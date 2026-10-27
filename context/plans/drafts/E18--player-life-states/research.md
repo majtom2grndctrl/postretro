@@ -154,6 +154,6 @@ Divergence source: only the host runs transitions and assist. Clients diverge on
   - "No source-scoped fact vocabulary" is false. `byPlayer(impact.source)` reads exist. The same stale line sits in the `SourceHandle` doc comments in `data_script.ts`.
   - "Every operand reads the same starting value" is false for owner-addressed reads. `read_owned_store` reads live.
 - **Debug-mirror drift.** `is_trigger_consequential_primitive` lists `applyDamage`/`addSlot` but not `grantHealth`/`grantAmmo`. Fix it in Task 1 alongside `setLifeState`.
-- **`player-descriptor-composition` stale.** Its Task 1 splits a `data_descriptors.rs` that is already split, and its shape predates friction, vault, swim and viewPose. No key collision: its states live inside `components.movement`.
+- **`player-descriptor-composition` needs a rebase.** Its Task 1 split shipped; its states-axis, modifiers-under-states and layered viewFeel are unbuilt, and its baseline predates friction, vault, swim and viewPose. No key collision: its states live inside `components.movement`.
 - **Already-true behaviour the spec relies on.** `restore_carried_health` skips carried HP ≤ 0, tested by `nonpositive_carried_health_keeps_descriptor_default`. `harvest_pawn` also runs at level change, which grounds O11 and O12.
 - **Slot cap.** 14 slots today, so the spec's 16 fits u16 exactly. Any further per-player slot must widen the bitset to u32.

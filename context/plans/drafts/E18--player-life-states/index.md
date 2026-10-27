@@ -2,13 +2,13 @@
 
 ## Goal
 
-Give mod authors an engine mechanism for player death and revival. They express their own death mechanics as policy over it: Borderlands down/revive, Quake co-op respawn, Doom restart. The engine adds author-named **life states** that gate an engine-closed capability set, reads for conditions and the HUD, verbs to change state and respawn, and a teammate **assist** interaction. It does not add a death policy. The dev mod ships Borderlands-style co-op death as the first consumer. Connected clients must feel it as smoothly as the host: no transition snaps the view except respawn, and the bars a player watches advance every frame. It is the first of the phases listed under Out of scope, and the co-op floor that E18-R (respawn and player-leave) names. E18-R's player-leave half keeps the existing harvest-and-hold contract; this spec adds only the life state a rejoining player gets (O11).
+Give mod authors an engine floor for player death and respawn, so they express death mechanics as policy: Quake co-op respawn, Doom restart, or a Borderlands-style down state with bleed-out. The engine adds author-named **life states** that gate an engine-closed capability set, reads for conditions and the HUD, verbs to change state and respawn, and an author map for the state a rejoining player enters. It adds no death policy. The dev mod ships down → bleed-out → respawn as the first consumer. Connected clients feel it as smoothly as the host: no transition snaps the view except respawn, and the bleed-out bar advances every frame. This is the co-op floor E18-R (respawn and player-leave) names. Player-leave keeps the existing harvest-and-hold contract; this spec adds only the life state a rejoining player enters (AC14).
 
 ## Scope
 
 ### In scope
 
-- `components.lifeStates` on an entity type descriptor: author-named states, an `initial` state, and per-state capability profiles. One validator serves both runtimes.
+- `components.lifeStates` on an entity type descriptor: author-named states, an `initial` state, per-state capability profiles, and an optional `rejoin` map. One validator serves both runtimes.
 - A global life-state name table, sorted, that rides `TuningPayload` with every declared profile.
 - Per-pawn life state (state id plus elapsed time in that state). It is stamped onto the movement component and replicated to the owner and to observers.
 - Capability gates, routed through one helper:
@@ -23,21 +23,16 @@ Give mod authors an engine mechanism for player death and revival. They express 
   - `inLifeState(name)` (Bool IR input)
   - `player.lifeStateMs` (per-player Number slot)
   - `player.lifeState` (local String slot for the HUD)
-  - `player.assistProgress` (per-player Number slot)
-- Impact-policy source reads and effects: `source.inLifeState(name)`, `source.setLifeState(name)`.
-- Assist:
-  - A held-Use input on the wire.
-  - An `assistable` profile key.
-  - A host accumulator.
-  - Discrete player-event sources `assistReceived()` and `assistGiven()`.
+- Rejoin: the seat harvest carries the leaving state by name, and restore enters the author's `rejoin` target.
 - Hot-reload remap of live pawns by state name.
-- Dev-mod Borderlands policy (down, bleed-out respawn, teammate revive, self-revive on kill, author-chosen bonuses) and its HUD.
+- Dev-mod down/bleed-out policy and its HUD.
 - Updates to `docs/scripting-reference.md` and `docs/teleporters.md`.
 
 ### Out of scope
 
-Later phases build on this shape. Each item below is additive to the Phase 1 surface.
+Later phases build on this shape. Each is additive to this surface.
 
+- **Next: `E18--player-revive-assist`.** Teammate assist (held Use, the `assistable` profile key, assist sources and progress) and impact-policy life-state reads and effects (`source.inLifeState`, `source.setLifeState`). It depends on this spec and lands before the phases below.
 - **Phase 2: respawn variety.**
   - `respawn({ loadout })` reset to the descriptor loadout.
   - Drop-on-death backpacks.
@@ -47,8 +42,6 @@ Later phases build on this shape. Each item below is additive to the Phase 1 sur
 - **Phase 3: presentation.**
   - Spectate/follow camera and a death cam (view roll and drop).
   - A per-state avatar `animation` override. Host `update_player_animation_locomotion` and the client remote-avatar classifier reselect every tick, so both need a hold path.
-  - A revive prompt showing the nearest assistable teammate.
-  - A target-side "being revived" slot separate from `player.assistProgress`.
 - **Phase 4: squad rules.**
   - Group aggregate conditions (all players down → wipe).
   - Game over and wave-end respawn.
@@ -65,13 +58,13 @@ Later phases build on this shape. Each item below is additive to the Phase 1 sur
 **Problem.** The engine has no notion of a player being out of play. A zero-HP pawn keeps moving, using and touching. Per-player death edges exist (`players().on(becomes(read(player.health).le(0)), …)`), but nothing they fire can gate, relocate, or revive one player; `playerDied` stays a param-less host event. Authors therefore cannot build any death mechanic beyond "restart the level for everyone".
 
 **Placement.**
-- **Engine mechanism vs mod policy.** The engine owns what a life state *means* to engine systems: the capability gates, the assist accumulator, and respawn relocation. The mod owns which states exist, when transitions happen, and every consequence (bonuses, timers, screens). The engine never transitions a pawn on HP.
-- **Host vs client.** Transitions, assist completion and their consequences are host-authoritative. Gates run on host, single player, and client prediction from the same profile data. What the owning client *watches* (its movement through a transition, its own assist progress, its bleed-out time) is predicted locally from data it already holds, then corrected smoothly, so host authority never shows up as latency or stair-stepping.
-- **Descriptor vs code.** Profiles are descriptor data because gates read them every tick, inside movement replay, where the IR cannot run.
+- **Engine mechanism vs mod policy.** The engine owns what a life state *means* to engine systems: the capability gates, respawn relocation, and carrying the state across a rejoin. The mod owns which states exist, when transitions happen, which state a rejoin enters, and every consequence (timers, screens). The engine never transitions a pawn on HP.
+- **Host vs client.** Transitions and their consequences are host-authoritative. Gates run on host, single player, and client prediction from the same profile data. What the owning client *watches* (its movement through a transition, its bleed-out time) is predicted locally from data it already holds, then corrected smoothly, so host authority never shows up as latency or stair-stepping.
+- **Descriptor vs code.** Profiles are descriptor data because gates read them every tick, inside movement replay, where the IR cannot run. The `rejoin` map is descriptor data because restore runs at materialization, before any script reaction can.
 
 **Prior commitments.**
 
-- **"The engine has no built-in death policy"** (`scripting.md` §10.4) and **"death is modder policy derived from impact"** (Q3 archive, E16). Kept. Zero HP fires only what it fires today, and every transition is an authored verb.
+- **"The engine has no built-in death policy"** (`scripting.md` §10.4) and **"death is modder policy derived from impact"** (Q3 archive, E16). Kept. Zero HP fires only what it fires today, and every transition is an authored verb or authored `rejoin` entry.
 - **Engine-closed component vocabulary** (`index.md` §4).
   - Kept for capabilities: the profile keys are a closed engine set, and unknown keys are rejected.
   - State *names* are authored. A name is data selecting a profile; it is not a new component kind.
@@ -83,6 +76,7 @@ Later phases build on this shape. Each item below is additive to the Phase 1 sur
 - **Client predicts only with host numbers** (`networking.md` §What gates). Kept. Profiles and the name table ride `TuningPayload`, and clients never read local descriptors for gates.
 - **Target selection holds no aliveness policy** (`entity_model.md` §AI). Kept. `damageable` gates spatial damage eligibility, the site that already gates AI attacks, and never selection.
 - **Player events are host-only, and `on.player` is legal only before `wait`** (`scripting.md` §12). Kept. Bleed-out uses the `player.lifeStateMs` fact, so no per-player cancellable timer is needed.
+- **Seat harvest and hold** (`networking.md`: a seat holds its carried state across a disconnect hold and level transitions). Kept. Carried health keeps `restore_carried_health`'s rule (carried ≤ 0 restores max). The carried record gains the leaving state's name; an expired hold mints a fresh seat, which carries nothing.
 - **Co-op research: E18-R needs respawn after a delay, a latch that re-arms, and dead players gating occupancy** (`context/research/co-op-triggers-trap-pools.md`).
   - Delivered by `respawn`, `player.lifeStateMs`, and the `occupancy` capability.
   - Re-arming already holds through `set_health_absolute`, which respawn and `grantHealth` both reach.
@@ -90,51 +84,49 @@ Later phases build on this shape. Each item below is additive to the Phase 1 sur
 **Alternatives rejected.**
 
 - **An engine-owned closed `alive`/`down`/`dead` model.** The owner chose author-named states. A closed set fixes three mechanics in engine vocabulary. Named states with closed capabilities cover the same ground and still let authors add "spectating" or "bleeding".
-- **Engine features per mechanic** (a revive system, a lives system). These put policy in the engine. Revive here is `setLifeState` plus `grantHealth` in an authored fire list, and bonuses are ordinary fire-list entries.
-- **A new `on.assister` token** for one `assisted()` event. A second dispatch token touches about a dozen hand-kept sites: SubjectToken, SequenceTarget, BoundTarget, DispatchScope's single event-player snapshot, `byPlayer` recognition in three installers, and five per-source rejection guards. Two discrete sources, each binding the existing `on.player` to a different pawn, deliver both bonuses with none of that.
-- **Assist as a trigger volume attached to the pawn.** Trigger volumes are level-authored AABBs keyed by map identity. A pawn-carried one has no placement, tag, or install story.
-- **A generic hold-to-interact mechanism with assist as its first target kind.** Pawn targets need the same accumulator either way. Assist stays player-on-player in Phase 1 because no other hold-to-interact consumer exists; generalising later adds a target kind beside pawns without changing the profile key or the sources.
+- **Engine features per mechanic** (a revive system, a lives system). These put policy in the engine. A revive is `setLifeState` plus `grantHealth` in an authored fire list.
 - **A raw `setCapabilities({...})` verb with no named states.** Named profiles validate at load, cost one byte on the wire, replay deterministically from that byte, and give `player.lifeStateMs` and `inLifeState` something to read. A raw verb would ship the whole capability set per change and leave conditions nothing to name.
 - **Bleed-out as a per-player `wait`.** This needs `on.player` after `wait` and cancellation on revive. Player events reject interruptible waits. A readable elapsed-time fact is simpler, shows on the HUD, and resets on every transition by construction.
+- **An engine-fixed rejoin state.** Always `initial` lets a downed player escape by reconnecting. Always the leaving state traps a reconnecting player in a state the author meant to be transient. A per-state map costs one validated descriptor key and lets the author pick either, or a third state such as `spectating`.
+- **Carrying the state id instead of its name.** Ids are indices into a table that hot reload rebuilds during the hold. The name survives a rebuild or fails to resolve visibly.
 
 **Foreclosures and one-way doors.**
 
-- New wire fields (movement state, input) and a `TuningPayload` epoch bump. Pre-stable, undone with another bump.
-- SDK names (`lifeStates`, `setLifeState`, `respawn`, `inLifeState`, `assistReceived`, `assistGiven`) become the modder contract. Renaming them costs a pre-stable SDK break across both runtimes.
-- Task 7 widens the per-player slot bitset (`EntityScope.warned_owned_engine`, capped at 16 by a compile-time assert) to u32. This spec takes `PlayerSlot` from 14 to 16, and without widening the next per-player slot would fail to compile.
+- New `WirePlayerMovementState` fields and a `TuningPayload` epoch bump. Pre-stable, undone with another bump.
+- SDK names (`lifeStates`, `rejoin`, `setLifeState`, `respawn`, `inLifeState`) become the modder contract. Renaming them costs a pre-stable SDK break across both runtimes.
+- `PlayerSlot` goes from 14 to 15. The per-player slot bitset (`EntityScope.warned_owned_engine`, capped at 16 by a compile-time assert) has one slot left.
 - The u8 state id caps the global name table at 255 names. That is material only for a mod with more than 255 distinct life-state names.
-- An assist with no line-of-sight or facing requirement can be tightened later by adding optional profile keys. Nothing material is foreclosed.
+- The carried life-state name is host-local seat data, never on the wire. Nothing material is foreclosed.
 
 ## Acceptance criteria
 
 ### Descriptor and validation
-- [ ] **AC1.** Both runtimes load a `components.lifeStates` block with `initial` and `states` into the same lowered shape. Loading is rejected, with the full key path, for each of these:
+- [ ] **AC1.** Both runtimes load a `components.lifeStates` block with `initial`, `states` and optional `rejoin` into the same lowered shape. Loading is rejected, with the full key path, for each of these:
   - an `initial` that names no declared state
   - a non-identifier state name
   - an unknown profile key
   - a `speedScale` outside `[0, 1]` or non-finite
-  - an `assistable.radius` ≤ 0 or non-finite
-  - an `assistable.holdMs` < 0 or non-finite
   - an unknown `posture`
+  - a `rejoin` key or value that names no declared state
   - the block on a descriptor without player movement
   - a mod whose distinct names exceed 255
 
-  A minimal valid block loads.
+  A minimal valid block loads, with and without `rejoin`.
 - [ ] **AC2.** A pawn whose descriptor declares no life states behaves exactly as today at zero HP. Fire is blocked and cancelled, vault is barred (so teleporters are skipped), the pawn is excluded from trigger occupancy and is not a spatial damage target. Movement, look, switch, reload, Use, Touch and pickups stay ungated.
 
 ### Life state and gates
-- [ ] **AC3.** A pawn spawns, joins, rejoins and restarts the level in its descriptor's `initial` state with `player.lifeStateMs` at 0. Rejoin applies even after a disconnect while in another state.
+- [ ] **AC3.** A pawn spawns, joins and restarts the level in its descriptor's `initial` state with `player.lifeStateMs` at 0. Rejoin and level change follow AC14.
 - [ ] **AC4.** For each capability key there are paired tests, one per direction. A state with the key `false` (or `speedScale: 0`) refuses the gated action. A state with the key `true` permits it at zero HP. This covers firing while downed, and covers it on the host, in single player, and in connected-client prediction. Movement and look keys hold across reconcile replay with no correction when host and client share the state.
 - [ ] **AC5.** `movement.posture: "crouch"` holds the pawn crouched while it is in that state, even with crouch released. Leaving the state returns control to the crouch input under the normal stand-up clearance rule.
 - [ ] **AC6.** `touch: false` blocks new trigger Touch entries and pickups. It does not emit Exit for a volume the pawn already occupies. `occupancy: false` removes the pawn from occupant counts.
 
 ### Verbs and reads
 - [ ] **AC7.** `setLifeState(name)` from a player event applies in-tick. The next tick's gates read the new profile, and `player.lifeStateMs` restarts from 0. Setting the current state again is a no-op that keeps elapsed time.
-- [ ] **AC8.** Install rejects any reaction whose `setLifeState`, `respawn({ lifeState })`, `inLifeState`, or `source.inLifeState` / `source.setLifeState` names a state absent from the mod's name table. The error names the reaction and the state. A runtime target whose descriptor lacks that state, or declares no states, warn-skips.
-- [ ] **AC9.** `inLifeState(name)` holds exactly while the evaluated pawn is in `name`. This applies in player-event conditions, in local `onStateCrossing` predicates (own pawn) and in impact-policy `source.inLifeState`. It is false for a non-player source, which reads no warning.
+- [ ] **AC8.** Install rejects any reaction whose `setLifeState`, `respawn({ lifeState })` or `inLifeState` names a state absent from the mod's name table. The error names the reaction and the state. A runtime target whose descriptor lacks that state, or declares no states, warn-skips.
+- [ ] **AC9.** `inLifeState(name)` holds exactly while the evaluated pawn is in `name`. This applies in player-event conditions and in local `onStateCrossing` predicates (own pawn).
 - [ ] **AC10.** `player.lifeState` (local String) and `player.lifeStateMs` reach the owning client's HUD. A HUD `visibleWhen` on `player.lifeState` equal to `"down"` shows only while downed. An undeclared pawn reads `player.lifeState` as `""`.
 
-### Respawn
+### Respawn and rejoin
 - [ ] **AC11.** `respawn()` relocates the pawn to its seat's placement on the next fixed tick and applies all of these:
   - zeroes velocity and sets yaw to the placement facing
   - sets health to max and re-arms the death latch, so a later zero fires `playerDied` again
@@ -143,39 +135,27 @@ Later phases build on this shape. Each item below is additive to the Phase 1 sur
   - keeps inventory
 - [ ] **AC12.** The owning client snaps through the teleport reconcile class and observers cut instead of interpolating. No teleporter arrival sound plays, even when the pawn last used a teleporter.
 - [ ] **AC13.** Respawn picks the seat placement unless another live pawn overlaps it. It then picks the lowest map-order placement that no pawn overlaps. With none free it uses the seat placement and logs one warning. `health` outside `(0, max]` or non-finite warn-clamps to max. A non-player target warn-skips.
-
-### Assist
-- [ ] **AC14.** Holding Use within `radius` of a pawn whose current state declares `assistable` completes after `holdMs`. The completion fires every `assistReceived()` subscription with `on.player` = target, then every `assistGiven()` subscription with `on.player` = helper. Both fire in the tick the hold completes, before that tick's condition snapshot.
-- [ ] **AC15.** Paired refuse/permit edges for assist:
-  - **Refused:** out of range; target in a non-assistable state; helper's state has `use: false`; release one tick before `holdMs`.
-  - **Permitted:** in range on an assistable state; `holdMs: 0` completes on the first held tick.
-
-  Progress resets when the helper releases or switches targets, when either pawn changes state, and when the target respawns. `player.assistProgress` reports the helper's progress 0..1, and the target's when it is not itself helping.
-- [ ] **AC16.** Two helpers completing on one target in one tick produce one completion, for the earlier helper in `players()` order. The other helper's progress resets. Held Use survives a short input gap under the host's hold-then-neutral gap policy.
+- [ ] **AC14.** A pawn that disconnects in state S and reconnects inside the seat hold window enters `rejoin[S]` with `player.lifeStateMs` at 0. It enters `initial` instead when S has no `rejoin` entry, when S is absent from the current name table (a hot reload during the hold removed it), or when the hold expired. It rejoins at its seat placement, and carried health ≤ 0 restores max. A level change is not a rejoin: every pawn starts the next level in `initial`, held seats included. A pawn whose descriptor declares no states is unaffected.
 
 ### Co-op and lifecycle
-- [ ] **AC17.** A late joiner sees an existing downed teammate's life state (`inLifeState` on the host, posture on the avatar) with no extra baseline work.
-- [ ] **AC18.** After hot reload, a live pawn keeps its state by name. If the new descriptor removed that name, the pawn enters the new `initial` state with one warning.
+- [ ] **AC15.** A late joiner sees an existing downed teammate's life state (`inLifeState` on the host, posture on the avatar) with no extra baseline work.
+- [ ] **AC16.** After hot reload, a live pawn keeps its state by name. If the new descriptor removed that name, the pawn enters the new `initial` state with one warning.
 
 ### Client experience
-- [ ] **AC22.** A connected client running into a transition (down with `speedScale: 0.3`, or revive back to full speed) at 150 ms simulated round-trip time gets no teleport-class snap. The correction rides the ordinary reconcile smoothing class, and the camera eases into and out of forced crouch exactly as a crouch-key press does. Respawn is the only life-state path that snaps.
-- [ ] **AC23.** The helper client's assist bar shows its own progress on the first held tick, with no round-trip wait, and advances every rendered frame. If the host resets or never confirms (target moved, revived elsewhere, out of range on the host), the bar returns to 0 with no success cue. Success consequences (state, health, bonuses, their presentation) appear only after host confirmation. The target client's received-progress bar has no stair-steps at snapshot arrival.
-- [ ] **AC24.** On the owning client, the `player.lifeStateMs` HUD value advances every rendered frame and never moves backwards when a snapshot lands, except at a real transition or respawn.
+- [ ] **AC17.** A connected client running into a transition (down with `speedScale: 0.3`, or back to a full-speed state) at 150 ms simulated round-trip time gets no teleport-class snap. The correction rides the ordinary reconcile smoothing class, and the camera eases into and out of forced crouch exactly as a crouch-key press does. Respawn is the only life-state path that snaps.
+- [ ] **AC18.** On the owning client, the `player.lifeStateMs` HUD value advances every rendered frame and never moves backwards when a snapshot lands, except at a real transition or respawn.
 
 ### Orderings and consumer
 - [ ] **AC19.** Every row of the Orderings table has a test asserting its expected outcome.
-- [ ] **AC20.** The dev mod ships the Borderlands policy in TS and Luau twins, with a parity surface test:
-  - zero HP → down: crawl, can fire, can't switch or use
-  - bleed-out after a fixed delay → respawn
-  - an enemy kill while down → self-revive, with a health and XP bonus
-  - teammate hold-Use → revive, with an XP bonus to the helper
-  - a bleed-out bar, a revive-progress bar, and a downed vignette on the HUD
+- [ ] **AC20.** The dev mod ships the down/bleed-out policy in TS and Luau twins, with a parity surface test:
+  - zero HP → down: crawl, can fire, can't switch, use or touch, no occupancy
+  - `inLifeState("down")` and `player.lifeStateMs` ≥ 15000 → respawn
+  - a bleed-out bar and a downed vignette on the HUD
 
-  A two-player headless test drives down → assist → alive, down → self-revive, and down → bleed-out → respawn.
+  A two-player headless test drives down → bleed-out → respawn, with the other pawn unaffected throughout.
 - [ ] **AC21.** The docs need these changes:
-  - `docs/scripting-reference.md` documents life states, the verbs, the reads, assist, and the Doom / Quake / Borderlands recipes.
-  - It drops its stale claims that per-owner + persist is rejected and that there is "no source-scoped fact vocabulary".
-  - The verb tables in it and in `docs/teleporters.md` list the new verbs.
+  - `docs/scripting-reference.md` documents life states, the zero-HP rule (Prior commitments), the verbs, the reads, `rejoin` with both `rejoin: { down: "alive" }` and `rejoin: { down: "spectating" }` (a profile with everything off), and the Doom / Quake / Borderlands-lite recipes.
+  - The verb tables in it and in `docs/teleporters.md` list `setLifeState` and `respawn`.
   - Every command shown runs from an SDK bundle.
 
 ## Orderings
@@ -185,27 +165,21 @@ Task agents cite rows by number. Expected outcomes are binding.
 | # | Scenario | Ordering | Expected |
 |---|---|---|---|
 | O1 | Two pawns zeroed in one tick | Same death sweep | `becomes(health ≤ 0)` fires once per pawn, each with its own `on.player`. `playerDied` fires once, unchanged |
-| O2 | Down and revived in one tick (impact self-revive applies before the sweep sees zero) | In-tick | No death edge. `playerDied` fires if the sweep latched first; health positive re-arms it |
-| O3 | Assist completes the same tick bleed-out would expire | Assist in tick, condition snapshot after | Revive applies first; the bleed-out condition reads `inLifeState("down")` false and does not fire |
-| O4 | Self-revive kill from a remote hit still waiting on fire authorization, landing after bleed-out expired | Bleed-out tick N, hit tick N+k | Respawn wins. The later `source.inLifeState("down")` is false and the self-revive row does not fire |
-| O5 | Assist completion recorded in tick, then a post-tick remote-hit flush self-revives the target | Completion, flush, player-event pass | The completion is dropped at application because the target no longer declares `assistable`. No assist sources fire |
-| O6 | Two `respawn` verbs on one pawn before the next tick | Queue | One relocation; the last request's arguments win |
-| O7 | `respawn` and `setLifeState` on one pawn in one fire list | Listed order | `setLifeState` applies in-tick. Respawn applies next tick and sets its own state, which wins |
-| O8 | `setLifeState` to the current state | — | No-op; elapsed time continues |
-| O9 | `holdMs: 0` | First held tick | Completes that tick |
-| O10 | Helper disconnects mid-hold | Seat hold | Progress dropped. The target is unchanged |
-| O11 | Target disconnects while down, rejoins inside the hold window | Harvest, restore | Rejoins in `initial` at the seat placement; carried health ≤ 0 restores max |
-| O12 | Level change while downed | Harvest at unload | Next level starts in `initial` with carried health (max if ≤ 0) |
-| O13 | Hot reload mid-down, state kept / removed | Recompose | Kept: same state, elapsed continues. Removed: `initial`, elapsed 0, one warning |
-| O14 | Client predicts through a transition | Host transition tick T | At most one reconcile correction at the state change. No repeated corrections while host and client share the state |
-| O15 | Respawn requested on the tick the pawn uses a teleporter | Same tick | The teleporter resolves, then respawn relocates the next tick. The generation bumps twice and the client snaps to the respawn |
-| O16 | Client fires in the window between the host's transition to `fire: false` and the client receiving it | Host tick T, client learns at T + RTT/2 | The host refuses those shots through the same path it uses for a zero-HP shooter today. The client shows no feedback class that path does not already show |
-| O17 | Client fires in the window after the host revives it (`fire: true`) but before the client knows | Same window, reversed | The client's own gate still refuses locally. No shot is sent, so nothing is refused and nothing is shown. Firing resumes when the state arrives |
-| O18 | Helper client predicts completion, but the host's accumulator reset one tick earlier (range edge under interpolation) | Client ahead of host | The host's reset wins. The client bar drains to 0 at the next snapshot and no success presentation plays |
+| O2 | Zeroed and healed in one tick (any in-tick heal that applies before the sweep sees zero) | In-tick | No death edge. `playerDied` fires if the sweep latched first; positive health re-arms it |
+| O3 | Two `respawn` verbs on one pawn before the next tick | Queue | One relocation; the last request's arguments win |
+| O4 | `respawn` and `setLifeState` on one pawn in one fire list | Listed order | `setLifeState` applies in-tick. Respawn applies next tick and sets its own state, which wins |
+| O5 | `setLifeState` to the current state | — | No-op; elapsed time continues |
+| O6 | Pawn disconnects while `down`, reconnects inside the hold window | Harvest, reclaim, restore | Enters `rejoin.down` when declared, else `initial`, elapsed 0, at the seat placement. Carried health ≤ 0 restores max. After hold expiry: fresh seat, `initial` |
+| O7 | Level change while in a non-initial state | Harvest at unload | Next level starts in `initial` regardless of `rejoin`, with carried health (max if ≤ 0) |
+| O8 | Hot reload mid-down, state kept / removed | Recompose | Kept: same state, elapsed continues. Removed: `initial`, elapsed 0, one warning |
+| O9 | Client predicts through a transition | Host transition tick T | At most one reconcile correction at the state change. No repeated corrections while host and client share the state |
+| O10 | Respawn requested on the tick the pawn uses a teleporter | Same tick | The teleporter resolves, then respawn relocates the next tick. The generation bumps twice and the client snaps to the respawn |
+| O11 | Client fires in the window between the host's transition to `fire: false` and the client receiving it | Host tick T, client learns at T + RTT/2 | The host refuses those shots through the same path it uses for a zero-HP shooter today. The client shows no feedback class that path does not already show |
+| O12 | Client fires in the window after the host moves it to a `fire: true` state but before the client knows | Same window, reversed | The client's own gate still refuses locally. No shot is sent, so nothing is refused and nothing is shown. Firing resumes when the state arrives |
 
 ## Tasks
 
-New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `physics/src/movement/mod.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `sim/src/impact_policy.rs`, `postretro/src/startup/lifecycle.rs`, `startup/reaction_validation.rs`, `netcode/src/state_slots.rs`, `scripting_systems/data_archetype.rs`) receive only call-site edits and match arms.
+New logic lands in new modules. Files already past ~800 lines (`sim/src/sim/mod.rs`, `physics/src/movement/mod.rs`, `netcode/src/lib.rs`, `netcode/src/client.rs`, `netcode/src/seat.rs`, `postretro/src/startup/lifecycle.rs`, `startup/reaction_validation.rs`, `netcode/src/state_slots.rs`, `scripting_systems/data_archetype.rs`, `scripting/builtins/net_descriptor.rs`) receive only call-site edits and match arms.
 
 ### Task 1: Thin slice: descriptor → state → verb → condition → wire → fire gate
 
@@ -213,7 +187,7 @@ This slice falsifies the boundary assumptions.
 
 **Descriptor and validation**
 - Add `lifeStates` as a descriptor component kind, `DescriptorComponentKind` plus `ComponentKind` / `ComponentValue`.
-- Both VMs read it into a neutral raw form. One shared validator, modelled on `validate_charge_interrupts` (sorted keys, `DescriptorError::InvalidShape` with full path), applies AC1.
+- Both VMs read it into a neutral raw form, `rejoin` included. One shared validator, modelled on `validate_charge_interrupts` (sorted keys, `DescriptorError::InvalidShape` with full path), applies AC1. The lowered `rejoin` map stays host-side and does not ride `TuningPayload`.
 
 **Global name table and profiles**
 - Build a sorted union of every declared name across `DataRegistry::entities` at manifest load. A state id is its index.
@@ -221,7 +195,7 @@ This slice falsifies the boundary assumptions.
 
 **Per-pawn state**
 - Add `life_state: u8` (255 = undeclared) and `life_state_elapsed_ms: u32` to `PlayerMovementComponent`, beside `teleport`.
-- Spawn paths set `initial`: `spawn_from_player_starts*`, and the netcode joiner spawn `host_handle_accept_descriptor_at_placement`.
+- Spawn paths set `initial`: `spawn_from_player_starts*`, and the netcode joiner spawn `host_handle_accept_descriptor_at_placement`. Task 5 extends these same sites for rejoin.
 - Replicate both fields through `WirePlayerMovementState`, bumping `WIRE_VERSION` 35→36 and `SNAPSHOT_VERSION` 22→23. Late-join baselines carry them through `collect_payloads`.
 - The movement tick advances elapsed time by the fixed step. Reconcile replay advances it identically.
 
@@ -243,7 +217,7 @@ This slice falsifies the boundary assumptions.
 **Test**
 - A two-player host/client test: a player event downs a pawn, its fire is refused, the client reads the same state.
 
-Delivers AC1, AC3, AC7, AC8 (verb and condition arms), AC9 (condition arm).
+Delivers AC1, AC3, AC7, AC8, AC9 (condition arm).
 
 ### Task 2: Movement capabilities
 
@@ -253,7 +227,7 @@ Delivers AC1, AC3, AC7, AC8 (verb and condition arms), AC9 (condition arm).
 - **`movement.posture: "crouch"`** forces crouch intent. Crouch already rewrites `capsule.eye_height`, so fire origin, hit validation and AI line of sight follow without new code.
 - **`look: false`** freezes view yaw/pitch input for the pawn on host and client. Existing camera feel layers still run.
 - **Client smoothness.** A life-state change replicated to the owning client takes the ordinary reconcile correction class, never the teleport class. The teleport class stays reserved for respawn (Task 5) and teleporters. The posture change reuses the crouch view-height easing.
-- Delivers AC4 (movement and look keys), AC5, AC22 and O14.
+- Delivers AC4 (movement and look keys), AC5, AC17 and O9.
 
 ### Task 3: Interaction and combat capabilities
 
@@ -263,27 +237,27 @@ Route each key through the Task 1 helper at its existing site.
 - **`touch`:** new Touch entries there and pickups in `touch.rs`. Gate the entry, never membership, so no false Exit fires.
 - **`occupancy`:** `player_is_alive_for_trigger_occupancy` / `effective_occupants`.
 - **`damageable`:** `is_damage_target_eligible` (`sim/src/scripting_systems/health.rs`), branching only for pawns carrying player movement so enemies are untouched. It gates spatial eligibility and AI attack exactly where zero HP does today. Hitscan apply, mover crush, impact effects and script `damage` stay ungated, as they are at zero HP today.
-- **Fire across a transition.** A remote shot refused by a life-state transition the client had not yet received uses the host's existing zero-HP refusal path unchanged (O16). The client weapon frame gates on its own replicated state (O17).
+- **Fire across a transition.** A remote shot refused by a life-state transition the client had not yet received uses the host's existing zero-HP refusal path unchanged (O11). The client weapon frame gates on its own replicated state (O12).
 - Put the per-site branches in a new `sim/src/sim/player_life.rs` and edit only call sites in `sim/mod.rs`.
-- Delivers AC2, AC4 (these keys), AC6, O16 and O17.
+- Delivers AC2, AC4 (these keys), AC6, O11 and O12.
 
 ### Task 4: Life-state reads and reload remap
 
 - **`player.lifeStateMs`.** Add a `PlayerSlot` variant read from the component's elapsed field: catalog entry with `OwnerPrivatePlayer`, `player_slots.rs` arm, HUD publisher beside `publish_swim_values`, `MIRRORED_GAME_STATE_LEAVES`, regenerated types and fixtures. This makes 15 player slots; the u16 bitset cap holds.
-- **Client HUD value.** On a connected client, the HUD publisher writes `player.lifeStateMs` from the owning pawn's *predicted* `life_state_elapsed_ms`, which advances every fixed tick and reconciles with movement. It never writes from the stepped owner-private sample. The owner-private copy stays the host's per-player source for conditions (AC24).
+- **Client HUD value.** On a connected client, the HUD publisher writes `player.lifeStateMs` from the owning pawn's *predicted* `life_state_elapsed_ms`, which advances every fixed tick and reconciles with movement. It never writes from the stepped owner-private sample. The owner-private copy stays the host's per-player source for conditions (AC18).
 - **`player.lifeState`.** Add a local String catalog slot with `ReplicationScope::None` (precedent `player.weapon.current`). Each machine publishes it for its own pawn from the replicated `life_state` and the `TuningPayload` name table; an undeclared pawn reads `""`.
 - **`inLifeState` in local crossings.** Teach `StoreScope` the `player.inLifeState:` input so local `onStateCrossing` predicates read the own pawn (precedent `read(player.swimming)`).
 - **Hot reload remap.** Rebuild the name table and remap each live pawn by name in the descriptor refresh path (`plan_descriptor_refresh`). A removed name enters `initial` with one warning.
-- Delivers AC9 (crossing arm), AC10, AC18, AC24 and O13.
+- Delivers AC9 (crossing arm), AC10, AC16, AC18 and O8.
 
-### Task 5: Respawn
+### Task 5: Respawn and rejoin
 
 **SDK and binding**
 - Add `respawn({ health?, lifeState? })` to `playerVerbs` and the type declarations.
-- Add `BoundTriggerCommand::Respawn`. It queues a `RespawnRequest { pawn, health, state_id }`; a second request for the same pawn replaces the first (O6).
+- Add `BoundTriggerCommand::Respawn`. It queues a `RespawnRequest { pawn, health, state_id }`; a second request for the same pawn replaces the first (O3).
 
 **Placements**
-- Netcode depends on sim, so the app publishes resolved placements into a sim-readable `RespawnPlacements` table: seat → placement transform, plus map-order spawn transforms.
+- Netcode depends on sim, so the app publishes resolved placements into a sim-readable `RespawnPlacements` table: seat → placement transform, plus the map-order transforms of `player_spawn::joinable_spawns` (the join path's eligibility, so respawn and join agree on which spawns exist).
 - Single player publishes at install. The host publishes at install and on every `SeatTable::assign_placement`.
 
 **Relocation, in the next fixed tick's movement stage** (through the `pending_teleporter_mutations` seam, so the host camera hold window sees it)
@@ -292,105 +266,68 @@ Route each key through the Task 1 helper at its existing site.
 - Bump the teleport generation with `last_teleporter = NO_TELEPORTER`, rebuild `arrival_latches` at the destination, and adjust `accumulated_yaw`.
 - Set health through `set_health_absolute`.
 - Set the state and reset elapsed time.
-- Cancel owned activations and charge, drop any vault, and reset any assist progress that names the pawn.
+- Cancel owned activations and charge, and drop any vault.
 
-Delivers AC11, AC12, AC13, O6, O7 and O15.
+**Rejoin** (AC14)
+- `CarriedState` (`combat-model/src/carried_loadout.rs`) gains `life_state: Option<String>`, the leaving state's *name*.
+- `SeatTable::harvest_pawn` records it on the disconnect path. It gains a name-table parameter (`&[String]`, the Task 1 table); its disconnect caller in `netcode/src/host.rs` passes the table the host already holds to build `TuningPayload`. An undeclared pawn records `None`. The id → name lookup lives in `player_life.rs`; `seat.rs` gets only the new `CarriedField` match arm.
+- `SeatTable::harvest_bound_pawns` is the level-change harvest. It records no name and clears `life_state` on every carried record, held seats included, so the next level starts in `initial` (O7).
+- Hold expiry already releases the seat and mints a fresh one with no carried record, so a late reconnect starts in `initial` with no new code.
+- Restore runs at the Task 1 spawn sites beside each `restore_carried_health` call (`data_archetype.rs` player-start path, `net_descriptor.rs` net-slot path). A new `restore_carried_life_state` in `player_life.rs` resolves a carried name through the pawn descriptor's `rejoin` map, then resolves the target against the current name table. A missing name, a missing `rejoin` entry, or an unresolvable target yields `initial`. Elapsed time starts at 0. Health keeps `restore_carried_health` unchanged.
 
-### Task 6: Impact-policy source reads and effects
+**Tests**
+- AC11–AC14 and O3, O4, O6, O7, O10, including a rejoin across a hot reload that removed the carried name.
 
-- **`source.inLifeState(name)`.** Add `EntityInputHandle::SourceLifeState`, resolved by `EntityScope::resolve_owned_input` for `owner:"@impact.source"`. It returns false, without a warning, for a non-player source.
-- **`source.setLifeState(name)`.** Intercept it in `apply_planned` the way `SetOwnerSlot` is, not in `apply_effect`, which lacks the tick and pawn checks.
-- **SDK.** Add `source` handle methods to `sdk/lib/data_script.ts` / `.luau` and the sdk_lib templates.
-- **Name validation.** Unknown names fail at load through the AC8 walk. Without it, `bind_policy` would silently drop the whole policy.
-- Delivers AC8 (impact arm), AC9 (impact arm), O2 and O4.
+Delivers AC11, AC12, AC13, AC14, O3, O4, O6, O7 and O10.
 
-### Task 7: Assist
-
-**Input**
-- Add a held-Use bit `use_held` to `WireMovementInput`, inside the same `WIRE_VERSION` 36 as Task 1. It follows `command_queue.rs`'s hold-then-neutral gap policy like other held inputs.
-- Thread it to the host and the single-player input.
-
-**Accumulator**
-- A host and single-player accumulator in new module `sim/src/sim/assist.rs`. It runs in the fixed tick after the weapon stage and death sweep.
-- Each helper whose state allows `use` and who holds Use accumulates on the nearest pawn within its target's `assistable.radius`. Distance is between pawn origins; ties go to the earlier pawn in `players()` order.
-- Progress resets per AC15. One completion per target per tick (AC16).
-- Completions go into a tick-events `assist_completions` list (precedent `tick_events.trigger_exit_fires`).
-- **One rule, two runners.** Write the accumulator as a pure step over (helper input, helper state, candidate pawn positions and states, profiles, previous progress). The host runs it authoritatively. The owning client runs the same step each predicted tick for its own pawn as helper only, using interpolated remote pawns, replicated life states and `TuningPayload` profiles. It writes only its local `player.assistProgress` for presentation and never emits completions.
-
-**Client presentation**
-- When host samples of the helper's own progress arrive, the client keeps its predicted value unless the host reports a reset or a different target. In that case the predicted progress drops to the host's value (O18).
-- The target client's received progress ramps instead of stepping. Add `player.assistProgress` to the timed-slot display projection's enumerated slots (`done/coop--timed-slot-projection`; it projects only listed slots) as an upward ramp bounded at 1. The helper's own predicted value overrides the projection on the helper's machine.
-- Success presentation (sounds, flashes) belongs to the authored `assistReceived` / `assistGiven` fire lists. Those run on host confirmation and route to each player's machine, so a prediction never plays one (AC23).
-
-**Sources**
-- `PlayerEventTable::run_tick` applies completions before `evaluate()`. Each completion is re-checked first and dropped if the target no longer declares `assistable` (O5).
-- `BoundPlayerEvent` gains a source kind: `Edge { condition, edge, … }` or `AssistReceived` or `AssistGiven`.
-- `player_event_from_json` accepts `edge: "assistReceived" | "assistGiven"` with no condition.
-- Fire-list validation is the player-event rule set unchanged. Each fire binds `on.player` to the target or the helper respectively.
-
-**Progress slot**
-- Add `player.assistProgress` as a `PlayerSlot` (16 slots). Widen the `warned_owned_engine` bitset in `ir/scopes.rs` from u16 to u32 and update its compile-time assert.
-
-Delivers AC14, AC15, AC16, AC23, O3, O5, O9, O10 and O18.
-
-### Task 8: Dev-mod Borderlands consumer, co-op lifecycle tests and docs
+### Task 6: Dev-mod down/bleed-out consumer, co-op lifecycle tests and docs
 
 **Content** (new `content/dev/scripts/player-death.ts` + `.luau` twin, registered in `start-script.ts`)
 - **Player descriptor** (`content/dev/scripts/player.ts`):
   - `alive {}`
-  - `down { movement: { speedScale: 0.3, abilities: false, posture: "crouch" }, switchWeapon: false, use: false, touch: false, occupancy: false, assistable: { radius: 1.5, holdMs: 3000 } }`
+  - `down { movement: { speedScale: 0.3, abilities: false, posture: "crouch" }, switchWeapon: false, use: false, touch: false, occupancy: false }`
+  - No `rejoin` entry, so a rejoin enters `alive`.
 - **Player events:**
   - zero HP → `down`
   - `inLifeState("down")` and `lifeStateMs ≥ 15000` → `respawn()`
-  - `assistReceived` → `setLifeState("alive")` + `grantHealth(30)`
-  - `assistGiven` → XP via `addSlot` on `progression.xp`
-- **Impact event:** a separate `defineImpactEvent("second-wind", { tag: "enemy" })`, not a row inside `enemyDeath`, which the zombie override would evict. On a kill with `source.inLifeState("down")`: `source.setLifeState("alive")`, `source.grantHealth(40)`, and an XP bump via `update(progression.xp.byPlayer(impact.source), …)`.
-- **HUD:** a bleed-out bar on `player.lifeStateMs` visible while `player.lifeState` equals `"down"`, an assist bar on `player.assistProgress`, and a downed vignette from a local crossing on `inLifeState("down")`.
+- **HUD:** a bleed-out bar on `player.lifeStateMs` visible while `player.lifeState` equals `"down"`, and a downed vignette from a local crossing on `inLifeState("down")`.
 
 **Tests**
 - A parity surface test (`*_surface_tests.rs` pattern).
-- The two-player test on `player_events::tests::World` with the `impact_policy` test helpers, driving the AC20 paths.
-- Lifecycle rows: AC3, AC17, O1, O8, O11, O12.
-- **Manual proof**, recorded in the PR: a two-client playtest of the dev mod at 150 ms RTT (`POSTRETRO_NET_LAG`) on `coop-presentation-test`. Check AC22 to AC24 from the client's seat, covering the cases below. Record each run's lag settings and what was seen.
+- The two-player test on `player_events::tests::World`, driving the AC20 path.
+- Lifecycle rows: AC3, AC15, O1, O2, O5.
+- **Manual proof**, recorded in the PR: a two-client playtest of the dev mod at 150 ms RTT (`POSTRETRO_NET_LAG`) on `coop-presentation-test`. Check AC17 and AC18 from the client's seat, covering the cases below. Record each run's lag settings and what was seen.
   - going down mid-sprint
   - crawling and shooting
-  - reviving and being revived
-  - a self-revive kill
   - bleed-out → respawn
 
 **Docs**
 - Update the docs per AC21.
 
-Delivers AC17, AC19 (residual rows), AC20, AC21, and the manual proof for AC22 to AC24.
+Delivers AC15, AC19 (residual rows), AC20, AC21, and the manual proof for AC17 and AC18.
 
 ## Sequencing
 
 **Phase 1 (sequential):** Task 1. The thin slice falsifies the descriptor, wire, verb and condition boundary assumptions, and every later task consumes its component fields, name table and helper.
-**Phase 2 (concurrent):** Task 2, Task 3, Task 4, Task 6. Each extends a different seam off Task 1's helper and fields. Task 2 owns movement files, Task 3 owns sim gate sites, Task 4 owns the slot catalog and refresh, Task 6 owns impact policy.
-**Phase 3 (concurrent):** Task 5, Task 7.
-- Task 5 consumes Task 4's elapsed reset semantics.
-- Task 7 consumes Task 3's `use` gate and Task 4's slot catalog.
-- Both edit `playerVerbs`/types, Task 7 for its sources. Merge-coordinate.
-**Phase 4 (sequential):** Task 8. It consumes every surface.
+**Phase 2 (concurrent):** Task 2, Task 3, Task 4. Each extends a different seam off Task 1's helper and fields. Task 2 owns movement files, Task 3 owns sim gate sites, Task 4 owns the slot catalog and refresh.
+**Phase 3 (sequential):** Task 5. It consumes Task 4's elapsed reset semantics and adds to Task 3's `player_life.rs`.
+**Phase 4 (sequential):** Task 6. It consumes every surface.
 
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | TS | Luau |
 |---|---|---|---|---|
-| Life-state component | `DescriptorComponentKind::LifeStates` | `"lifeStates"` (`initial`, `states`) | `components.lifeStates` | `components.lifeStates` |
-| Profile keys | `LifeStateProfile` fields | `movement.speedScale`, `movement.abilities`, `movement.posture` (`"stand"`/`"crouch"`), `look`, `fire`, `switchWeapon`, `reload`, `use`, `touch`, `occupancy`, `damageable`, `assistable.radius`, `assistable.holdMs` | same | same |
+| Life-state component | `DescriptorComponentKind::LifeStates` | `"lifeStates"` (`initial`, `states`, `rejoin`) | `components.lifeStates` | `components.lifeStates` |
+| Profile keys | `LifeStateProfile` fields | `movement.speedScale`, `movement.abilities`, `movement.posture` (`"stand"`/`"crouch"`), `look`, `fire`, `switchWeapon`, `reload`, `use`, `touch`, `occupancy`, `damageable` | same | same |
+| Rejoin map | lowered map of state ids, host-only | `rejoin: { <fromState>: "<toState>" }` | same | same |
 | Set verb | `BoundTriggerCommand::SetLifeState` | primitive `"setLifeState"`, args `{ state }` | `setLifeState(name)` | `setLifeState(name)` |
 | Respawn verb | `BoundTriggerCommand::Respawn` | primitive `"respawn"`, args `{ health?, state? }` | `respawn({ health?, lifeState? })` | `respawn({ health = , lifeState = })` |
 | Condition input | parsed in each scope | `{op:"input", name:"player.inLifeState:<name>"}` | `inLifeState(name)` | `inLifeState(name)` |
-| Impact source read | `EntityInputHandle::SourceLifeState` | `{op:"input", owner:"@impact.source", name:"player.inLifeState:<name>"}` | `source.inLifeState(name)` | `source:inLifeState(name)` |
-| Impact source effect | planned effect intercepted in `apply_planned` | `{ effect:"setLifeState", owner:"@impact.source", state }` | `source.setLifeState(name)` | `source:setLifeState(name)` |
-| Slots | `PlayerSlot::LifeStateMs`, `PlayerSlot::AssistProgress` | `"player.lifeStateMs"`, `"player.assistProgress"`, `"player.lifeState"` | `player.lifeStateMs` etc. | same |
-| Assist sources | `PlayerEventSourceKind::{AssistReceived, AssistGiven}` | `edge: "assistReceived"` / `"assistGiven"`, no `condition` | `assistReceived()` / `assistGiven()` | same |
+| Slots | `PlayerSlot::LifeStateMs` | `"player.lifeStateMs"`, `"player.lifeState"` | `player.lifeStateMs`, `player.lifeState` | same |
 
 ## Wire format
 
-- **`WirePlayerMovementState`** appends `life_state: u8` (255 = undeclared) then `life_state_elapsed_ms: u32`, little-endian. Field order follows the existing `teleport` record. `SNAPSHOT_VERSION` goes 22→23.
-- **`WireMovementInput`** appends `use_held: bool` after `use_pressed`. `WIRE_VERSION` goes 35→36 for both changes.
+- **`WirePlayerMovementState`** appends `life_state: u8` (255 = undeclared) then `life_state_elapsed_ms: u32`, little-endian. Field order follows the existing `teleport` record. `SNAPSHOT_VERSION` goes 22→23 and `WIRE_VERSION` 35→36.
 - **`TuningPayload`** (epoch 16) adds `life_state_names: Vec<String>` (sorted, ≤ 255) and per-archetype `life_state_profiles: Vec<(u8, LifeStateProfile)>`, serialized like existing tuning entries.
 
 ## Invariants
@@ -398,17 +335,16 @@ Delivers AC17, AC19 (residual rows), AC20, AC21, and the manual proof for AC22 t
 | Invariant | Established by | Preserved / threatened at | Verified by |
 |---|---|---|---|
 | I1. One capability source: every gate on a declared pawn reads its current profile; undeclared pawns keep today's HP-derived gates | Task 1 (helper) | Task 2, 3 gate sites; any new gate added later | AC2, AC4, AC6 |
-| I2. Host, single player and client prediction derive capabilities from the same data: replicated `life_state` + `TuningPayload` profiles | Task 1 | Task 2 stamping in replay; client weapon frame | AC4, O14 |
-| I3. The engine never changes life state on HP. Only `initial` at spawn/rejoin/restart, `setLifeState`, `respawn`, `source.setLifeState` and hot-reload remap move it | Task 1 | Task 5, 6, 4 (remap) | AC3, AC7, AC18 |
-| I4. Elapsed time resets on every actual transition and on respawn; a same-state set preserves it | Task 1 | Task 5, 4 | AC7, O8, O13 |
-| I5. At most one assist completion per target per tick, applied before that tick's condition snapshot, and only while the target still declares `assistable` | Task 7 | Remote-hit flush between tick and player-event pass | AC14, AC16, O3, O5 |
-| I6. A respawn relocates exactly once per request batch through the teleport generation, with no teleporter cue | Task 5 | Same-tick teleporter use | AC12, O6, O15 |
-| I8. Client smoothness: no life-state transition reaches the owning client as a teleport-class snap except respawn; presentation the client watches (assist progress, bleed-out time) is predicted locally and corrected without success cues the host did not confirm | Task 2, 4, 7 | Task 5 must keep the teleport class to respawn only; any later state-driven relocation | AC22, AC23, AC24, O18 |
-| I7. The death latch contract is unchanged: `playerDied` fires once per latch, re-armed by positive health | Existing | Task 5 health write, Task 6 self-revive | AC11, O1, O2 |
+| I2. Host, single player and client prediction derive capabilities from the same data: replicated `life_state` + `TuningPayload` profiles | Task 1 | Task 2 stamping in replay; client weapon frame | AC4, O9 |
+| I3. The engine never changes life state on HP. Only `initial` at spawn/join/restart, the `rejoin` map at restore, `setLifeState`, `respawn` and hot-reload remap move it | Task 1 | Task 4 (remap), Task 5 (respawn, rejoin) | AC3, AC7, AC14, AC16 |
+| I4. Elapsed time resets on every actual transition, on respawn and on rejoin; a same-state set preserves it | Task 1 | Task 4, 5 | AC7, AC14, O5, O8 |
+| I5. A respawn relocates exactly once per request batch through the teleport generation, with no teleporter cue | Task 5 | Same-tick teleporter use | AC12, O3, O10 |
+| I6. The death latch contract is unchanged: `playerDied` fires once per latch, re-armed by positive health | Existing | Task 5 health write | AC11, O1, O2 |
+| I7. Client smoothness: no life-state transition reaches the owning client as a teleport-class snap except respawn; the bleed-out time the client watches is predicted locally | Task 2, 4 | Task 5 must keep the teleport class to respawn only; any later state-driven relocation | AC17, AC18, O9 |
 
 ## Script syntax examples
 
-**Borderlands (dev mod, TS).**
+**Borderlands-lite (dev mod, TS).** Down, crawl and shoot, bleed out to respawn.
 
 ```ts
 // player descriptor
@@ -421,7 +357,6 @@ components: {
       down: {
         movement: { speedScale: 0.3, abilities: false, posture: "crouch" },
         switchWeapon: false, use: false, touch: false, occupancy: false,
-        assistable: { radius: 1.5, holdMs: 3000 },
       },
     },
   },
@@ -433,29 +368,20 @@ export const playerEvents = [
   players().on(becomes(read(player.health).le(0)), [goDown]),        // goDown: on.player.setLifeState("down")
   players().on(becomes(inLifeState("down").and(read(player.lifeStateMs).ge(15000))),
                [bleedOut]),                                          // bleedOut: on.player.respawn()
-  players().on(assistReceived(), [revived]),  // on.player.setLifeState("alive"), on.player.grantHealth(30)
-  players().on(assistGiven(), [assistBonus]), // on.player.addSlot(progression.xp, 25)
 ];
-
-export const secondWind = defineImpactEvent("second-wind", { tag: "enemy" }, (impact) => {
-  const { target, source } = impact;
-  const killed = target.healthBefore.gt(0).and(target.healthAfter.le(0));
-  return [{
-    when: killed.and(source.inLifeState("down")),
-    do: [source.setLifeState("alive"), source.grantHealth(40),
-         update(progression.xp.byPlayer(source), (xp) => xp.add(50))],
-  }];
-});
 ```
 
-**Quake co-op (TS).** Dead players respawn after 2 s.
+**Quake co-op (TS).** Dead players respawn after 2 s. A player who reconnects while dead spectates until the author moves them on.
 
 ```ts
-lifeStates: { initial: "alive", states: {
+lifeStates: { initial: "alive", rejoin: { dead: "spectating" }, states: {
   alive: {},
   dead: { movement: { speedScale: 0, abilities: false, posture: "crouch" },
           fire: false, switchWeapon: false, reload: false, use: false, touch: false,
           occupancy: false, damageable: false },
+  spectating: { movement: { speedScale: 0, abilities: false }, look: false,
+                fire: false, switchWeapon: false, reload: false, use: false, touch: false,
+                occupancy: false, damageable: false },
 } }
 
 players().on(becomes(read(player.health).le(0)), [die]);   // on.player.setLifeState("dead")
@@ -471,6 +397,5 @@ onStateCrossing(inLifeState("dead"), { openMenu("deathScreen") })  -- buttons: r
 
 ## Open questions
 
-- **Player-leave policy (E18-R).** Decided by recommendation: rejoin in `initial` at the seat placement (O11). The owner may prefer rejoining downed. That would need `life_state` in `CarriedState`, which is additive.
-- **Player-descriptor-composition draft.** It is stale: its planned split already shipped. It does not conflict at the key level. If it later revives per-state movement tuning, `movement.speedScale` may want to become a modifier reference instead of a scale.
-- **`coop--spawn-placement-occupancy` draft.** Source refutes its premise: since commit `0d0aa24`, install spawns one pawn and the first joiner takes the first free spawn. That draft should be re-evaluated or dropped. It no longer blocks respawn placement.
+- **Player-descriptor-composition draft** is live but needs a rebase: only its file split shipped; per-state movement tuning, modifiers under states and layered viewFeel are unbuilt. When it lands, `movement.speedScale` may become a reference to a movement modifier instead of a bare scale. Neither spec blocks the other.
+- **`coop--spawn-placement-occupancy` draft** is mostly shipped (`0d0aa24`, `40d39a5`); it does not block respawn placement, which uses the same `joinable_spawns` eligibility the join path uses.

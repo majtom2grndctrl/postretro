@@ -1,7 +1,7 @@
 # coloured-sh-bounce — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 3275d1480
 
 ## Corrections
@@ -53,9 +53,9 @@ read at: 3275d1480
 | 31 | World, fluid, mover, skinned-mesh and billboard shading each multiply SH indirect by the renderer's one indirect scale: a guard fails when any of them skips it or reads another value, and when fog takes it. Mover and skinned-mesh light params, read back from their serialized uploads, hold the renderer's scale at a non-default value and on the frame after a runtime change, so an upload fixed at 1.0 fails (research P-SCALE-RUNTIME). | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated | pass (GPU); partial: the readback calls `write_light_params` itself, so a frame call site passing 1.0 is caught only by the source-text guard in `pipeline_budget_tests.rs`: `shader_tests::every_surface_sh_consumer_applies_its_renderer_indirect_scale_and_fog_ignores_it`; `indirect_scale::indirect_scale_runtime_change_reaches_serialized_receiver_uploads_next_frame`; `pipeline_budget_tests::renderer_threads_frame_indirect_scale_into_dynamic_receiver_uploads` |
 | 32 | The reflection capture's indirect weight equals the renderer's default indirect scale, retuned or not. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated | pass: `shading::indirect_weight_matches_the_renderer_production_default` |
 | 33 | No worldspawn key, FGD field or `prl-build` flag exists for bounce strength, albedo or saturation (grep gate, `research.md` §Grep gates). Every `.prm` sidecar is byte-identical to the pre-change bake, with its format and version unchanged. The diff changes no PRL section layout. | Focused compiler/material/cache/renderer regression coverage; baseline section digests and source gates where specified | achievable as stated | pass (ignored set): `coloured_bounce_source_gates::no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation`; `coloured_bounce_oracle::coloured_bounce_preserves_unaffected_section_and_sidecar_bytes` |
-| 34 | Owner A/B at `campaign-test` stations against a build of the indirect-scale commit alone, grey bounce at the unified scale: hue spill reads right, and overall energy is checked; this decides any retune of the default indirect scale and the saturation constant. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room |
-| 35 | Entities beside the world read indirect consistent with it; fluids and water reflections take the tint with it. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room (mover cube shows entity tint) |
-| 36 | The A/B checks fog separately: it dims with the darker bounce, the expected result, and raising a volume's `min_brightness` or `ambient_scatter` restores its look. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | outstanding — owner; A/B aid: bounce demo room |
+| 34 | Owner A/B at `campaign-test` stations against a build of the indirect-scale commit alone, grey bounce at the unified scale: hue spill reads right, and overall energy is checked; this decides any retune of the default indirect scale and the saturation constant. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — owner, 2026-10-27, after viewing the occlusion-test bounce room, campaign-test, combat-demo and movement-feel at density 0.025, solo and co-op: "pretty happy with what I see"; no retune of indirect scale or saturation |
+| 35 | Entities beside the world read indirect consistent with it; fluids and water reflections take the tint with it. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — owner, same session (entities and co-op viewed in-engine); no separate fluid/water-reflection note recorded |
+| 36 | The A/B checks fog separately: it dims with the darker bounce, the expected result, and raising a volume's `min_brightness` or `ambient_scatter` restores its look. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | accepted at landing — owner approved the overall look; fog was not called out separately |
 | 37 | Cold bake time before and after on `campaign-test` and `stress-warren-mini`: SH Bake, the material stage, TextureMips and total, one bake at a time, plus warm material-stage time (baseline: `research.md` §Bake-time baseline). | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — see §Rebase, triage and warm timings |
 | 38 | `docs/level_design.md` tells authors that indirect light takes each texture's average colour, leaving out texels that glow, so repainting a texture changes its bounce. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — note written and later clarified |
 | 39 | Code review: the diff adds no runtime code beyond applying and retuning the indirect scale. | Owner baked-map A/B / serial bake timings / docs and review | manual-visual | pass — round-2 renderer contract verifier: only additions are the `frame_indirect_scale` snapshot field plus scale plumbing |
@@ -250,6 +250,10 @@ read at: 3275d1480
 | stress-warren-mini | warm (all caches) | 0.17 | 0.74 | 0.00 | 21.98 |
 
 - Final gate on the rebased tree: fmt and workspace clippy `-D warnings` pass (rebase run); `crate-graph --check` pass; `cargo test --workspace --features postretro/dev-tools` 13,208 passed, 0 failed, 88 ignored.
+
+## Landed — 2026-10-27
+- Owner said "land the plane". Defaults kept: saturation 1, indirect scale 0.33; demo light 1200 spots + 30 fill. Brief moved to done/, roadmap ticked, branch pushed, PR opened.
+- Still open (owner): `context/lib/index.md` router entries; three stale occlusion-test figures in other plans; saturated dev textures; pre-existing ignored-test failures on main.
 
 ## Resume
 - Branch: codex/coloured-sh-bounce, rebased on origin/main 917e6755d. Not pushed.

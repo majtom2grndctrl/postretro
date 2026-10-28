@@ -1,7 +1,7 @@
 # occluder-first-partition — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 05c549129
 
 Source cited by Decisions and Path re-read at 05c549129. Since the brief's 0380ba710, no partition, portal, visibility, geometry, cell-visibility, kinematic, hint, residency, affinity, chunk-list or fog source changed; `pipeline.rs`, `pack.rs` and `bvh_build.rs` changed only in unrelated lines. No Decision premise is false.

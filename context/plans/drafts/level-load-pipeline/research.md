@@ -1,7 +1,7 @@
 # Level-Load Pipeline — Research
 
 > **Read this when:** drafting the level-loading pipeline spec with the owner. This is its research section: the facts the design is made from. It chooses nothing.
-> **Key facts:** the main thread is idle for the whole parse and then does ~0.7–1.0 s of install in one redraw that also renders the first level frame. About a third of that install is level-invariant, a third could run on any thread, and a third needs the GPU device. Only ~5–20 ms needs the script VM.
+> **Key facts:** at `a2e1f4b` (after the reveal gate) the main thread is idle for the whole parse, then does ≈ 0.63–0.81 s of install in one redraw before Settling (lavapipe). About half of that install is level-invariant; the rest is per-level any-thread CPU and GPU-device work, in proportions that differ by map. Only ≈ 5–20 ms needs the script VM. Settling, not the install, dominates time to reveal here.
 > **Related:** `context/lib/boot_sequence.md` §1–§4 · `context/plans/done/level-load-perf/contract.md` · `context/plans/done/level-load-perf/findings.md` · `context/lib/networking.md` §Admission and content parity · `context/lib/rendering_pipeline.md` §12
 
 ---
@@ -12,19 +12,16 @@ Every number carries a label.
 
 | Label | Meaning |
 |---|---|
-| **m** | Measured. Release, this Linux container (4 cores, lavapipe under Xvfb), medians. Unless noted, from the Track A interleaved A/B session's post-Track-A binary: n = 4 first loads and 8 same-map level changes per map. Raw logs lived in the session scratchpad and were not retained. |
-| **p** | Perf share from the findings (pre-Track-A, a ~1.5× slower run of the machine; the contract notes perf inflates shares). Used only to split a measured stage. |
+| **m** | Measured at HEAD `a2e1f4b` (2026-10-28). Release profile, this Linux container (4 cores, 15 GB), Mesa 25.2.8 lavapipe under Xvfb 640×480, `--windowed`, launched through `postretro-tool run --install-root .` with the dev mod. One warm-up launch per map, discarded, then 4 launches per map, each a first load from the CLI followed by two same-map level changes: n = 4 first loads and 8 changes, medians, ranges in §2. Parse harness: n = 8 per map. No audio device, so level sounds cost 0. |
 | **e** | Estimate: arithmetic on measured numbers, shown. |
-| **r** | Code reading at HEAD `5594fe4`, plus the single-parse model sweep (Track C, landed since). |
+| **r** | Code reading at `a2e1f4b` unless a section names another commit. |
+| **p** | Perf share from `done/level-load-perf/findings.md` (pre-Track-A). Used only where §1 cites it. |
 
-Two rounds landed after that session, so two stages are estimates:
+**Maps.** Both were rebaked for this session, so §2 is not like-for-like with the numbers this file carried before. campaign-test: default warm bake, 330 MB PRL (the findings' was 142 MiB). stress-warren-lit: the warm bake's stage cache outgrew the disk (≈ 24 GB) and failed, so it was baked with `--no-cache --working-set-max-size 11GiB` (exact lighting), 4.36 GB PRL (the findings' was a 1.85 GiB warm bake). Model textures were baked with `postretro-tool bake-model-textures` for every dev glTF.
 
-- **Parse (Track B).** The `x_parse_bench` harness went 1478 → 771 ms on stress-warren-lit and 131 → 109 ms on campaign-test (m). In-app post-B parse is scaled by the same ratio: lit 1538 × 0.522 ≈ **803 ms** first load, 1615 × 0.522 ≈ 843 ms change. Campaign 153 × 0.832 ≈ **127 ms**, 138 × 0.832 ≈ 114 ms (e).
-- **Model sweep (Track C).** Post-C cost = measured `model_load` minus the hit-zone re-parse the same session measured with a finer mark. Lit 210 − 43 ≈ **167 ms** first, 201 − 45 ≈ 156 ms change. Campaign 247 − 51 ≈ **196 ms**, 200 − 46 ≈ 155 ms (e).
+**Instrumentation.** Line C, `[Renderer] Texture install timing:`, `[Renderer] Geometry install timing:`, `[Startup] unload_level=` and the `[Settling] entry` line, plus temporary marks that were not committed: a timer around every pipeline and shader-module creation, around `ShResidencyState::from_manifest`, `sparse_compose_capacity` and model-texture `.prm` read and parse; per-model parse and upload times; sub-phase marks inside the compose-family install; the install redraw's body; a level-change cycle hook; and the lavapipe storage-binding clamp the findings used. The parse harness is a scratch example calling `load_prl` once per process (the findings' `x_parse_bench` was not retained, so it was rebuilt the same way).
 
-Track C's landed build confirms both estimates on one first load each (m): `prl_parse` 786 ms lit, 144 ms camp; `model_parse` + `model_upload` 181 ms lit, 225 ms camp.
-
-GPU-side cost is not measured anywhere: lavapipe rasterizes and compiles on the CPU. Every renderer-owned number below is a lavapipe CPU number.
+GPU-side cost is not measured anywhere: lavapipe compiles and rasterizes on the CPU. Every renderer-owned number below is a lavapipe CPU number.
 
 Map shorthand: **lit** = stress-warren-lit, **camp** = campaign-test. "F / C" = first load / level change.
 
@@ -54,98 +51,93 @@ Input codes: **L** level file (payload) · **G** mod-global (manifest, descripto
 
 ### 1.1 Request and unload
 
-| Id | Unit | Inputs | Feeds | Affinity | Earliest | Life | lit F / C | camp F / C |
-|---|---|---|---|---|---|---|---|---|
-| Q | Resolve request (catalog lookup or raw path) | G (`DataRegistry.maps`) | W | M (`ScriptCtx.data_registry`) | Request | — | ~0 | ~0 |
-| U | Unload previous level (change only) | Previous level state | Everything (clear-on-unload) | M + R | Today: before W spawns | — | — / 70 m | — / 55 m |
-| U.1 | Renderer release: installs empty textures and an **empty geometry**, which rebuilds the compose pipelines | D | — | R | — | — | — / 64 m (compose phase 49 m) | — / 48 m (compose phase 43 m) |
-| U.2 | Streaming retire: cancel SH workers, lightmap session, issuer; join later | — | Next level's first reads | M (session) | — | — | small (r) | small (r) |
-| U.3 | Net parity clear, audio fade and release, registry and bridge clears | — | Peers demote | M | — | — | ≈ U − U.1 | ≈ U − U.1 |
+| Id | Unit | Inputs | Feeds | Affinity | Earliest | Life |
+|---|---|---|---|---|---|---|
+| Q | Resolve request (catalog lookup or raw path) | G (`DataRegistry.maps`) | W | M (`ScriptCtx.data_registry`) | Request | — |
+| U | Unload previous level (change only) | Previous level state | Everything (clear-on-unload) | M + R | Today: before W spawns | — |
+| U.1 | Renderer release: installs empty textures and an **empty geometry**, which rebuilds SH compose's pipeline | D | — | R | — | — |
+| U.2 | Streaming retire: cancel SH workers, lightmap session, issuer; join later | — | Next level's first reads | M (session) | — | — |
+| U.3 | Net parity clear, audio fade and release, registry and bridge clears | — | Peers demote | M | — | — |
 
-Unload's empty install is the measured proxy for compose-pipeline creation: ~45 ms of each unload is pipelines for a level with no data.
+Unload's empty install builds one pipeline, SH compose's (the other compose families build nothing without data, §8). It is most of U.1's cost (§2).
 
 ### 1.2 Worker parse
 
 One `std::thread` per load, `mpsc` handoff (r). Inputs: map path, content root, `--baked-root`, and two env vars (`POSTRETRO_SH_STREAMING`, `POSTRETRO_LIGHTMAP_STREAMING`). No mod-global data, no scripts, no settings, no device.
 
-| Id | Phase | Feeds | Cost |
-|---|---|---|---|
-| W1 | Open file, read container table | W2, W3 | small |
-| W2 | SH stream manifest (maps with id 50): read id 49, id-50 metadata, base and source metadata; id-50 `ValidationPlan`. Runs **before** `progress.begin` (r). | SH residency (G1a), planner (X.1), W4 | lit ≈ 500 ms post-B (Track B outcome); camp unknown |
-| W3 | Choose backing. Positional reads when SH or lightmaps may stream (both maps here, r: both log streamed lightmap pools). Whole-file image read only for legacy maps. | W4 | — |
-| W4 | Section reads, decode, validation: geometry, BVH, cells, portals, cell draw index, lights, lightmap index (+ payloads when all-resident), animated weight maps, id-49 semantics, canonical partition | Everything in install | camp weight-map decode ≈ 65 p; id-49 derivation 29 / 4 ms m (lit / camp); partition ≈ 30 ms lit |
-| W5 | `progress.finish`, send payload | Delivery | — |
-
-| | lit F / C | camp F / C |
+| Id | Phase | Feeds |
 |---|---|---|
-| Whole parse | ≈ 803 / 843 e (harness 771 m) | ≈ 127 / 114 e (harness 109 m) |
-| Delivery wait (channel polled once per vsynced Loading frame) | 9.5 / 6.6 m | 8.7 / 10.5 m |
-| Install deferral (one held painted frame) | 21 / 20 m | 20 / 22 m |
+| W1 | Open file, read container table | W2, W3 |
+| W2 | SH stream manifest (maps with id 50): read id 49, id-50 metadata, base and source metadata; id-50 `ValidationPlan`. Runs **before** `progress.begin` (r). | SH residency (G1a), planner (X.1), W4 |
+| W3 | Choose backing. Positional reads when SH or lightmaps may stream (both maps here, r: both log streamed lightmap pools). Whole-file image read only for legacy maps. | W4 |
+| W4 | Section reads, decode, validation: geometry, BVH, cells, portals, cell draw index, lights, lightmap index (+ payloads when all-resident), animated weight maps, id-49 semantics, canonical partition | Everything in install |
+| W5 | `progress.finish`, send payload | Delivery |
 
-Earliest start: the request. On a CLI boot map the path is known at boot stage 1, before the window (r), about 1 s earlier on lavapipe (`renderer_full_init_complete` ≈ 984–1000 ms m precedes `boot_worker_dispatch`). For a catalog load the path needs mod init.
+Parse, delivery wait and the held deferral frame are measured in §2.
+
+Earliest start: the request. On a CLI boot map the path is known at boot stage 1, before the window (r), about 1.7 s earlier on lavapipe (`renderer_full_init_complete` ≈ 1.7 s m at a2e1f4b precedes `boot_worker_dispatch`). For a catalog load the path needs mod init.
 
 Lifetime: per level. The retained file handle (`Arc<PrlFile>`) and both stream manifests live as long as the level streams.
 
 ### 1.3 Main-thread install
 
-Rows follow `install_level_payload` order. Costs are lit F / C, then camp F / C.
+Rows follow `install_level_payload` order. Costs are in §2.
 
-| Id | Unit | Inputs | Feeds | Affinity (pin) | Earliest | Life | lit | camp |
-|---|---|---|---|---|---|---|---|---|
-| P1 | Index-range check + static collision build. Fallible; rejects before any mutation. | L | Gate for everything; collision commit (S7) | Any (pure functions of `LevelWorld`) | During W4 | Level | 2.2 / 2.3 m | 0.5 / 0.5 m |
-| P2a | Level content digest | L (movers, static collision) | P2b | Any (blake3) | During W4 | Level | 0 m (no endpoint) | 0 m |
-| P2b | Publish parity, relevel catalog id, join seed | P2a, source identity, persisted state | Peer participation (§3.7) | M (session endpoint) | See §3 | Level | ~0 | ~0 |
-| P3 | Install hot-reload-deferred mesh descriptors | G (staged) | Model list (S12a) | M (`ScriptRuntime`) | Level boundary | Mod | ~0 | ~0 |
-| P4 | Seed gravity; build nav graph | L | Scripts; AI | Gravity M (`ScriptCtx.gravity`); nav Any | During W4 | Level | 0.2 m | 0.1 m |
-| P5 | Derive materials from texture names | L | S2, S4 | Any | During W4 | Level | ~0 | ~0 |
-| P6 | Apply shadow and surface-depth tiers to the renderer | P | S2 packing, S4 spot pool | R (renderer state) | Before S2 | Session | ~0 | ~0 |
-| S2a | World `.prm` read + parse (copies each slot) | L (names, cache keys), payload `.prm` root | S2b, S3 (dimensions) | Any (file read, `PrmFile::from_bytes_partial`) | After W4 decodes id 32 | Level today; content-keyed by blake3 (r) | ≈ 40 / 19 e (41 % p of 97.5 / 45.2 m) | ≈ 52 / 25 e (47 % p of 111 / 53 m) |
-| S2b | Texture create + write, samplers, bind groups | S2a, P (surface-depth tier), D | Draw; S4 | R | After S2a | Level | ≈ 57 / 27 e | ≈ 59 / 28 e |
-| S3 | UV normalize | S2a dimensions, L vertices | S4 | Any (pure; reads dimensions only) | After S2a | Level | 0.1 m | 0.0 m |
-| S4 | Geometry upload, four phases (m, `[Renderer] Geometry install timing:`) | — | — | — | — | — | **361 / 320 m** | **270 / 250 m** |
-| S4.G1 | Buffers, lights, SH volume resources, SH streaming init | | | | | | 305 / 260 m | 131 / 127 m |
-| G1a | — SH residency derivation from manifest + cells (dense-node arrays) | W2, L cells | Renderer streaming state | Any (pure function of `(manifest, cells)`, r) | After W4 cells | Level | ≈ 130 (contract) | ≈ 15 e (≈ 20 p) |
-| G1b | — `sparse_compose_capacity` | manifest | Compose sizing | **Not established** | ? | Level | ≈ 60 (contract) | small |
-| G1c | — SH-streaming compute pipelines | D, static WGSL | Compose passes | R | Before any load | **Invariant** | ≈ 100 e (shared estimate, below) | ≈ 100 e (75 % p of 131) |
-| G1d | — Buffers, bind groups, SH resources | L, D | Draw | R | After delivery | Level | ≈ 20 e (remainder) | see G2 |
-| S4.G2 | SDF atlas + compose family | | | | | | 46 / 47 m | 131 / 114 m |
-| G2a | — Compose-family pipelines | D | Compose passes | R | Before any load | **Invariant** | ≈ 45 e (= empty-install compose phase, m 49) | ≈ 45 e (m 43) |
-| G2b | — Animated weight-map re-pack to bytes + second consistency check | L | GPU buffers | Any | After W4 | Level | small | ≈ 35 e (48 of 182 p) |
-| G2c | — Compose buffers | L, D | Draw | R | After delivery | Level | rest | ≈ 50 e |
-| S4.G3 | Lightmap pool plan + SDF shadow rebind | L, D, G1 | X.2 | R | After G1 | Level | 2.2 m | 0.4 m |
-| S4.G4 | BVH upload + cull pipelines | L, D | Draw | R (pipelines invariant) | — | Mixed | 6.7 m | 6.7 m |
-| S5–S8 | World mesh, light bridge, collision commit, fog/trigger/mover entities | L, **S4** (light bridge reads the renderer's scripted-sample offset set in G1, r) | Registry entity ids, dispatch | M (registry) | After S4 | Level | 2.1 / 0.1 m | 0.3 / 0.1 m |
-| S9 | Built-in classname dispatch | L, G | S10, S11 | M | After S8 (entity-id order) | Level | 0 m | 5.3 / 1.0 m |
-| S10 | Data script; compose reactions; validation; subscriber and trigger-binding rebuild | L (script), G (global reactions), S9 | S11, `levelLoad` | M (QuickJS) | After S9 | Level | 0.3 m | 7.2 / 8.6 m |
-| S11 | Archetype sweep, player spawn, spawners, trigger pools | L, G, S10, P (carried loadout, client suppression) | S12a, camera | M | After S10 | Level | 0.3 m | 0.5 / 0.6 m |
-| S12a | Model list: registry meshes ∪ movement, weapon, projectile, touchable descriptor models ∪ spawner archetypes ∪ client-suppressed placements | S11, G | S12b | M (registry read) | Descriptor subset: before any load. Registry subset: after S11. | — | ~0 | ~0 |
-| S12b | glTF parse, once per model per load (Track C) | S12a, content root | S12c, S12d | Any (`LoadedModel`) | Descriptor subset: before any load | Level today | see S12 total | see S12 total |
-| S12c | Renderer upload: model `.prm` read + parse (Any), texture and buffer upload (R) | S12b, D | Draw; clip metadata | Any + R | After S12b | Level today (cleared on unload) | | |
-| S12d | Hit-zone build, clip tables, clip-index resolve | S12b (clip tables are a pure function of the parse, r: Track C's sweep equivalence test) | `levelLoad` | Build Any; store and resolve M | After S12b | Level | | |
-| S12 | **Model sweep total** | | | | | | **≈ 167 / 156 e** | **≈ 196 / 155 e** |
-| S13 | Fire `levelLoad` | S12d | Sprites, camera | M | After S12 | Level | 0 m | 0.1 m |
-| — | Carried-light resolve, system-reaction bindings, weapon attachment, host registration, dynamic-light absorb | Registry | — | M | After S13 | Level | ≈ 0.3 m | ≈ 0.3 m |
-| CAM | Camera: first spawn, `--start-pose`, spawn eye | S11, S13, P (start pose, frontend menu) | X.2 | M | After S13 | — | ~0 | ~0 |
-| S14 | Sprite collections: registry emitters (M), map billboards (L), projectile sprites (G), weapon impact (invariant); PNG decode (Any); register (R) | S13, G, D | Draw | M + Any + R | Invariant part before any load | Level | 2.6 / 2.5 m | 2.9 / 3.0 m |
-| S15 | "Level" sounds: the **whole mod `sounds/` directory**, reloaded every level (r) | G | Audio | M today (session audio); decode Any | Before any load | **Invariant in content** | 0 (no audio device) | 0 |
-| X.1 | SH streaming session: planner topology from manifest + id-49 hints; budget from the renderer's residency snapshot | W2, G1 snapshot | Streaming | Any for topology (pure, r); budget needs G1 output (plain data) | Topology: after W2 | Level | ≈ 52 / 57 m (preload minus lightmap) | ≈ 2.6 / 2.5 m |
-| X.2 | Lightmap spawn preload: read the spawn cell's mandatory blocks (Any, positional I/O), install through the renderer drain (R) | CAM spawn eye, W lightmap manifest, G3 pool, D | First frame | Any + R | Reads: once the spawn eye is known | Level | **310 / 189 m** | **276 / 194 m** |
-| F | First level frame (same redraw as install) | All | Present | M + R | — | — | 1173 / 580 m (lavapipe, not representative) | 1057 / 401 m |
+| Id | Unit | Inputs | Feeds | Affinity (pin) | Earliest | Life |
+|---|---|---|---|---|---|---|
+| P1 | Index-range check + static collision build. Fallible; rejects before any mutation. | L | Gate for everything; collision commit (S7) | Any (pure functions of `LevelWorld`) | During W4 | Level |
+| P2a | Level content digest | L (movers, static collision) | P2b | Any (blake3) | During W4 | Level |
+| P2b | Publish parity, relevel catalog id, join seed | P2a, source identity, persisted state | Peer participation (§3.7) | M (session endpoint) | See §3 | Level |
+| P3 | Install hot-reload-deferred mesh descriptors | G (staged) | Model list (S12a) | M (`ScriptRuntime`) | Level boundary | Mod |
+| P4 | Seed gravity; build nav graph | L | Scripts; AI | Gravity M (`ScriptCtx.gravity`); nav Any | During W4 | Level |
+| P5 | Derive materials from texture names | L | S2, S4 | Any | During W4 | Level |
+| P6 | Apply shadow and surface-depth tiers to the renderer | P | S2 packing, S4 spot pool | R (renderer state) | Before S2 | Session |
+| S2a | World `.prm` read + parse (copies each slot) | L (names, cache keys), payload `.prm` root | S2b, S3 (dimensions) | Any (file read, `PrmFile::from_bytes_partial`) | After W4 decodes id 32 | Level today; content-keyed by blake3 (r) |
+| S2b | Texture create + write, samplers, bind groups | S2a, P (surface-depth tier), D | Draw; S4 | R | After S2a | Level |
+| S3 | UV normalize | S2a dimensions, L vertices | S4 | Any (pure; reads dimensions only) | After S2a | Level |
+| S4 | Geometry upload, four phases (m, `[Renderer] Geometry install timing:`) | — | — | — | — | — |
+| S4.G1 | Buffers, lights, SH volume resources, SH streaming init | | | | | |
+| G1a | — SH residency derivation from manifest + cells (dense-node arrays) | W2, L cells | Renderer streaming state | Any (pure function of `(manifest, cells)`, r) | After W4 cells | Level |
+| G1b | — `sparse_compose_capacity` | manifest | Compose sizing | Any (pure CPU, §8) | After W2 | Level |
+| G1c | — SH-streaming compute pipelines | D, static WGSL | Compose passes | R | Before any load | **Invariant** |
+| G1d | — Buffers, bind groups, SH resources | L, D | Draw | R | After delivery | Level |
+| S4.G2 | SDF atlas + compose family | | | | | |
+| G2a | — Compose-family pipelines | D | Compose passes | R | Before any load | **Invariant** |
+| G2b | — Animated weight-map re-pack to bytes + second consistency check | L | GPU buffers | Any | After W4 | Level |
+| G2c | — Compose buffers | L, D | Draw | R | After delivery | Level |
+| S4.G3 | Lightmap pool plan + SDF shadow rebind | L, D, G1 | Lightmap streaming | R | After G1 | Level |
+| S4.G4 | BVH upload + cull pipelines | L, D | Draw | R (pipelines invariant) | — | Mixed |
+| S5–S8 | World mesh, light bridge, collision commit, fog/trigger/mover entities | L, **S4** (light bridge reads the renderer's scripted-sample offset set in G1, r) | Registry entity ids, dispatch | M (registry) | After S4 | Level |
+| S9 | Built-in classname dispatch | L, G | S10, S11 | M | After S8 (entity-id order) | Level |
+| S10 | Data script; compose reactions; validation; subscriber and trigger-binding rebuild | L (script), G (global reactions), S9 | S11, `levelLoad` | M (QuickJS) | After S9 | Level |
+| S11 | Archetype sweep, player spawn, spawners, trigger pools | L, G, S10, P (carried loadout, client suppression) | S12a, camera | M | After S10 | Level |
+| S12a | Model list: registry meshes ∪ movement, weapon, projectile, touchable descriptor models ∪ spawner archetypes ∪ client-suppressed placements | S11, G | S12b | M (registry read) | Descriptor subset: before any load. Registry subset: after S11. | — |
+| S12b | glTF parse, once per model per load (Track C) | S12a, content root | S12c, S12d | Any (`LoadedModel`) | Descriptor subset: before any load | Level today |
+| S12c | Renderer upload: model `.prm` read + parse (Any), texture and buffer upload (R) | S12b, D | Draw; clip metadata | Any + R | After S12b | Level today (cleared on unload) |
+| S12d | Hit-zone build, clip tables, clip-index resolve | S12b (clip tables are a pure function of the parse, r: Track C's sweep equivalence test) | `levelLoad` | Build Any; store and resolve M | After S12b | Level |
+| S12 | **Model sweep total** | | | | | |
+| S13 | Fire `levelLoad` | S12d | Sprites, camera | M | After S12 | Level |
+| — | Carried-light resolve, system-reaction bindings, weapon attachment, host registration, dynamic-light absorb | Registry | — | M | After S13 | Level |
+| CAM | Camera: presented pose (first spawn, `--start-pose`, spawn eye, or the menu pose) | S11, S13, P (start pose, frontend menu) | Settling's streamed set | M | After S13 | — |
+| S14 | Sprite collections: registry emitters (M), map billboards (L), projectile sprites (G), weapon impact (invariant); PNG decode (Any); register (R) | S13, G, D | Draw | M + Any + R | Invariant part before any load | Level |
+| S15 | "Level" sounds: the **whole mod `sounds/` directory**, reloaded every level (r) | G | Audio | M today (session audio); decode Any | Before any load | **Invariant in content** |
+| X.1 | Streaming sessions (`streaming_sessions` mark): SH planner topology from manifest + id-49 hints, budget from the renderer's residency snapshot; lightmap session. Reads nothing. | W4 (topology is installed at parse end, §8), G1 snapshot | Settling | Any for topology (pure, r); budget needs G1 output (plain data) | Topology: after the parse returns | Level |
+| X.2 | Settling: the level's drains make the presented pose's settle set resident (SH clusters, lightmap blocks) behind the loading tree, on later frames; replaced the spawn lightmap preload at install (`done/sh-streaming--reveal-gate-and-warm-horizon`) | CAM, X.1, G3 pool, D | Reveal | Streaming threads + renderer drain on main | After install | Level |
+| F | First level frame: the reveal frame, after Settling | All | Present | M + R | — | — |
 
 Notes on the table:
 
-- **G1c + G2a shared estimate.** Both maps stream SH and build the same static-WGSL pipeline set (r). Campaign's G1 phase is 131 ms, and the findings put pipelines at 142 of 190 ms of it (75 %, p), so ≈ 100 ms. Compose pipelines: the empty install's compose phase is the clean proxy (43–49 ms m). Total invariant pipelines ≈ 150 ms per install on both maps, plus ≈ 45 ms per unload.
-- **X.2 read/install split.** Measured whole from `[Lightmap streaming] spawn preload: … read in N ms` (51.5 MiB lit, 35.9 MiB camp; range 110–323 ms). The findings' lit perf split was 47 ms reads, 105 ms staging and writes (31 / 69 %, p). §2 uses that split.
-- **S12 level-invariance.** On lit every model is a descriptor preload: seven distinct models, one map entity (m log, r). Camp loads ten: the same seven plus three map-placed. Camp's map-specific share ≈ 196 − 167 ≈ 29 ms first load, ≈ 0 on a change (e, noisy).
-- **Line C labels.** The measured session's line C lumped sprite collections, host registration, camera, fog and sounds into `audio_load` (3.0–3.8 ms m). Track C gives each its own mark.
+- **Pipelines.** Both maps stream SH and build the same static-WGSL pipeline set (r). §2 measures it directly: a temporary timer around every pipeline and shader-module creation.
+- **S12 level-invariance.** Camp loads ten distinct models: seven descriptor models (the pawn's `exo_red` and six weapons) plus three map-placed (m log). The pawn model dominates both parse and upload (§2).
+- **G1b.** `sparse_compose_capacity` is pure CPU (§8) and measures under 1 ms on camp (§2).
 
-### 1.4 Work deferred into the first level frame
+### 1.4 Work after the install redraw
 
-Install and the first level frame run in **one redraw**: a successful install returns `true`, and the redraw falls through to the normal frame loop (r). No frame presents between them. Inside that frame (r):
+Since the reveal gate, a successful install returns and enters Settling; the first level frame is the reveal frame, after Settling ends (r: `finish_level_payload` → `enter_settling`). Between install and reveal (r):
 
-- wgpu flushes every queue write staged during install at the frame's first submit. Install writes bypass the renderer's frame batching (the installation guard) and go to the raw queue. World textures (~80–96 MiB), lightmap blocks and the queue-written buffers therefore reach the GPU in this frame. Buffers built with `create_buffer_init` are filled at creation instead.
-- SH async workers issue their first reads. Default mode is `Async`; SH clusters stream in over later frames.
-- First light-bridge update, first compose dispatches, first cull.
+- The first Settling frame's submit flushes every queue write staged during install. Install writes bypass the renderer's frame batching (the installation guard) and go to the raw queue: world textures (~80–96 MiB), model textures and the queue-written buffers. Buffers built with `create_buffer_init` are filled at creation instead.
+- Settling's drains read and install the presented pose's settle set (SH clusters Sampleable, lightmap blocks installed) on the streaming threads and the renderer drain, at Settling's larger drain budget, one compose-only frame at a time.
+- The reveal frame runs the first light-bridge update, compose dispatches and cull at full weight.
 - Metal pipeline compile: not established whether wgpu compiles at pipeline creation or at first use on Metal. A Metal System Trace answers it (§5).
 
 ### 1.5 Dependency graph
@@ -179,7 +171,7 @@ flowchart TD
   S2a --> S3[UV normalize S3]:::any
   W2 --> G1a[SH residency derivation G1a]:::any
   W4 --> G1a
-  W2 --> X1[Planner topology X.1]:::any
+  W4 --> X1[Planner topology X.1]:::any
   W4 --> G2b[Weight-map re-pack G2b]:::any
   S3 --> GEO[Geometry GPU G1d G2c G3]:::rnd
   G1a --> GEO
@@ -204,14 +196,12 @@ flowchart TD
   LL --> SPR[Sprite collections S14]:::main
   LL --> CAM[Spawn eye CAM]:::main
   SET --> CAM
-  CAM --> X2r[Spawn lightmap reads X.2]:::any
-  X2r --> X2w[Spawn lightmap install X.2]:::rnd
-  GEO --> X2w
-  GEO --> X1s[SH session budget X.1]:::main
+  GEO --> X1s[Streaming sessions X.1]:::main
   X1 --> X1s
-  S2b --> F[First level frame F]
-  X2w --> F
-  X1s --> F
+  CAM --> SET2[Settling drains X.2]:::rnd
+  X1s --> SET2
+  S2b --> F[Reveal frame F]
+  SET2 --> F
   SPR --> F
   SND --> F
   PAR -. today same frame .-> F
@@ -223,82 +213,94 @@ Legend: blue = level-invariant, green = any thread, orange = renderer-owned, red
 
 ## 2. Critical path
 
+Measured at `a2e1f4b`, after the reveal gate. Milliseconds, medians (m) unless labelled.
+
 ### 2.1 Today
 
-Time to first frame (TTFF) = unload + parse + delivery + deferral + install + F. Freeze = install + F, one redraw. On a change, unload is a separate hitch inside the redraw that enters Loading, before its first loading frame paints. F is excluded from the sums below: its lavapipe value is not representative and its Metal value is unknown.
+A load runs: dispatch → worker parse → delivery → one held deferral frame → **install redraw** (the freeze) → Settling, compose-only frames behind the loading tree until the settle set is resident → reveal frame. On a change, unload runs first, inside the redraw that enters Loading.
 
-Install sums (m, post-C model estimate):
-
-- lit F: 2.2 + 97.5 + 0.1 + 361.4 + 2.7 + 167.3 + 0 + 3.0 + 364.3 = **998** ms
-- lit C: 2.3 + 45.2 + 0.2 + 320.0 + 0.7 + 156.2 + 0 + 3.3 + 247.8 = **776** ms
-- camp F: 0.5 + 111.1 + 0 + 270.1 + 13.3 + 196 + 0.1 + 3.8 + 279.2 = **874** ms
-- camp C: 0.5 + 53.4 + 0.1 + 250.1 + 10.3 + 154.8 + 0.1 + 3.5 + 196.9 = **670** ms
-
-| | lit F | lit C | camp F | camp C |
+| | camp F | camp C | lit F | lit C |
 |---|---|---|---|---|
-| Unload | — | 70 | — | 55 |
-| Parse (e) | 803 | 843 | 127 | 114 |
-| Delivery + deferral | 31 | 26 | 29 | 32 |
-| Install (freeze) | 998 | 776 | 874 | 670 |
-| **TTFF − F** | **1832** | **1714** | **1030** | **871** |
+| Unload (`unload_level`) | — | 66 (59–78) | — | 70 (62–87) |
+| — of which empty install (`has_geometry=false`) | — | 53 | — | 64 |
+| — of which its one pipeline (SH compose) | — | 48 | — | 51 |
+| Parse, in app (`prl_parse`) | 276 (249–384) | 284 (250–320) | 817 (768–840) | 827 (723–863) |
+| Parse, harness (n = 8, one `load_prl` per process) | 253 (220–300) | | 790 (750–857) | |
+| Dispatch → delivered | 297 | 299 | 830 | 842 |
+| Deferral frame | 36 | 33 | 31 | 31 |
+| **Install redraw (freeze)** | **805 (770–910)** | **666 (644–737)** | **802 (752–903)** | **631 (619–685)** |
+| Settling hold (`[Settling] hold_ms`) | 1636 (1541–1720) | 1438 (1379–1557) | 5173 (4997–5284) | 4745 (4621–5240) |
+| Dispatch → reveal edge (line C minus `first_level_frame`) | 2888 | 2530 | 6887 | 6320 |
+| Reveal frame (`first_level_frame`, not representative) | 1794 | 812 | 1195 | 463 |
 
-On lit the parse and the install are close to equal. On camp the install is seven times the parse.
+Install redraw by stage (line C and the renderer lines):
+
+| Stage | camp F | camp C | lit F | lit C |
+|---|---|---|---|---|
+| `texture_upload` (read / parse / create+write) | 162 (38 / 38 / 80) | 56 (19 / 13 / 23) | 120 (30 / 20 / 70) | 52 (22 / 11 / 19) |
+| `geometry_upload` | 400 | 378 | 387 | 336 |
+| — buffers, SH volume, SH streaming init | 165 | 156 | 320 | 269 |
+| — SH compose constructor | 52 | 47 | 50 | 46 |
+| — billboard scatter compose | 9 | 9 | 0 | 0 |
+| — animated lightmap and the rest of the compose family | 167 | 146 | 0 | 0 |
+| — lightmap pool + SDF shadow; BVH + cull | 7 | 9 | 13 | 14 |
+| `model_parse` | 60 | 59 | 50 | 50 |
+| `model_upload` | 151 | 143 | 145 | 115 |
+| `streaming_sessions` | 4 | 5 | 78 | 71 |
+| Main-only stages (class Mo, §2.2) | 20 | 21 | 7 | 4 |
+
+Models: camp loads ten, lit seven. The seven common ones are descriptor models: the pawn's `exo_red` (≈ 165–190 parse + upload, nearly all of the sweep) and six weapons; camp adds three map-placed (≈ 22–25 together).
 
 ### 2.2 Install by affinity class
 
-Each install unit assigned to one class. Splits use §1.3's estimates.
+Each install unit assigned to one class (e from the stage marks):
 
-| Class | lit F | lit C | camp F | camp C | Contents |
+| Class | camp F | camp C | lit F | lit C | Contents |
 |---|---|---|---|---|---|
-| **I** level-invariant | 317 | 306 | 317 | 305 | Pipelines ≈ 150; descriptor models 167 / 156 (camp: lit's seven) |
-| **A** any thread, per level | 320 | 246 | 209 | 138 | `.prm` read + parse, G1a, X.1 topology, X.2 reads (31 %), collision; camp adds G2b and map-model CPU |
-| **U** affinity unknown | 60 | 60 | 0 | 0 | G1b `sparse_compose_capacity` |
-| **R** renderer-owned, per level | 291 | 157 | 331 | 212 | Texture create + write, geometry remainder, X.2 install (69 %); camp adds map-model upload |
-| **Mo** main only | 6 | 4 | 17 | 14 | Bridges, dispatch, data script, archetypes, clip resolve, `levelLoad`, sprite and host registration, camera |
-| Allocated / measured | 995 / 998 | 773 / 776 | 874 / 874 | 670 / 670 | |
+| **I** level-invariant | 398 | 399 | 342 | 299 | Pipelines and shader modules (camp 206 / 217, 8 compute pipelines; lit 138 / 133, 5); descriptor models (camp 186 / 178, lit 194 / 167; CPU ≈ 126–132 of each, the rest GPU) |
+| **A** any thread, per level | 118 | 71 | 333 | 272 | World `.prm` read + parse; SH residency derivation (camp 19 / 12, lit 169 / 135); `sparse_compose_capacity` (camp < 1, lit 36 / 33); streaming sessions' topology; collision; UV normalize; map-model CPU (camp 19 / 18) |
+| **R** renderer-owned, per level | 268 | 178 | 119 | 53 | Texture create + write and bind groups; the geometry remainder (camp 176 / 149, lit 49 / 34: GPU objects plus unattributed CPU such as the weight-map re-pack, §7); map-model upload |
+| **Mo** main only | 20 | 21 | 7 | 4 | Bridges, dispatch, data script, archetypes, hit zones, clip resolve, `levelLoad`, sprite and host registration, camera |
+| Allocated / measured | 804 / 805 | 665 / 666 | 801 / 802 | 630 / 631 | |
 
-On a change, unload adds ≈ 49 ms (lit) / ≈ 43 ms (camp) of I (empty-install pipelines) and ≈ 21 / ≈ 12 ms of main-thread clearing.
+On a change, unload adds ≈ 48–51 ms of I (the empty install's SH compose pipeline) and ≈ 15–20 ms of main-thread clearing.
+
+**Prep against the parse** (the pool's warrant, e). Per-level prep (A): camp 118 / 71 against a 276 / 284 parse; lit 333 / 272 against 817 / 827. A cold first load adds the descriptor models' CPU (≈ 126 camp, ≈ 132 lit): camp 244, lit 465, still under the parse. Run serially on one thread, prep finishes inside the parse on both maps.
 
 ### 2.3 Floors
 
-Each floor runs every unit at its earliest start on a thread its affinity allows. Assumptions common to all three: I is done before the request (once per boot, or kept from an earlier load); unload overlaps the parse, and its invariant part disappears; the one held deferral frame stays.
+Time from dispatch to Settling (the install end), excluding Settling and the reveal frame, which every floor keeps. Assumptions common to all: I is done before the request (pipelines build after full init, which on lavapipe precedes the first dispatch by mod init's ≈ 1.9 s; models come from the cache on a change); unload's pipeline disappears; the deferral frame stays.
 
-- **Floor A — no renderer thread.** A and U run on helper threads during the parse. R + Mo run on the main thread after delivery.
-  TTFF = max(parse, A + U) + delivery + deferral + R + Mo. The range puts U on a helper or on the main thread.
-- **Floor A′ — one sequential worker.** Keeps "one worker per load" and widens only what it does. TTFF = parse + A + U + delivery + deferral + R + Mo.
-- **Floor B — renderer-owned upload context off the main thread.** Same TTFF as A, because R still waits for delivery. The freeze drops to Mo (+ U if U turns out main-only).
-- **Floor B′ — uploads stream during the parse.** Not quantifiable from current data. Lower bound ≈ longest dependency chain + delivery + Mo.
+- **Floor A — prep off-main, GPU creation on main.** max(delivered, A) + deferral + R + Mo. Freeze = R + Mo.
+- **Floor B — prep and upload off-main, both from delivery.** delivered + A (its longest item with a pool, all of it serially) + R + Mo. Freeze = Mo.
+- **Floor B′ — prep and upload consume hand-outs during the parse.** Lower bound: max(delivered + work only the parse's end unblocks, the upload thread's serial R) + Mo. The parse's end unblocks the SH topology (§8) and late validation. On a first load the upload thread also uploads the descriptor models (camp ≈ 60, lit ≈ 62 GPU).
 
-| | lit F | lit C | camp F | camp C |
+| | camp F | camp C | lit F | lit C |
 |---|---|---|---|---|
-| Today TTFF − F | 1832 | 1714 | 1030 | 871 |
-| **Floor A** TTFF − F | **1131–1191** | **1030–1090** | **585** | **397** |
-| Floor A′ TTFF − F | 1511 | 1336 | 712 | 511 |
-| Floor B′ TTFF − F (lower bound) | ≈ 820 | ≈ 860 | ≈ 300 | — |
-| Today freeze (+ F) | 998 | 776 (+ 70 unload hitch) | 874 | 670 (+ 55) |
-| **Floor A** freeze (+ F) | **297–357** | **161–221** | **348** | **226** |
-| **Floor B** freeze (+ F) | **6–66** | **4–64** | **17** | **14** |
+| Today, dispatch → Settling | 1138 | 998 (+ 66 unload) | 1663 | 1504 (+ 70 unload) |
+| **Floor A** | **621** | **531** | **987** | **930** |
+| Floor B | 661–703 | 530–569 | 1161–1289 | 1068–1171 |
+| Floor B′ (lower bound) | ≈ 348 | ≈ 325 | ≈ 915 | ≈ 917 |
+| Today freeze | 805 | 666 (+ 66) | 802 | 631 (+ 70) |
+| **Floor A** freeze | **288** | **199** | **126** | **57** |
+| **Floor B / B′** freeze | **20** | **21** | **7** | **4** |
+| Settling hold, every floor | 1636 | 1438 | 5173 | 4745 |
 
-Arithmetic, Floor A:
+Arithmetic (e):
 
-- lit F: max(803, 320 + 60) = 803; + 9.5 + 21.4 + 291 + 6 = **1131**. With U on main: 803 + 9.5 + 21.4 + 291 + 6 + 60 = **1191**.
-- lit C: max(843, 306) = 843; + 6.6 + 19.7 + 157 + 4 = **1030**; + 60 = **1090**.
-- camp F: max(127, 209) = 209; + 8.7 + 20.0 + 331 + 17 = **585**.
-- camp C: max(114, 138) = 138; + 10.5 + 21.5 + 212 + 14 = **397**.
+- Floor A. camp F: max(297, 118) + 36 + 268 + 20 = 621. camp C: 299 + 33 + 178 + 21 = 531. lit F: 830 + 31 + 119 + 7 = 987. lit C: 842 + 31 + 53 + 4 = 930.
+- Floor B. camp F: 297 + (76 world `.prm` … 118) + 268 + 20. camp C: 299 + (32 … 71) + 178 + 21. lit F: 830 + (205 SH residency and capacity … 333) + 119 + 7. lit C: 842 + (168 … 272) + 53 + 4.
+- Floor B′. camp F: max(297 + 4, 268 + 60) + 20. camp C: max(299 + 5, 178) + 21. lit F: max(830 + 78, 119 + 62) + 7. lit C: max(842 + 71, 53) + 4.
 
-Arithmetic, Floor B′ lower bounds:
+Readings:
 
-- lit: R (291) is shorter than the parse, so ≈ 803 + 9.5 + 6.
-- camp: the longest chain is the spawn lightmap, ≈ 86 reads + 190 install = 276. So ≈ 276 + 8.7 + 17.
+- **B′ over B** saves ≈ 310–355 ms on a camp first load, ≈ 205–245 on a camp change, and ≈ 150–375 on lit (e), loading-screen order only. In the seam order the load is hidden behind play, and the saving shrinks the prefetch region instead.
+- **Settling dominates time to reveal on lavapipe**: 1.4–1.6 s on camp and 4.7–5.2 s on lit, against a 0.3–0.9 s floor. Its compose-only frames cost ≈ 120–150 ms each here (camp 11 frames, lit 43). U1 does not touch it; on Metal it is unmeasured (§5 #7).
+- **The freeze is now evenly split** between level-invariant work and per-level work on both maps. On lit the per-level work is mostly any-thread CPU (SH residency derivation and topology); on camp it is mostly renderer-owned.
 
-Caveats that move these floors:
+**Before the reveal gate** (`5594fe4` plus Tracks B and C, earlier maps, e from the measured numbers this file carried): the install redraw was 874 / 670 ms camp and 998 / 776 ms lit, and it included the spawn lightmap preload (276 / 197 camp, 310 / 189 lit) and rendered the first level frame. Without the preload it would have been ≈ 598 / 473 camp and ≈ 688 / 587 lit. Today's larger figures come from the rebaked maps (campaign-test's compose family and lit's SH residency grew) and from measuring pipelines directly rather than estimating them.
 
-- **I is not free on the first load.** Done before the request, it adds ≈ 317 ms between logo and Loading, unless boot overlaps it. Done during the first parse on the main thread, it fits under lit's 803 ms parse but not camp's 127 ms. Camp first-load Floor A then becomes max(127, 209, 317) + 8.7 + 20 + 331 + 17 ≈ **694**.
-- **A items need parse outputs.** Floor A assumes each starts as soon as its input is decoded. X.1 topology needs only W2, so it can start early. G1a needs cells, S2a needs id 32, and X.2 needs the spawn placement, all from W4. Section decode order inside W4 was not traced.
-- **X.2 reads are speculative before scripts.** The spawn eye comes from the first `player_spawn`, the pawn descriptor's eye, `--start-pose`, or the frontend camera, all known at the request. But it is read after `levelLoad`, so a `levelLoad` teleport moves it (r). Early reads need a re-check at install.
-- **F is outside every floor.** On lavapipe F alone (0.4–1.2 s) is the same size as the floor. On Metal it is unmeasured.
-
-The floors above are load-scoped. A wider floor exists for the CLI boot path: the parse needs only the path, so it could start at boot stage 1 and overlap ≈ 1 s (lavapipe) of window, session and full renderer init. That crosses §1's causal rule (§3).
+The floors above are load-scoped. A wider floor exists for the CLI boot path: the parse needs only the path, so it could start at boot stage 1 and overlap ≈ 1.7 s (lavapipe) of window, session and full renderer init. That crosses §1's causal rule (§3).
 
 ---
 
@@ -359,14 +361,14 @@ Moves that cross nothing: create-once pipelines inside the renderer (findings ca
 
 ### 4.3 Progress reporting
 
-**Question.** What do the bar's units mean once work other than PRL reads happens before the first frame?
+**Question.** What do the bar's units mean once work other than PRL reads happens before the reveal?
 
 **Code today (r).**
 
 - The worker credits bytes read.
-- `progress.begin` runs **after** the SH manifest load (W2). Until then `fraction()` is 0. On lit, W2's id-50 validation is ≈ 0.5 s of the ≈ 0.8 s post-B parse (Track B outcome), so the bar should sit at zero for most of the parse (inference, not observed).
+- `progress.begin` runs **after** the SH manifest load (W2). Until then `fraction()` is 0. On lit, W2's id-50 validation was ≈ 0.5 s of the ≈ 0.8 s post-B parse (Track B outcome), so the bar should sit at zero for most of the parse (inference, not observed).
 - CPU-bound validation inside W4 advances nothing.
-- Install shows a fixed 0.85 for one held frame, then blocks through install and the first frame (one redraw).
+- The parse maps onto `[0, 0.85]`. Install shows 0.85 for one held frame, then blocks through the install redraw. Settling carries the bar from 0.85 to 1.0 as the settle set's shortfall shrinks, and paints 1.0 on its last frame (reveal gate).
 - `loading.progress` is a slot written through `ScriptCtx`, so the bar is main-thread state.
 
 ### 4.4 Errors and failure semantics
@@ -384,7 +386,8 @@ Moves that cross nothing: create-once pipelines inside the renderer (findings ca
 | Missing `.prm`, model or sprite | Warning; placeholder | Level loads |
 | Animated lightmap install error | Dummy fallback | Level loads |
 | Streamed SH renderer init error | **`panic!`** ("cannot install streamed SH level resources") | Process dies |
-| Spawn streaming install error | `exit_result = Err`, event-loop exit, even on a runtime load | Process exits |
+| Streaming-session install error (disallowed `POSTRETRO_SH_STREAMING` mode, a streamed level with no id 49) | `exit_result = Err`, event-loop exit, even on a runtime load | Process exits |
+| Streaming step error while Settling | `exit_result = Err`, event-loop exit | Process exits |
 
 Every recoverable rejection happens before parity publication and before any registry mutation. Work moved earlier keeps that property only if its rejections still reach the same gate. Work moved later (an upload thread, a multi-frame install) can fail after mutation began, a state no path handles today.
 
@@ -411,7 +414,7 @@ Pure CPU work (parse, `.prm`, SH derivation, hit zones) has no observable order,
 - **One path for everyone.** Clients load through the same request path. A connected client suppresses host-replicated placements and its boot pawn, and adds the suppressed placements' models to the sweep.
 - **Parity publication is install-time.** The host's `set_level_parity` re-evaluates participation immediately, at the start of install. That is safe only because install and the first frame share one redraw, so no snapshot is sent while the level is half-installed (inference). A split install must decide where publication goes.
 - **Clients learn the next map late.** The host announces the next catalog id inside its own install (`set_relevel_catalog_id`), after its parse. A client's relevel therefore serializes: host unload + parse → client unload + parse + install.
-- **Transport keeps polling during Loading.** It is polled every Loading frame. A blocking install frame (≈ 0.7–1.0 s here) stalls the poll for that long.
+- **Transport keeps polling during Loading.** It is polled every Loading and Settling frame. A blocking install redraw (≈ 0.65–0.8 s on camp here, §2) stalls the poll for that long.
 - **Unload clears host parity**, which demotes peers. Admission is untouched.
 
 ---
@@ -430,11 +433,11 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 
 - `[Startup] … renderer_full_init_complete=…, boot_worker_dispatch=…` (line A)
 - `[Startup] mod_init=…` (covers session install + full renderer init + mod init)
-- Line C: `worker_delivered=… (incl. prl_parse=…)`, `install_deferral`, `static_collision`, `texture_upload`, `geometry_upload`, segment-B marks, `model_parse`, `model_upload`, `hit_zone_build`, `model_bindings`, `level_load_event`, `host_registration`, `camera_pose`, `fog_masks`, `sprite_collections`, `audio_load`, `streaming_preload`, `first_level_frame`
+- Line C: `worker_delivered=… (incl. prl_parse=…)`, `install_deferral`, `static_collision`, `texture_upload`, `geometry_upload`, segment-B marks, `model_parse`, `model_upload`, `hit_zone_build`, `model_bindings`, `level_load_event`, `host_registration`, `camera_pose`, `fog_masks`, `sprite_collections`, `audio_load`, `streaming_sessions`, `settle_hold`, `first_level_frame`
 - `[Renderer] Geometry install timing:` (`has_geometry=true` on install, `false` on unload)
 - `[Renderer] Texture install timing:` (read, parse, create_write, bind_groups)
 - `[Startup] unload_level=`
-- `[Lightmap streaming] spawn preload: … MiB read in N ms`
+- `[Settling] entry …` (`hold_ms`, settle-set peaks)
 - `[Model] uploaded N distinct mesh model(s)`; `[Audio] loaded N sound(s)`
 
 | # | Measurement | How | Decides |
@@ -445,7 +448,7 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 | 4 | First-frame cost | `first_level_frame` vs a steady frame from `POSTRETRO_GPU_TIMING=1` (or the Metal System Trace if timestamps are unsupported, `rendering_pipeline.md` §12) | Whether F dominates every floor. If it does, the staged-write flush or first compose is the next target, not install. |
 | 5 | Where the install frame's main thread waits | Metal System Trace over boot + one load (`xcrun xctrace record --template 'Metal System Trace' --launch -- <binary> content/dev/maps/<map>.prl`). Read main-thread intervals across the install redraw and GPU intervals for the first submit. Delete the `.trace` and `$TMPDIR/instruments*.ktrace` afterwards. Keep the window in front. | Whether Metal compiles pipeline state at creation or first use; how long the staged-write flush takes on the GPU. |
 | 6 | Cold vs warm page cache | `sudo purge` before launch, versus a warm repeat | Whether `.prm`, lightmap and parse reads are I/O-bound on the Mac's SSD. That decides whether prefetching them during the parse pays. |
-| 7 | Spawn lightmap preload | The spawn-preload line, cold and warm | Whether X.2 (the largest per-level unit on campaign here) needs an early start, a read/install split, or neither. |
+| 7 | Settling hold | `settle_hold` and the `[Settling] entry` line's `hold_ms`, cold and warm | How much of time to reveal Settling takes on Metal, the share U3's pre-commit settle must hide in seam order. |
 | 8 | Peak memory per load | `/usr/bin/time -l` (maximum resident set size) for a boot plus one change, each map | The cost of spawn-before-unload and of a fatter payload. |
 | 9 | Level sounds | `audio_load` with a real audio device | Whether reloading the whole `sounds/` directory per level is worth caching. |
 | 10 | Co-op relevel (optional) | Host `--mod dev --host` on a catalog map, client `--mod dev --connect 127.0.0.1:<port>` (flags as in `networking.md` §Testing the conditioned link); host quits to menu and restarts. Client line C plus the time from host unload to client first frame. | Whether announcing the next map at host request instead of host install is worth deciding now. |
@@ -453,6 +456,8 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 ---
 
 ## 6. Open questions for the owner
+
+Asked before the first brief draft, against the pre-reveal-gate numbers; kept as the record of what was weighed. §2 has today's numbers, and the brief's Decisions answer each question.
 
 1. **Target.** Faster time to first frame, or a loading screen that never freezes?
    - Floor A cuts TTFF by 35–55 % and the freeze by 60–80 %, without a renderer thread.
@@ -520,19 +525,17 @@ Run on the owner's Mac from a release build. Bake the maps and model textures as
 
 | Gap | Where to look first |
 |---|---|
-| Affinity of G1b `sparse_compose_capacity` (≈ 60 ms lit) | Its body under `crates/renderer/src/render/sh_streaming/`: does it touch `device`/`queue`, or only manifest data? |
-| Section decode order inside W4, which sets when A items could start | `load_prl_from_container` |
+| CPU share of the geometry remainder (§2.2): weight-map re-pack and consistency check (G2b), buffer packing, against GPU object creation | A finer mark inside the animated-lightmap and compose constructors, or perf |
 | Whether built-in classname handlers or the data script add mesh models a placements × descriptors prediction would miss | Built-in handlers' `MeshComponent` inserts; `distinct_mesh_models` |
-| Post-B in-app parse and post-C model sweep beyond one first load each | Interleaved runs with the Track C marks |
-| Read vs install split of X.2 after Track A | A mark between the spawn preload's read and its renderer drain |
+| GPU-side cost of every R item | Lavapipe compiles and rasterizes on the CPU; Metal §5 #2–#5 |
 | Peak memory | §5 #8 |
 | Metal pipeline compile timing | §5 #1 and #5 |
 
 ---
 
-## 8. Re-verified at `da46511f7` (brief drafting session)
+## 8. Re-verified facts
 
-Code reading only (r). Supersedes §1–§7 where they disagree.
+Code reading only (r), first at `da46511f7`, then at `a2e1f4b` (the rewrite session). Supersedes §1–§7 where they disagree.
 
 **Drift since `5594fe4`.** No change to the worker, SH or lightmap streaming, or the renderer geometry install. sdk-addressing added kill-progress membership capture, after the model sweep and before `levelLoad`. It has no line-C mark and is timed inside `level_load_event`. `boot_sequence.md` §3 renumbered: `levelLoad` = 14, sprites = 15, sounds = 16. The main.rs split moved only the frame body; `first_level_frame` is now recorded in `frame_loop`.
 
@@ -559,7 +562,17 @@ Each constructor bundles the pipeline with level-sized buffers, so creating pipe
 
 **Worker.** `load_prl_from_container` is monolithic and returns one `LevelWorld`. Order: id 49, geometry, texture names and cache keys, BVH, portals, cells, visibility, residency set, locator, lights, lightmap index (streaming: index prefixes only), SDF and SH deltas, the remaining lighting sections, data script, map entities, kinematics, triggers, fog, nav, cell draw index, cluster-directory validation, lighting split, then the lightmap stream manifest. The SH stream manifest loads before it. `progress.begin` runs after the manifest, so `fraction()` is 0 through the manifest load.
 
-**Spawn lightmap preload.** It runs after `install_level_payload` returns, through `install_spawn_streaming` → `LevelStreaming::install_spawn_lightmap`. The eye is `spawn_eye_position()`: the frontend camera, else the camera set at install from the followed pawn eye, after first spawn and `--start-pose`. The `levelLoad` system commands drain after install. No script primitive teleports before the preload (grep, medium confidence).
+**Reveal gate (at `a2e1f4b`).** `done/sh-streaming--reveal-gate-and-warm-horizon` shipped. A successful install no longer renders the first level frame: `finish_level_payload` creates the level's streaming sessions, then `enter_settling`, and the Loading step returns. No streamed read happens at install; the spawn lightmap preload and `install_spawn_streaming` are gone. Settling draws the loading tree over compose-only frames while the level's drains make the presented pose's settle set resident, then reveals. The presented pose is the menu pose while the frontend menu is present, else the followed pawn's eye, else the start pose.
+
+**Fatal paths (at `a2e1f4b`).** A streaming-session install error exits the process even on a runtime load (`install_level_streaming_sessions`). It covers a disallowed `POSTRETRO_SH_STREAMING` mode and a streamed level with no id 49 (`ensure_level_streaming_sessions`). A streaming step error while Settling also exits. The streamed-SH renderer init still `panic!`s.
+
+**Single-slot renderer level state (at `a2e1f4b`).** Each install replaces, in place: `full.sh_compose` (built at full init over the no-level SH volume, replaced per install, so after the first load no full-init instance exists), the fog pass's extent-sized target (built against `full.depth_view`), and the mesh pass's `models`, `model_bounds` and `model_clips` tables, keyed by `ModelHandle`, the path string. The sampler maps (`mip_count_aniso_samplers`, the character-model map) are renderer-lifetime, keyed by mip count, and only grow. `release_level_resources` re-installs empty textures and an empty geometry through the full install path, clears the mesh pass and smoke collections, and resets fog with `set_fog_pixel_scale(0)`. Its empty install builds one pipeline (SH compose); the direct-SH, billboard-scatter, animated-lightmap and cull families build nothing without data.
+
+**Options and reloads by frame kind (at `a2e1f4b`).** Options apply on Running and frontend frames, never on Loading. Surface Depth is live (installed material uniforms are rewritten); reflection tier is live; the shadow tier is consumed at the next level boundary. The staged-manifest (hot reload) poll runs on Running, Settling and frontend frames, not Loading. Extents commit on every frame, Loading paints included.
+
+**wgpu (at `a2e1f4b`).** The workspace depends on `wgpu = "30"` with no features, so wgpu's internal resource counters read zero (the `counters` feature is off). `Features::PIPELINE_CACHE` is implemented for Vulkan only; Metal and DX12 are unimplemented (wgpu-types 30.0.1). Every pipeline is built with `cache: None`.
+
+**Test harness (at `a2e1f4b`).** App-crate tests that build an offscreen renderer return early with an `eprintln!` when no adapter exists. The renderer crate's GPU test harness panics instead when `POSTRETRO_REQUIRE_GPU` is set; the app crate does not read it.
 
 **Model set.** Beyond descriptors: the `prop_mesh` built-in takes its model from the map entity `model` key, which the compiler also scans (`prop_mesh_model_handles`). Runtime spawners, net materialization and projectile meshes reuse descriptor models. No script primitive attaches a new model. `distinct_mesh_models` sweeps the live registry.
 
@@ -568,8 +581,6 @@ Each constructor bundles the pipeline with level-sized buffers, so creating pipe
 **Parse-end rewrites (round 2 review).** The SH manifest's cluster adjacency and seam portals are installed at the very end of the parse, and their accessors panic before that; planner topology needs them, so §2.3's "X.1 topology needs only W2" is wrong. The lightmap stream manifest is finalized at parse end, and the shadowmask may be dropped after entity shadow lights decode.
 
 **Full-init pipelines (round 2 review).** Full init runs with no level data, so the direct-SH, animated direct-SH, billboard-scatter and animated-lightmap compose constructors return their disabled form and build no pipeline. Only SH compose has a full-init instance install could reuse. SDF atlas and lightmap resources create no pipelines.
-
-**Settings during Loading.** Loading frames drop UI input and return before the options bridge applies, so no tier changes between request and commit today. Surface Depth is live (installed material uniforms are rewritten); the shadow tier is consumed at the next level boundary.
 
 **Models and Surface Depth.** Skinned-model materials are outside Surface Depth: their uniform is flat at every tier and never rewritten.
 

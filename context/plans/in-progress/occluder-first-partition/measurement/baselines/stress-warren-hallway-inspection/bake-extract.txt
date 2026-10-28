@@ -1,0 +1,80 @@
+# log extract from target/occluder-baselines/stress-warren-hallway-inspection/bake.log (frozen prl-build 8a9a341, RUST_LOG=info, -v)
+[INFO prl_build::partition] BSP leaves: 3178 solid, 2493 empty
+[INFO prl_build::partition] BSP nodes: 5670
+[INFO prl_build::partition] BSP leaves: 5671
+[INFO prl_build::partition] Total faces (after brush-side extraction): 9301
+[INFO prl_build::partition] Average faces per leaf: 1.6
+[WARN prl_build::pipeline] [Compiler] Watertightness: 283 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[WARN prl_build::pipeline] [Compiler]   open edge near (-91.643, 39.827, -110.477) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-91.643, 39.827, -107.632) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -110.515) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -110.439) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -107.671) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -107.594) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.840, 34.138, 101.740) — near brush 869
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.814, 34.138, 103.175) — near brush 869
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.789, 35.560, 103.175) — near brush 1575
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.789, 36.982, 101.752) — near brush 1575
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.560, 39.827, -110.477) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.560, 39.827, -107.632) — near brush 1589
+[INFO prl_build::visibility] Exterior flood-fill: 411 exterior leaves, 2082 interior empty leaves
+[INFO prl_build::visibility] Visibility: 2493 empty leaves, 5800 portals
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 334
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 335
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 338
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 339
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 340
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 733
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 734
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 736
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 738
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 940
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 953
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 5552
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 5580
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2336
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2438
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2623
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2624
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2626
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 541
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 582
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 2765
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 7 seals generated portal 2576
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 4434
+[INFO prl_build::geometry] Vertices: 33776 (28 bytes each)
+[INFO prl_build::geometry] Triangles: 16886
+[INFO prl_build::geometry] Faces: 8445
+[INFO prl_build::geometry] Empty leaves: 2082
+[INFO prl_build::geometry] Unique textures: 16
+[INFO prl_build::bvh_build] Bvh: 16889 nodes (8444 internal, 8445 leaf), 8445 leaf entries
+  Cell Visibility: 100%  ETA 0.0s
+[INFO prl_build::chunk_light_list_bake] [ChunkLightList] grid 26x7x31 (5642 chunks), 344 static lights, avg 1.70 / chunk, max 8, total indices 9585, payload 83476 bytes
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 56214 eye candidates (54294 in cell, 1689 inset, 231 rejected; missed into solid 9, exterior 0, other cell 1911), 0 camera cells without an eye point, 335898 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 2082 camera cells, 356354 entries (max 416 per camera), 2873536 bytes, max lead 32 m, 0.704 s
+[INFO prl_build::pipeline] [Compiler] Lightmap runtime all-resident pool: 230 pool layers
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] face 7098 chunk bottomed out at min-extent with 5 animated lights (cap 4); retaining all overlapping lights
+[INFO prl_build::animated_light_chunks] [AnimatedLightChunks] 4213168 chunks, 6 animated lights, max 6 / chunk, mean 5.80 / chunk, 4197801 chunks bottomed out at min-extent floor
+[WARN prl_build::animated_light_chunks] [AnimatedLightChunks] 4197801 chunks exceeded cap 4 at the min-extent floor; 7597910 extra light entries retained beyond the cap
+[INFO prl_build::pipeline::animated_atlas_stage] [AnimatedLightWeightMaps] Packed layout: 48 blocks on 2 pages of 2048² (100663296 bytes; identity layout 6 pages of 2048², 301989888 bytes)
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 2873536 payload bytes
+## open-edge sample lines
+[WARN prl_build::pipeline] [Compiler]   open edge near (-91.643, 39.827, -110.477) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-91.643, 39.827, -107.632) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -110.515) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -110.439) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -107.671) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-90.602, 39.827, -107.594) — near brush 1589
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.840, 34.138, 101.740) — near brush 869
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.814, 34.138, 103.175) — near brush 869
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.789, 35.560, 103.175) — near brush 1575
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.789, 36.982, 101.752) — near brush 1575
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.560, 39.827, -110.477) — near brush 1588
+[WARN prl_build::pipeline] [Compiler]   open edge near (-89.560, 39.827, -107.632) — near brush 1589

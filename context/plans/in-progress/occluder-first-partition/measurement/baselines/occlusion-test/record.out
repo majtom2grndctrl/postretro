@@ -1,0 +1,13 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/occlusion-test/occlusion-test.prl
+loaded in 0.1 s
+bake read: id51=75d9e439c2fda728 walk_epoch=3 size=138360125 mtime=1793154350 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/occlusion-test/occlusion-test.prl
+grid spacing=3 m columns=24x23 (cap 600) floors=302 eye=1.5 m yaws=[0.0, 90.0, 180.0, 270.0] pitch=0 footprint=[-69.088, -53.2384]..[0, 13.0048]
+imported=/Users/dhiester/Projects/Personal/postretro/context/plans/in-progress/occluder-first-partition/measurement/frame-cost/poses.txt (9 poses)
+bake=id51=75d9e439c2fda728 walk_epoch=3 size=138360125 mtime=1793154350 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/occlusion-test/occlusion-test.prl
+1217 poses written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/occlusion-test/occlusion-test.poses
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_record ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.09s
+

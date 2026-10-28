@@ -330,7 +330,7 @@ Leanings, pinned by the U2 brief.
 
 ## Open questions
 
-- **Co-op movement hold.** U4's held window runs about half a round trip plus the client's commit. If the manual check finds it visible at realistic latency, the provisional-prediction shape (U4) is reopened with that measurement — owner decision then.
+- **Co-op movement hold.** U4's held window runs about half a round trip plus the client's commit; the owner accepted it (2026-10-28). If the manual check finds it visible at realistic latency, the provisional-prediction shape (U4) is reopened with that measurement.
 - **Lighting parity across a seam.** D6 checks that a seam is blind to sight, not to light: a bend unsealed against outside light pops at the swap. Lean: a per-map prl-build warning when any light outside the seam reaches its cells, directly or through SH; two identical copies that both pass bake alike. U3 brief.
 - **Death at a seam.** Whether a dead or downed pawn (E18 player life states) activates or crosses a seam, given that teleporters bar dead pawns (`movement.md` §6), is for the U2 brief. Whether death inside a waiting seam blocks the swap or sends that player to a player start is for the U3 brief. Both are decided against the life-states spec.
 - **Non-player entities inside a seam.** Whether a hostile actor inside the active seam holds the swap rather than vanishing with its level — U3 brief.

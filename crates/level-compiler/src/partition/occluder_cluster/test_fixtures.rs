@@ -122,6 +122,24 @@ pub(crate) fn facade_rects(length: f64, height: f64) -> Vec<[f64; 4]> {
     rects
 }
 
+/// The openings `facade_rects` leaves, as `[along0, along1, up0, up1]`: in
+/// each bay, a window between each sill band and the band or cap above it.
+pub(crate) fn facade_windows(length: f64, height: f64) -> Vec<[f64; 4]> {
+    let bays = ((length - PIER_M) / BAY_PITCH_M).floor().max(1.0) as usize;
+    let pitch = (length - PIER_M) / bays as f64;
+    let cap = height - BAND_M;
+    let mut windows = Vec::new();
+    for k in 0..bays {
+        let (a0, a1) = (k as f64 * pitch + PIER_M, (k + 1) as f64 * pitch);
+        let mut y = 0.0;
+        while y + BAND_M < cap - 1e-9 {
+            windows.push([a0, a1, y + BAND_M, (y + STOREY_M).min(cap)]);
+            y += STOREY_M;
+        }
+    }
+    windows
+}
+
 /// A facade along +x from `x0`, its slab `z0..z0 + FACADE_DEPTH_M`.
 fn facade_along_x(x0: f64, z0: f64, length: f64, height: f64) -> Vec<BrushVolume> {
     facade_rects(length, height)

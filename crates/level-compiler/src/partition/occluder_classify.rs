@@ -250,8 +250,8 @@ pub struct OccluderClassification {
 impl OccluderClassification {
     /// One role per brush, the shape `build_bsp_with_occluder_tier` takes: a
     /// brush that occludes alone is an occluder; an in-slab member of an
-    /// occluding section splits in the tier off its section's box planes;
-    /// every other brush splits only beneath the tier.
+    /// occluding section splits in the tier on its section's bounding face
+    /// and box edges only; every other brush splits only beneath the tier.
     pub fn tier_roles(&self) -> Vec<TierRole> {
         let mut roles: Vec<TierRole> = self
             .verdicts
@@ -371,6 +371,39 @@ pub(crate) fn at_least(measure: f64, constant: f64) -> bool {
     measure >= constant - RULE_EPSILON_M
 }
 
+/// Mean open depth in front of the face of `frame`'s box whose outward
+/// normal is `outward` along `normal_axis`, over the face lattice's open
+/// samples; zero when none is open. The same probes the rule's depth test
+/// casts, so it reads only geometry and the first pass.
+pub(crate) fn broad_face_open_depth(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> f64 {
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    let face = BroadFace {
+        normal: frame.axes[normal_axis] * outward,
+        center: frame.center
+            + frame.axes[normal_axis] * (outward * frame.extents[normal_axis] * 0.5),
+    };
+    let (mut open, mut depth) = (0_usize, 0.0);
+    for offsets in face.sample_offsets(frame, broad) {
+        let probe = face.probe(offsets);
+        if space.is_blocked(probe) {
+            continue;
+        }
+        open += 1;
+        depth += PROBE_OFFSET_M + space.distance_to_blocking(probe, face.normal);
+    }
+    if open == 0 { 0.0 } else { depth / open as f64 }
+}
+
+/// True when `a` and `b` differ by no more than the rule's slack.
+pub(crate) fn within_rule_slack(a: f64, b: f64) -> bool {
+    (a - b).abs() <= RULE_EPSILON_M
+}
+
 /// One broad face of a brush's own-frame box, outward normal and centre.
 struct BroadFace {
     normal: DVec3,
@@ -378,6 +411,28 @@ struct BroadFace {
 }
 
 impl BroadFace {
+    /// The lattice's displacements from the face centre along its two broad
+    /// axes, one pair per sample.
+    fn sample_offsets(
+        &self,
+        frame: &BrushFrame,
+        broad: [usize; 2],
+    ) -> impl Iterator<Item = [DVec3; 2]> {
+        let offset = move |axis: usize, fraction: f64| {
+            frame.axes[axis] * ((fraction - 0.5) * frame.extents[axis])
+        };
+        FACE_SAMPLE_FRACTIONS.into_iter().flat_map(move |a| {
+            FACE_SAMPLE_FRACTIONS
+                .into_iter()
+                .map(move |b| [offset(broad[0], a), offset(broad[1], b)])
+        })
+    }
+
+    /// Where a sample's probes start: in front of the face, off its plane.
+    fn probe(&self, offsets: [DVec3; 2]) -> DVec3 {
+        self.center + offsets[0] + offsets[1] + self.normal * PROBE_OFFSET_M
+    }
+
     /// Judge the face at each open sample of its lattice; it passes when
     /// most of them pass. A sample whose probe starts in blocked space reads
     /// the brush touching the face there, not the space in front, so it is
@@ -388,23 +443,17 @@ impl BroadFace {
         broad: [usize; 2],
         space: &OpenSpace<'_>,
     ) -> OccluderVerdict {
-        let offset = |axis: usize, fraction: f64| {
-            frame.axes[axis] * ((fraction - 0.5) * frame.extents[axis])
-        };
         let (mut open, mut passing) = (0_usize, 0_usize);
         let mut failing = OccluderVerdict::NoOpenFace;
-        for &a in &FACE_SAMPLE_FRACTIONS {
-            for &b in &FACE_SAMPLE_FRACTIONS {
-                let offsets = [offset(broad[0], a), offset(broad[1], b)];
-                let probe = self.center + offsets[0] + offsets[1] + self.normal * PROBE_OFFSET_M;
-                if space.is_blocked(probe) {
-                    continue;
-                }
-                open += 1;
-                match self.judge_sample(probe, offsets, frame, broad, space) {
-                    OccluderVerdict::Occludes => passing += 1,
-                    verdict => failing = rank(failing, verdict),
-                }
+        for offsets in self.sample_offsets(frame, broad) {
+            let probe = self.probe(offsets);
+            if space.is_blocked(probe) {
+                continue;
+            }
+            open += 1;
+            match self.judge_sample(probe, offsets, frame, broad, space) {
+                OccluderVerdict::Occludes => passing += 1,
+                verdict => failing = rank(failing, verdict),
             }
         }
         if open > 0 && 2 * passing > open {

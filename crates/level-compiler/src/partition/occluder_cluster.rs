@@ -10,7 +10,10 @@ mod section;
 use glam::{DVec2, DVec3};
 
 use super::brush_bsp::REGION_CLASSIFICATION_EPSILON;
-use super::occluder_classify::{BrushFrame, OccluderVerdict, OpenSpace, brush_polytope, judge_box};
+use super::occluder_classify::{
+    BrushFrame, OccluderVerdict, OpenSpace, broad_face_open_depth, brush_polytope, judge_box,
+    within_rule_slack,
+};
 use crate::map_data::BrushVolume;
 use contact::{Hull, touching_pairs};
 use coverage::covered_cells;
@@ -55,9 +58,16 @@ pub struct Section {
     /// Share of the bounding broad face the members cover, on the grid.
     pub coverage: f64,
     pub occludes: bool,
-    /// Per member, one flag per brush plane: true when the plane lies on the
-    /// bounding box, within the contact epsilon. Those planes bound the
-    /// section in the occluder tier; the rest shape its openings.
+    /// Outward normal of the one broad face that bounds the section in the
+    /// occluder tier: `normal` or its negation (see `bounding_face`).
+    pub bounding_face: DVec3,
+    /// Per member, one flag per brush plane: true when the plane lies, within
+    /// the contact epsilon, on the bounding face or on one of the box's four
+    /// edge faces. Those planes bound the section in the occluder tier; the
+    /// rest, the other broad face and the openings' jambs, sills and lintels,
+    /// split only beneath it, so each opening's air lies in the cell behind
+    /// the bounding face and, unless another tier plane crosses the slab,
+    /// crosses into the cell in front through one portal.
     pub outline: Vec<Vec<bool>>,
 }
 
@@ -165,9 +175,10 @@ fn judge_cluster(
             let dense = covered as f64 > OCCLUDER_COVERAGE_FRACTION * total as f64;
             let mut in_slab: Vec<usize> = shape.members.iter().map(|&m| members[m].brush).collect();
             in_slab.sort_unstable();
+            let bounding_face = bounding_face(&frame, space);
             let outline = in_slab
                 .iter()
-                .map(|&brush| outline_planes(&brushes[brush], &frame))
+                .map(|&brush| outline_planes(&brushes[brush], &frame, bounding_face))
                 .collect();
             Section {
                 members: in_slab,
@@ -176,6 +187,7 @@ fn judge_cluster(
                 box_verdict,
                 coverage,
                 occludes: box_verdict == OccluderVerdict::Occludes && dense,
+                bounding_face,
                 outline,
             }
         })
@@ -189,9 +201,29 @@ fn judge_cluster(
     }
 }
 
-/// One flag per plane of `brush`: true when the plane lies on a face of
-/// `frame`'s box.
-fn outline_planes(brush: &BrushVolume, frame: &BrushFrame) -> Vec<bool> {
+/// The section's bounding face: of its two broad faces, the one fronting the
+/// deeper open space, as the face lattice measures it; on a tie, the one
+/// facing along the canonical section normal. Splitting on one broad face
+/// gives each opening one portal where no other tier plane crosses the slab;
+/// on the deeper side, the larger and more widely seen cell gains none of the
+/// openings' air or reveals, which go to the shallower, more enclosed cell
+/// behind the face. Reads only canonical geometry and the first pass, so it
+/// does not depend on brush order.
+fn bounding_face(frame: &BrushFrame, space: &OpenSpace<'_>) -> DVec3 {
+    let normal = frame.axes[SECTION_NORMAL_AXIS];
+    let depth = |outward: f64| broad_face_open_depth(frame, SECTION_NORMAL_AXIS, outward, space);
+    let (along, against) = (depth(1.0), depth(-1.0));
+    if against > along && !within_rule_slack(against, along) {
+        -normal
+    } else {
+        normal
+    }
+}
+
+/// One flag per plane of `brush`: true when the plane lies on `frame`'s
+/// box, on its bounding face (outward normal `bounding_face`) or on an edge
+/// face, never on the other broad face.
+fn outline_planes(brush: &BrushVolume, frame: &BrushFrame, bounding_face: DVec3) -> Vec<bool> {
     brush
         .planes
         .iter()
@@ -199,6 +231,9 @@ fn outline_planes(brush: &BrushVolume, frame: &BrushFrame) -> Vec<bool> {
             (0..3).any(|axis| {
                 let along = plane.normal.dot(frame.axes[axis]);
                 if along.abs() < OUTLINE_PARALLEL_COS {
+                    return false;
+                }
+                if axis == SECTION_NORMAL_AXIS && plane.normal.dot(bounding_face) < 0.0 {
                     return false;
                 }
                 let face =

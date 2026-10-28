@@ -34,11 +34,11 @@ pub enum TierRole {
     /// Every plane splits at occluder rank.
     Occluder,
     /// A member of an occluding cluster section, one flag per plane: a
-    /// flagged plane lies on the section's bounding box and splits at
-    /// occluder rank, bounding the section as a wall's faces and top bound
-    /// the wall. The rest split only where no occluder-rank plane spans the
-    /// region, which is inside that box, so they shape the section's
-    /// openings without cutting the open space around it.
+    /// flagged plane lies on the section's bounding face or its box's edge
+    /// faces and splits at occluder rank, bounding the section as a wall's
+    /// face and top bound the wall. The rest split only beneath the tier, so
+    /// each opening's air joins the occluder-tier leaf behind the bounding
+    /// face and crosses it through one portal.
     SectionMember(Vec<bool>),
 }
 
@@ -103,9 +103,9 @@ pub(super) struct TierPlanes<'a> {
 }
 
 /// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
-/// inside the tier: occluder-rank planes split first, section-member planes
-/// off their section's box next, then the planes of each door in `doors`
-/// inside the region holding it; each region none of them spans becomes an
+/// inside the tier: occluder-rank planes split first, then the planes of
+/// each door in `doors` inside the region holding it; each region none of
+/// them spans becomes an
 /// occluder-tier leaf, and every brush's planes split beneath it with
 /// `build_bsp_from_brushes`' scoring. Door planes are never solid: solidity,
 /// leaves and face ownership read the returned tree exactly as they read a
@@ -231,14 +231,12 @@ impl TierRecorder {
 }
 
 /// Pick the occluder-tier splitter: among the occluder-rank planes of the
-/// candidates (occluders' planes, and section members' planes on their
-/// section's box) scored by today's spanning and balance terms over the
-/// occluder candidates; failing those, among the section members' other
-/// planes, scored over the member candidates; failing those, among the
-/// planes of the doors the region holds, broad-face planes before edge
-/// planes, scored over every candidate. Each rank takes a credit for the
-/// plane's slice through the region. `None` makes the region an
-/// occluder-tier leaf.
+/// candidates (occluders' planes, and section members' flagged planes)
+/// scored by today's spanning and balance terms over the occluder
+/// candidates; failing those, among the planes of the doors the region
+/// holds, broad-face planes before edge planes, scored over every candidate.
+/// Each rank takes a credit for the plane's slice through the region. `None`
+/// makes the region an occluder-tier leaf.
 ///
 /// Door planes rank last, so a door splits only what would otherwise be the
 /// occluder-tier leaf holding its doorway, and adds no boundary to any region
@@ -250,47 +248,30 @@ fn select_occluder_splitter(
     region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
-    let of_role = |keep: fn(&TierRole) -> bool| -> Vec<usize> {
-        candidates
-            .iter()
-            .copied()
-            .filter(|&idx| keep(&roles[idx]))
-            .collect()
-    };
-    let occluders = of_role(|role| *role == TierRole::Occluder);
-    let members = of_role(|role| matches!(role, TierRole::SectionMember(_)));
-    let planes_of = |brush_set: &[usize], occluder_rank: bool| -> Vec<(DVec3, f64)> {
-        brush_set
-            .iter()
-            .flat_map(|&idx| {
-                brushes[idx]
-                    .planes
-                    .iter()
-                    .enumerate()
-                    .filter(move |&(k, _)| roles[idx].occluder_rank(k) == occluder_rank)
-                    .map(|(_, plane)| (plane.normal, plane.distance))
-            })
-            .collect()
-    };
+    let occluders: Vec<usize> = candidates
+        .iter()
+        .copied()
+        .filter(|&idx| roles[idx] == TierRole::Occluder)
+        .collect();
+    let occluder_rank: Vec<(DVec3, f64)> = candidates
+        .iter()
+        .flat_map(|&idx| {
+            brushes[idx]
+                .planes
+                .iter()
+                .enumerate()
+                .filter(move |&(k, _)| roles[idx].occluder_rank(k))
+                .map(|(_, plane)| (plane.normal, plane.distance))
+        })
+        .collect();
 
-    let mut first_rank = planes_of(&occluders, true);
-    first_rank.extend(planes_of(&members, true));
     best_plane(
         brushes,
-        first_rank,
+        occluder_rank,
         &occluders,
         region_polytope,
         ancestor_planes,
     )
-    .or_else(|| {
-        best_plane(
-            brushes,
-            planes_of(&members, false),
-            &members,
-            region_polytope,
-            ancestor_planes,
-        )
-    })
     .or_else(|| select_door_splitter(brushes, candidates, doors, region_polytope, ancestor_planes))
 }
 

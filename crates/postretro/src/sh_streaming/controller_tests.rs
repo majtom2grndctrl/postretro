@@ -459,18 +459,18 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         let portal_index = usize::try_from(seam.portal_id).unwrap();
         closed_portals[portal_index] = true;
     }
-    // The runtime cells are the two rooms and the doorway between them, so
-    // the doorway's two portals are every portal, and the seam, which
-    // overhangs both faces of the divider, resolves to both.
+    // The runtime cells are the two rooms, the doorway's air joined to one of
+    // them, so the doorway's one portal is every portal, and the seam, which
+    // overhangs both faces of the divider, resolves to it.
     assert_eq!(
         closed_portals.iter().filter(|&&closed| closed).count(),
-        2,
-        "fixture's doorway resolves both runtime portals across the doorway"
+        1,
+        "fixture's doorway resolves the runtime portal across the doorway"
     );
     assert_eq!(
         closed_portals.len(),
-        2,
-        "the doorway's portals are the only ones"
+        1,
+        "the doorway's portal is the only one"
     );
     assert!(
         manifest
@@ -527,10 +527,14 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         .update_targets_two_hop(&visible, Some(near_cell as usize), 0.0)
         .unwrap();
     let far_cluster = controller.topology.hints.cell_to_cluster[far_cell as usize];
+    // The near cell holds the doorway's air out to the divider's far face, so
+    // its probe range reaches probes the far cluster writes; the far
+    // cluster then arrives as the near cluster's owner, a class above the
+    // seam warm. Synthetic topologies pin `SeamWarm` alone.
     assert_eq!(
         controller.states[far_cluster as usize].class,
-        Some(TargetClass::SeamWarm),
-        "validated seam metadata warms the exact far endpoint before the door opens"
+        Some(TargetClass::Visible),
+        "the far endpoint is resident before the door opens, as the near cluster's owner"
     );
     assert_eq!(
         culled_ids(&visible),

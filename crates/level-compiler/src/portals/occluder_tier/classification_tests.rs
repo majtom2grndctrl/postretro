@@ -243,7 +243,9 @@ struct Outcome {
     verdicts: Vec<OccluderVerdict>,
     in_tier: Vec<bool>,
     clusters: BTreeSet<Vec<usize>>,
-    sections: BTreeSet<(Vec<usize>, bool)>,
+    /// In-slab members, whether the section occludes, and whether its
+    /// bounding face faces along its normal.
+    sections: BTreeSet<(Vec<usize>, bool, bool)>,
 }
 
 /// Classify `brushes` visited in `order`, each brush's sides in the order
@@ -277,7 +279,13 @@ fn classify_reordered(
             .clusters
             .iter()
             .flat_map(|cluster| &cluster.sections)
-            .map(|section| (original(&section.members), section.occludes))
+            .map(|section| {
+                (
+                    original(&section.members),
+                    section.occludes,
+                    section.bounding_face.dot(section.normal) > 0.0,
+                )
+            })
             .collect(),
     };
     for (position, &brush) in order.iter().enumerate() {

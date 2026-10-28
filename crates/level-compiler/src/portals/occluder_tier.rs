@@ -1,6 +1,8 @@
 // Occluder-tier portals: the runtime portal set of a two-tier BSP, one portal
-// per pair of adjacent occluder-tier leaves whose interiors meet.
+// per opening between adjacent occluder-tier leaves whose interiors meet.
 // See: context/plans/in-progress/occluder-first-partition/plan.md §Approach notes
+
+mod openings;
 
 use std::collections::HashSet;
 
@@ -10,6 +12,7 @@ use super::{
     MIN_PORTAL_AREA_M2, PlaneEntry, Portal, distribute_winding, make_node_portal, polygon_area,
 };
 use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
+use openings::openings;
 
 /// Collinear and duplicate hull points closer than this are dropped.
 const HULL_EPSILON: f64 = 1e-9;
@@ -36,13 +39,17 @@ pub struct TierPortal {
 
 /// Generate portals at occluder-tier nodes only. Each node's winding is cut
 /// among the tier-leaf pairs it separates, then pushed through both leaves'
-/// sub-trees; the pieces whose two sub-leaves are both interior (neither
-/// solid nor in `exterior_leaves`) survive at any area above clipping dust,
-/// and their convex hull is the pair's portal. The portal-area cull runs on
-/// the tier piece and on the hull, as on every portal set, never on the
-/// pieces. The hull can only widen what the pieces let through, and a
-/// pair no interior piece joins gets no portal, so none leads into solid or
-/// joins interior to exterior.
+/// sub-trees; the fragments whose two sub-leaves are both interior (neither
+/// solid nor in `exterior_leaves`) survive at any area above clipping dust.
+/// Fragments sharing an edge form one opening, and each opening's convex
+/// hull is a portal, so a facade's windows each cross it through their own
+/// portal rather than one hull spanning the facade. An opening whose hull
+/// falls under the portal-area cull is no portal of its own: the pair's
+/// small openings share one hull, which takes the cull. The cull also runs
+/// on the tier piece, as on every portal set, never on the fragments. A hull
+/// can only widen what its fragments let through, and a pair no interior
+/// fragment joins gets no portal, so none leads into solid or joins interior
+/// to exterior.
 pub fn generate_occluder_tier_portals(
     tree: &BspTree,
     tier: &OccluderTier,
@@ -103,7 +110,7 @@ fn generate_recursive(
         let interior =
             |leaf: usize| !tree.leaves[leaf].is_solid && !exterior_leaves.contains(&leaf);
         for (piece, front, back) in tier_pairs {
-            let mut kept: Vec<DVec3> = Vec::new();
+            let mut fragments: Vec<Vec<DVec3>> = Vec::new();
             distribute_winding(
                 tree,
                 &piece,
@@ -120,22 +127,41 @@ fn generate_recursive(
                             .defining_planes
                             .iter()
                             .chain(&tree.leaves[*b].defining_planes);
-                        kept.extend(
+                        fragments.push(
                             fragment
                                 .iter()
-                                .map(|&corner| snap_to_axis_planes(corner, bounding.clone())),
+                                .map(|&corner| snap_to_axis_planes(corner, bounding.clone()))
+                                .collect(),
                         );
                     }
                 },
             );
-            if let Some(polygon) = coplanar_hull(&kept, normal)
-                && polygon_area(&polygon) >= MIN_PORTAL_AREA_M2
-            {
+            let (front_tier_leaf, back_tier_leaf) = (
+                tier.tier_leaf_of(tree, &front),
+                tier.tier_leaf_of(tree, &back),
+            );
+            let mut push = |polygon: Vec<DVec3>| {
                 portals.push(TierPortal {
                     polygon,
-                    front_tier_leaf: tier.tier_leaf_of(tree, &front),
-                    back_tier_leaf: tier.tier_leaf_of(tree, &back),
-                });
+                    front_tier_leaf,
+                    back_tier_leaf,
+                })
+            };
+            let mut small: Vec<DVec3> = Vec::new();
+            for opening in openings(&fragments) {
+                let corners: Vec<DVec3> = opening
+                    .iter()
+                    .flat_map(|&f| fragments[f].iter().copied())
+                    .collect();
+                match coplanar_hull(&corners, normal) {
+                    Some(polygon) if polygon_area(&polygon) >= MIN_PORTAL_AREA_M2 => push(polygon),
+                    _ => small.extend(corners),
+                }
+            }
+            if let Some(polygon) = coplanar_hull(&small, normal)
+                && polygon_area(&polygon) >= MIN_PORTAL_AREA_M2
+            {
+                push(polygon);
             }
         }
     }

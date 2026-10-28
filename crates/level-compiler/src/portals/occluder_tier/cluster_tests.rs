@@ -220,6 +220,61 @@ fn strip_facade_bounds_cells_as_one_section_square_and_turned_45_degrees() {
 }
 
 #[test]
+fn strip_facade_windows_join_the_cell_behind_and_cross_through_one_portal_each() {
+    // Owner ruling, one portal per window (plan.md §Block (Task 9),
+    // resolved). The facade's slab is z 20..20.3 in a hall 40 m deep; its
+    // -z face fronts the deeper space, so it bounds the section, and each
+    // window's air joins the cell behind it. Before, each window was its own
+    // cell with a portal on both faces: twice the windows.
+    let cf = fixtures::strip_facade();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert!(sections[0].occludes, "{:#?}", sections[0]);
+    assert_eq!(sections[0].bounding_face, glam::DVec3::NEG_Z);
+    assert_apart(&cf.fixture);
+
+    let build = TierBuild::classified(&cf.fixture.brushes);
+    let (x0, z0, z1) = (15.0, 20.0, 20.0 + 0.3);
+    let windows = fixtures::facade_windows(31.0, 15.0);
+    let behind = build.cell_at(glam::DVec3::new(30.5, 1.5, 25.0));
+    let tier_portals = crate::portals::occluder_tier::generate_occluder_tier_portals(
+        &build.tree,
+        &build.tier,
+        &build.exterior,
+    );
+    let on_facade: Vec<glam::DVec3> = tier_portals
+        .iter()
+        .filter(|portal| {
+            portal
+                .polygon
+                .iter()
+                .all(|p| (p.z - z0).abs() < 1e-6 || (p.z - z1).abs() < 1e-6)
+        })
+        .map(|portal| portal.polygon.iter().sum::<glam::DVec3>() / portal.polygon.len() as f64)
+        .filter(|c| c.x > x0 && c.x < x0 + 31.0 && c.y > 0.0 && c.y < 15.0)
+        .collect();
+    assert_eq!(
+        on_facade.len(),
+        windows.len(),
+        "runtime portals across the facade, one per window"
+    );
+    for [a0, a1, y0, y1] in windows {
+        let centre = glam::DVec3::new(x0 + (a0 + a1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0);
+        assert_eq!(
+            build.cell_at(centre),
+            behind,
+            "window at {centre} is not in the cell behind the facade"
+        );
+        let inside = |c: &&glam::DVec3| c.x > x0 + a0 && c.x < x0 + a1 && c.y > y0 && c.y < y1;
+        assert_eq!(
+            on_facade.iter().filter(inside).count(),
+            1,
+            "window at {centre}"
+        );
+    }
+}
+
+#[test]
 fn strips_touching_only_through_the_floor_add_no_empty_cell_square_and_turned_45_degrees() {
     for cf in [
         fixtures::spaced_strips(),

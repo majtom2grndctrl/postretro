@@ -364,15 +364,16 @@ fn window_split_below_the_tier_into_pieces_under_the_cull_keeps_its_portal() {
             DVec3::new(x + 0.02, size.y, z0),
         ));
     }
-    // The wall is one facade section: its faces and outline split at
-    // occluder rank, the window's jambs only inside its box. Planes run
-    // +X, -X, +Y, -Y, +Z, -Z.
+    // The wall is one facade section: its bounding face, the posts' side,
+    // and its box edges split at occluder rank, its far face and the
+    // window's jambs only beneath the tier. Planes run +X, -X, +Y, -Y, +Z,
+    // -Z.
     let mut roles = vec![TierRole::Exempt; brushes.len()];
     let outlines = [
-        [false, true, true, true, true, true],
-        [true, false, true, true, true, true],
-        [false, false, false, true, true, true],
-        [false, false, true, false, true, true],
+        [false, true, true, true, false, true],
+        [true, false, true, true, false, true],
+        [false, false, false, true, false, true],
+        [false, false, true, false, false, true],
     ];
     for (role, outline) in roles[walls..walls + 4].iter_mut().zip(outlines) {
         *role = TierRole::SectionMember(outline.to_vec());
@@ -397,17 +398,25 @@ fn window_split_below_the_tier_into_pieces_under_the_cull_keeps_its_portal() {
             .all(|s| build.is_interior_at(s - DVec3::Z * 0.01))
     );
 
+    // The posts part the window's fragments into openings each under the
+    // cull, so they share one hull.
     let room = build.tier_leaf_at(DVec3::new(15.5, 2.25, 5.0));
     let window = build.tier_leaf_at(DVec3::new(15.5, 2.25, (z0 + z1) / 2.0));
     assert_ne!(room, window);
-    let portal = build
+    let across: Vec<&TierPortal> = build
         .tier_portals
         .iter()
-        .find(|p| {
+        .filter(|p| {
             (p.front_tier_leaf, p.back_tier_leaf) == (room, window)
                 || (p.front_tier_leaf, p.back_tier_leaf) == (window, room)
         })
-        .expect("the window keeps a portal into the room the posts stand in");
+        .collect();
+    assert_eq!(
+        across.len(),
+        1,
+        "the window keeps one portal into the room the posts stand in"
+    );
+    let portal = across[0];
     let covers = |point: DVec3| {
         let n = portal.polygon.len();
         let normal = (portal.polygon[1] - portal.polygon[0])

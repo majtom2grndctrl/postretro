@@ -1,6 +1,6 @@
 # Epic 25 — Map Transitions (Epic hub)
 
-> **Status:** draft — epic index. Records cross-cutting decisions and each unit's contract; no task decomposition. Each unit gets its own brief, drafted when the unit comes up. U1 is the existing `drafts/level-load-pipeline/`.
+> **Status:** draft — epic index. Records cross-cutting decisions and each unit's contract; no task decomposition. Each unit gets its own brief, drafted when the unit comes up. U1 is the existing `ready/level-load-pipeline/`.
 > **Research:** `research.md` — session-verified facts, the swap lifecycle, rejected shapes.
 > **Related:** `context/lib/boot_sequence.md` §1, §2, §4, §8 · `context/lib/movement.md` §6 (Teleport) · `context/lib/entity_model.md` §5, §7, §7d · `context/lib/rendering_pipeline.md` §2, §4 · `context/lib/networking.md` §Session-state ledger, §Admission and content parity, §Slot lifecycle, §What gates · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/scripting.md` §12 · `context/plans/large-map-spatial-residency.md` · `context/plans/done/E17--doors-as-occluders/` · roadmap Epic 15.
 
@@ -12,7 +12,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 ### In scope
 
-- **U1 Off-main level load** — the staged load pipeline of `drafts/level-load-pipeline/`, amended so it can run while a level plays.
+- **U1 Off-main level load** — the staged load pipeline of `ready/level-load-pipeline/`, amended so it can run while a level plays.
 - **U2 Landmark level change** — the seam author surface and a classic transition through it: loading screen, landmark-relative arrival, carried state, co-op arrival.
 - **U3 Seamless seam** — prefetch, background load during play, blind swap, door wait and its events. Co-op clients take the classic path.
 - **U4 Co-op seamless seam** — clients prefetch on host instruction, and a ready client inside the seam crosses with no loading screen and no movement hold, predicting through the swap; any other client takes the classic relevel.
@@ -31,7 +31,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 **Prior commitments.**
 - `boot_sequence.md` §8 lists "multiple simultaneously resident levels or streaming" as a non-goal. U3 reverses it for exactly one prefetched, unpublished level beside the active one. The argument: the alternative to a resident next map is a load at the moment of crossing, which is the hitch this epic exists to remove. Rewritten at U1 promotion, since U1 already holds a second level's set beside a running one.
-- `drafts/level-load-pipeline/` kept "unload-first" and listed spawn-before-unload as a non-goal. It is amended here to keep unload-first as the loading-screen order only, so its stages may run before an unload (D1).
+- `ready/level-load-pipeline/` kept "unload-first" and listed spawn-before-unload as a non-goal. It is amended here to keep unload-first as the loading-screen order only, so its stages may run before an unload (D1).
 - Large-map residency keeps "one authored level, one logical PRL". This epic keeps it: each map stays its own PRL and catalog entry.
 - The session-state ledger (`networking.md`) says what survives a level change is an explicit, enumerable set. A seam swap carries exactly that set plus each seam occupant's landmark-relative arrival (I3, D4). Under U4 the host also carries, for a seamless slot, its queued commands for client ticks after the harvest tick with the slot's cursor and playout state, and the harvested teleport record the new pawn's record is seeded from. The client keeps its prediction ring, its local pawn's predicted state and the newest tuning payload across its own unload of A. `networking.md` §Session-state ledger is rewritten at U4 promotion to name each.
 - Teleporters ship classic and seamless modes, and seamless mode's landmark → target transform is one pure `foundation` function shared with ghost links (`movement.md` §6, `entity_model.md` §7d). Seam arrival uses that transform with the source and target in different maps (D4).
@@ -146,13 +146,13 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 **Purpose.** Move a level's CPU preparation and GPU creation off the main thread and shrink the install to a short commit. Every level change benefits; U3 cannot ship without it, because a one-second commit at a seam is the hitch the epic removes.
 
-**Contents.** `drafts/level-load-pipeline/` as amended alongside this hub: decisions reveal-gate already delivered are dropped; unload-first becomes the loading-screen order; stages may run before an unload; "one level's world data resident at a time" is gone; renderer level resources are keyed per load, and an unload releases only its own level's (D1).
+**Contents.** `ready/level-load-pipeline/` as amended alongside this hub: decisions reveal-gate already delivered are dropped; unload-first becomes the loading-screen order; stages may run before an unload; "one level's world data resident at a time" is gone; renderer level resources are keyed per load, and an unload releases only its own level's (D1).
 
 **Depends on.** Nothing. Runs concurrently with U2.
 
 **Key acceptance.** AC 1–2.
 
-**Brief.** `context/plans/drafts/level-load-pipeline/` (resumable).
+**Brief.** `context/plans/ready/level-load-pipeline/` (resumable).
 
 ### U2 — Landmark level change
 
@@ -270,7 +270,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - **Teammates across the commit.** A client presents each teammate who crossed seamlessly at the teammate's A presentation carried through the landmark until that teammate's first B record presents, so a group crossing together never blinks out. B's other entities appear as their first records apply; the blind seam hides those outside it.
 - **The exception, and its condition.** This bends `networking.md` rules written for joins (Prior commitments, "Join-time prediction rules"). It applies only when every input to the prediction came from the host or from a level whose parity the host checked: the newest tuning payload and the report's parity for the current generation, the swap notice and swap message, the host-assigned `NetworkId`, the spawn pose, the harvest tick and the seeded teleport record. Missing any of them, the client takes the classic relevel. A client never composes from its own descriptors or a previous level's payload.
 - **Wire.** The instruction, release, swap notice, swap message, report and retraction are appended variants of `ServerControlMessage` and `ClientControlMessage`, advancing the application protocol from PRLC to PRLD; a change to a shipped message's layout also advances `WIRE_VERSION` from 35 (`networking.md` §Version gates).
-- The relevel-at-request non-goal in `drafts/level-load-pipeline/` (a failed host parse would strand clients) is answered by the speculative prefetch: a client never commits a level the host did not.
+- The relevel-at-request non-goal in `ready/level-load-pipeline/` (a failed host parse would strand clients) is answered by the speculative prefetch: a client never commits a level the host did not.
 
 **Depends on.** U3.
 
@@ -430,6 +430,6 @@ Leanings, pinned by the U2 brief.
 - **Cost of the blind walk on the host.** All-directions walks per player in a seam, once per frame while activated or waiting (D6 evaluation point). Measured in U3.
 - **Swap-frame cost after U1.** The script VM and registry stages stay on the main thread, and the first frame after the swap pays the first light-bridge update, compose dispatches and a full-weight cull (lavapipe `first_level_frame` ≈ 0.46–0.81 s on a change, unmeasured on Metal). If commit plus that frame exceed the swap budget, U3 needs its own lever.
 - **How long a prefetched level stays.** The Pinned orderings default keeps it until superseded, so the two-level peak can last the rest of the map. A release on leaving the prefetch region, with hysteresis, is the alternative — U3 brief, against AC 19.
-- **Two-level peak memory.** Unmeasured. World textures alone are about 80–96 MiB per level (`drafts/level-load-pipeline/research.md`).
-- **Pre-commit settle in the loading-screen order.** Post-commit streaming errors (Settling and in-play) still exit the process; U1 leaves them (`drafts/level-load-pipeline/` Non-goals). U3's pre-commit settle moves those reads before commit in the seam order. If the loading-screen order also settled before its commit, behind the loading tree, that exit path would leave both orders and the pipeline would stay one. Lean: yes — U3 brief; if declined, the exit becomes its own roadmap item.
+- **Two-level peak memory.** Unmeasured. World textures alone are about 80–96 MiB per level (`ready/level-load-pipeline/research.md`).
+- **Pre-commit settle in the loading-screen order.** Post-commit streaming errors (Settling and in-play) still exit the process; U1 leaves them (`ready/level-load-pipeline/` Non-goals). U3's pre-commit settle moves those reads before commit in the seam order. If the loading-screen order also settled before its commit, behind the loading tree, that exit path would leave both orders and the pipeline would stay one. Lean: yes — U3 brief; if declined, the exit becomes its own roadmap item.
 - **Audio across the swap.** Level sounds reload per level; ambient loops cut at a swap unless carried or crossfaded — U3 brief.

@@ -201,7 +201,7 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 Players walk from one map into the next as if into the next room. A seam is a stretch of level built identically in two maps; the next map loads in the background, and the engine swaps maps once no player in the seam can see past it. Doors and bends keep a seam blind. Today a trigger can already fire `loadLevel`, but every change is a hard cut to the next map's player starts. Epic hub: `context/plans/drafts/E25--map-transitions/`.
 
-- [ ] **U1 — Off-main level load** — staged load pipeline; prep and GPU creation off the main thread, a short commit, stages free to run beside a live level. Brief: `context/plans/drafts/level-load-pipeline/`. Concurrent with U2.
+- [ ] **U1 — Off-main level load** — staged load pipeline; prep and GPU creation off the main thread, a short commit, stages free to run beside a live level. Brief: `context/plans/ready/level-load-pipeline/`. Concurrent with U2.
 - [ ] **U2 — Landmark level change** — seam entity, landmark-relative arrival through the seamless-teleport transform, carried state, co-op arrival; loading screen kept.
 - [ ] **U3 — Seamless seam** — generated or authored prefetch region, background load during play, blind swap, door wait with `waiting` / `ready` events. Co-op clients take the classic relevel. After U1 and U2.
 - [ ] **U4 — Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no movement hold, predicting through the swap as through a teleport; participation stays one predicate. After U3.

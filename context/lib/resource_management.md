@@ -361,7 +361,7 @@ The renderer owns all GPU-side resources: wgpu buffers, textures, samplers. CPU-
 | Debug descriptor reload | Visual asset path additions or changes stay deferred in the installed descriptor snapshot. The latest authored snapshot promotes before the next level install preload. Gameplay never uploads a model or sprite collection. |
 | Level unload | Release all GPU resources. Drop all texture data. Handles become invalid. |
 
-Material textures and models load once at level load and release on level unload, with no incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level.
+Material textures and models load once at level load and release on level unload, with no incremental loading during gameplay. No reference counting — the level owns everything, and everything dies with the level. The staged load (`boot_sequence.md` §9) changes this: models move to a cache shared across loads, and each load owns and releases only its own renderer resources.
 
 **Baked lighting residency is the exception.** Baked lighting streams during play from a file handle the level retains. Cluster SH (id 50) installs and evicts per cluster. The static lightmap and shadowmask (ids 22/42) install and evict per cell block, as a pair, into a renderer-owned pool that grows or repacks at a drain. Both share one read issuer and one per-drain budget, and level unload releases the pools, the handle and the workers. A level without usable portals or a usable residency set (id 51), or one run with lightmap streaming set to all-resident, loads its lightmap blocks whole; SH `off` mode loads SH whole. See `rendering_pipeline.md` §4, *Cluster SH residency* and *Lightmap cell-block residency*.
 

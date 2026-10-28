@@ -146,9 +146,9 @@ Resource proof covers the full lifetime in [Development Guide](./development_gui
 
 Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
 
-### No GPU context in tests
+### GPU tests
 
-Tests run via `cargo test` with no window and no GPU context. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GPU layer is verified by running the engine.
+Tests run via `cargo test` with no window. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) keeps most logic testable as pure functions. A test that needs a device builds a headless one through the renderer's shared harness and skips when no adapter exists, so adapter absence never fails CI. `POSTRETRO_REQUIRE_GPU` (any non-empty value but `0`) turns that skip into a failure; a run that must prove a GPU result sets it. App-crate tests that build an offscreen renderer adopt the same policy with the staged load (`boot_sequence.md` §9).
 
 ### Sandboxed test runs
 

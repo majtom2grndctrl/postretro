@@ -39,12 +39,12 @@ The two-frame delay is causal: pixels reach the user before any deferred session
 
 ### Loading screen
 
-Every Loading frame — CLI boot map, catalog load, frontend backdrop, network relevel — draws a loading tree, a UI tree composed alone over a world-less frame cleared to the splash background color, so the boot splash hands off with no color step. It is display-only: never pushed onto the modal stack, no focus ring, and UI input stays dropped as on every non-UI frame. It runs its own UI clock from zero each load, so authored tweens advance without touching `script_time`. The renderer-owned splash paint remains the fallback for a Loading frame with no session, no full-ready renderer, or no registered loading tree.
+Every Loading frame — CLI boot map, catalog load, frontend backdrop, network relevel — draws a loading tree, a UI tree composed alone over a world-less frame cleared to the splash background color, so the boot splash hands off with no color step. It is display-only: never pushed onto the modal stack, no focus ring, and UI input stays dropped as on every non-UI frame. It runs its own UI clock from zero each load, so authored tweens advance without touching `script_time`. Under the staged load (§9) a superseding load keeps the tree and clock and restarts the bar at 0. The renderer-owned splash paint remains the fallback for a Loading frame with no session, no full-ready renderer, or no registered loading tree.
 
 - **Choice.** Once per load, when it begins: the catalog entry's `loadingTree` pool, else the mod's `loading.tree` pool, else the registry name `loadingScreen` — an engine fallback (`core/ui/loadingScreen.json`: the splash logo where the splash draws it, a bar beneath) a mod shadows by registering the same name. A pool picks uniformly among its names registered at engine or mod tier; an unregistered name warns once. The level tier is never a candidate: the outgoing level's trees are gone before Loading begins. Raw-path loads have no catalog entry and start at the mod pool.
-- **State.** `loading.levelName` (catalog name, else file stem) and `loading.progress` are set when the load begins and reset when it ends: at reveal on success, or on failure. Progress is the worker's load fraction scaled into `[0, 0.85]`; Settling carries it to 1.0. It never decreases.
+- **State.** `loading.levelName` (catalog name, else file stem) and `loading.progress` are set when the load begins and reset when it ends: at reveal on success, or on failure. Progress is the worker's load fraction scaled into `[0, 0.85]`; Settling carries it to 1.0. It never decreases. The staged load (§9) drops the parse cap and weights parse, prep, upload and settling.
 - **Images.** The chosen tree's loading-only mod images (`ui.md` §5) start decoding on a worker thread when the load chooses its tree; one already registered is skipped. Loading and Settling frames poll without waiting and register each image as it arrives, so the background is absent until its decode lands while the tree's widgets draw normally; on a short load it may never appear. Every end of the loading screen — reveal, failure, abandon, network relevel, a load that replaces it, suspend — unregisters what that load registered and discards decodes still in flight. An image the installed level's trees name is the exception: install promotes it to eager (`ui.md` §5), and the load no longer releases it. A decode that arrives after a staged reload changed or reclassified its entry is discarded. Each load re-decodes its images.
-- **Install deferral.** The main-thread install is one blocking frame the bar cannot animate through. A delivered payload is therefore held for one painted frame at progress 0.85, then installs. A held payload counts as a load in flight, so request draining waits for it.
+- **Install deferral.** The main-thread install is one blocking frame the bar cannot animate through. A delivered payload is therefore held for one painted frame at progress 0.85, then installs. A held payload counts as a load in flight, so request draining waits for it. The staged load (§9) replaces the blocking install with a short commit, and a request no longer waits.
 
 ### Settling
 
@@ -137,13 +137,13 @@ Textures are decoded from baked `.prm` mip sidecars, not from the PRL. The worke
 
 The worker also advances a level-loader progress counter it shares with the main thread, which reads it each Loading frame (§1 Loading screen). Units are the bytes this load actually reads: sections read whole, plus the file image itself on the whole-file backing. Streamed SH bodies and lightmap blocks past their index prefix are not read at load and do not count. The counter only rises, and reads done == total when the worker returns successfully.
 
-Handoff is an `mpsc` channel. One worker per load request; no thread pool, no async runtime (`std::thread` + `mpsc`).
+Handoff is an `mpsc` channel. One worker per load request; no thread pool, no async runtime (`std::thread` + `mpsc`). The staged load (§9) replaces this split: CPU prep on one engine pool, GPU creation on one renderer-owned upload thread.
 
 ---
 
 ## 3. Level Install Order
 
-Level install runs on the main thread after worker delivery. It is repeatable: every load request reaches this path after any active level has been unloaded. Texture upload precedes UV normalize: `.prm` slot dimensions drive UV normalization, so the renderer must produce loaded textures before texel-space UVs convert to `[0,1]`.
+Level install runs on the main thread after worker delivery. It is repeatable: every load request reaches this path after any active level has been unloaded. The staged load (§9) keeps this order but moves every stage that is not main-pinned off the main thread, where it may run beside a running level; the main thread keeps one commit. Texture upload precedes UV normalize: `.prm` slot dimensions drive UV normalization, so the renderer must produce loaded textures before texel-space UVs convert to `[0,1]`.
 
 | Order | Stage |
 |-------|-------|
@@ -200,7 +200,7 @@ after worker join.
 
 `LevelSource::Catalog(id)` resolves against the engine-global `DataRegistry.maps` snapshot before a worker is spawned. A found entry contributes `content_root.join(entry.path)` to the worker and stores `{ catalog_id, path, name, tags }` and the entry's loading-tree pool on the in-flight load so catalog metadata is available before the data script runs; omitted catalog tags are stored as `[]`. A missing id logs a diagnostic and no-ops; it must not unload an active level. Raw path loads (`LevelSource::Path`, including the CLI map path and dev tooling) bypass the catalog and synthesize non-catalog metadata: no catalog id, `tags = []`, and `name` from the file stem.
 
-Clear-on-unload contract:
+Clear-on-unload contract (the staged load, §9, keeps models in a cache shared across loads and has an unload release only its own load's resources):
 
 | Cleared on unload | Kept across unload |
 |---|---|
@@ -264,7 +264,7 @@ Hot reload (debug only) stages entity descriptors, store declarations, the map c
 ## 8. Non-Goals
 
 - Per-entity script lifecycle callbacks (see `entity_model.md` §9)
-- Multiple simultaneously resident levels or streaming
+- Two levels drawn or simulated at once. The staged load (§9) holds at most one unpublished level's resources beside the active one.
 - Networked mod sync; runtime mod hot-swap mid-level
 - Sandboxing mods from each other (mods share VM contexts and `data_registry` by design)
 
@@ -277,5 +277,11 @@ None of the following exists in code. Do not treat any of it as current behavior
 - **Mod discovery / multiple mod roots.** A scan of `content/*/` mod roots plus per-mod load-order resolution. Today one active mod root is selected explicitly with singular `--mod <name>`, by the CLI map path, or by the default dev root.
 - **Mod browser and persisted mod selection.** Engine-native mod browsing, multi-mod selection (`--mods`), and remembering the last selected mod. Singular `--mod` is already the shipped single-mod boot handle.
 - **Mod-supplied splash override.** No override hook is active until a splash-override feature ships. The renderer-owned boot splash (§1) consumes only the built-in base asset today; the mod-override consume path is wired but unreachable until the mod system sets it.
+- **Staged level load** (Epic 25 U1; `plans/ready/level-load-pipeline/`). One pipeline, two commit orders: the loading-screen order unloads, loads, then commits; the seam order (Epic 25 U3) loads beside a running level and swaps at commit. The parse hands out section groups as they decode. CPU prep runs on one bounded engine pool, the one place load work runs. One renderer-owned upload thread creates the level's GPU objects, touching only resources not yet published. The main thread pays one short commit of main-pinned work: resource hand-back and the script-VM and registry stages, in §3 order.
+  - **Commit.** Cannot fail on level data: every check that can fail runs before it. A load that fails before commit leaves a running level Running. Its only creations are counted fallbacks (a model prediction miss, a scene-extent rebuild) and sprite-collection registration.
+  - **Ownership.** Each load owns its renderer resources; release drops one load's set and creates nothing. Loads share only the model cache (freed at a commit that no longer references an entry), the add-only sampler maps and a spot shadow pool of one tier. Install-time pipelines build once per renderer.
+  - **Inputs.** Player tiers are snapshotted at dispatch; a later change never reaches the bundle. A scene-extent change before commit rebuilds the bundle's extent-bound groups once, at commit.
+  - **Cancellation.** A superseding request, a queued unload request or suspend cancels an uncommitted load. Releasing the running level beside a ready bundle cancels nothing.
+  - **Progress.** `loading.progress` spans parse, prep, upload and settling with no parse cap. A load beside a running level credits none.
 - **Classname-driven world mesh spawn.** A classname handler replaces the hardwired single-mesh seam (§3 stage 5).
 - **Domain folder convention.** Fixed `start-script` entry, `actors/`, `weapons/`, `levels/<name>/<name>.{ts,luau}` auto-discovery, and moving the data script out of the PRL. Today the data script is bundled in the PRL.

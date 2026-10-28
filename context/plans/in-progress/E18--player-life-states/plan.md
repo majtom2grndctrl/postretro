@@ -1,7 +1,7 @@
 # Player life states — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 834a09c51
 
 ## Resume point
@@ -19,9 +19,8 @@ Acceptance or Ordering requirement.
 Source verification is complete, including two read-only audit workers. The
 owner resolved the acceptance conflict on 2026-10-27 as recorded below. The
 amended timer requirements are feasible; no acceptance row needs restatement.
-Await the owner's plan review before implementation. On approval, set
-`status: approved` and commit it before Task 1. Proposed is not implementation
-approval.
+The owner approved this plan on 2026-10-27. Task 1 may proceed; later tasks
+retain the dependency order below.
 
 ## Owner decisions
 

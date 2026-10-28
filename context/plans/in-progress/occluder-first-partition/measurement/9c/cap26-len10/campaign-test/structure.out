@@ -1,0 +1,27 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.prl
+loaded in 0.4 s
+bake read: id51=52be329add8c3815 walk_epoch=3 size=295254648 mtime=1793208997 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.prl
+
+=== structure
+cells 701 (interior 92, solid 367, exterior 242, drawable 92)
+interior cell AABB volume: [<0.1 m3] 0 [0.1-1 m3] 0 [1-10 m3] 14 [10-100 m3] 23 [100-1000 m3] 31 [1000-10000 m3] 24 [>=10000 m3] 0
+interior cell smallest extent: [<0.1 m] 0 [0.1-0.25 m] 2 [0.25-0.5 m] 31 [0.5-1 m] 2 [1-2 m] 0 [2-4 m] 35 [4-8 m] 17 [>=8 m] 5
+interior cell largest extent: p50 18.69 p95 26.01 max 26.01
+portals 193 (walkable, both cells interior: 193; touching solid or exterior: 0)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 6 [1-10 m2] 57 [10-100 m2] 84 [100-1000 m2] 46 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 17 [1.5-2] 32 [2-4] 58 [4-8] 42 [8-16] 13 [16-32] 19 [32-64] 6 [>=64] 6
+walkable portal normals: horizontal 80, vertical 111, oblique 2
+faces 1013, triangles 2022, vertices 4048, BVH leaves 1013
+lightmap blocks 92 over 92 cells (max 1 per cell), texel area 42167952
+lightmap storage: streaming
+SH probe grid 74x48x114 = 404928 probes
+SH clusters 626 (indivisible oversize 5), max 17 cells per cluster
+cell visibility: 610 components, 1701 coupled pairs
+id 51: 701 camera cells, 5501 entries; entries per interior camera cell p50 65.00 p95 70.00 max 76.00
+lights 34, fog volumes 5
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.46s
+

@@ -1,0 +1,6 @@
+flags: --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache 
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/bin/prl-build-cap26-len10 c41db86646bc
+start: 2026-10-28 10:37:56
+exit: 0
+wall_seconds: 13
+/dev/disk1s6   466Gi   418Gi    30Gi    94%    4.7M  310M    2%   /System/Volumes/Data

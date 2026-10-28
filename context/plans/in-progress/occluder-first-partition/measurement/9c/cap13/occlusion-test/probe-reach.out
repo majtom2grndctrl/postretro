@@ -1,0 +1,5 @@
+cap13/occlusion-test/occlusion-test.prl
+  SH grid 71x15x68 cell [1.0, 1.0, 1.0]; 398 clusters, 186 interior cells
+  probe reach into another cluster's cells: 21 clusters (186 interior cells), 182 cluster pairs, 64883 probe refs, max 16 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 21 clusters (186 interior cells), 171 cluster pairs, 49195 probe refs
+  owner edges: patch 50 over 20 clusters; sparse halo 50 over 20 clusters

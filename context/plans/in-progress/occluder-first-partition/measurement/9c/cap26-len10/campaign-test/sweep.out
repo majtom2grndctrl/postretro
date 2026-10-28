@@ -1,0 +1,41 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.prl
+loaded in 0.4 s
+bake read: id51=52be329add8c3815 walk_epoch=3 size=295254648 mtime=1793208997 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.prl
+swept 1448 poses x 160x90 rays on 16 threads in 2.2 s
+sweep record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.after.sweep
+
+=== this build: 1448 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=52be329add8c3815 walk_epoch=3 size=295254648 mtime=1793208997 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/campaign-test/campaign-test.prl
+paths [("portal", 1448)]
+per pose                   mean          p95          max
+considered                 45.2          139          199
+accepted                   15.2           55           86
+drawn                       8.8           24           38
+reach                       8.8           24           38
+seen                        7.1           19           26
+drawn_faces               136.2          320          495
+tris                      272.0          640          990
+tris_in_frustum           152.2          470          818
+lightmap_blocks             8.8           24           38
+lightmap_texels       5192124.0     11393776     20176560
+sh_clusters                 3.0            7            9
+fog_volumes                 1.1            2            3
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0            0
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 2.62s
+

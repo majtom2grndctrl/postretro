@@ -1,0 +1,43 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.1 s
+bake read: id51=86c6d3a7312f5f64 walk_epoch=3 size=39611134 mtime=1793204060 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-warren-showcase/stress-warren-showcase.prl
+
+=== structure
+cells 2011 (interior 981, solid 824, exterior 206, drawable 949)
+interior cell AABB volume: [<0.1 m3] 0 [0.1-1 m3] 0 [1-10 m3] 2 [10-100 m3] 44 [100-1000 m3] 824 [1000-10000 m3] 111 [>=10000 m3] 0
+interior cell smallest extent: [<0.1 m] 0 [0.1-0.25 m] 0 [0.25-0.5 m] 0 [0.5-1 m] 2 [1-2 m] 0 [2-4 m] 352 [4-8 m] 627 [>=8 m] 0
+interior cell largest extent: p50 13.00 p95 16.26 max 26.01
+portals 1748 (walkable, both cells interior: 1748; touching solid or exterior: 0)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 1 [1-10 m2] 16 [10-100 m2] 1665 [100-1000 m2] 66 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 159 [1.5-2] 602 [2-4] 884 [4-8] 102 [8-16] 0 [16-32] 0 [32-64] 1 [>=64] 0
+walkable portal normals: horizontal 144, vertical 1604, oblique 0
+faces 4074, triangles 8147, vertices 16295, BVH leaves 4074
+lightmap blocks 949 over 949 cells (max 1 per cell), texel area 4669008
+lightmap storage: streaming
+SH probe grid 17x4x20 = 1360 probes
+SH clusters 1113 (indivisible oversize 2), max 32 cells per cluster
+cell visibility: 1031 components, 18480 coupled pairs
+id 51: 2011 camera cells, 123043 entries; entries per interior camera cell p50 94.00 p95 274.00 max 346.00
+lights 94, fog volumes 0
+
+=== region [[6.5024, 1.6256, 35.7632]]..[[13.0048, 11.3792, 58.5216]]
+interior cells overlapping: 8
+  cell 299 [0.00, 1.63, 52.02]..[13.00, 8.13, 61.77] faces 70
+  cell 310 [0.00, 1.63, 39.01]..[13.00, 8.13, 52.02] faces 86
+  cell 332 [0.00, 1.63, 26.01]..[13.00, 8.13, 39.01] faces 14
+  cell 705 [0.00, 8.13, 39.01]..[6.50, 11.38, 55.27] faces 2
+  cell 711 [0.00, 8.13, 26.01]..[6.50, 11.38, 39.01] faces 1
+  cell 1017 [0.00, 11.38, 52.02]..[13.00, 17.88, 61.77] faces 5
+  cell 1018 [0.00, 11.38, 39.01]..[13.00, 17.88, 52.02] faces 3
+  cell 1021 [0.00, 11.38, 26.01]..[13.00, 17.88, 39.01] faces 3
+walkable portals overlapping: 11, on 4 planes
+  horizontal y = 8.128 m: 3 portals, 190.27 m2, ids [8, 9, 12]
+  horizontal y = 11.379 m: 3 portals, 190.27 m2, ids [625, 626, 629]
+  vertical z = 39.014 m: 3 portals, 147.98 m2, ids [334, 727, 1019]
+  vertical z = 52.019 m: 2 portals, 159.22 m2, ids [338, 1023]
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.10s
+

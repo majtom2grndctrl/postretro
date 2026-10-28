@@ -1,0 +1,12 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1259 brushes, 72 occlude alone; exempt alone: 1174 under floor, 10 no open face, 3 short span, 0 low top; 29 clusters, 37 sections, 13 occlude (1070 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 0 of 0 kinematic movers seal a doorway at their closed pose
+[INFO prl_build::partition] BSP leaves: 2891 solid, 3395 empty
+[INFO prl_build::partition] BSP leaves: 6286
+[INFO prl_build::partition] Total faces (after brush-side extraction): 10897
+[WARN prl_build::pipeline] [Compiler] Watertightness: 624 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 307 exterior leaves, 3088 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 2066 occluder-tier leaves; 4218 cells (1020 interior, 2891 solid, 307 exterior); 4240 runtime portals; full tree 6286 leaves, 8428 portals; cell-size cap 19.5072 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 27540 eye candidates (26373 in cell, 285 inset, 882 rejected; missed into solid 1149, exterior 0, other cell 18), 4 camera cells without an eye point, 159948 walks (2927 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 1020 camera cells, 1024541 entries (max 1020 per camera), 8213220 bytes, max lead 32 m, 10.094 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 8213220 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 624 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

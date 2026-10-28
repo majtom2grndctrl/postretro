@@ -1,0 +1,9 @@
+[package]
+name = "mandatory"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+postretro-level-format = { path = "/Users/dhiester/Projects/Personal/postretro/crates/level-format" }

@@ -1,0 +1,5 @@
+cap19/campaign-test/campaign-test.prl
+  SH grid 74x48x114 cell [1.0, 1.0, 1.0]; 750 clusters, 186 interior cells
+  probe reach into another cluster's cells: 25 clusters (186 interior cells), 90 cluster pairs, 50420 probe refs, max 7 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 25 clusters (186 interior cells), 84 cluster pairs, 34754 probe refs
+  owner edges: patch 39 over 23 clusters; sparse halo 39 over 23 clusters

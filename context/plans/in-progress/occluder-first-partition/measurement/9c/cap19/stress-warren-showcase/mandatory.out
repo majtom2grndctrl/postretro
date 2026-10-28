@@ -1,0 +1,7 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap19/stress-warren-showcase/stress-warren-showcase.prl: L 16 m, 1561 camera cells; mandatory texels p50 0.0 M p95 0.8 M max 1.2 M (pool cap 15 layers ~62.9 M)
+  cell 687: 1.2 M, 182 entries
+  cell 765: 1.2 M, 173 entries
+  cell 763: 1.2 M, 173 entries
+  cell 685: 1.2 M, 175 entries
+  cell 749: 1.1 M, 173 entries
+  cells over 62.9 M: 0

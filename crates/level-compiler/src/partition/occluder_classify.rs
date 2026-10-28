@@ -33,6 +33,43 @@ pub const OCCLUDER_SPAN_FRACTION: f64 = 0.5;
 /// the floor in front of its face: eye height 1.5 m plus jump reach.
 pub const OCCLUDER_SEE_OVER_M: f64 = 2.5;
 
+/// The see-over height the rule reads: `OCCLUDER_SEE_OVER_M`, or in tests a
+/// per-thread override that changes classification with every brush's
+/// geometry held fixed (pin R16).
+fn see_over_m() -> f64 {
+    #[cfg(test)]
+    if let Some(height) = see_over_override::get() {
+        return height;
+    }
+    OCCLUDER_SEE_OVER_M
+}
+
+#[cfg(test)]
+pub(crate) mod see_over_override {
+    use std::cell::Cell;
+
+    thread_local! {
+        static HEIGHT: Cell<Option<f64>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn get() -> Option<f64> {
+        HEIGHT.with(Cell::get)
+    }
+
+    /// Run `f` with the see-over height set to `height` on this thread.
+    #[allow(dead_code)]
+    pub(crate) fn with<R>(height: f64, f: impl FnOnce() -> R) -> R {
+        struct Restore(Option<f64>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                HEIGHT.with(|cell| cell.set(self.0));
+            }
+        }
+        let _restore = Restore(HEIGHT.with(|cell| cell.replace(Some(height))));
+        f()
+    }
+}
+
 /// An axis within 45° of up takes the see-over test; any other takes the
 /// horizontal one.
 const VERTICAL_AXIS_MIN_COS: f64 = FRAC_1_SQRT_2;
@@ -407,7 +444,7 @@ impl BroadFace {
                 let start = top - DVec3::Y * PROBE_OFFSET_M;
                 let see_over =
                     PROBE_OFFSET_M + space.distance_through_to_blocking(start, DVec3::NEG_Y);
-                if !at_least(see_over, OCCLUDER_SEE_OVER_M) {
+                if !at_least(see_over, see_over_m()) {
                     return OccluderVerdict::LowTop;
                 }
             } else {

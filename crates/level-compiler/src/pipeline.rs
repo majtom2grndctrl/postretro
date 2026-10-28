@@ -29,6 +29,7 @@ mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
+pub(crate) mod runtime_cells;
 mod sdf_stage;
 mod stage_registry;
 mod texture_stage;
@@ -405,7 +406,8 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
-    let result = partition::partition(&map_data.brush_volumes)?;
+    let runtime_cells::OccluderPartition { result, tier } =
+        runtime_cells::partition_with_occluders(&map_data.brush_volumes)?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -539,19 +541,28 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Visibility);
-    // The exterior set is used by the BSP/leaf encoder to emit `face_count = 0`
-    // for outside-the-map leaves in lockstep with the geometry section.
-    let generated_portals = portals::generate_portals(&result.tree);
-    let portal_count = generated_portals.len();
+    // The full tree's portals feed only the exterior flood. Every later stage
+    // that reads cell ids reads the runtime cells: the cell view of the tree,
+    // its exterior cells, and the portals between occluder-tier cells. The
+    // exterior set lets the cell encoder emit `face_count = 0` for
+    // outside-the-map cells in lockstep with the geometry section.
+    let full_tree_portals = portals::generate_portals(&result.tree);
+    let full_exterior_leaves = visibility::find_exterior_leaves(&result.tree, &full_tree_portals);
+    let runtime = runtime_cells::RuntimeCells::build(
+        &result.tree,
+        &tier,
+        &full_exterior_leaves,
+        full_tree_portals.len(),
+    );
+    drop(full_tree_portals);
+    let portal_count = runtime.portals.len();
     if portal_count == 0 {
         log::warn!(
-            "Portal generation produced 0 portals. Vis will treat all leaves as mutually visible."
+            "Portal generation produced 0 portals between cells. Vis will treat all cells as mutually visible."
         );
     }
 
-    let exterior_leaves = visibility::find_exterior_leaves(&result.tree, &generated_portals);
-
-    let mut vis_result = visibility::encode_vis(&result.tree, &exterior_leaves);
+    let mut vis_result = visibility::encode_vis(&runtime.cells.tree, &runtime.cells.exterior_cells);
     finish_stage(
         &mut timings,
         reporter.as_ref(),
@@ -564,8 +575,11 @@ fn run_after_parsing(
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Geometry);
-    let (mut geo_result, mut face_brushes) =
-        geometry::extract_geometry_with_brushes(&result.faces, &result.tree, &exterior_leaves);
+    let (mut geo_result, mut face_brushes) = geometry::extract_geometry_with_brushes(
+        &result.faces,
+        &runtime.cells.tree,
+        &runtime.cells.exterior_cells,
+    );
     let carried_lights_by_mover = kinematic_geometry::member_lights_by_mover(
         &map_data.kinematic_movers,
         &map_data.carried_light_links,
@@ -575,7 +589,7 @@ fn run_after_parsing(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
         &carried_lights_by_mover,
-        &generated_portals,
+        &runtime.portals,
         &mut geo_result.texture_names,
     );
     let trigger_volumes_section =
@@ -588,14 +602,7 @@ fn run_after_parsing(
         true,
     );
     if args.verbose {
-        let empty_leaf_count = result
-            .tree
-            .leaves
-            .iter()
-            .enumerate()
-            .filter(|(idx, l)| !l.is_solid && !exterior_leaves.contains(idx))
-            .count();
-        geometry::log_stats(&geo_result, empty_leaf_count);
+        geometry::log_stats(&geo_result, runtime.cells.interior_cell_count());
     }
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::BvhBuild);
@@ -620,8 +627,8 @@ fn run_after_parsing(
     let cell_visibility_control =
         BakeControl::new(Arc::clone(&governor), &cell_visibility_progress);
     let cell_visibility_section = cell_visibility_bake::cell_visibility_bake_cached(
-        &result.tree,
-        &generated_portals,
+        &runtime.cells.tree,
+        &runtime.portals,
         stage_cache.as_ref(),
         &cell_visibility_control,
     )?;
@@ -635,7 +642,7 @@ fn run_after_parsing(
 
     // Cell draw index (id 37): per-cell BVH-leaf spans for the runtime visible-cell
     // candidate cull. Derived from the already-sorted flat BVH leaves joined into
-    // the encoded BSP leaf records (cell_id == BSP leaf index). Uncached — it is a
+    // the encoded cell records (BVH leaf cell_id is its face's cell). Uncached — it is a
     // cheap CSR pass over data the (uncached) BVH stage just produced. Omitted for
     // zero-leaf maps; emission is independent of portal presence.
     let mut cell_draw_index_section = cell_draw_index_bake::bake_cell_draw_index(
@@ -736,9 +743,9 @@ fn run_after_parsing(
         bvh: &bvh,
         bvh_primitives: &bvh_primitives,
         geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
-        portals: &generated_portals,
+        tree: &runtime.cells.tree,
+        exterior_leaves: &runtime.cells.exterior_cells,
+        portals: &runtime.portals,
         static_baked_lights: &static_baked_lights,
         animated_baked_lights: &animated_baked_lights,
         alpha_lights: &alpha_lights_ns,
@@ -824,8 +831,8 @@ fn run_after_parsing(
         bvh: &bvh,
         primitives: &bvh_primitives,
         geometry: &geo_result,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
+        tree: &runtime.cells.tree,
+        exterior_leaves: &runtime.cells.exterior_cells,
         static_lights: &static_baked_lights,
         animated_lights: &animated_baked_lights,
         total_light_count: map_data.lights.len(),
@@ -898,9 +905,9 @@ fn run_after_parsing(
             bvh: &bvh,
             primitives: &bvh_primitives,
             geometry: &geo_result,
-            tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
-            portals: &generated_portals,
+            tree: &runtime.cells.tree,
+            exterior_leaves: &runtime.cells.exterior_cells,
+            portals: &runtime.portals,
             animated_lights: &animated_baked_lights,
         };
         delta_sh_bake::bake_delta_sh_volumes_controlled(
@@ -964,7 +971,7 @@ fn run_after_parsing(
     } else {
         let inputs = direct_sh_bake::DirectBakeInputs {
             sh_ctx: &sh_ctx,
-            portals: &generated_portals,
+            portals: &runtime.portals,
         };
         // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
         // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
@@ -1003,7 +1010,7 @@ fn run_after_parsing(
     } else {
         let inputs = animated_direct_sh_bake::AnimatedDirectShBakeInputs {
             sh_ctx: &sh_ctx,
-            portals: &generated_portals,
+            portals: &runtime.portals,
             animated_lights: &animated_baked_lights,
             mutable_descriptors: &script_mutable_descriptor_slots,
         };
@@ -1066,7 +1073,7 @@ fn run_after_parsing(
             .and_then(|section| {
                 let inputs = direct_sh_bake::DirectBakeInputs {
                     sh_ctx: &sh_ctx,
-                    portals: &generated_portals,
+                    portals: &runtime.portals,
                 };
                 direct_sh_bake::bake_direct_sh_delta_volumes_controlled(
                     &inputs,
@@ -1373,7 +1380,7 @@ fn run_after_parsing(
     let stage_start = begin_stage(reporter.as_ref(), StageId::BillboardDirectScatterBake);
     let scatter_inputs = billboard_direct_scatter_bake::BillboardDirectScatterBakeInputs {
         sh_ctx: &sh_ctx,
-        portals: &generated_portals,
+        portals: &runtime.portals,
         animated_lights: &animated_baked_lights,
     };
     let animated_scatter_layout_fits_pack_cap =
@@ -1468,9 +1475,9 @@ fn run_after_parsing(
             primitives: &bvh_primitives,
             geometry: &geo_result,
             lights: &alpha_lights_ns,
-            tree: &result.tree,
-            portals: &generated_portals,
-            exterior_leaves: &exterior_leaves,
+            tree: &runtime.cells.tree,
+            portals: &runtime.portals,
+            exterior_leaves: &runtime.cells.exterior_cells,
         };
         chunk_light_list_bake::bake_chunk_light_list_cached(
             &inputs,
@@ -1508,8 +1515,8 @@ fn run_after_parsing(
             animated_lights: &animated_baked_lights,
             config: &lightmap_config,
             working_set_max_bytes: args.working_set_max_bytes,
-            generated_portals: &generated_portals,
-            exterior_leaves: &exterior_leaves,
+            generated_portals: &runtime.portals,
+            exterior_leaves: &runtime.cells.exterior_cells,
             control: &atlas_control,
         },
         &mut geo_result,
@@ -1547,7 +1554,7 @@ fn run_after_parsing(
 
     // Lightmap residency set (id 51): reads the partition plan's Cells and
     // Portals, the encoded locator, and for teleporter routes the id-55 section
-    // plus the f64 BSP leaves (bounds and defining planes), all final here. It
+    // plus the f64 cell hulls (bounds and defining planes), all final here. It
     // never feeds a bake.
     let stage_start = begin_stage(reporter.as_ref(), StageId::CellResidencySet);
     let cell_residency_progress = StageProgress::indeterminate();
@@ -1556,11 +1563,11 @@ fn run_after_parsing(
     let cell_residency_set_section = cell_residency_bake::cell_residency_set_bake_cached(
         &cell_partition.cells,
         &cell_partition.portals,
-        &pack::encode_cell_locator(&result.tree)?,
+        &pack::encode_cell_locator(&runtime.cells.tree)?,
         Some(
             cell_residency_bake::teleport_routes::TeleportResidencyInput {
                 section: &map_data.teleporters,
-                tree: &result.tree,
+                tree: &runtime.cells.tree,
             },
         ),
         stage_cache.as_ref(),
@@ -1674,14 +1681,14 @@ fn run_after_parsing(
         }
     }
 
-    let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &result.tree);
+    let alpha_lights_section = pack::encode_alpha_lights(&alpha_lights_ns, &runtime.cells.tree);
     let light_influence_section = pack::encode_light_influence(&alpha_lights_ns);
     let light_tags_section = pack::encode_light_tags(&alpha_lights_ns);
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
     let fog_volumes_section =
         pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
     let fog_cell_masks_section =
-        fog_cell_masks::bake_fog_cell_masks(&result.tree, &map_data.fog_volumes);
+        fog_cell_masks::bake_fog_cell_masks(&runtime.cells.tree, &map_data.fog_volumes);
 
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 
@@ -1824,7 +1831,9 @@ fn run_after_parsing(
             ..sdf_bake::SdfConfig::default()
         };
         // The SDF describes the surface, which the cut leaves unchanged: it
-        // bakes from the pre-cut geometry so density edits keep its key.
+        // bakes from the pre-cut geometry so density edits keep its key. It
+        // reads only solidity, so it takes the full tree and cell grouping
+        // never re-keys it.
         let section = sdf_stage::bake_or_load_sdf_atlas(
             pre_cut_geometry.as_ref().unwrap_or(&geo_result),
             &result.tree,
@@ -1885,8 +1894,8 @@ fn run_after_parsing(
     // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),
     // id 45's descriptor table (checked for identity), the runtime lights
     // (id 18) and their chunk windows (id 23), and the baked `.prm`
-    // sidecars, with the BVH still in scope; the BSP and its exterior leaves
-    // drop capture points in solid or outside the hull.
+    // sidecars, with the BVH still in scope; the full BSP and its exterior
+    // leaves drop capture points in solid or outside the hull.
     let stage_start = begin_stage(reporter.as_ref(), StageId::ReflectionProbes);
     let reflection_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ReflectionProbes, reflection_progress.clone());
@@ -1902,7 +1911,7 @@ fn run_after_parsing(
             face_brushes: &face_brushes,
             capture_override: &map_data.brush_capture_override,
             tree: &result.tree,
-            exterior_leaves: &exterior_leaves,
+            exterior_leaves: &full_exterior_leaves,
             lightmap: &lightmap_section,
             sh_volume: &packed_sh_volume,
             delta_sh: delta_sections.indirect.as_ref(),
@@ -1928,7 +1937,7 @@ fn run_after_parsing(
     let finalized_cluster_metadata =
         build_finalized_cluster_metadata(FinalizedClusterMetadataInputs {
             partition: cell_partition,
-            tree: &result.tree,
+            tree: &runtime.cells.tree,
             bvh: &bvh_section,
             bvh_chunk_ranges: &bvh_chunk_ranges,
             packed_sh_volume: &packed_sh_volume,
@@ -1957,8 +1966,8 @@ fn run_after_parsing(
         geo_result: &geo_result,
         texture_cache_keys: &name_to_key,
         leaves: &vis_result.leaves_section,
-        tree: &result.tree,
-        exterior_leaves: &exterior_leaves,
+        tree: &runtime.cells.tree,
+        exterior_leaves: &runtime.cells.exterior_cells,
         bvh: &bvh_section,
         bvh_chunk_ranges: &bvh_chunk_ranges,
         alpha_lights: &alpha_lights_section,

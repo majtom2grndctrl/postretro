@@ -6,8 +6,8 @@ use std::collections::HashSet;
 
 use glam::DVec3;
 
-use super::{PlaneEntry, distribute_winding, make_node_portal};
-use crate::partition::{BspChild, BspTree, OccluderTier};
+use super::{PlaneEntry, Portal, distribute_winding, make_node_portal};
+use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 
 /// Collinear and duplicate hull points closer than this are dropped.
 const HULL_EPSILON: f64 = 1e-9;
@@ -38,6 +38,25 @@ pub fn generate_occluder_tier_portals(
         generate_recursive(tree, tier, exterior_leaves, 0, &[], &mut portals);
     }
     portals
+}
+
+/// The runtime portal set in cell ids: each tier portal joins the interior
+/// cells of its two occluder-tier leaves. Every tier portal has interior
+/// space on both sides, so both cells exist; none touches a solid or exterior
+/// cell. Order follows `tier_portals`.
+pub fn runtime_portals(tier_portals: Vec<TierPortal>, cells: &CellTree) -> Vec<Portal> {
+    let interior_cell = |tier_leaf: usize| {
+        cells.tier_leaf_cell[tier_leaf]
+            .expect("a tier portal's occluder-tier leaf holds an interior cell")
+    };
+    tier_portals
+        .into_iter()
+        .map(|portal| Portal {
+            front_leaf: interior_cell(portal.front_tier_leaf),
+            back_leaf: interior_cell(portal.back_tier_leaf),
+            polygon: portal.polygon,
+        })
+        .collect()
 }
 
 fn generate_recursive(

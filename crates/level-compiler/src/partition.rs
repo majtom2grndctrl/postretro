@@ -1,10 +1,12 @@
 // BSP tree construction and brush-side face extraction. Wires the
-// brush-volume builder (`brush_bsp`) into the world-face emitter
-// (`face_extract`) and exposes the combined output to downstream stages.
+// brush-volume builder (`brush_bsp`), one-tier or with an occluder tier, into
+// the world-face emitter (`face_extract`) and exposes the combined output,
+// and the cell view of a two-tier tree (`cell_tree`), to downstream stages.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 pub(crate) mod brush_bsp;
 mod bsp;
+mod cell_tree;
 mod face_extract;
 mod manifold;
 pub mod occluder_classify;
@@ -16,6 +18,7 @@ pub use brush_bsp::{
     OccluderTier, TierLeaf, TierRole, build_bsp_from_brushes, build_bsp_with_occluder_tier,
 };
 pub use bsp::find_leaf_for_point;
+pub use cell_tree::CellTree;
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
 pub use manifold::{OpenEdge, WatertightReport, check_watertight};
 pub use types::*;
@@ -35,17 +38,43 @@ use anyhow::Result;
 /// into the same `faces` vector this function returns.
 pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
     if brush_volumes.is_empty() {
-        return Ok(PartitionResult {
-            tree: BspTree {
-                nodes: Vec::new(),
-                leaves: Vec::new(),
-            },
-            faces: Vec::new(),
-        });
+        return Ok(empty_partition());
     }
+    let tree = build_bsp_from_brushes(brush_volumes)?;
+    Ok(with_faces(tree, brush_volumes))
+}
 
-    let mut tree = build_bsp_from_brushes(brush_volumes)?;
+/// Partition world brushes into a two-tier BSP tree (`roles[i]` says how
+/// brush `i` splits inside the occluder tier), then extract world faces as
+/// `partition` does. Solidity and faces read the returned tree exactly as
+/// they read `partition`'s; the tier record groups its leaves into cells.
+pub fn partition_with_occluder_tier(
+    brush_volumes: &[BrushVolume],
+    roles: &[TierRole],
+) -> Result<(PartitionResult, OccluderTier)> {
+    if brush_volumes.is_empty() {
+        let tier = OccluderTier {
+            node_is_tier: Vec::new(),
+            leaves: Vec::new(),
+            leaf_tier_leaf: Vec::new(),
+        };
+        return Ok((empty_partition(), tier));
+    }
+    let (tree, tier) = build_bsp_with_occluder_tier(brush_volumes, roles)?;
+    Ok((with_faces(tree, brush_volumes), tier))
+}
 
+fn empty_partition() -> PartitionResult {
+    PartitionResult {
+        tree: BspTree {
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+        },
+        faces: Vec::new(),
+    }
+}
+
+fn with_faces(mut tree: BspTree, brush_volumes: &[BrushVolume]) -> PartitionResult {
     let FaceExtractionResult {
         faces,
         coplanar_conflicts,
@@ -58,7 +87,7 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
         );
     }
 
-    Ok(PartitionResult { tree, faces })
+    PartitionResult { tree, faces }
 }
 
 pub fn log_stats(tree: &BspTree, faces: &[Face]) {

@@ -553,14 +553,14 @@ fn build_leaf_ordered_faces(
 }
 
 /// Log geometry extraction statistics.
-pub fn log_stats(result: &GeometryResult, empty_leaf_count: usize) {
+pub fn log_stats(result: &GeometryResult, interior_cell_count: usize) {
     let section = &result.geometry;
     let triangle_count = section.indices.len() / 3;
     log::info!("Vertices: {} (28 bytes each)", section.vertices.len());
     log::info!("Indices: {}", section.indices.len());
     log::info!("Triangles: {triangle_count}");
     log::info!("Faces: {}", section.faces.len());
-    log::info!("Empty leaves: {empty_leaf_count}");
+    log::info!("Interior cells: {interior_cell_count}");
     log::info!("Unique textures: {}", result.texture_names.names.len());
 }
 

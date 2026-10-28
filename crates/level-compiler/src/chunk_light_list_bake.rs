@@ -8,7 +8,7 @@ use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -405,44 +405,19 @@ pub fn bake_chunk_light_list(
 
     let cap = per_chunk_cap as usize;
 
-    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
-    for p in inputs.portals {
-        adjacency.entry(p.front_leaf).or_default().push(p.back_leaf);
-        adjacency.entry(p.back_leaf).or_default().push(p.front_leaf);
-    }
+    let adjacency = crate::affinity_grid::portal_adjacency(inputs.portals);
 
     // `None` means portal filter is bypassed: directional sources, or origin in
-    // solid/exterior leaf — fall back to spatial overlap + BVH shadow rays only.
+    // solid/exterior cell — fall back to spatial overlap + BVH shadow rays only.
     let light_reachable: Vec<Option<HashSet<usize>>> = static_slots
         .iter()
         .map(|&(_, light)| {
-            if matches!(light.light_type, LightType::Directional) {
-                return None;
-            }
-            let source = find_leaf_for_point(inputs.tree, light.origin);
-            if source >= inputs.tree.leaves.len() {
-                return None;
-            }
-            if inputs.tree.leaves[source].is_solid || inputs.exterior_leaves.contains(&source) {
-                return None;
-            }
-            let mut reachable: HashSet<usize> = HashSet::new();
-            reachable.insert(source);
-            let mut queue: VecDeque<usize> = VecDeque::new();
-            queue.push_back(source);
-            while let Some(leaf) = queue.pop_front() {
-                if let Some(neighbors) = adjacency.get(&leaf) {
-                    for &n in neighbors {
-                        if inputs.exterior_leaves.contains(&n) {
-                            continue;
-                        }
-                        if reachable.insert(n) {
-                            queue.push_back(n);
-                        }
-                    }
-                }
-            }
-            Some(reachable)
+            crate::affinity_grid::light_portal_reach(
+                light,
+                inputs.tree,
+                inputs.exterior_leaves,
+                &adjacency,
+            )
         })
         .collect();
 

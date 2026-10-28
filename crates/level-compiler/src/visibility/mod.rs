@@ -37,6 +37,22 @@ pub struct VisibilityResult {
 /// boundary), so culling becomes a no-op and ambiguous boundary maps keep their
 /// geometry.
 pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
+    flood_exterior(tree, portals, FloodLog::Report)
+}
+
+/// `find_exterior_leaves` without its log lines, for a pass whose leak
+/// status is not the build's: the occluder classifier's first-pass tree.
+pub fn find_exterior_leaves_quietly(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
+    flood_exterior(tree, portals, FloodLog::Quiet)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloodLog {
+    Report,
+    Quiet,
+}
+
+fn flood_exterior(tree: &BspTree, portals: &[Portal], log_mode: FloodLog) -> HashSet<usize> {
     if tree.leaves.is_empty() {
         return HashSet::new();
     }
@@ -67,6 +83,9 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     let seed = partition::find_leaf_for_point(tree, probe);
 
     if tree.leaves[seed].is_solid {
+        if log_mode == FloodLog::Quiet {
+            return HashSet::new();
+        }
         log::warn!(
             "Exterior probe landed in a solid leaf — exterior culling is disabled for this \
              compile (no leaves classified as exterior, all geometry treated as interior). \
@@ -99,6 +118,9 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
         }
     }
 
+    if log_mode == FloodLog::Quiet {
+        return exterior;
+    }
     let exterior_count = exterior.len();
     if log::log_enabled!(log::Level::Info) {
         let interior_empty_count = tree
@@ -233,7 +255,7 @@ fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeaves
 /// Log visibility statistics.
 pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
     log::info!(
-        "Visibility: {} empty leaves, {} portals",
+        "Visibility: {} non-solid cells, {} portals",
         result.empty_leaf_count,
         portal_count,
     );

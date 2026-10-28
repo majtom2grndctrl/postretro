@@ -201,12 +201,8 @@ pub fn decompose_affinity_for_lights_with_policies(
     // `probe_spacing` apart, so an affinity cell is this many meters per axis.
     let affinity_cell_meters = inputs.probe_spacing.max(1.0e-4) as f64 * AFFINITY_FACTOR as f64;
 
-    // Portal adjacency graph — identical construction to chunk_light_list_bake.
-    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
-    for p in inputs.portals {
-        adjacency.entry(p.front_leaf).or_default().push(p.back_leaf);
-        adjacency.entry(p.back_leaf).or_default().push(p.front_leaf);
-    }
+    // Portal adjacency graph, shared with chunk_light_list_bake.
+    let adjacency = portal_adjacency(inputs.portals);
 
     let world_aabb_d = world_aabb_for_directional(inputs.geometry_vertices);
 
@@ -214,7 +210,8 @@ pub fn decompose_affinity_for_lights_with_policies(
         .iter()
         .zip(policies)
         .map(|(&light, &policy)| {
-            let reachable = reachable_leaves(light, inputs, &adjacency);
+            let reachable =
+                light_portal_reach(light, inputs.tree, inputs.exterior_leaves, &adjacency);
             cells_for_light(
                 light,
                 world_aabb_d,
@@ -235,24 +232,37 @@ pub fn decompose_affinity_for_lights_with_policies(
 }
 
 // ---------------------------------------------------------------------------
-// Reachability — inline BFS, mirrors chunk_light_list_bake.rs:98-135.
+// Reachability — the light flood this grid and chunk_light_list_bake share.
 
-/// `None` means the portal filter is bypassed (directional source, or origin in
-/// a solid/exterior leaf) — every overlapping cell is kept. `Some(set)` is the
-/// set of leaves reachable from the light's leaf through non-exterior portals.
-fn reachable_leaves(
+/// Both directions of every portal, keyed by cell, in portal order.
+pub(crate) fn portal_adjacency(portals: &[Portal]) -> HashMap<usize, Vec<usize>> {
+    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
+    for p in portals {
+        adjacency.entry(p.front_leaf).or_default().push(p.back_leaf);
+        adjacency.entry(p.back_leaf).or_default().push(p.front_leaf);
+    }
+    adjacency
+}
+
+/// The cells a light's portal flood reaches: from the cell its origin
+/// locates to, through `adjacency`, never into an exterior cell. The seed and
+/// the portals must share one id space (runtime cells). `None` means the
+/// portal filter is bypassed (directional source, or origin in a solid or
+/// exterior cell) — every overlapping cell is kept.
+pub(crate) fn light_portal_reach(
     light: &MapLight,
-    inputs: &AffinityReachInputs<'_>,
+    tree: &BspTree,
+    exterior_leaves: &HashSet<usize>,
     adjacency: &HashMap<usize, Vec<usize>>,
 ) -> Option<HashSet<usize>> {
     if matches!(light.light_type, LightType::Directional) {
         return None;
     }
-    let source = find_leaf_for_point(inputs.tree, light.origin);
-    if source >= inputs.tree.leaves.len() {
+    let source = find_leaf_for_point(tree, light.origin);
+    if source >= tree.leaves.len() {
         return None;
     }
-    if inputs.tree.leaves[source].is_solid || inputs.exterior_leaves.contains(&source) {
+    if tree.leaves[source].is_solid || exterior_leaves.contains(&source) {
         return None;
     }
     let mut reachable: HashSet<usize> = HashSet::new();
@@ -262,7 +272,7 @@ fn reachable_leaves(
     while let Some(leaf) = queue.pop_front() {
         if let Some(neighbors) = adjacency.get(&leaf) {
             for &n in neighbors {
-                if inputs.exterior_leaves.contains(&n) {
+                if exterior_leaves.contains(&n) {
                     continue;
                 }
                 if reachable.insert(n) {

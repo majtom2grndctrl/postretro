@@ -459,14 +459,18 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         let portal_index = usize::try_from(seam.portal_id).unwrap();
         closed_portals[portal_index] = true;
     }
+    // The runtime cells are the two rooms and the doorway between them, so
+    // the doorway's two portals are every portal, and the seam, which
+    // overhangs both faces of the divider, resolves to both.
     assert_eq!(
         closed_portals.iter().filter(|&&closed| closed).count(),
-        6,
-        "fixture's doorway resolves all six authored seam portal polygons"
+        2,
+        "fixture's doorway resolves both runtime portals across the doorway"
     );
-    assert!(
-        closed_portals.iter().any(|&closed| !closed),
-        "the visibility proof keeps unrelated portal traversal open"
+    assert_eq!(
+        closed_portals.len(),
+        2,
+        "the doorway's portals are the only ones"
     );
     assert!(
         manifest

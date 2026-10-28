@@ -356,7 +356,41 @@ pub(super) struct Compiled {
 pub(super) fn compile(map: &MapText, extra_args: &[&str]) -> Compiled {
     let dir = tempfile::tempdir().expect("temporary build directory");
     let input = write_map(dir.path(), map);
+    compile_into(dir, &input, extra_args)
+}
+
+/// `compile` for a map file already on disk, such as a committed fixture.
+pub(super) fn compile_path(input: &Path, extra_args: &[&str]) -> Compiled {
+    let dir = tempfile::tempdir().expect("temporary build directory");
+    compile_into(dir, input, extra_args)
+}
+
+fn compile_into(dir: tempfile::TempDir, input: &Path, extra_args: &[&str]) -> Compiled {
     let prl = dir.path().join("fixture.prl");
+    run_pipeline(input, &prl, extra_args).expect("fixture compiles");
+    let world = load(&prl).expect("runtime loader accepts the compiled fixture");
+    let unoriented = world
+        .portal_planes()
+        .iter()
+        .filter(|plane| !plane.oriented)
+        .count();
+    assert_eq!(unoriented, 0, "every portal carries orientation evidence");
+    Compiled {
+        _dir: dir,
+        prl,
+        world,
+    }
+}
+
+/// Compile `map` with `prl-build`'s pipeline as `compile` does and return
+/// the build's result, for fixtures the compiler must refuse.
+pub(super) fn try_compile(map: &MapText) -> anyhow::Result<()> {
+    let dir = tempfile::tempdir().expect("temporary build directory");
+    let input = write_map(dir.path(), map);
+    run_pipeline(&input, &dir.path().join("fixture.prl"), &[])
+}
+
+fn run_pipeline(input: &Path, prl: &Path, extra_args: &[&str]) -> anyhow::Result<()> {
     let mut args = vec![
         input.to_str().expect("fixture path is UTF-8").to_owned(),
         "--no-cache".to_owned(),
@@ -378,19 +412,6 @@ pub(super) fn compile(map: &MapText, extra_args: &[&str]) -> Compiled {
         reporter,
         Arc::new(crate::governor::Governor::new(1, false)),
     )
-    .expect("fixture compiles");
-    let world = load(&prl).expect("runtime loader accepts the compiled fixture");
-    let unoriented = world
-        .portal_planes()
-        .iter()
-        .filter(|plane| !plane.oriented)
-        .count();
-    assert_eq!(unoriented, 0, "every portal carries orientation evidence");
-    Compiled {
-        _dir: dir,
-        prl,
-        world,
-    }
 }
 
 pub(super) fn load(prl: &Path) -> Result<LevelWorld, postretro_level_loader::PrlLoadError> {

@@ -389,6 +389,36 @@ pub struct PlayerMovementComponent {
     /// Relocation identity and arrival latches survive prediction and replay.
     #[serde(default)]
     pub teleport: crate::movement::TeleportState,
+    #[serde(default = "super::life_state::undeclared_life_state")]
+    pub life_state: u8,
+    #[serde(default)]
+    pub life_state_elapsed_ticks: u32,
+    #[serde(default)]
+    pub life_state_table_revision: u8,
+    // Derived from the matching profile at state adoption, never from local
+    // descriptors during client replay. Consumers use player_capability.
+    #[serde(skip)]
+    pub life_movement_abilities: bool,
+    #[serde(skip)]
+    pub life_look: bool,
+    #[serde(skip)]
+    pub life_fire: bool,
+    #[serde(skip)]
+    pub life_switch_weapon: bool,
+    #[serde(skip)]
+    pub life_reload: bool,
+    #[serde(skip)]
+    pub life_use: bool,
+    #[serde(skip)]
+    pub life_touch: bool,
+    #[serde(skip)]
+    pub life_occupancy: bool,
+    #[serde(skip)]
+    pub life_damageable: bool,
+    #[serde(skip, default = "super::life_state::unit_speed_scale")]
+    pub life_speed_scale: f32,
+    #[serde(skip)]
+    pub life_posture: super::LifeStatePosture,
 }
 
 impl PlayerMovementComponent {
@@ -480,6 +510,20 @@ impl PlayerMovementComponent {
             swim_reentry_latched: false,
             vault_barred: false,
             teleport: Default::default(),
+            life_state: super::UNDECLARED_LIFE_STATE,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
+            life_movement_abilities: false,
+            life_look: false,
+            life_fire: false,
+            life_switch_weapon: false,
+            life_reload: false,
+            life_use: false,
+            life_touch: false,
+            life_occupancy: false,
+            life_damageable: false,
+            life_speed_scale: 1.0,
+            life_posture: super::LifeStatePosture::Stand,
         }
     }
 

@@ -306,6 +306,9 @@ fn pawn_record(x: f32, generation: u8) -> Vec<ComponentPayload> {
             scale: [1.0; 3],
         }),
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            life_state: 255,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
             teleport: WireTeleportState::new(generation, 0.0, 0, &[]).unwrap(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

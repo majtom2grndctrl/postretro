@@ -220,6 +220,19 @@ impl Fixture {
                 level_gravity: 0.0,
                 fluids: Default::default(),
             },
+            &fixture
+                .descriptors
+                .iter()
+                .filter_map(|descriptor| descriptor.life_states.as_ref())
+                .flat_map(|block| block.states.keys().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            fixture
+                .descriptors
+                .iter()
+                .find_map(|descriptor| descriptor.life_states.as_ref())
+                .map_or(0, |block| block.table_revision),
         );
         netcode::host_send_tuning_if_changed(
             &mut fixture.server,
@@ -357,6 +370,7 @@ impl Fixture {
             tuning,
             tuning_generation,
             applied_movement_tuning_generation,
+            life_state_tables,
             ..
         } = &mut receive.endpoint
         else {
@@ -389,6 +403,7 @@ impl Fixture {
             &mut NoBindings,
             f64::from(self.tick) * f64::from(DT),
             Some(0.0),
+            life_state_tables,
         );
         // As the app's client frame does once an arm met movement tuning.
         if outcome.armed_local_pawn.is_some()

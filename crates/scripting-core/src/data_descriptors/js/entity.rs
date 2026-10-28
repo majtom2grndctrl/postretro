@@ -39,6 +39,7 @@ pub fn entity_descriptor_from_js<'js>(
     let mut light = None;
     let mut emitter = None;
     let mut movement = None;
+    let mut life_states = None;
     let mut weapon = None;
     let mut touchable = None;
     let mut mesh = None;
@@ -81,6 +82,12 @@ pub fn entity_descriptor_from_js<'js>(
                             reason: "`components.movement` must be an object".to_string(),
                         })?;
                     movement = Some(movement_descriptor_from_js(ctx, &m_obj)?);
+                }
+            }
+            if components_obj.contains_key("lifeStates").map_err(js_err)? {
+                let raw: JsValue = components_obj.get("lifeStates").map_err(js_err)?;
+                if !raw.is_null() && !raw.is_undefined() {
+                    life_states = Some(life_states_from_js(raw, movement.as_ref())?);
                 }
             }
             if components_obj.contains_key("weapon").map_err(js_err)? {
@@ -178,6 +185,7 @@ pub fn entity_descriptor_from_js<'js>(
         light,
         emitter,
         movement,
+        life_states,
         weapon,
         touchable,
         mesh,

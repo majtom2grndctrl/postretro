@@ -695,6 +695,7 @@ mod tests {
 
     fn entity_descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

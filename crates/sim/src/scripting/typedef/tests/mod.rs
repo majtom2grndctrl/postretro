@@ -17,6 +17,7 @@ use postretro_scripting_core::primitives_registry::ContextScope;
 
 mod build_time_game_state_mirror;
 mod committed;
+mod life_state_surface;
 mod player_surface;
 mod snapshots;
 mod surface;

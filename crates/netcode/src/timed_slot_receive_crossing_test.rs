@@ -194,6 +194,7 @@ impl ReplicatedStateFrame for CrossingFrame {
             &mut NoPresentationBindings,
             0.0,
             None,
+            &Default::default(),
         );
         self.observations = receiver.slots.timed_slot_pending_observations().to_vec();
     }

@@ -18,6 +18,7 @@ const CLIENT_OWN_WEAPON: &str = "local_pistol";
 
 fn weapon(name: &str) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -66,6 +67,7 @@ fn weapon(name: &str) -> EntityTypeDescriptor {
 
 fn player(loadout: &[&str]) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -139,7 +141,7 @@ fn host_payload(slots: &[(usize, &str)], active: usize, range: f32) -> TuningPay
             Some(&carried),
         )
         .expect("the host composes its copy of the pawn");
-    tuning_payload_for_pawn(&host, pawn, &descriptors, None, &environment())
+    tuning_payload_for_pawn(&host, pawn, &descriptors, None, &environment(), &[], 0)
 }
 
 fn bytes(payload: &TuningPayload) -> Vec<u8> {
@@ -191,6 +193,7 @@ fn rearm(endpoint: &NetEndpoint, registry: &mut EntityRegistry) {
         tuning.and_then(|payload| payload.movement.as_ref()),
         tuning,
         false,
+        &Default::default(),
     );
 }
 

@@ -277,6 +277,9 @@ pub fn tick_with_immersion_and_armed(
     position: Vec3,
     armed: impl FnMut(usize) -> bool,
 ) -> (Vec3, MovementEvents, f32) {
+    if component.life_state != postretro_foundation::UNDECLARED_LIFE_STATE {
+        component.life_state_elapsed_ticks = component.life_state_elapsed_ticks.saturating_add(1);
+    }
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;

@@ -63,12 +63,19 @@ pub fn is_trap_primitive(primitive: &str) -> bool {
 /// Reject `spawnFromSpawner`, the trap verbs and the ghost-link member steps
 /// beside a group `kind`: a spawner is addressed by `tag` or member id, and a
 /// trap or a ghost link by member id, so the `kind` would be silently dropped.
-/// Every other primitive passes; the handler decides what a group applies to.
+/// Life-state verbs accept only the player group. Every other primitive passes;
+/// the handler decides what a group applies to.
 pub fn validate_group_kind_primitive(
     reaction: &str,
     site: &str,
     primitive: &str,
+    kind: GroupKind,
 ) -> Result<(), String> {
+    if kind == GroupKind::Npc && matches!(primitive, "setLifeState" | "respawn") {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` targets players, so it cannot carry `kind` \"npc\""
+        ));
+    }
     if primitive == "spawnFromSpawner" {
         return Err(format!(
             "reaction `{reaction}` {site}: `spawnFromSpawner` addresses spawners, so it cannot carry a group `kind`"

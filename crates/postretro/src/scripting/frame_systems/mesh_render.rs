@@ -2292,6 +2292,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let id = registry.spawn(Transform::default());
         let descriptor = EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

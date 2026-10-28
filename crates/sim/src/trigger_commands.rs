@@ -24,6 +24,10 @@ use crate::trigger_system::{arm_trigger_targets, disarm_trigger_targets};
 /// directly-owned sequenced step without performing a reaction-name lookup.
 #[derive(Debug, Clone)]
 pub(crate) enum BoundTriggerCommand {
+    SetLifeState {
+        target: BoundTarget,
+        state_id: u8,
+    },
     Mover {
         target: BoundTarget,
         command: MoverCommand,
@@ -143,6 +147,7 @@ impl ResolvedTargets<'_> {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundTriggerCommandKind {
+    SetLifeState,
     Mover,
     Damage,
     GrantHealth,
@@ -226,6 +231,22 @@ impl BoundTriggerCommand {
             return;
         }
         match self {
+            Self::SetLifeState { target, state_id } => {
+                if !group_commands_apply_here(script_ctx) {
+                    return;
+                }
+                let targets = target.resolve(registry, fire_context);
+                let data = script_ctx.data_registry.borrow();
+                if let Some(state) = data.life_state_names.get(usize::from(*state_id)) {
+                    crate::life_state_commands::set_life_state(
+                        script_ctx,
+                        registry,
+                        targets.as_slice(),
+                        state,
+                    );
+                }
+            }
+
             Self::Trap { .. } if !group_commands_apply_here(script_ctx) => {
                 // Every trap step is host-only; a client latches nothing.
             }
@@ -350,6 +371,9 @@ impl BoundTriggerCommand {
         fire_context: &TriggerFireContext,
     ) {
         match self {
+            Self::SetLifeState { .. } => {
+                log::warn!("[LifeState] bound command requires a live ScriptCtx; skipping")
+            }
             Self::Mover { target, command } => apply_mover_command_to_targets(
                 registry,
                 target.resolve(registry, fire_context).as_slice(),
@@ -477,7 +501,8 @@ impl BoundTriggerCommand {
     /// The group this command addresses, if any. Store writes carry no target.
     fn group_target(&self) -> Option<&GroupTarget> {
         let target = match self {
-            Self::Mover { target, .. }
+            Self::SetLifeState { target, .. }
+            | Self::Mover { target, .. }
             | Self::Damage { target, .. }
             | Self::GrantHealth { target, .. }
             | Self::GrantAmmo { target, .. }
@@ -501,6 +526,7 @@ impl BoundTriggerCommand {
     #[cfg(test)]
     pub(crate) fn kind(&self) -> BoundTriggerCommandKind {
         match self {
+            Self::SetLifeState { .. } => BoundTriggerCommandKind::SetLifeState,
             Self::Mover { .. } => BoundTriggerCommandKind::Mover,
             Self::Damage { .. } => BoundTriggerCommandKind::Damage,
             Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,

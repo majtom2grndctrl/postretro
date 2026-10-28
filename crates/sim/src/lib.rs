@@ -22,6 +22,7 @@ pub(crate) mod health;
 pub mod health;
 pub mod impact_effects;
 pub mod impact_policy;
+pub mod life_state_commands;
 pub mod mover_commands;
 pub mod nav;
 pub mod particle_pool;

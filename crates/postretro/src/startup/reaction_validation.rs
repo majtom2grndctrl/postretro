@@ -119,6 +119,7 @@ pub(crate) fn reaction_audience_token(descriptor: &ReactionDescriptor) -> Option
 /// binds a body this pass rejects.
 pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
     let mut data_registry = script_ctx.data_registry.borrow_mut();
+    super::life_state_validation::validate_life_state_references(&mut data_registry);
 
     // V6 checks a `fire` step's target against the set of reaction names present.
     // Duplicates collapse; an entry this pass rejects to `Sequence(vec![])` still

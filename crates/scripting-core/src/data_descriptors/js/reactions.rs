@@ -142,8 +142,8 @@ pub fn primitive_descriptor_from_js<'js>(
         target.is_some(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })?;
-    if kind.is_some() {
-        validate_group_kind_primitive(reaction, "primitive", &primitive)
+    if let Some(kind) = kind {
+        validate_group_kind_primitive(reaction, "primitive", &primitive, kind)
             .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
     if primitive == "spawnFromSpawner"
@@ -258,8 +258,8 @@ pub fn sequence_steps_from_js<'js>(
             validate_subject_token_primitive(reaction, &site, token, &primitive)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
-        if matches!(id, SequenceTarget::Group(_)) {
-            validate_group_kind_primitive(reaction, &site, &primitive)
+        if let SequenceTarget::Group(group) = &id {
+            validate_group_kind_primitive(reaction, &site, &primitive, group.kind)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         let args = if obj.contains_key("args").map_err(js_err)? {

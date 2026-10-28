@@ -197,6 +197,7 @@ impl RelayHarness {
             prediction: ClientPrediction::new(),
             state_slots: Box::new(ClientStateApply::new()),
             tuning: None,
+            life_state_tables: Default::default(),
             tuning_generation: 0,
             applied_movement_tuning_generation: 0,
             next_switch_declaration_id: 0,
@@ -649,6 +650,8 @@ impl RelayHarness {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
             },
+            &[],
+            0,
         );
         host_send_tuning_if_changed(
             &mut self.server,
@@ -764,6 +767,7 @@ impl RelayHarness {
             prediction,
             state_slots,
             tuning,
+            life_state_tables,
             tuning_generation,
             applied_movement_tuning_generation,
             ..
@@ -807,6 +811,7 @@ impl RelayHarness {
             &mut NoPresentationBindings,
             0.0,
             time_sync.rtt_micros(),
+            life_state_tables,
         );
         if let Some(armed) = &outcome.armed_local_pawn {
             self.client_pawn = Some(armed.entity_id);

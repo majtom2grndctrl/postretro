@@ -178,9 +178,7 @@ fn weapon_charge_values(
 ) -> Option<(ActivationToken, f32)> {
     if inventory.switch_target.is_some()
         || crate::scripting_systems::health::is_terminally_committed_to_removal(registry, pawn)
-        || registry
-            .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
-            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
+        || !crate::weapon::pawn_gate::pawn_can_fire(registry, pawn)
     {
         return None;
     }

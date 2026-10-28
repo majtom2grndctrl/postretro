@@ -10379,6 +10379,7 @@ fn projectile_weapon_descriptor(
     cooldown_ms: f32,
 ) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

@@ -821,6 +821,7 @@ mod tests {
 
     fn weapon_descriptor(name: &str, damage: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -869,6 +870,7 @@ mod tests {
 
     fn light_descriptor(name: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -910,6 +912,7 @@ mod tests {
 
     fn emitter_descriptor(name: &str, sprite: &str, rate: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -938,6 +941,7 @@ mod tests {
         eye_height: f32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1029,6 +1033,7 @@ mod tests {
     fn health_descriptor(name: &str, max: f32) -> EntityTypeDescriptor {
         use crate::data_descriptors::HealthDescriptor;
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2137,6 +2142,7 @@ mod tests {
         };
 
         let make_descriptor = |name: &str| EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

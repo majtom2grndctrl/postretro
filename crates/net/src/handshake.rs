@@ -44,8 +44,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// and the snapshot envelope the level-scoped ghost-audio record (`SNAPSHOT_VERSION` 22).
 /// Projectile traps reserve component discriminant 25 but never replicate, so
 /// they need no bump of their own; the ghost-link record takes discriminant 26.
-/// A declaration kind separates a timed switch from an immediate active-slot resync.
-pub const WIRE_VERSION: u32 = 35;
+/// A declaration kind separates a timed switch from an immediate active-slot resync at 35.
+/// Player life-state id, elapsed ticks and table revision advance it to 36.
+pub const WIRE_VERSION: u32 = 36;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -638,7 +639,7 @@ mod switch_tick_epoch_tests {
         const {
             assert!(WIRE_VERSION >= 34);
         }
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
+        assert!(crate::wire::SNAPSHOT_VERSION >= 22);
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,
             "no vocabulary change: still PRLC"
@@ -672,9 +673,9 @@ mod switch_tick_epoch_tests {
     #[test]
     fn switch_kind_refuses_wire_34_peers_and_admits_wire_35() {
         const PRE_KIND_WIRE_VERSION: u32 = 34;
-        assert_eq!(WIRE_VERSION, 35);
+        assert!(WIRE_VERSION >= 35);
         assert_eq!(PROTOCOL_ID, 0x_5052_4C43);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
+        assert!(crate::wire::SNAPSHOT_VERSION >= 22);
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_KIND_WIRE_VERSION,

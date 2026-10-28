@@ -149,7 +149,9 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
         // Pawns and corpses persist at zero HP. Stop their future shots now,
         // before the one-shot death-report latch, rather than waiting for a
         // later authored despawn. Holstered instances share this lifecycle.
-        cancel_owned_weapon_activations(registry, id);
+        if !crate::weapon::pawn_gate::pawn_can_fire(registry, id) {
+            cancel_owned_weapon_activations(registry, id);
+        }
         let is_player = registry
             .has_component_kind(id, ComponentKind::PlayerMovement)
             .unwrap_or(false);
@@ -223,7 +225,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     report
 }
 
-fn cancel_owned_weapon_activations(registry: &mut EntityRegistry, pawn: EntityId) {
+pub(crate) fn cancel_owned_weapon_activations(registry: &mut EntityRegistry, pawn: EntityId) {
     let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
         return;
     };

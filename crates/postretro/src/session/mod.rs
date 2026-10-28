@@ -914,6 +914,10 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    postretro_sim::life_state_commands::register_sequenced_life_state_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::teleporter_commands::register_sequenced_teleporter_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
@@ -944,6 +948,10 @@ fn build_scripting_core(
     );
     register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    postretro_sim::life_state_commands::register_life_state_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::teleporter_commands::register_teleporter_reaction_primitives(
         &mut reaction_registry,
         script_ctx.clone(),
@@ -1072,6 +1080,7 @@ impl ScriptingCore {
             for desc in descriptors {
                 data_registry.upsert_entity_type(desc);
             }
+            data_registry.rebuild_life_state_table();
             data_registry.replace_factions(
                 std::mem::take(&mut manifest.factions),
                 &mut faction_sentiment,

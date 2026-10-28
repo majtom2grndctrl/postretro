@@ -40,9 +40,11 @@ pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_impulse};
 pub use ir::*;
 pub use movement::{
-    DashPrograms, GroundRef, ImmersionComponent, MovementScope, MovementState, MovementStateKind,
+    Capability, DashPrograms, GroundRef, ImmersionComponent, LifeStateMovementProfile,
+    LifeStatePosture, LifeStateProfile, MovementScope, MovementState, MovementStateKind,
     NO_TELEPORTER, PlayerMovementComponent, SeamlessMapping, TeleportLatches, TeleportState,
-    wrap_teleport_yaw,
+    UNDECLARED_LIFE_STATE, carry_life_state_stamps, clear_life_state, enter_life_state,
+    player_capability, restamp_life_state, wrap_teleport_yaw,
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use presentation::{

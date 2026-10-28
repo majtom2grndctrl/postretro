@@ -582,6 +582,8 @@ export type ActivatorsTarget = {
   damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this fire's activators.
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
+  respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this fire's activators' named ammo-reserve pool.
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
@@ -616,6 +618,8 @@ export type PlayerTarget = {
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this event's player.
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
+  respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this event's player's named ammo-reserve pool.
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
   --- Add `delta` to this event's player's value of a per-owner numeric slot.
@@ -931,6 +935,9 @@ export type NpcGroup = {
   --- Damage each NPC by a finite, non-negative amount.
   damage: (self: NpcGroup, amount: number) -> GroupCommand,
 }
+--- Options for relocating a player to its seat placement on the next tick.
+export type RespawnOptions = { health: number?, lifeState: string? }
+
 --- Every player pawn bound to a seat; a seat in a disconnect hold is skipped,
 --- and single player reaches the local pawn. Opaque: no members, no length;
 --- `#group`, `group[1]` and any name but a verb raise. Commands run on the
@@ -940,6 +947,8 @@ export type PlayerGroup = {
   damage: (self: PlayerGroup, amount: number) -> GroupCommand,
   --- Add health to each player.
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
+  respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   --- Add `amount` to each player's named ammo-reserve pool.
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
@@ -959,6 +968,8 @@ export type PlayerEventEdge = { __playerEventEdge: true }
 export type PlayerEventOptions = { levels: {string}? }
 --- One `playerEvents` entry, as `players():on` builds it.
 export type PlayerEventDescriptor = { edge: "becomes" | "ceases", condition: RuntimeValue, fire: {string}, levels: {string}? }
+--- Test the evaluated player in player events, or the local player in crossings.
+declare function inLifeState(name: string): BoolRef
 --- Fire when `cond` turns true for a player. Inside `cond`, a plain read of a
 --- per-player slot (an engine player slot or a mod per-owner slot) means the
 --- player being evaluated. A player first observed while `cond` holds fires

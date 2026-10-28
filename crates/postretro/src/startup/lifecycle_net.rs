@@ -49,11 +49,13 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let (descriptors, default_weapon_placement) = {
+        let (descriptors, default_weapon_placement, life_state_names, life_state_table_revision) = {
             let registry = session.scripting.script_ctx.data_registry.borrow();
             (
                 registry.entities.clone(),
                 registry.default_weapon_placement.clone(),
+                registry.life_state_names.clone(),
+                registry.life_state_table_revision,
             )
         };
         let environment = crate::netcode::host_environment_tuning(&session.scripting.script_ctx);
@@ -75,6 +77,8 @@ impl App {
             &descriptors,
             default_weapon_placement.as_ref(),
             &environment,
+            &life_state_names,
+            life_state_table_revision,
         );
     }
 

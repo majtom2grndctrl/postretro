@@ -167,6 +167,19 @@ pub(super) fn bind_command_at(
         })
     };
     match primitive {
+        "setLifeState" => {
+            let state = args.get("state")?.as_str()?;
+            let data = script_ctx?.data_registry.borrow();
+            let Some(id) = data.life_state_names.iter().position(|name| name == state) else {
+                log::error!("[LifeState] unknown state `{state}`; not binding");
+                return None;
+            };
+            Some(BoundTriggerCommand::SetLifeState {
+                target: target(primitive)?,
+                state_id: id as u8,
+            })
+        }
+
         "moverStart" => Some(BoundTriggerCommand::Mover {
             target: target(primitive)?,
             command: MoverCommand::Start,

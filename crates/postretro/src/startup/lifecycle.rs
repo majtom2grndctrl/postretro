@@ -2056,6 +2056,7 @@ pub(crate) mod tests {
 
     pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

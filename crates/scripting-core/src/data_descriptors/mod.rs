@@ -65,6 +65,7 @@ mod fluids;
 mod ghost_flag;
 mod ghost_styles;
 mod input_block;
+mod life_states;
 mod loading_manifest;
 mod movement_sounds;
 mod player_events;
@@ -117,6 +118,7 @@ pub use error::*;
 pub use fluids::{drain_fluids_js, drain_fluids_lua};
 pub(crate) use ghost_flag::*;
 pub use ghost_styles::{drain_ghost_styles_js, drain_ghost_styles_lua};
+pub(crate) use life_states::*;
 pub(crate) use movement_sounds::*;
 pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_events_lua};
 pub use runtime_manifest::*;
@@ -128,8 +130,8 @@ pub use vm_adapters::*;
 
 pub use postretro_entities::data_descriptors::{
     ComposedPlayerEvent, CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, GroupKind,
-    GroupTarget, InventoryDescriptor, LocomotionDescriptor, MeshDescriptor, NamedReaction,
-    PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
+    GroupTarget, InventoryDescriptor, LifeStatesDescriptor, LocomotionDescriptor, MeshDescriptor,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
     ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
     SequenceTarget, TeleportEventDescriptor, TriggerEventDescriptor, TriggerPoolArm,
     TriggerPoolDescriptor, VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,

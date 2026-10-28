@@ -21,6 +21,7 @@ use crate::ctx::ScriptCtx;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
 use crate::ir_scopes::{StoreHandle, StoreScope};
+use crate::life_state_inputs::LIFE_STATE_INPUT_PREFIX;
 use crate::player_event_scope::is_local_player_slot;
 use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::registry::{EntityId, EntityRegistry};
@@ -37,6 +38,7 @@ pub enum PlayerConditionHandle {
 #[derive(Clone, Debug, PartialEq)]
 enum PlayerInput {
     Engine(PlayerSlot),
+    LifeState(u8),
     Owned { name: String, ir_type: IrType },
 }
 
@@ -44,6 +46,7 @@ impl PlayerInput {
     fn ir_type(&self) -> IrType {
         match self {
             PlayerInput::Engine(slot) => slot.ir_type(),
+            PlayerInput::LifeState(_) => IrType::Bool,
             PlayerInput::Owned { ir_type, .. } => *ir_type,
         }
     }
@@ -96,15 +99,21 @@ impl PlayerConditionScope {
         let inputs = self.inputs.borrow();
         let mut values = self.values.borrow_mut();
         values.clear();
-        values.extend(inputs.iter().map(|input| match input {
-            PlayerInput::Engine(slot) => project(
-                slot.ir_type(),
-                player_slot_value(registry, *slot, pawn).as_ref(),
-            ),
-            PlayerInput::Owned { name, ir_type } => {
-                let seat = seat?;
-                let record = slot_table.get(name)?;
-                project(*ir_type, record.per_seat_value(seat))
+        values.extend(inputs.iter().map(|input| {
+            match input {
+                PlayerInput::Engine(slot) => project(
+                    slot.ir_type(),
+                    player_slot_value(registry, *slot, pawn).as_ref(),
+                ),
+                PlayerInput::LifeState(state) => registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()
+                    .map(|movement| IrValue::Bool(movement.life_state == *state)),
+                PlayerInput::Owned { name, ir_type } => {
+                    let seat = seat?;
+                    let record = slot_table.get(name)?;
+                    project(*ir_type, record.per_seat_value(seat))
+                }
             }
         }));
     }
@@ -144,6 +153,14 @@ impl BindingScope for PlayerConditionScope {
     type OutputHandle = ();
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        if let Some(state) = name.strip_prefix(LIFE_STATE_INPUT_PREFIX) {
+            let state = self.store.life_state_id(state)?;
+            let index = self.bind_player_input(PlayerInput::LifeState(state));
+            return Some(ResolvedInput {
+                handle: PlayerConditionHandle::Player(index),
+                ir_type: IrType::Bool,
+            });
+        }
         if let Some(slot) = PlayerSlot::from_name(name) {
             let index = self.bind_player_input(PlayerInput::Engine(slot));
             return Some(ResolvedInput {

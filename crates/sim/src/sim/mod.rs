@@ -657,6 +657,11 @@ where
         &command.movement,
         tick_dt,
     );
+    crate::life_state_commands::advance_unstepped_life_state_time(
+        &mut registry.borrow_mut(),
+        &remote_movement,
+        movement.stepped_pawn,
+    );
     let mut remote_pawn_commands = std::borrow::Cow::Borrowed(remote_pawn_commands);
     let mut teleports: Vec<_> = remote_movement
         .into_iter()
@@ -1943,6 +1948,7 @@ mod trap_tick_tests;
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
+    stepped_pawn: Option<EntityId>,
     teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
     emissions: Vec<crate::emission::MovementEmission>,
     state_edges: Vec<crate::movement::MovementStateEdge>,
@@ -1961,6 +1967,7 @@ fn run_movement_tick(
     };
     let Some(id) = local else {
         return LocalMovementTickEvents {
+            stepped_pawn: None,
             teleport: None,
             emissions: Vec::new(),
             state_edges: Vec::new(),
@@ -1976,6 +1983,7 @@ fn run_movement_tick(
         &pawn_inputs,
         tick_dt,
     );
+    let stepped_pawn = events.iter().any(|(pawn, _)| *pawn == id).then_some(id);
     let emitter = crate::emission::entity_emitter(&registry, id);
     let mut emissions = Vec::new();
     let mut state_edges = Vec::new();
@@ -1988,6 +1996,7 @@ fn run_movement_tick(
         }
     }
     LocalMovementTickEvents {
+        stepped_pawn,
         teleport,
         emissions,
         state_edges,

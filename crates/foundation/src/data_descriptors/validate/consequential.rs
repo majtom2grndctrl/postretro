@@ -1,13 +1,16 @@
-// Pure-JSON payload checks for consequential primitives (grants, `addSlot`) and trap verbs.
+// Pure-JSON payload checks for consequential player primitives and trap verbs.
 // See: context/lib/scripting.md §12 (Entity addressing)
 
 use super::super::DescriptorError;
 use super::foundation::validate_ascii_identifier;
 
 /// Primitives whose `args` are fixed author-time payloads checked at load.
-/// Downstream grant dispatch assumes these checks ran.
+/// Downstream command dispatch assumes these checks ran.
 pub fn is_consequential_primitive(primitive: &str) -> bool {
-    matches!(primitive, "grantHealth" | "grantAmmo" | "addSlot")
+    matches!(
+        primitive,
+        "grantHealth" | "grantAmmo" | "addSlot" | "setLifeState" | "respawn"
+    )
 }
 
 /// Validate a consequential primitive's or trap verb's `args` at `site`
@@ -44,6 +47,24 @@ pub fn validate_consequential_args(
     let object = args
         .as_object()
         .ok_or_else(|| fail(format!("`{primitive}` `args` must be an object")))?;
+    if matches!(primitive, "setLifeState" | "respawn") {
+        let state = object.get("state");
+        if primitive == "setLifeState" || state.is_some() {
+            let name = state.and_then(serde_json::Value::as_str).ok_or_else(|| {
+                fail(format!(
+                    "`{primitive}` `args.state` must be a string identifier"
+                ))
+            })?;
+            validate_ascii_identifier(&format!("{primitive}.args.state"), name)
+                .map_err(|error| fail(error.to_string()))?;
+        }
+        // Respawn normalizes non-positive, non-finite or out-of-range health
+        // at execution. Load-time validation checks the authored type only.
+        if primitive == "respawn" && object.get("health").is_some_and(|value| !value.is_number()) {
+            return Err(fail("`respawn` `args.health` must be a number".to_string()));
+        }
+        return Ok(());
+    }
     if primitive == "addSlot" {
         if object
             .get("slot")
@@ -136,3 +157,7 @@ fn finite_f32(value: Option<&serde_json::Value>) -> Result<(), &'static str> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "consequential_life_state_tests.rs"]
+mod life_state_tests;

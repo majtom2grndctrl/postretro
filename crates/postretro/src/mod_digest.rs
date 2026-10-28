@@ -413,6 +413,7 @@ pub(crate) mod tests {
 
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

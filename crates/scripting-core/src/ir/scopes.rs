@@ -14,6 +14,7 @@ use crate::ctx::ScriptCtx;
 use crate::group_resolution::is_player_pawn;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
+use crate::life_state_inputs::{LIFE_STATE_INPUT_PREFIX, resolve_life_state_id};
 use crate::player_event_scope::EVENT_PLAYER_TOKEN;
 use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::registry::{EntityId, EntityRegistry};
@@ -45,6 +46,7 @@ pub enum StoreCapability {
 pub struct StoreHandle {
     name: String,
     ir_type: IrType,
+    life_state: Option<String>,
 }
 
 impl StoreHandle {
@@ -118,6 +120,10 @@ impl StoreScope {
         }
     }
 
+    pub(crate) fn life_state_id(&self, name: &str) -> Option<u8> {
+        resolve_life_state_id(&self.ctx, name)
+    }
+
     /// Resolve the addressable half of an owner store. Only a scope that
     /// publishes an owner — the impact source, the evaluated or event player —
     /// exposes this handle after it validates the owner token.
@@ -132,6 +138,7 @@ impl StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -786,6 +793,17 @@ impl BindingScope for StoreScope {
     type OutputHandle = StoreHandle;
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
+        if let Some(state) = name.strip_prefix(LIFE_STATE_INPUT_PREFIX) {
+            self.life_state_id(state)?;
+            return Some(ResolvedInput {
+                handle: StoreHandle {
+                    name: name.to_string(),
+                    ir_type: IrType::Bool,
+                    life_state: Some(state.to_string()),
+                },
+                ir_type: IrType::Bool,
+            });
+        }
         let table = self.ctx.slot_table.borrow();
         let record = table.get(name)?;
         // Bare reads are scalar projections. A per-owner slot has no
@@ -799,6 +817,7 @@ impl BindingScope for StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -824,6 +843,7 @@ impl BindingScope for StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -832,6 +852,12 @@ impl BindingScope for StoreScope {
     fn read(&self, handle: &StoreHandle) -> IrValue {
         // Alloc-free re-hash through the existing `get(&str)`; no new store API.
         let table = self.ctx.slot_table.borrow();
+        if let Some(state) = &handle.life_state {
+            let matches = table.get("player.lifeState").is_some_and(|record| {
+                matches!(&record.value, Some(SlotValue::String(current)) if current == state)
+            });
+            return IrValue::Bool(matches);
+        }
         let value = table
             .get(&handle.name)
             .and_then(|record| record.value.as_ref());

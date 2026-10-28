@@ -267,6 +267,8 @@ impl Fixture {
                 level_gravity: 0.0,
                 fluids: Default::default(),
             },
+            &[],
+            0,
         );
         netcode::host_send_tuning_if_changed(
             &mut self.server,
@@ -334,6 +336,7 @@ impl Fixture {
             &mut receive_alternate::NoBindings,
             f64::from(self.tick) * f64::from(DT),
             Some(0.0),
+            &Default::default(),
         );
         if let Some(selected) = observer
             .replication

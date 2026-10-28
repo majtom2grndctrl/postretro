@@ -721,6 +721,7 @@ mod tests {
         };
 
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1266,6 +1267,7 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_meshless_descriptor_leaves_transform_only() {
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             touchable: None,
             mesh: None,
@@ -1339,6 +1341,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1357,6 +1360,7 @@ mod tests {
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1377,6 +1381,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

@@ -3644,6 +3644,7 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
 
 // Late tuning payloads on join: composition waits, then lands on the host slot.
 mod late_join;
+mod life_states;
 mod receive_alternate;
 // Reload, use and drop edges and switches delivered once, in client-tick order,
 // across a lost datagram and a two-second outage.

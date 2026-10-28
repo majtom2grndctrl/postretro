@@ -347,7 +347,10 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
 fn is_trigger_consequential_primitive(primitive: &str) -> bool {
     matches!(
         primitive,
-        "moverStart"
+        "setLifeState"
+            | "grantHealth"
+            | "grantAmmo"
+            | "moverStart"
             | "moverStop"
             | "moverReverse"
             | "moverGoToPathNode"

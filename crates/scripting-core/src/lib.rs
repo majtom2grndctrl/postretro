@@ -42,6 +42,9 @@ pub mod ir {
 #[path = "ir/scopes.rs"]
 pub mod ir_scopes;
 
+#[path = "ir/life_state_inputs.rs"]
+mod life_state_inputs;
+
 #[path = "ir/player_scope.rs"]
 pub mod ir_player_scope;
 

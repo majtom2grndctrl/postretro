@@ -4263,6 +4263,8 @@ impl App {
                                     &net_descriptors,
                                     net_default_weapon_placement.as_ref(),
                                     &netcode::host_environment_tuning(&script_ctx),
+                                    &script_ctx.data_registry.borrow().life_state_names,
+                                    script_ctx.data_registry.borrow().life_state_table_revision,
                                 );
                                 netcode::host_send_tuning_if_changed(
                                     server,
@@ -4323,6 +4325,7 @@ impl App {
                 prediction,
                 state_slots,
                 tuning,
+                life_state_tables,
                 tuning_generation,
                 applied_movement_tuning_generation,
                 session_status,
@@ -4453,6 +4456,7 @@ impl App {
                         &mut presentation_bindings,
                         script_ctx.presentation_script_time.get(),
                         time_sync.rtt_micros(),
+                        life_state_tables,
                     )
                 };
                 crate::runtime_teleporters::apply_local_adoptions(
@@ -4842,6 +4846,8 @@ impl App {
                     &data_registry.entities,
                     data_registry.default_weapon_placement.as_ref(),
                     &netcode::host_environment_tuning(&script_ctx),
+                    &data_registry.life_state_names,
+                    data_registry.life_state_table_revision,
                 );
             }
             let slot_table = script_ctx.slot_table.borrow();
@@ -7261,6 +7267,7 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -8795,6 +8802,7 @@ mod tests {
         .expect("weapon parses");
         let table = sound_events::DescriptorSoundTable::build(&[
             postretro_entities::EntityTypeDescriptor {
+                life_states: None,
                 ghost: false,
                 faction: None,
                 tolerance: None,
@@ -12062,6 +12070,7 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

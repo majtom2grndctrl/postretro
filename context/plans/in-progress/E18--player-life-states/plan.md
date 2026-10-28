@@ -8,8 +8,12 @@ read at: 834a09c51
 
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. No implementation has started and no Rust tests or
-builds have run. A small presentation-clock design experiment is recorded below.
+`codex/player-life-states`. Task 1 implementation and focused verification are complete. Tasks 2–4 are
+the next approved phase. The usage-window interruption left edits intact; the
+session resumed on 2026-10-28 without changing the approved scope. A cold
+type-check found an import error and two missed test endpoint fields, now fixed.
+No acceptance row is proved until its tests run. A small presentation-clock
+design experiment is recorded below.
 
 The legacy brief has no compact/resumable header. Use resumable coordination
 because its seven tasks cross descriptor validation, prediction, replication,
@@ -19,7 +23,7 @@ Acceptance or Ordering requirement.
 Source verification is complete, including two read-only audit workers. The
 owner resolved the acceptance conflict on 2026-10-27 as recorded below. The
 amended timer requirements are feasible; no acceptance row needs restatement.
-The owner approved this plan on 2026-10-27. Task 1 may proceed; later tasks
+The owner approved this plan on 2026-10-27. Task 1 is complete; later tasks
 retain the dependency order below.
 
 ## Owner decisions
@@ -198,7 +202,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approval | not started |
+| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approved | done: focused checks, conditioned fire and SDK proof pass |
 | 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | not started |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | not started |
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | not started |
@@ -213,6 +217,30 @@ shared-file edits. Each completed resumable task commits its proof and plan
 update together.
 
 ## Ordering proof ownership
+
+### Task 1 proof checkpoint (2026-10-28)
+
+- Focused `cargo check` for postretro, netcode and sim with dev-tools and all
+  targets passes after repairing an import and two test endpoint literals.
+- Cross-library `life_state` filter passed: combat-model 1, entities 4,
+  foundation 1, net 1, netcode 6, scripting-core 11. The first sim pass exposed
+  an elapsed-clock bug: the extra host pass inferred the locally stepped pawn
+  from a fallback registry lookup. The movement result now explicitly carries
+  the successfully stepped pawn. Focused sim retest passes all 8 cases.
+- `cargo test -p postretro --features dev-tools --bin postretro life_state`
+  passes 4 tests: install diagnostics; conditioned player event → fire refusal
+  → owner state adoption at 150 ms RTT; permitted zero-HP held/burst actions;
+  permitted zero-HP charge across repeated death sweeps and release.
+- O15 trigger entry and O39 scheduled-tail drain/reset are covered by
+  `life_state_o15_trigger_write_reads_zero_before_next_host_tick` and
+  `life_state_o39_wait_tail_enters_at_drain_and_reload_drops_pending_tail`.
+- SDK TS/Luau declarations and full-registry fixtures have been regenerated.
+  Typedef consistency passes all 50 tests; O26 passes both history and production
+  reconcile/replay tests; tuning codec passes all 17 tests; movement round-trip
+  and SDK export inventory each pass their one focused test. The inventory was
+  rerun after the usage-window interruption to recover its result.
+- Formatting and whitespace checks pass. No full workspace suite has run.
+  Tasks 2–4 may now run concurrently under the approved ownership boundaries.
 
 These are required scenario allocations. Replace each with concrete executed
 test names/results as its task completes. Shared rows require proof at both

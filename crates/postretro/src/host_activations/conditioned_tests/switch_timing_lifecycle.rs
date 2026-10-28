@@ -13,6 +13,8 @@ fn host_tuning(fixture: &Fixture) -> postretro_combat_model::TuningPayload {
             level_gravity: 0.0,
             fluids: Default::default(),
         },
+        &[],
+        0,
     )
 }
 

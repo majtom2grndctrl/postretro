@@ -129,9 +129,15 @@ pub fn drop_vault_if_dead(
     pawn: EntityId,
     movement: &mut PlayerMovementComponent,
 ) {
-    let dead = crate::scripting_systems::health::is_quiescent(registry, pawn);
-    movement.vault_barred = dead;
-    if dead {
+    if postretro_foundation::player_capability(
+        movement,
+        postretro_foundation::Capability::MovementAbilities,
+    )
+    .is_none()
+    {
+        movement.vault_barred = crate::scripting_systems::health::is_quiescent(registry, pawn);
+    }
+    if movement.vault_barred {
         movement.break_off_vault();
     }
 }

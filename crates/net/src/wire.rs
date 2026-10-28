@@ -370,7 +370,8 @@ impl WeaponCuesMessage {
 /// record (armed state, member categories, script-set look ramps), and the
 /// envelope gained the level-scoped ghost-audio record (script-set Ghost bus
 /// ramps). Both are unreleased additions under the one bump.
-pub const SNAPSHOT_VERSION: u16 = 22;
+/// Bumped to 23 for player life-state id, elapsed ticks and table revision.
+pub const SNAPSHOT_VERSION: u16 = 23;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -1438,6 +1439,9 @@ mod tests {
 
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            life_state: 255,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
@@ -1459,6 +1463,28 @@ mod tests {
             capsule_eye_height: 1.5,
             aim_pitch: -0.45,
         }
+    }
+
+    #[test]
+    fn player_life_state_wire_round_trips_and_rejects_pre_life_snapshot_version() {
+        const {
+            assert!(SNAPSHOT_VERSION >= 23);
+            assert!(crate::handshake::WIRE_VERSION >= 36);
+        }
+        let mut movement = sample_movement();
+        movement.life_state = 17;
+        movement.life_state_elapsed_ticks = u32::MAX;
+        movement.life_state_table_revision = 249;
+        assert!(round_trips(&movement));
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.version = 22;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: 22
+            })
+        );
     }
 
     fn raw_transform_payload() -> RawComponentPayload {
@@ -4046,7 +4072,7 @@ mod tests {
     #[test]
     fn ghost_link_record_snapshot_rejects_the_pre_ghost_layout() {
         const PRE_GHOST_SNAPSHOT_VERSION: u16 = 21;
-        assert_eq!(SNAPSHOT_VERSION, PRE_GHOST_SNAPSHOT_VERSION + 1);
+        assert!(SNAPSHOT_VERSION > PRE_GHOST_SNAPSHOT_VERSION);
         let mut raw = raw_snapshot(1, 2, Vec::new());
         raw.version = PRE_GHOST_SNAPSHOT_VERSION;
         assert_eq!(
@@ -4137,7 +4163,7 @@ mod tests {
     // whole envelope before engine apply.
     #[test]
     fn ghost_audio_record_rides_the_envelope_and_a_forbidden_record_rejects_it() {
-        const { assert!(SNAPSHOT_VERSION == 22) };
+        const { assert!(SNAPSHOT_VERSION >= 22) };
         let ramp = WireGhostScalarRamp {
             from: 0.6,
             to: 0.9,

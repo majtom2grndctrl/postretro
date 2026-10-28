@@ -2,6 +2,7 @@
 //! Host activation admission and reliable settlement around the shared machine.
 
 use crate::{App, netcode, sim};
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -42,13 +43,7 @@ fn binding_is_live(
     id: ActivationId,
     weapon: EntityId,
 ) -> bool {
-    registry.exists(pawn)
-        && !registry
-            .get_component::<HealthComponent>(pawn)
-            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
-        && !postretro_sim::scripting_systems::health::is_terminally_committed_to_removal(
-            registry, pawn,
-        )
+    postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn)
         && registry
             .get_component::<Inventory>(pawn)
             .is_ok_and(|inventory| inventory.wieldables.contains(&Some(weapon)))

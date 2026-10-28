@@ -78,12 +78,7 @@ pub(in crate::sim) fn run_remote_weapon_commands(
             || remote_projectile_aim(&registry, remote).is_some();
         let descriptor_available = weapon_component.resolution != ResolutionMode::Projectile
             || weapon_component.projectile.is_some();
-        let pawn_alive = !crate::scripting_systems::health::is_terminally_committed_to_removal(
-            &registry,
-            remote.pawn,
-        ) && !registry
-            .get_component::<postretro_entities::components::health::HealthComponent>(remote.pawn)
-            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite());
+        let pawn_alive = weapon::pawn_gate::pawn_can_fire(&registry, remote.pawn);
         if !pawn_alive {
             weapon_component.cancel_activation();
         }

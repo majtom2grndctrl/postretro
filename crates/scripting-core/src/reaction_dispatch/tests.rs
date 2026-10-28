@@ -628,6 +628,7 @@ fn progress_with_zero_install_members_warns_once() {
 fn resolve_entity_type_finds_registered_classname() {
     let mut data = DataRegistry::new();
     data.upsert_entity_type(EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -647,6 +648,7 @@ fn resolve_entity_type_finds_registered_classname() {
     assert_eq!(
         resolved,
         Some(&EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

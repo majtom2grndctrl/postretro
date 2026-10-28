@@ -310,6 +310,13 @@ pub(super) fn run_mod_init_quickjs(
             }
         };
 
+        if let Err(error) = crate::data_descriptors::validate_life_state_name_limit(&entities) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` invalid life-state names: {error}"),
+            });
+            return;
+        }
+
         // UI fields drain via the G1a bridge fns. Malformed entries are logged
         // and skipped inside the drains — a bad UI field never aborts mod-init
         // (ui.md §1.1). A structurally broken read still surfaces as InvalidArgument.
@@ -766,6 +773,12 @@ pub(super) fn run_mod_init_luau(
         } else {
             (Vec::new(), Vec::new())
         };
+
+    crate::data_descriptors::validate_life_state_name_limit(&entities).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` invalid life-state names: {error}"),
+        }
+    })?;
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
     // the drains (ui.md §1.1). Errors here are structural read failures only.
@@ -1782,3 +1795,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "life_state_manifest_tests.rs"]
+mod life_state_manifest_tests;

@@ -30,6 +30,7 @@ export type {
   NpcGroupFilter,
   NpcStateUpdateArgs,
   PlayerGroup,
+  RespawnOptions,
   PlayerTarget,
   SubjectTokenCommand,
   SubjectTokenTarget,
@@ -376,6 +377,11 @@ export const fromRuntime: RuntimeExpressionRefs = Object.freeze({
   number: (value) => numberRef(value),
   bool: (value) => boolRef(value),
 });
+
+/** Test the evaluated player in player events, or the local player in crossings. */
+export function inLifeState(name: string): BoolRef {
+  return boolRef({ op: "input", name: `player.inLifeState:${name}` });
+}
 
 export function read(ref: StateRef<number>): NumberRef;
 export function read(ref: StateRef<boolean>): BoolRef;

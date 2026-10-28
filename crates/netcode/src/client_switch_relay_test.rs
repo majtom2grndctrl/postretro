@@ -170,6 +170,7 @@ impl SwitchRelay {
             prediction: ClientPrediction::new(),
             state_slots: Box::new(ClientStateApply::new()),
             tuning: None,
+            life_state_tables: Default::default(),
             tuning_generation: 0,
             applied_movement_tuning_generation: 0,
             next_switch_declaration_id: 0,

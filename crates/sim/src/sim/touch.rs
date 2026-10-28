@@ -857,6 +857,7 @@ mod tests {
 
     fn drop_descriptor(canonical_name: &str, mode: TouchMode, radius: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

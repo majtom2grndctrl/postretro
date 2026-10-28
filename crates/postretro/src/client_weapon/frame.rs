@@ -63,6 +63,19 @@ impl ClientWeaponFrame {
         let alive = !slots.get("player.health").is_some_and(|slot| {
             matches!(slot.value, Some(postretro_entities::SlotValue::Number(health)) if health <= 0.0 || !health.is_finite())
         });
+        let alive = registry
+            .local_player_movement_pawn()
+            .and_then(|pawn| {
+                let movement = registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()?;
+                postretro_foundation::player_capability(
+                    movement,
+                    postretro_foundation::Capability::Fire,
+                )
+                .map(|_| postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn))
+            })
+            .unwrap_or(alive);
         if !alive
             && let Some((_, weapon)) = crate::local_active_wieldable(registry)
             && let Ok(ComponentValue::Weapon(component)) =
@@ -124,14 +137,7 @@ impl ClientWeaponFrame {
             std::sync::Arc::clone(&component.descriptor_identity)
         };
         command.firing_slot = u8::try_from(slot).ok()?;
-        let alive = owner_alive
-            && registry.exists(pawn)
-            && !postretro_sim::scripting_systems::health::is_terminally_committed_to_removal(
-                registry, pawn,
-            )
-            && !registry
-                .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
-                .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite());
+        let alive = owner_alive && postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn);
         // Judged before this tick's movement is predicted: the pawn as the tick
         // starts, the state every fire path reads.
         let fire_blocked = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn);

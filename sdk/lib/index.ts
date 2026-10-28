@@ -104,6 +104,7 @@ export type {
   NpcGroupFilter,
   NpcStateUpdateArgs,
   PlayerGroup,
+  RespawnOptions,
   SubjectTokenCommand,
   SubjectTokenTarget,
   Reaction,
@@ -150,6 +151,7 @@ export {
   wait,
   fire,
   defineTriggerEvent,
+  inLifeState,
   becomes,
   ceases,
 } from "./data_script";

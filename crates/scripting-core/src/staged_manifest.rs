@@ -576,6 +576,12 @@ fn manifest_from_js_value<'js>(
         }
     };
 
+    crate::data_descriptors::validate_life_state_name_limit(&entities).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` invalid life-state names: {error}"),
+        }
+    })?;
+
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
     // the drains (ui.md §1.1). This is the hot-reload twin of `run_mod_init_quickjs`.
     let ui_trees = drain_ui_trees_js(ctx, &obj, "default mod manifest export").map_err(|e| {
@@ -960,6 +966,12 @@ fn run_staged_mod_init_luau(
     } else {
         (Vec::new(), Vec::new())
     };
+
+    crate::data_descriptors::validate_life_state_name_limit(&entities).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` invalid life-state names: {error}"),
+        }
+    })?;
 
     // UI fields drain via the G1a bridge fns; malformed entries log+skip inside
     // the drains (ui.md §1.1). This is the hot-reload twin of `run_mod_init_luau`.

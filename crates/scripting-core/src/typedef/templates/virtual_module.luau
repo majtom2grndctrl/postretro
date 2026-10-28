@@ -189,6 +189,8 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   --- Read a state ref into an expression value.
   read: typeof(read),
+  --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.
+  inLifeState: typeof(inLifeState),
   --- Lift raw `runtime.*` expressions into public NumberRef/BoolRef values.
   fromRuntime: typeof(fromRuntime),
   --- Build an absolute writable-number store-slot write.

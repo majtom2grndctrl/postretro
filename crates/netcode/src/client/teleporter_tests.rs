@@ -16,6 +16,9 @@ fn transform(x: f32) -> ComponentPayload {
 
 fn movement(generation: u8, last_teleporter: u16, ground: WireGroundRef) -> ComponentPayload {
     ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+        life_state: 255,
+        life_state_elapsed_ticks: 0,
+        life_state_table_revision: 0,
         teleport: WireTeleportState::new(generation, 0.0, last_teleporter, &[]).unwrap(),
         knockback_velocity: [0.0; 3],
         push_velocity: [0.0; 3],

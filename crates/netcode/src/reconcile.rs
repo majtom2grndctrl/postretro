@@ -79,6 +79,7 @@ pub(crate) fn reconcile_local_pawn(
         collision,
         environment,
         dt,
+        &Default::default(),
     )
 }
 
@@ -101,6 +102,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     collision: &impl MovementCollisionSource,
     environment: EnvironmentView<'_>,
     dt: f32,
+    life_state_tables: &crate::life_state_tables::LifeStateTables,
 ) -> Option<CorrectionClass> {
     // Only reconcile the armed local pawn, and only the entity it maps to. A record
     // for a stale/other entity is ignored (the caller filters by NetworkId, but the
@@ -117,6 +119,9 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         .get_component::<PlayerMovementComponent>(entity_id)
         .ok()?
         .clone();
+    let previous_life_state = registry
+        .get_component::<PlayerMovementComponent>(entity_id)
+        .ok()?;
     let predicted_teleport = (
         component.teleport.generation,
         component.teleport.accumulated_yaw,
@@ -163,6 +168,14 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         prediction.clear_history();
     } else if let Some(tick) = acked_tick {
         prediction.prune_through_ack(tick);
+    }
+
+    if movement.is_some() {
+        life_state_tables.gate_merged(
+            &mut component,
+            previous_life_state,
+            prediction.history().len(),
+        );
     }
 
     // 4. Replay the remaining (unacked) commands on top of the authoritative baseline.
@@ -1336,6 +1349,7 @@ mod tests {
             &world,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
+            &Default::default(),
         )
         .unwrap();
 
@@ -1441,6 +1455,7 @@ mod tests {
             &live_collision,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
+            &Default::default(),
         )
         .unwrap();
 
@@ -1661,5 +1676,120 @@ mod tests {
             .is_none(),
             "a record for a non-armed entity is ignored"
         );
+    }
+    #[test]
+    fn o26_reconcile_missing_table_preserves_life_stamps_and_counts_replay_once() {
+        use crate::life_state_tables::LifeStateTables;
+        use postretro_combat_model::{EnvironmentTuning, FluidMovementTable, TuningPayload};
+        use postretro_foundation::{LifeStateProfile, enter_life_state};
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(7));
+        let mut profile = LifeStateProfile::default();
+        profile.fire = false;
+        profile.movement.speed_scale = 0.3;
+        let mut previous = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .clone();
+        enter_life_state(&mut previous, 1, &profile, 7);
+        previous.life_state_elapsed_ticks = 40;
+        registry.set_component(id, previous).unwrap();
+        let mut current = (
+            *registry.get_component::<Transform>(id).unwrap(),
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone(),
+        );
+        for tick in 0..6 {
+            current = prediction
+                .predict_tick(
+                    forward_command(tick, false),
+                    current,
+                    &world,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
+                    DT,
+                )
+                .expect("armed prediction");
+        }
+        registry.set_component(id, current.0).unwrap();
+        registry.set_component(id, current.1).unwrap();
+        let before_elapsed = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .life_state_elapsed_ticks;
+        let mut payload = TuningPayload::new(
+            None,
+            std::array::from_fn(|_| None),
+            EnvironmentTuning {
+                level_gravity: GRAVITY,
+                fluids: FluidMovementTable::default(),
+            },
+        );
+        payload.life_state_names = vec!["alive".into(), "down".into()];
+        payload.life_state_profiles = vec![(1, profile)];
+        payload.life_state_table_revision = 7;
+        let mut tables = LifeStateTables::default();
+        tables.install(&payload, Some(7));
+        let mut wire = authoritative_movement();
+        wire.life_state = 0;
+        wire.life_state_table_revision = 8;
+        wire.life_state_elapsed_ticks = 2;
+        let authoritative_transform = *registry.get_component::<Transform>(id).unwrap();
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            authoritative_transform,
+            Some(&wire),
+            Some(2),
+            10,
+            None,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+            &tables,
+        )
+        .unwrap();
+        let kept = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap();
+        assert_eq!((kept.life_state, kept.life_state_table_revision), (1, 7));
+        assert_eq!(kept.life_state_elapsed_ticks, before_elapsed);
+        assert!(!kept.life_fire);
+        assert_eq!(kept.life_speed_scale, 0.3);
+        payload.life_state_table_revision = 8;
+        payload.life_state_profiles = vec![(0, LifeStateProfile::default())];
+        tables.install(&payload, Some(7));
+        wire.life_state_elapsed_ticks = 6;
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            authoritative_transform,
+            Some(&wire),
+            Some(5),
+            11,
+            None,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+            &tables,
+        )
+        .unwrap();
+        let adopted = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap();
+        assert_eq!(
+            (
+                adopted.life_state,
+                adopted.life_state_table_revision,
+                adopted.life_state_elapsed_ticks
+            ),
+            (0, 8, 6)
+        );
+        assert!(adopted.life_fire);
     }
 }

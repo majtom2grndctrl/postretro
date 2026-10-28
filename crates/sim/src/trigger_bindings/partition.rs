@@ -15,6 +15,7 @@ use super::command_binding::{BindSite, bind_primitive, bind_sequence_step};
 use crate::trigger_commands::BoundTriggerCommand;
 
 const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
+    "setLifeState",
     "moverStart",
     "moverStop",
     "moverReverse",

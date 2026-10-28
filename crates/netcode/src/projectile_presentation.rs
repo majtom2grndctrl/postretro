@@ -801,6 +801,7 @@ mod tests {
 
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1646,7 +1647,7 @@ mod tests {
         const {
             assert!(postretro_net::handshake::WIRE_VERSION >= 34);
         }
-        assert_eq!(postretro_net::wire::SNAPSHOT_VERSION, 22);
+        assert!(postretro_net::wire::SNAPSHOT_VERSION >= 22);
     }
 
     // Regression: multiple enemy shots surfaced by one AI tick had no seam-crossing

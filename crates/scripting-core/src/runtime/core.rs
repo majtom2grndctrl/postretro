@@ -1684,6 +1684,7 @@ mod tests {
         inventory_weapon: Option<&str>,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

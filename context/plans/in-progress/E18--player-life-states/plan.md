@@ -1,7 +1,7 @@
 # Player life states — plan of record
 
 mode: resumable
-status: blocked
+status: proposed
 read at: a953f386f
 
 ## Resume point
@@ -15,56 +15,31 @@ because its seven tasks cross descriptor validation, prediction, replication,
 simulation ordering, respawn, and seat lifecycle contracts. This changes no
 Acceptance or Ordering requirement.
 
-Source verification started, with two read-only audit workers. It stopped at
-the acceptance conflict below. After the owner resolves it, apply only the
-authorized wording, re-run the feasibility check, finish the cited-source
-audit, and propose the completed plan for owner review before implementation.
-Do not treat this blocked plan as implementation approval.
+Source verification is continuing with two read-only audit workers. The owner
+resolved the acceptance conflict on 2026-10-27 as recorded below. The amended
+timer requirements are feasible; no acceptance row currently needs restatement.
+Finish the cited-source audit and present this resumable plan for owner review
+before implementation. Proposed is not implementation approval.
 
-## Blocking acceptance conflict
+## Owner decisions
 
-AC18 requires `player.lifeStateMs` to advance on **every** rendered frame of
-positive duration. O25 repeats that requirement on host, single player and
-client. O24 explicitly requires that the displayed value **holds, then rises**
-after the host trims a client's command backlog. Task 4's prescribed monotonic
-hold implements O24: a lower replayed elapsed value is clamped to the previous
-displayed value until it catches up. Those positive-duration frames plateau,
-so they cannot also satisfy literal AC18/O25.
+On 2026-10-27 the owner selected and then reaffirmed continuous advancement,
+including through lag and loss. Preserve AC18's every-positive-frame and
+no-backwards requirements. O24 and Task 4 now require rate correction instead
+of a hold, and O25 identifies predicted elapsed plus alpha as the correction
+target rather than requiring equality to the displayed value.
 
-Evidence in `index.md`: AC18 at line 155; O24/O25 at lines 200–201; Task 4's
-HUD value and monotonic hold at lines 364–365. The current
-`FrameTiming::accumulate` (`crates/sim/src/sim/frame_timing.rs`) supplies tick
-count and alpha, retaining alpha for a zero-duration frame; alpha cannot remove
-the deficit after replay drops already-counted commands.
+The presentation clock advances from game-frame duration at a bounded strictly
+positive rate and converges toward the predicted elapsed target. Backwards
+prediction corrections temporarily slow it; forward deficits temporarily speed
+it up. Ordinary corrections never assign the displayed value directly. Real
+life-state/pawn/teleport resets still reset the clock. Host tick time remains
+the source for gameplay conditions and the bleed-out deadline.
 
-Concrete example: previous display is 1000 ms; replay plus alpha is 950 ms.
-The prescribed hold displays 1000 ms on subsequent positive-duration frames
-until the candidate exceeds 1000 ms. O24 passes; AC18/O25's strict rise fails.
-Using a separate always-advancing clock would instead change Task 4's specified
-display formula and O24's hold behavior. Neither choice is authorized yet.
-
-### Proposed owner wording (not applied)
-
-Replace AC18 with:
-
-> On the owning client, the `player.lifeStateMs` HUD value advances on every
-> rendered frame of positive duration except while the monotonic hold waits
-> for the predicted elapsed value to catch up after a reconciliation correction
-> (O24). During that hold the value may remain unchanged. It never moves
-> backwards when a snapshot lands, except at a real reset: a transition, a
-> respawn, a rejoin (a change of pawn), or a teleport generation change
-> (a teleporter use).
-
-Replace O25's Expected cell with:
-
-> The displayed `player.lifeStateMs` rises on every frame of positive duration
-> ((elapsed ticks plus alpha) times the step, unfloored) on host, single player
-> and client, except during the monotonic correction hold described in O24.
-> A zero-duration frame shows the previous value.
-
-This proposal preserves the specified predictor, display formula, and O24.
-AC19 remains dependent on the owner's resolution because it requires a passing
-test for every Ordering row, including O24 and O25.
+The owner also requires a process check for running `rustc` or `prl-build`
+before every build because another session is building on this laptop. All
+session agents received this instruction. Defer builds while either is active
+and recheck before starting; continue independent reads/edits in the meantime.
 
 ## Corrections
 
@@ -74,13 +49,19 @@ test for every Ordering row, including O24 and O25.
   AC13 instead says another live pawn blocks a placement and that earlier
   relocations affect later picks. Follow AC13: test all other live pawns at
   their current positions, including pending later requests, and update the
-  Path wording when planning resumes. This adjusts the approach without
+  Path wording with the final plan. This adjusts the approach without
   changing AC13 or O18.
+- Task 4's frame-final owner-slot read cannot witness a reset followed by
+  another accepted snapshot in the same frame. Retain a local reset witness
+  while applying accepted owner samples, and expose it to the display clock.
+  A kept-name table remap changes no logical state identity and must preserve
+  display continuity. No new wire field is needed.
 
 ## Delegated answers and source findings
 
-- HUD feasibility — the strict-every-frame and hold requirements conflict;
-  owner wording is required, as recorded above.
+- HUD feasibility — resolved by the owner's continuous-advancement decision.
+  Use fixed-size high-precision presentation state and bounded positive rate
+  correction at the store-to-UI seam; exact tick values remain separate.
 - Descriptor placement — `EntityTypeDescriptor` has no `Default`; both
   `data_descriptors/{js,lua}/entity.rs` readers enumerate component fields.
   Add an optional descriptor field and a shared validator, updating every
@@ -118,8 +99,8 @@ test for every Ordering row, including O24 and O25.
   Reserve and Inventory are all absent. A life-state-only pawn must also count
   as harvestable when the carried name is added.
 
-These findings are planning evidence, not implemented fixes. The source audit
-must finish after the blocking acceptance wording is resolved.
+These findings are planning evidence, not implemented fixes. Complete the
+remaining cited-source audit before the owner reviews the plan.
 
 ## AC-to-proof
 
@@ -145,8 +126,8 @@ or executed. All rows remain unproved. No manual result is inferred.
 | 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated, planned |
 | 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated, planned |
 | 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual, planned |
-| 18 | Deterministic render-frame projection, backlog trim hold, monotonic snapshots and reset witnesses; owning-client playtest | needs restatement: AC18 conflicts with O24/O25; exact proposal above |
-| 19 | One named outcome test for every O1–O44 row, linked in an ordering coverage ledger before final review | blocked by O24/O25 wording; remaining rows planned |
+| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual, planned; owner wording resolved |
+| 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated, planned |
 | 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated, planned |
 | 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks, planned |
 
@@ -159,10 +140,10 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | owner resolution, source audit, plan approval | not started |
+| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | source audit, plan approval | not started |
 | 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | not started |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | not started |
-| 4 | Number/String reads and SDK mirrors, client HUD display/hold, local predicates and authoritative reload remap | integrating executor | 1 | blocked on HUD wording |
+| 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | not started |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | not started |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | not started |
 | 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
@@ -181,7 +162,7 @@ update together.
   without commands; replay must not count a command twice.
 - Name-table rebuild/remap is load/reload work; client table history retains
   four recent revisions plus its protected pawn revision, per the brief.
-- UI projection uses fixed-size hold/witness state at the existing UI snapshot
+- UI projection uses fixed-size clock/witness state at the existing UI snapshot
   boundary; it writes no presentation values into the gameplay store.
 - Respawn work is request-driven and bounded by live seats, eligible map
   placements and pawn overlap checks. Requests coalesce per pawn; level unload

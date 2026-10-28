@@ -2,6 +2,12 @@
 
 Read-only grounding for `index.md`. Symbols from five source reads. `[M]` marks a site inferred from adjacent source or precedent; unmarked rows were read. Line counts shown only past ~800.
 
+Owner clarification, 2026-10-27: the HUD timer must advance continuously through
+network corrections. O24 and Task 4 now use a bounded positive playback rate
+to converge toward predicted elapsed, replacing the previously proposed hold.
+Gameplay conditions keep exact host tick time. Smooth client presentation over
+lag and loss is the governing preference.
+
 ## Today's behaviour at zero HP
 
 Five predicates decide "dead" today, and they disagree:
@@ -151,7 +157,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | Host-local player | In-tick verb on host registry | Component stamps, restamped from the lowered descriptor block | Component field; UI display adds alpha × step | Tick-start drain before camera callback, so `hold_local_arrival` snaps for free |
 | Single player | Same as host. No endpoint, no `server_tick` | Same | Same; no wire | Same. `SeatTable` is `Some` (`local_only` fallback); the headless driver may have none, so it falls back to `first_player_spawn_order` |
-| Client, own pawn | Movement state merged, then restamped, before replay; kept when the record's revision has no installed table | Stamps restamped from the `TuningPayload` table matching the component's revision, never local descriptors. Fire at `apply_owner_liveness` | Store: owner-private slot at about 30 Hz (`SNAPSHOT_TICK_INTERVAL`=2). UI: predicted elapsed + alpha × step, held monotonic | Generation mismatch → Teleport class; the yaw stamp keeps in-flight input valid |
+| Client, own pawn | Movement state merged, then restamped, before replay; kept when the record's revision has no installed table | Stamps restamped from the `TuningPayload` table matching the component's revision, never local descriptors. Fire at `apply_owner_liveness` | Store: owner-private slot at about 30 Hz (`SNAPSHOT_TICK_INTERVAL`=2). UI: continuously advancing presentation clock converging toward predicted elapsed + alpha × step through rate correction | Generation mismatch → Teleport class; the yaw stamp keeps in-flight input valid |
 | Observer client | Remote movement state | None runs; the host is authoritative | Not exposed (owner-private) | Interpolation cut, silent |
 | Late joiner | `FullBaseline` carries every payload; own pawn spawns in `initial` | Needs `TuningPayload`. A tuning epoch mismatch means no prediction, but no handshake fails | Baseline value | n/a |
 

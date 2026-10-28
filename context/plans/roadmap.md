@@ -271,6 +271,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Lighting extensions** — optional hybrid grafts, each behind its own gate: shadowmask-mode owner lights (crisp-or-soft edges from distance-to-edge masks), specular occlusion cones, mover rest poses as a second state-channel consumer, and glossy world reflections (after counsel on Tencent WO2026113651A1). `context/research/gi-rtx-lite/`.
 - **Directional fog** — the remaining fog enhancement. Existing fog volumes and portal-aware culling are shipped.
 - **Moving-light shadow-depth invalidation** — re-render a moving light's cached static depth only when its transform changes, so projectile-attached and other moving lights do not redraw the full world every frame. Not sequenced until a moving shadow-caster needs it.
+- **Cross-level vista** — see into the next map through an open seam: a straight hallway or a window onto it, with no door or bend hiding the swap. Needs two levels drawn in one frame, which Epic 25 forbids (its I2) and no plan owns; Epic 25 leaves a second level resident to draw from (`drafts/E25--map-transitions/`).
 - **Post-processing** — optional CRT/scanline filter. HDR scene color, additive emissive, tonemapping, and bloom are shipped.
 
 ### Infrastructure

@@ -69,6 +69,11 @@ pub(super) struct FrameOutcome {
     pub(super) deferred: u32,
     /// Every other drawn block still not resident, demanded or not.
     pub(super) left_behind: u32,
+    /// Texel area of the `deferred` blocks: the bake-gap gate's unit, which
+    /// compares across cell partitions where block counts do not.
+    pub(super) deferred_texels: u64,
+    /// Texel area of the `left_behind` blocks.
+    pub(super) left_behind_texels: u64,
     /// A pool growth began this frame.
     pub(super) grew: bool,
     /// A grown-out generation was still retiring as the frame began.
@@ -200,8 +205,10 @@ impl FrameDriver {
             for block in blocks.filter(|&block| !mirror.model().is_resident(block)) {
                 if mirror.deferred_this_frame(block) {
                     out.deferred += 1;
+                    out.deferred_texels += mirror.block_texels(block);
                 } else {
                     out.left_behind += 1;
+                    out.left_behind_texels += mirror.block_texels(block);
                 }
             }
         };

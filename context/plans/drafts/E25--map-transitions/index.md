@@ -15,7 +15,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - **U1 Off-main level load** — the staged load pipeline of `drafts/level-load-pipeline/`, amended so it can run while a level plays.
 - **U2 Landmark level change** — the seam author surface and a classic transition through it: loading screen, landmark-relative arrival, carried state, co-op arrival.
 - **U3 Seamless seam** — prefetch, background load during play, blind swap, door wait and its events. Co-op clients take the classic path.
-- **U4 Co-op seamless seam** — clients prefetch on host instruction and swap without demotion.
+- **U4 Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no visible hold.
 
 ### Out of scope
 
@@ -125,17 +125,20 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 ### U4 — Co-op seamless seam
 
-**Purpose.** Co-op clients cross a seam with no loading screen and no demotion.
+**Purpose.** Co-op clients cross a seam with no loading screen and no visible hold.
 
 **Contents.**
 - The host tells participating clients to prefetch when it does; a client prefetch is speculative and commits only on the host's swap (I6).
 - The host's swap waits for every participating client to report ready, bounded by a timeout after which a late client takes the classic relevel.
-- A swap path that keeps slots participating: pawns respawn at their mapped poses, network identity re-baselines, prediction takes a teleport-style cut.
+- Participation stays the one predicate (`networking.md` §Slot lifecycle). A swap demotes and re-promotes like any level change; what U4 owes is player-visible: no loading screen and a bounded hold that prediction hides.
+- The client reports readiness for its prefetched level separately from its installed-level declaration, so the report never fails the predicate while the host is still on the old map. With every report in hand, the host demotes at unload and re-promotes at commit on its swap frame.
+- The entry rule's pawn spawn takes the seat's carried arrival pose (D4 or D5) instead of its assigned `player_spawn` when one exists. Network identity re-baselines; the client predicts its pawn from the arrival pose until the host's baseline lands, with a teleport-style cut.
+- A dedicated swap path that keeps slots participating is reopened only if measurement at realistic latency shows the hold is visible.
 - The relevel-at-request non-goal in `drafts/level-load-pipeline/` (a failed host parse would strand clients) is answered by the speculative prefetch: a client never commits a level the host did not.
 
 **Depends on.** U3.
 
-**Key acceptance.** AC 19–22.
+**Key acceptance.** AC 19–23.
 
 **Brief form.** Resumable brief; it changes the slot lifecycle.
 
@@ -169,9 +172,10 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 **U4**
 19. Clients prefetch when the host does, and a client prefetch never commits without the host's swap.
-20. At a host swap, a ready client crosses with no loading screen and no demotion; its pawn arrives by D4 or D5.
+20. At a host swap, a ready client crosses with no loading screen. At the reference simulated latency its input is held for no more than the tick bound the U4 brief pins, and its view never freezes: its pawn is predicted from the arrival pose (D4 or D5) until the host's baseline lands.
 21. A client not ready by the timeout takes the classic relevel; the others still swap seamlessly.
 22. A host whose prefetch fails takes D8, and clients follow the classic relevel.
+23. A ready client's slot leaves and re-enters participating on the host's swap frame, through the same predicate as any level change. Its readiness report never demotes it while the host is still on the old map.
 
 ### Manual
 
@@ -190,6 +194,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 | I5 — At most one prefetched level | U3 | A second prefetch region; a level change during prefetch | AC 9, Pinned orderings |
 | I6 — The host owns every swap; a client never commits a level the host has not | U2 (relevel), U4 | Client prefetch completing first | AC 19, 21 |
 | I7 — A seam never strands a player | U3 | Prefetch failure, cancellation, suspend | AC 17, 22 |
+| I8 — Participation changes only through the one predicate | Existing slot lifecycle | U4 readiness report; any seam-specific swap path | AC 23 |
 
 ## Pinned orderings
 

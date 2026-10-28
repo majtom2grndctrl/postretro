@@ -31,7 +31,7 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 ## Acceptance
 ### Automated
 **Equivalence**
-- [ ] On every fixture, the staged parse's hand-outs together equal the monolithic parse's level data.
+- [ ] On every fixture, the staged parse's hand-outs together equal the monolithic parse's level data. Each hand-out already equals the monolithic parse's data for its sections, including sections a parse-end step rewrites (pin P25).
 - [ ] On fixture levels that include at least one baked texture and one model, pipeline install and the main-thread oracle path produce the same renderer resource summary: texture count, sizes and formats; buffer sizes; SH residency state; lightmap pool plan.
 - [ ] With a renderer present, both paths produce the same entity-id order and the same clip and hit-zone tables.
 - [ ] Existing order guards stay green and run against the pipeline's commit path, not only the retained oracle: range rejection precedes all state mutation; light entity ids precede fog entity ids; pinned-seed trigger restart.
@@ -42,7 +42,8 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] A map with geometry but no textures, and a map with no SH manifest, each reach bundle-ready and reveal. A stage whose kind gets no hand-out finishes when the parse returns.
 
 **Commit frame**
-- [ ] A level install creates no pipelines, parses no `.prm` or glTF, decodes no sound, and creates no textures or buffers on the main thread. The exceptions are sprite-collection registration and counted fallbacks (a model prediction miss, a scene-extent rebuild). Counts come from a device-wide source, either wgpu's internal counters or a chokepoint a grep gate proves every creation call uses, read across the commit call alone.
+- [ ] A level install creates no pipelines or bind groups, parses no `.prm` or glTF, decodes no sound, and creates no textures or buffers on the main thread. The exceptions are sprite-collection registration and counted fallbacks (a model prediction miss, a scene-extent rebuild). Counts come from a device-wide source, either wgpu's internal counters or a chokepoint a grep gate proves every creation call uses, read across the commit call alone. The same source reads nonzero across the main-thread oracle's install, so a source that counts nothing fails the row.
+- [ ] Loading frames do no install work on the main thread. A `.prm` or glTF parse, sound decode or SH residency derivation never runs on the main thread before commit. With the upload stage held at its first creation, Loading frames still paint, and the commit row's count source reads no level pipeline, texture, buffer or bind-group creation across them beyond the loading tree's own UI images. Released, the load reaches bundle-ready.
 - [ ] The upload thread builds the install-time pipelines once, starting right after full init, off the main thread. The commit and unload create zero, and a second load reuses every one. A load dispatched before they finish waits off the main thread. A frontend-only boot builds them without blocking a frame.
 - [ ] A level with a non-default fog pixel scale gets its fog target from the upload stage, not the commit.
 - [ ] The commit frame never waits on a stage thread or on the GPU. It runs only once the bundle is ready. The commit path holds no blocking receive, thread join or device wait (grep gate). A Loading-step test shows that a bundle not yet ready paints instead of committing.
@@ -51,7 +52,7 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] Level sounds still reload from the mod's sounds directory on every load. A missing or bad sound file still warns and the level loads.
 - [ ] Sounds register in sorted path order whatever order the pool decodes them. With two files sharing a key, the same file wins as today. A mod with no sounds directory, or an empty one, loads with no sounds.
 - [ ] On a host level change, level parity, the relevel id and the join seed are unset on every Loading frame and set on the commit frame, after the range and collision checks (pin P14).
-- [ ] Line C names each new stage, the progress-membership capture and the commit-frame mark. A stage timed on another thread prints inside the main-thread stage that contains it, so the line still adds up.
+- [ ] Line C names each new stage, the progress-membership capture, the commit-frame mark and the reveal. A stage timed on another thread prints inside the main-thread stage that contains it, so the line still adds up.
 
 **Failure**
 - [ ] An injected prep failure and an injected upload failure each end a runtime load in Frontend and a CLI boot load in a non-zero exit, with no registry mutation and no parity publish.
@@ -75,14 +76,16 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] A runtime request during a CLI boot load is still refused with a warning and cancels nothing, whether it arrives during the parse, prep or upload. A runtime request during a runtime load no longer waits for it to install (pin P8).
 - [ ] Cancelling a load while the pipelines build neither cancels nor restarts the build, and the next load creates zero pipelines (pin P5).
 - [ ] No stage work starts while a request only waits in the queue: none during the first-launch hold or the OS-preference wait, and on a loading-screen level change none before the old level's unload (pin P12).
-- [ ] A test harness can run a load's stages to bundle-ready while another level is installed and running. The running level draws and simulates unchanged on every frame meanwhile, and nothing the stages created is bound or drawn before commit.
+- [ ] A test harness can run a load's stages to bundle-ready while another level is installed and running. The running level draws and simulates unchanged on every frame meanwhile, and nothing the stages created is bound or drawn before commit. Both levels are streamed-SH fixtures, the running level's in-play drains install and compose during the stages, and the load starts without starting a loading screen.
+- [ ] Cancelling a load whose stages run beside a running level: every stage joins through retirement polled on the running level's frames, with no join on the event-loop thread. The running level draws and simulates on every frame meanwhile. The model cache keeps every entry the running level references, including entries the load hit, and holds none of the load's own (pin P28).
 - [ ] A superseded load keeps its loading tree and UI clock, shows the new level's name, and restarts the bar at 0. The bar never decreases within one load.
 - [ ] After a supersede, the old load's stages credit nothing to the new load's bar.
 
 **Prediction**
-- [ ] On every dev-mod map, baked first and run on demand, the model prediction misses zero times.
+- [ ] On every dev-mod map, baked first and run on demand, the model prediction misses zero times. The on-demand run's result is recorded in the plan of record, because the gate does not run it.
 - [ ] On a connected-client fixture with a host-replicated placement, the model prediction includes that placement's model and misses zero times.
 - [ ] A load requested after a hot reload that changed a mesh block predicts the new model and misses zero times. The old level kept the old model until its unload (pin P9).
+- [ ] A mod hot reload committed on a Running frame while a load's stages run beside the running level: the load installs the reloaded descriptors' models. A model only the reload added logs one miss and loads correctly. The running level keeps its models until it is released (pin P26).
 - [ ] A forced model miss (a model only the registry adds) loads correctly and logs one miss.
 
 **Caches**
@@ -93,17 +96,20 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] An entry the next level doesn't reference is released at its commit. A referenced entry is kept.
 - [ ] Suspend clears GPU entries. A bundle ready but not committed at suspend never reaches the resumed renderer. The first load after resume re-uploads every model it uses and is correct (pin P7).
 - [ ] A failed or cancelled load leaves the model cache as it found it. The next commit still releases every entry its level doesn't reference (pin P11).
+- [ ] A cancelled load whose upload inserts a model after the cancel: the next load, dispatched on the frame the cancelled load joins, finds the cache as it was before the cancelled load and never commits a model that load inserted (pin P29).
 
 **Progress, pool, settings**
 - [ ] Progress never decreases. On a map with a streamed SH manifest it moves before the parse's first section read. It is exactly 1.0 at reveal, including a reveal released by the settle timeout. A near-empty level also reaches 1.0.
 - [ ] The loading tree stays drawn through Settling. Progress stays below 1.0 until reveal, and rises during prep, upload and settling, not only during the parse. A test samples it at each stage boundary of a fixture load (pin P15).
 - [ ] A load with an empty prep set completes.
 - [ ] Load stages start no threads beyond the engine pool, the renderer's upload thread and the existing streaming threads (grep gate).
+- [ ] The engine pool is built once per boot. A second load starts no thread, and the pool never exceeds its cap.
 - [ ] Tiers are read when the request dispatches, not when it is queued. A tier changed on the frame a request is queued reaches the level that request installs (pin P21).
 - [ ] A tier change on the commit frame applies after commit through the live path, and the shadow tier waits for the next level, as today (pin P17).
+- [ ] A Surface Depth change and a shadow-tier change applied on a Running frame while a load's stages run beside the running level do not reach the load: its bundle matches a load dispatched at the old tiers. The live Surface Depth rewrite changes the running level's materials only (pin P27).
 
 **Gate**
-- [ ] Every row above that needs a renderer runs on an adapter-present test run, and the gate confirms those tests ran rather than skipped.
+- [ ] Every row above that needs a renderer runs on an adapter-present test run, and the gate confirms those tests ran rather than skipped. Tests that build a renderer through `Renderer::new_offscreen` honor `POSTRETRO_REQUIRE_GPU` as the renderer crate's harness does, so a missing adapter fails the gate run.
 
 ### Manual
 - [ ] Metal release on this Mac, stress-warren-lit and campaign-test, the pool at its shipped size, first load (n ≥ 5, model cache cold) and change (n ≥ 8, model cache warm), medians against the named baseline commit: line C before and after, reporting time to reveal, the commit-frame mark, unload, and the `renderer_full_init_complete` delta. First load and level change sit side by side per map, and any work a level change pays that a first load doesn't is named. Follows `research.md` §5 and the Mac measurement memory (caffeinate, screen saver check).

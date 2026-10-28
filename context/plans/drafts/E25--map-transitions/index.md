@@ -38,10 +38,15 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - Doors already seal portals: `doors-as-occluders` bakes which portals each mover's closed brush seals, and the runtime walk blocks them while the mover is docked closed. The blind check reuses that walk (D6).
 - The runtime visible set is a conservative superset (`rendering_pipeline.md` §2). A cell absent from it is not visible, which is the direction the blind check needs (D6).
 - Map authority is server-owned; a client never asks for a level change (`networking.md`). The host owns every swap (I6).
+- **"Nothing waits on residency in play"** (`boot_sequence.md` §1; `done/sh-probe-streaming/` "no door waits on async residency"). D7 diverges: the swap, a gameplay event, holds on the next map's load. The argument: residency misses have a fallback (the ambient floor), but a missing level has none short of a loading screen, which D8 keeps for failure. The wait is bounded by the prefetch and is the author-presented door, not an invisible stall.
+- **"Every level entry passes from install into Settling, never straight to Running"** (`boot_sequence.md` §1). Settling also drives the network revealed term, the reveal edge, accumulator re-arm and level audio at reveal. U3's pre-commit settle moves that settling before the swap; the swap frame must still publish everything Settling's exit publishes, including the host's reveal of the new level, or classic-path clients never re-promote. Rewritten at U3 promotion.
+- **"Participation is a predicate, not a pair of transitions"** (`networking.md` §Slot lifecycle); a level change demotes every participating slot. U4 must keep the predicate: the outcome it owes is no loading screen and a bounded held window, not a new lifecycle path.
+- **"Seam" already names a residency concept.** `streaming_seam_volume` (`build_pipeline.md` §Custom FGD) marks a best-effort load-hide point at a portal. A map-transition seam often sits at the same place. The U2 brief either relates the two or renames one.
 
 **Alternatives rejected.**
 - **Grow one map instead of joining two.** Large-map residency could in principle make a whole campaign one PRL. Rejected as this epic's vehicle: it streams baked lighting only today, everything else loads whole, and one PRL per campaign makes every edit a whole-campaign compile. Maps as units match how mods author and catalog content.
 - **Metroid Prime's door-press load.** Start loading when the door is activated. Simple, and it is the hesitation the owner wants gone. Kept only as the fallback when a prefetch has not finished (D7).
+- **Stop after U1 and U2.** A Half-Life-style landmark change keeps pose and loadout, and U1 shortens its loading screen. Rejected because it keeps a visible break, which is the outcome the owner asked to remove (D7); it remains the fallback (D8).
 - **Two pipelines, seamless and classic.** Each would own an install order, failure path, cancellation and parity publication, and they would drift. Rejected for D1.
 - **Swap check at compile time only.** prl-build could mark blind cells once. Doors move, so a cell's blindness depends on runtime mover state, and the runtime walk already folds that in. The compiler keeps a warning (D6), not the decision.
 
@@ -215,9 +220,10 @@ Leanings, pinned by the U2 brief.
 
 ## Open questions
 
-- **Lighting parity across a seam.** Each map bakes its copy of the seam with its own lights; light spilling in from one map's room has no source in the other. Whether a cross-map check is feasible, given prl-build compiles one map at a time, or whether this stays authoring guidance — U3 brief.
+- **Lighting parity across a seam.** D6 checks that a seam is blind to sight, not to light: a bend unsealed against outside light pops at the swap. Lean: a per-map prl-build warning when any light outside the seam reaches its cells, directly or through SH; two identical copies that both pass bake alike. U3 brief.
 - **Death while a seam waits.** Whether a dead or downed pawn (E18 player life states) crosses, blocks the swap, or arrives at a player start — U2 brief, against the life-states spec.
 - **Cost of the blind walk on the host.** One all-directions walk per player in a seam per tick while activated. Measured in U3.
 - **Commit-frame cost after U1.** The script VM and registry stages stay on the main thread. If they exceed the swap budget, U3 needs its own lever.
+- **How long a prefetched level stays.** Pinned orderings keep it until superseded, so the two-level peak can last the rest of the map. A release on leaving the prefetch region, with hysteresis, is the alternative — U3 brief, against AC 18.
 - **Two-level peak memory.** Unmeasured. World textures alone are about 80–96 MiB per level (`drafts/level-load-pipeline/research.md`).
 - **Audio across the swap.** Level sounds reload per level; ambient loops cut at a swap unless carried or crossfaded — U3 brief.

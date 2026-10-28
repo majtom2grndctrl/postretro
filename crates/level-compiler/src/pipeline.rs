@@ -407,7 +407,10 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Partitioning);
     let runtime_cells::OccluderPartition { result, tier } =
-        runtime_cells::partition_with_occluders(&map_data.brush_volumes)?;
+        runtime_cells::partition_with_occluders(
+            &map_data.brush_volumes,
+            &map_data.kinematic_movers,
+        )?;
     finish_stage(
         &mut timings,
         reporter.as_ref(),

@@ -3,7 +3,7 @@
 // by how much of that box's broad face their solid covers.
 // See: context/plans/in-progress/occluder-first-partition/research.md §Clusters
 
-mod contact;
+pub(crate) mod contact;
 mod coverage;
 mod section;
 

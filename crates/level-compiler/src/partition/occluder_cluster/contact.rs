@@ -12,7 +12,7 @@ use crate::partition::types::Aabb;
 const PARALLEL_COS: f64 = 1.0 - 1e-9;
 
 /// A brush's convex hull as the separating-axis test reads it.
-pub(super) struct Hull {
+pub(crate) struct Hull {
     pub(super) vertices: Vec<DVec3>,
     normals: Vec<DVec3>,
     edges: Vec<DVec3>,
@@ -20,7 +20,7 @@ pub(super) struct Hull {
 }
 
 impl Hull {
-    pub(super) fn of(polytope: &RegionPolytope) -> Self {
+    pub(crate) fn of(polytope: &RegionPolytope) -> Self {
         let mut vertices: Vec<DVec3> = Vec::new();
         let mut normals: Vec<DVec3> = Vec::new();
         let mut edges: Vec<DVec3> = Vec::new();
@@ -42,7 +42,23 @@ impl Hull {
         }
     }
 
-    fn projection(&self, axis: DVec3) -> (f64, f64) {
+    /// A flat rectangle as the separating-axis test reads it: `corners` in
+    /// winding order, on the plane spanned by `u` and `v` (unit, perpendicular).
+    pub(crate) fn of_rectangle(corners: [DVec3; 4], u: DVec3, v: DVec3) -> Self {
+        let mut normals = Vec::new();
+        for direction in [u.cross(v), u, v] {
+            push_direction(&mut normals, direction);
+        }
+        Self {
+            vertices: corners.to_vec(),
+            normals,
+            edges: vec![u, v],
+            aabb: Aabb::from_points(&corners),
+        }
+    }
+
+    /// The hull's extent along `axis`, as (least, greatest) projection.
+    pub(crate) fn projection(&self, axis: DVec3) -> (f64, f64) {
         self.vertices
             .iter()
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), vertex| {
@@ -64,7 +80,7 @@ fn push_direction(directions: &mut Vec<DVec3>, direction: DVec3) {
 /// True when `a` and `b` overlap or lie within the contact epsilon of each
 /// other on every candidate separating axis: both hulls' face normals and
 /// the cross products of their edge directions. Symmetric in its arguments.
-pub(super) fn touching(a: &Hull, b: &Hull) -> bool {
+pub(crate) fn touching(a: &Hull, b: &Hull) -> bool {
     let separated = |axis: DVec3| {
         let (a_lo, a_hi) = a.projection(axis);
         let (b_lo, b_hi) = b.projection(axis);

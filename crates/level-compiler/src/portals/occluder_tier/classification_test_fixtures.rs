@@ -64,7 +64,7 @@ pub(crate) struct TierBuild {
 impl TierBuild {
     pub(crate) fn new(brushes: &[BrushVolume], roles: &[TierRole]) -> Self {
         let (tree, tier) =
-            build_bsp_with_occluder_tier(brushes, roles).expect("two-tier tree builds");
+            build_bsp_with_occluder_tier(brushes, roles, &[]).expect("two-tier tree builds");
         let portals = generate_portals(&tree);
         let exterior = find_exterior_leaves(&tree, &portals);
         Self {

@@ -7,14 +7,15 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use crate::map_data::BrushVolume;
+use crate::map_data::{BrushVolume, MapKinematicMover};
 use crate::partition::occluder_classify::{
     OCCLUDER_ABSOLUTE_LENGTH_M, OCCLUDER_FLOOR_M, OCCLUDER_SEE_OVER_M, OCCLUDER_SPAN_FRACTION,
     OccluderClassification, OccluderVerdict, OpenSpace, classify_occluders,
 };
 use crate::partition::occluder_cluster::OCCLUDER_COVERAGE_FRACTION;
 use crate::partition::{
-    self, BspTree, CellTree, OccluderTier, PartitionResult, build_bsp_from_brushes,
+    self, BspTree, CellTree, DoorSplitter, OccluderTier, PartitionResult, build_bsp_from_brushes,
+    recognize_doors,
 };
 use crate::portals::{self, Portal};
 use crate::visibility;
@@ -26,32 +27,90 @@ pub(crate) struct OccluderPartition {
     pub(crate) tier: OccluderTier,
 }
 
-/// Classify every static brush, then build the two-tier tree on the verdicts
-/// and extract world faces. The classification is logged at info.
-pub(crate) fn partition_with_occluders(brushes: &[BrushVolume]) -> Result<OccluderPartition> {
-    let classification = classify(brushes)?;
+/// Classify every static brush and recognise the doors among `movers`, then
+/// build the two-tier tree on the verdicts and door splitters and extract
+/// world faces. Classification and doors are logged at info.
+pub(crate) fn partition_with_occluders(
+    brushes: &[BrushVolume],
+    movers: &[MapKinematicMover],
+) -> Result<OccluderPartition> {
+    let (classification, doors) = match FirstPass::build(brushes)? {
+        Some(first_pass) => {
+            let space = first_pass.space();
+            (
+                classify_occluders(brushes, &space),
+                recognize_doors(movers, brushes, &space),
+            )
+        }
+        None => (OccluderClassification::default(), Vec::new()),
+    };
     log_classification(&classification);
+    log_doors(&doors, movers);
     let (result, tier) =
-        partition::partition_with_occluder_tier(brushes, &classification.tier_roles())?;
+        partition::partition_with_occluder_tier(brushes, &classification.tier_roles(), &doors)?;
     Ok(OccluderPartition { result, tier })
 }
 
 /// Classify every brush against a first pass: today's tree of every brush and
 /// its exterior flood, which bound each face's open space.
+#[cfg(test)]
 pub(crate) fn classify(brushes: &[BrushVolume]) -> Result<OccluderClassification> {
-    if brushes.is_empty() {
-        return Ok(OccluderClassification {
-            verdicts: Vec::new(),
-            clusters: Vec::new(),
-        });
+    Ok(match FirstPass::build(brushes)? {
+        Some(first_pass) => classify_occluders(brushes, &first_pass.space()),
+        None => OccluderClassification::default(),
+    })
+}
+
+/// The doors among `movers`, recognised against the first pass as
+/// `partition_with_occluders` recognises them.
+#[cfg(test)]
+pub(crate) fn doors(
+    brushes: &[BrushVolume],
+    movers: &[MapKinematicMover],
+) -> Result<Vec<DoorSplitter>> {
+    Ok(match FirstPass::build(brushes)? {
+        Some(first_pass) => recognize_doors(movers, brushes, &first_pass.space()),
+        None => Vec::new(),
+    })
+}
+
+/// Today's tree of every static brush and its exterior flood: the open space
+/// classification and door recognition measure against. `None` for a map
+/// with no brushes.
+struct FirstPass {
+    tree: BspTree,
+    exterior: HashSet<usize>,
+}
+
+impl FirstPass {
+    fn build(brushes: &[BrushVolume]) -> Result<Option<Self>> {
+        if brushes.is_empty() {
+            return Ok(None);
+        }
+        let tree = build_bsp_from_brushes(brushes)?;
+        let first_pass_portals = portals::generate_portals(&tree);
+        let exterior = visibility::find_exterior_leaves_quietly(&tree, &first_pass_portals);
+        Ok(Some(Self { tree, exterior }))
     }
-    let tree = build_bsp_from_brushes(brushes)?;
-    let first_pass_portals = portals::generate_portals(&tree);
-    let exterior = visibility::find_exterior_leaves_quietly(&tree, &first_pass_portals);
-    Ok(classify_occluders(
-        brushes,
-        &OpenSpace::new(&tree, &exterior),
-    ))
+
+    fn space(&self) -> OpenSpace<'_> {
+        OpenSpace::new(&self.tree, &self.exterior)
+    }
+}
+
+fn log_doors(doors: &[DoorSplitter], movers: &[MapKinematicMover]) {
+    let ids: Vec<String> = doors
+        .iter()
+        .map(|door| movers[door.mover_index].mover_id.to_string())
+        .collect();
+    log::info!(
+        "[Compiler] Door recognition: {} of {} kinematic movers seal a doorway at their \
+         closed pose{}{}",
+        doors.len(),
+        movers.len(),
+        if ids.is_empty() { "" } else { ": movers " },
+        ids.join(", "),
+    );
 }
 
 fn log_classification(classification: &OccluderClassification) {
@@ -140,3 +199,6 @@ mod test_fixtures;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod door_tests;

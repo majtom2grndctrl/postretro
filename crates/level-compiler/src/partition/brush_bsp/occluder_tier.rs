@@ -12,6 +12,7 @@ use super::{
     build_tree, count_partition, leaf_bounds, planes_equivalent, split_region,
 };
 use crate::map_data::BrushVolume;
+use crate::partition::door_recognition::DoorSplitter;
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::types::{Aabb, BspChild, BspTree};
 
@@ -94,26 +95,38 @@ impl OccluderTier {
     }
 }
 
+/// What splits inside the occluder tier: each brush's role, and the doors.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TierPlanes<'a> {
+    roles: &'a [TierRole],
+    doors: &'a [DoorSplitter],
+}
+
 /// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
 /// inside the tier: occluder-rank planes split first, section-member planes
-/// off their section's box next, each region none of them spans becomes an
+/// off their section's box next, then the planes of each door in `doors`
+/// inside the region holding it; each region none of them spans becomes an
 /// occluder-tier leaf, and every brush's planes split beneath it with
-/// `build_bsp_from_brushes`' scoring. Solidity, leaves and face ownership read
-/// the returned tree exactly as they read a one-tier tree.
+/// `build_bsp_from_brushes`' scoring. Door planes are never solid: solidity,
+/// leaves and face ownership read the returned tree exactly as they read a
+/// one-tier tree.
 pub fn build_bsp_with_occluder_tier(
     brushes: &[BrushVolume],
     roles: &[TierRole],
+    doors: &[DoorSplitter],
 ) -> Result<(BspTree, OccluderTier)> {
     assert_eq!(roles.len(), brushes.len(), "one tier role per brush");
     let mut recorder = TierRecorder::default();
-    let tree = build_tree(brushes, SplitTier::Occluder(roles), &mut recorder)?;
+    let planes = TierPlanes { roles, doors };
+    let tree = build_tree(brushes, SplitTier::Occluder(planes), &mut recorder)?;
     let tier = recorder.finish(&tree);
     Ok((tree, tier))
 }
 
 /// Build a region inside the occluder tier: split on the best occluder plane,
-/// or, when none spans the region, close it as a tier leaf and build its
-/// sub-tree on every brush's planes.
+/// or door plane once no occluder plane qualifies, or, when none spans the
+/// region, close it as a tier leaf and build its sub-tree on every brush's
+/// planes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_tier_region(
     tree: &mut BspTree,
@@ -124,17 +137,25 @@ pub(super) fn build_tier_region(
     inside: &[usize],
     ancestor_planes: &[(DVec3, f64)],
     leaf_planes: &[(DVec3, f64)],
-    roles: &[TierRole],
+    planes: TierPlanes<'_>,
     recorder: &mut TierRecorder,
     parent: Option<usize>,
     depth: usize,
 ) -> Result<BspChild> {
-    // An empty or solid region is a tier leaf as it stands; otherwise the
-    // tier continues while an occluder plane spans the region.
-    let splitter = if candidates.is_empty() || !inside.is_empty() {
+    // A solid region is a tier leaf as it stands; otherwise the tier
+    // continues while an occluder or door plane spans the region. A region
+    // no brush reaches has no occluder plane, but a door may still stand in
+    // it.
+    let splitter = if !inside.is_empty() {
         None
     } else {
-        select_occluder_splitter(brushes, candidates, roles, region_polytope, ancestor_planes)
+        select_occluder_splitter(
+            brushes,
+            candidates,
+            planes,
+            region_polytope,
+            ancestor_planes,
+        )
     };
     let Some((normal, distance)) = splitter else {
         let first_leaf = tree.leaves.len();
@@ -169,7 +190,7 @@ pub(super) fn build_tier_region(
         ancestor_planes,
         leaf_planes,
         (normal, distance),
-        SplitTier::Occluder(roles),
+        SplitTier::Occluder(planes),
         recorder,
         parent,
         depth,
@@ -213,13 +234,19 @@ impl TierRecorder {
 /// candidates (occluders' planes, and section members' planes on their
 /// section's box) scored by today's spanning and balance terms over the
 /// occluder candidates; failing those, among the section members' other
-/// planes, scored over the member candidates. Each rank takes a credit for
-/// the plane's slice through the region. `None` makes the region an
+/// planes, scored over the member candidates; failing those, among the
+/// planes of the doors the region holds, broad-face planes before edge
+/// planes, scored over every candidate. Each rank takes a credit for the
+/// plane's slice through the region. `None` makes the region an
 /// occluder-tier leaf.
-pub(super) fn select_occluder_splitter(
+///
+/// Door planes rank last, so a door splits only what would otherwise be the
+/// occluder-tier leaf holding its doorway, and adds no boundary to any region
+/// it does not reach (pin R7).
+fn select_occluder_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
-    roles: &[TierRole],
+    TierPlanes { roles, doors }: TierPlanes<'_>,
     region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
@@ -260,6 +287,47 @@ pub(super) fn select_occluder_splitter(
             brushes,
             planes_of(&members, false),
             &members,
+            region_polytope,
+            ancestor_planes,
+        )
+    })
+    .or_else(|| select_door_splitter(brushes, candidates, doors, region_polytope, ancestor_planes))
+}
+
+/// The best door plane for a region no occluder plane spans: a broad-face
+/// plane of a door the region overlaps, or failing those, one of its edge
+/// planes, which then cut only the slab between its broad faces.
+fn select_door_splitter(
+    brushes: &[BrushVolume],
+    candidates: &[usize],
+    doors: &[DoorSplitter],
+    region_polytope: &RegionPolytope,
+    ancestor_planes: &[(DVec3, f64)],
+) -> Option<(DVec3, f64)> {
+    let held: Vec<&DoorSplitter> = doors
+        .iter()
+        .filter(|door| door.overlaps(region_polytope))
+        .collect();
+    if held.is_empty() {
+        return None;
+    }
+    let planes_of = |pick: fn(&DoorSplitter) -> &[(DVec3, f64)]| -> Vec<(DVec3, f64)> {
+        held.iter()
+            .flat_map(|door| pick(door).iter().copied())
+            .collect()
+    };
+    best_plane(
+        brushes,
+        planes_of(|door| &door.broad_planes),
+        candidates,
+        region_polytope,
+        ancestor_planes,
+    )
+    .or_else(|| {
+        best_plane(
+            brushes,
+            planes_of(|door| &door.edge_planes),
+            candidates,
             region_polytope,
             ancestor_planes,
         )

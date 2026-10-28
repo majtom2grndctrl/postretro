@@ -7,6 +7,7 @@
 pub(crate) mod brush_bsp;
 mod bsp;
 mod cell_tree;
+pub mod door_recognition;
 mod face_extract;
 mod manifold;
 pub mod occluder_classify;
@@ -19,6 +20,7 @@ pub use brush_bsp::{
 };
 pub use bsp::find_leaf_for_point;
 pub use cell_tree::CellTree;
+pub use door_recognition::{DoorSplitter, recognize_doors};
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
 pub use manifold::{OpenEdge, WatertightReport, check_watertight};
 pub use types::*;
@@ -45,12 +47,14 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 }
 
 /// Partition world brushes into a two-tier BSP tree (`roles[i]` says how
-/// brush `i` splits inside the occluder tier), then extract world faces as
-/// `partition` does. Solidity and faces read the returned tree exactly as
-/// they read `partition`'s; the tier record groups its leaves into cells.
+/// brush `i` splits inside the occluder tier, and each of `doors` splits the
+/// tier leaf holding its doorway), then extract world faces as `partition`
+/// does. Solidity and faces read the returned tree exactly as they read
+/// `partition`'s; the tier record groups its leaves into cells.
 pub fn partition_with_occluder_tier(
     brush_volumes: &[BrushVolume],
     roles: &[TierRole],
+    doors: &[DoorSplitter],
 ) -> Result<(PartitionResult, OccluderTier)> {
     if brush_volumes.is_empty() {
         let tier = OccluderTier {
@@ -60,7 +64,7 @@ pub fn partition_with_occluder_tier(
         };
         return Ok((empty_partition(), tier));
     }
-    let (tree, tier) = build_bsp_with_occluder_tier(brush_volumes, roles)?;
+    let (tree, tier) = build_bsp_with_occluder_tier(brush_volumes, roles, doors)?;
     Ok((with_faces(tree, brush_volumes), tier))
 }
 

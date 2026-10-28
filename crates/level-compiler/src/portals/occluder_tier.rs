@@ -12,6 +12,10 @@ use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 /// Collinear and duplicate hull points closer than this are dropped.
 const HULL_EPSILON: f64 = 1e-9;
 
+/// A portal corner this close to an axis-aligned plane bounding its leaves
+/// lies on it: far above clipping dust, far below any authored gap.
+const SNAP_EPSILON: f64 = 1e-9;
+
 /// A portal between two occluder-tier leaves, wound counter-clockwise seen
 /// from the front side of the tier node plane it lies on.
 pub struct TierPortal {
@@ -99,11 +103,19 @@ fn generate_recursive(
                         && interior(*f)
                         && interior(*b)
                     {
-                        kept.extend_from_slice(fragment);
+                        let bounding = tree.leaves[*f]
+                            .defining_planes
+                            .iter()
+                            .chain(&tree.leaves[*b].defining_planes);
+                        kept.extend(
+                            fragment
+                                .iter()
+                                .map(|&corner| snap_to_axis_planes(corner, bounding.clone())),
+                        );
                     }
                 },
             );
-            if let Some(polygon) = coplanar_hull(&kept, normal, distance) {
+            if let Some(polygon) = coplanar_hull(&kept, normal) {
                 portals.push(TierPortal {
                     polygon,
                     front_tier_leaf: tier.tier_leaf_of(tree, &front),
@@ -134,9 +146,28 @@ fn generate_recursive(
     }
 }
 
+/// Move `point` exactly onto each axis-aligned plane of `planes` it lies
+/// within `SNAP_EPSILON` of. Clipping the base winding leaves corners about
+/// 1e-13 m off the planes that cut them; a door whose face bounds a portal
+/// covers it only if no corner lies past that face, so the dust must go.
+fn snap_to_axis_planes<'a>(
+    mut point: DVec3,
+    planes: impl Iterator<Item = &'a (DVec3, f64)>,
+) -> DVec3 {
+    for &(normal, distance) in planes {
+        let Some(axis) = (0..3).find(|&axis| normal[axis].abs() == 1.0) else {
+            continue;
+        };
+        if (point.dot(normal) - distance).abs() <= SNAP_EPSILON {
+            point[axis] = distance / normal[axis];
+        }
+    }
+    point
+}
+
 /// Convex hull of points lying on one plane, wound counter-clockwise about
 /// its normal, as `make_base_winding` winds. `None` under three corners.
-fn coplanar_hull(points: &[DVec3], normal: DVec3, distance: f64) -> Option<Vec<DVec3>> {
+fn coplanar_hull(points: &[DVec3], normal: DVec3) -> Option<Vec<DVec3>> {
     if points.len() < 3 {
         return None;
     }
@@ -148,18 +179,22 @@ fn coplanar_hull(points: &[DVec3], normal: DVec3, distance: f64) -> Option<Vec<D
     let u_axis = normal.cross(reference).normalize();
     let v_axis = normal.cross(u_axis).normalize();
 
-    let mut flat: Vec<(f64, f64)> = points
+    // Each hull corner is one of `points` itself, not re-projected from the
+    // plane frame: a corner on an ancestor plane stays where clipping put it,
+    // so a door whose face bounds the portal still covers it exactly.
+    let mut flat: Vec<(f64, f64, usize)> = points
         .iter()
-        .map(|p| (p.dot(u_axis), p.dot(v_axis)))
+        .enumerate()
+        .map(|(index, p)| (p.dot(u_axis), p.dot(v_axis), index))
         .collect();
     flat.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     flat.dedup_by(|a, b| (a.0 - b.0).abs() <= HULL_EPSILON && (a.1 - b.1).abs() <= HULL_EPSILON);
 
     // Andrew's monotone chain: lower hull, then upper, counter-clockwise.
-    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+    let cross = |o: (f64, f64, usize), a: (f64, f64, usize), b: (f64, f64, usize)| {
         (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
     };
-    let mut hull: Vec<(f64, f64)> = Vec::with_capacity(flat.len() * 2);
+    let mut hull: Vec<(f64, f64, usize)> = Vec::with_capacity(flat.len() * 2);
     for pass in [
         flat.as_slice(),
         &flat.iter().rev().copied().collect::<Vec<_>>(),
@@ -179,10 +214,9 @@ fn coplanar_hull(points: &[DVec3], normal: DVec3, distance: f64) -> Option<Vec<D
         return None;
     }
 
-    let origin = normal * distance;
     Some(
         hull.into_iter()
-            .map(|(u, v)| origin + u_axis * u + v_axis * v)
+            .map(|(_, _, index)| points[index])
             .collect(),
     )
 }

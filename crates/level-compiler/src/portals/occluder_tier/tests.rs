@@ -76,7 +76,8 @@ struct TieredBuild {
 }
 
 fn tiered_build(brushes: &[BrushVolume], roles: &[TierRole]) -> TieredBuild {
-    let (tree, tier) = build_bsp_with_occluder_tier(brushes, roles).expect("two-tier tree builds");
+    let (tree, tier) =
+        build_bsp_with_occluder_tier(brushes, roles, &[]).expect("two-tier tree builds");
     let portals = generate_portals(&tree);
     let exterior = find_exterior_leaves(&tree, &portals);
     let tier_portals = generate_occluder_tier_portals(&tree, &tier, &exterior);
@@ -138,7 +139,7 @@ fn unclassified_build_keeps_todays_tree() {
 
     let today = build_bsp_from_brushes(&brushes).expect("tree builds");
     let (tiered, tier) =
-        build_bsp_with_occluder_tier(&brushes, &vec![TierRole::Exempt; brushes.len()])
+        build_bsp_with_occluder_tier(&brushes, &vec![TierRole::Exempt; brushes.len()], &[])
             .expect("tree builds");
 
     assert_eq!(today.nodes.len(), tiered.nodes.len());
@@ -321,4 +322,19 @@ fn occlusion_test_wall_top_bounds_occluder_tier_leaves_beyond_the_wall() {
         build.tier_leaf_at(above),
         "points below and above the wall top beyond it share an occluder-tier leaf"
     );
+}
+
+#[test]
+fn portal_corners_snap_onto_axis_planes_within_clipping_dust_only() {
+    // Clipping the base winding leaves corners about 1e-13 m off the planes
+    // that cut them; a closed door must still cover a portal its face bounds.
+    let floor = (DVec3::Y, 1.6256);
+    let oblique = (DVec3::new(1.0, 1.0, 0.0).normalize(), 2.0);
+    let dusty = DVec3::new(19.5072, 1.6256 - 3e-13, 88.5952);
+    let snapped = snap_to_axis_planes(dusty, [floor, oblique].iter());
+    assert_eq!(snapped.y, 1.6256);
+    assert_eq!((snapped.x, snapped.z), (dusty.x, dusty.z));
+
+    let open_gap = DVec3::new(19.5072, 1.6256 - 1e-6, 88.5952);
+    assert_eq!(snap_to_axis_planes(open_gap, [floor].iter()), open_gap);
 }

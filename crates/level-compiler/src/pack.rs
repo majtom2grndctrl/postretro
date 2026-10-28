@@ -2395,7 +2395,9 @@ mod tests {
 
     // Regression: the closet fixture's compiler-generated portal ids were never
     // exercised across PRL packing and runtime loading, so portal-order drift
-    // could silently make a closed door block the wrong portal.
+    // could silently make a closed door block the wrong portal. Built on the
+    // production partition, whose door splitters bound the doorway in the
+    // occluder tier: the closet's walls stay exempt.
     #[test]
     fn closet_reveal_compiler_loader_portal_ids_block_and_restore_interior() {
         use glam::Vec3;
@@ -2409,18 +2411,33 @@ mod tests {
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("closet-reveal.map should parse");
-        let result =
-            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
-        let generated_portals = crate::portals::generate_portals(&result.tree);
-        let exterior = crate::visibility::find_exterior_leaves(&result.tree, &generated_portals);
-        let vis_result = crate::visibility::encode_vis(&result.tree, &exterior);
-        let mut geo_result =
-            crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+        // The production partition: occluder tier, door splitters and the
+        // runtime cells and portals every later stage reads.
+        let crate::pipeline::runtime_cells::OccluderPartition { result, tier } =
+            crate::pipeline::runtime_cells::partition_with_occluders(
+                &map_data.brush_volumes,
+                &map_data.kinematic_movers,
+            )
+            .expect("occluder partition should succeed");
+        let full_tree_portals = crate::portals::generate_portals(&result.tree);
+        let full_exterior =
+            crate::visibility::find_exterior_leaves(&result.tree, &full_tree_portals);
+        let runtime = crate::pipeline::runtime_cells::RuntimeCells::build(
+            &result.tree,
+            &tier,
+            &full_exterior,
+            full_tree_portals.len(),
+        );
+        let cell_tree = &runtime.cells.tree;
+        let exterior = &runtime.cells.exterior_cells;
+        let generated_portals = &runtime.portals;
+        let vis_result = crate::visibility::encode_vis(cell_tree, exterior);
+        let mut geo_result = crate::geometry::extract_geometry(&result.faces, cell_tree, exterior);
         let kinematic_geometry = crate::kinematic_geometry::encode_kinematic_geometry_section(
             &map_data.kinematic_movers,
             &map_data.kinematic_waypoints,
             &[],
-            &generated_portals,
+            generated_portals,
             &mut geo_result.texture_names,
         )
         .expect("closet fixture should emit kinematic geometry");
@@ -2431,10 +2448,10 @@ mod tests {
             &vis_result.leaves_section.leaves,
         );
         let alpha_ns = crate::light_namespaces::AlphaLightsNs::from_lights(&map_data.lights);
-        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
+        let alpha_lights = encode_alpha_lights(&alpha_ns, cell_tree);
         let light_influence = encode_light_influence(&alpha_ns);
         let map_entities = encode_map_entities(&map_data.map_entities);
-        let portals = encode_portals(&generated_portals).unwrap();
+        let portals = encode_portals(generated_portals).unwrap();
         let texture_cache_keys = HashMap::new();
 
         let unique = std::time::SystemTime::now()
@@ -2453,9 +2470,9 @@ mod tests {
             &geo_result,
             &texture_cache_keys,
             &vis_result.leaves_section,
-            &result.tree,
+            cell_tree,
             &portals,
-            &exterior,
+            exterior,
             &bvh_section,
             &[],
             &alpha_lights,
@@ -2511,6 +2528,8 @@ mod tests {
             "every loaded association must index the loaded portal array"
         );
 
+        // The camera stands at eye height over the spawn: the spawn origin
+        // lies on the floor plane, which the tree may file with the floor.
         let player_position = Vec3::from(
             world
                 .map_entities
@@ -2518,7 +2537,7 @@ mod tests {
                 .find(|entity| entity.classname == "player_spawn")
                 .expect("loaded player spawn")
                 .origin,
-        );
+        ) + Vec3::Y * 1.5;
         let closet_position = Vec3::from(
             world
                 .map_entities

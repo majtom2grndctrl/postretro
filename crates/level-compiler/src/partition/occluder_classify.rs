@@ -77,13 +77,13 @@ const VERTICAL_AXIS_MIN_COS: f64 = FRAC_1_SQRT_2;
 /// How far in front of a broad face its probes start. Small against the
 /// floor, and well clear of the 1 mm region classification epsilon, so a probe
 /// never starts inside the brush it measures.
-const PROBE_OFFSET_M: f64 = 0.02;
+pub(crate) const PROBE_OFFSET_M: f64 = 0.02;
 
 /// Where a broad face is sampled along each of its broad axes: the centres
 /// of its thirds, a 3 × 3 lattice. One centre sample misreads a floor with a
 /// pillar on its centre, or a wall another wall abuts at its middle, as
 /// fronting no open space.
-const FACE_SAMPLE_FRACTIONS: [f64; 3] = [1.0 / 6.0, 0.5, 5.0 / 6.0];
+pub(crate) const FACE_SAMPLE_FRACTIONS: [f64; 3] = [1.0 / 6.0, 0.5, 5.0 / 6.0];
 
 /// Extents this close count as tied when choosing the broad face, so a cube
 /// offers every face and the choice cannot depend on side order.
@@ -239,7 +239,7 @@ pub enum OccluderVerdict {
 
 /// Per-brush verdicts, index-aligned with the classified brush slice, and the
 /// clusters their exempt brushes form.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OccluderClassification {
     /// Each brush judged alone.
     pub verdicts: Vec<OccluderVerdict>,
@@ -367,7 +367,7 @@ fn rank(current: OccluderVerdict, candidate: OccluderVerdict) -> OccluderVerdict
     }
 }
 
-fn at_least(measure: f64, constant: f64) -> bool {
+pub(crate) fn at_least(measure: f64, constant: f64) -> bool {
     measure >= constant - RULE_EPSILON_M
 }
 
@@ -474,20 +474,29 @@ pub(crate) struct BrushFrame {
 
 impl BrushFrame {
     pub(crate) fn of(brush: &BrushVolume) -> Option<Self> {
-        let vertices = brush_vertices(brush);
+        Self::of_brushes(std::slice::from_ref(brush))
+    }
+
+    /// The own-frame box of a union of brushes, such as a mover's closed
+    /// pose: the minimum-volume box over every brush's perpendicular side
+    /// pairs, fitted to every brush's corners.
+    pub(crate) fn of_brushes(brushes: &[BrushVolume]) -> Option<Self> {
+        let vertices: Vec<DVec3> = brushes.iter().flat_map(brush_vertices).collect();
         if vertices.is_empty() {
             return None;
         }
 
         let mut frames: Vec<Self> = Vec::new();
-        for (i, a) in brush.planes.iter().enumerate() {
-            for b in &brush.planes[i + 1..] {
-                if a.normal.dot(b.normal).abs() > PERPENDICULAR_EPSILON {
-                    continue;
+        for brush in brushes {
+            for (i, a) in brush.planes.iter().enumerate() {
+                for b in &brush.planes[i + 1..] {
+                    if a.normal.dot(b.normal).abs() > PERPENDICULAR_EPSILON {
+                        continue;
+                    }
+                    let u = a.normal.normalize();
+                    let v = (b.normal - u * u.dot(b.normal)).normalize();
+                    frames.push(Self::fit(canonical_axes([u, v, u.cross(v)]), &vertices));
                 }
-                let u = a.normal.normalize();
-                let v = (b.normal - u * u.dot(b.normal)).normalize();
-                frames.push(Self::fit(canonical_axes([u, v, u.cross(v)]), &vertices));
             }
         }
         if frames.is_empty() {

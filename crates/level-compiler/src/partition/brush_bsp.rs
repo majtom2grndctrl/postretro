@@ -11,7 +11,7 @@ use super::region_polytope::RegionPolytope;
 use super::types::*;
 use crate::map_data::BrushVolume;
 pub use occluder_tier::{OccluderTier, TierLeaf, TierRole, build_bsp_with_occluder_tier};
-use occluder_tier::{TierRecorder, build_tier_region};
+use occluder_tier::{TierPlanes, TierRecorder, build_tier_region};
 
 /// Classification tolerance for AABB corners against brush-derived planes.
 #[cfg(test)]
@@ -55,9 +55,10 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
 /// How `build_recursive` picks a region's splitter.
 #[derive(Debug, Clone, Copy)]
 enum SplitTier<'a> {
-    /// Occluder-tier planes only, ranked by each brush's role; a region none
-    /// spans becomes an occluder-tier leaf and continues as `Full`.
-    Occluder(&'a [TierRole]),
+    /// Occluder-tier planes only, ranked by each brush's role, then door
+    /// splitters; a region none spans becomes an occluder-tier leaf and
+    /// continues as `Full`.
+    Occluder(TierPlanes<'a>),
     /// Every candidate brush's planes, scored by `select_splitter`.
     Full,
 }
@@ -421,7 +422,7 @@ fn build_recursive(
         );
     }
 
-    if let SplitTier::Occluder(roles) = tier {
+    if let SplitTier::Occluder(planes) = tier {
         return build_tier_region(
             tree,
             brushes,
@@ -431,7 +432,7 @@ fn build_recursive(
             inside,
             ancestor_planes,
             leaf_planes,
-            roles,
+            planes,
             recorder,
             parent,
             depth,

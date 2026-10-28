@@ -13,6 +13,7 @@ use glam::{DVec3, Mat4, Vec3};
 use postretro_level_format::cell_locator::CellLocatorSection;
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_loader::LevelWorld;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
@@ -94,6 +95,47 @@ impl MapText {
         self
     }
 
+    /// A `kinematic_mover` of axis-aligned boxes, authored closed where it
+    /// stands, with a second waypoint `rise` units above to slide open to.
+    pub(super) fn mover(
+        &mut self,
+        name: &str,
+        boxes: &[([f64; 3], [f64; 3])],
+        rise: f64,
+    ) -> &mut Self {
+        let (mut min, mut max) = (DVec3::splat(f64::INFINITY), DVec3::splat(f64::NEG_INFINITY));
+        for &(a, b) in boxes {
+            min = min.min(DVec3::from_array(a));
+            max = max.max(DVec3::from_array(b));
+        }
+        let closed = ((min + max) * 0.5).to_array();
+        let open = (DVec3::from_array(closed) + DVec3::Z * rise).to_array();
+        let (closed_name, open_name) = (format!("{name}_closed"), format!("{name}_open"));
+        self.brush_entity(
+            "kinematic_mover",
+            &[
+                ("name", name),
+                ("path", &closed_name),
+                ("speed", "4"),
+                ("move_mode", "once"),
+                ("start_on_spawn", "0"),
+            ],
+            boxes,
+        )
+        .point_entity(
+            "kinematic_waypoint",
+            &[
+                ("name", &closed_name),
+                ("next", &open_name),
+                ("origin", &quake_triple(closed)),
+            ],
+        )
+        .point_entity(
+            "kinematic_waypoint",
+            &[("name", &open_name), ("origin", &quake_triple(open))],
+        )
+    }
+
     pub(super) fn text(&self) -> String {
         let mut entities = vec![entity("worldspawn", &[], &self.world_brushes)];
         entities.extend(self.entities.iter().cloned());
@@ -168,7 +210,8 @@ impl Cells {
 
     pub(super) fn of_map_data(map_data: MapData) -> Self {
         let partition =
-            partition_with_occluders(&map_data.brush_volumes).expect("occluder partition builds");
+            partition_with_occluders(&map_data.brush_volumes, &map_data.kinematic_movers)
+                .expect("occluder partition builds");
         let full_portals = portals::generate_portals(&partition.result.tree);
         let full_exterior = visibility::find_exterior_leaves(&partition.result.tree, &full_portals);
         let runtime = RuntimeCells::build(
@@ -213,6 +256,27 @@ impl Cells {
         (0..self.runtime.cells.leaf_cell.len())
             .filter(|&leaf| self.runtime.cells.leaf_cell[leaf] == cell)
             .collect()
+    }
+
+    /// Per mover, the runtime portal ids its closed pose seals, as the
+    /// KinematicGeometry encoder records them.
+    pub(super) fn sealed_portals(&self) -> Vec<Vec<u32>> {
+        let mut texture_names = TextureNamesSection { names: Vec::new() };
+        crate::kinematic_geometry::encode_kinematic_geometry_section(
+            &self.map_data.kinematic_movers,
+            &self.map_data.kinematic_waypoints,
+            &[],
+            &self.runtime.portals,
+            &mut texture_names,
+        )
+        .map(|section| {
+            section
+                .movers
+                .into_iter()
+                .map(|mover| mover.sealed_portal_ids)
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// Cells, Portals and CellLocator as the pack stage encodes them.
@@ -342,6 +406,21 @@ pub(super) fn walk(
     eye_q: [f64; 3],
     dir_q: [f64; 3],
 ) -> (Vec<u32>, VisibilityPath) {
+    walk_blocked(world, eye_q, dir_q, &[])
+}
+
+/// `walk` with the portals whose ids `blocked` lists closed, as a closed
+/// mover blocks them at runtime.
+pub(super) fn walk_blocked(
+    world: &LevelWorld,
+    eye_q: [f64; 3],
+    dir_q: [f64; 3],
+    blocked: &[u32],
+) -> (Vec<u32>, VisibilityPath) {
+    let mut blocked_portals = vec![false; world.portals.len()];
+    for &portal in blocked {
+        blocked_portals[portal as usize] = true;
+    }
     let eye = engine(eye_q).as_vec3();
     let dir = (engine(dir_q) - engine([0.0; 3])).as_vec3().normalize();
     let view = glam::camera::rh::view::look_at_mat4(eye, eye + dir, Vec3::Y);
@@ -351,7 +430,7 @@ pub(super) fn walk(
         eye,
         projection * view,
         world,
-        &[],
+        &blocked_portals,
         false,
         &mut postretro_visibility::PortalWalkScratch::new(),
         postretro_visibility::TimingGate::OFF,

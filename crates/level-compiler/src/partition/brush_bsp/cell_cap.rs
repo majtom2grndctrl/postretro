@@ -11,10 +11,11 @@ use crate::partition::types::Aabb;
 
 /// Widest horizontal extent an occluder-tier leaf keeps before the cap splits
 /// it. Without a cap, one interior cell holds everything exempt brushes used
-/// to cut apart, so it draws whole and its residency cannot divide. 512
-/// authoring units at the 0.0254 m unit scale, so grid lines fall on the
-/// coarse authoring grid where walls and floors already meet.
-pub const CELL_SIZE_CAP_M: f64 = 13.0048;
+/// to cut apart, so it draws whole and its residency cannot divide. 1024
+/// authoring units at the 0.0254 m unit scale, q3map's blocksize, so grid
+/// lines fall on the coarse authoring grid where walls and floors already
+/// meet. Of the swept 512, 768 and 1024 units it walks least on every map.
+pub const CELL_SIZE_CAP_M: f64 = 26.0096;
 
 /// A cap line must leave each piece at least this share of the cap along the
 /// split axis, so the cap never cuts a sliver cell off a region's edge, such
@@ -23,11 +24,14 @@ pub const CELL_SIZE_CAP_M: f64 = 13.0048;
 /// line nearest its middle leaves both pieces at least a quarter cap.
 pub const CAP_MIN_PIECE_FRACTION: f64 = 0.25;
 
-/// A cap line's slice through its region must be strictly more than this
-/// share open: neither solid nor exterior void in the first pass. A line run
-/// along a wall's thickness or through a solid filled by touching brushes adds
-/// a boundary where little crosses it, and a region of exterior void, such as
-/// the slack around the world, has no open slice to split.
+/// A cap line's slice through its region, within the bounds of the region's
+/// open space, must be strictly more than this share open: neither solid nor
+/// exterior void in the first pass. A line run along a wall's thickness or
+/// through a solid filled by touching brushes adds a boundary where little
+/// crosses it, and a region of exterior void, such as the slack around the
+/// world, has no open slice to split. Solid outside the bounds of the
+/// region's open space, such as exempt mass over a corridor in a taller
+/// region, is not judged: no open space lies across it to divide.
 pub const CAP_MIN_OPEN_SLICE_FRACTION: f64 = 0.5;
 
 /// Samples per axis of the lattice laid over a cap line's slice, cell centres.
@@ -121,7 +125,14 @@ impl<'a> CellSizeCap<'a> {
             .into_iter()
             .filter(|&axis| extent(axis) > CELL_SIZE_CAP_M + REGION_CLASSIFICATION_EPSILON)
             .collect();
+        if axes.is_empty() {
+            return None;
+        }
         axes.sort_by(|&a, &b| extent(b).total_cmp(&extent(a)).then(a.cmp(&b)));
+        let open = self.space.open_bounds_within(&bounds);
+        if !open.is_valid() {
+            return None;
+        }
 
         axes.into_iter().find_map(|axis| {
             grid_lines(bounds.min[axis], bounds.max[axis])
@@ -131,7 +142,7 @@ impl<'a> CellSizeCap<'a> {
                     normal[axis] = 1.0;
                     (normal, line)
                 })
-                .find(|&plane| self.accepts(axis, plane, region, &bounds, ancestor_planes))
+                .find(|&plane| self.accepts(axis, plane, region, &bounds, &open, ancestor_planes))
         })
     }
 
@@ -141,6 +152,7 @@ impl<'a> CellSizeCap<'a> {
         (normal, line): (DVec3, f64),
         region: &RegionPolytope,
         bounds: &Aabb,
+        open: &Aabb,
         ancestor_planes: &[(DVec3, f64)],
     ) -> bool {
         let least_piece = CAP_MIN_PIECE_FRACTION * CELL_SIZE_CAP_M;
@@ -155,7 +167,7 @@ impl<'a> CellSizeCap<'a> {
         }
         region.plane_spans(normal, line, REGION_CLASSIFICATION_EPSILON)
             && !self.inside_a_slab(axis, (normal, line), region, bounds)
-            && self.slice_mostly_open(axis, (normal, line), region)
+            && self.slice_mostly_open(axis, (normal, line), region, open)
     }
 
     /// True when the line runs through the slab of an occluding section that
@@ -178,12 +190,14 @@ impl<'a> CellSizeCap<'a> {
     }
 
     /// True when strictly more than `CAP_MIN_OPEN_SLICE_FRACTION` of a
-    /// lattice over the line's slice through `region` lies in open space.
+    /// lattice over the line's slice through `region`, clipped to `open`, the
+    /// bounds of the region's open space, lies in open space.
     fn slice_mostly_open(
         &self,
         axis: usize,
         (normal, line): (DVec3, f64),
         region: &RegionPolytope,
+        open: &Aabb,
     ) -> bool {
         let Some(slice) = region.slice(normal, line) else {
             return false;
@@ -193,12 +207,19 @@ impl<'a> CellSizeCap<'a> {
             slice_bounds.expand_point(corner);
         }
         let [u, v] = [(axis + 1) % 3, (axis + 2) % 3];
+        for a in [u, v] {
+            slice_bounds.min[a] = slice_bounds.min[a].max(open.min[a]);
+            slice_bounds.max[a] = slice_bounds.max[a].min(open.max[a]);
+            if slice_bounds.min[a] >= slice_bounds.max[a] {
+                return false;
+            }
+        }
         let at = |a: usize, i: usize| {
             slice_bounds.min[a]
                 + (slice_bounds.max[a] - slice_bounds.min[a]) * (i as f64 + 0.5)
                     / SLICE_SAMPLES_PER_AXIS as f64
         };
-        let (mut sampled, mut open) = (0_usize, 0_usize);
+        let (mut sampled, mut unblocked) = (0_usize, 0_usize);
         for i in 0..SLICE_SAMPLES_PER_AXIS {
             for j in 0..SLICE_SAMPLES_PER_AXIS {
                 let mut point = DVec3::ZERO;
@@ -210,11 +231,11 @@ impl<'a> CellSizeCap<'a> {
                 }
                 sampled += 1;
                 if !self.space.is_blocked(point) {
-                    open += 1;
+                    unblocked += 1;
                 }
             }
         }
-        sampled > 0 && open as f64 > CAP_MIN_OPEN_SLICE_FRACTION * sampled as f64
+        sampled > 0 && unblocked as f64 > CAP_MIN_OPEN_SLICE_FRACTION * sampled as f64
     }
 }
 
@@ -228,7 +249,9 @@ impl CellSizeCap<'_> {
     pub(crate) fn accepts_line(&self, axis: usize, line: f64, region: &RegionPolytope) -> bool {
         let mut normal = DVec3::ZERO;
         normal[axis] = 1.0;
-        self.accepts(axis, (normal, line), region, &region.vertex_aabb(), &[])
+        let bounds = region.vertex_aabb();
+        let open = self.space.open_bounds_within(&bounds);
+        self.accepts(axis, (normal, line), region, &bounds, &open, &[])
     }
 
     /// Whether the line runs through any occluding section's slab within

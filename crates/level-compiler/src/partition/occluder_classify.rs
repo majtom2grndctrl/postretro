@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use glam::DVec3;
 
-use super::brush_bsp::TierRole;
+use super::brush_bsp::{REGION_CLASSIFICATION_EPSILON, TierRole};
 use super::find_leaf_for_point;
 use super::occluder_cluster::{Cluster, find_clusters};
 use super::region_polytope::RegionPolytope;
@@ -179,6 +179,56 @@ impl<'a> OpenSpace<'a> {
         }
         let leaf = find_leaf_for_point(self.tree, point);
         self.tree.leaves[leaf].is_solid || self.exterior_leaves.contains(&leaf)
+    }
+
+    /// Bounds of the open space inside `bounds`: the union of each open
+    /// leaf's bounds clipped to `bounds`, counting only leaves that reach
+    /// past the region classification epsilon into it on every axis. Empty
+    /// when none does.
+    pub fn open_bounds_within(&self, bounds: &Aabb) -> Aabb {
+        let mut open = Aabb::empty();
+        if self.tree.leaves.is_empty() || !bounds.is_valid() {
+            return open;
+        }
+        let (centre, half) = (bounds.centroid(), (bounds.max - bounds.min) * 0.5);
+        let mut pending = vec![if self.tree.nodes.is_empty() {
+            BspChild::Leaf(0)
+        } else {
+            BspChild::Node(0)
+        }];
+        while let Some(child) = pending.pop() {
+            match child {
+                BspChild::Leaf(index) => {
+                    let leaf = &self.tree.leaves[index];
+                    if leaf.is_solid || self.exterior_leaves.contains(&index) {
+                        continue;
+                    }
+                    let clipped = Aabb {
+                        min: leaf.bounds.min.max(bounds.min),
+                        max: leaf.bounds.max.min(bounds.max),
+                    };
+                    if (clipped.max - clipped.min)
+                        .cmpgt(DVec3::splat(REGION_CLASSIFICATION_EPSILON))
+                        .all()
+                    {
+                        open.expand_aabb(&clipped);
+                    }
+                }
+                BspChild::Node(index) => {
+                    let node = &self.tree.nodes[index];
+                    let side = centre.dot(node.plane_normal) - node.plane_distance;
+                    let reach = node.plane_normal.abs().dot(half);
+                    // Same sign rule as `find_leaf_for_point`: on the plane is front.
+                    if side + reach >= 0.0 {
+                        pending.push(node.front.clone());
+                    }
+                    if side - reach < 0.0 {
+                        pending.push(node.back.clone());
+                    }
+                }
+            }
+        }
+        open
     }
 
     /// First parameter in `t0..t1` along the segment where it enters a leaf

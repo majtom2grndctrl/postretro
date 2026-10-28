@@ -20,6 +20,20 @@ fn cap_q() -> f64 {
     CELL_SIZE_CAP_M / MapFormat::IdTech2.units_to_meters()
 }
 
+/// `n` caps in Quake units: fixtures sized in caps pin the same behaviour at
+/// any cap value.
+fn caps(n: f64) -> f64 {
+    n * cap_q()
+}
+
+/// A hall `[length, width, height]` 4.6875 caps long, under a cap wide and
+/// over one tall: grid lines at one to four caps cut it into four whole caps
+/// and a remainder over the sliver guard's quarter cap, and a cap along up
+/// would cut it too.
+fn long_hall() -> [f64; 3] {
+    [caps(4.6875), caps(0.78125), caps(1.5625)]
+}
+
 /// A sealed hall of 16-unit slabs, interior `min..max` in Quake units.
 fn hall_between(map: &mut MapText, min: [f64; 3], max: [f64; 3]) -> &mut MapText {
     let t = 16.0;
@@ -41,20 +55,21 @@ fn interior_cell_bounds(cells: &Cells) -> Vec<Aabb> {
 }
 
 #[test]
-fn cell_size_cap_divides_a_sixty_metre_hall_on_the_world_grid_and_never_along_up() {
-    // A hall 2400 u (61 m) long, 400 u (10 m) wide and 800 u (20 m) tall:
-    // its walls occlude, so it is one occluder-tier leaf before the cap.
+fn cell_size_cap_divides_a_hall_several_caps_long_on_the_world_grid_and_never_along_up() {
+    // Its walls occlude, so it is one occluder-tier leaf before the cap.
+    let size = long_hall();
     let mut map = MapText::new();
-    map.hall([2400.0, 400.0, 800.0]);
+    map.hall(size);
     let cells = Cells::of(&map);
 
     let interior = interior_cell_bounds(&cells);
     assert_eq!(
         interior.len(),
         5,
-        "grid lines at 512, 1024, 1536 and 2048 u cut the hall into five cells: {interior:#?}"
+        "grid lines at one, two, three and four caps cut the hall into five cells: \
+         {interior:#?}"
     );
-    let height = engine([0.0, 0.0, 800.0]).y;
+    let height = engine([0.0, 0.0, size[2]]).y;
     for bounds in &interior {
         let size = bounds.max - bounds.min;
         for axis in [0, 2] {
@@ -68,11 +83,11 @@ fn cell_size_cap_divides_a_sixty_metre_hall_on_the_world_grid_and_never_along_up
             "the cap never splits along up: {bounds:?}"
         );
     }
-    let thirty_m = 30.0 / MapFormat::IdTech2.units_to_meters();
+    let (near, mid_width) = (caps(0.2), size[1] / 2.0);
     assert_ne!(
-        cells.cell_at([100.0, 200.0, 60.0]),
-        cells.cell_at([100.0 + thirty_m, 200.0, 60.0]),
-        "points 30 m apart down the hall lie in different cells"
+        cells.cell_at([near, mid_width, 60.0]),
+        cells.cell_at([near + caps(2.3), mid_width, 60.0]),
+        "points 2.3 caps apart down the hall lie in different cells"
     );
     assert_eq!(cells.runtime.portals.len(), 4, "one portal per cap line");
     for portal in &cells.runtime.portals {
@@ -91,9 +106,13 @@ fn cell_size_cap_divides_a_sixty_metre_hall_on_the_world_grid_and_never_along_up
 
 #[test]
 fn cell_size_cap_leaves_a_hall_under_the_cap_whole() {
-    // 480 u (12.2 m) across a grid line at 512 u, and 800 u (20 m) tall.
+    // 0.94 cap long across the grid line at one cap, and over a cap tall.
     let mut map = MapText::new();
-    hall_between(&mut map, [300.0, 0.0, 0.0], [780.0, 400.0, 800.0]);
+    hall_between(
+        &mut map,
+        [caps(0.5859), 0.0, 0.0],
+        [caps(1.5234), caps(0.78125), caps(1.5625)],
+    );
     let cells = Cells::of(&map);
     assert_eq!(interior_cell_bounds(&cells).len(), 1, "one interior cell");
     assert!(cells.runtime.portals.is_empty(), "and no portal");
@@ -106,7 +125,11 @@ fn cell_size_cap_sliver_guard_decides_at_a_quarter_cap() {
     let quarter = CAP_MIN_PIECE_FRACTION * cap_q();
     let cells_from = |start: f64| {
         let mut map = MapText::new();
-        hall_between(&mut map, [start, 0.0, 0.0], [2.0 * cap_q(), 400.0, 256.0]);
+        hall_between(
+            &mut map,
+            [start, 0.0, 0.0],
+            [caps(2.0), caps(0.78125), 256.0],
+        );
         interior_cell_bounds(&Cells::of(&map)).len()
     };
     assert_eq!(
@@ -124,15 +147,16 @@ fn cell_size_cap_sliver_guard_decides_at_a_quarter_cap() {
 #[test]
 fn cell_size_cap_refuses_a_line_whose_slice_is_mostly_solid() {
     // A hall one and a half caps long and 128 u (3.25 m) tall; the only grid
-    // line inside it, at 512 u, splits it in two. A block 96 u (2.44 m)
+    // line inside it, at one cap, splits it in two. A block 96 u (2.44 m)
     // tall across its whole width, under the see-over height so exempt,
     // straddles that line: its slice is three quarters solid, and the line is
     // refused.
+    let width = caps(0.78125);
     let leaves_on_line = |with_block: bool| {
         let mut map = MapText::new();
-        hall_between(&mut map, [0.0, 0.0, 0.0], [1.5 * cap_q(), 400.0, 128.0]);
+        hall_between(&mut map, [0.0, 0.0, 0.0], [caps(1.5), width, 128.0]);
         if with_block {
-            map.solid([cap_q() - 32.0, 0.0, 0.0], [cap_q() + 32.0, 400.0, 96.0]);
+            map.solid([cap_q() - 32.0, 0.0, 0.0], [cap_q() + 32.0, width, 96.0]);
         }
         let cells = Cells::of(&map);
         let line_z = engine([cap_q(), 0.0, 0.0]).z;
@@ -158,12 +182,57 @@ fn cell_size_cap_refuses_a_line_whose_slice_is_mostly_solid() {
     );
 }
 
+// Regression: the open-slice guard judged a corridor's slices against its
+// whole occluder-tier leaf, solid mass included, so 120 m corridors on
+// stress-warren-hallway-inspection stayed whole at every cap.
+#[test]
+fn cell_size_cap_cuts_a_corridor_several_caps_long_whose_tier_leaf_also_holds_solid() {
+    // A corridor 128 u (3.25 m) wide and 192 u (4.88 m) tall under an exempt
+    // mass filling the rest of a sealed hall 512 u (13 m) tall: the hall's
+    // slabs bound one occluder-tier leaf, and each cap line's slice through
+    // it is only three eighths open.
+    let [length, width, corridor_top] = [caps(4.6875), 128.0, 192.0];
+    let mut map = MapText::new();
+    hall_between(&mut map, [0.0, 0.0, 0.0], [length, width, 512.0]);
+    map.solid([0.0, 0.0, corridor_top], [length, width, 512.0]);
+    let cells = Cells::of(&map);
+
+    let tier = &cells.partition.tier;
+    let tier_leaf = tier.leaf_tier_leaf[cells.leaf_at([caps(0.2), width / 2.0, 60.0])];
+    assert!(
+        tier.leaves[tier_leaf]
+            .leaf_range
+            .clone()
+            .any(|leaf| cells.full_tree().leaves[leaf].is_solid),
+        "precondition: the corridor's occluder-tier leaf also holds solid"
+    );
+    let interior = interior_cell_bounds(&cells);
+    assert_eq!(
+        interior.len(),
+        5,
+        "grid lines at one, two, three and four caps cut the corridor into five cells: \
+         {interior:#?}"
+    );
+    for bounds in &interior {
+        let size = bounds.max - bounds.min;
+        assert!(
+            size.x.max(size.z) <= 1.25 * CELL_SIZE_CAP_M + 1e-6,
+            "cell {bounds:?} is wider than 1.25 caps"
+        );
+    }
+    assert_ne!(
+        cells.cell_at([caps(0.2), width / 2.0, 60.0]),
+        cells.cell_at([caps(2.5), width / 2.0, 60.0]),
+        "points 2.3 caps apart down the corridor lie in different cells"
+    );
+}
+
 #[test]
 fn cell_size_cap_adds_no_exterior_cell_in_the_void_around_the_world() {
     // The slack shell around the world is exterior void; the cap never cuts
     // it into a grid of void cells.
     let mut map = MapText::new();
-    map.hall([2400.0, 400.0, 800.0]);
+    map.hall(long_hall());
     let cells = Cells::of(&map);
     assert_eq!(
         cells.runtime.cells.exterior_cells.len(),
@@ -193,14 +262,16 @@ fn exterior_cells_uncapped(map: &MapText) -> usize {
 
 #[test]
 fn cell_size_cap_cells_do_not_depend_on_brush_order() {
-    // A long hall with a row of exempt pillars and a low exempt curb.
+    // A hall several caps long and over a cap wide, so the cap cuts both
+    // horizontal axes, with a row of exempt pillars and a low exempt curb.
+    let [length, width] = [caps(4.6875), caps(1.4)];
     let mut map = MapText::new();
-    map.hall([2400.0, 640.0, 256.0]);
+    map.hall([length, width, 256.0]);
     for k in 0..12 {
-        let x = 100.0 + 190.0 * f64::from(k);
-        map.solid([x, 300.0, 0.0], [x + 40.0, 340.0, 256.0]);
+        let x = caps(0.2) + caps(0.371) * f64::from(k);
+        map.solid([x, width / 2.0, 0.0], [x + 40.0, width / 2.0 + 40.0, 256.0]);
     }
-    map.solid([0.0, 500.0, 0.0], [2400.0, 512.0, 12.0]);
+    map.solid([0.0, width - 140.0, 0.0], [length, width - 128.0, 12.0]);
 
     let cells_of = |reverse: bool| {
         let mut map_data = map.parse();
@@ -231,20 +302,21 @@ fn cell_size_cap_cells_do_not_depend_on_brush_order() {
 
 #[test]
 fn closed_door_seals_every_portal_piece_a_cap_line_cuts_across_its_doorway() {
-    // The exempt-wall door of the C11 row, in a hall 2400 u long, set across
-    // the grid line at x = 512 u: the cap cuts each room's portal onto the
-    // door in two, and the door covers each piece.
+    // The exempt-wall door of the C11 row, in a hall several caps long, set
+    // across the grid line at one cap: the cap cuts each room's portal onto
+    // the door in two, and the door covers each piece.
+    let line = cap_q();
     let mut map = MapText::new();
-    map.hall([2400.0, 640.0, 128.0])
-        .solid([442.0, 320.0, 0.0], [482.0, 328.0, 128.0])
-        .solid([542.0, 320.0, 0.0], [582.0, 328.0, 128.0]);
-    let door = ([482.0, 320.0, 0.0], [542.0, 328.0, 128.0]);
+    map.hall([caps(4.6875), 640.0, 128.0])
+        .solid([line - 70.0, 320.0, 0.0], [line - 30.0, 328.0, 128.0])
+        .solid([line + 30.0, 320.0, 0.0], [line + 70.0, 328.0, 128.0]);
+    let door = ([line - 30.0, 320.0, 0.0], [line + 30.0, 328.0, 128.0]);
     map.mover("door", &[door], 112.0);
     let cells = Cells::of(&map);
 
     assert_ne!(
-        cells.cell_at([497.0, 160.0, 60.0]),
-        cells.cell_at([527.0, 160.0, 60.0]),
+        cells.cell_at([line - 15.0, 160.0, 60.0]),
+        cells.cell_at([line + 15.0, 160.0, 60.0]),
         "the cap line crosses the room in front of the doorway"
     );
     let pad = DVec3::splat(1e-3);
@@ -277,12 +349,17 @@ fn closed_door_seals_every_portal_piece_a_cap_line_cuts_across_its_doorway() {
 
 // ---- slab guard ----
 
-/// A hall 70 × 25 × 60 m with a strip facade 31 m long and 15 m tall, its
-/// slab from `z0` 0.3 m deep, turned `yaw` in plan about its own centre.
-/// Deeper open space lies on its +z side, so its section, and the region
-/// holding its slab, lie toward z = 0.
+/// The facade hall, 70 × 25 m and 4.6 caps deep along z.
+fn facade_hall() -> DVec3 {
+    DVec3::new(70.0, 25.0, 4.6 * CELL_SIZE_CAP_M)
+}
+
+/// `facade_hall` with a strip facade 31 m long and 15 m tall, its slab from
+/// `z0` 0.3 m deep, turned `yaw` in plan about its own centre. With `z0`
+/// near two caps, deeper open space lies on its +z side, so its section, and
+/// the region holding its slab, lie toward z = 0.
 fn facade_in_hall(z0: f64, yaw: f64) -> Vec<BrushVolume> {
-    let mut brushes = hall(DVec3::new(70.0, 25.0, 60.0));
+    let mut brushes = hall(facade_hall());
     let (length, height, depth) = (31.0, 15.0, 0.3);
     let centre = DVec3::new(35.0, 0.0, z0 + depth / 2.0);
     let turn = DQuat::from_rotation_y(yaw);
@@ -296,13 +373,13 @@ fn facade_in_hall(z0: f64, yaw: f64) -> Vec<BrushVolume> {
 
 #[test]
 fn cell_size_cap_refuses_a_line_through_a_facade_slab_along_it_and_crosses_one_turned_away() {
-    // The line z = 26 m crosses the slab of a facade at z = 24 m. At 25° the
-    // slab lies along the cap's z lines and the line is refused; at 40° it
-    // lies across them and the line splits. The sliver guard passes the line
-    // either way, so the slab guard decides.
+    // The line at two caps crosses the slab of a facade 2 m short of it. At
+    // 25° the slab lies along the cap's z lines and the line is refused; at
+    // 40° it lies across them and the line splits. The sliver guard passes
+    // the line either way, so the slab guard decides.
     let line = 2.0 * CELL_SIZE_CAP_M;
     let decide = |yaw_degrees: f64| {
-        let brushes = facade_in_hall(24.0, yaw_degrees.to_radians());
+        let brushes = facade_in_hall(line - 2.0, yaw_degrees.to_radians());
         let classification = classify(&brushes).expect("classifies");
         let section = classification
             .clusters
@@ -322,7 +399,7 @@ fn cell_size_cap_refuses_a_line_through_a_facade_slab_along_it_and_crosses_one_t
         let face = section.frame.center.dot(outward) + section.frame.extents[2] * 0.5;
         let hall_air = RegionPolytope::from_aabb(&Aabb {
             min: DVec3::ZERO,
-            max: DVec3::new(70.0, 25.0, 60.0),
+            max: facade_hall(),
         });
         let region = hall_air.clip(outward, face).1;
         let bounds = region.vertex_aabb();
@@ -343,16 +420,17 @@ fn cell_size_cap_refuses_a_line_through_a_facade_slab_along_it_and_crosses_one_t
 
 #[test]
 fn cell_size_cap_puts_no_cell_boundary_inside_an_axis_aligned_facade_slab() {
-    // The grid line z = 26.0096 m lies inside the slab of an unturned facade
-    // at z = 25.9..26.2 m. The slab bounds the region it lies in, so the
-    // line would cut a sliver cell off it: no occluder-tier leaf beside the
-    // facade ends on it, while the line at 13 m still divides the region
-    // behind. Over the facade's top and past its ends the line splits as
-    // anywhere.
+    // The grid line at two caps lies inside the slab of an unturned facade
+    // from 0.11 m short of it to 0.19 m past it. The slab bounds the region
+    // it lies in, so the line would cut a sliver cell off it: no
+    // occluder-tier leaf beside the facade ends on it, while the line at one
+    // cap still divides the region behind. Over the facade's top and past its
+    // ends the line splits as anywhere.
     let line = 2.0 * CELL_SIZE_CAP_M;
-    let brushes = facade_in_hall(25.9, 0.0);
+    let z0 = line - 0.11;
+    let brushes = facade_in_hall(z0, 0.0);
     assert!(
-        line > 25.9 && line < 26.2,
+        line > z0 && line < z0 + 0.3,
         "precondition: the line is in the slab"
     );
     let partition = partition_with_occluders(&brushes, &[]).expect("partition builds");

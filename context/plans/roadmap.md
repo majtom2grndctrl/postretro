@@ -244,6 +244,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **NPC entities** — additional enemy archetypes and behavior beyond the shipped navigation, line-of-sight, and statechart foundation.
 - **Baked spatial-AI data** — the Epic 10 navmesh bake is the first layer of a broader compile-time hint set for intelligent enemies. Speculative extensions reuse the same additive PRL section: cover points, jump/drop links, hint nodes (sniper perches, ambush spots), and precomputed influence/flow data. Authored in TrenchBroom where useful, derived in prl-build where it follows from geometry.
 - **World Entities** — common base scripts for doors, pickups, trigger volumes, timeline/sequence helpers; a scripted ambush set piece with destruction choreography.
+- **Revisited-map state** — a player returning to a map finds it as they left it: dead enemies stay dead, opened doors stay open, taken pickups stay gone. Today every load is fresh; only per-seat carried state and mod slots cross a level change. Follows map-to-map transitions. The per-map record joins the session-state ledger (`networking.md` §Session-state ledger), so a host-migration handoff carries it too. Open: whether save games share its format.
 
 ### Moving and destructible geometry
 

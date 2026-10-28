@@ -1,0 +1,108 @@
+# occluder-first-partition — plan of record
+
+mode: resumable
+status: proposed
+read at: 05c549129
+
+Source cited by Decisions and Path re-read at 05c549129. Since the brief's 0380ba710, no partition, portal, visibility, geometry, cell-visibility, kinematic, hint, residency, affinity, chunk-list or fog source changed; `pipeline.rs`, `pack.rs` and `bvh_build.rs` changed only in unrelated lines. No Decision premise is false.
+
+## Corrections
+
+- Lightmap blocks group by `chart.leaf_index` in `lightmap_bake/cell_blocks.rs` → the grouping is `lightmap_bake/block_layout.rs` `pack_cell_blocks_within` (`by_cell.entry(chart.leaf_index)`); planning around it by remapping there (or, with the cell-tree chokepoint below, by `leaf_index` already holding the cell id).
+- `teleport_routes` "builds one hull per leaf … asserts leaf count equals cell count" → hulls are `Vec<Option<Hull>>`, built from `defining_planes` only for leaves passing `LeafPrefilter::On` (solid and exterior get `None`), and the count assertion runs only when teleporters exist. Guard row "one teleport hull per cell" is read as: one hull slot per cell, built from the cell's hull, `None` for solid and exterior cells as today. Same meaning; no restatement.
+- `visibility::…` lives in `visibility/mod.rs` (`find_exterior_leaves` :39, `encode_vis` :138, `encode_leaves` :180).
+- The brief's leaf-id consumer table omits `pipeline/cell_partition.rs` `plan_cell_partition`, which calls `encode_portals`, `encode_cells` and `resolve_streaming_hints` from `generated_portals` and `exterior_leaves`. It joins the chokepoint's consumers (runtime portals, cell ids).
+- `CLUSTER_FLAG_INDIVISIBLE_OVERSIZE` fires when one cell alone exceeds `DEFAULT_PRIMITIVE_LIMIT` BVH primitives (`canonical_partition.rs:176`), not a "leaf cap"; wording only.
+- Eye height 1.5 m: `player.ts` gives `eyeHeight: 0.5` above a capsule centre 1.0 m up, so 1.5 m above the feet; holds.
+- `stress-warren-showcase.map` is `--preset warren -o content/dev/maps/stress-warren-showcase.map` (`stress-warren.README.md`); `PRESETS["warren"]` names no output.
+- Cache keys reading tree, leaves or portals beyond those the brief names: `chunk_light_list_bake.rs` `update_bsp_fingerprint` and portal pairs, `direct_sh_bake.rs:741`, `sh_group.rs:415` (probe validity), `sdf_bake.rs:152` (leaf solidity), `lightmap_layer/cache_keys.rs` (`blocks[].cell_id`). R16 covers each that reads cells or portals; solidity-only readers stay on the full tree and keep hitting.
+- `resolve_streaming_hints` skips validation when a map has no hint regions; R27/R29 fixtures have hints, so unaffected.
+
+## Delegated answers
+
+- **Span sampling, blocking set, broad axes, slopes.** Every brush blocks: spans and depths are segment queries against a first-pass BSP of all static brushes (today's tree) and its exterior flood, so void bounds a span and no brush's class depends on another's (R6, R28 hold by construction). The span is taken on one line through the face's centre, offset a named small distance in front of it, along each broad horizontal axis both ways to the first solid or exterior leaf. The depth test casts along the face normal from the same point. The vertical test casts down from in front of the face's top. Extents come from the brush's own frame, the minimum-volume box over pairs of its perpendicular side normals (R5). When axes tie within epsilon, every tied face is a candidate broad face, and the brush occludes if any passes (R18; deterministic, order-free). An axis within 45° of up takes the vertical test; any other axis takes the horizontal one. Reason: one tree answers every query exactly, and the first pass is cheap beside the bakes.
+- **Clusters.** Touching means separating-axis distance ≤ 1 mm (`REGION_CLASSIFICATION_EPSILON`), over brushes exempt alone. A section is a connected set of members whose broad-face normals agree within a named angle. A member joins only when its extent along the section normal lies within the section's slab, so a pillar on tiles or a lamp proud of a facade stays out (R4). Coverage is the members' projected union, rasterized on a fixed grid in the section's own frame, over the bounding broad face. It starts at 50% and is strict (R12). The in-slab members' planes reach the occluder tier. Reason: orientation and slab tests separate the street map's corners and fixtures without a locality term in plane selection.
+- **Door recognition.** A pre-BSP geometric test on each mover's closed pose. It is a door when static solid touches (≤ 1 mm) both ends of at least one broad axis of its closed hull's broad face, and open space at least the floor deep lies in front of both broad faces. Only the hull planes parallel to its broad face feed the occluder tier, as non-solid splitters ranked after every occluder plane, so they cut only the occluder-tier leaf that holds the doorway (R7, R25, R8, R17: the door is never a blocking surface for classification). Sealing keeps `sealed_portal_ids_for_mover` unchanged against runtime portals. Reason: no two-pass rebuild; lift cars docked in a room touch only the floor.
+- **id-51 lattice.** The lattice stays at `LATTICE_FRACTIONS` unless the measured sweep reports id-51 misses on coarse cells. Then it scales with cell extent, up to a named spacing, inside this brief. Reason: the brief delegates the decision to the measurement.
+- **Solid and exterior sub-leaves.** Each one stays its own cell, as each leaf is today. Each occluder-tier leaf gets at most one interior cell, holding all its non-solid, non-exterior sub-leaves. Reason: this keeps every cell's hull convex for teleport hulls and fog masks; grouping is an optimisation the reported cell counts can call for later.
+
+## Approach notes (Path, not contract)
+
+- **Cell tree as the leaf → cell chokepoint.** After face extraction, buried lights and the full-tree exterior flood, derive a `BspTree` view with the same nodes, whose leaf children point at cell entries many to one. A cell entry holds the cell's hull (occluder-tier leaf planes for interior cells), bounds enclosing every member leaf, solidity, and the union of member faces; an exterior set comes with it in cell ids. `pipeline.rs` passes that view where it passes `result.tree` today, call-site edits only. Locator, fog masks, cell encode, face order, teleport hulls, AlphaLights, floods and cell visibility then read cell ids unchanged. Readers that need exact sub-leaf solidity (buried lights, face extraction) keep the full tree. Point classification on the view equals the full tree's, because the nodes are unchanged.
+- **Runtime portals.** Generated at occluder-tier nodes only, distributed to occluder-tier leaf pairs. Each pair is then pushed through both sides' subtrees, keeping fragments whose two sub-leaves are interior, under the unchanged `MIN_PORTAL_AREA_M2` cull. One portal is emitted per pair: the convex hull of the surviving fragments, coplanar inside the occluder-tier winding. Hull over-inclusion only widens visibility. Dropping solid parts keeps doors sealing under full coverage, and no portal touches a solid or exterior cell (R3, R22). The full tree's portals still feed the exterior flood.
+- **Plane selection.** Inside the tier, candidates are occluder planes only. The score adds a cross-section term: the area of the plane's slice through the current region, larger preferred, so the retaining wall's top beats its back face. Door splitters follow once no occluder plane qualifies. Below the tier, today's score is unchanged.
+- **Baselines.** Until task 5 wires the tier into `pipeline.rs`, prl-build output equals main. Before-bakes, eye-pose records, leak, door-sealing and exterior-point references are therefore recorded from this branch just before task 5, with no main worktree.
+
+## AC-to-proof
+
+Row ids: A = Automated classification, C = Correctness, F = Format/cache/content, M = Measured, H = Manual.
+
+| AC | Row | Proof | Status |
+|---|---|---|---|
+| A1 | Classification table (9 brushes) | `occluder_classify` unit tests, one per brush, at starting constants | achievable as stated |
+| A2 | occlusion-test.map through parse: wall occludes, pillars exempt (R24) | compiler test parsing the committed map | achievable as stated |
+| A3 | Two sealed rooms differ in cell; occlusion-test first room walls and ceiling occlude (R30) | classifier + cell-tree locate test | achievable as stated |
+| A4 | Room in a hall (R31) | classifier + locate test | achievable as stated |
+| A5 | Open-air maze; railing exempt | classifier + locate test | achievable as stated |
+| A6 | Each constant decides both ways | parameterised classifier tests, ±epsilon about each constant | achievable as stated |
+| A7 | Inclusive edges; coverage strict (R12) | classifier and cluster edge tests | achievable as stated |
+| A8 | 45° curb exempt, 45° wall fixture occludes (R5) | classifier test on rotated brushes | achievable as stated |
+| A9 | Reordering invariance (R6, R18) | test permuting brushes and cube sides over every classification fixture | achievable as stated |
+| A10 | Chain walls occlude in every order (R28) | test over all permutations of the chain | achievable as stated |
+| A11 | Strip facade bounds cells; spaced strips add no cell; both at 45° (R13, R23) | cluster + cell-count test | achievable as stated |
+| A12 | Corner facade arms and sign-joined facades (R26) | cluster section test | achievable as stated |
+| A13 | L lamp post and colonnade add no empty cell | cluster test vs fixture without them | achievable as stated |
+| A14 | Pillar on tiles, lamp on facade add no portal (R4) | cluster membership + portal-count test | achievable as stated |
+| A15 | Touching-step run adds no empty cell (R19) | cluster test | achievable as stated |
+| A16 | All-occluding fixture: each empty leaf its own cell; loads (R2) | compile + loader test | achievable as stated |
+| C1 | occlusion-modelled fixture: floor and pillar-top cells beyond the wall not visible; above-wall cell visible | compiler test running `postretro_visibility` walk on the loaded fixture; before-state failure recorded from the baseline build | achievable as stated |
+| C2 | Guard: orientation evidence for every portal; one teleport hull slot per cell | test over every fixture; teleport fixture test (see Corrections) | achievable as stated |
+| C3 | Teleporter across leaves couples its cell once (R9) | id-51 teleport route test | achievable as stated |
+| C4 | Multi-leaf cell: fog bit, faces, draw list, blocks, bounds, reachability (R20) | consumer test on one fixture | achievable as stated |
+| C5 | Guard: pillar interior solid cell, buried light excluded, buried faces culled, player cannot stand inside | compiler test + physics `SolidCells` test on the compiled fixture | achievable as stated |
+| C6 | Guard: no portal into solid or interior↔exterior; loads (R3, R22) | compile + loader tests on three fixtures | achievable as stated |
+| C7 | Guard: alcove sealed only by exempt brush (R15) | compile + walk + `SolidCells` test | achievable as stated |
+| C8 | Guard: leak ≥ 4× cull reported; sealed stays sealed; exterior points match pre-change reference (R14) | test against reference recorded from the baseline build | achievable as stated |
+| C9 | No-occluder sealed fixture: one cell, no portals, fallback (R1) | compile + loader + walk test | achievable as stated |
+| C10 | Guard: existing door fixtures block when closed, pass when open | extend `closet_reveal_compiler_loader_portal_ids_block_and_restore_interior` and door fixtures | achievable as stated |
+| C11 | Door in exempt wall seals its opening (R8); wall class same without door (R17) | door fixture tests | achievable as stated |
+| C12 | Rooms A, B, C: removing the door leaves C unchanged (R7) | compile pair test | achievable as stated |
+| C13 | Docked lift car leaves room unchanged (R25) | compile pair test | achievable as stated |
+| C14 | Hinted fixtures build, load, seams match (R27) | compile + loader test; regenerate committed `test-fixtures/sh-streaming-hinted-door.prl` | achievable as stated |
+| C15 | Guard: hinted fixtures' cells and portals match hint-free maps (R29) | compile pair test | achievable as stated |
+| C16 | Light 1 mm outside pillar kept, records far-side cell, floods reach it (R11) | compiler test | achievable as stated |
+| C17 | Light on occluder plane records front cell, floods reach back (R10) | compiler test | achievable as stated |
+| F1 | Guard: loader accepts multi-leaf cells, rejects mismatched face cell | loader test | achievable as stated |
+| F2 | Oversize face in multi-leaf cell stays in it, contiguous, loads (R21) | compiler test through the face cut | achievable as stated |
+| F3 | Guard, source gate: format layouts and versions, walk runtime, renderer unchanged | `git diff main --` over `crates/level-format`, `crates/visibility/src` (non-test), `crates/renderer`, reviewed at preflight | achievable as stated |
+| F4 | Guard, source gate: no `_occluder` or classifier map key; classifier outside the Quake adapter | grep at preflight | achievable as stated |
+| F5 | Guard, doc wording | grep + review at landing | achievable as stated |
+| F6 | Unchanged rebuild hits; regrouped cells or test-overridden classification miss cell/portal stages (R16) | cache test with a test-only constant override | achievable as stated |
+| F7 | Generator test pins street features; committed map matches | `tools/tests/test_gen_stress_map.py` | achievable as stated |
+| M1 | Guard: ray-cast hits ⊆ walk visible set at every pose; no step-cap trip | ray-grid sweep tool over five maps, world-space poses | measured pass/fail |
+| M2 | Guard: deferred texel area after ≤ before; zero stays zero | `walk_measurement` completed reads, before/after world-pose replay | measured pass/fail |
+| M3 | Guard: doors sealing before still seal | prl-build sealing log diff over swept maps | measured pass/fail |
+| M4 | Guard: leak status unchanged (small-opening flips reported) | prl-build log diff | measured pass/fail |
+| M5 | Reported: per-map structure counts and classifier output | report tool + prl-build log | reported |
+| M6 | Reported: per-pose walk and residency counts | sweep tool | reported |
+| M7 | Reported: arena cells, portals, riser/tread boundaries | sweep tool on `stress-warren-showcase` | reported |
+| H1 | Owner walks occlusion-test; no pillar behind the wall | owner, in-engine | manual |
+| H2 | Owner plays the street map | owner, in-engine | manual |
+| H3 | Live frame-cost runs at `measurement/frame-cost/poses.txt` | owner, named machine | manual |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | **Split, then first slice.** Commit A moves the test modules of `partition/brush_bsp.rs` and `portals.rs` to sibling files, a pure move. Commit B adds `partition/occluder_classify.rs` (individual-brush rule, own-frame extents, span and depth queries on a first-pass tree with its exterior flood), the occluder tier in `build_recursive`/`select_splitter` with the cross-section term, and occluder-tier portal generation, not wired into `pipeline.rs`. A compiler test on occlusion-test's brush set asserts R24 and that points below and above the wall top beyond the wall land in different occluder-tier leaves, and reports tier leaf and portal counts beside today's. If the wall-top plane does not carry, stop and report before task 3. | integrating executor | — | |
+| 2 | **Measurement tooling + baselines.** World-space pose record/replay for `walk_measurement` completed reads with deferred texel area; a ray-grid sweep over every swept map (tools or test modules); a structure-count report. Then record before-bakes, pose records, leak and door-sealing logs, and the R14 exterior-point reference for the five maps and fixtures. | delegated worker (tooling); integrating executor (baseline runs) | 1 (branch output still equals main) | |
+| 3 | **Classifier rows.** A1–A10 fixtures and tests; tune and report constants. | integrating executor | 1 | |
+| 4 | **Clusters.** Contact, sections, slab membership, coverage; A7 coverage edge, A11–A15. Stepped-solid check on the R19 fixture. | integrating executor | 3 | |
+| 5 | **Cell chokepoint + pipeline wiring.** Cell tree, cell-id runtime portals, `pipeline.rs` call sites, `plan_cell_partition`, every leaf-id consumer, cache keys. Rows A16, C1–C9, C16, C17, F1, F2, F6. | integrating executor | 2, 4 | |
+| 6 | **Doors.** Pre-BSP door recognition, broad-face splitters after occluder planes. Rows C10–C13. | integrating executor | 5 | |
+| 7 | **Streaming hints.** Runtime-portal resolution, regenerate the committed hinted PRL. Rows C14, C15. | integrating executor | 5 | |
+| 8 | **Street map.** Preset module beside `stress_zones.py`: elevated street over a promenade, upper opposite-direction deck, corners, barriers closing side streets, strip facades, an abutting row and a free-standing building, linked-group lamp posts holding a light, `.generated.ts` sidecar, README; committed map. Row F7. | delegated worker | — (runs alongside 3–7) | |
+| 9 | **Measured sweep + escalations.** After-bakes; M1–M7; id-51 lattice decision; stepped-solid escalation only if the arena shows riser or tread boundaries. | integrating executor | 5, 6, 7, 8 | |
+| 10 | **Gates.** F3, F4, F5 source and doc checks; `/preflight`; review loop; full gate. | integrating executor | 9 | |
+
+Hot paths: the runtime walk and renderer are untouched (F3). Compile cost adds one first-pass BSP plus classification queries before the second build; task 2's report includes partition-stage time before and after.

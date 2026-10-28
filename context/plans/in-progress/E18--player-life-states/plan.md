@@ -2,24 +2,26 @@
 
 mode: resumable
 status: proposed
-read at: a953f386f
+read at: 834a09c51
 
 ## Resume point
 
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. No implementation has started and no tests have run.
+`codex/player-life-states`. No implementation has started and no Rust tests or
+builds have run. A small presentation-clock design experiment is recorded below.
 
 The legacy brief has no compact/resumable header. Use resumable coordination
 because its seven tasks cross descriptor validation, prediction, replication,
 simulation ordering, respawn, and seat lifecycle contracts. This changes no
 Acceptance or Ordering requirement.
 
-Source verification is continuing with two read-only audit workers. The owner
-resolved the acceptance conflict on 2026-10-27 as recorded below. The amended
-timer requirements are feasible; no acceptance row currently needs restatement.
-Finish the cited-source audit and present this resumable plan for owner review
-before implementation. Proposed is not implementation approval.
+Source verification is complete, including two read-only audit workers. The
+owner resolved the acceptance conflict on 2026-10-27 as recorded below. The
+amended timer requirements are feasible; no acceptance row needs restatement.
+Await the owner's plan review before implementation. On approval, set
+`status: approved` and commit it before Task 1. Proposed is not implementation
+approval.
 
 ## Owner decisions
 
@@ -48,14 +50,28 @@ and recheck before starting; continue independent reads/edits in the meantime.
 - Task 5's Path excludes pawns with later respawn requests from overlap tests.
   AC13 instead says another live pawn blocks a placement and that earlier
   relocations affect later picks. Follow AC13: test all other live pawns at
-  their current positions, including pending later requests, and update the
-  Path wording with the final plan. This adjusts the approach without
+  their current positions, including pending later requests. The Path wording
+  has been corrected. This adjusts the approach without
   changing AC13 or O18.
 - Task 4's frame-final owner-slot read cannot witness a reset followed by
   another accepted snapshot in the same frame. Retain a local reset witness
   while applying accepted owner samples, and expose it to the display clock.
   A kept-name table remap changes no logical state identity and must preserve
   display continuity. No new wire field is needed.
+- Task 3 named `switch_start_refused` as a switch-request gate. It actually
+  gates activation starts during switch timing. Use the Declaration path in
+  `host_switch_timing::apply` for `switchWeapon` and preserve its correlated
+  refusal/active-slot resync; keep down-state firing independent. Consume raw
+  reload levels while suppressing refused reload work and charge cancellation.
+- Task 5's teleport arrival reuse needs canonical spawn capsule/eye and
+  integration-state restoration before ground classification. Carrying the
+  downed crouch capsule to a standing centre otherwise leaves the pawn airborne.
+  Preserve the placement foot anchor and apply the target profile coherently,
+  including the no-command remote path. The Path now calls this out.
+- Existing surface harnesses are precedents, not complete AC20 proof:
+  player-event `World` runs no movement/respawn, and the private teleporter
+  `Level` harness binds no seats and runs no player-event pass. Build a focused
+  two-seat production sim → player-event harness for the new consumer.
 
 ## Delegated answers and source findings
 
@@ -98,9 +114,52 @@ and recheck before starting; continue independent reads/edits in the meantime.
 - Seat harvest — `SeatTable::harvest_pawn_inner` returns early when Health,
   Reserve and Inventory are all absent. A life-state-only pawn must also count
   as harvestable when the carried name is added.
+- Health normalization — `set_health_absolute` rearms the death latch on
+  positive health, but maps NaN/negative health to zero. Respawn must first
+  warn-normalize invalid health to max, as AC13 requires.
+- Arrival consumers — owner reconcile, observer generation cuts, host camera
+  hold and `arrival_sound(NO_TELEPORTER)` support the proposed relocation/silence.
+- Client lifecycle — payload install and snapshot materialization are separate
+  rebuild callers. Both need table history; level reset/demotion must retire
+  history and local timer reset evidence alongside existing tuning.
+- Fire/charge — capability-aware liveness must not inherit the vault-only
+  `charge.interruptedBy.vault: false` exemption. The independent death-sweep,
+  host activation, client frame and charge-HUD sites remain required.
+- Proof harnesses — the relay uses production prediction/reconcile but no App
+  UI/eye construction. Set 75 ms explicitly each way (its default helper uses
+  45 ms); use App-local deterministic eye/timer proofs plus manual feel checks.
+- SDK regeneration — the existing generator command is
+  `cargo run -p postretro-sim --bin gen-script-types`; committed-type and mirror
+  tests already protect both runtime outputs. It counts as build work and
+  requires the process precheck.
 
-These findings are planning evidence, not implemented fixes. Complete the
-remaining cited-source audit before the owner reviews the plan.
+These findings are planning evidence, not implemented fixes. Current source
+still supports the brief's mechanisms and ownership boundaries; no additional
+false Decision premise was found.
+
+## Continuous display-clock design
+
+Use an `f64` millisecond integrator in a new App-side module. Let `D` be the
+previous display and `P` the current predicted elapsed-plus-alpha target. For
+a positive game-frame duration `dt`, advance by `dt * rate`, using a finite
+rate bounded above and strictly above zero. A proportional correction against
+`P - (D + dt)` gives ordinary frames rate 1, and absorbs target jumps without
+assigning `D` or clamping it to its previous value. Reseed only for real resets.
+Zero-duration frames return the previous value. Advance once per game frame;
+loading/frontend snapshot reads do not advance the gameplay clock.
+
+Planning experiment: with a 250 ms response time and rate bounds 0.25–1.25,
+both ±50 ms target corrections at 30, 60, 144 and 240 Hz advanced on every frame,
+including the UI's existing f32 conversion, and converged to under 0.016 ms
+error after two seconds. This validates the proposed design, not engine code.
+The exact response constants can be tuned during focused verification without
+weakening continuous progression or moving gameplay deadlines.
+
+The high-precision integrator avoids accumulated rounding; the UI's existing
+`SlotValue::Number(f32)` still has its normal sampling precision. Include
+rendered-value assertions at practical frame rates over the full 15-second
+consumer interval, as well as internal clock/rate invariants. This change
+does not widen the shared slot schema.
 
 ## AC-to-proof
 
@@ -140,7 +199,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | source audit, plan approval | not started |
+| 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approval | not started |
 | 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | not started |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | not started |
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | not started |
@@ -153,6 +212,22 @@ tests the shared substrate every subsequent task consumes. Tasks 2–4 run
 concurrently only after Task 1 passes; the executor coordinates their small
 shared-file edits. Each completed resumable task commits its proof and plan
 update together.
+
+## Ordering proof ownership
+
+These are required scenario allocations. Replace each with concrete executed
+test names/results as its task completes. Shared rows require proof at both
+listed boundaries; no allocation is a passing result.
+
+| Task | Required Ordering rows |
+|---|---|
+| 1 | O15 (set entry ticks), O26, O36, O39 (post-wait execution), O42 |
+| 2 | O9, O13, O16 (movement/look), O38, O40, O43 |
+| 3 | O11, O12, O16 (stage capture/fire), O35 |
+| 4 | O8, O14, O15 (millisecond reads), O24, O25, O27, O34, O37, O39 (millisecond reads) |
+| 5 | O3, O4, O10, O15 (respawn), O17, O18, O19, O20, O28, O29, O32, O33, O44 |
+| 6 | O6, O7, O15 (rejoin), O21, O22, O23, O30, O31, O41 |
+| 7 | O1, O2, O5; audit all O1–O44 names/results after integration |
 
 ## Performance and resource constraints
 

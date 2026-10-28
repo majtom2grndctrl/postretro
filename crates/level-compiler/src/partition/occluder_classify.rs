@@ -33,10 +33,10 @@ pub const OCCLUDER_SPAN_FRACTION: f64 = 0.5;
 /// the floor in front of its face: eye height 1.5 m plus jump reach.
 pub const OCCLUDER_SEE_OVER_M: f64 = 2.5;
 
-/// The see-over height the rule reads: `OCCLUDER_SEE_OVER_M`, or in tests a
-/// per-thread override that changes classification with every brush's
-/// geometry held fixed (pin R16).
-fn see_over_m() -> f64 {
+/// The see-over height the rule and the cluster roofline read:
+/// `OCCLUDER_SEE_OVER_M`, or in tests a per-thread override that changes
+/// classification with every brush's geometry held fixed (pin R16).
+pub(crate) fn see_over_m() -> f64 {
     #[cfg(test)]
     if let Some(height) = see_over_override::get() {
         return height;
@@ -335,12 +335,7 @@ pub(crate) fn judge_box(
         }
         verdict = rank(verdict, OccluderVerdict::NoOpenFace);
         for sign in [1.0, -1.0] {
-            let face = BroadFace {
-                normal: frame.axes[normal_axis] * sign,
-                center: frame.center
-                    + frame.axes[normal_axis] * (sign * frame.extents[normal_axis] * 0.5),
-            };
-            let face_verdict = face.judge(frame, broad, space);
+            let face_verdict = BroadFace::of(frame, normal_axis, sign).judge(frame, broad, space);
             if face_verdict == OccluderVerdict::Occludes {
                 return face_verdict;
             }
@@ -382,11 +377,7 @@ pub(crate) fn broad_face_open_depth(
     space: &OpenSpace<'_>,
 ) -> f64 {
     let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
-    let face = BroadFace {
-        normal: frame.axes[normal_axis] * outward,
-        center: frame.center
-            + frame.axes[normal_axis] * (outward * frame.extents[normal_axis] * 0.5),
-    };
+    let face = BroadFace::of(frame, normal_axis, outward);
     let (mut open, mut depth) = (0_usize, 0.0);
     for offsets in face.sample_offsets(frame, broad) {
         let probe = face.probe(offsets);
@@ -394,9 +385,55 @@ pub(crate) fn broad_face_open_depth(
             continue;
         }
         open += 1;
-        depth += PROBE_OFFSET_M + space.distance_to_blocking(probe, face.normal);
+        depth += face.open_depth(probe, space);
     }
     if open == 0 { 0.0 } else { depth / open as f64 }
+}
+
+/// The broad axis of `frame`'s box across `normal_axis` that takes the
+/// see-over test, within 45° of up; the more upright when both are, the
+/// first on a tie. `None` for a slab, whose broad axes are both horizontal.
+pub(crate) fn vertical_broad_axis(frame: &BrushFrame, normal_axis: usize) -> Option<usize> {
+    let upness = |axis: usize| frame.axes[axis].dot(DVec3::Y).abs();
+    [(normal_axis + 1) % 3, (normal_axis + 2) % 3]
+        .into_iter()
+        .filter(|&axis| upness(axis) >= VERTICAL_AXIS_MIN_COS)
+        .reduce(|best, axis| {
+            if upness(axis) > upness(best) {
+                axis
+            } else {
+                best
+            }
+        })
+}
+
+/// World height of the lowest floor the see-over test reads in front of the
+/// face of `frame`'s box whose outward normal is `outward` along
+/// `normal_axis`: the drop from in front of the top along `vertical_axis`,
+/// at each lattice sample that fronts open space at least the floor deep.
+/// `None` when no sample does. The same drops the rule casts, so it reads
+/// only geometry and the first pass.
+pub(crate) fn broad_face_floor(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    vertical_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> Option<f64> {
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    let slot = broad.iter().position(|&axis| axis == vertical_axis)?;
+    let face = BroadFace::of(frame, normal_axis, outward);
+    face.sample_offsets(frame, broad)
+        .filter(|&offsets| {
+            let probe = face.probe(offsets);
+            !space.is_blocked(probe) && at_least(face.open_depth(probe, space), OCCLUDER_FLOOR_M)
+        })
+        .map(|offsets| {
+            let (top, see_over) =
+                face.drop_from_top(frame, vertical_axis, offsets[1 - slot], space);
+            top.y - see_over
+        })
+        .reduce(f64::min)
 }
 
 /// True when `a` and `b` differ by no more than the rule's slack.
@@ -411,6 +448,16 @@ struct BroadFace {
 }
 
 impl BroadFace {
+    /// The face of `frame`'s box across `normal_axis` whose outward normal
+    /// points along `sign` (±1) times that axis.
+    fn of(frame: &BrushFrame, normal_axis: usize, sign: f64) -> Self {
+        let normal = frame.axes[normal_axis] * sign;
+        Self {
+            normal,
+            center: frame.center + normal * (frame.extents[normal_axis] * 0.5),
+        }
+    }
+
     /// The lattice's displacements from the face centre along its two broad
     /// axes, one pair per sample.
     fn sample_offsets(
@@ -431,6 +478,33 @@ impl BroadFace {
     /// Where a sample's probes start: in front of the face, off its plane.
     fn probe(&self, offsets: [DVec3; 2]) -> DVec3 {
         self.center + offsets[0] + offsets[1] + self.normal * PROBE_OFFSET_M
+    }
+
+    /// Open depth in front of the face from `probe`, along its normal.
+    fn open_depth(&self, probe: DVec3, space: &OpenSpace<'_>) -> f64 {
+        PROBE_OFFSET_M + space.distance_to_blocking(probe, self.normal)
+    }
+
+    /// The see-over drop: from just in front of the face's top along the
+    /// broad `axis`, displaced `across` along the other broad axis, down
+    /// through any ceiling or roof the top meets or sinks into, to the floor
+    /// below. No one sees over a top that solid closes, so the measure runs
+    /// from the top itself. Returns the top and the drop's length.
+    fn drop_from_top(
+        &self,
+        frame: &BrushFrame,
+        axis: usize,
+        across: DVec3,
+        space: &OpenSpace<'_>,
+    ) -> (DVec3, f64) {
+        let direction = frame.axes[axis];
+        let up = direction * direction.dot(DVec3::Y).signum();
+        let top =
+            self.center + across + up * (frame.extents[axis] * 0.5) + self.normal * PROBE_OFFSET_M;
+        // Start just under the top, so the drop never starts on its plane.
+        let start = top - DVec3::Y * PROBE_OFFSET_M;
+        let see_over = PROBE_OFFSET_M + space.distance_through_to_blocking(start, DVec3::NEG_Y);
+        (top, see_over)
     }
 
     /// Judge the face at each open sample of its lattice; it passes when
@@ -473,8 +547,7 @@ impl BroadFace {
         broad: [usize; 2],
         space: &OpenSpace<'_>,
     ) -> OccluderVerdict {
-        let depth = PROBE_OFFSET_M + space.distance_to_blocking(probe, self.normal);
-        if !at_least(depth, OCCLUDER_FLOOR_M) {
+        if !at_least(self.open_depth(probe, space), OCCLUDER_FLOOR_M) {
             return OccluderVerdict::NoOpenFace;
         }
         for (slot, axis) in broad.into_iter().enumerate() {
@@ -482,17 +555,7 @@ impl BroadFace {
             let length = frame.extents[axis];
             let upness = direction.dot(DVec3::Y);
             if upness.abs() >= VERTICAL_AXIS_MIN_COS {
-                // Start just under the top, and drop through any ceiling or
-                // roof the top meets or sinks into: no one sees over a top
-                // that solid closes, so the measure runs from the top itself.
-                let up = direction * upness.signum();
-                let top = self.center
-                    + offsets[1 - slot]
-                    + up * (length * 0.5)
-                    + self.normal * PROBE_OFFSET_M;
-                let start = top - DVec3::Y * PROBE_OFFSET_M;
-                let see_over =
-                    PROBE_OFFSET_M + space.distance_through_to_blocking(start, DVec3::NEG_Y);
+                let (_, see_over) = self.drop_from_top(frame, axis, offsets[1 - slot], space);
                 if !at_least(see_over, see_over_m()) {
                     return OccluderVerdict::LowTop;
                 }

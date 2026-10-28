@@ -3,12 +3,15 @@ use super::classification_test_fixtures::{
 };
 use crate::map_data::BrushVolume;
 use crate::partition::TierRole;
+use crate::partition::occluder_classify::OCCLUDER_SEE_OVER_M;
 use crate::partition::occluder_classify::test_fixtures::Edge;
 use crate::partition::occluder_classify::{OccluderClassification, OccluderVerdict};
 use crate::partition::occluder_cluster::test_fixtures::{
     self as fixtures, ClusterFixture, STEP_RUN_STEPS,
 };
-use crate::partition::occluder_cluster::{OCCLUDER_COVERAGE_FRACTION, Section};
+use crate::partition::occluder_cluster::{
+    COVERAGE_GRID_CELLS, OCCLUDER_COVERAGE_FRACTION, Section,
+};
 
 const TURN: f64 = std::f64::consts::FRAC_PI_4;
 
@@ -151,9 +154,11 @@ fn report(name: &str, brushes: &[BrushVolume], classification: &OccluderClassifi
     );
     for section in sections {
         println!(
-            "  section {:?} n={:.3?} extents {:.2?} box {:?} coverage {:.3} occludes {}",
+            "  section {:?} n={:.3?} centre {:.2?} extents {:.2?} box {:?} coverage {:.3} \
+             occludes {}",
             section.members,
             section.normal,
+            section.frame.center,
             section.extents,
             section.box_verdict,
             section.coverage,
@@ -334,6 +339,92 @@ fn facades_joined_by_a_touching_sign_each_bound_cells() {
     assert_eq!(occluding.len(), 2, "{occluding:#?}");
     assert_added_stay_exempt(&cf, &classification);
     assert_apart(&cf.fixture);
+}
+
+// Roofline coverage (index.md §Decisions, Clusters; owner ruling after
+// Task 9): a section's face counts each column up to the higher of its
+// solid and the see-over height above the floor in front.
+
+#[test]
+fn abutting_facades_of_mixed_heights_occlude_under_their_roofline() {
+    let cf = fixtures::mixed_height_row();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(
+        sections.len(),
+        1,
+        "one section holds the row: {sections:#?}"
+    );
+    let section = sections[0];
+    assert_eq!(section.box_verdict, OccluderVerdict::Occludes);
+
+    // Each frontage alone, and the row over its bounding box (the rule
+    // before the roofline), from the strips' own areas.
+    let area = |rects: &[[f64; 4]]| -> f64 {
+        rects
+            .iter()
+            .map(|[a0, a1, y0, y1]| (a1 - a0) * (y1 - y0))
+            .sum()
+    };
+    let (mut solid, mut length, mut height) = (0.0, 0.0_f64, 0.0_f64);
+    for (l, h) in fixtures::MIXED_ROW_FRONTAGES {
+        let strips = area(&fixtures::facade_rects(l, h));
+        assert!(
+            strips / (l * h) > 0.6,
+            "a {l} × {h} m frontage covers its own face"
+        );
+        solid += strips;
+        length += l;
+        height = height.max(h);
+    }
+    let bounding_box_share = solid / (length * height);
+    assert!(
+        bounding_box_share <= OCCLUDER_COVERAGE_FRACTION,
+        "over its bounding box the row covers {bounding_box_share:.3}"
+    );
+    // Under the roofline the row reads as its frontages do.
+    let roofline_share: f64 = solid
+        / fixtures::MIXED_ROW_FRONTAGES
+            .iter()
+            .map(|(l, h)| l * h)
+            .sum::<f64>();
+    assert!(
+        (section.coverage - roofline_share).abs() < 0.01,
+        "coverage {:.3} vs the frontages' {roofline_share:.3}",
+        section.coverage
+    );
+    assert!(section.occludes, "{section:#?}");
+    assert_apart(&cf.fixture);
+}
+
+#[test]
+fn low_wall_between_tall_posts_stays_exempt_under_the_roofline() {
+    // Each wall column counts up to the 2.5 m see-over height, not its 1 m
+    // top: the posts fill their columns, and the wall columns cover 1 of the
+    // 2.5 m counted, 0.457 of the counted cells. Counted only to each
+    // column's own solid, the wall would read solid. Every edge and the
+    // line land on cell boundaries, so the share is exact.
+    let cf = fixtures::low_wall_between_posts();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(section.box_verdict, OccluderVerdict::Occludes);
+    let n = COVERAGE_GRID_CELLS as f64;
+    let rows = |metres: f64| metres / fixtures::LOW_WALL_POST_HEIGHT_M * n;
+    let post_columns = fixtures::LOW_WALL_POSTS.len() as f64 * fixtures::LOW_WALL_POST_M
+        / fixtures::LOW_WALL_LENGTH_M
+        * n;
+    let wall_columns = n - post_columns;
+    let expected = (post_columns * n + wall_columns * rows(fixtures::LOW_WALL_HEIGHT_M))
+        / (post_columns * n + wall_columns * rows(OCCLUDER_SEE_OVER_M));
+    assert!(
+        (section.coverage - expected).abs() < 1e-9,
+        "coverage {:.4} vs {expected:.4}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
 }
 
 // A13: sparse clusters whose bounding face passes the rule add no cell.

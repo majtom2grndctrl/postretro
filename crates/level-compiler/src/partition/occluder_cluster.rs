@@ -1,6 +1,6 @@
 // Occluder clusters: touching brushes each exempt alone, judged per
 // near-planar section by the occluder rule on the section's bounding box and
-// by how much of that box's broad face their solid covers.
+// by how much of that box's broad face, under its roofline, their solid covers.
 // See: context/plans/in-progress/occluder-first-partition/research.md §Clusters
 
 pub(crate) mod contact;
@@ -11,19 +11,20 @@ use glam::{DVec2, DVec3};
 
 use super::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use super::occluder_classify::{
-    BrushFrame, OccluderVerdict, OpenSpace, broad_face_open_depth, brush_polytope, judge_box,
-    within_rule_slack,
+    BrushFrame, OccluderVerdict, OpenSpace, broad_face_floor, broad_face_open_depth,
+    brush_polytope, judge_box, see_over_m, vertical_broad_axis, within_rule_slack,
 };
 use crate::map_data::BrushVolume;
 use contact::{Hull, touching_pairs};
-use coverage::covered_cells;
+use coverage::{SeeOverLine, covered_cells};
 use section::{Member, find_sections};
 
 pub use coverage::COVERAGE_GRID_CELLS;
 
 /// A section occludes only when its solid covers strictly more than this
-/// share of its bounding broad face: "mostly solid". Between a colonnade under
-/// a beam (about a third) and a facade a third windows (about two thirds).
+/// share of its bounding broad face under its roofline: "mostly solid".
+/// Between a colonnade under a beam (about a third) and a facade a third
+/// windows (about two thirds).
 pub const OCCLUDER_COVERAGE_FRACTION: f64 = 0.5;
 
 /// Axis of a section's frame across its slab.
@@ -58,7 +59,9 @@ pub struct Section {
     pub(crate) frame: BrushFrame,
     /// The individual occluder rule on the bounding box.
     pub box_verdict: OccluderVerdict,
-    /// Share of the bounding broad face the members cover, on the grid.
+    /// Share of the bounding broad face the members cover, on the grid:
+    /// of the cells under its roofline when the face has a vertical axis
+    /// (see `face_coverage`), of every cell when it is a slab's.
     pub coverage: f64,
     pub occludes: bool,
     /// Outward normal of the one broad face that bounds the section in the
@@ -160,22 +163,16 @@ fn judge_cluster(
         .map(|shape| {
             let frame = shape.frame;
             let box_verdict = judge_box(&frame, [SECTION_NORMAL_AXIS], space);
-            let half = DVec2::new(frame.extents[0], frame.extents[1]) * 0.5;
-            let centre = DVec2::new(
-                frame.center.dot(frame.axes[0]),
-                frame.center.dot(frame.axes[1]),
-            );
             let solids: Vec<&[DVec3]> =
                 shape.members.iter().map(|&m| members[m].vertices).collect();
-            let (covered, total) = covered_cells(
-                [frame.axes[0], frame.axes[1]],
-                centre - half,
-                half * 2.0,
-                &solids,
-            );
-            let coverage = covered as f64 / total as f64;
+            let (covered, counted) = face_coverage(&frame, &solids, space);
+            let coverage = if counted == 0 {
+                0.0
+            } else {
+                covered as f64 / counted as f64
+            };
             // Strict, and exact on the integer cell counts (pin R12).
-            let dense = covered as f64 > OCCLUDER_COVERAGE_FRACTION * total as f64;
+            let dense = covered as f64 > OCCLUDER_COVERAGE_FRACTION * counted as f64;
             let mut in_slab: Vec<usize> = shape.members.iter().map(|&m| members[m].brush).collect();
             in_slab.sort_unstable();
             let bounding_face = bounding_face(&frame, space);
@@ -203,6 +200,43 @@ fn judge_cluster(
         members: cluster,
         sections,
     }
+}
+
+/// The section's covered and counted cells over its bounding broad face.
+///
+/// A face with a vertical broad axis (within 45° of up, the rule's vertical
+/// test) counts under its roofline: each column along the horizontal axis
+/// counts up to the higher of its members' solid and the see-over height
+/// above the floor in front. The floor is the lowest the see-over test reads
+/// in front of either broad face, as the rule passes from either. So sky over
+/// a lower neighbour's roof does not count against a row, while a low wall
+/// between tall posts, or a gap with no solid, still counts to see-over
+/// height. A slab's face, both broad axes horizontal, or a face with no
+/// sample fronting open space, counts every cell.
+fn face_coverage(frame: &BrushFrame, solids: &[&[DVec3]], space: &OpenSpace<'_>) -> (usize, usize) {
+    let normal = frame.axes[SECTION_NORMAL_AXIS];
+    // `[along, up]` broad axes with the up one's sign, and the see-over line.
+    let ([along, up], up_sign, roofline) = match vertical_broad_axis(frame, SECTION_NORMAL_AXIS) {
+        Some(up) => {
+            let floor = [1.0, -1.0]
+                .into_iter()
+                .filter_map(|outward| {
+                    broad_face_floor(frame, SECTION_NORMAL_AXIS, up, outward, space)
+                })
+                .reduce(f64::min);
+            let roofline = floor.map(|floor| SeeOverLine {
+                height: floor + see_over_m(),
+                plane_y: frame.center.dot(normal) * normal.y,
+            });
+            let along = 3 - SECTION_NORMAL_AXIS - up;
+            ([along, up], frame.axes[up].y.signum(), roofline)
+        }
+        None => ([0, 1], 1.0, None),
+    };
+    let axes = [frame.axes[along], frame.axes[up] * up_sign];
+    let extent = DVec2::new(frame.extents[along], frame.extents[up]);
+    let lo = DVec2::new(frame.center.dot(axes[0]), frame.center.dot(axes[1])) - extent * 0.5;
+    covered_cells(axes, lo, extent, solids, roofline.as_ref())
 }
 
 /// The section's bounding face: of its two broad faces, the one fronting the

@@ -1,6 +1,7 @@
-// Cluster-section coverage: the share of a section's bounding broad face its
-// members' solid covers, rasterized on a fixed grid in the section's frame.
-// See: context/plans/in-progress/occluder-first-partition/research.md §Clusters
+// Cluster-section coverage: the share of a section's bounding broad face,
+// under its roofline, that its members' solid covers, rasterized on a fixed
+// grid in the section's frame.
+// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions (Clusters)
 
 use glam::{DVec2, DVec3};
 
@@ -14,15 +15,32 @@ pub const COVERAGE_GRID_CELLS: usize = 240;
 /// boundary never claims the cells on its other side.
 const INSIDE_EPSILON: f64 = 1e-9;
 
-/// Cells of the `COVERAGE_GRID_CELLS`² grid over the face spanned by `u` and
-/// `v` (unit, perpendicular) whose centres some member covers, as
-/// `(covered, total)`. The face runs `lo..lo + extent` along each axis; each
-/// member is its vertices, projected onto the face as its silhouette.
+/// The see-over line across a face whose second axis points up: the face's
+/// points at world height `height`. A face point at coordinates `(s, t)`
+/// stands at world height `plane_y + s·axes[0].y + t·axes[1].y`, where
+/// `plane_y` is the height the face plane's offset along its normal adds.
+pub(super) struct SeeOverLine {
+    pub(super) height: f64,
+    pub(super) plane_y: f64,
+}
+
+/// Cells of the `COVERAGE_GRID_CELLS`² grid over the face spanned by `axes`
+/// (unit, perpendicular) that count, and those of them whose centres some
+/// member covers, as `(covered, counted)`. The face runs `lo..lo + extent`
+/// along each axis; each member is its vertices, projected onto the face as
+/// its silhouette.
+///
+/// With no `roofline` every cell counts. With one, `axes[1]` points up and
+/// each column along `axes[0]` counts from the face's foot to the higher of
+/// its highest covered cell and the see-over line at the column's centre:
+/// sky over a lower roof does not count, while a column whose solid stops
+/// under the line, or that holds none, still counts up to it.
 pub(super) fn covered_cells(
     axes: [DVec3; 2],
     lo: DVec2,
     extent: DVec2,
     members: &[&[DVec3]],
+    roofline: Option<&SeeOverLine>,
 ) -> (usize, usize) {
     let n = COVERAGE_GRID_CELLS;
     let total = n * n;
@@ -60,7 +78,25 @@ pub(super) fn covered_cells(
             }
         }
     }
-    (covered.iter().filter(|&&cell| cell).count(), total)
+    let covered_count = covered.iter().filter(|&&cell| cell).count();
+    let Some(line) = roofline else {
+        return (covered_count, total);
+    };
+    let counted = (0..n)
+        .map(|i| {
+            let solid_top = (0..n)
+                .rev()
+                .find(|&j| covered[j * n + i])
+                .map_or(0, |j| j + 1);
+            let s = lo.x + (i as f64 + 0.5) / n as f64 * extent.x;
+            let t = (line.height - line.plane_y - s * axes[0].y) / axes[1].y;
+            // Rows whose centres lie at or under the line, within the face.
+            let rows = (t - lo.y) / extent.y * n as f64;
+            let under_line = (rows + 0.5 + INSIDE_EPSILON).floor().clamp(0.0, n as f64) as usize;
+            solid_top.max(under_line)
+        })
+        .sum();
+    (covered_count, counted)
 }
 
 /// True when `p` lies inside the counter-clockwise convex `polygon`.
@@ -76,7 +112,20 @@ fn inside(polygon: &[DVec2], p: DVec2) -> bool {
 /// dropped.
 fn convex_hull(mut points: Vec<DVec2>) -> Vec<DVec2> {
     points.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
-    points.dedup_by(|a, b| (*a - *b).abs().max_element() <= INSIDE_EPSILON);
+    // Every near-duplicate goes, not only neighbours: rounding can sort the
+    // copies of one corner apart, and the chain would then pop a true corner
+    // across their near-zero spacing. The first copy in sorted order stays,
+    // so the result does not depend on vertex order.
+    let mut unique: Vec<DVec2> = Vec::with_capacity(points.len());
+    for point in points {
+        if !unique
+            .iter()
+            .any(|kept| (point - *kept).abs().max_element() <= INSIDE_EPSILON)
+        {
+            unique.push(point);
+        }
+    }
+    let points = unique;
     if points.len() < 3 {
         return points;
     }
@@ -99,4 +148,104 @@ fn convex_hull(mut points: Vec<DVec2>) -> Vec<DVec2> {
         hull.pop();
     }
     hull
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A box's corners from `lo` to `hi` on the face's `(along, up)` plane.
+    fn rect(lo: DVec2, hi: DVec2) -> Vec<DVec3> {
+        [lo.x, hi.x]
+            .into_iter()
+            .flat_map(|x| [lo.y, hi.y].map(|y| DVec3::new(x, y, 0.0)))
+            .flat_map(|p| [p, p + DVec3::Z])
+            .collect()
+    }
+
+    /// Coverage over a face 24 m along and 6 m up, grid cells 0.1 × 0.025 m,
+    /// standing on the floor with the see-over line 2.5 m up when
+    /// `roofline`.
+    fn cells(members: &[Vec<DVec3>], roofline: bool) -> (usize, usize) {
+        let members: Vec<&[DVec3]> = members.iter().map(Vec::as_slice).collect();
+        let line = SeeOverLine {
+            height: 2.5,
+            plane_y: 0.0,
+        };
+        covered_cells(
+            [DVec3::X, DVec3::Y],
+            DVec2::ZERO,
+            DVec2::new(24.0, 6.0),
+            &members,
+            roofline.then_some(&line),
+        )
+    }
+
+    #[test]
+    fn roofline_counts_each_column_up_to_its_solid_or_the_see_over_line() {
+        // Columns 0..60 under a 6 m tower, 60..120 under a 4 m one, 120..180
+        // under a 1 m wall, 180..240 empty.
+        let members = [
+            rect(DVec2::ZERO, DVec2::new(6.0, 6.0)),
+            rect(DVec2::new(6.0, 0.0), DVec2::new(12.0, 4.0)),
+            rect(DVec2::new(12.0, 0.0), DVec2::new(18.0, 1.0)),
+        ];
+        let (covered, counted) = cells(&members, true);
+        assert_eq!(covered, 60 * 240 + 60 * 160 + 60 * 40);
+        assert_eq!(counted, 60 * 240 + 60 * 160 + 60 * 100 + 60 * 100);
+    }
+
+    // Regression: a pier whose clipped corners carried rounding of up to
+    // 1e-12 m rasterized as a triangle. Near-duplicate projections that did
+    // not sort next to each other survived the dedup, and the hull popped a
+    // true corner across their near-zero spacing.
+    #[test]
+    fn silhouette_keeps_every_corner_when_duplicate_corners_differ_by_rounding() {
+        // A pier 1 × 15 m of a facade, its corners as its brush hull lists
+        // them, once per facet.
+        let (x0, x1) = (31.400000000000002, 32.400000000000006);
+        let noisy = [
+            (x1, 0.0, 20.0),
+            (x1, 0.0, 20.3),
+            (x1, 15.0, 20.3),
+            (x1, 15.0, 20.0),
+            (x0, 15.0, 20.0),
+            (x0, 15.0, 20.3),
+            (x0, 0.0, 20.3),
+            (x0, 0.0, 20.0),
+            (32.40000000000066, 15.0, 20.0),
+            (32.400000000000425, 15.0, 20.3),
+            (31.400000000000635, 15.0, 20.3),
+            (31.400000000000823, 15.0, 20.0),
+            (31.400000000000635, 0.0, 20.0),
+            (31.400000000000823, 0.0, 20.3),
+            (32.40000000000067, 0.0, 20.3),
+            (32.40000000000043, 0.0, 20.0),
+            (31.40000000000073, 0.0, 20.3),
+            (31.40000000000073, 15.0, 20.3),
+            (32.400000000000546, 15.0, 20.3),
+            (32.400000000000546, 0.0, 20.3),
+            (31.400000000000727, 15.0, 20.0),
+            (31.400000000000727, 0.0, 20.0),
+            (32.400000000000546, 0.0, 20.0),
+            (32.400000000000546, 15.0, 20.0),
+        ];
+        let pier: Vec<DVec3> = noisy.map(|(x, y, z)| DVec3::new(x, y, z)).to_vec();
+        let (covered, _) = covered_cells(
+            [DVec3::X, DVec3::Y],
+            DVec2::new(8.0, 0.0),
+            DVec2::new(45.0, 21.0),
+            &[&pier],
+            None,
+        );
+        // Columns 125..=129 (centres 23.53..24.28 m along), rows 0..171
+        // (centres up to 14.96 m).
+        assert_eq!(covered, 5 * 171);
+    }
+
+    #[test]
+    fn no_roofline_counts_every_cell_of_the_face() {
+        let members = [rect(DVec2::ZERO, DVec2::new(6.0, 6.0))];
+        assert_eq!(cells(&members, false), (60 * 240, 240 * 240));
+    }
 }

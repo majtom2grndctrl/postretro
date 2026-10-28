@@ -1,6 +1,6 @@
-// Synthetic brush sets for occluder clusters: strip facades, corners, lamps,
-// colonnades, tiled floors and step runs, each split into the room without
-// the row's brushes and the brushes the row adds.
+// Synthetic brush sets for occluder clusters: strip facades, corners, mixed-
+// height rows, lamps, colonnades, low walls, tiled floors and step runs, each
+// split into the room without the row's brushes and the brushes the row adds.
 // See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
 
 use std::ops::Range;
@@ -87,6 +87,8 @@ pub(crate) fn cluster_fixtures() -> Vec<ClusterFixture> {
         spaced_strips().turned(std::f64::consts::FRAC_PI_4),
         corner_facade(),
         joined_facades(),
+        mixed_height_row(),
+        low_wall_between_posts(),
         lamp_post_in_alcove(),
         colonnade(),
         tiled_floor_with_pillar(),
@@ -231,6 +233,72 @@ pub(crate) fn joined_facades() -> ClusterFixture {
     ]);
     fixture
 }
+
+/// The mixed-height row's frontages along x, as `(length, height)`: a long
+/// 16 m building abutting a short 21 m one. Each covers about 63% of its
+/// own face, but over the row's bounding box the sky above the lower roof
+/// leaves under half covered.
+pub(crate) const MIXED_ROW_FRONTAGES: [(f64, f64); 2] = [(40.0, 16.0), (5.0, 21.0)];
+
+/// Where the mixed-height row starts along x.
+const MIXED_ROW_X0: f64 = 8.0;
+
+/// The mixed-height row's slab starts at this z.
+const MIXED_ROW_Z0: f64 = 20.0;
+
+/// The `MIXED_ROW_FRONTAGES` as strip facades touching end to end across a
+/// hall 60 × 30 × 40 m, their slab at z = 20 m (owner ruling after Task 9).
+pub(crate) fn mixed_height_row() -> ClusterFixture {
+    let mut fixture = ClusterFixture::new("mixed-height row", hall(DVec3::new(60.0, 30.0, 40.0)));
+    let mut x0 = MIXED_ROW_X0;
+    for (length, height) in MIXED_ROW_FRONTAGES {
+        fixture.add(facade_along_x(x0, MIXED_ROW_Z0, length, height));
+        x0 += length;
+    }
+    fixture.fixture.apart.extend([
+        (DVec3::new(20.0, 1.5, 15.0), DVec3::new(20.0, 1.5, 25.0)),
+        (DVec3::new(50.5, 1.5, 15.0), DVec3::new(50.5, 1.5, 25.0)),
+    ]);
+    fixture
+}
+
+/// A wall 1 m tall between posts 0.3 m square and 5 m tall, at 8 m centres
+/// with one flush with each end, 24 m long across a hall 40 × 10 × 30 m:
+/// every brush is under the floor on a broad axis, and the bounding face,
+/// 24 × 5 m, passes the occluder rule.
+pub(crate) fn low_wall_between_posts() -> ClusterFixture {
+    let (x0, z0) = (8.0, 15.0);
+    let depth = DVec3::Z * LOW_WALL_POST_M;
+    let posts = LOW_WALL_POSTS;
+    let mut fixture = ClusterFixture::new(
+        "low wall between tall posts",
+        hall(DVec3::new(40.0, 10.0, 30.0)),
+    );
+    fixture.add(posts.map(|a| {
+        box_brush(
+            DVec3::new(x0 + a, 0.0, z0),
+            DVec3::new(x0 + a + LOW_WALL_POST_M, LOW_WALL_POST_HEIGHT_M, z0) + depth,
+        )
+    }));
+    fixture.add(posts.windows(2).map(|pair| {
+        box_brush(
+            DVec3::new(x0 + pair[0] + LOW_WALL_POST_M, 0.0, z0),
+            DVec3::new(x0 + pair[1], LOW_WALL_HEIGHT_M, z0) + depth,
+        )
+    }));
+    fixture
+}
+
+/// The low wall's length, and where its posts start along it.
+pub(crate) const LOW_WALL_LENGTH_M: f64 = 24.0;
+pub(crate) const LOW_WALL_POSTS: [f64; 4] = [0.0, 8.0, 16.0, LOW_WALL_LENGTH_M - LOW_WALL_POST_M];
+
+/// The low wall's posts: width and depth, and height.
+pub(crate) const LOW_WALL_POST_M: f64 = 0.3;
+pub(crate) const LOW_WALL_POST_HEIGHT_M: f64 = 5.0;
+
+/// The low wall's height, under the 2.5 m see-over height.
+pub(crate) const LOW_WALL_HEIGHT_M: f64 = 1.0;
 
 /// The strip facade with a lamp 0.3 m deep touching a pier's street face:
 /// its broad face agrees with the facade's but it stands proud of the slab

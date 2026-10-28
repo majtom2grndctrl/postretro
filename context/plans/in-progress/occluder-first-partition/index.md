@@ -18,6 +18,7 @@ Raised by the owner from an observed defect on `occlusion-test.map`, with the st
 - **Occlusion value is the test, not sealing.** An exempt brush between two rooms may only over-include visibility. Automatic classification never makes the walk under-include or a sealed map leak, except through a crack near the portal-area cull, whose portals and leak status can change either way under the unchanged cull (pin R14).
 - **Doors keep sealing.** Every doorway a closed door seals today stays sealed, and a door in a wall of exempt brushes seals its opening. Movers that seal no doorway (lift cars, platforms) add no cell boundary.
 - **Stepped solids escalate through their hulls.** If the arena sweep shows riser or tread planes slicing the room, stacked and stepped solids occlude through their outer hull planes instead, added alongside clusters. It is built only then (`research.md` §Stacked and stepped solids).
+- **Cells are size-capped.** Owner ruling after the Task 9 sweep: non-solid cap splitters, like q3map's blocksize, divide any occluder-tier leaf larger than a named cap, ranked after occluder and door planes. Without a cap, one interior cell holds everything exempt brushes used to cut apart, so it draws whole and its residency cannot divide (`research.md` §Cell size; `plan.md` §Block).
 - **Streaming hints never change visibility.** Hints stay outside cell construction and never change cells, portals or visible sets, per `build_pipeline.md` §Entity resolution. A seam that matches no runtime portal fails the build by name (`research.md` §Streaming hints).
 - **The baker is the fix.** No runtime occluder culling and no full PVS bake.
 - **No wire-format change.** Every PRL section keeps its layout and version constant; the runtime already reads cell ids everywhere, and the locator's leaf children name cells many to one (`research.md` §Wire format).
@@ -30,7 +31,6 @@ Raised by the owner from an observed defect on `occlusion-test.map`, with the st
   - Re-merging coplanar face fragments: the follow-up `face-fragment-remerge`, opened if the owner judges the per-map rise in face and lightmap-chart counts significant. Occluder planes crossing open space split the faces they pass, and any door or hull splitters add more, so both counts may rise.
   - The roadmap's author-defined Sector Graph. The runtime cell, portal and locator contracts stay, so it is not foreclosed.
   - A per-project setting for the classifier constants: a later option if a game's movement outreaches the see-over height.
-  - A cell-size cap, like q3map's blocksize: follow-up `occluder-cell-size-cap`. Cells stay unbounded, so a long street or a hall of exempt pillars can become one cell too coarse to divide for streaming (`research.md` §Cell size).
   - Changing `MIN_PORTAL_AREA_M2`: the cull stays as it is on every portal set, so its effect on portals stays separable from the partition's in the measurements. Retiring it is the follow-up `portal-area-cut-retirement`; the lake-slot hidden sightline stays until then (`research.md` §`MIN_PORTAL_AREA_M2`).
 
 ## Acceptance

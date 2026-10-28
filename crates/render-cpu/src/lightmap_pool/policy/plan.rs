@@ -26,7 +26,9 @@ pub struct PlannedEviction {
 
 /// A new pool generation: `to_layers + 1` array layers (the last is the
 /// spare). Copy layers `0..from_layers` of the old generation at origin zero,
-/// then retire the old one until submitted-work-done.
+/// then retire the old one until submitted-work-done. `to_layers` reserves
+/// the whole targeted mandatory and visible demand with headroom, so it can
+/// exceed what the drain's own pairs occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolGrowth {
     pub from_layers: u32,
@@ -89,8 +91,9 @@ pub struct DrainPlan {
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
     /// still retiring, or a layer past the device limit: a counted miss.
-    /// Transient while retiring; at the device limit it lasts while that
-    /// pair stays wanted and the resident set leaves it no room.
+    /// Transient while retiring, and only once demand outgrew the last
+    /// growth's reserve; at the device limit it lasts while that pair stays
+    /// wanted and the resident set leaves it no room.
     pub deferred: Vec<u32>,
     /// A pair was deferred because the pool holds the device's every usable
     /// layer. Later pairs this drain at least that large skipped the victim

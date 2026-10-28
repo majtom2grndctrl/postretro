@@ -86,8 +86,27 @@ fn assert_state(model: &LightmapPoolModel, classes: &[Option<LightmapBlockClass>
     }
 }
 
+/// Layers a from-scratch pack of the mandatory and visible blocks fills,
+/// tallest first, and every block's all-resident layers.
+fn packed_layers(extents: &[(u32, u32)], classes: &[Option<LightmapBlockClass>]) -> (u32, u32) {
+    let aligned = |&(w, h): &(u32, u32)| (w.next_multiple_of(ALIGN), h.next_multiple_of(ALIGN));
+    let mut demand: Vec<(u32, u32)> = extents
+        .iter()
+        .zip(classes)
+        .filter(|(_, class)| never_refused(**class))
+        .map(|(extent, _)| aligned(extent))
+        .collect();
+    demand.sort_unstable_by_key(|&(w, h)| (std::cmp::Reverse(h), std::cmp::Reverse(w)));
+    let layers = |set: &[(u32, u32)]| {
+        crate::lightmap_pool::place_all_resident(set, ALIGN, EDGE)
+            .unwrap()
+            .layer_count
+    };
+    (layers(&demand), layers(extents))
+}
+
 fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
-    let mut model = LightmapPoolModel::new(extents, ALIGN, EDGE, cap).unwrap();
+    let mut model = LightmapPoolModel::new(extents.clone(), ALIGN, EDGE, cap).unwrap();
     let mut gpu = GpuMirror::new(&model);
     let mut classes: Vec<Option<LightmapBlockClass>> = vec![None; BLOCKS];
     for step in steps {
@@ -127,13 +146,14 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
         let retiring_before = model.retiring();
         let allocations_before = model.texture_allocations();
 
-        let plan = model.plan_drain(DrainRequest {
+        model.plan_drain(DrainRequest {
             pool_cap_layers: step.cap,
             target_reset: None,
             target_set: &set,
             target_remove: &remove,
             ready: &ready,
         });
+        let plan = model.plan();
         for &block in &ready {
             if never_refused(next[block as usize]) {
                 assert!(
@@ -161,8 +181,25 @@ fn run(extents: Vec<(u32, u32)>, cap: u32, steps: Vec<Step>) {
                 class.is_none()
             );
         }
-        if plan.growth.is_some() {
+        if let Some(growth) = plan.growth {
             assert!(!retiring_before, "growth while retiring");
+            // The reserve covers the targeted demand with headroom, bounded
+            // by the all-resident layers; only the drain's own placements
+            // may need more.
+            let (demand, all_resident) = packed_layers(&extents, &next);
+            let occupied = model.occupied_layers();
+            assert!(
+                growth.to_layers >= growth::GROWTH_HEADROOM.of(demand).min(all_resident),
+                "{growth:?} below demand {demand} with headroom (all-resident {all_resident})"
+            );
+            assert!(
+                growth.to_layers >= occupied,
+                "{growth:?} below occupied {occupied}"
+            );
+            assert!(
+                growth.to_layers <= all_resident.max(occupied),
+                "{growth:?} past all-resident {all_resident} and occupied {occupied}"
+            );
         }
         assert!(!(plan.report.repacked && plan.growth.is_some()));
         let grew = plan.growth.is_some();

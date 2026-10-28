@@ -19,6 +19,7 @@ use super::super::baked_set::bake_identity;
 use super::super::frame_driver::FrameInput;
 use super::super::modes::{ReadsMode, WalkModes, render_camera};
 use super::super::paths::{SplitMix64, WALK_SEED, WalkKind};
+use super::super::report::pool_layers_line;
 use super::super::walk::{Walk, eye_point};
 use super::super::{DEFAULT_LEVERS, DEFAULT_STEPS, FRAME_SECONDS, Rig, run_label};
 use super::poses::{WorldPose, read_poses};
@@ -102,7 +103,7 @@ pub(super) fn run(
     let mut sequences = Vec::new();
     for (label, spawn, frames) in plans {
         let started = std::time::Instant::now();
-        let results = replay(world, spawn, &frames, &modes);
+        let (results, pool) = replay(world, spawn, &frames, &modes);
         let seq = Sequence {
             label,
             spawn,
@@ -121,6 +122,7 @@ pub(super) fn run(
             totals.left_behind_texels,
             totals.trips,
         );
+        println!("   pool: {pool}");
         sequences.push(seq);
     }
     Some(BakeGapRecord {
@@ -189,12 +191,13 @@ fn pose_tour(poses: &[WorldPose]) -> Vec<FramePose> {
 
 /// One sequence through a fresh rig: preload at the cell `spawn` locates
 /// to, then every frame's walk from its eye and the completed-reads drains.
+/// Returns each frame's result and the pool's layer line.
 fn replay(
     world: &LevelWorld,
     spawn: Vec3,
     frames: &[FramePose],
     modes: &WalkModes,
-) -> Vec<FrameResult> {
+) -> (Vec<FrameResult>, String) {
     let mut rig = Rig::new(world, DEFAULT_LEVERS, modes.reads);
     let spawn_cell = world.locate_cell(spawn);
     assert!(
@@ -242,8 +245,13 @@ fn replay(
             scratch.recycle_cells(cells);
         }
     }
-    rig.driver.finish();
-    results
+    let (_, _, mirror) = rig.driver.finish();
+    let pool = format!(
+        "{}, growths {}",
+        pool_layers_line(&mirror.stats, mirror.layer_bytes()),
+        mirror.stats.growths
+    );
+    (results, pool)
 }
 
 // --- Record ---

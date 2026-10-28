@@ -239,6 +239,21 @@ pub(super) fn mib(bytes: u64) -> f64 {
     bytes as f64 / MIB
 }
 
+/// Peak pool layers beside peak occupancy. Growth reserves the targeted
+/// demand with headroom and the pool never shrinks, so the layers never
+/// filled are what that headroom cost.
+pub(super) fn pool_layers_line(pool: &PoolStats, layer_bytes: u64) -> String {
+    let headroom = pool.peak_layers.saturating_sub(pool.peak_occupied_layers);
+    format!(
+        "first {} layers, peak {} layers ({} occupied; headroom cost {} layers, {:.1} MiB)",
+        pool.first_layers,
+        pool.peak_layers,
+        pool.peak_occupied_layers,
+        headroom,
+        mib(u64::from(headroom) * layer_bytes),
+    )
+}
+
 fn micros_line(label: &str, nanos: &[u64]) -> String {
     if nanos.is_empty() {
         return format!("{label}: no frames");
@@ -321,13 +336,10 @@ pub(super) fn print_run(walk: &Walk, levers: Levers, report: &RunReport) {
         mib(man42_p95),
     );
     println!(
-        "   pool: first {} layers, peak {} layers ({} occupied), layer {:.1} MiB; peak held \
-         {:.1} MiB (spare and retiring included); growths {}, growth transient peak {:.1} MiB; \
-         repacks {} ({:.2}% of steps, {} copies); deferred {}; evictions {}; refusals {}; \
-         failed {}",
-        pool.first_layers,
-        pool.peak_layers,
-        pool.peak_occupied_layers,
+        "   pool: {}, layer {:.1} MiB; peak held {:.1} MiB (spare and retiring included); \
+         growths {}, growth transient peak {:.1} MiB; repacks {} ({:.2}% of steps, {} copies); \
+         deferred {}; evictions {}; refusals {}; failed {}",
+        pool_layers_line(pool, report.layer_bytes),
         mib(report.layer_bytes),
         mib(pool.peak_pool_bytes),
         pool.growths,

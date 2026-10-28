@@ -53,7 +53,7 @@ Produces a visible-cell bitmask consumed by the BVH traversal compute pass (§5)
 
 The walk has two entries. The camera entry starts from the located camera cell with the full screen, near plane slid to the eye. The seeded entry, for the planar water mirror (§7.3a), starts from caller-given seed cells, never calls the locator, and takes the caller's eye, view-projection and near plane as given; the bypass never crosses that near plane. It skips seeds that are out of range, solid, exterior or wholly off screen, and queues every usable seed with the full screen before any cell expands. Seeds share one region state and one step cap, so seed order and repeats change neither the set nor the portal-test count. A seeded cap trip returns to the caller, which picks its own fallback and filters the result into its own draw and fog sets. The step cap is the mirror's backstop, never a path it relies on.
 
-**Visible-set contract: conservative superset.** The visible set may hold cells the exact portal set excludes, never fewer; the walk's snapped rects, bypass and hand-on rule make this the steady state, and the fallbacks below rely on it too. No consumer may read a visible cell as proof of line of sight. Fixed-capacity consumers (shadow slot ranking, the mesh instance cap) and non-evictable residency demand (SH, lightmap) pay for extra cells in quality or cost, so over-inclusion is measured, not assumed free. The id-51 bake samples the same walk and is never widened to cover over-inclusion. Drawn cells outside the baked set are never-refused visible demand, so a walk change passes the bake-gap gate only if the lightmap pool defers no more blocks than under the walk it replaces. Blocks are per cell, so a change to the cell partition compares deferred texel area, at the same world-space poses, instead of block count. The set keeps its shape on every path: valid cell ids, a drawable draw set, non-solid fog reach that holds the camera cell and is never empty on walk paths, and blocked portals block in both directions.
+**Visible-set contract: conservative superset.** The visible set may hold cells the exact portal set excludes, never fewer; the walk's snapped rects, bypass and hand-on rule make this the steady state, and the fallbacks below rely on it too. No consumer may read a visible cell as proof of line of sight. Fixed-capacity consumers (shadow slot ranking, the mesh instance cap) and non-evictable residency demand (SH, lightmap) pay for extra cells in quality or cost, so over-inclusion is measured, not assumed free. The id-51 bake samples the same walk and is never widened to cover over-inclusion. Drawn cells outside the baked set are never-refused visible demand, so a walk change passes the bake-gap gate only if the lightmap pool defers no more blocks than under the walk it replaces. Blocks are per cell, so a change to the cell partition compares deferred texel area, at the same world-space poses, instead of block count. Both builds of a paired comparison run the same pool policy (§4), so the gate measures the visibility change, not growth timing. The set keeps its shape on every path: valid cell ids, a drawable draw set, non-solid fog reach that holds the camera cell and is never empty on walk paths, and blocked portals block in both directions.
 
 **Fallback paths.** Solid-cell camera, exterior-camera, and no-portals cases fall back to per-cell AABB frustum culling against all cells, with an empty fog-reachable set that downstream reads as "no portal isolation." A camera walk that trips its step cap discards its partial reach and also falls back to frustum culling, but stays bounded: the drawable subset (drives the candidate cull) frustum-culls against the camera frustum as usual; the fog-reachable set (non-solid, non-exterior cells, plus the camera cell) culls cell bounds against the walk's own outermost clip region — near plane slid to the eye, far plane, and the full screen's side planes padded as the walk pads every rect — with the clipper's epsilon as slack. It also keeps every cell whose bounds come within the bypass distance of the eye (plus the same slack), since the walk reaches such a cell through a portal beside or behind the eye; the plane test culls per plane, so widening the near plane alone would still drop it. Fog reach is therefore a superset of the walk's fog reach. The drawable subset is a superset too, except for cells lying entirely in the near slab, beside the eye, or in the clip pad's sliver outside a screen edge — the walk may keep them, the camera cull drops them, and that's harmless because the camera frustum clips their geometry regardless. Fog, shadow-light eligibility, and the SH compose gate never widen to every cell. See `build_pipeline.md` §Runtime visibility for the compile-side picture.
 
@@ -244,10 +244,10 @@ walk path.
 During Settling its cells join the settle set on any path, as the main view's drawn cells
 do (`boot_sequence.md` §1). It never requests probes. Its cells outside the baked set are
 over-inclusion (§2), whose demand is never refused, so they count against the bake-gap
-gate: the pool may defer no more lightmap blocks with the mirror than without it. In the
-dev-tools Streaming tab, a level-scope slider sets L (default 16 m, up to the baked maximum
-of 32 m) for both resources, and a lightmap slider sets the pool cap (1–255 layers, default 15).
-Neither is a player setting.
+gate: under one pool policy, the pool may defer no more lightmap blocks with the mirror
+than without it. In the dev-tools Streaming tab, a level-scope slider sets L (default 16 m,
+up to the baked maximum of 32 m) for both resources, and a lightmap slider sets the pool
+cap (1–255 layers, default 15). Neither is a player setting.
 
 SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
 budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block visible,
@@ -264,13 +264,20 @@ blocks, refuses band pairs past the cap, and evicts resident band blocks farthes
 first. Before growing, it repacks in place: blocks move between layers of the same texture
 through the spare layer, because WebGPU copies within one texture only between distinct
 subresources. A repack never moves a block to a higher layer, so one spare suffices and no
-second pool is allocated. Only mandatory or visible pairs grow the pool. Growth allocates a
-new generation and copies the old layers into it GPU-side, so every placement keeps its
-address. At most one generation retires at a time, released on submitted-work-done. A pair
-that needs growth while a generation retires, or past the device's array-layer limit, is
-deferred and counts as a miss. The first generation holds the cap or what the level needs
-all-resident, whichever is smaller. One drain's copies, uploads and table writes reach the
-GPU in one submission.
+second pool is allocated. Only mandatory or visible pairs grow the pool, and growth is
+sized to the whole targeted demand, not to the pairs one drain admitted: the shared budget
+admits a large set over several drains, and a second growth would wait behind the first's
+retirement. A drain's first growth reserves a from-scratch shelf pack of every mandatory and
+visible block, resident or not, times `GROWTH_HEADROOM` (4/3, the fragmentation a runtime
+pool carries over a fresh pack), bounded by the level's all-resident layers and the device
+limit, and never below the layers the drain's pairs land in. The pool never shrinks, so the
+reserve is held for the level. Growth allocates a new generation and copies the old layers
+into it GPU-side, so every placement keeps its address. At most one generation retires at
+a time, released on submitted-work-done. A pair that needs growth while a generation
+retires, which happens only once demand outgrows the last reserve, or past the device's
+array-layer limit, is deferred and counts as a miss. The first generation holds the cap or
+what the level needs all-resident, whichever is smaller. One drain's copies, uploads and
+table writes reach the GPU in one submission.
 
 Level install reads no block. Settling's drains make the presented pose's set resident
 before the first world frame (`boot_sequence.md` §1, Settling), and play never waits on a

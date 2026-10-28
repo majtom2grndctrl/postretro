@@ -6,6 +6,10 @@ use glam::DVec3;
 use crate::geometry_utils::{clip_winding_to_half_spaces, make_base_winding, split_polygon};
 use crate::partition::{BspChild, BspTree};
 
+mod occluder_tier;
+
+pub use occluder_tier::{TierPortal, generate_occluder_tier_portals};
+
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
 /// error. Matches ericw-tools' ON_EPSILON for winding operations.
@@ -94,63 +98,66 @@ fn distribute_portal(
     back_child: &BspChild,
     portals: &mut Vec<Portal>,
 ) {
-    match (front_child, back_child) {
-        (BspChild::Leaf(f), BspChild::Leaf(b)) => {
-            let front_leaf = &tree.leaves[*f];
-            let back_leaf = &tree.leaves[*b];
-            if !front_leaf.is_solid && !back_leaf.is_solid {
+    distribute_winding(
+        tree,
+        winding,
+        front_child,
+        back_child,
+        &|_| true,
+        &mut |piece, front, back| {
+            let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front, back) else {
+                return;
+            };
+            if !tree.leaves[*f].is_solid && !tree.leaves[*b].is_solid {
                 portals.push(Portal {
-                    polygon: winding.to_vec(),
+                    polygon: piece.to_vec(),
                     front_leaf: *f,
                     back_leaf: *b,
                 });
             }
+        },
+    );
+}
+
+/// Push a winding through the subtrees on each side of its plane, splitting
+/// it at every node `descend` admits, front side first. Each piece that
+/// survives the area cull reaches `on_pair` with the two children it ends
+/// between: leaves, or nodes `descend` refused.
+fn distribute_winding(
+    tree: &BspTree,
+    winding: &[DVec3],
+    front_child: &BspChild,
+    back_child: &BspChild,
+    descend: &impl Fn(usize) -> bool,
+    on_pair: &mut impl FnMut(&[DVec3], &BspChild, &BspChild),
+) {
+    let (split_node, split_front) = match (front_child, back_child) {
+        (BspChild::Node(n), _) if descend(*n) => (&tree.nodes[*n], true),
+        (_, BspChild::Node(n)) if descend(*n) => (&tree.nodes[*n], false),
+        _ => {
+            on_pair(winding, front_child, back_child);
+            return;
         }
+    };
 
-        (BspChild::Node(n), _) => {
-            let split_node = &tree.nodes[*n];
-            let (front_winding, back_winding) = split_polygon(
-                winding,
-                split_node.plane_normal,
-                split_node.plane_distance,
-                PORTAL_EPSILON,
-            );
-
-            if let Some(fw) = front_winding
-                && fw.len() >= 3
-                && polygon_area(&fw) >= MIN_PORTAL_AREA_M2
-            {
-                distribute_portal(tree, &fw, &split_node.front, back_child, portals);
-            }
-            if let Some(bw) = back_winding
-                && bw.len() >= 3
-                && polygon_area(&bw) >= MIN_PORTAL_AREA_M2
-            {
-                distribute_portal(tree, &bw, &split_node.back, back_child, portals);
-            }
+    let (front_winding, back_winding) = split_polygon(
+        winding,
+        split_node.plane_normal,
+        split_node.plane_distance,
+        PORTAL_EPSILON,
+    );
+    for (piece, side) in [
+        (front_winding, &split_node.front),
+        (back_winding, &split_node.back),
+    ] {
+        let Some(piece) = piece else { continue };
+        if piece.len() < 3 || polygon_area(&piece) < MIN_PORTAL_AREA_M2 {
+            continue;
         }
-
-        (_, BspChild::Node(n)) => {
-            let split_node = &tree.nodes[*n];
-            let (front_winding, back_winding) = split_polygon(
-                winding,
-                split_node.plane_normal,
-                split_node.plane_distance,
-                PORTAL_EPSILON,
-            );
-
-            if let Some(fw) = front_winding
-                && fw.len() >= 3
-                && polygon_area(&fw) >= MIN_PORTAL_AREA_M2
-            {
-                distribute_portal(tree, &fw, front_child, &split_node.front, portals);
-            }
-            if let Some(bw) = back_winding
-                && bw.len() >= 3
-                && polygon_area(&bw) >= MIN_PORTAL_AREA_M2
-            {
-                distribute_portal(tree, &bw, front_child, &split_node.back, portals);
-            }
+        if split_front {
+            distribute_winding(tree, &piece, side, back_child, descend, on_pair);
+        } else {
+            distribute_winding(tree, &piece, front_child, side, descend, on_pair);
         }
     }
 }

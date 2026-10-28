@@ -2,12 +2,16 @@
 // the inside-set rule; no post-pass classifier needed.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+mod occluder_tier;
+
 use anyhow::{Result, bail};
 use glam::DVec3;
 
 use super::region_polytope::RegionPolytope;
 use super::types::*;
 use crate::map_data::BrushVolume;
+pub use occluder_tier::{OccluderTier, TierLeaf, build_bsp_with_occluder_tier};
+use occluder_tier::{TierRecorder, build_tier_region};
 
 /// Classification tolerance for AABB corners against brush-derived planes.
 #[cfg(test)]
@@ -44,6 +48,25 @@ const MAX_RECURSION_DEPTH: usize = 256;
 /// Build a BSP tree from brush volumes. Leaf solidity is assigned during
 /// construction; `face_extract::extract_faces` populates `face_indices` afterward.
 pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
+    let mut recorder = TierRecorder::default();
+    build_tree(brushes, SplitTier::Full, &mut recorder)
+}
+
+/// How `build_recursive` picks a region's splitter.
+#[derive(Debug, Clone, Copy)]
+enum SplitTier<'a> {
+    /// Occluder planes only, flagged per brush; a region none spans becomes
+    /// an occluder-tier leaf and continues as `Full`.
+    Occluder(&'a [bool]),
+    /// Every candidate brush's planes, scored by `select_splitter`.
+    Full,
+}
+
+fn build_tree(
+    brushes: &[BrushVolume],
+    tier: SplitTier<'_>,
+    recorder: &mut TierRecorder,
+) -> Result<BspTree> {
     let mut tree = BspTree {
         nodes: Vec::new(),
         leaves: Vec::new(),
@@ -69,6 +92,8 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
         &inside,
         &ancestor_planes,
         &leaf_planes,
+        tier,
+        recorder,
         None,
         0,
     )?;
@@ -384,6 +409,8 @@ fn build_recursive(
     inside: &[usize],
     ancestor_planes: &[(DVec3, f64)],
     leaf_planes: &[(DVec3, f64)],
+    tier: SplitTier<'_>,
+    recorder: &mut TierRecorder,
     parent: Option<usize>,
     depth: usize,
 ) -> Result<BspChild> {
@@ -391,6 +418,23 @@ fn build_recursive(
         bail!(
             "BSP recursion depth exceeded {MAX_RECURSION_DEPTH} while partitioning brushes; \
              input may contain pathological brush configuration"
+        );
+    }
+
+    if let SplitTier::Occluder(occluders) = tier {
+        return build_tier_region(
+            tree,
+            brushes,
+            region,
+            region_polytope,
+            candidates,
+            inside,
+            ancestor_planes,
+            leaf_planes,
+            occluders,
+            recorder,
+            parent,
+            depth,
         );
     }
 
@@ -406,7 +450,7 @@ fn build_recursive(
 
     // Mixed candidates, no qualifying splitter: cannot separate solid from air.
     // Treat as empty (structural air gap, not an error).
-    let Some((normal, distance)) = select_splitter(
+    let Some(splitter) = select_splitter(
         brushes,
         candidates,
         region,
@@ -416,6 +460,38 @@ fn build_recursive(
         return Ok(make_leaf(tree, region, region_polytope, false, leaf_planes));
     };
 
+    split_region(
+        tree,
+        brushes,
+        region,
+        region_polytope,
+        candidates,
+        ancestor_planes,
+        leaf_planes,
+        splitter,
+        tier,
+        recorder,
+        parent,
+        depth,
+    )
+}
+
+/// Emit a node on `splitter` and build both children in the same tier.
+#[allow(clippy::too_many_arguments)]
+fn split_region(
+    tree: &mut BspTree,
+    brushes: &[BrushVolume],
+    region: &Aabb,
+    region_polytope: &RegionPolytope,
+    candidates: &[usize],
+    ancestor_planes: &[(DVec3, f64)],
+    leaf_planes: &[(DVec3, f64)],
+    (normal, distance): (DVec3, f64),
+    tier: SplitTier<'_>,
+    recorder: &mut TierRecorder,
+    parent: Option<usize>,
+    depth: usize,
+) -> Result<BspChild> {
     let (front_candidates, back_candidates) =
         partition_candidates(brushes, candidates, normal, distance);
 
@@ -447,6 +523,9 @@ fn build_recursive(
         back: BspChild::Leaf(0),
         parent,
     });
+    if let SplitTier::Occluder(_) = tier {
+        recorder.tier_nodes.push(node_idx);
+    }
 
     let front_child = build_recursive(
         tree,
@@ -457,6 +536,8 @@ fn build_recursive(
         &front_inside,
         &child_ancestors,
         &front_leaf_planes,
+        tier,
+        recorder,
         Some(node_idx),
         depth + 1,
     )?;
@@ -469,6 +550,8 @@ fn build_recursive(
         &back_inside,
         &child_ancestors,
         &back_leaf_planes,
+        tier,
+        recorder,
         Some(node_idx),
         depth + 1,
     )?;

@@ -7,10 +7,11 @@ pub(crate) mod brush_bsp;
 mod bsp;
 mod face_extract;
 mod manifold;
+pub mod occluder_classify;
 pub(crate) mod region_polytope;
 mod types;
 
-pub use brush_bsp::build_bsp_from_brushes;
+pub use brush_bsp::{OccluderTier, TierLeaf, build_bsp_from_brushes, build_bsp_with_occluder_tier};
 pub use bsp::find_leaf_for_point;
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
 pub use manifold::{OpenEdge, WatertightReport, check_watertight};

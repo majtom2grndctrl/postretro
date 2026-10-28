@@ -166,6 +166,20 @@ impl RegionPolytope {
         false
     }
 
+    /// Area of the plane's slice through the region: the cap a split on this
+    /// plane would put on each child. Zero when the plane misses the region.
+    pub(crate) fn cross_section_area(&self, normal: DVec3, distance: f64) -> f64 {
+        let Some(cap) = self.cap_winding(normal, distance) else {
+            return 0.0;
+        };
+        let v0 = cap[0];
+        let mut twice_area = DVec3::ZERO;
+        for i in 1..cap.len() - 1 {
+            twice_area += (cap[i] - v0).cross(cap[i + 1] - v0);
+        }
+        twice_area.length() * 0.5
+    }
+
     pub(crate) fn vertex_aabb(&self) -> Aabb {
         let mut bounds = Aabb::empty();
         for vertex in self.vertices() {
@@ -355,6 +369,15 @@ mod tests {
         assert!(!polytope.plane_spans(DVec3::X, 10.0, 0.0));
         assert!(!polytope.plane_spans(DVec3::X, 1e-7, 1e-6));
         assert!(polytope.plane_spans(DVec3::X, 1e-5, 1e-6));
+    }
+
+    #[test]
+    fn cross_section_area_measures_the_slice_through_the_region() {
+        let (low, _) = box_region().clip(DVec3::NEG_Y, -4.0);
+
+        assert!((low.cross_section_area(DVec3::Y, 2.0) - 100.0).abs() <= EPS);
+        assert!((low.cross_section_area(DVec3::X, 5.0) - 40.0).abs() <= EPS);
+        assert_eq!(low.cross_section_area(DVec3::Y, 6.0), 0.0);
     }
 
     #[test]

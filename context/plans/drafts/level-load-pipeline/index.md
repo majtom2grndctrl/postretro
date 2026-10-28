@@ -1,8 +1,8 @@
 # level-load-pipeline
 
-Brief · resumable · reads: `context/lib/boot_sequence.md` §1 (Loading screen), §2, §3, §4, §6 · `context/lib/rendering_pipeline.md` §12 · `context/lib/networking.md` §Admission and content parity · `context/lib/testing_guide.md` §Resource bounds · `context/plans/done/level-load-perf/` · read at da46511f7
+Brief · resumable · reads: `context/lib/boot_sequence.md` §1 (Loading screen), §2, §3, §4, §6 · `context/lib/rendering_pipeline.md` §12 · `context/lib/networking.md` §Admission and content parity · `context/lib/testing_guide.md` §Resource bounds · `context/plans/done/level-load-perf/` · `context/plans/drafts/E25--map-transitions/` · read at da46511f7; decisions re-checked at 05c5491
 
-**Sequence:** builds after `sh-streaming--reveal-gate-and-warm-horizon`, whose Settling state this brief consumes.
+**Sequence:** Epic 25 U1 (`drafts/E25--map-transitions/`). Consumes the Settling state `done/sh-streaming--reveal-gate-and-warm-horizon` shipped; that brief already made the spawn lightmap a settle target and draws the loading tree through Settling.
 
 ## Problem
 Developer-raised, from measured cost (`research.md` §1–§2). A level load freezes the main thread for one redraw of ~0.7–1.0 s (lavapipe). That redraw does the whole install and also renders the first level frame. Meanwhile the loading bar can't move, the co-op transport poll stalls, and the parse worker sits idle. Cause: everything except the PRL parse runs serially on the main thread inside that frame, including CPU preparation, GPU resource creation, and rebuilding level-invariant pipelines and models, because `boot_sequence.md` §2 limits the worker to the parse. When done, the freeze shrinks to a short commit frame, and the time to a complete, revealed frame shrinks with it. The bar moves until reveal. Level-invariant work is not redone per load, so a level change pays nothing a first load doesn't.
@@ -16,18 +16,17 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - **Pipelines once per renderer.** The upload thread builds every install-time pipeline once, in the background, starting right after full init, and keeps them. SH compose reuses its full-init instance. Commit and unload create none, and a load that needs an unfinished pipeline waits for it off the main thread.
 - **Model cache.** Parsed and uploaded models, with their hit-zone and clip source, survive a level change. The key covers file content and every install-time parameter that shapes the result, and a hit is indistinguishable from a fresh load. Each commit releases entries its level doesn't reference, and a failed or cancelled load leaves the cache as it found it. Steady state holds one level's set; the peak, between upload and commit, holds two. Diverges from the §4 clear-on-unload table, rewritten at promotion, and from `resource_management.md` "the level owns everything".
 - **Predict models, then fall back exactly.** Prep predicts the model set. A miss takes today's synchronous path at commit and is counted, so correctness never rests on a prediction.
-- **Spawn lightmap is a settle target.** The spawn view's lightmap blocks join Settling's settle check and are read without blocking a frame. No spawn-cell prediction and no synchronous spawn preload remain.
 - **Scene extent.** A resize during Loading makes the commit rebuild the extent-bound bind groups once, counted like a prediction miss.
 - **Settings are read once at request.** Player options never apply on a Loading frame, so the request's tiers are the commit's tiers. A later change follows its existing rule: Surface Depth live, shadow tier at the next level boundary.
 - **Failures before commit.** A prep, upload or parse failure, including late parse validation after hand-outs went out, is one load failure raised before commit. Runtime loads go to Frontend; CLI boot loads exit non-zero. An upload failure means an error wgpu reports synchronously on the upload thread; device loss stays out of scope. The streamed-SH init `panic!` becomes an ordinary load failure.
 - **Cancellation.** A superseding request, a queued unload, or suspend cancels a load that has not committed. A queued unload then enters Frontend; a backdrop arrives only through the load a return to frontend already queues. Generations never overlap, on the streaming retirement precedent (`boot_sequence.md` §4). A runtime request during a CLI boot load is still refused.
-- **Loading screen.** It stays drawn through Settling, replacing reveal-gate's "splash stays painted". On a supersede it keeps its tree and UI clock, shows the new level's name, and restarts the bar at 0, which diverges from `boot_sequence.md` §1 "UI clock from zero each load".
-- **Unload-first stays** (§4). One level's world data is resident at a time; the model cache is bounded by the same working set.
+- **Loading screen.** On a supersede it keeps its tree and UI clock, shows the new level's name, and restarts the bar at 0, which diverges from `boot_sequence.md` §1 "UI clock from zero each load".
+- **Unload-first is the loading-screen order, not a pipeline assumption.** A loading-screen change still unloads before its load starts (§4). The pipeline itself never assumes the previous level is gone: its stages may run while a level is installed and running, and nothing they create reaches the frame path before commit. Epic 25's seam order (D1) loads the next level beside the active one and swaps at commit; this brief builds the pipeline that order needs, not the seam. Diverges from `boot_sequence.md` §8 "multiple simultaneously resident levels", rewritten at Epic 25 U3 promotion.
 - **Progress covers the whole load.** `loading.progress` stays a monotone 0–1 slot, weighted across parse, prep, upload and settling, and reaches 1.0 at reveal. The 0.85 cap is removed. It stays "honest and coarse" (`plans/done/mod-loading-screen-contract.md`): every phase credits real units of its own work, and the counter stays in the level-loader or below.
 - **Co-op unchanged in shape.** Parity, relevel id and join seed publish at commit (`networking.md` §Admission and content parity). The transport polls on every Loading frame.
 - **Line C gains marks.** Each new stage, the progress-membership capture, the commit frame and the reveal get marks. Log-only, as in `plans/done/level-load-perf`.
 - **Non-goal: boot pipeline.** Early CLI-map parse, a parallel `Session::build`, parallel full init or mod-init decodes, and a wgpu pipeline cache go to a separate brief. They cross the causal two-frame rule and the first-launch hold (`boot_sequence.md` §1), which this brief leaves alone.
-- **Non-goals, load side.** Spawn-before-unload (§8 non-goal). Announcing a relevel at host request: a failed host parse would leave clients on a level the host never installs (`research.md` §6 Q9). A multi-frame install or moving parity publication. A cross-level world-texture cache: world textures are per-level content at ~80–96 MiB, so keeping them doubles resident texture memory across a change. Caching sounds or moving them to mod lifetime: each level reloads the whole `sounds/` directory, and the saving is unmeasured.
+- **Non-goals, load side.** The seam prefetch, swap commit and pre-commit settle (Epic 25 U3). Announcing a relevel at host request: a failed host parse would leave clients on a level the host never installs (`research.md` §6 Q9). A multi-frame install or moving parity publication. A cross-level world-texture cache: world textures are per-level content at ~80–96 MiB, so keeping them doubles resident texture memory across a change. Caching sounds or moving them to mod lifetime: each level reloads the whole `sounds/` directory, and the saving is unmeasured.
 
 ## Acceptance
 ### Automated
@@ -75,7 +74,8 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] A load and a return to frontend on one tick with a backdrop declared: the load never starts, and the backdrop installs (pin P24).
 - [ ] A runtime request during a CLI boot load is still refused with a warning and cancels nothing, whether it arrives during the parse, prep or upload. A runtime request during a runtime load no longer waits for it to install (pin P8).
 - [ ] Cancelling a load while the pipelines build neither cancels nor restarts the build, and the next load creates zero pipelines (pin P5).
-- [ ] No stage work starts while a request only waits in the queue: none during the first-launch hold or the OS-preference wait, and on a level change none before the old level's unload (pin P12).
+- [ ] No stage work starts while a request only waits in the queue: none during the first-launch hold or the OS-preference wait, and on a loading-screen level change none before the old level's unload (pin P12).
+- [ ] A test harness can run a load's stages to bundle-ready while another level is installed and running. The running level draws and simulates unchanged on every frame meanwhile, and nothing the stages created is bound or drawn before commit.
 - [ ] A superseded load keeps its loading tree and UI clock, shows the new level's name, and restarts the bar at 0. The bar never decreases within one load.
 - [ ] After a supersede, the old load's stages credit nothing to the new load's bar.
 
@@ -84,8 +84,6 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - [ ] On a connected-client fixture with a host-replicated placement, the model prediction includes that placement's model and misses zero times.
 - [ ] A load requested after a hot reload that changed a mesh block predicts the new model and misses zero times. The old level kept the old model until its unload (pin P9).
 - [ ] A forced model miss (a model only the registry adds) loads correctly and logs one miss.
-- [ ] The spawn view's lightmap blocks are a settle target: reveal waits for them, no frame blocks on their reads, and a level with no streamed lightmap settles without them.
-- [ ] A `--start-pose` elsewhere in the map settles the blocks around that view, not around the first player spawn.
 
 **Caches**
 - [ ] A same-content level change hits for every shared model, with no re-parse and no re-upload.
@@ -129,7 +127,7 @@ Developer-raised, from measured cost (`research.md` §1–§2). A level load fre
 - Seams: `Renderer::install_level_geometry`, `install_textures`, `load_textures`, `register_smoke_collection`, `ShResidencyState::from_manifest` and `initialize_gpu`, every `sparse_compose_capacity` call site, `UploadQueue::installation`, `install_level_payload`, `finish_level_payload`, `install_spawn_streaming`, `set_fog_pixel_scale`, `load_level_sounds`, `distinct_mesh_models`, `spawn_level_worker`, `drain_level_requests`, `begin_loading_screen`. Keep-across-levels precedent: `spot_shadow_pool_needs_rebuild`. Retirement precedent: the SH async worker pool.
 - Prepared products must be `Send`. Assert it at compile time, like `LevelPayload`.
 - Equivalence oracle: keep the main-thread path and the monolithic parse callable from tests until landing (`plans/done/level-load-perf` Invariants).
-- Settling comes from `sh-streaming--reveal-gate-and-warm-horizon`: its one settle chokepoint takes the spawn lightmap target, and its splash paint becomes the loading tree. Today `present_world_less_frame` clears level streaming on every Loading paint, so nothing streamed may be set up before commit.
+- Settling comes from `done/sh-streaming--reveal-gate-and-warm-horizon`: one settle chokepoint already covers SH and the spawn lightmap (`startup/settling.rs`). Streamed sessions are installed at commit; Epic 25 U3 owns any streamed read before commit.
 - Session-verified facts, pipeline creation sites and ordering pins: `research.md` §8–§9.
 
 ## Open questions

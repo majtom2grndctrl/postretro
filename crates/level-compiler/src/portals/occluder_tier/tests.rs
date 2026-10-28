@@ -338,3 +338,90 @@ fn portal_corners_snap_onto_axis_planes_within_clipping_dust_only() {
     let open_gap = DVec3::new(19.5072, 1.6256 - 1e-6, 88.5952);
     assert_eq!(snap_to_axis_planes(open_gap, [floor].iter()), open_gap);
 }
+
+#[test]
+fn window_split_below_the_tier_into_pieces_under_the_cull_keeps_its_portal() {
+    // A 1 × 0.5 m window through an occluding wall, with thin exempt posts
+    // standing flush against one face. The posts' planes cut the window's
+    // tier piece below the tier into strips each under the portal-area cull;
+    // the cull applies to the tier piece and the pair's portal, so the strips
+    // between the posts must still be covered by the window's portal.
+    let size = DVec3::new(20.0, 6.0, 20.0);
+    let mut brushes = hall(size);
+    let walls = brushes.len();
+    let (z0, z1) = (10.0, 10.5);
+    let (x0, x1, y0, y1) = (15.0, 16.0, 2.0, 2.5);
+    brushes.extend([
+        box_brush(DVec3::new(0.0, 0.0, z0), DVec3::new(x0, size.y, z1)),
+        box_brush(DVec3::new(x1, 0.0, z0), DVec3::new(size.x, size.y, z1)),
+        box_brush(DVec3::new(x0, 0.0, z0), DVec3::new(x1, y0, z1)),
+        box_brush(DVec3::new(x0, y1, z0), DVec3::new(x1, size.y, z1)),
+    ]);
+    let posts: Vec<f64> = vec![15.17, 15.36, 15.55, 15.74, 15.93];
+    for &x in &posts {
+        brushes.push(box_brush(
+            DVec3::new(x, 0.0, z0 - 0.5),
+            DVec3::new(x + 0.02, size.y, z0),
+        ));
+    }
+    // The wall is one facade section: its faces and outline split at
+    // occluder rank, the window's jambs only inside its box. Planes run
+    // +X, -X, +Y, -Y, +Z, -Z.
+    let mut roles = vec![TierRole::Exempt; brushes.len()];
+    let outlines = [
+        [false, true, true, true, true, true],
+        [true, false, true, true, true, true],
+        [false, false, false, true, true, true],
+        [false, false, true, false, true, true],
+    ];
+    for (role, outline) in roles[walls..walls + 4].iter_mut().zip(outlines) {
+        *role = TierRole::SectionMember(outline.to_vec());
+    }
+
+    let build = tiered_build(&brushes, &roles);
+    build.assert_tier_portals_well_formed();
+
+    // Strip centres between the posts, on the wall face the posts touch.
+    let mut edges = vec![x0];
+    for &x in &posts {
+        edges.extend([x, x + 0.02]);
+    }
+    edges.push(x1);
+    let strips: Vec<DVec3> = edges
+        .chunks(2)
+        .map(|pair| DVec3::new((pair[0] + pair[1]) / 2.0, (y0 + y1) / 2.0, z0))
+        .collect();
+    assert!(
+        strips
+            .iter()
+            .all(|s| build.is_interior_at(s - DVec3::Z * 0.01))
+    );
+
+    let room = build.tier_leaf_at(DVec3::new(15.5, 2.25, 5.0));
+    let window = build.tier_leaf_at(DVec3::new(15.5, 2.25, (z0 + z1) / 2.0));
+    assert_ne!(room, window);
+    let portal = build
+        .tier_portals
+        .iter()
+        .find(|p| {
+            (p.front_tier_leaf, p.back_tier_leaf) == (room, window)
+                || (p.front_tier_leaf, p.back_tier_leaf) == (window, room)
+        })
+        .expect("the window keeps a portal into the room the posts stand in");
+    let covers = |point: DVec3| {
+        let n = portal.polygon.len();
+        let normal = (portal.polygon[1] - portal.polygon[0])
+            .cross(portal.polygon[2] - portal.polygon[0])
+            .normalize();
+        (0..n).all(|i| {
+            let (a, b) = (portal.polygon[i], portal.polygon[(i + 1) % n]);
+            (b - a).cross(point - a).dot(normal) >= -1e-9
+        })
+    };
+    for strip in &strips {
+        assert!(
+            covers(*strip),
+            "window portal misses the strip at {strip:?}"
+        );
+    }
+}

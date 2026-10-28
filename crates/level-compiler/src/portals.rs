@@ -17,7 +17,7 @@ pub(crate) const PORTAL_EPSILON: f64 = 0.01;
 
 /// Slivers below this area are discarded to prevent degenerate geometry
 /// from accumulating numerical precision loss during repeated clipping.
-const MIN_PORTAL_AREA_M2: f64 = 0.1;
+pub(crate) const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
 /// In the runtime set (`runtime_portals`) the endpoints are cell ids, under
@@ -106,6 +106,7 @@ fn distribute_portal(
         front_child,
         back_child,
         &|_| true,
+        MIN_PORTAL_AREA_M2,
         &mut |piece, front, back| {
             let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front, back) else {
                 return;
@@ -122,15 +123,16 @@ fn distribute_portal(
 }
 
 /// Push a winding through the subtrees on each side of its plane, splitting
-/// it at every node `descend` admits, front side first. Each piece that
-/// survives the area cull reaches `on_pair` with the two children it ends
-/// between: leaves, or nodes `descend` refused.
+/// it at every node `descend` admits, front side first. Each piece of at
+/// least `min_area` reaches `on_pair` with the two children it ends between:
+/// leaves, or nodes `descend` refused.
 fn distribute_winding(
     tree: &BspTree,
     winding: &[DVec3],
     front_child: &BspChild,
     back_child: &BspChild,
     descend: &impl Fn(usize) -> bool,
+    min_area: f64,
     on_pair: &mut impl FnMut(&[DVec3], &BspChild, &BspChild),
 ) {
     let (split_node, split_front) = match (front_child, back_child) {
@@ -153,13 +155,13 @@ fn distribute_winding(
         (back_winding, &split_node.back),
     ] {
         let Some(piece) = piece else { continue };
-        if piece.len() < 3 || polygon_area(&piece) < MIN_PORTAL_AREA_M2 {
+        if piece.len() < 3 || polygon_area(&piece) < min_area {
             continue;
         }
         if split_front {
-            distribute_winding(tree, &piece, side, back_child, descend, on_pair);
+            distribute_winding(tree, &piece, side, back_child, descend, min_area, on_pair);
         } else {
-            distribute_winding(tree, &piece, front_child, side, descend, on_pair);
+            distribute_winding(tree, &piece, front_child, side, descend, min_area, on_pair);
         }
     }
 }

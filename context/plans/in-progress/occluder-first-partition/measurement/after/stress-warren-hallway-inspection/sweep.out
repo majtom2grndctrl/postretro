@@ -1,0 +1,41 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 1.0 s
+bake read: id51=ab2022c165265502 walk_epoch=3 size=2741219473 mtime=1793165933 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+swept 4596 poses x 160x90 rays on 16 threads in 5.6 s
+sweep record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-warren-hallway-inspection/stress-warren-hallway-inspection.after.sweep
+
+=== this build: 4596 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=ab2022c165265502 walk_epoch=3 size=2741219473 mtime=1793165933 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+paths [("portal", 4596)]
+per pose                   mean          p95          max
+considered                 38.7          156          464
+accepted                   12.9           54          183
+drawn                       9.2           33           75
+reach                       9.2           33           75
+seen                        7.0           23           47
+drawn_faces               104.2          334          590
+tris                      206.4          658         1160
+tris_in_frustum           132.6          486         1084
+lightmap_blocks             9.5           35           75
+lightmap_texels       9000814.7     32355168     59393056
+sh_clusters                 3.5           11           24
+fog_volumes                 0.0            0            0
+id51_outside                0.0            0            6
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.1            0           51
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 6.76s
+

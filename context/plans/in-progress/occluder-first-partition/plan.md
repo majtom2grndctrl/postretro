@@ -1,7 +1,7 @@
 # occluder-first-partition — plan of record
 
 mode: resumable
-status: approved
+status: blocked
 read at: 05c549129
 
 Source cited by Decisions and Path re-read at 05c549129. Since the brief's 0380ba710, no partition, portal, visibility, geometry, cell-visibility, kinematic, hint, residency, affinity, chunk-list or fog source changed; `pipeline.rs`, `pack.rs` and `bvh_build.rs` changed only in unrelated lines. No Decision premise is false.
@@ -46,6 +46,14 @@ Source cited by Decisions and Path re-read at 05c549129. Since the brief's 0380b
 - **Runtime portals.** Generated at occluder-tier nodes only, distributed to occluder-tier leaf pairs. Each pair is then pushed through both sides' subtrees, keeping fragments whose two sub-leaves are interior, under the unchanged `MIN_PORTAL_AREA_M2` cull. One portal is emitted per pair: the convex hull of the surviving fragments, coplanar inside the occluder-tier winding. Hull over-inclusion only widens visibility. Dropping solid parts keeps doors sealing under full coverage, and no portal touches a solid or exterior cell (R3, R22). The full tree's portals still feed the exterior flood.
 - **Plane selection.** Inside the tier, candidates are occluder planes only. The score adds a cross-section term: the area of the plane's slice through the current region, larger preferred, so the retaining wall's top beats its back face. Door splitters follow once no occluder plane qualifies. Below the tier, today's score is unchanged.
 - **Baselines.** Until task 5 wires the tier into `pipeline.rs`, prl-build output equals main. Before-bakes, eye-pose records, leak, door-sealing and exterior-point references are therefore recorded from this branch just before task 5, with no main worktree.
+
+## Block (Task 9)
+
+Two pass/fail rows fail as measured; the owner rules before Task 10.
+
+- **M2, the bake-gap gate, hallway random walk.** 3.07 M deferred texels in 2 frames near spawn: those eyes draw 41 cells and 23.4 M texels against 12–13 cells and 3.3–4.3 M before, so the pool grows a second time while its first generation retires. No drawn block was outside the baked id-51 set, so the delegated id-51 lever does not apply. Cause: one interior cell per occluder-tier leaf holds everything exempt brushes used to cut apart, and the Decision "cells stay unbounded" defers the size cap to `occluder-cell-size-cap`.
+- **M1, step cap, stress-street.** 29 poses trip (518 before). The walk's cost comes from facade sections giving each window its own cell with two portals; floors behind the windows hold 50–90 window portals each. The walk runtime cap is out of scope (F3).
+- **Reported, owner-judged:** tris in frustum +117% campaign-test, +65% hallway, +36% arena; drawn lightmap texels +29–83% on all five maps, against the Problem's "no significant increase"; face growth suggests `face-fragment-remerge`.
 
 ## AC-to-proof
 
@@ -116,7 +124,7 @@ Row ids: A = Automated classification, C = Correctness, F = Format/cache/content
 | 6 | **Doors.** Pre-BSP door recognition, broad-face splitters after occluder planes. Rows C10–C13. | integrating executor | 5 | done: `partition/door_recognition.rs`, `TierPlanes { roles, doors }`; `pipeline/runtime_cells/door_tests.rs` + production-path `closet_reveal_compiler_loader_portal_ids_block_and_restore_interior` (bin target 1977 pass, 1 expected fail). M3 per mover, after (before): campaign-test m0 5 (2), m1 5 (0); arena m0–m5 all seal (lifts 6, 7 not doors); hallway m0–m8 all seal. campaign-test now 793 cells (71 interior), 132 portals; arena 1,180 (199), 221; hallway 7,111 (1,222), 1,771. No leaks. |
 | 7 | **Streaming hints.** Runtime-portal resolution, regenerate the committed hinted PRL. Rows C14, C15. | integrating executor | 5 | done: no resolution logic change (Task 5 already feeds runtime portals to `resolve_streaming_hints`); `pipeline/runtime_cells/hint_tests.rs` (C14, C15 over both hinted maps; unmatched seam across an exempt wall fails by name); `sh-streaming-hinted-door.prl` regenerated (42 cells, 2 runtime portals, both seams; byte test passes, deterministic). Bin target 1981 pass, 0 fail. FGD and `build_pipeline.md` seam wording left for F5. |
 | 8 | **Street map.** Preset module beside `stress_zones.py`: elevated street over a promenade, upper opposite-direction deck, corners, barriers closing side streets, strip facades, an abutting row and a free-standing building, linked-group lamp posts holding a light, `.generated.ts` sidecar, README; committed map. Row F7. | delegated worker | — (runs alongside 3–7) | done: `tools/stress_street.py`, `content/dev/maps/stress-street.{map,generated.ts,README.md}`; `StreetMapTests` 12 pass (2 env-volume failures predate the branch, also fail at HEAD). Compiles at `8a9a34177` in 28 s with `--sh-probe-spacing 4.0 --lightmap-density 0.25`, no leak; 396 open-edge diagnostics, mostly at lamp posts (check at H2). |
-| 9 | **Measured sweep + escalations.** After-bakes; M1–M7; id-51 lattice decision; stepped-solid escalation only if the arena shows riser or tread boundaries. | integrating executor | 5, 6, 7, 8 | |
+| 9 | **Measured sweep + escalations.** After-bakes; M1–M7; id-51 lattice decision; stepped-solid escalation only if the arena shows riser or tread boundaries. | integrating executor | 5, 6, 7, 8 | measured, blocked: `measurement/after/README.md`. M3, M4 pass on all five maps; M1 passes on four; **M1 fails on stress-street (29 step-cap trips, 518 before; 26 tripped before, 3 new)**; **M2 fails on hallway (random walk 0 → 3,067,968 deferred texels, 2 frames)**. Walk portal tests −39 to −79% per pose; tris in frustum +5 to +117%, drawn texels +29 to +83%; faces +3 to +33%. id-51 lattice unchanged (no drawn block outside the baked set). `CROSS_SECTION_WEIGHT` kept at 8 (2× fails; 4× fewer faces, street slightly worse). No riser/tread boundary. Fix: sub-tier fragments keep down to `FRAGMENT_DUST_AREA_M2`, cull on tier piece and hull only (`window_split_below_the_tier_into_pieces_under_the_cull_keeps_its_portal`); bin target 1982 pass. |
 | 10 | **Gates.** F3, F4, F5 source and doc checks; `/preflight`; review loop; full gate. | integrating executor | 9 | |
 
 Hot paths: the runtime walk and renderer are untouched (F3). Compile cost adds one first-pass BSP plus classification queries before the second build; task 2's report includes partition-stage time before and after.

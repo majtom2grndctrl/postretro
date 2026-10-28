@@ -6,11 +6,20 @@ use std::collections::HashSet;
 
 use glam::DVec3;
 
-use super::{PlaneEntry, Portal, distribute_winding, make_node_portal};
+use super::{
+    MIN_PORTAL_AREA_M2, PlaneEntry, Portal, distribute_winding, make_node_portal, polygon_area,
+};
 use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 
 /// Collinear and duplicate hull points closer than this are dropped.
 const HULL_EPSILON: f64 = 1e-9;
+
+/// Sub-tier fragments below this area are clipping dust. The portal-area
+/// cull applies to the tier piece and to the pair's portal, never to the
+/// fragments below-tier planes cut a tier piece into: those fragments only
+/// tell interior from solid, and culling them drops real opening the tier
+/// portal must cover.
+const FRAGMENT_DUST_AREA_M2: f64 = 1e-6;
 
 /// A portal corner this close to an axis-aligned plane bounding its leaves
 /// lies on it: far above clipping dust, far below any authored gap.
@@ -28,8 +37,10 @@ pub struct TierPortal {
 /// Generate portals at occluder-tier nodes only. Each node's winding is cut
 /// among the tier-leaf pairs it separates, then pushed through both leaves'
 /// sub-trees; the pieces whose two sub-leaves are both interior (neither
-/// solid nor in `exterior_leaves`) survive, and their convex hull is the
-/// pair's portal. The hull can only widen what the pieces let through, and a
+/// solid nor in `exterior_leaves`) survive at any area above clipping dust,
+/// and their convex hull is the pair's portal. The portal-area cull runs on
+/// the tier piece and on the hull, as on every portal set, never on the
+/// pieces. The hull can only widen what the pieces let through, and a
 /// pair no interior piece joins gets no portal, so none leads into solid or
 /// joins interior to exterior.
 pub fn generate_occluder_tier_portals(
@@ -83,6 +94,7 @@ fn generate_recursive(
             &node.front,
             &node.back,
             &in_tier,
+            MIN_PORTAL_AREA_M2,
             &mut |piece, front, back| {
                 tier_pairs.push((piece.to_vec(), front.clone(), back.clone()))
             },
@@ -98,6 +110,7 @@ fn generate_recursive(
                 &front,
                 &back,
                 &|_| true,
+                FRAGMENT_DUST_AREA_M2,
                 &mut |fragment, front_leaf, back_leaf| {
                     if let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front_leaf, back_leaf)
                         && interior(*f)
@@ -115,7 +128,9 @@ fn generate_recursive(
                     }
                 },
             );
-            if let Some(polygon) = coplanar_hull(&kept, normal) {
+            if let Some(polygon) = coplanar_hull(&kept, normal)
+                && polygon_area(&polygon) >= MIN_PORTAL_AREA_M2
+            {
                 portals.push(TierPortal {
                     polygon,
                     front_tier_leaf: tier.tier_leaf_of(tree, &front),

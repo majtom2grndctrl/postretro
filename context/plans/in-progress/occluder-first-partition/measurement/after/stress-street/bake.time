@@ -1,0 +1,5 @@
+flags: --sh-probe-spacing 4.0 --lightmap-density 0.25 --cache-dir /private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/25609316-dd73-4754-993f-da7529caa8f7/scratchpad/after/cache-stress-street
+start: 2026-10-27 22:18:05
+exit: 0
+wall_seconds: 9
+ 32M	/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/25609316-dd73-4754-993f-da7529caa8f7/scratchpad/after/cache-stress-street

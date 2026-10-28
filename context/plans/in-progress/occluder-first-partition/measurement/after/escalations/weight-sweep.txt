@@ -1,0 +1,67 @@
+### CROSS_SECTION_WEIGHT = 2 x SPLIT_PENALTY
+27:const CROSS_SECTION_WEIGHT: f64 = 2.0 * SPLIT_PENALTY as f64;
+occluder_tier tests rc 101
+runtime_cells tests rc 101
+build rc 0
+occlusion-test bake rc 0
+stress-street bake rc 0
+test result: FAILED. 21 passed; 1 failed; 0 ignored; 0 measured; 1981 filtered out; finished in 7.71s
+test result: FAILED. 42 passed; 1 failed; 1 ignored; 0 measured; 1959 filtered out; finished in 2.52s
+test portals::occluder_tier::tests::occlusion_test_wall_top_bounds_occluder_tier_leaves_beyond_the_wall ... FAILED
+test result: FAILED. 42 passed; 1 failed; 1 ignored; 0 measured; 1959 filtered out; finished in 2.52s
+test pipeline::runtime_cells::tests::no_runtime_portal_leads_into_solid_or_joins_interior_to_exterior ... FAILED
+test result: FAILED. 21 passed; 1 failed; 0 ignored; 0 measured; 1981 filtered out; finished in 7.71s
+occlusion-test: 161 occluder-tier leaves; 288 cells (42 interior, 175 solid, 71 exterior); 66 runtime portals; full tree 538 leaves, 946 portals | faces 1027 | partition 0.03s
+  uncapped walk: poses 1217 considered mean 45.9 p95 108 max 157; over 5000: 0; reach mean 9.6 p95 21 max 27
+stress-street: 2219 occluder-tier leaves; 2760 cells (928 interior, 1780 solid, 52 exterior); 2053 runtime portals; full tree 3526 leaves, 4982 portals | faces 8111 | partition 0.31s
+  uncapped walk: poses 2960 considered mean 1250.1 p95 3576 max 7615; over 5000: 43; reach mean 91.6 p95 307 max 579
+### CROSS_SECTION_WEIGHT = 4 x SPLIT_PENALTY
+27:const CROSS_SECTION_WEIGHT: f64 = 4.0 * SPLIT_PENALTY as f64;
+occluder_tier tests rc 0
+runtime_cells tests rc 0
+build rc 0
+occlusion-test bake rc 0
+stress-street bake rc 0
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 1981 filtered out; finished in 7.80s
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 1959 filtered out; finished in 2.50s
+two-tier: 586 leaves, 1189 full-tree portals; 209 tier nodes, 210 tier leaves (56 with interior), 91 tier portals
+below/above wall top part at node 37 (tier: true), plane n=DVec3(-0.0, 1.0, -0.0) d=6.5024
+occlusion-test: 210 occluder-tier leaves; 333 cells (56 interior, 191 solid, 86 exterior); 91 runtime portals; full tree 586 leaves, 1189 portals | faces 910 | partition 0.03s
+  uncapped walk: poses 1217 considered mean 65.9 p95 165 max 215; over 5000: 0; reach mean 13.9 p95 30 max 36
+stress-street: 2541 occluder-tier leaves; 3212 cells (1030 interior, 2080 solid, 102 exterior); 2277 runtime portals; full tree 4113 leaves, 5731 portals | faces 8713 | partition 0.34s
+  uncapped walk: poses 2960 considered mean 1301.3 p95 3881 max 7235; over 5000: 33; reach mean 108.7 p95 363 max 621
+### CROSS_SECTION_WEIGHT = 8 x SPLIT_PENALTY
+27:const CROSS_SECTION_WEIGHT: f64 = 8.0 * SPLIT_PENALTY as f64;
+occluder_tier tests rc 0
+runtime_cells tests rc 0
+build rc 0
+occlusion-test bake rc 0
+stress-street bake rc 0
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 1981 filtered out; finished in 6.91s
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 1959 filtered out; finished in 2.38s
+two-tier: 765 leaves, 1519 full-tree portals; 304 tier nodes, 305 tier leaves (69 with interior), 124 tier portals
+below/above wall top part at node 36 (tier: true), plane n=DVec3(-0.0, 1.0, -0.0) d=6.5024
+occlusion-test: 305 occluder-tier leaves; 461 cells (69 interior, 268 solid, 124 exterior); 124 runtime portals; full tree 765 leaves, 1519 portals | faces 1039 | partition 0.04s
+  uncapped walk: poses 1217 considered mean 106.7 p95 298 max 364; over 5000: 0; reach mean 18.1 p95 39 max 51
+stress-street: 3682 occluder-tier leaves; 4559 cells (1276 interior, 2977 solid, 306 exterior); 2597 runtime portals; full tree 5710 leaves, 6969 portals | faces 10183 | partition 0.51s
+  uncapped walk: poses 2960 considered mean 1246.4 p95 3812 max 6760; over 5000: 29; reach mean 126.6 p95 399 max 654
+### CROSS_SECTION_WEIGHT = 16 x SPLIT_PENALTY
+27:const CROSS_SECTION_WEIGHT: f64 = 16.0 * SPLIT_PENALTY as f64;
+occluder_tier tests rc 0
+runtime_cells tests rc 0
+build rc 0
+occlusion-test bake rc 0
+stress-street bake rc 0
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 1981 filtered out; finished in 6.36s
+test result: ok. 43 passed; 0 failed; 1 ignored; 0 measured; 1959 filtered out; finished in 2.54s
+two-tier: 1061 leaves, 1877 full-tree portals; 525 tier nodes, 526 tier leaves (107 with interior), 190 tier portals
+below/above wall top part at node 35 (tier: true), plane n=DVec3(-0.0, -1.0, -0.0) d=-6.5024
+occlusion-test: 526 occluder-tier leaves; 708 cells (107 interior, 396 solid, 205 exterior); 190 runtime portals; full tree 1061 leaves, 1877 portals | faces 1190 | partition 0.04s
+  uncapped walk: poses 1217 considered mean 142.5 p95 362 max 526; over 5000: 0; reach mean 28.2 p95 62 max 85
+stress-street: 4770 occluder-tier leaves; 5901 cells (1578 interior, 3779 solid, 544 exterior); 3158 runtime portals; full tree 7278 leaves, 8616 portals | faces 11450 | partition 0.39s
+  uncapped walk: poses 2960 considered mean 1413.7 p95 4510 max 7244; over 5000: 89; reach mean 155.9 p95 526 max 853
+### W=4 extra: campaign-test and arena bakes, M1 sweeps on all four maps
+occlusion-test: faces 910; 210 occluder-tier leaves; 333 cells (56 interior, 191 solid, 86 exterior); 91 runtime portals; full tree 586 leaves, 1189 portals; M1 verdict: PASS, trips 0
+campaign-test: faces 856; 311 occluder-tier leaves; 531 cells (47 interior, 291 solid, 193 exterior); 79 runtime portals; full tree 717 leaves, 1283 portals; M1 verdict: PASS, trips 0
+stress-warren-showcase: faces 2468; 866 occluder-tier leaves; 1097 cells (210 interior, 731 solid, 156 exterior); 304 runtime portals; full tree 1516 leaves, 1971 portals; M1 verdict: PASS, trips 0
+stress-street: faces 8713; 2541 occluder-tier leaves; 3212 cells (1030 interior, 2080 solid, 102 exterior); 2277 runtime portals; full tree 4113 leaves, 5731 portals; M1 verdict: FAIL, trips 33

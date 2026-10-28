@@ -170,3 +170,9 @@ fn coplanar_hull(points: &[DVec3], normal: DVec3, distance: f64) -> Option<Vec<D
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod classification_test_fixtures;
+
+#[cfg(test)]
+mod classification_tests;

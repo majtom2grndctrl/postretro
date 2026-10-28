@@ -7,6 +7,7 @@ use std::f64::consts::FRAC_1_SQRT_2;
 
 use glam::DVec3;
 
+use super::find_leaf_for_point;
 use super::region_polytope::RegionPolytope;
 use super::types::{Aabb, BspChild, BspTree};
 use crate::map_data::BrushVolume;
@@ -38,6 +39,12 @@ const VERTICAL_AXIS_MIN_COS: f64 = FRAC_1_SQRT_2;
 /// floor, and well clear of the 1 mm region classification epsilon, so a probe
 /// never starts inside the brush it measures.
 const PROBE_OFFSET_M: f64 = 0.02;
+
+/// Where a broad face is sampled along each of its broad axes: the centres
+/// of its thirds, a 3 × 3 lattice. One centre sample misreads a floor with a
+/// pillar on its centre, or a wall another wall abuts at its middle, as
+/// fronting no open space.
+const FACE_SAMPLE_FRACTIONS: [f64; 3] = [1.0 / 6.0, 0.5, 5.0 / 6.0];
 
 /// Extents this close count as tied when choosing the broad face, so a cube
 /// offers every face and the choice cannot depend on side order.
@@ -94,6 +101,15 @@ impl<'a> OpenSpace<'a> {
         };
         self.first_blocking(&root, origin, dir, 0.0, self.reach)
             .unwrap_or(self.reach)
+    }
+
+    /// True when `point` lies in a solid or exterior leaf.
+    pub fn is_blocked(&self, point: DVec3) -> bool {
+        if self.tree.leaves.is_empty() {
+            return true;
+        }
+        let leaf = find_leaf_for_point(self.tree, point);
+        self.tree.leaves[leaf].is_solid || self.exterior_leaves.contains(&leaf)
     }
 
     fn first_blocking(
@@ -244,18 +260,57 @@ struct BroadFace {
 }
 
 impl BroadFace {
+    /// Judge the face at each open sample of its lattice; it passes when
+    /// most of them pass. A sample whose probe starts in blocked space reads
+    /// the brush touching the face there, not the space in front, so it is
+    /// skipped.
     fn judge(
         &self,
         frame: &BrushFrame,
         broad: [usize; 2],
         space: &OpenSpace<'_>,
     ) -> OccluderVerdict {
-        let probe = self.center + self.normal * PROBE_OFFSET_M;
+        let offset = |axis: usize, fraction: f64| {
+            frame.axes[axis] * ((fraction - 0.5) * frame.extents[axis])
+        };
+        let (mut open, mut passing) = (0_usize, 0_usize);
+        let mut failing = OccluderVerdict::NoOpenFace;
+        for &a in &FACE_SAMPLE_FRACTIONS {
+            for &b in &FACE_SAMPLE_FRACTIONS {
+                let offsets = [offset(broad[0], a), offset(broad[1], b)];
+                let probe = self.center + offsets[0] + offsets[1] + self.normal * PROBE_OFFSET_M;
+                if space.is_blocked(probe) {
+                    continue;
+                }
+                open += 1;
+                match self.judge_sample(probe, offsets, frame, broad, space) {
+                    OccluderVerdict::Occludes => passing += 1,
+                    verdict => failing = rank(failing, verdict),
+                }
+            }
+        }
+        if open > 0 && 2 * passing > open {
+            OccluderVerdict::Occludes
+        } else {
+            failing
+        }
+    }
+
+    /// The rule at one sample: `probe` lies in front of the face, displaced
+    /// from its centre by `offsets` along the two broad axes.
+    fn judge_sample(
+        &self,
+        probe: DVec3,
+        offsets: [DVec3; 2],
+        frame: &BrushFrame,
+        broad: [usize; 2],
+        space: &OpenSpace<'_>,
+    ) -> OccluderVerdict {
         let depth = PROBE_OFFSET_M + space.distance_to_blocking(probe, self.normal);
         if !at_least(depth, OCCLUDER_FLOOR_M) {
             return OccluderVerdict::NoOpenFace;
         }
-        for axis in broad {
+        for (slot, axis) in broad.into_iter().enumerate() {
             let direction = frame.axes[axis];
             let length = frame.extents[axis];
             let upness = direction.dot(DVec3::Y);
@@ -263,7 +318,10 @@ impl BroadFace {
                 // Start just under the top: a top meeting a ceiling lies on
                 // the ceiling's plane, which may descend into its solid.
                 let up = direction * upness.signum();
-                let top = self.center + up * (length * 0.5) + self.normal * PROBE_OFFSET_M;
+                let top = self.center
+                    + offsets[1 - slot]
+                    + up * (length * 0.5)
+                    + self.normal * PROBE_OFFSET_M;
                 let start = top - DVec3::Y * PROBE_OFFSET_M;
                 let see_over = PROBE_OFFSET_M + space.distance_to_blocking(start, DVec3::NEG_Y);
                 if !at_least(see_over, OCCLUDER_SEE_OVER_M) {
@@ -398,5 +456,9 @@ fn brush_vertices(brush: &BrushVolume) -> Vec<DVec3> {
     polytope.vertices().collect()
 }
 
+// The rows these fixtures serve run in `portals::occluder_tier`: they need the
+// exterior flood, which only the `prl-build` target compiles, so the library
+// target's test build leaves the fixtures unused.
 #[cfg(test)]
-mod tests;
+#[allow(dead_code)]
+pub(crate) mod test_fixtures;

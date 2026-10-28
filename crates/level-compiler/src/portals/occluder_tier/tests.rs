@@ -5,7 +5,7 @@ use crate::partition::occluder_classify::{
     OccluderClassification, OccluderVerdict, OpenSpace, classify_occluders,
 };
 use crate::partition::{
-    Aabb, build_bsp_from_brushes, build_bsp_with_occluder_tier, find_leaf_for_point,
+    Aabb, TierRole, build_bsp_from_brushes, build_bsp_with_occluder_tier, find_leaf_for_point,
 };
 use crate::portals::generate_portals;
 use crate::visibility::find_exterior_leaves;
@@ -75,9 +75,8 @@ struct TieredBuild {
     tier_portals: Vec<TierPortal>,
 }
 
-fn tiered_build(brushes: &[BrushVolume], occluders: &[bool]) -> TieredBuild {
-    let (tree, tier) =
-        build_bsp_with_occluder_tier(brushes, occluders).expect("two-tier tree builds");
+fn tiered_build(brushes: &[BrushVolume], roles: &[TierRole]) -> TieredBuild {
+    let (tree, tier) = build_bsp_with_occluder_tier(brushes, roles).expect("two-tier tree builds");
     let portals = generate_portals(&tree);
     let exterior = find_exterior_leaves(&tree, &portals);
     let tier_portals = generate_occluder_tier_portals(&tree, &tier, &exterior);
@@ -139,7 +138,8 @@ fn unclassified_build_keeps_todays_tree() {
 
     let today = build_bsp_from_brushes(&brushes).expect("tree builds");
     let (tiered, tier) =
-        build_bsp_with_occluder_tier(&brushes, &vec![false; brushes.len()]).expect("tree builds");
+        build_bsp_with_occluder_tier(&brushes, &vec![TierRole::Exempt; brushes.len()])
+            .expect("tree builds");
 
     assert_eq!(today.nodes.len(), tiered.nodes.len());
     assert_eq!(today.leaves.len(), tiered.leaves.len());
@@ -164,14 +164,13 @@ fn exempt_pillar_adds_no_tier_portal_beside_an_occluding_wall() {
     let without: Vec<BrushVolume> = hall(size).into_iter().chain([wall.clone()]).collect();
     let with: Vec<BrushVolume> = without.iter().cloned().chain([pillar]).collect();
 
-    let flags_without = first_pass(&without).classification.occluder_flags();
-    let pass_with = first_pass(&with);
-    let flags_with = pass_with.classification.occluder_flags();
-    assert!(flags_with[6], "the wall occludes");
-    assert!(!flags_with[7], "the pillar stays exempt");
+    let roles_without = first_pass(&without).classification.tier_roles();
+    let roles_with = first_pass(&with).classification.tier_roles();
+    assert_eq!(roles_with[6], TierRole::Occluder, "the wall occludes");
+    assert_eq!(roles_with[7], TierRole::Exempt, "the pillar stays exempt");
 
-    let build_without = tiered_build(&without, &flags_without);
-    let build_with = tiered_build(&with, &flags_with);
+    let build_without = tiered_build(&without, &roles_without);
+    let build_with = tiered_build(&with, &roles_with);
     build_with.assert_tier_portals_well_formed();
 
     assert_eq!(
@@ -273,7 +272,7 @@ fn occlusion_test_wall_top_bounds_occluder_tier_leaves_beyond_the_wall() {
     }
 
     let flags = pass.classification.occluder_flags();
-    let build = tiered_build(brushes, &flags);
+    let build = tiered_build(brushes, &pass.classification.tier_roles());
     build.assert_tier_portals_well_formed();
 
     // Beyond the wall (north, Quake +y), mid-span, just below and just above

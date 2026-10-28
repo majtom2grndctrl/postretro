@@ -176,3 +176,6 @@ pub(crate) mod classification_test_fixtures;
 
 #[cfg(test)]
 mod classification_tests;
+
+#[cfg(test)]
+mod cluster_tests;

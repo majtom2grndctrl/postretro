@@ -191,6 +191,8 @@ pub(crate) fn classification_fixtures() -> Vec<Fixture> {
         turned_retaining_wall(),
         cube_in_room(),
         chain_walls(),
+        wall_under_roof(6.0),
+        wall_under_roof(OCCLUDER_SEE_OVER_M - EDGE_STEP_M),
     ];
     for edge in Edge::ALL {
         fixtures.extend(constant_edges(edge));
@@ -592,6 +594,45 @@ pub(crate) fn constant_edges(edge: Edge) -> [Fixture; 5] {
         see_over_edge(edge),
         one_face_gap_edge(edge),
     ]
+}
+
+/// A wall 12 m long and `height` tall across a hall 30 × 13 × 30 m, closing
+/// a room 3 m deep behind it whose 0.5 m roof sinks into the wall's top,
+/// flush with it. Fronting the room the wall fills its span; fronting the
+/// hall, 12 of 30 m, it fails both horizontal tests. So the room face
+/// decides, and its see-over drop starts inside the roof.
+// Regression: the drop read 0 inside the roof, so every facade whose room
+// roof met its top stayed exempt whatever its height.
+pub(crate) fn wall_under_roof(height: f64) -> Fixture {
+    let mut fixture = Fixture::in_hall(
+        format!("wall {height} m tall under a roof"),
+        DVec3::new(30.0, 13.0, 30.0),
+    );
+    let (x0, x1, z0, t, depth) = (9.0, 21.0, 15.0, 0.3, 3.0);
+    let verdict = if height >= OCCLUDER_SEE_OVER_M {
+        OccluderVerdict::Occludes
+    } else {
+        OccluderVerdict::LowTop
+    };
+    fixture.add_pinned(
+        "wall under a roof",
+        box_brush(DVec3::new(x0, 0.0, z0), DVec3::new(x1, height, z0 + t)),
+        verdict,
+    );
+    let back = z0 + t + depth;
+    fixture.brushes.extend([
+        box_brush(DVec3::new(x0 - t, 0.0, z0), DVec3::new(x0, height, back)),
+        box_brush(DVec3::new(x1, 0.0, z0), DVec3::new(x1 + t, height, back)),
+        box_brush(
+            DVec3::new(x0 - t, 0.0, back),
+            DVec3::new(x1 + t, height, back + t),
+        ),
+        box_brush(
+            DVec3::new(x0, height - 0.5, z0 + t),
+            DVec3::new(x1, height, back),
+        ),
+    ]);
+    fixture
 }
 
 // Rotated brushes (pin R5).

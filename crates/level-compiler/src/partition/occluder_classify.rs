@@ -7,7 +7,9 @@ use std::f64::consts::FRAC_1_SQRT_2;
 
 use glam::DVec3;
 
+use super::brush_bsp::TierRole;
 use super::find_leaf_for_point;
+use super::occluder_cluster::{Cluster, find_clusters};
 use super::region_polytope::RegionPolytope;
 use super::types::{Aabb, BspChild, BspTree};
 use crate::map_data::BrushVolume;
@@ -48,7 +50,7 @@ const FACE_SAMPLE_FRACTIONS: [f64; 3] = [1.0 / 6.0, 0.5, 5.0 / 6.0];
 
 /// Extents this close count as tied when choosing the broad face, so a cube
 /// offers every face and the choice cannot depend on side order.
-const AXIS_TIE_EPSILON_M: f64 = 1e-3;
+pub(crate) const AXIS_TIE_EPSILON_M: f64 = 1e-3;
 
 /// Side normals whose dot product is within this of zero are perpendicular
 /// and seed a candidate own-frame box.
@@ -99,7 +101,36 @@ impl<'a> OpenSpace<'a> {
         } else {
             BspChild::Node(0)
         };
-        self.first_blocking(&root, origin, dir, 0.0, self.reach)
+        self.first_leaf(&root, origin, dir, 0.0, self.reach, true)
+            .unwrap_or(self.reach)
+    }
+
+    /// Distance along unit `dir` from `origin`, through any solid or exterior
+    /// `origin` starts in, then across open space to the next solid or
+    /// exterior leaf, capped at `reach`: how far a top that meets or sinks
+    /// into a ceiling stands above the floor below it.
+    pub fn distance_through_to_blocking(&self, origin: DVec3, dir: DVec3) -> f64 {
+        if self.tree.leaves.is_empty() {
+            return 0.0;
+        }
+        let root = if self.tree.nodes.is_empty() {
+            BspChild::Leaf(0)
+        } else {
+            BspChild::Node(0)
+        };
+        let Some(open) = self.first_leaf(&root, origin, dir, 0.0, self.reach, false) else {
+            return self.reach;
+        };
+        // Past the solid's face, so the search never starts on its plane.
+        let from = if open > 0.0 {
+            open + PROBE_OFFSET_M
+        } else {
+            0.0
+        };
+        if from >= self.reach {
+            return self.reach;
+        }
+        self.first_leaf(&root, origin, dir, from, self.reach, true)
             .unwrap_or(self.reach)
     }
 
@@ -112,19 +143,22 @@ impl<'a> OpenSpace<'a> {
         self.tree.leaves[leaf].is_solid || self.exterior_leaves.contains(&leaf)
     }
 
-    fn first_blocking(
+    /// First parameter in `t0..t1` along the segment where it enters a leaf
+    /// whose blocked state (solid or exterior) is `blocked`.
+    fn first_leaf(
         &self,
         child: &BspChild,
         origin: DVec3,
         dir: DVec3,
         t0: f64,
         t1: f64,
+        blocked: bool,
     ) -> Option<f64> {
         match child {
             BspChild::Leaf(leaf) => {
-                let blocked =
+                let is_blocked =
                     self.tree.leaves[*leaf].is_solid || self.exterior_leaves.contains(leaf);
-                blocked.then_some(t0)
+                (is_blocked == blocked).then_some(t0)
             }
             BspChild::Node(node) => {
                 let node = &self.tree.nodes[*node];
@@ -132,10 +166,10 @@ impl<'a> OpenSpace<'a> {
                 // Same sign rule as `find_leaf_for_point`: on the plane is front.
                 let (d0, d1) = (side(t0), side(t1));
                 if d0 >= 0.0 && d1 >= 0.0 {
-                    return self.first_blocking(&node.front, origin, dir, t0, t1);
+                    return self.first_leaf(&node.front, origin, dir, t0, t1, blocked);
                 }
                 if d0 < 0.0 && d1 < 0.0 {
-                    return self.first_blocking(&node.back, origin, dir, t0, t1);
+                    return self.first_leaf(&node.back, origin, dir, t0, t1, blocked);
                 }
                 let t_mid = t0 + (t1 - t0) * (d0 / (d0 - d1));
                 let (near, far) = if d0 >= 0.0 {
@@ -143,8 +177,8 @@ impl<'a> OpenSpace<'a> {
                 } else {
                     (&node.back, &node.front)
                 };
-                self.first_blocking(near, origin, dir, t0, t_mid)
-                    .or_else(|| self.first_blocking(far, origin, dir, t_mid, t1))
+                self.first_leaf(near, origin, dir, t0, t_mid, blocked)
+                    .or_else(|| self.first_leaf(far, origin, dir, t_mid, t1, blocked))
             }
         }
     }
@@ -166,34 +200,73 @@ pub enum OccluderVerdict {
     LowTop,
 }
 
-/// Per-brush verdicts, index-aligned with the classified brush slice.
+/// Per-brush verdicts, index-aligned with the classified brush slice, and the
+/// clusters their exempt brushes form.
 #[derive(Debug, Clone)]
 pub struct OccluderClassification {
+    /// Each brush judged alone.
     pub verdicts: Vec<OccluderVerdict>,
+    /// Touching brushes each exempt alone, judged per near-planar section.
+    pub clusters: Vec<Cluster>,
 }
 
 impl OccluderClassification {
-    /// One flag per brush, the shape `build_bsp_with_occluder_tier` takes.
-    pub fn occluder_flags(&self) -> Vec<bool> {
-        self.verdicts
+    /// One role per brush, the shape `build_bsp_with_occluder_tier` takes: a
+    /// brush that occludes alone is an occluder; an in-slab member of an
+    /// occluding section splits in the tier off its section's box planes;
+    /// every other brush splits only beneath the tier.
+    pub fn tier_roles(&self) -> Vec<TierRole> {
+        let mut roles: Vec<TierRole> = self
+            .verdicts
             .iter()
-            .map(|&verdict| verdict == OccluderVerdict::Occludes)
+            .map(|&verdict| match verdict {
+                OccluderVerdict::Occludes => TierRole::Occluder,
+                _ => TierRole::Exempt,
+            })
+            .collect();
+        for section in self.clusters.iter().flat_map(|cluster| &cluster.sections) {
+            if !section.occludes {
+                continue;
+            }
+            for (&member, outline) in section.members.iter().zip(&section.outline) {
+                match &mut roles[member] {
+                    role @ TierRole::Exempt => *role = TierRole::SectionMember(outline.clone()),
+                    // A member of two occluding sections bounds both.
+                    TierRole::SectionMember(flags) => {
+                        for (flag, &on_box) in flags.iter_mut().zip(outline) {
+                            *flag |= on_box;
+                        }
+                    }
+                    TierRole::Occluder => {}
+                }
+            }
+        }
+        roles
+    }
+
+    /// One flag per brush: true when any of its planes split inside the
+    /// occluder tier.
+    pub fn occluder_flags(&self) -> Vec<bool> {
+        self.tier_roles()
+            .iter()
+            .map(|role| *role != TierRole::Exempt)
             .collect()
     }
 }
 
-/// Classify every brush. Each verdict reads only that brush's geometry and
-/// `space`, so no brush's class depends on another's or on brush order.
+/// Classify every brush, then judge the clusters of touching exempt brushes.
+/// Each verdict reads only that brush's geometry and `space`, and clusters
+/// are sets judged on their own geometry, so nothing depends on brush order.
 pub fn classify_occluders(
     brushes: &[BrushVolume],
     space: &OpenSpace<'_>,
 ) -> OccluderClassification {
-    OccluderClassification {
-        verdicts: brushes
-            .iter()
-            .map(|brush| classify_brush(brush, space))
-            .collect(),
-    }
+    let verdicts: Vec<OccluderVerdict> = brushes
+        .iter()
+        .map(|brush| classify_brush(brush, space))
+        .collect();
+    let clusters = find_clusters(brushes, &verdicts, space);
+    OccluderClassification { verdicts, clusters }
 }
 
 fn classify_brush(brush: &BrushVolume, space: &OpenSpace<'_>) -> OccluderVerdict {
@@ -201,13 +274,21 @@ fn classify_brush(brush: &BrushVolume, space: &OpenSpace<'_>) -> OccluderVerdict
         return OccluderVerdict::UnderFloor;
     };
     let thinnest = frame.extents.iter().copied().fold(f64::INFINITY, f64::min);
+    let normal_axes = (0..3).filter(|&axis| frame.extents[axis] <= thinnest + AXIS_TIE_EPSILON_M);
+    judge_box(&frame, normal_axes, space)
+}
 
-    // Exempt verdicts rank by how far the brush got; the furthest one wins.
+/// The occluder rule on an own-frame box, judged from the faces across each
+/// of `normal_axes`: a brush offers its thinnest axes, a cluster section the
+/// axis across its slab.
+pub(crate) fn judge_box(
+    frame: &BrushFrame,
+    normal_axes: impl IntoIterator<Item = usize>,
+    space: &OpenSpace<'_>,
+) -> OccluderVerdict {
+    // Exempt verdicts rank by how far the box got; the furthest one wins.
     let mut verdict = OccluderVerdict::UnderFloor;
-    for normal_axis in 0..3 {
-        if frame.extents[normal_axis] > thinnest + AXIS_TIE_EPSILON_M {
-            continue;
-        }
+    for normal_axis in normal_axes {
         let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
         if broad
             .iter()
@@ -222,7 +303,7 @@ fn classify_brush(brush: &BrushVolume, space: &OpenSpace<'_>) -> OccluderVerdict
                 center: frame.center
                     + frame.axes[normal_axis] * (sign * frame.extents[normal_axis] * 0.5),
             };
-            let face_verdict = face.judge(&frame, broad, space);
+            let face_verdict = face.judge(frame, broad, space);
             if face_verdict == OccluderVerdict::Occludes {
                 return face_verdict;
             }
@@ -315,15 +396,17 @@ impl BroadFace {
             let length = frame.extents[axis];
             let upness = direction.dot(DVec3::Y);
             if upness.abs() >= VERTICAL_AXIS_MIN_COS {
-                // Start just under the top: a top meeting a ceiling lies on
-                // the ceiling's plane, which may descend into its solid.
+                // Start just under the top, and drop through any ceiling or
+                // roof the top meets or sinks into: no one sees over a top
+                // that solid closes, so the measure runs from the top itself.
                 let up = direction * upness.signum();
                 let top = self.center
                     + offsets[1 - slot]
                     + up * (length * 0.5)
                     + self.normal * PROBE_OFFSET_M;
                 let start = top - DVec3::Y * PROBE_OFFSET_M;
-                let see_over = PROBE_OFFSET_M + space.distance_to_blocking(start, DVec3::NEG_Y);
+                let see_over =
+                    PROBE_OFFSET_M + space.distance_through_to_blocking(start, DVec3::NEG_Y);
                 if !at_least(see_over, OCCLUDER_SEE_OVER_M) {
                     return OccluderVerdict::LowTop;
                 }
@@ -387,7 +470,8 @@ impl BrushFrame {
             .min_by(|x, y| axes_order(&x.axes, &y.axes))
     }
 
-    fn fit(axes: [DVec3; 3], vertices: &[DVec3]) -> Self {
+    /// The box along `axes` enclosing `vertices`.
+    pub(crate) fn fit(axes: [DVec3; 3], vertices: &[DVec3]) -> Self {
         let mut extents = [0.0; 3];
         let mut center = DVec3::ZERO;
         for (axis, extent) in axes.iter().zip(extents.iter_mut()) {
@@ -417,20 +501,25 @@ impl BrushFrame {
 /// sort, so the same box from any side pair compares equal.
 fn canonical_axes(mut axes: [DVec3; 3]) -> [DVec3; 3] {
     for axis in &mut axes {
-        let first = axis
-            .to_array()
-            .into_iter()
-            .find(|component| component.abs() > 1e-9)
-            .unwrap_or(1.0);
-        if first < 0.0 {
-            *axis = -*axis;
-        }
+        *axis = canonical_direction(*axis);
     }
     axes.sort_by(|x, y| axis_order(*x, *y));
     axes
 }
 
-fn axis_order(x: DVec3, y: DVec3) -> std::cmp::Ordering {
+/// `direction` or its negation, whichever has a positive first
+/// non-negligible component, so a line's two directions compare equal.
+pub(crate) fn canonical_direction(direction: DVec3) -> DVec3 {
+    let first = direction
+        .to_array()
+        .into_iter()
+        .find(|component| component.abs() > 1e-9)
+        .unwrap_or(1.0);
+    if first < 0.0 { -direction } else { direction }
+}
+
+/// An exact total order on directions, for order-free tie-breaks.
+pub(crate) fn axis_order(x: DVec3, y: DVec3) -> std::cmp::Ordering {
     x.x.total_cmp(&y.x)
         .then(x.y.total_cmp(&y.y))
         .then(x.z.total_cmp(&y.z))
@@ -445,6 +534,11 @@ fn axes_order(x: &[DVec3; 3], y: &[DVec3; 3]) -> std::cmp::Ordering {
 /// The brush's corner points, cut from its padded AABB by its own planes, so
 /// they come from canonical planes alone and not from textured sides.
 fn brush_vertices(brush: &BrushVolume) -> Vec<DVec3> {
+    brush_polytope(brush).vertices().collect()
+}
+
+/// The brush as a convex polytope cut from its padded AABB by its planes.
+pub(crate) fn brush_polytope(brush: &BrushVolume) -> RegionPolytope {
     let pad = DVec3::ONE;
     let mut polytope = RegionPolytope::from_aabb(&Aabb {
         min: brush.aabb.min - pad,
@@ -453,7 +547,7 @@ fn brush_vertices(brush: &BrushVolume) -> Vec<DVec3> {
     for plane in &brush.planes {
         polytope = polytope.clip(plane.normal, plane.distance).1;
     }
-    polytope.vertices().collect()
+    polytope
 }
 
 // The rows these fixtures serve run in `portals::occluder_tier`: they need the

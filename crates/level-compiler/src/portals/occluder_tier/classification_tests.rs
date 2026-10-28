@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
+
 use super::classification_test_fixtures::{
-    assert_apart, assert_pins, brush_at_quake_box, classify, occlusion_test_brushes,
+    assert_apart, assert_pins, brush_at_quake_box, classification, classify, occlusion_test_brushes,
 };
 use crate::map_data::BrushVolume;
 use crate::partition::occluder_classify::test_fixtures::{
     self as fixtures, Edge, Fixture, classification_fixtures, constant_edges,
 };
 use crate::partition::occluder_classify::{BrushFrame, OccluderVerdict};
+use crate::partition::occluder_cluster::test_fixtures::cluster_fixtures;
 
 // Classification table: each brush classifies as the Acceptance table shows.
 
@@ -151,6 +154,16 @@ fn floor_decides_the_gap_in_front_of_a_wall_passing_from_one_face_both_ways() {
 }
 
 #[test]
+fn see_over_height_measures_from_a_top_that_sinks_into_a_roof() {
+    // The room's roof closes the wall's top, so no one sees over it; the
+    // measure still runs from the top, so a wall under the height fails.
+    assert_pins(&fixtures::wall_under_roof(6.0));
+    assert_pins(&fixtures::wall_under_roof(
+        crate::partition::occluder_classify::OCCLUDER_SEE_OVER_M - 1e-3,
+    ));
+}
+
+#[test]
 fn every_occluder_test_passes_exactly_at_its_constant() {
     // Pin R12. The see-over drop starts 2 cm under the top and adds it back,
     // so a top exactly at the height measures exactly the height.
@@ -222,28 +235,61 @@ fn with_side_order(brush: &BrushVolume, order: &[usize]) -> BrushVolume {
     }
 }
 
+/// What classification decides, in the original brush order: each brush's
+/// verdict alone and whether it reaches the occluder tier, each cluster's
+/// members, and each section's in-slab members and outcome.
+#[derive(Debug, PartialEq)]
+struct Outcome {
+    verdicts: Vec<OccluderVerdict>,
+    in_tier: Vec<bool>,
+    clusters: BTreeSet<Vec<usize>>,
+    sections: BTreeSet<(Vec<usize>, bool)>,
+}
+
 /// Classify `brushes` visited in `order`, each brush's sides in the order
-/// `sides` gives for its plane count; verdicts return in the original order.
+/// `sides` gives for its plane count; the outcome names brushes by their
+/// original index.
 fn classify_reordered(
     brushes: &[BrushVolume],
     order: &[usize],
     sides: impl Fn(usize) -> Vec<usize>,
-) -> Vec<OccluderVerdict> {
+) -> Outcome {
     let reordered: Vec<BrushVolume> = order
         .iter()
         .map(|&i| with_side_order(&brushes[i], &sides(brushes[i].planes.len())))
         .collect();
-    let visited = classify(&reordered);
-    let mut verdicts = vec![OccluderVerdict::UnderFloor; brushes.len()];
-    for (position, &original) in order.iter().enumerate() {
-        verdicts[original] = visited[position];
+    let visited = classification(&reordered);
+    let in_tier = visited.occluder_flags();
+    let original = |members: &[usize]| {
+        let mut members: Vec<usize> = members.iter().map(|&p| order[p]).collect();
+        members.sort_unstable();
+        members
+    };
+    let mut outcome = Outcome {
+        verdicts: vec![OccluderVerdict::UnderFloor; brushes.len()],
+        in_tier: vec![false; brushes.len()],
+        clusters: visited
+            .clusters
+            .iter()
+            .map(|cluster| original(&cluster.members))
+            .collect(),
+        sections: visited
+            .clusters
+            .iter()
+            .flat_map(|cluster| &cluster.sections)
+            .map(|section| (original(&section.members), section.occludes))
+            .collect(),
+    };
+    for (position, &brush) in order.iter().enumerate() {
+        outcome.verdicts[brush] = visited.verdicts[position];
+        outcome.in_tier[brush] = in_tier[position];
     }
-    verdicts
+    outcome
 }
 
 fn assert_order_free(name: &str, brushes: &[BrushVolume], orders: &[Vec<usize>]) {
-    let baseline = classify(brushes);
     let identity = |n: usize| (0..n).collect::<Vec<_>>();
+    let baseline = classify_reordered(brushes, &identity(brushes.len()), identity);
     for (k, order) in orders.iter().enumerate() {
         assert_eq!(
             classify_reordered(brushes, order, identity),
@@ -264,8 +310,11 @@ fn assert_order_free(name: &str, brushes: &[BrushVolume], orders: &[Vec<usize>])
 }
 
 #[test]
-fn reordering_brushes_and_sides_changes_no_classification() {
-    for Fixture { name, brushes, .. } in classification_fixtures() {
+fn reordering_brushes_and_sides_changes_no_classification_or_cluster() {
+    let fixtures = classification_fixtures()
+        .into_iter()
+        .chain(cluster_fixtures().into_iter().map(|cf| cf.fixture));
+    for Fixture { name, brushes, .. } in fixtures {
         let n = brushes.len();
         let orders = [reversed(n), shuffled(n, 7), shuffled(n, 31)];
         assert_order_free(&name, &brushes, &orders);
@@ -311,7 +360,8 @@ fn chain_walls_occlude_in_every_brush_order() {
             walls.iter().chain(&hall).copied().collect(),
         ] {
             let verdicts =
-                classify_reordered(&fixture.brushes, &order, |n| (0..n).collect::<Vec<_>>());
+                classify_reordered(&fixture.brushes, &order, |n| (0..n).collect::<Vec<_>>())
+                    .verdicts;
             for pin in &fixture.pins {
                 assert_eq!(
                     verdicts[pin.brush],

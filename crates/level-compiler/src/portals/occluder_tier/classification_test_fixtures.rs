@@ -12,12 +12,15 @@ use glam::DVec3;
 use crate::map_data::BrushVolume;
 use crate::map_format::MapFormat;
 use crate::partition::occluder_classify::test_fixtures::Fixture;
-use crate::partition::occluder_classify::{OccluderVerdict, OpenSpace, classify_occluders};
+use crate::partition::occluder_classify::{
+    OccluderClassification, OccluderVerdict, OpenSpace, classify_occluders,
+};
 use crate::partition::{
-    BspTree, OccluderTier, build_bsp_from_brushes, build_bsp_with_occluder_tier,
+    BspTree, OccluderTier, TierRole, build_bsp_from_brushes, build_bsp_with_occluder_tier,
     find_leaf_for_point,
 };
 use crate::portals::generate_portals;
+use crate::portals::occluder_tier::generate_occluder_tier_portals;
 use crate::visibility::find_exterior_leaves;
 
 /// The first pass the classifier reads: today's tree of every brush and its
@@ -35,24 +38,22 @@ impl FirstPass {
         Self { tree, exterior }
     }
 
-    pub(crate) fn classify(&self, brushes: &[BrushVolume]) -> Vec<OccluderVerdict> {
-        classify_occluders(brushes, &OpenSpace::new(&self.tree, &self.exterior)).verdicts
+    pub(crate) fn classification(&self, brushes: &[BrushVolume]) -> OccluderClassification {
+        classify_occluders(brushes, &OpenSpace::new(&self.tree, &self.exterior))
     }
 }
 
-/// Classify `brushes` against their own first pass.
+/// Each brush's verdict alone, against the brushes' own first pass.
 pub(crate) fn classify(brushes: &[BrushVolume]) -> Vec<OccluderVerdict> {
-    FirstPass::of(brushes).classify(brushes)
+    classification(brushes).verdicts
 }
 
-pub(crate) fn occluder_flags(verdicts: &[OccluderVerdict]) -> Vec<bool> {
-    verdicts
-        .iter()
-        .map(|&verdict| verdict == OccluderVerdict::Occludes)
-        .collect()
+/// Brushes and clusters classified against the brushes' own first pass.
+pub(crate) fn classification(brushes: &[BrushVolume]) -> OccluderClassification {
+    FirstPass::of(brushes).classification(brushes)
 }
 
-/// The two-tier tree on given occluder flags, with its exterior flood. An
+/// The two-tier tree on given tier roles, with its exterior flood. An
 /// occluder-tier leaf stands in for the runtime cell it becomes.
 pub(crate) struct TierBuild {
     pub(crate) tree: BspTree,
@@ -61,9 +62,9 @@ pub(crate) struct TierBuild {
 }
 
 impl TierBuild {
-    pub(crate) fn new(brushes: &[BrushVolume], occluders: &[bool]) -> Self {
+    pub(crate) fn new(brushes: &[BrushVolume], roles: &[TierRole]) -> Self {
         let (tree, tier) =
-            build_bsp_with_occluder_tier(brushes, occluders).expect("two-tier tree builds");
+            build_bsp_with_occluder_tier(brushes, roles).expect("two-tier tree builds");
         let portals = generate_portals(&tree);
         let exterior = find_exterior_leaves(&tree, &portals);
         Self {
@@ -71,6 +72,29 @@ impl TierBuild {
             tier,
             exterior,
         }
+    }
+
+    /// The two tiers on `brushes`' own classification, clusters included.
+    pub(crate) fn classified(brushes: &[BrushVolume]) -> Self {
+        Self::new(brushes, &classification(brushes).tier_roles())
+    }
+
+    /// Occluder-tier leaves holding interior space, and tier portals: the
+    /// empty cells and portals a brush that occludes nothing leaves as they
+    /// were.
+    pub(crate) fn interior_cells_and_portals(&self) -> (usize, usize) {
+        let interior = self
+            .tier
+            .leaves
+            .iter()
+            .filter(|leaf| {
+                leaf.leaf_range
+                    .clone()
+                    .any(|l| !self.tree.leaves[l].is_solid && !self.exterior.contains(&l))
+            })
+            .count();
+        let portals = generate_occluder_tier_portals(&self.tree, &self.tier, &self.exterior);
+        (interior, portals.len())
     }
 
     /// Occluder-tier leaf holding `point`, which must lie in interior space.
@@ -105,8 +129,7 @@ pub(crate) fn assert_apart(fixture: &Fixture) {
         "{}: no points to part",
         fixture.name
     );
-    let flags = occluder_flags(&classify(&fixture.brushes));
-    let build = TierBuild::new(&fixture.brushes, &flags);
+    let build = TierBuild::classified(&fixture.brushes);
     for &(a, b) in &fixture.apart {
         assert_ne!(
             build.cell_at(a),

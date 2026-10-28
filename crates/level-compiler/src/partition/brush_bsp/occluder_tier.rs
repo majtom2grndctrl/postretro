@@ -25,6 +25,33 @@ use crate::partition::types::{Aabb, BspChild, BspTree};
 /// height, doubling the tier's leaves and portals.
 const CROSS_SECTION_WEIGHT: f64 = 8.0 * SPLIT_PENALTY as f64;
 
+/// How a brush's planes split inside the occluder tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TierRole {
+    /// Splits only beneath the tier.
+    Exempt,
+    /// Every plane splits at occluder rank.
+    Occluder,
+    /// A member of an occluding cluster section, one flag per plane: a
+    /// flagged plane lies on the section's bounding box and splits at
+    /// occluder rank, bounding the section as a wall's faces and top bound
+    /// the wall. The rest split only where no occluder-rank plane spans the
+    /// region, which is inside that box, so they shape the section's
+    /// openings without cutting the open space around it.
+    SectionMember(Vec<bool>),
+}
+
+impl TierRole {
+    /// True when plane `plane` of the brush splits at occluder rank.
+    fn occluder_rank(&self, plane: usize) -> bool {
+        match self {
+            TierRole::Exempt => false,
+            TierRole::Occluder => true,
+            TierRole::SectionMember(outline) => outline[plane],
+        }
+    }
+}
+
 /// One leaf of the occluder tier: a convex region that no occluder plane
 /// spans. Exempt brushes split it further into the full tree's leaves.
 #[derive(Debug, Clone)]
@@ -67,22 +94,19 @@ impl OccluderTier {
     }
 }
 
-/// Build a two-tier BSP tree. `occluders[i]` marks brush `i` an occluder:
-/// occluder planes split first, each region no occluder plane spans becomes
-/// an occluder-tier leaf, and every brush's planes split beneath it with
+/// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
+/// inside the tier: occluder-rank planes split first, section-member planes
+/// off their section's box next, each region none of them spans becomes an
+/// occluder-tier leaf, and every brush's planes split beneath it with
 /// `build_bsp_from_brushes`' scoring. Solidity, leaves and face ownership read
 /// the returned tree exactly as they read a one-tier tree.
 pub fn build_bsp_with_occluder_tier(
     brushes: &[BrushVolume],
-    occluders: &[bool],
+    roles: &[TierRole],
 ) -> Result<(BspTree, OccluderTier)> {
-    assert_eq!(
-        occluders.len(),
-        brushes.len(),
-        "one occluder flag per brush"
-    );
+    assert_eq!(roles.len(), brushes.len(), "one tier role per brush");
     let mut recorder = TierRecorder::default();
-    let tree = build_tree(brushes, SplitTier::Occluder(occluders), &mut recorder)?;
+    let tree = build_tree(brushes, SplitTier::Occluder(roles), &mut recorder)?;
     let tier = recorder.finish(&tree);
     Ok((tree, tier))
 }
@@ -100,7 +124,7 @@ pub(super) fn build_tier_region(
     inside: &[usize],
     ancestor_planes: &[(DVec3, f64)],
     leaf_planes: &[(DVec3, f64)],
-    occluders: &[bool],
+    roles: &[TierRole],
     recorder: &mut TierRecorder,
     parent: Option<usize>,
     depth: usize,
@@ -110,13 +134,7 @@ pub(super) fn build_tier_region(
     let splitter = if candidates.is_empty() || !inside.is_empty() {
         None
     } else {
-        select_occluder_splitter(
-            brushes,
-            candidates,
-            occluders,
-            region_polytope,
-            ancestor_planes,
-        )
+        select_occluder_splitter(brushes, candidates, roles, region_polytope, ancestor_planes)
     };
     let Some((normal, distance)) = splitter else {
         let first_leaf = tree.leaves.len();
@@ -151,7 +169,7 @@ pub(super) fn build_tier_region(
         ancestor_planes,
         leaf_planes,
         (normal, distance),
-        SplitTier::Occluder(occluders),
+        SplitTier::Occluder(roles),
         recorder,
         parent,
         depth,
@@ -191,49 +209,101 @@ impl TierRecorder {
     }
 }
 
-/// Pick the occluder-tier splitter: among the planes of candidate occluder
-/// brushes only, qualified as `select_splitter` qualifies planes, scored by
-/// today's spanning and balance terms over the occluder candidates, less a
-/// credit for the plane's slice through the region. `None` makes the region
-/// an occluder-tier leaf.
+/// Pick the occluder-tier splitter: among the occluder-rank planes of the
+/// candidates (occluders' planes, and section members' planes on their
+/// section's box) scored by today's spanning and balance terms over the
+/// occluder candidates; failing those, among the section members' other
+/// planes, scored over the member candidates. Each rank takes a credit for
+/// the plane's slice through the region. `None` makes the region an
+/// occluder-tier leaf.
 pub(super) fn select_occluder_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
-    occluders: &[bool],
+    roles: &[TierRole],
     region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
-    let occluder_candidates: Vec<usize> = candidates
-        .iter()
-        .copied()
-        .filter(|&idx| occluders[idx])
-        .collect();
+    let of_role = |keep: fn(&TierRole) -> bool| -> Vec<usize> {
+        candidates
+            .iter()
+            .copied()
+            .filter(|&idx| keep(&roles[idx]))
+            .collect()
+    };
+    let occluders = of_role(|role| *role == TierRole::Occluder);
+    let members = of_role(|role| matches!(role, TierRole::SectionMember(_)));
+    let planes_of = |brush_set: &[usize], occluder_rank: bool| -> Vec<(DVec3, f64)> {
+        brush_set
+            .iter()
+            .flat_map(|&idx| {
+                brushes[idx]
+                    .planes
+                    .iter()
+                    .enumerate()
+                    .filter(move |&(k, _)| roles[idx].occluder_rank(k) == occluder_rank)
+                    .map(|(_, plane)| (plane.normal, plane.distance))
+            })
+            .collect()
+    };
+
+    let mut first_rank = planes_of(&occluders, true);
+    first_rank.extend(planes_of(&members, true));
+    best_plane(
+        brushes,
+        first_rank,
+        &occluders,
+        region_polytope,
+        ancestor_planes,
+    )
+    .or_else(|| {
+        best_plane(
+            brushes,
+            planes_of(&members, false),
+            &members,
+            region_polytope,
+            ancestor_planes,
+        )
+    })
+}
+
+/// The best of `planes` that qualifies as `select_splitter` qualifies
+/// planes, scored over `counted`, less a credit for its slice through the
+/// region scaled to the largest qualifying slice.
+fn best_plane(
+    brushes: &[BrushVolume],
+    mut planes: Vec<(DVec3, f64)>,
+    counted: &[usize],
+    region_polytope: &RegionPolytope,
+    ancestor_planes: &[(DVec3, f64)],
+) -> Option<(DVec3, f64)> {
+    // Coplanar members share planes; score each plane once. The first of a
+    // run of equivalent planes in exact order stands for it.
+    planes.sort_by(|a, b| {
+        a.0.x
+            .total_cmp(&b.0.x)
+            .then(a.0.y.total_cmp(&b.0.y))
+            .then(a.0.z.total_cmp(&b.0.z))
+            .then(a.1.total_cmp(&b.1))
+    });
+    planes.dedup_by(|later, earlier| planes_equivalent(*later, *earlier));
 
     // (plane, today's score, cross-section area), gathered first so the
     // area credit can be scaled to the region's largest slice.
     let mut qualifying: Vec<((DVec3, f64), i32, f64)> = Vec::new();
-    for &idx in &occluder_candidates {
-        for plane in &brushes[idx].planes {
-            let key = (plane.normal, plane.distance);
-            if ancestor_planes
-                .iter()
-                .any(|&anc| planes_equivalent(anc, key))
-            {
-                continue;
-            }
-            if !region_polytope.plane_spans(
-                plane.normal,
-                plane.distance,
-                REGION_CLASSIFICATION_EPSILON,
-            ) {
-                continue;
-            }
-            let (front, back, spanning) =
-                count_partition(brushes, &occluder_candidates, plane.normal, plane.distance);
-            let score = spanning * SPLIT_PENALTY + (front - back).abs() * IMBALANCE_PENALTY;
-            let area = region_polytope.cross_section_area(plane.normal, plane.distance);
-            qualifying.push((key, score, area));
+    for key in planes {
+        if ancestor_planes
+            .iter()
+            .any(|&anc| planes_equivalent(anc, key))
+        {
+            continue;
         }
+        if !region_polytope.plane_spans(key.0, key.1, REGION_CLASSIFICATION_EPSILON) {
+            continue;
+        }
+        let (front, back, spanning) = count_partition(brushes, counted, key.0, key.1);
+        let score = spanning * SPLIT_PENALTY + (front - back).abs() * IMBALANCE_PENALTY;
+        let area = region_polytope.cross_section_area(key.0, key.1);
+        qualifying.push((key, score, area));
     }
 
     let max_area = qualifying

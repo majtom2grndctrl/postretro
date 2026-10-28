@@ -36,40 +36,56 @@ fn workspace_root() -> PathBuf {
 
 #[test]
 #[ignore = "cold prl-build bake; run on demand with -- --ignored"]
-fn single_fixture_compiles_and_carries_weight_map_section() {
+fn single_animated_fixture_uses_weights_only_with_a_static_block_frame() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/test_animated_weight_maps_single.map");
     assert!(input.exists(), "fixture map missing: {}", input.display(),);
 
     // Use a tempfile under the OS temp dir so the integration test does not
     // depend on or stomp the checked-in `.prl`.
-    let out_dir = std::env::temp_dir().join("postretro_fixture_single");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("test_animated_weight_maps_single.prl");
 
-    // Invoke the `prl-build` binary via cargo. Running it in-process via
-    // main.rs would require a library target we don't want to add for this
-    // test alone; shelling out costs one cargo invocation.
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
+        .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
     assert!(status.success(), "prl-build failed: {status}");
 
-    // Parse the container and pull the AnimatedLightWeightMaps section.
+    // Regression: animated-only maps have no static blocks, so they cannot
+    // carry animated surface weights. Keep that degradation case explicit.
+    let bytes = std::fs::read(&output).expect("read animated-only .prl");
+    let mut cursor = Cursor::new(&bytes);
+    let meta = read_container(&mut cursor).expect("read_container");
+    let lightmap = read_section_data(&mut cursor, &meta, SectionId::Lightmap as u32)
+        .expect("read lightmap")
+        .expect("lightmap section present");
+    assert!(
+        LightmapSection::from_bytes(&lightmap)
+            .expect("lightmap decodes")
+            .blocks
+            .is_empty()
+    );
+    for id in [
+        SectionId::AnimatedLightChunks,
+        SectionId::AnimatedLightWeightMaps,
+    ] {
+        assert!(
+            meta.find_section(id as u32).is_none(),
+            "animated-only map emitted {id:?}"
+        );
+    }
+
+    let input = fixture_with_static_control(&input, &out_dir);
+    prl_build_logged(&input, &output, &["--no-cache"]);
+
     let bytes = std::fs::read(&output).expect("read compiled .prl");
     let mut cursor = Cursor::new(&bytes);
     let meta = read_container(&mut cursor).expect("read_container");
@@ -114,10 +130,6 @@ fn single_fixture_compiles_and_carries_weight_map_section() {
         section.texel_lights, re_section.texel_lights,
         "texel_lights drifted during round-trip",
     );
-
-    // Cleanup.
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
 /// Regression: animated receivers packed onto a second static-atlas layer
@@ -132,25 +144,17 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
     let input = ws.join("content/dev/maps/animated-layer-spill.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_animated_layer_spill");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("animated-layer-spill.prl");
 
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
         .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -210,9 +214,6 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
         "a lightmap block >= 1 must contain an animated receiver with covered texels: {:?}",
         weight_maps.blocks,
     );
-
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
 /// The fixture's KVP curve and script target must occupy distinct animated slots,
@@ -226,25 +227,17 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
     let input = ws.join("content/dev/maps/script_light_membership_fixture.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_script_light_membership");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("script_light_membership_fixture.prl");
 
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
         .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -281,14 +274,15 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
         [0, ANIMATED_SLOT_NONE, 1],
         "script and KVP lights must retain distinct map-light identities while the steady control has no animated slot",
     );
+    // Regression: these tables use descriptor slots, not source map-light indices.
     assert!(
         !chunks.light_indices.is_empty()
             && chunks
                 .light_indices
                 .iter()
-                .all(|&index| matches!(index, 0 | 2))
+                .all(|&index| matches!(index, 0 | 1))
             && chunks.light_indices.contains(&0)
-            && chunks.light_indices.contains(&2),
+            && chunks.light_indices.contains(&1),
         "animated chunks must contain both the script and KVP light, never the steady control",
     );
     assert!(
@@ -296,7 +290,7 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
             && weights
                 .texel_lights
                 .iter()
-                .all(|entry| matches!(entry.light_index, 0 | 2))
+                .all(|entry| matches!(entry.light_index, 0 | 1))
             && weights
                 .texel_lights
                 .iter()
@@ -304,13 +298,10 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
             && weights
                 .texel_lights
                 .iter()
-                .any(|entry| entry.light_index == 2),
+                .any(|entry| entry.light_index == 1),
         "animated weights must contain both the script and KVP light, never the steady control: {:?}",
         weights.texel_lights,
     );
-
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
 /// Task 6 soft-shadow test map: compile `soft_shadow_test.map` (single key
@@ -325,27 +316,19 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
     let input = ws.join("content/dev/maps/soft_shadow_test.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_soft_shadow");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("soft_shadow_test.prl");
 
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
         // Isolate from the shared on-disk stage cache so this test always
         // exercises a fresh bake regardless of prior runs.
         .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -372,9 +355,6 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
             .all(|block| !block.irradiance.is_empty()),
         "baked lightmap blocks must carry irradiance data",
     );
-
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
 /// Regression: every `light_index` emitted into `texel_lights` must reference
@@ -394,24 +374,17 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
     let input = ws.join("content/dev/maps/test_animated_weight_maps_mixed.map");
     assert!(input.exists(), "fixture map missing: {}", input.display(),);
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_mixed");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("test_animated_weight_maps_mixed.prl");
 
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
+        .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -459,96 +432,85 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
             animated_light_count,
         );
     }
-
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
-/// Golden regression for the script-light-membership seam: an unflagged static
-/// light in a map with no data script must keep its pre-feature baked output.
-///
-/// The checked-in baseline was regenerated on the compact-animated-atlas
-/// branch with `prl-build --no-cache` on this exact map. Its SHA-256 is
-/// `4debe70dcc2f4538b2dc36d488044332243dd7938fd609b5563a6f2f242d1df5`.
-/// Byte-for-byte comparison prevents script-membership plumbing from changing
-/// the output for static lights that it does not target.
-///
-/// That regeneration moved section 25 to v4 (compact block table) and stamped
-/// block ids into section 17's vertex pad by design. The previous baseline
-/// (`19d0bd3`, SHA `d4cb2750…`) still carried a v2 section 25 and had gone
-/// stale in unrelated sections, so it no longer loaded.
-///
-/// The prior baseline (`33e3a152`, SHA `9264a3b2…`) went stale from engine
-/// evolution unrelated to script membership — a newly-emitted
-/// `AnimatedDirectShDeltaVolumes` section, delta-SH probe coarsening, and
-/// deterministic BVH/navmesh/texture-cache-key changes. The lightmap and
-/// animated weight-map sections (22/24/25) this test exists to guard were
-/// byte-identical across that drift, so regenerating re-baselines the
-/// unrelated sections without weakening the guarantee.
+/// Regression: the old whole-PRL snapshot drifted whenever unrelated sections changed.
+/// An empty data script must leave both the steady and KVP-animated light bakes
+/// identical to a build without a script; compare only the sections at that seam.
 #[test]
-#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
-fn mixed_fixture_without_script_membership_matches_pre_feature_golden_prl() {
+#[ignore = "two cold prl-build bakes; run on demand with -- --ignored"]
+fn empty_script_membership_preserves_existing_lightmap_and_animated_sections() {
     let ws = workspace_root();
     let input = ws.join("content/dev/maps/test_animated_weight_maps_mixed.map");
-    let baseline = ws.join(
-        "crates/level-compiler/tests/fixtures/golden/\
-         test_animated_weight_maps_mixed.pre-script-light-membership.prl",
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let source = std::fs::read_to_string(&input).expect("read mixed fixture");
+    let without_script_map = temp.path().join("without-script.map");
+    std::fs::write(&without_script_map, &source).expect("write original fixture");
+    let without_script = temp.path().join("without-script.prl");
+    prl_build_logged(&without_script_map, &without_script, &["--no-cache"]);
+
+    let script = temp.path().join("empty.ts");
+    std::fs::write(
+        &script,
+        "export function setupLevel() { return { reactions: [] }; }\n",
+    )
+    .expect("write empty data script");
+    let with_script_source = source.replacen(
+        "\"classname\" \"worldspawn\"",
+        "\"classname\" \"worldspawn\"\n\"data_script\" \"empty.ts\"",
+        1,
     );
-    assert!(input.exists(), "fixture map missing: {}", input.display());
-    assert!(
-        baseline.exists(),
-        "pre-feature baseline missing: {}",
-        baseline.display(),
+    assert_ne!(
+        with_script_source, source,
+        "fixture must contain worldspawn"
     );
+    let with_script_map = temp.path().join("with-script.map");
+    std::fs::write(&with_script_map, with_script_source).expect("write scripted fixture");
+    let with_script = temp.path().join("with-script.prl");
+    prl_build_logged(&with_script_map, &with_script, &["--no-cache"]);
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_mixed_golden");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
-    let output = out_dir.join("test_animated_weight_maps_mixed.prl");
-
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
-        .arg(&input)
-        .arg("-o")
-        .arg(&output)
-        .arg("--no-cache")
-        .current_dir(&ws)
-        .status()
-        .expect("spawn prl-build");
-    assert!(status.success(), "prl-build failed: {status}");
-
-    let actual = std::fs::read(&output).expect("read compiled .prl");
-    let expected = std::fs::read(&baseline).expect("read pre-feature baseline");
+    for (prl, scripted) in [(&without_script, false), (&with_script, true)] {
+        let bytes = std::fs::read(prl).expect("read compiled fixture");
+        let meta = read_container(&mut Cursor::new(bytes)).expect("read fixture container");
+        assert_eq!(
+            meta.find_section(SectionId::DataScript as u32).is_some(),
+            scripted,
+            "the comparison must exercise a real data-script boundary",
+        );
+    }
+    for id in [
+        SectionId::Lightmap,
+        SectionId::AnimatedLightChunks,
+        SectionId::AnimatedLightWeightMaps,
+    ] {
+        assert_eq!(
+            section_bytes(&without_script, id),
+            section_bytes(&with_script, id),
+            "an empty script-membership result changed section {id:?}",
+        );
+    }
+    let sh = |prl: &std::path::Path| {
+        OctahedralShVolumeSection::from_bytes(&section_bytes(prl, SectionId::OctahedralShVolume))
+            .expect("SH volume decodes")
+    };
+    let original = sh(&without_script);
+    let scripted = sh(&with_script);
+    assert_eq!(original.animation_descriptors.len(), 1);
+    assert_eq!(original.slot_for_map_light, [ANIMATED_SLOT_NONE, 0]);
+    assert_eq!(scripted.slot_for_map_light, original.slot_for_map_light);
     assert_eq!(
-        actual, expected,
-        "an un-targeted static light changed the pre-feature PRL output",
+        scripted.animation_descriptors,
+        original.animation_descriptors
     );
-
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
 }
 
 /// Cap fixture smoke-test: compile `test_animated_weight_maps_cap.map` and
 /// assert every covered texel's light list honors
 /// `MAX_ANIMATED_LIGHTS_PER_CHUNK` (plan acceptance criterion).
 ///
-/// Ignored: the cap fixture (6 co-located animated lights, cap = 4) triggers a
-/// pre-existing UV-packer edge case where the chunk partitioner bottoms out at
-/// min-extent and emits adjacent chunks whose outward-rounded atlas rects
-/// overlap, tripping the baker's disjointness assert. The `MAX_LIGHTS_PER_CHUNK`
-/// invariant itself is covered by unit tests in `animated_light_weight_maps.rs`
-/// and by the `is_consistent` check. Un-ignore once the UV packer leaves a
-/// 1-atlas-texel gap between adjacent chunk UV boundaries within a face.
+/// A steady control supplies the static block frame that surface weights require.
 #[test]
-#[ignore]
+#[ignore = "cold prl-build bake; run on demand with -- --ignored"]
 fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     use postretro_level_format::animated_light_chunks::MAX_ANIMATED_LIGHTS_PER_CHUNK;
 
@@ -556,24 +518,18 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     let input = ws.join("content/dev/maps/test_animated_weight_maps_cap.map");
     assert!(input.exists(), "fixture map missing: {}", input.display());
 
-    let out_dir = std::env::temp_dir().join("postretro_fixture_cap");
-    std::fs::create_dir_all(&out_dir).expect("mkdir temp out");
+    let temp = tempfile::tempdir().expect("create fixture directory");
+    let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("test_animated_weight_maps_cap.prl");
+    let input = fixture_with_static_control(&input, &out_dir);
 
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(&input)
         .arg("-o")
         .arg(&output)
+        .arg("--no-cache")
+        .arg("--baked-root")
+        .arg(out_dir.join("baked"))
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -591,7 +547,16 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     .expect("AnimatedLightWeightMaps section present on cap fixture");
 
     let section = AnimatedLightWeightMapsSection::from_bytes(&section_bytes).expect("from_bytes");
+    assert!(section.is_consistent());
+    assert!(
+        !section.texel_lights.is_empty(),
+        "cap fixture must exercise covered texels"
+    );
     let cap = MAX_ANIMATED_LIGHTS_PER_CHUNK as u32;
+    assert!(
+        section.offset_counts.iter().any(|entry| entry.count == cap),
+        "co-located fixture lights must exercise the full per-chunk light cap",
+    );
     for (i, entry) in section.offset_counts.iter().enumerate() {
         assert!(
             entry.count <= cap,
@@ -601,28 +566,30 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
             cap,
         );
     }
+}
 
-    let _ = std::fs::remove_file(&output);
-    let _ = std::fs::remove_dir(&out_dir);
+fn fixture_with_static_control(input: &std::path::Path, directory: &std::path::Path) -> PathBuf {
+    let source = std::fs::read_to_string(input).expect("read fixture source");
+    let control = "// entity 2 -- steady control supplies the static lightmap frame\n{\n\"classname\" \"light\"\n\"origin\" \"64 64 64\"\n\"light\" \"100\"\n\"_falloff_range\" \"2048\"\n}\n// entity 2";
+    let edited = source.replacen("// entity 2", control, 1);
+    assert_ne!(
+        edited, source,
+        "fixture must number its first light entity 2"
+    );
+    let path = directory.join("with-static-control.map");
+    std::fs::write(&path, edited).expect("write steady-control fixture");
+    path
 }
 
 /// Run `prl-build` on `input` with `extra` flags, returning its combined log.
 fn prl_build_logged(input: &std::path::Path, output: &std::path::Path, extra: &[&str]) -> String {
     let ws = workspace_root();
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let result = Command::new(cargo)
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let result = Command::new(env!("CARGO_BIN_EXE_prl-build"))
         .arg(input)
         .arg("-o")
         .arg(output)
+        .arg("--baked-root")
+        .arg(output.parent().expect("output has parent").join("baked"))
         .args(extra)
         .env("RUST_LOG", "info")
         .current_dir(&ws)

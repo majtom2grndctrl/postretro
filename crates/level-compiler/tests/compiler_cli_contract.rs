@@ -1071,18 +1071,18 @@ fn compile_overlap_fixture(output: &Path, cache_dir: &Path, verbose: bool) -> Ou
     command.output().expect("spawn prl-build")
 }
 
-fn overlap_lines(stderr: &str) -> Vec<&str> {
+fn owner_demand_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
-        .filter(|line| line.contains("[ShadowmaskAtlas] peak per-texel overlap:"))
+        .filter(|line| line.contains("[ShadowmaskAtlas] peak per-face owner demand:"))
         .collect()
 }
 
-// Pin: overlap-memo-hit. The count comes from the graph only a memo miss
-// builds; the memo carries it so a hit reports the same value.
+// Regression: the CLI guard still expected the retired per-texel conflict graph metric.
+// The ownership memo retains per-face demand so hits and misses report the same value.
 #[test]
 #[ignore = "one cold and two warm prl-build bakes; run on demand with -- --ignored"]
-fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_not() {
+fn verbose_bakes_report_peak_face_owner_demand_on_miss_and_hit_and_quiet_bakes_do_not() {
     let temp = TempBuildDir::new();
     let cache_dir = temp.0.join("cache");
 
@@ -1093,16 +1093,16 @@ fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_no
         cold_stderr.contains("[cache] shadowmask_atlas miss"),
         "{cold_stderr}"
     );
-    let cold_lines = overlap_lines(&cold_stderr);
+    let cold_lines = owner_demand_lines(&cold_stderr);
     assert_eq!(
         cold_lines.len(),
         1,
-        "one overlap line per verbose bake:\n{cold_stderr}"
+        "one owner-demand line per verbose bake:\n{cold_stderr}"
     );
     assert!(
-        cold_lines[0].contains("4 selected light(s) at one texel")
-            && cold_lines[0].contains("cell block(s), BC5 .rg in 2 groups (4 slots)"),
-        "four overlapping lights must report peak 4 with block count and format: {}",
+        cold_lines[0].contains("4 candidate light(s) on one face (capacity 4)")
+            && cold_lines[0].contains("0 light(s) dropped above the floor"),
+        "four overlapping lights must report per-face demand 4 without drops: {}",
         cold_lines[0]
     );
 
@@ -1116,11 +1116,11 @@ fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_no
     let peak_text = |line: &str| {
         line.split("[ShadowmaskAtlas] ")
             .nth(1)
-            .expect("overlap line carries its tag")
+            .expect("owner-demand line carries its tag")
             .to_string()
     };
     assert_eq!(
-        overlap_lines(&warm_stderr)
+        owner_demand_lines(&warm_stderr)
             .into_iter()
             .map(peak_text)
             .collect::<Vec<_>>(),
@@ -1133,7 +1133,8 @@ fn verbose_bakes_report_peak_texel_overlap_on_miss_and_hit_and_quiet_bakes_do_no
     let quiet_stderr = String::from_utf8_lossy(&quiet.stderr);
     let quiet_stdout = String::from_utf8_lossy(&quiet.stdout);
     assert!(
-        overlap_lines(&quiet_stderr).is_empty() && overlap_lines(&quiet_stdout).is_empty(),
-        "a non-verbose bake gains no overlap line"
+        owner_demand_lines(&quiet_stderr).is_empty()
+            && owner_demand_lines(&quiet_stdout).is_empty(),
+        "a non-verbose bake gains no owner-demand line"
     );
 }

@@ -428,7 +428,7 @@ Leanings, pinned by the U2 brief.
 - **Death at a seam.** Whether a dead or downed pawn (E18 player life states) activates or crosses a seam, given that teleporters bar dead pawns (`movement.md` §6), is for the U2 brief. Whether death inside a waiting seam blocks the swap or sends that player to a player start is for the U3 brief. Both are decided against the life-states spec.
 - **Non-player entities inside a seam.** Whether a hostile actor inside the active seam holds the swap rather than vanishing with its level — U3 brief.
 - **Cost of the blind walk on the host.** All-directions walks per player in a seam, once per frame while activated or waiting (D6 evaluation point). Measured in U3.
-- **Commit-frame cost after U1.** The script VM and registry stages stay on the main thread. If they exceed the swap budget, U3 needs its own lever.
+- **Swap-frame cost after U1.** The script VM and registry stages stay on the main thread, and the first frame after the swap pays the first light-bridge update, compose dispatches and a full-weight cull (lavapipe `first_level_frame` ≈ 0.46–0.81 s on a change, unmeasured on Metal). If commit plus that frame exceed the swap budget, U3 needs its own lever.
 - **How long a prefetched level stays.** The Pinned orderings default keeps it until superseded, so the two-level peak can last the rest of the map. A release on leaving the prefetch region, with hysteresis, is the alternative — U3 brief, against AC 19.
 - **Two-level peak memory.** Unmeasured. World textures alone are about 80–96 MiB per level (`drafts/level-load-pipeline/research.md`).
 - **Audio across the swap.** Level sounds reload per level; ambient loops cut at a swap unless carried or crossfaded — U3 brief.

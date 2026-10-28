@@ -2,6 +2,8 @@
 
 Brief · compact · Epic 25 U2 · reads: `context/lib/movement.md` §6 (Teleport) · `context/lib/entity_model.md` §7, §7d · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/boot_sequence.md` §3, §4 · `context/lib/networking.md` §Slot lifecycle, §Session-state ledger · `context/lib/scripting.md` §12 · hub `drafts/E25--map-transitions/` (D4, D5, D9–D11, AC 3–9, U2 pins, Boundary inventory) · read at ab08438
 
+**Sequence:** after `coop--client-spawn-view-handoff` (drafts), whose host-side spawn-pose resolver this brief extends. Concurrent with U1.
+
 ## Problem
 Owner-raised, as Epic 25's second unit. A level change today is a hard cut to a player start: `loadLevel` carries a catalog id and nothing else, every pawn spawns at `player_spawn`, and only the seat's carried loadout survives. Nothing lets an author join two maps so a player walks out of one and into the other where they left off. When done, an author places a **seam** — a volume built at the same spot in both maps, with a shared name — and a player who activates it crosses behind a loading screen into the next map at the same place relative to the seam's landmark, facing the same way, moving the same way, with loadout carried. Other players arrive at player starts. This is the seam's author surface and transition contract; U3 later removes the loading screen without changing either.
 
@@ -16,6 +18,7 @@ Owner-raised, as Epic 25's second unit. A level change today is a hard cut to a 
 - **One arrival rule, shared with teleports** (hub D4, I4). The apply half of the teleport chokepoint — channel and boost rotation, vault abort to `Normal`, arrival ground settle, blocked-arrival fit, latch against every armed teleporter containing the body point — is factored out of `resolve`, and teleports and seam spawns both call it. The mapping is `SeamlessMapping` with the source landmark and the destination landmark. Pitch passes through unchanged, as on a teleport. A blocked arrival or a destination with no seam of that name places the pawn at a player start with one warning; the blocked test runs at spawn.
 - **Host view and Settling follow the arrival.** On an arriving host or single player, the presented pose is the arrival eye, yaw and pitch, so Settling settles the view the player reveals into.
 - **Co-op: the entry rule spawns at the arrival.** A client pawn still spawns at participation entry (`networking.md` §Slot lifecycle); its spawn takes the seat's arrival instead of `assign_joiner_placement`'s spawn when one exists and fits. The relevel message is unchanged: the host places every pawn. `networking.md` §Slot lifecycle (entry rule) is rewritten at promotion.
+- **Co-op client view comes from the host's spawn pose.** The host's one spawn-pose resolver (`coop--client-spawn-view-handoff`) returns a seat's mapped arrival when it has one and it fits, else the seat's player start, so the client's hint, its Settling view and its spawned pawn agree on eye, yaw and pitch. A seat resolving to an arrival reserves no player start. The blocked test runs in the resolver, at host install.
 - **Arrival latches; arming keeps latches** (hub D11, latch table). Every pawn spawn latches the pawn against every seam its capsule overlaps, before any trigger tick sees it, so a two-way seam and a player start inside a seam never fire straight away. A latch clears when the capsule stops overlapping. Arming keeps latches, unlike a teleporter's arm. The latch is host-side state, off the wire: seams run only in the host's trigger stage.
 - **The arrival event.** The destination seam fires `arrive` once per arriving pawn, host-only, inside the first fixed tick after the pawn spawns, as teleport events dispatch inside their tick. Its params are opaque `activators` and `seam` tokens. U3 adds `waiting` and `ready` to the same source.
 - **Life state crosses as a level change.** A pawn inside the seam crosses landmark-relative whatever its life state; the seam changes where it arrives, never its life or health, which follow the level-change rule (E18 O7).
@@ -23,7 +26,6 @@ Owner-raised, as Epic 25's second unit. A level change today is a hard cut to a 
 - **Non-goals.**
   - A seam argument on `loadLevel`. A scripted transition arms a disarmed touch seam, which fires for its standing occupants on the next trigger tick.
   - Prefetch, the blind check, `waiting` / `ready` and their compiler warnings: hub U3.
-  - Co-op client view at reveal. A client's camera yaw and pitch at reveal come from its first baseline, which `coop--client-spawn-view-handoff` owns (Open questions).
 
 ### Scripting surface
 ```typescript
@@ -72,6 +74,7 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 
 **Co-op**
 - [ ] A client pawn inside the seam arrives landmark-relative at participation entry; one outside arrives at its assigned player start.
+- [ ] A crossing client settles, reveals and arms at its arrival eye, yaw and pitch, and its seat holds no player start. A client whose arrival is blocked resolves to a player start, and its hint names that start.
 - [ ] A host level change before a crossing client spawns clears that client's arrival; it arrives at a player start (pin P5).
 
 **Compiler and surface**
@@ -105,6 +108,5 @@ New PRL section `Seams`, next free id, packed only when the map has a seam; mirr
 | Arrival event | `on_arrive` | `on_arrive` | seam binding table | `s.on("arrive", …)` under `seamEvents`; `SeamEventParams` | `s:on("arrive", …)` |
 
 ## Open questions
-- Co-op client view at reveal. Today a client reveals at the host's first-spawn yaw, and arming moves position only, so a client arriving landmark-relative plays from the right place facing the wrong way. `coop--client-spawn-view-handoff` (draft) fixes it with a host-sent spawn pose; the seat's arrival is that pose. Lean: build U2 after it and send the arrival eye, yaw and pitch as the hint, which also needs pitch added to its pose. Otherwise U2 takes only that brief's "arming adopts the pawn's replicated facing" and pitch starts level. — owner — **blocks build**
 - Event key spellings beyond the Boundary inventory's — **delegated**.
 - Where the seam request rides between the trigger stage and the request queue (in-tick enqueue or a frame-end residual), within pin P3 — **delegated**.

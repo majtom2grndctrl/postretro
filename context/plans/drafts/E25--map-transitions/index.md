@@ -15,7 +15,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - **U1 Off-main level load** — the staged load pipeline of `drafts/level-load-pipeline/`, amended so it can run while a level plays.
 - **U2 Landmark level change** — the seam author surface and a classic transition through it: loading screen, landmark-relative arrival, carried state, co-op arrival.
 - **U3 Seamless seam** — prefetch, background load during play, blind swap, door wait and its events. Co-op clients take the classic path.
-- **U4 Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and a bounded hold.
+- **U4 Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no movement hold, predicting through the swap.
 
 ### Out of scope
 
@@ -52,12 +52,14 @@ Players walk from one map into the next as if into the next room. A **seam** is 
   | Line C `settle_hold` and `first_level_frame` marks; Settling entry log | Replaced by swap marks and one swap log line |
   | Loading screen end, splash clear | Nothing to end |
 - **"Participation is a predicate, not a pair of transitions"** (`networking.md` §Slot lifecycle); a level change demotes every participating slot. U4 keeps one predicate and widens one of its inputs; it adds no lifecycle edge (I8).
+- **Join-time prediction rules** (`networking.md` §What gates, §Snapshot apply ordering, §Host input command queue, §Slot lifecycle). The client drops its tuning payload at demotion and at level unload; it predicts nothing before its pawn's first record merges (the joiner gate); no provisional client-spawned pawn exists alongside the host's; a held slot's commands are discarded and queues clear at a level change; a client sends `Revealed(None)` at unload. Each rule exists because a joining client holds nothing it can trust. U4 bends them for one case, a ready client's seam commit, where the client holds everything prediction needs from the host: the host's tuning payload for B, B's parity checked by the host, the arrival, the harvest tick and the pawn's host-assigned `NetworkId`. The purposes stay whole: prediction uses only host numbers, and the client's one pawn carries the host's identity and is refreshed in place. Owner decision (2026-10-28); rewritten at U4 promotion.
 - **"Seam" already names a residency concept.** `streaming_seam_volume` (`build_pipeline.md` §Custom FGD) marks a best-effort load-hide point at a portal. A map-transition seam often sits at the same place. The U2 brief either relates the two or renames one.
 
 **Alternatives rejected.**
 - **Grow one map instead of joining two.** Large-map residency could in principle make a whole campaign one PRL. Rejected as this epic's vehicle: it streams baked lighting only today, everything else loads whole, and one PRL per campaign makes every edit a whole-campaign compile. Maps as units match how mods author and catalog content.
 - **Metroid Prime's door-press load.** Start loading when the door is activated. Simple, and it is the hesitation the owner wants gone. Kept only as the fallback when a prefetch has not finished (D7).
 - **Stop after U1 and U2.** A Half-Life-style landmark change keeps pose and loadout, and U1 shortens its loading screen. Rejected: it keeps a visible break, and removing that break is an owner decision (2026-10-28). It remains the fallback (D8).
+- **Held movement across a co-op swap.** Keep the join-time rules and hold the client's movement from the host's swap until its pawn's first record merges, about half a round trip. No rule bends. Rejected by the owner (2026-10-28) in favour of prediction through the swap (U4); a client lacking what that prediction needs takes the classic relevel instead.
 - **Two pipelines, seamless and classic.** Each would own an install order, failure path, cancellation and parity publication, and they would drift. Rejected for D1.
 - **Swap check at compile time only.** prl-build could mark blind cells once. Doors move, so a cell's blindness depends on runtime mover state, and the runtime walk already folds that in. Baked visibility is also sampled, so it can miss cells, which is the unsafe direction. The compiler keeps warnings (D6), not the decision.
 
@@ -209,12 +211,12 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 ### U4 — Co-op seamless seam
 
-**Purpose.** Co-op clients cross a seam with no loading screen and a hold bounded by AC 23.
+**Purpose.** Co-op clients cross a seam with no loading screen and no movement hold: the swap reaches a ready client as a cross-map teleport its prediction carries through.
 
 **Contents.**
-- **Instruction.** The host tells participating clients to prefetch when it does, and tells a slot that enters participating while the prefetch stands. A client prefetch is speculative and commits only on the host's swap (I6). Each instruction names the level and a prefetch generation; a supersede (D3) sends the next generation, and a cancel sends a release.
-- **Readiness report.** A new Control message, separate from the client's installed-level declaration and its revealed declaration. It names its generation, carries the prefetched level's parity values, and says the client's pre-commit settle is complete. The host keeps each slot's last report and counts it only for the current generation. A client whose prefetch is cancelled, fails or is released after reporting sends a retraction; suspend retracts too.
-- **Host wait.** The host's swap waits for every participating client's report, inside D7's wait: **waiting** and **ready** cover client readiness. The timeout, pinned by the U4 brief, runs from the first evaluation that passes every term but client readiness; on expiry client readiness leaves the Ready column, and the next evaluation that passes the remaining terms, the blind check included, swaps. On the swap frame the host splits the slots once: a slot whose current report has arrived swaps seamlessly, every other participating slot gets the classic relevel, and a report arriving later is not read. With no participating client the swap does not wait.
+- **Instruction.** The host tells participating clients to prefetch when it does, and tells a slot that enters participating while the prefetch stands. A client prefetch is speculative and commits only on the host's swap (I6). Each instruction names the level and a prefetch generation and carries the host's tuning payload for that level; a supersede (D3) sends the next generation, and a cancel sends a release. The client stages the payload with its prefetch and never installs it before its seam commit.
+- **Readiness report.** A new Control message, separate from the client's installed-level declaration and its revealed declaration. It names its generation, carries the prefetched level's parity values, and says the client's bundle is ready and its pre-commit settle is complete for its own settle set (U3). The host keeps each slot's last report and counts it only for the current generation. A client whose prefetch is cancelled, fails or is released after reporting sends a retraction; suspend retracts too. A sent report stands while the client moves: the client keeps settling its own view through the swap, and a block its later movement needs takes its miss fallback for the frames it is short, as in-play streaming does.
+- **Host wait.** The host's swap waits for every participating client's report, inside D7's wait: **waiting** and **ready** cover client readiness. A current report whose parity values differ from the host's prefetched level ends the wait for that slot; the slot takes the classic relevel and is held with the diverged content cause. The timeout, pinned by the U4 brief, runs from the first evaluation that passes every term but client readiness; on expiry client readiness leaves the Ready column, and the next evaluation that passes the remaining terms, the blind check included, swaps. On the swap frame the host splits the slots once: a slot whose current report has arrived swaps seamlessly, every other participating slot gets the classic relevel, and a report arriving later is not read. With no participating client the swap does not wait.
 - **Predicate input.** The predicate stays one comparison; only its client-side input widens. A current-generation report counts as the client's declaration and revealed record for the level it names only when that level is the host's installed level and the report arrived before the host's swap frame. A later declaration or revealed message from the client supersedes it. On its swap frame the host's unload re-evaluates every slot (demote), and the re-evaluation after its commit and reveal reads the reports (re-promote). `networking.md` §Slot lifecycle is rewritten at U4 promotion to name the report as an input.
 
   | Host installed | Client's newest Control fact | Verdict |
@@ -227,15 +229,17 @@ Players walk from one map into the next as if into the next room. A **seam** is 
   | B | Declaration and reveal of A, no report | Held; the client takes the classic relevel |
   | B | `Revealed(None)` or a retraction after a report for B | Held |
   | B | Declaration and reveal of B after its own swap | Participating |
-- **Client across the swap.** Re-promotion on the host's swap frame spawns the pawn at the seat's stored arrival (U2's entry rule). The swap message follows on Control and carries that arrival. The client commits its prefetch at its next redraw boundary with no Settling, then declares B's parity and its reveal of B. The client's ticks on A after the host's harvest are discarded. Its view cuts once, teleport-style, to the arrival the swap message carried. Look applies throughout. Movement and actions are held until the pawn's first record merges, because the client has nothing to predict before then: demotion drops its tuning payload, prediction never falls back to the local registry, and a client pawn exists only once a baseline materializes it (`networking.md` §What gates, §Snapshot apply ordering). The first record merges with no further cut, because the host's pawn stood at that pose with no input.
-- A shape that keeps the client's payload across the swap and predicts a provisional pawn from its own mapped pose would remove the movement hold, but diverges from `networking.md` §What gates. It is reopened only if measurement at realistic latency shows the hold is visible (Open questions).
+- **Host swap frame.** The arrival harvest (D4) records the harvest tick. Re-promotion spawns each seamless slot's pawn at its stored arrival (U2's entry rule) under a `NetworkId` the host assigns then. The host keeps that slot's queued input commands for ticks after the harvest tick, where a level change clears them today, and applies them to the new pawn with every facing sampled before the swap turned by the landmark yaw delta, as stamped rotation turns commands that span a teleport (`networking.md` §Host input command queue). The swap message follows on Control and carries the arrival, the pawn's `NetworkId`, the harvest tick, the landmark yaw delta, the prefetch generation and B's catalog id.
+- **Client commit.** A client whose current-generation prefetch is ready when the swap message arrives commits it at its next redraw boundary with no Settling, then declares B's parity and its reveal of B. That commit's unload of A has none of a level-change unload's net effects, because the slot already participates on B: it sends no `Revealed(None)` and no cleared declaration, and it installs the staged tuning payload instead of dropping to none. Until the commit, the client applies no traffic of the new participation epoch: snapshot records received while A is installed are held aside and applied after it, so no record of B reaches A's registry. A client whose prefetch is not ready follows the swap message as a classic relevel to its catalog id, discards what it held, and arrives at its assigned `player_spawn`, because the swap frame's spawn consumed the seat's arrival (U2). That covers a client that retracted after the host's split.
+- **Predicted arrival.** At the commit the client materializes its local pawn in B under the host-assigned `NetworkId`, at the arrival, with the carried state, composing its inventory from the staged payload, and arms prediction at once. Its unacknowledged commands for ticks after the harvest tick replay on that pawn from the arrival, turned by the landmark yaw delta, as reconciliation replays across a teleport. Input continues on every fixed tick; the view moves only by the landmark mapping, which the identical seam hides, and view yaw turns by the delta from wherever look has taken it, never back to the harvested yaw. The host's first record for the pawn refreshes it in place and reconciles as any record does. The seam is identical in both maps, so the replayed path matches the path predicted in A carried through the landmark, and the correction stays small. A host arrival that differs, such as one blocked at spawn and sent to a player start, takes the teleport-class snap.
+- **The exception, and its condition.** This bends `networking.md` rules written for joins (Prior commitments). It applies only when every input to the prediction came from the host or from a level whose parity the host checked: the staged payload and the report's parity for the current generation, the host-assigned `NetworkId`, the arrival and the harvest tick. Missing any of them, the client takes the classic relevel.
 - The relevel-at-request non-goal in `drafts/level-load-pipeline/` (a failed host parse would strand clients) is answered by the speculative prefetch: a client never commits a level the host did not.
 
 **Depends on.** U3.
 
-**Key acceptance.** AC 22–26.
+**Key acceptance.** AC 22–28.
 
-**Brief form.** Resumable brief; it widens the participation predicate's inputs and adds Control messages, but adds no lifecycle edge.
+**Brief form.** Resumable brief; it widens the participation predicate's inputs, adds Control messages and bends the join-time prediction rules for one case, but adds no lifecycle edge.
 
 ## Acceptance criteria
 
@@ -269,17 +273,19 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 21. Co-op, until U4 lands: at a host's swap each client takes the classic relevel and arrives by D4 or D5, and the host publishes its reveal of the next map on the swap frame, so every client re-promotes.
 
 **U4**
-22. Clients prefetch when the host does, including a slot promoted during the prefetch, and a client prefetch never commits without the host's swap. A report of a superseded generation, and a retracted report, count as not ready.
-23. At a host swap, a ready client crosses with no loading screen. At the reference simulated latency its movement is held for no more than the tick bound the U4 brief pins; look applies throughout; its view cuts once to the arrival and the first record merges with no further cut.
+22. Clients prefetch when the host does, including a slot promoted during the prefetch, and a client prefetch never commits without the host's swap. Each instruction carries the host's tuning payload for that level, and the client installs it only at its seam commit. A report of a superseded generation, and a retracted report, count as not ready; a current report whose parity differs never holds the swap. A host held only on client readiness fires **waiting** once and **ready** on the evaluation that swaps.
+23. At a host swap at the reference simulated latency, a ready client crosses with no loading screen and no movement hold: its input applies on every fixed tick across the commit, and its view moves only by the landmark mapping. The host's first record refreshes its pawn in place, with no second pawn, and its correction stays below the teleport floor on the reference fixtures.
 24. A client not ready by the timeout, or whose report arrives after the host's swap frame, takes the classic relevel; the others still swap seamlessly. A client given the classic relevel while its prefetch of that level stands commits that prefetch rather than loading the level again. With no participating client the swap does not wait.
 25. A host whose prefetch fails takes D8, every client releases its prefetch, and clients follow the classic relevel.
 26. A ready client's slot leaves and re-enters participating on the host's swap frame, through the same predicate as any level change, with its current report standing in for its declaration and reveal; the predicate follows U4's table on every row. Its report never demotes it while the host is still on the old map.
+27. The client's seam commit sends no `Revealed(None)` and no cleared declaration, installs the staged payload, and applies no new-epoch record to A's registry. Commands the host had queued for ticks after the harvest tick, and commands the client had in flight, apply to the new pawn turned by the landmark yaw delta.
+28. A client lacking any input U4's exception names takes the classic relevel; so does one whose prefetch is not ready when the swap message arrives, and it arrives at its assigned `player_spawn`.
 
 ### Manual
 
 - Playtest the airlock pair and the bent-hallway pair, single-player and co-op at simulated latency. Watch for a lighting, audio or entity pop at the swap; the seam's two bakes can differ (Open questions).
 - Outrun a prefetch on purpose and confirm the door's wait reads as the door powering up.
-- Co-op: judge whether the movement hold at the swap is visible at realistic latency.
+- Co-op: watch for any correction or pop as a client crosses at realistic latency.
 - Metal: swap-frame timing and peak memory on the reference pairs.
 
 ## Invariants
@@ -294,6 +300,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 | I6 — The host owns every swap; a client never commits a level the host has not | U2 (relevel), U4 | Client prefetch completing first | AC 22, 24 |
 | I7 — A seam never strands a player | U3 | Prefetch failure, cancellation, suspend, a prefetch or settle that never completes | AC 10, 18, 25 |
 | I8 — Participation changes only through the one predicate | Existing slot lifecycle; U4 adds the readiness report as one of its inputs | A report read while the host is on another level; any seam-specific swap path | AC 26 |
+| I9 — A client predicts before its pawn's first record only at a seam commit, and only from host-sent or host-checked inputs | U4 | A payload staged for a superseded generation; a local descriptor fallback; a second pawn under another identity | AC 22, 23, 28 |
 
 ## Pinned orderings
 
@@ -341,8 +348,17 @@ Each row is a test the named unit's brief carries.
 | U4 | Report races the timeout | timeout expires → swap frame → report arrives | Slot already given the classic relevel; report not read; the client finishes its prefetch under the loading screen instead of loading B twice |
 | U4 | Waited-on client closes | activate → **waiting** → close | The host stops waiting on it |
 | U4 | Host prefetch fails after reports | reports in → host prefetch fails | D8 classic relevel; every client prefetch released |
-| U4 | Ready client crosses | host swap frame (demote, commit, re-promote) → swap message → client commit → declaration of B → first record merge | Movement held until the merge; look live; one cut, none at the merge |
-| U4 | Client ticks on A after the host's harvest | host harvest → client keeps moving on A → swap message | Those ticks discarded; one teleport-style cut to the host's arrival |
+| U4 | Ready client crosses | host swap frame (demote, commit, re-promote) → swap message → client commit → declaration of B → first record | Input applies every tick; the pawn is predicted from the arrival at the commit; the first record refreshes it in place |
+| U4 | Client ticks on A after the host's harvest | host harvest → client keeps moving on A → swap message | Those commands reach the host's new pawn turned by the landmark yaw delta; the client replays them on B from the arrival |
+| U4 | Commands queued before the host's swap frame | client commands for ticks after the harvest tick already in the host's queue → host swap frame | Kept and applied to the new pawn, turned; not cleared |
+| U4 | Report arrives on the evaluation frame | client report → host net poll → that frame's evaluation passes | The report counts: the net poll precedes the evaluation, and none runs before the commit |
+| U4 | Retraction arrives on the host's swap frame | evaluation counts the report → client retracts → host commit and split → host net poll reads the retraction | Slot held; the client follows the swap message as a classic relevel and arrives at its assigned `player_spawn` |
+| U4 | Swap message before the client's prefetch is ready | host swap → swap message → client bundle still loading | Classic relevel to the message's catalog id; held traffic discarded |
+| U4 | New-epoch traffic before the client's commit | host re-promotes → B records arrive with the swap message → client commit at its next boundary | Held aside until the commit, then applied; no B record reaches A's registry |
+| U4 | Client's own seam commit | client commit unloads A → declaration and reveal of B | No `Revealed(None)` sent; staged payload installed; the slot stays participating; no second pawn spawn |
+| U4 | Host arrival differs from the client's | host's arrival blocked at spawn → pawn at a player start → first record | Teleport-class snap to the host's pose |
+| U4 | Host timeout expires while the seam is not blind | evaluation passes every term but client readiness → door opens → timeout expires → door docks closed | Swap on the first blind evaluation; slots whose report arrived by then cross seamlessly, the rest take the classic relevel |
+| U4 | Host timeout of zero | the U4 brief pins zero → activation with a client not yet reported | The first evaluation that passes every other term swaps; that client takes the classic relevel |
 
 ## Boundary inventory
 
@@ -357,7 +373,7 @@ Leanings, pinned by the U2 brief.
 
 ## Open questions
 
-- **Co-op movement hold.** U4's held window runs about half a round trip plus the client's commit; the owner accepted it (2026-10-28). If the manual check finds it visible at realistic latency, the provisional-prediction shape (U4) is reopened with that measurement.
+- **Prediction across the swap.** Whether the host's tuning payload differs between levels is unverified: maps declare world gravity, and the payload carries the spawn active slot. Staging B's payload with the instruction covers either answer. Replicated entities in B appear when their first records land, about half a round trip after the swap; the blind seam hides all but B's own seam placements — U4 brief.
 - **Lighting parity across a seam.** D6 checks that a seam is blind to sight, not to light: a bend unsealed against outside light pops at the swap. Lean: a per-map prl-build warning when any light outside the seam reaches its cells, directly or through SH; two identical copies that both pass bake alike. U3 brief.
 - **Death at a seam.** Whether a dead or downed pawn (E18 player life states) activates or crosses a seam, given that teleporters bar dead pawns (`movement.md` §6), is for the U2 brief. Whether death inside a waiting seam blocks the swap or sends that player to a player start is for the U3 brief. Both are decided against the life-states spec.
 - **Non-player entities inside a seam.** Whether a hostile actor inside the active seam holds the swap rather than vanishing with its level — U3 brief.

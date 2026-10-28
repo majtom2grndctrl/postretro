@@ -204,7 +204,7 @@ Players walk from one map into the next as if into the next room. A seam is a st
 - [ ] **U1 — Off-main level load** — staged load pipeline; prep and GPU creation off the main thread, a short commit, stages free to run beside a live level. Brief: `context/plans/drafts/level-load-pipeline/`. Concurrent with U2.
 - [ ] **U2 — Landmark level change** — seam entity, landmark-relative arrival through the seamless-teleport transform, carried state, co-op arrival; loading screen kept.
 - [ ] **U3 — Seamless seam** — generated or authored prefetch region, background load during play, blind swap, door wait with `waiting` / `ready` events. Co-op clients take the classic relevel. After U1 and U2.
-- [ ] **U4 — Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no visible hold; participation stays one predicate. After U3.
+- [ ] **U4 — Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no movement hold, predicting through the swap as through a teleport; participation stays one predicate. After U3.
 
 **Testable outcome:** a player opens an airlock door, or rounds a bend, into the next map with no loading screen and keeps their speed, facing and loadout; a co-op group crosses together.
 

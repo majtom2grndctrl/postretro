@@ -1,0 +1,34 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 447 brushes, 237 occlude alone; exempt alone: 3 under floor, 56 no open face, 148 short span, 3 low top; 49 clusters, 11 sections, 2 occlude (10 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 6 of 8 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5
+[INFO prl_build::partition] BSP leaves: 792 solid, 1027 empty
+[INFO prl_build::partition] BSP leaves: 1819
+[INFO prl_build::partition] Total faces (after brush-side extraction): 3400
+[WARN prl_build::pipeline] [Compiler] Watertightness: 24 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 206 exterior leaves, 821 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 1131 occluder-tier leaves; 1389 cells (391 interior, 792 solid, 206 exterior); 608 runtime portals; full tree 1819 leaves, 2462 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 537
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 575
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 601
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 311
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 357
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 411
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 491
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 494
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 495
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 498
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 510
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 520
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 521
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 530
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 91
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 92
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 104
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 452
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 487
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 491
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 492
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 498
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 10557 eye candidates (10379 in cell, 138 inset, 40 rejected; missed into solid 178, exterior 0, other cell 0), 0 camera cells without an eye point, 63102 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 391 camera cells, 20845 entries (max 131 per camera), 172336 bytes, max lead 32 m, 0.065 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 172336 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 24 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

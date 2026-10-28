@@ -62,6 +62,9 @@ Owner rulings:
 - **Guardrail:** measure H3 live frame cost (Task 9d) before judging. Expect guardrail adjustments near the end of this build.
 - **Mixed-height sections:** answered in conversation; awaiting the owner's go before any coverage change.
 - `CROSS_SECTION_WEIGHT` stays 8; `face-fragment-remerge` is proposed at landing.
+- Street map building heights stay as they are (owner, 2026-10-28).
+
+M2 hallway trace (diagnostic, 2026-10-28; 0-based record frames 72 and 76 = README f73, f77). The eye's cell 5030 (3.3 × 62.6 m) walks down a straight corridor into 4922 and 1158. Of the 32 extra drawn cells, 28 (16.5 M texels) sit behind exempt pillar 1172, a full-height pillar rotated 45° that fills most of the 3.25 m corridor; 2 are genuinely visible; 2 are visible long cells demanded whole. None are reached only because the camera cell is big, so the cap cuts no drawn cell. Growth is forced by the id-51 mandatory set, not the drawn set: cell 5030's set is 97.9 M texels (23.3 layers against `DEFAULT_LIGHTMAP_POOL_CAP_LAYERS` 15), against 31.9 M before. Estimated mandatory maximum by horizontal cap: 26 m → 54.5 M, 19.5 m → 56.6 M (both near zero deferral, no margin), 13 m → 42.9 M (zero deferral, with margin). Levers outside the cap: pool growth timing in `postretro-render-cpu` (`place_with_growth`; owner call), a classifier rule bounding cross-section-filling pillars (conflicts with the pillars-exempt rows; owner call). Pool cap size lives in `crates/renderer` (F3).
 
 ## AC-to-proof
 

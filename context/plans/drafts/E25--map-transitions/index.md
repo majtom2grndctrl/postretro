@@ -21,7 +21,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 
 - **Drawing a non-active level.** A straight hallway or a vista that sees into the next map needs two worlds in one frame. No plan owns that capability today. Large-map residency (`context/plans/large-map-spatial-residency.md`) is its nearest home, but that plan streams baked resources inside one logical PRL and never draws a second level. This epic forbids it by I2, so a later spec that draws a vista revises I2; U1 and U3 leave it a second resident level to draw from. Planted in the roadmap (Future › Rendering and visual polish).
 - **Revisited-map state.** Planted separately in the roadmap (Future › Gameplay systems).
-- **Non-player entities crossing.** Enemies following through a seam, dropped items carried across. Players only. At the swap, a non-player entity inside the active seam vanishes with its level, and the next map's seam shows that map's own placements; the blind check hides neither. The U3 reference pairs keep their seams free of placements that differ between copies, and the manual playtest watches for an entity pop.
+- **Non-player entities crossing.** Enemies following through a seam, dropped items carried across. Players only. At the swap, a non-player entity inside the active seam vanishes with its level unless the U3 brief makes a hostile one hold the swap (Open questions), and the next map's seam shows that map's own placements; the blind check hides neither. The U3 reference pairs keep their seams free of placements that differ between copies, and the manual playtest watches for an entity pop.
 - **Co-op players straddling a seam with both levels simulated.** One level simulates at a time; the swap moves everyone.
 - **A second, seamless-only load pipeline.** One pipeline serves both orders (D1).
 
@@ -73,7 +73,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
   The movement component holding that state despawns at unload, and carried state does not hold it. So the harvest reads each seam occupant's arrival from the live pawn before unload: body offset from the landmark, view yaw and pitch, the velocity channels and the movement state payload. The next map's spawn applies it through arrival code U2 factors out of the chokepoint, so teleports and seams share one rule (I4). A blocked arrival or a missing matching seam falls back to player starts with one warning; the blocked test runs when the pawn spawns, not at harvest.
 - **D5 — The engine moves every player.** Players inside the seam (D11's test) arrive landmark-relative; anyone outside arrives at the next map's player starts through ordinary placement. Whether to wait for everyone is mod policy: a seam has an armed state, as trigger volumes and teleporters do, and a mod's occupancy reaction arms it.
 - **D6 — Blind swap.** A seamless seam swaps only when, for every player inside it, an all-directions walk from the eye under current door state reaches no cell outside the seam. The same walk from the mapped eye in the prefetched level, under that level's mover spawn state, must also reach no cell outside its seam, or a door the next map spawns open shows world that was hidden one frame earlier. A walk that trips its step cap or falls back to frustum culling counts as not blind.
-  - **Evaluation point.** Activation is a fixed-tick trigger event; the swap is a redraw-boundary commit. Once per frame, after its last fixed tick, the host evaluates each seam activated that frame or holding an open wait (D7): the walks from every inside player's eye at that tick's pose and mover state, and the prefetch state polled at this frame's redraw boundary. A passing evaluation queues the swap, which commits at the next redraw boundary's request drain, before that frame's Input stage. Nothing simulates between evaluation and commit, so the commit carries exactly the poses and door state the check passed. A frame that runs no fixed tick still evaluates.
+  - **Evaluation point.** Activation is a fixed-tick trigger event; the swap is a redraw-boundary commit. Once per frame, after its last fixed tick and after the frame loop rebuilds the blocked-portal buffer from that tick's mover state, the host evaluates each seam activated that frame or holding an open wait (D7): the walks from every inside player's eye at that tick's pose and mover state, the bundle state polled at this frame's redraw boundary, and the pre-commit settle asked for those eyes. A passing evaluation queues the swap, which commits at the next redraw boundary's request drain, before that frame's Input stage. Nothing simulates between evaluation and commit, so the commit carries exactly the poses and door state the check passed. A frame that runs no fixed tick still evaluates.
   - **Compiler warnings.** prl-build warns when no cell of a seam can ever be blind with its sealing movers closed, and when a seam's sealing mover does not spawn docked closed.
   - Mover and light state do not cross the swap: the destination installs its copy at its spawn state, and a light the **waiting** reaction set does not carry.
   - U3's brief pins the walk's form and its cost on the host.
@@ -90,7 +90,15 @@ Players walk from one map into the next as if into the next room. A **seam** is 
   | Yes | Ready | No | Yes | Hold; no event |
   | Yes | Loading | Any | Yes | Hold; no event |
 
-  "Ready" means the bundle is ready and the pre-commit settle answers settled for the current arrival eyes (U3). Suspend ends an open wait with no event and drops a queued swap with its prefetch. U4 adds client readiness to the Ready column.
+  When more than one seam evaluates in a frame, one seam takes the table and every other seam's activation that frame drops with no event and no D8:
+
+  | Seams evaluating this frame | Takes the table | Every other seam |
+  |---|---|---|
+  | One | That seam | — |
+  | Several; the seam holding the current prefetch is among them with a player inside | That seam | Activation drops; an open wait ends with no event |
+  | Several; otherwise | First in map order with a player inside; if none has one, each seam takes the table | Activation drops; an open wait ends with no event |
+
+  "Ready" means the bundle is ready, as polled at the frame's redraw boundary, and the pre-commit settle answers settled for the eyes this evaluation walks from (U3). "Loading" is every other live prefetch: requested and not yet ready, ready with its settle pending, or targeted on a tick this frame and not yet requested (U3). "None started" means no tick has targeted the seam since install. Suspend ends an open wait with no event and drops a queued swap with its prefetch. U4 adds client readiness to the Ready column under its own timeout (U4, Host wait); the Settling timeout in the second row counts only the host's bundle and pre-commit settle, so a hold on client readiness alone never takes D8.
 - **D8 — A seam never strands the player.** A prefetch that fails, a seam activated with no prefetch started, and a swap held on its prefetch or pre-commit settle past the Settling timeout from activation each take the classic path with a loading screen and one warning.
 - **D9 — Defaults for beginners, tools for advanced authors.** The engine and tools do something sensible when an author places only the minimum, and give advanced authors explicit overrides:
   - **Prefetch region.** prl-build generates one by portal-graph distance from the seam; an authored region replaces it. U3's brief sizes the default distance from measured background load time and sustained movement speed.
@@ -186,13 +194,13 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 **Contents.**
 - **Instruction.** The host tells participating clients to prefetch when it does, and tells a slot that enters participating while the prefetch stands. A client prefetch is speculative and commits only on the host's swap (I6). Each instruction names the level and a prefetch generation; a supersede (D3) sends the next generation, and a cancel sends a release.
 - **Readiness report.** A new Control message, separate from the client's installed-level declaration and its revealed declaration. It names its generation, carries the prefetched level's parity values, and says the client's pre-commit settle is complete. The host keeps each slot's last report and counts it only for the current generation. A client whose prefetch is cancelled, fails or is released after reporting sends a retraction; suspend retracts too.
-- **Host wait.** The host's swap waits for every participating client's report, inside D7's wait: **waiting** and **ready** cover client readiness. The timeout, pinned by the U4 brief, runs from the first evaluation that passes every term but client readiness; on expiry the swap proceeds. On the swap frame the host splits the slots once: a slot whose current report has arrived swaps seamlessly, every other participating slot gets the classic relevel, and a report arriving later is not read. With no participating client the swap does not wait.
+- **Host wait.** The host's swap waits for every participating client's report, inside D7's wait: **waiting** and **ready** cover client readiness. The timeout, pinned by the U4 brief, runs from the first evaluation that passes every term but client readiness; on expiry client readiness leaves the Ready column, and the next evaluation that passes the remaining terms, the blind check included, swaps. On the swap frame the host splits the slots once: a slot whose current report has arrived swaps seamlessly, every other participating slot gets the classic relevel, and a report arriving later is not read. With no participating client the swap does not wait.
 - **Predicate input.** The predicate stays one comparison; only its client-side input widens. A current-generation report counts as the client's declaration and revealed record for the level it names only when that level is the host's installed level and the report arrived before the host's swap frame. A later declaration or revealed message from the client supersedes it. On its swap frame the host's unload re-evaluates every slot (demote), and the re-evaluation after its commit and reveal reads the reports (re-promote). `networking.md` §Slot lifecycle is rewritten at U4 promotion to name the report as an input.
 
   | Host installed | Client's newest Control fact | Verdict |
   |---|---|---|
   | A | Declaration and reveal of A | Participating |
-  | A | Report for B, after its A declaration | Participating: the report names a level the host has not installed and is not read |
+  | A | Report or retraction for B, after its A declaration | Participating: it names a level the host has not installed and is not read |
   | B | Current report for B, arrived before the swap frame, parity matching | Participating: the report stands in for declaration and reveal |
   | B | Current report for B, arrived before the swap frame, parity differing | Held with the diverged content cause; the client takes the classic relevel |
   | B | Report for B, arrived after the swap frame, or of a superseded generation | Not read; held until the client declares and reveals B through the classic relevel |
@@ -236,7 +244,7 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 16. A walk that trips its step cap or falls back to frustum culling never permits a swap.
 17. prl-build warns on a seam that can never be blind, and on a sealing mover that does not spawn docked closed, and stays silent on a seam with neither.
 18. A failed prefetch, an activation with no prefetch started, and an activation whose prefetch or pre-commit settle is still unready at the Settling timeout each take the classic path with one warning. A seam held only on its blind check never times out.
-19. Peak resident CPU and GPU bytes with two levels are reported per `testing_guide.md` §Resource bounds and stay within the 2 GB VRAM target on the reference fixtures. Entering a second seam's region releases the held prefetch before the new one uploads, so no more than two levels are ever resident.
+19. Peak resident CPU and GPU bytes with two levels are reported per `testing_guide.md` §Resource bounds and stay within the 2 GB VRAM target on the reference fixtures. When a second seam's prefetch supersedes the held one (U3's table), the held one is released before the new one uploads, so no more than two levels are ever resident.
 20. A shadow-tier change during a prefetch restarts it, and a Surface Depth change made then is live on the first frame after the swap.
 21. Co-op, until U4 lands: at a host's swap each client takes the classic relevel and arrives by D4 or D5, and the host publishes its reveal of the next map on the swap frame, so every client re-promotes.
 
@@ -273,8 +281,8 @@ Each row is a test the named unit's brief carries.
 
 | Unit | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| U2 | Latch clears on capsule exit | latched → body point leaves, capsule still overlaps → capsule leaves → re-enter | No fire while the capsule overlaps; re-entry fires |
-| U2 | Level change before a classic-path client arrives | swap A→B → client still loading B → host changes B→C | Client arrives in C at a player start; its B arrival cleared |
+| U2 | Latch clears on capsule exit | touch seam latched → body point leaves, capsule still overlaps → capsule leaves → re-enter | No fire while the capsule overlaps; re-entry fires |
+| U2 | Level change before a co-op client arrives | seam crossing A→B → client still loading B → host changes B→C | Client arrives in C at a player start; its B arrival cleared |
 | U3 | Prefetch completion polled at the activation frame's redraw boundary | ready polled → activate on a tick of that frame | Swap at the next boundary; no **waiting** |
 | U3 | Prefetch completes during the activation frame's ticks | activate → completion → poll at the next boundary | **waiting** on the activation frame, **ready** on the next, swap at the boundary after |
 | U3 | Blind on an early tick, not on the last | activate on tick 1 (blind) → door starts opening on tick 3 → boundary | No swap that frame; evaluation reads tick 3 |
@@ -291,13 +299,13 @@ Each row is a test the named unit's brief carries.
 | U3 | Prefetch fails after activation | activate → **waiting** → failure | Classic path with one warning (D8); **ready** never fires |
 | U3 | Prefetch never completes | activate → **waiting** → Settling timeout from activation | Classic path with one warning (D8); **ready** never fires |
 | U3 | Level change during prefetch | prefetch → `loadLevel` / `restartLevel` / return to frontend | Prefetch cancelled; the requested change proceeds |
-| U3 | Script level request on the swap's frame | evaluation passes; `loadLevel`, `restartLevel` or `returnToFrontend` dispatches the same frame, either order | The script request proceeds; swap dropped, prefetch released, no **ready** |
+| U3 | Script level request on the swap's frame | evaluation passes; `loadLevel`, `restartLevel` or `returnToFrontend` dispatches the same frame, either order | The script request proceeds; swap dropped, prefetch released; **ready** fires only if the evaluation ended an open wait (D7), as when suspend falls between evaluation and commit |
 | U3 | Prefetch target and level change on one frame | region entered; `loadLevel` dispatches the same frame | The change proceeds; the prefetch never starts |
 | U3 | Two seams activated on one frame | A→B prefetched, A→C not, both activated | A→B evaluates; the A→C activation drops with no event and no D8 |
 | U3 | Suspend during prefetch | prefetch → suspend | Prefetch cancelled; resume does not restore it |
 | U3 | Suspend between evaluation and commit | evaluation passes → **ready** → suspend → resume | Queued swap and prefetch dropped; A stays installed; the seam needs a fresh activation |
 | U3 | Door opened while waiting | activate → **waiting** → door opens | Swap holds until blind again |
-| U3 | Arrival inside the return seam | swap → arrival inside B→A seam | Latched (D11) before B's first trigger tick; B→A prefetch starts on that tick; the swap cannot fire until the player leaves and re-enters |
+| U3 | Arrival inside the return seam | swap → arrival inside B→A seam | Latched (D11) before B's first trigger tick; B→A prefetch targeted on that tick and requested at the next redraw boundary; the swap cannot fire until the player leaves and re-enters |
 | U3 | First frame after a swap | commit → B's first fixed tick | `levelLoad` reactions run at commit; the arrival event fires on B's first fixed tick; their queued commands dispatch in that order |
 | U3 | Player dies inside a waiting seam | activate → **waiting** → death | Open (Open questions) |
 | U4 | Report for a superseded prefetch | report for B arrives after the host supersedes with C | Not read; the slot is not ready for C |

@@ -2,6 +2,7 @@
 // the inside-set rule; no post-pass classifier needed.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
+mod cell_cap;
 mod occluder_tier;
 
 use anyhow::{Result, bail};
@@ -10,6 +11,9 @@ use glam::DVec3;
 use super::region_polytope::RegionPolytope;
 use super::types::*;
 use crate::map_data::BrushVolume;
+pub use cell_cap::{
+    CAP_MIN_OPEN_SLICE_FRACTION, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M, CellSizeCap,
+};
 pub use occluder_tier::{OccluderTier, TierLeaf, TierRole, build_bsp_with_occluder_tier};
 use occluder_tier::{TierPlanes, TierRecorder, build_tier_region};
 
@@ -53,11 +57,11 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
 }
 
 /// How `build_recursive` picks a region's splitter.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 enum SplitTier<'a> {
     /// Occluder-tier planes only, ranked by each brush's role, then door
-    /// splitters; a region none spans becomes an occluder-tier leaf and
-    /// continues as `Full`.
+    /// splitters, then the cell-size cap's grid lines; a region none spans
+    /// becomes an occluder-tier leaf and continues as `Full`.
     Occluder(TierPlanes<'a>),
     /// Every candidate brush's planes, scored by `select_splitter`.
     Full,

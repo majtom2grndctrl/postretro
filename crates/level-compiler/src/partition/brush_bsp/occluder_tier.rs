@@ -7,6 +7,7 @@ use std::ops::Range;
 use anyhow::Result;
 use glam::DVec3;
 
+use super::cell_cap::CellSizeCap;
 use super::{
     IMBALANCE_PENALTY, REGION_CLASSIFICATION_EPSILON, SPLIT_PENALTY, SplitTier, build_recursive,
     build_tree, count_partition, leaf_bounds, planes_equivalent, split_region,
@@ -95,38 +96,41 @@ impl OccluderTier {
     }
 }
 
-/// What splits inside the occluder tier: each brush's role, and the doors.
-#[derive(Debug, Clone, Copy)]
+/// What splits inside the occluder tier: each brush's role, the doors, and
+/// the cell-size cap.
+#[derive(Clone, Copy)]
 pub(super) struct TierPlanes<'a> {
     roles: &'a [TierRole],
     doors: &'a [DoorSplitter],
+    cap: Option<&'a CellSizeCap<'a>>,
 }
 
 /// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
 /// inside the tier: occluder-rank planes split first, then the planes of
-/// each door in `doors` inside the region holding it; each region none of
-/// them spans becomes an
-/// occluder-tier leaf, and every brush's planes split beneath it with
-/// `build_bsp_from_brushes`' scoring. Door planes are never solid: solidity,
-/// leaves and face ownership read the returned tree exactly as they read a
-/// one-tier tree.
+/// each door in `doors` inside the region holding it, then, with `cap`, the
+/// cell-size cap's grid lines in any region still wider than the cap; each
+/// region none of them spans becomes an occluder-tier leaf, and every brush's
+/// planes split beneath it with `build_bsp_from_brushes`' scoring. Door and
+/// cap planes are never solid: solidity, leaves and face ownership read the
+/// returned tree exactly as they read a one-tier tree.
 pub fn build_bsp_with_occluder_tier(
     brushes: &[BrushVolume],
     roles: &[TierRole],
     doors: &[DoorSplitter],
+    cap: Option<&CellSizeCap<'_>>,
 ) -> Result<(BspTree, OccluderTier)> {
     assert_eq!(roles.len(), brushes.len(), "one tier role per brush");
     let mut recorder = TierRecorder::default();
-    let planes = TierPlanes { roles, doors };
+    let planes = TierPlanes { roles, doors, cap };
     let tree = build_tree(brushes, SplitTier::Occluder(planes), &mut recorder)?;
     let tier = recorder.finish(&tree);
     Ok((tree, tier))
 }
 
 /// Build a region inside the occluder tier: split on the best occluder plane,
-/// or door plane once no occluder plane qualifies, or, when none spans the
-/// region, close it as a tier leaf and build its sub-tree on every brush's
-/// planes.
+/// or door plane once no occluder plane qualifies, or cap line once neither
+/// does, or, when none spans the region, close it as a tier leaf and build
+/// its sub-tree on every brush's planes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_tier_region(
     tree: &mut BspTree,
@@ -143,9 +147,9 @@ pub(super) fn build_tier_region(
     depth: usize,
 ) -> Result<BspChild> {
     // A solid region is a tier leaf as it stands; otherwise the tier
-    // continues while an occluder or door plane spans the region. A region
-    // no brush reaches has no occluder plane, but a door may still stand in
-    // it.
+    // continues while an occluder, door or cap plane spans the region. A
+    // region no brush reaches has no occluder plane, but a door may still
+    // stand in it, and it may still be wider than the cap.
     let splitter = if !inside.is_empty() {
         None
     } else {
@@ -235,16 +239,21 @@ impl TierRecorder {
 /// scored by today's spanning and balance terms over the occluder
 /// candidates; failing those, among the planes of the doors the region
 /// holds, broad-face planes before edge planes, scored over every candidate.
-/// Each rank takes a credit for the plane's slice through the region. `None`
-/// makes the region an occluder-tier leaf.
+/// Each of those ranks takes a credit for the plane's slice through the
+/// region. Failing both, the cap's grid line, chosen by its own rule and
+/// never scored, since the slice credit would fight its nearest-the-middle
+/// choice. `None` makes the region an occluder-tier leaf.
 ///
-/// Door planes rank last, so a door splits only what would otherwise be the
-/// occluder-tier leaf holding its doorway, and adds no boundary to any region
-/// it does not reach (pin R7).
+/// Door planes rank after occluder planes, so a door splits only what would
+/// otherwise be the occluder-tier leaf holding its doorway, and adds no
+/// boundary to any region it does not reach (pin R7). Cap lines rank last,
+/// so they split only what would otherwise be an occluder-tier leaf, and a
+/// cap line through a doorway cuts the door's portals into pieces the closed
+/// door still covers.
 fn select_occluder_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
-    TierPlanes { roles, doors }: TierPlanes<'_>,
+    TierPlanes { roles, doors, cap }: TierPlanes<'_>,
     region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
@@ -273,6 +282,7 @@ fn select_occluder_splitter(
         ancestor_planes,
     )
     .or_else(|| select_door_splitter(brushes, candidates, doors, region_polytope, ancestor_planes))
+    .or_else(|| cap.and_then(|cap| cap.splitter(region_polytope, ancestor_planes)))
 }
 
 /// The best door plane for a region no occluder plane spans: a broad-face

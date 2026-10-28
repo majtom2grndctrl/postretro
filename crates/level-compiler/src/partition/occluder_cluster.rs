@@ -53,6 +53,9 @@ pub struct Section {
     /// Bounding box extents in the section's own frame: the two broad axes,
     /// then across the slab.
     pub extents: [f64; 3],
+    /// The bounding box itself: the slab the cell-size cap's slab guard
+    /// keeps its grid lines out of.
+    pub(crate) frame: BrushFrame,
     /// The individual occluder rule on the bounding box.
     pub box_verdict: OccluderVerdict,
     /// Share of the bounding broad face the members cover, on the grid.
@@ -189,6 +192,7 @@ fn judge_cluster(
                 occludes: box_verdict == OccluderVerdict::Occludes && dense,
                 bounding_face,
                 outline,
+                frame,
             }
         })
         .collect();

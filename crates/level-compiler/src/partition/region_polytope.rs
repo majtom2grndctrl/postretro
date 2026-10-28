@@ -180,6 +180,21 @@ impl RegionPolytope {
         twice_area.length() * 0.5
     }
 
+    /// The plane's slice through the region as a winding, or `None` when the
+    /// plane misses it.
+    pub(crate) fn slice(&self, normal: DVec3, distance: f64) -> Option<Vec<DVec3>> {
+        self.cap_winding(normal, distance)
+    }
+
+    /// True when `point` lies inside every facet's half-space, within `tol`.
+    pub(crate) fn contains_point(&self, point: DVec3, tol: f64) -> bool {
+        !self.facets.is_empty()
+            && self
+                .facets
+                .iter()
+                .all(|facet| point.dot(facet.normal) - facet.distance >= -tol)
+    }
+
     pub(crate) fn vertex_aabb(&self) -> Aabb {
         let mut bounds = Aabb::empty();
         for vertex in self.vertices() {

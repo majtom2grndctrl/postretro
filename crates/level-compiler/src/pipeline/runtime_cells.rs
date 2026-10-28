@@ -14,7 +14,8 @@ use crate::partition::occluder_classify::{
 };
 use crate::partition::occluder_cluster::OCCLUDER_COVERAGE_FRACTION;
 use crate::partition::{
-    self, BspTree, CellTree, DoorSplitter, OccluderTier, PartitionResult, build_bsp_from_brushes,
+    self, BspTree, CAP_MIN_OPEN_SLICE_FRACTION, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M,
+    CellSizeCap, CellTree, DoorSplitter, OccluderTier, PartitionResult, build_bsp_from_brushes,
     recognize_doors,
 };
 use crate::portals::{self, Portal};
@@ -28,13 +29,15 @@ pub(crate) struct OccluderPartition {
 }
 
 /// Classify every static brush and recognise the doors among `movers`, then
-/// build the two-tier tree on the verdicts and door splitters and extract
-/// world faces. Classification and doors are logged at info.
+/// build the two-tier tree on the verdicts, the door splitters and the
+/// cell-size cap, and extract world faces. Classification and doors are
+/// logged at info.
 pub(crate) fn partition_with_occluders(
     brushes: &[BrushVolume],
     movers: &[MapKinematicMover],
 ) -> Result<OccluderPartition> {
-    let (classification, doors) = match FirstPass::build(brushes)? {
+    let first_pass = FirstPass::build(brushes)?;
+    let (classification, doors) = match &first_pass {
         Some(first_pass) => {
             let space = first_pass.space();
             (
@@ -46,8 +49,15 @@ pub(crate) fn partition_with_occluders(
     };
     log_classification(&classification);
     log_doors(&doors, movers);
-    let (result, tier) =
-        partition::partition_with_occluder_tier(brushes, &classification.tier_roles(), &doors)?;
+    let cap = first_pass
+        .as_ref()
+        .map(|first_pass| CellSizeCap::new(first_pass.space(), &classification));
+    let (result, tier) = partition::partition_with_occluder_tier(
+        brushes,
+        &classification.tier_roles(),
+        &doors,
+        cap.as_ref(),
+    )?;
     Ok(OccluderPartition { result, tier })
 }
 
@@ -180,7 +190,9 @@ impl RuntimeCells {
             .count();
         log::info!(
             "[Compiler] Runtime cells: {} occluder-tier leaves; {} cells ({} interior, {} solid, \
-             {} exterior); {} runtime portals; full tree {} leaves, {} portals",
+             {} exterior); {} runtime portals; full tree {} leaves, {} portals; cell-size cap \
+             {CELL_SIZE_CAP_M} m, least piece {CAP_MIN_PIECE_FRACTION}, open slice over \
+             {CAP_MIN_OPEN_SLICE_FRACTION}",
             tier.leaves.len(),
             cells.tree.leaves.len(),
             cells.interior_cell_count(),
@@ -205,3 +217,6 @@ mod door_tests;
 
 #[cfg(test)]
 mod hint_tests;
+
+#[cfg(test)]
+mod cap_tests;

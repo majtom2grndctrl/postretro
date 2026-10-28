@@ -990,14 +990,16 @@ fn light_on_an_occluder_plane_records_the_front_cell_and_floods_behind() {
 
 #[test]
 fn oversize_face_in_a_multi_leaf_cell_keeps_every_piece_in_that_cell() {
-    // Pin R21: a 2100 u (53 m) hall, past one 2048-texel pool layer at the
-    // default density, split lengthwise beneath the tier by an exempt curb.
+    // Pin R21: a 2100 u (53 m) shaft, past one 2048-texel pool layer at the
+    // default density, split lengthwise beneath the tier by an exempt
+    // column. It stands upright because the cell-size cap divides any
+    // horizontal run that long, and never splits along up.
     let mut map = MapText::new();
-    map.hall([2100.0, 80.0, 100.0])
-        .solid([0.0, 30.0, 0.0], [2100.0, 42.0, 12.0])
-        .light([1050.0, 60.0, 80.0], 2400.0);
+    map.hall([80.0, 100.0, 2100.0])
+        .solid([0.0, 30.0, 0.0], [12.0, 42.0, 2100.0])
+        .light([60.0, 80.0, 1050.0], 2400.0);
     let cells = Cells::of(&map);
-    let cell = cells.cell_at([1050.0, 15.0, 50.0]);
+    let cell = cells.cell_at([50.0, 15.0, 1050.0]);
     assert!(cells.members(cell).len() > 1, "the curb splits the cell");
     let pre_cut = crate::geometry::extract_geometry(
         &cells.partition.result.faces,

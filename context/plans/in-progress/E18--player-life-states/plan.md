@@ -8,9 +8,9 @@ read at: 834a09c51
 
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. Tasks 1–4 are complete and committed as separate
-verified milestones. The next task is Task 5 respawn, with the tick-start and
-foot-anchor Path corrections recorded below. The usage-window interruptions
+`codex/player-life-states`. Tasks 1–5 are complete as separately verified milestones. Next is Task 6
+carried state/rejoin, then the consumer/docs and final review gates. Tick-start
+and foot-anchor Path corrections are recorded below. The usage-window interruptions
 left edits intact; no scope or owner approval changed. Manual AC17/AC18 proof
 remains outstanding for the final runbook.
 
@@ -221,7 +221,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | done: movement, relay ordering and eye/look proofs pass |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | done: 7 sim, 2 netcode and 2 app behavior tests pass |
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | done: catalog, publication, clock, remap, replication and SDK proofs pass |
-| 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | not started |
+| 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | done: 20 library + 6 app respawn tests and regressions pass |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | not started |
 | 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
 
@@ -312,6 +312,46 @@ listed boundaries; no allocation is a passing result.
 | 5 | O3, O4, O10, O15 (respawn), O17, O18, O19, O20, O28, O29, O32, O33, O44 |
 | 6 | O6, O7, O15 (rejoin), O21, O22, O23, O30, O31, O41 |
 | 7 | O1, O2, O5; audit all O1–O44 names/results after integration |
+
+## Task 5 implementation checkpoint (2026-10-28)
+
+- Shared host-local requests/foot placements live in `entities::respawn` and on
+  `ScriptCtx`. Requests coalesce by entity id and preserve optional state names.
+  `Seat` now derives ordering for deterministic seat-keyed placement maps.
+- The enqueue/runtime/sequenced/bound command paths, install/name checks and
+  placement publication/unload cleanup are implemented. Queue survives reload
+  and suspend; actual level unload clears it and the placement projection.
+- `sim::begin_tick` snapshots transforms, applies queued teleporter changes and
+  physically drains respawns before App remote switch/fire admission.
+  `finish_tick_start` resolves yaw from resolved inputs or old transform yaw,
+  runs the shared arrival tail and returns a consumed `StartedTick` token.
+  App rotates raw inputs before activation preparation; retained start aim
+  reads the updated accumulated yaw. The original sim API remains a wrapper
+  that performs the same start for headless callers and rotates prepared aim.
+- Drain rebuilds canonical movement, derives the target capsule centre from
+  the foot anchor, picks against every other live pawn in seat order, restores
+  health/latch and initial/named profile, cancels activations, and preserves
+  inventory. Undeclared respawn stamps the current table revision, avoiding an
+  unresolvable revision after a descriptor loses its states.
+- Ten sim drain tests, three shared-arrival tests, five enqueue tests, four
+  App placement/unload tests and two conditioned network tests are complete.
+  The unmarked local fallback is aligned with the actual movement consumer;
+  dedicated tests cover that fallback with a remote input present and full-tick
+  crouched host/command-free remote -> standing alive restoration.
+- Formatting/whitespace and touched-crate all-target check pass. Three test
+  fixture type/mutability mistakes were fixed. Focused `respawn_` passes:
+  physics 3, scripting-core 1, sim 16, App 6. The App tests include actual
+  conditioned command-100 admission/turned start aim/one movement step (O33),
+  owner teleport cuts, and an odd-T teleporter/even-T respawn coalesced observer
+  cut with no replayed cue (O10/O28). Sound proof observes production requests,
+  not audio-device playback. Sim `life_state` regression passes 19; App passes
+  17 including the new network cases. All filters matched tests.
+- Task 5 is complete. Task 6 grounding confirms all harvest paths must receive
+  the current name table, life-only movement must bypass the old component
+  presence early return, held records need an explicit unload-only name clear,
+  and remote restore runs before seat binding, so it cannot require membership.
+- Tasks 6/7, review-panel/fix loop, final preflight and manual runbook are still
+  outstanding. No full workspace suite has run.
 
 ## Performance and resource constraints
 

@@ -348,6 +348,7 @@ fn is_trigger_consequential_primitive(primitive: &str) -> bool {
     matches!(
         primitive,
         "setLifeState"
+            | "respawn"
             | "grantHealth"
             | "grantAmmo"
             | "moverStart"

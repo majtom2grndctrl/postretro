@@ -477,6 +477,18 @@ impl SeatTable {
         }
     }
 
+    /// The original map placement assigned to this durable seat.
+    pub fn placement_for_seat(&self, seat: Seat) -> Option<usize> {
+        self.placement_assignments.get(&seat).copied()
+    }
+
+    /// Current and held-seat placement assignments, without a seat-count guess.
+    pub fn assigned_placements(&self) -> impl Iterator<Item = (Seat, usize)> + '_ {
+        self.placement_assignments
+            .iter()
+            .map(|(&seat, &placement)| (seat, placement))
+    }
+
     /// Record the spawn an install-time pawn took.
     pub fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
         self.level_spawn_placements.insert(pawn, placement);

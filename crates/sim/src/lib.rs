@@ -28,6 +28,7 @@ pub mod nav;
 pub mod particle_pool;
 pub mod player_events;
 pub mod residual_drain;
+pub mod respawn_commands;
 pub mod scripting;
 pub mod scripting_systems;
 pub mod sim;

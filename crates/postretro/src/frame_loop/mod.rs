@@ -798,7 +798,38 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // Host: resolve remote (owned) pawn inputs up front, then the
             // shared `simulate_tick` runs loaded movers and every player
             // movement consumer against the same combined collision query.
-            let resolved_remote_commands = app.host_resolve_remote_commands(tick_dt);
+            let teleport_before =
+                crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
+            let pending_tick = sim::begin_tick(&script_ctx.registry, Some(&script_ctx));
+            let mut resolved_remote_commands = app.host_resolve_remote_commands(tick_dt);
+            let local_pawn = script_ctx.registry.borrow().local_player_movement_pawn();
+            let (started_tick, respawn_turns) = sim::finish_tick_start(
+                pending_tick,
+                &mut script_ctx.registry.borrow_mut(),
+                &app.collision_world,
+                |pawn| {
+                    resolved_remote_commands
+                        .iter()
+                        .find(|remote| remote.pawn == pawn)
+                        .map(|remote| remote.command.movement.facing_yaw)
+                        .or_else(|| {
+                            (Some(pawn) == local_pawn).then_some(command.movement.facing_yaw)
+                        })
+                },
+            );
+            let mut local_respawn_yaw = 0.0;
+            for turn in respawn_turns {
+                if Some(turn.pawn) == local_pawn {
+                    command.movement.facing_yaw += turn.yaw_delta;
+                    local_respawn_yaw += turn.yaw_delta;
+                }
+                for remote in resolved_remote_commands
+                    .iter_mut()
+                    .filter(|remote| remote.pawn == turn.pawn)
+                {
+                    remote.command.movement.facing_yaw += turn.yaw_delta;
+                }
+            }
             let remote_pawn_commands =
                 app.host_prepare_remote_pawn_commands(&resolved_remote_commands);
             trigger_use_edges.extend(remote_pawn_commands.iter().filter_map(|remote| {
@@ -858,13 +889,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let touch_system = &mut session.touch_system;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
             let trigger_bindings = &app.trigger_bindings;
-            let teleport_before =
-                crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
-            let presentation_camera_aim = (app.camera.pitch, app.camera.yaw);
+            let presentation_camera_aim = (app.camera.pitch, app.camera.yaw + local_respawn_yaw);
             let camera = &mut app.camera;
             #[cfg(feature = "dev-tools")]
             let debug_chase_agent = app.debug_chase_agent;
-            let tick_events = sim::simulate_tick_with_presentation_aim(
+            let tick_events = sim::simulate_started_tick_with_presentation_aim(
+                started_tick,
                 script_ctx.registry.clone(),
                 collision_world,
                 hit_zone_store,

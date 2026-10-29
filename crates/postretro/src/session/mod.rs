@@ -922,6 +922,10 @@ fn build_scripting_core(
         &mut sequence_registry,
         script_ctx.clone(),
     );
+    postretro_sim::respawn_commands::register_sequenced_respawn_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::ghost_link_commands::register_sequenced_ghost_link_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
@@ -953,6 +957,10 @@ fn build_scripting_core(
         script_ctx.clone(),
     );
     postretro_sim::teleporter_commands::register_teleporter_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
+    postretro_sim::respawn_commands::register_respawn_reaction_primitives(
         &mut reaction_registry,
         script_ctx.clone(),
     );

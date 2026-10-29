@@ -491,3 +491,5 @@ fn conditioned_zero_hp_fire_true_charge_survives_sweeps_and_fires_its_release() 
     );
     life.assert_other_player_untouched();
 }
+
+mod respawn;

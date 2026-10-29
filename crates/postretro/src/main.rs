@@ -19,6 +19,7 @@ mod life_state_display;
 mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
+mod respawn_placements;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -4211,8 +4212,17 @@ impl App {
                                         );
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
-                                            seats
-                                                .assign_joiner_placement(&registry, seat, &joinable)
+                                            let placement = seats.assign_joiner_placement(
+                                                &registry, seat, &joinable,
+                                            );
+                                            crate::respawn_placements::publish(
+                                                &script_ctx,
+                                                &host_spawn_points,
+                                                &net_descriptors,
+                                                Some(seats),
+                                                None,
+                                            );
+                                            placement
                                         })
                                     else {
                                         log::warn!(

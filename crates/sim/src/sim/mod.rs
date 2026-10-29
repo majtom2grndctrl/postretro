@@ -8,6 +8,12 @@ mod descriptor_health;
 pub mod frame_timing;
 mod mesh_bindings;
 pub mod player_life;
+mod respawn;
+mod tick_start;
+pub use tick_start::{
+    PendingTickStart, RespawnTurn, StartedTick, begin_tick, finish_tick_start,
+    simulate_tick_with_presentation_aim,
+};
 #[cfg(test)]
 mod player_life_tests;
 mod player_locomotion;
@@ -529,7 +535,8 @@ where
 /// Headless callers retain the wrapper above and intentionally use the neutral
 /// camera; production local-player presentation passes the live camera aim here.
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_tick_with_presentation_aim<AiResult>(
+pub fn simulate_started_tick_with_presentation_aim<AiResult>(
+    _started: StartedTick,
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -577,13 +584,6 @@ where
     // Every body's overlap check this tick reads the level's static world, so
     // its timer spans host movement and agent steering alike.
     collision_world.overlap_timer().begin(timing.is_enabled());
-    registry.borrow_mut().snapshot_transforms();
-    if let Some(ctx) = trigger_context
-        .as_ref()
-        .and_then(|context| context.script_ctx.as_ref())
-    {
-        crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
-    }
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
     // (ready remote-hit ingest, AI, and local weapon fire), so every newly

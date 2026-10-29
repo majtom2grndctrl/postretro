@@ -899,11 +899,13 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
         };
+        let mut first_player_placement = None;
         let products = install_world_cpu(
             handles,
             &mut self.level_timings,
             upload_mesh_models,
             |first_player| {
+                first_player_placement = first_player.map(|spawned| spawned.placement);
                 if let Some(seats) = session.seat_table.as_mut() {
                     bind_installed_first_player(
                         seats,
@@ -912,6 +914,13 @@ impl App {
                     );
                 }
             },
+        );
+        crate::respawn_placements::publish(
+            &script_ctx,
+            &products.spawn_points,
+            &script_ctx.data_registry.borrow().entities,
+            session.seat_table.as_ref(),
+            first_player_placement,
         );
         crate::runtime_teleporters::bind_loaded_teleporters(
             &mut self.collision_world.teleporters,

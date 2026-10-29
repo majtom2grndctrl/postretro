@@ -28,6 +28,11 @@ pub(crate) enum BoundTriggerCommand {
         target: BoundTarget,
         state_id: u8,
     },
+    Respawn {
+        target: BoundTarget,
+        health: Option<f32>,
+        state: Option<String>,
+    },
     Mover {
         target: BoundTarget,
         command: MoverCommand,
@@ -148,6 +153,7 @@ impl ResolvedTargets<'_> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundTriggerCommandKind {
     SetLifeState,
+    Respawn,
     Mover,
     Damage,
     GrantHealth,
@@ -247,6 +253,20 @@ impl BoundTriggerCommand {
                 }
             }
 
+            Self::Respawn {
+                target,
+                health,
+                state,
+            } => {
+                let targets = target.resolve(registry, fire_context);
+                crate::respawn_commands::enqueue_respawns(
+                    script_ctx,
+                    registry,
+                    targets.as_slice(),
+                    *health,
+                    state.as_deref(),
+                );
+            }
             Self::Trap { .. } if !group_commands_apply_here(script_ctx) => {
                 // Every trap step is host-only; a client latches nothing.
             }
@@ -373,6 +393,9 @@ impl BoundTriggerCommand {
         match self {
             Self::SetLifeState { .. } => {
                 log::warn!("[LifeState] bound command requires a live ScriptCtx; skipping")
+            }
+            Self::Respawn { .. } => {
+                log::warn!("[Respawn] bound command requires a live ScriptCtx queue; skipping")
             }
             Self::Mover { target, command } => apply_mover_command_to_targets(
                 registry,
@@ -502,6 +525,7 @@ impl BoundTriggerCommand {
     fn group_target(&self) -> Option<&GroupTarget> {
         let target = match self {
             Self::SetLifeState { target, .. }
+            | Self::Respawn { target, .. }
             | Self::Mover { target, .. }
             | Self::Damage { target, .. }
             | Self::GrantHealth { target, .. }
@@ -527,6 +551,7 @@ impl BoundTriggerCommand {
     pub(crate) fn kind(&self) -> BoundTriggerCommandKind {
         match self {
             Self::SetLifeState { .. } => BoundTriggerCommandKind::SetLifeState,
+            Self::Respawn { .. } => BoundTriggerCommandKind::Respawn,
             Self::Mover { .. } => BoundTriggerCommandKind::Mover,
             Self::Damage { .. } => BoundTriggerCommandKind::Damage,
             Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,

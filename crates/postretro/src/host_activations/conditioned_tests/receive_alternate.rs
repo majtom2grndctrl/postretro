@@ -446,6 +446,13 @@ impl Fixture {
                 );
             }
         }
+        self.life_owner_adoptions.extend(
+            outcome
+                .local_teleport_adoptions
+                .iter()
+                .copied()
+                .map(|adoption| (self.tick, adoption)),
+        );
         self.projection.merge(&outcome.owner_private_weapon);
         if let Some(switch) = self.switch_receive.as_mut() {
             switch

@@ -677,6 +677,55 @@ fn sdk_authored_token_and_group_entries_before_the_wait_apply_in_the_trigger_tic
     assert!(entered.residual_fired, "the wait tail drains at frame end");
 }
 
+#[test]
+fn respawn_sdk_trigger_entries_queue_in_order_without_relocating_or_residual_dispatch() {
+    let mut level = Level::new();
+    let pawn = level.spawn_pawn(&[]);
+    level.registry.mark_local_player_pawn(pawn).unwrap();
+    let other = level.spawn_pawn(&[]);
+    level.registry.bind_pawn_seat(other, Seat(1));
+    let npc = level.spawn_npc(&[]);
+    let manifest = sdk_manifest(&format!(
+        r#"
+        import {{ defineReaction, players, type TriggerEventParams }} from "postretro";
+        const reset = defineReaction("reset", (on: TriggerEventParams) => ({{
+          sequence: [
+            on.activators.respawn({{ health: 25 }}),
+            players().respawn({{ health: 40 }}),
+            on.activators.respawn({{ health: 61 }}),
+          ],
+        }}));
+        export function setupLevel() {{
+          return {{ reactions: [reset],
+            triggerEvents: [{{ trigger: {plate}, event: "enter", fire: [reset.name] }}] }};
+        }}
+        "#,
+        plate = level.plate.to_raw(),
+    ));
+    let logs = level.install_manifest(manifest, SpawnContext::default());
+    assert!(warnings(&logs).is_empty(), "{logs:?}");
+    level.move_to(pawn, INSIDE);
+    let entered = level.tick(&[local(pawn)]);
+    assert_eq!(entered.commands, vec![BoundTriggerCommandKind::Respawn; 3]);
+    assert!(!entered.residual_fired);
+    assert!(warnings(&entered.logs).is_empty(), "{:?}", entered.logs);
+    let pending = level.script_ctx.pending_respawns.borrow();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[&pawn].health, Some(61.0));
+    assert_eq!(pending[&other].health, Some(40.0));
+    assert!(!pending.contains_key(&npc));
+    assert_eq!(level.health(pawn), START_HEALTH);
+    assert_eq!(level.health(other), START_HEALTH);
+    assert_eq!(
+        level
+            .registry
+            .get_component::<Transform>(pawn)
+            .unwrap()
+            .position,
+        INSIDE
+    );
+}
+
 // Tick half: a group step bound after a tag-targeted spawn on the same
 // edge sees the NPCs that spawn produced in the same tick. The `s.fire()`
 // member form is covered below (`trigger_tick_spawner_member_*`).

@@ -184,6 +184,7 @@ impl App {
         // the issuer and SH's workers go now, not at the next install.
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
+            crate::respawn_placements::clear_for_level_unload(&session.scripting.script_ctx);
             session
                 .scripting
                 .script_ctx

@@ -16,6 +16,7 @@ use crate::trigger_commands::BoundTriggerCommand;
 
 const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "setLifeState",
+    "respawn",
     "moverStart",
     "moverStop",
     "moverReverse",

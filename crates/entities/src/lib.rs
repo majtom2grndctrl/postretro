@@ -63,3 +63,6 @@ pub use registry::{
 };
 pub use scripting::error::ScriptError;
 pub use slot_table::*;
+
+pub mod respawn;
+pub use respawn::{RespawnPlacement, RespawnPlacements, RespawnRequest};

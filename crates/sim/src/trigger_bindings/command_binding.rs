@@ -180,6 +180,14 @@ pub(super) fn bind_command_at(
             })
         }
 
+        "respawn" => Some(BoundTriggerCommand::Respawn {
+            target: target(primitive)?,
+            health: crate::respawn_commands::respawn_health(args),
+            state: args
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        }),
         "moverStart" => Some(BoundTriggerCommand::Mover {
             target: target(primitive)?,
             command: MoverCommand::Start,

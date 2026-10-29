@@ -4,7 +4,7 @@
 use glam::{Vec2, Vec3};
 
 mod carry;
-mod teleport;
+pub mod teleport;
 pub use teleport::TeleportEvent;
 mod dispatch;
 mod environment;

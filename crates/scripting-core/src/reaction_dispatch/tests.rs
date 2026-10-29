@@ -77,6 +77,12 @@ fn spawn_from_spawner_stays_in_trigger_consequential_mirror() {
     assert!(is_trigger_consequential_primitive("spawnFromSpawner"));
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn respawn_stays_in_trigger_consequential_mirror() {
+    assert!(is_trigger_consequential_primitive("respawn"));
+}
+
 #[test]
 fn progress_threshold_fires_when_all_dead_at_full_ratio() {
     let mut data = DataRegistry::new();

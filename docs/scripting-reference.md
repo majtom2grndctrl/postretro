@@ -1836,30 +1836,31 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
 ```typescript
-import { defineReaction, getMapEntities, npcs, players, fire, wait } from "postretro";
+import { defineReaction, getMapEntities, npcs, players, wait } from "postretro";
 import type { TriggerEventParams } from "postretro";
+import { playSound } from "postretro/ui";
 
-const resupply = defineReaction("closet.resupply", players().grantAmmo("shells.buck", 8));
-const patchUp = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
+const patchUp = defineReaction((on: TriggerEventParams) => [
+  on.activators.grantHealth(25),
+  playSound("sfx/test_tone"),
+]);
 
 export function setupLevel() {
   const doors = getMapEntities("mover", { tag: "closet_door" });       // members
   const closets = getMapEntities("spawner", { tag: "closet_spawner" });
   const closet = npcs({ tag: "closet" });                                 // group
 
-  const reveal = defineReaction("closet.timedReveal", {
-    sequence: [
-      ...wait(800, { interruptible: true }),
-      ...doors.flatMap((m) => m.start()),
-      ...closets.flatMap((s) => s.fire()),
-      closet.update({ aggro: true }), // whoever exists when this step runs
-      closet.damage(5),
-      ...fire(resupply),
-    ],
-  });
+  const reveal = defineReaction("closet.timedReveal", [
+    wait(800, { interruptible: true }),
+    doors.map((m) => m.start()),
+    closets.map((s) => s.fire()),
+    closet.update({ aggro: true }), // whoever exists when this step runs
+    closet.damage(5),
+    players().grantAmmo("shells.buck", 8),
+  ]);
 
   return {
-    reactions: [reveal, patchUp, resupply],
+    reactions: [reveal, patchUp],
     triggerEvents: getMapEntities("trigger", { tag: "closet_reveal_plate" })
       .flatMap((t) => [t.on("enter", [reveal]), t.on("exit", [patchUp])]),
   };
@@ -1868,38 +1869,122 @@ export function setupLevel() {
 
 ```lua
 local Postretro = require("postretro")
+local UI = require("postretro/ui")
 
-local resupply = Postretro.defineReaction("closet.resupply",
-  Postretro.players():grantAmmo("shells.buck", 8))
 local patchUp = Postretro.defineReaction(function(on)
-  return on.activators:grantHealth(25)
+  return { on.activators:grantHealth(25), UI.playSound("sfx/test_tone") }
 end)
+
+-- Nested tables flatten; mapping over members still needs a loop.
+local function map(members, build)
+  local out = {}
+  for _, member in ipairs(members) do table.insert(out, build(member)) end
+  return out
+end
 
 function setupLevel(_ctx)
   local closet = Postretro.npcs({ tag = "closet" })
-  local steps = {}
-  for _, step in Postretro.wait(800, { interruptible = true }) do table.insert(steps, step) end
-  for _, door in Postretro.getMapEntities("mover", { tag = "closet_door" }) do
-    for _, step in door:start() do table.insert(steps, step) end
-  end
-  for _, spawner in Postretro.getMapEntities("spawner", { tag = "closet_spawner" }) do
-    for _, step in spawner:fire() do table.insert(steps, step) end
-  end
-  table.insert(steps, closet:update({ aggro = true }))
-  table.insert(steps, closet:damage(5))
-  for _, step in Postretro.fire(resupply) do table.insert(steps, step) end
-  local reveal = Postretro.defineReaction("closet.timedReveal", { sequence = steps })
+  local reveal = Postretro.defineReaction("closet.timedReveal", {
+    Postretro.wait(800, { interruptible = true }),
+    map(Postretro.getMapEntities("mover", { tag = "closet_door" }), function(m) return m:start() end),
+    map(Postretro.getMapEntities("spawner", { tag = "closet_spawner" }), function(s) return s:fire() end),
+    closet:update({ aggro = true }),
+    closet:damage(5),
+    Postretro.players():grantAmmo("shells.buck", 8),
+  })
 
   local triggerEvents = {}
   for _, t in Postretro.getMapEntities("trigger", { tag = "closet_reveal_plate" }) do
     table.insert(triggerEvents, t:on("enter", { reveal }))
     table.insert(triggerEvents, t:on("exit", { patchUp }))
   end
-  return { reactions = { reveal, patchUp, resupply }, triggerEvents = triggerEvents }
+  return { reactions = { reveal, patchUp }, triggerEvents = triggerEvents }
 end
 ```
 
 A map names its data script with the `data_script` key on `worldspawn`, a path relative to the `.map` file. `prl-build` compiles the script into the `.prl`, and the engine runs that compiled copy, never the file beside it. Rebuild the map after editing its data script. When the script file is newer than the `.prl`, the engine logs an error at level load naming both. It does not notice edits to modules the script imports.
+
+---
+
+## Reaction bodies
+
+`defineReaction` takes a body in one of these shapes:
+
+| Body | Means |
+|------|-------|
+| One step | That step: a member, group or subject-token verb, or a system reaction. |
+| An array of steps | A sequence. Arrays nested in it flatten at any depth, so a member method's steps, `wait(…)` and `fire(…)` go in unspread. |
+| `{ sequence: [...] }` | The same sequence. Nested arrays in the list flatten too. |
+| `(on) => …` | A tracer: it returns any of the shapes above, built from the event's tokens. |
+| `{ progress: … }` and the other keyed bodies | As documented for each. |
+
+An empty array (in Luau, an empty table) is a reaction that does nothing.
+
+An entry that is not a step raises an error when the script runs, naming
+`defineReaction`, and is a type error in TypeScript: a `{ progress }` body, a
+nested `{ sequence }` (list its steps instead), a reaction handle (fire it with
+`fire(r)`), or a step carrying `onComplete`, which only a body may.
+
+### System steps
+
+A system reaction (`playSound`, `flashScreen`, `updateState`, `setGhostAudio`,
+`loadLevel` and the rest of [System reactions](#system-reactions)) is a step
+like any other. It does what the same reaction does as a body, on the machine
+that runs it, so one body can open a door and sound a klaxon:
+
+```typescript
+import { defineReaction, defineStore, getMapEntities } from "postretro";
+import { playSound, updateState } from "postretro/ui";
+
+const vault = defineStore("vault", { opened: { type: "number", default: 0, network: "shared" } });
+const open = defineReaction("vault.open", [
+  getMapEntities("mover", { tag: "vault_door" }).map((door) => door.start()),
+  playSound("sfx/test_tone"),
+  updateState(vault.opened, 1),
+]);
+```
+
+Before a `wait`, a system step sees what the fire supplied: `at: on.emitter`
+resolves, and `audience` routes as it does on a body.
+
+`fire(r)` still has its uses: a beat several reactions share, one a brush KVP
+names, or one a TypeScript and a Luau script must agree on. A reaction that
+only wraps one effect so a fire list can run it beside others is no longer
+needed; put the effect in the body.
+
+### Steps after a `wait`
+
+A `wait` changes when a step happens, never who sees or hears it.
+
+- A step after a `wait` presents to the audience the same step reaches before
+  the wait. A step routed to a player who has left presents nowhere.
+- Steps that change shared state (member and group verbs, `setState` on a
+  replicated slot, `loadLevel`, `restartLevel`, sentiment, `setGhostAudio`)
+  apply on the host only and reach clients by replication, after a `wait` as
+  before one.
+- Steps that touch only one machine (sounds, flashes, shakes, rumble,
+  vignettes, dialogs and menus, cell and text edits, `setState` on a slot
+  that does not replicate) land on each machine the reaction fired on:
+  - `levelLoad` runs on every machine. Its waits count on the host's
+    timeline, so each connected machine lands them when the host does. A
+    player who joins after a step was due skips its sounds and screen effects
+    but still gets its dialogs, text and local state.
+  - A crossing over shared slots fires on every machine, and each counts its
+    waits on its own clock.
+  - A crossing over your own, owner-private or local slots, a movement event
+    and a UI press fire on your machine for your player only, and land there.
+    A step that would change shared state from such a tail is dropped on a
+    client, with one warning per reaction naming the first dropped step.
+  - Triggers, teleports, per-player events, movers, NPCs and deaths fire on
+    the host; their tails park there, and their landings route as above.
+- `fire(r)` after a `wait` runs `r` on the same terms, and `r`'s own waits
+  count on the same clock.
+- A `wait(ms, { interruptible: true })` is cancelled by its trigger's Exit on
+  the host; elsewhere it lands as a plain wait.
+- Subject tokens, `on.emitter`, dispatch inputs and token audiences
+  (`on.activators`, `on.trigger`, `on.player`) are gone after a `wait`. A
+  reaction using one there is dropped when the level installs, with an error
+  naming it. A literal audience such as `"everyone"` survives the wait.
 
 ---
 
@@ -1960,7 +2045,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 - A static light whose origin is inside solid geometry is dropped at compile time (the compiler warns, naming the entity), so it has no runtime presence and never appears in `"light"` results.
 - Call it in a level's data script, during module evaluation or in `setupLevel`. In a mod start script it raises an error naming the call, because no level exists yet.
 - An unknown kind is an error. NPCs and players are not members; use `npcs()` and `players()`.
-- Member methods return step arrays: spread them into a `sequence` (`...door.start()`), or use one as a whole `sequence`.
+- Member methods return step arrays. List them in an array body or a `sequence` as they are; nested arrays flatten, so no spread is needed (see [Reaction bodies](#reaction-bodies)).
 
 ### npcs and players
 
@@ -1973,7 +2058,7 @@ players();                    // every player
 - `npcs()` reaches brain-driven characters that are not players, friendly or hostile alike. `update(fields)` applies a partial update to each NPC's state; its one field is `aggro: boolean`, and spawned NPCs arrive with it set. `damage(amount)` damages each NPC.
 - `players()` reaches every player bound to a seat. A player whose connection is in a disconnect hold is skipped until they reclaim their seat. In single player it reaches you.
 - A group has no members and no length. `npcs().length` and `npcs().map(…)` are type errors in TypeScript; `#g`, `g[1]` and `g.length` raise in Luau.
-- Each verb returns one descriptor. Use it as a reaction body, or put it — unspread — in a `sequence`, before or after a `wait`. It resolves when its step runs, so `[...wait(800), npcs().damage(5)]` damages the NPCs alive when the wait ends. A group with no matches does nothing.
+- Each verb returns one descriptor. Use it as a reaction body, or put it — unspread — in a `sequence`, before or after a `wait`. It resolves when its step runs, so `[wait(800), npcs().damage(5)]` damages the NPCs alive when the wait ends. A group with no matches does nothing.
 - Groups resolve in the same order on every run with the same inputs.
 - **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing above debug, because every machine runs the same reactions and the host's results replicate. Member steps in the same reaction still run on the client.
 - **A `wait` tail runs once per activating player.** Each player's fire parks its own instance of the reaction, so on a volume that is not `once`, a group command after a `wait` runs once for every player who fired the trigger.
@@ -2663,8 +2748,10 @@ System reactions are the HUD-dynamics half of the reaction surface.
 Unlike the tag-targeted primitives above, they carry **no `tag`**: they touch no
 entities. Instead each enqueues a typed engine command — audio, force feedback, a
 screen flash, or a UI-stack push/pop. The SDK exposes them as pure body builders
-that pair with `defineReaction`; the builder returns a `PrimitiveReactionDescriptor`
-and has no FFI side effect (the boundary is the `return`). Optional arguments are
+that pair with `defineReaction`; the builder returns a system reaction step
+and has no FFI side effect (the boundary is the `return`). Each is a whole body
+on its own, or a step in an array body or `sequence`, unspread, before or after
+a `wait` (see [Reaction bodies](#reaction-bodies)). Optional arguments are
 omitted from the emitted `args` entirely when not supplied — they are never sent as
 `undefined`/`nil`.
 
@@ -2683,7 +2770,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. |
 | `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
-| `setGhostAudio({ volume?, highPassHz?, lowPassHz?, drive?, periodMs? })` | `{ primitive: "setGhostAudio", args: { volume?, highPassHz?, lowPassHz?, drive?, periodMs? } }` | Changes the mod-wide Ghost bus mix. Import it from `postretro/audio` (`require("postretro/audio")` in Luau), not from the root module. Names no target, so pass it whole to `defineReaction`. Each named field ramps on its own over `periodMs` (default 0); at least one of `volume`, `highPassHz`, `lowPassHz` or `drive` is required. See [ghost-links.md](ghost-links.md). |
+| `setGhostAudio({ volume?, highPassHz?, lowPassHz?, drive?, periodMs? })` | `{ primitive: "setGhostAudio", args: { volume?, highPassHz?, lowPassHz?, drive?, periodMs? } }` | Changes the mod-wide Ghost bus mix. Import it from `postretro/audio` (`require("postretro/audio")` in Luau), not from the root module. Names no target: a whole body or a step. Each named field ramps on its own over `periodMs` (default 0); at least one of `volume`, `highPassHz`, `lowPassHz` or `drive` is required. See [ghost-links.md](ghost-links.md). |
 | `adjustSentiment(from, to, delta)` | `{ primitive: "adjustSentiment", args: { from, to, delta } }` | Adds `delta` to the live directional `from` → `to` relationship, starting from the authored baseline when unchanged. Negative deltas degrade it; positive deltas bond it. |
 | `updateState(ref, value)` | `{ primitive: "setState", args: { slot: ref.slot, value } }` | Writes a global slot at the game-logic stage. Per-owner slots reject this legacy path. Literals use the normal readonly-gated coercion and range path. A `RuntimeValue` can read known projectable Number/Boolean slots, including readonly slots; its Number/Boolean output target must be writable. Unknown/nonprojectable inputs, readonly targets, and type-mismatched IR reject before firing. |
 | `appendText(ref, text)` | `{ primitive: "appendText", args: { slot: ref.slot, text } }` | Appends `text` to the current string value of a writable String state reference. |
@@ -2700,7 +2787,7 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 | Trigger enter or exit | Everyone | The players who activated that edge |
 | Teleport | Everyone | The player who teleported |
 | Per-player event | That player | That player |
-| Host-only AI cues, death, movers, kill progress, follow-ups and timed landings | Everyone | Host only |
+| Host-only AI cues, death, movers, kill progress and follow-ups | Everyone | Host only |
 | Each-machine level load, local crossing, movement, weapon or AI activate/observer presentation | This machine | This machine |
 
 `audience: "everyone"` reaches every participating player. In a trigger callback,
@@ -2729,7 +2816,9 @@ const click = defineReaction("plate.click", (on: TriggerEventParams) =>
 
 A named `fire` or `onComplete` follow-up has no activator/player/occupant token.
 Register its own default-audience or `"everyone"` reaction instead of forwarding
-a source-token reaction. Timed landings likewise run without those tokens.
+a source-token reaction. A step after a `wait` presents to the audience the same
+step reaches before it, but cannot name a source token; see
+[Steps after a `wait`](#steps-after-a-wait).
 The TypeScript surface and level install checks reject unsupported token sources.
 `"everyone"` works from any source; each-machine sources still present locally,
 so they do not multiply a cue across the network.
@@ -2947,19 +3036,16 @@ import { playSound } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
 import { leveling } from "./leveling";
 
-const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) =>
+const levelUp = defineReaction("leveling.levelUp", (on: PlayerEventParams) => [
   on.player.addSlot(leveling.level, 1),
-);
-const fanfare = defineReaction("leveling.fanfare", playSound("sfx/test_tone"));
+  playSound("sfx/test_tone"), // the fanfare, on that player's machine
+]);
 
 export function setupLevel() {
   return {
-    reactions: [levelUp, fanfare],
+    reactions: [levelUp],
     playerEvents: [
-      players().on(becomes(read(progression.xp).ge(100).and(read(leveling.level).lt(2))), [
-        levelUp,
-        fanfare,
-      ]),
+      players().on(becomes(read(progression.xp).ge(100).and(read(leveling.level).lt(2))), [levelUp]),
     ],
   };
 }
@@ -2976,7 +3062,7 @@ export function setupLevel() {
   inside a fired reaction is rejected at load; use `byPlayer(on.player)`. Both
   forms work only in reactions a player event fires, and only before any `wait`.
 - **Presentation plays on that player's machine.** `playSound`, `rumble`,
-  `flashScreen`, `vignette` and `screenShake` in the fire list play only for the
+  `flashScreen`, `vignette` and `screenShake` in a fired body play only for the
   player the event is about, on their own machine. A machine-local effect that
   cannot be sent to another player — a UI-stack verb, a text edit, or `setState`
   on a slot without `network` — is rejected at load.

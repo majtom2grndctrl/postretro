@@ -675,20 +675,13 @@ fn closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_e
     let level = Level::new();
     let scripting = Scripting::new(&level.ctx);
     let (manifest, _) = scripting.run("closet-reveal.ts");
-    assert_eq!(manifest.reactions.len(), 5, "every reaction parses");
+    assert_eq!(manifest.reactions.len(), 3, "every reaction parses");
     let capture = LogCapture::start();
     let table = install(&level, &scripting, manifest);
-    // The one expected note: the alarm write is a `fire` step, so it drains at
-    // the frame end rather than inside the trigger's tick.
     let loud: Vec<_> = capture
         .records()
         .into_iter()
         .filter(|record| record.level <= log::Level::Warn)
-        .filter(|record| {
-            !record
-                .message
-                .contains("buries consequential work behind onComplete `closet.raiseAlarm`")
-        })
         .collect();
     assert!(loud.is_empty(), "the example installs cleanly: {loud:?}");
 
@@ -738,6 +731,17 @@ fn closet_reveal_surface_example_rouses_placed_and_spawned_npcs_and_resupplies_e
         scripting.scheduler.pending_len(),
         1,
         "the reveal parks on the wait"
+    );
+    // The alarm write, a system step before the wait, lands on the press.
+    assert_eq!(
+        level
+            .ctx
+            .slot_table
+            .borrow()
+            .get("closetReveal.alarm")
+            .and_then(|record| record.value.clone()),
+        Some(postretro_entities::SlotValue::Number(1.0)),
+        "the alarm write lands before the wait"
     );
     // Nothing past the wait has run yet.
     assert!(!level.door_started());
@@ -808,7 +812,7 @@ fn closet_reveal_twins_emit_byte_identical_wire_data() {
     assert_eq!(ts_manifest.reactions, luau_manifest.reactions);
     assert_eq!(ts_manifest.trigger_events, luau_manifest.trigger_events);
     assert_eq!(ts_manifest.crossings, luau_manifest.crossings);
-    assert_eq!(ts_manifest.reactions.len(), 5);
+    assert_eq!(ts_manifest.reactions.len(), 3);
     assert_eq!(
         ts_manifest.trigger_events.len(),
         2,

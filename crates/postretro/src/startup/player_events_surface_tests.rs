@@ -107,7 +107,7 @@ fn player_events_twins_emit_byte_identical_wire_data() {
     assert_eq!(ts_manifest.reactions, luau_manifest.reactions);
     assert_eq!(ts_manifest.player_events, luau_manifest.player_events);
     assert_eq!(ts_manifest.crossings, luau_manifest.crossings);
-    assert_eq!(ts_manifest.reactions.len(), 9);
+    assert_eq!(ts_manifest.reactions.len(), 4);
     assert_eq!(
         ts_manifest.crossings.len(),
         1,
@@ -122,20 +122,8 @@ fn player_events_twins_emit_byte_identical_wire_data() {
     assert_eq!(
         edges,
         vec![
-            (
-                PlayerEventEdge::Becomes,
-                vec![
-                    "leveling.levelUp",
-                    "leveling.recordLevelUp",
-                    "leveling.fanfare",
-                    "leveling.goldFlash",
-                    "leveling.shake"
-                ]
-            ),
-            (
-                PlayerEventEdge::Becomes,
-                vec!["heat.scald", "heat.scaldHiss"]
-            ),
+            (PlayerEventEdge::Becomes, vec!["leveling.levelUp"]),
+            (PlayerEventEdge::Becomes, vec!["heat.scald"]),
             (PlayerEventEdge::Ceases, vec!["heat.cooled"]),
         ]
     );
@@ -157,13 +145,30 @@ fn player_events_twins_emit_byte_identical_wire_data() {
             .find(|reaction| reaction["name"] == name)
             .unwrap_or_else(|| panic!("missing reaction {name}"))
     };
+    // One body: the host's writes, then the presentation, as system steps.
+    let level_up = reaction("leveling.levelUp")["sequence"]
+        .as_array()
+        .expect("the level-up is one sequence body");
     assert_eq!(
-        reaction("leveling.levelUp")["target"],
+        level_up
+            .iter()
+            .map(|step| step["primitive"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "addSlot",
+            "setState",
+            "playSound",
+            "flashScreen",
+            "screenShake"
+        ]
+    );
+    assert_eq!(
+        level_up[0]["target"],
         json!("@player"),
         "on.player is a subject token"
     );
     assert_eq!(
-        reaction("leveling.recordLevelUp")["args"]["value"],
+        level_up[1]["args"]["value"],
         json!({ "op": "input", "name": "progression.xp", "owner": "@player" }),
         "updateState lowers the fluent read to IR"
     );

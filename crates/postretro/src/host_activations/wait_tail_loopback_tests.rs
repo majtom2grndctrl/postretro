@@ -776,3 +776,91 @@ fn s40_own_state_tail_on_a_networked_light_is_captured() {
     );
     assert!(own_state_warnings(&capture).is_empty());
 }
+
+/// The shipped `ghost-links` level script's reactions, evaluated in one
+/// runtime with no map: member lists come back empty, so only the bodies'
+/// group, control and system steps remain.
+fn ghost_links_reactions(luau: bool) -> Vec<NamedReaction> {
+    use postretro_level_format::data_script::DataScriptSection;
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+
+    let scripts =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/scripts");
+    let entry = scripts.join(if luau {
+        "ghost-links.luau"
+    } else {
+        "ghost-links.ts"
+    });
+    let bundled = if luau {
+        std::fs::read_to_string(&entry).expect("the Luau twin reads")
+    } else {
+        postretro_script_compiler::bundle_entry(&entry).expect("the TS twin bundles")
+    };
+    let ctx = ScriptCtx::new();
+    let mut primitives = PrimitiveRegistry::new();
+    crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
+    let runtime = ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx)
+        .expect("script runtime constructs");
+    runtime
+        .run_data_script(
+            &DataScriptSection {
+                compiled_bytes: bundled.into_bytes(),
+                source_path: entry.to_string_lossy().into_owned(),
+            },
+            &scripts,
+        )
+        .reactions
+        .into_iter()
+        .filter(|reaction| ["levelLoad", "closet.a1"].contains(&reaction.name.as_str()))
+        .collect()
+}
+
+// AC 20: the ghost-links north-closet klaxon, authored after the timer's
+// `wait(15000)`, sounds once on the host and once on the client connected at
+// 15 s, on the host's timeline; a client that joins afterwards never hears
+// it. No machine refuses the tail's enrollment.
+#[test]
+fn ghost_links_klaxon_plays_once_per_connected_machine_and_never_for_a_late_joiner() {
+    let reactions = ghost_links_reactions(false);
+    assert_eq!(reactions.len(), 2, "levelLoad and closet.a1 install");
+    assert_eq!(reactions, ghost_links_reactions(true), "the twins agree");
+    // `closet.a1` wakes its knights through the npc group verb.
+    set_install_hook(|_, scripting, _| {
+        postretro_sim::scripting::reactions::registry::register_npc_state_reaction_primitives(
+            &mut scripting.reaction_registry,
+        );
+    });
+    let capture = LogCapture::start();
+    let mut h = Harness::with_shared_reactions(fixture_world(), reactions);
+    assert_eq!(pending(&h.host), 1, "the host parks the timer's tail");
+    assert_eq!(pending(&h.peers[0].app), 1, "the client parks its own copy");
+
+    // 15 s is 900 ticks; nothing sounds a tick early.
+    h.advance(898);
+    assert_eq!(plays(&h.host_commands, "sfx/test_tone"), 0);
+    assert_eq!(plays(&h.peers[0].commands, "sfx/test_tone"), 0);
+    h.advance(60);
+    assert_eq!(
+        plays(&h.host_commands, "sfx/test_tone"),
+        1,
+        "the host hears it once"
+    );
+    assert_eq!(
+        plays(&h.peers[0].commands, "sfx/test_tone"),
+        1,
+        "the connected client hears it once, from its own landing"
+    );
+
+    h.connect_late();
+    h.advance(120);
+    assert_eq!(
+        plays(&h.peers[1].commands, "sfx/test_tone"),
+        0,
+        "the late joiner never hears it"
+    );
+    assert_eq!(plays(&h.host_commands, "sfx/test_tone"), 1);
+    assert_eq!(plays(&h.peers[0].commands, "sfx/test_tone"), 1);
+    capture.assert_not_logged(log::Level::Warn, "enrollment refused");
+    assert_tail_quiet(&capture);
+}

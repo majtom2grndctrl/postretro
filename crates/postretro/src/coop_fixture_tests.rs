@@ -528,7 +528,7 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
         e.descriptor
             .fire
             .iter()
-            .any(|name| name == "leveling.shake")
+            .any(|name| name == "leveling.levelUp")
     }));
     let mut ts_bindings =
         postretro_sim::trigger_bindings::TriggerBindingTable::build_with_script_ctx(
@@ -546,7 +546,12 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
     luau_bindings.install_manifest_events(&luau_ctx.registry.borrow(), &b, &luau_ctx);
     assert_eq!(ts_bindings.bound_edges(), luau_bindings.bound_edges());
     assert_eq!(ts_bindings.bound_edges().len(), 3);
-    assert!(a.reactions.iter().any(|r| r.name == "leveling.shake"));
+    for merged in ["leveling.levelUp", "heat.scald"] {
+        assert!(
+            a.reactions.iter().any(|r| r.name == merged),
+            "{merged}: a player event's tracer array installs"
+        );
+    }
     let registry = ts_ctx.registry.borrow();
     for (tag, kind) in [
         (

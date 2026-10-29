@@ -283,7 +283,7 @@ bus uses the floor values.
 
 `getMapEntities("ghostLink", { tag })` returns the map's links carrying that
 tag, in map order. Each member has `id`, `position` and `tags`, and these
-methods, each returning steps to spread into a reaction's `sequence`:
+methods, each returning steps to list in a reaction's body:
 
 | Method | What it does |
 |--------|--------------|
@@ -295,8 +295,8 @@ methods, each returning steps to spread into a reaction's `sequence`:
 In Luau, call them as `l:arm()`, `l:setMembers({ ... })` and so on.
 
 The ghost bus mix changes with `setGhostAudio`, from the `postretro/audio`
-module. It names no target, so it is a whole reaction body, like
-`setSentiment`:
+module. It names no target: it is a step beside the link steps, or a whole
+reaction body on its own, like `setSentiment`:
 
 ```typescript
 import { setGhostAudio } from "postretro/audio";
@@ -322,7 +322,10 @@ and drops that step. A non-finite value (NaN or Infinity) in any argument is
 caught earlier: it warns when the level loads and drops the whole reaction, so
 every other step in that reaction is lost too.
 
-### A reveal, a fight and a swell
+### A reveal and a fight
+
+An array is a reaction body, and arrays nested in it flatten, so each
+member's steps and the swell go in one list without spreading.
 
 ```typescript
 import { defineReaction, getMapEntities } from "postretro";
@@ -330,49 +333,48 @@ import { setGhostAudio } from "postretro/audio";
 
 export function setupLevel() {
   const echoes = getMapEntities("ghostLink", { tag: "vault_echo" }); // map order
-  const reveal = defineReaction("echo.reveal", {
-    sequence: [
-      ...echoes.flatMap((l) => l.arm()),
-      ...echoes.flatMap((l) => l.setColorFilter({ tint: [1.0, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
-    ],
-  });
-  const fight = defineReaction("echo.fight", { sequence: echoes.flatMap((l) => l.setMembers({ projectiles: false })) });
-  const swell = defineReaction("echo.swell", setGhostAudio({ volume: 0.9, lowPassHz: 5000, periodMs: 1500 }));
+  const reveal = defineReaction("echo.reveal", [
+    echoes.map((l) => l.arm()),
+    echoes.map((l) => l.setColorFilter({ tint: [1.0, 0.4, 0.3], opacity: 0.6, periodMs: 1500 })),
+    setGhostAudio({ volume: 0.9, lowPassHz: 5000, periodMs: 1500 }),
+  ]);
+  const fight = defineReaction("echo.fight", echoes.map((l) => l.setMembers({ projectiles: false })));
   return {
-    reactions: [reveal, swell, fight],
-    triggerEvents: getMapEntities("trigger", { tag: "echo_plate" }).map((t) => t.on("enter", [reveal, swell])),
+    reactions: [reveal, fight],
+    triggerEvents: getMapEntities("trigger", { tag: "echo_plate" }).map((t) => t.on("enter", [reveal])),
   };
 }
 ```
+
+In Luau, nested tables flatten the same way; mapping over members still needs
+a loop.
 
 ```lua
 local Postretro = require("postretro")
 local Audio = require("postretro/audio")
 
+local function map(members, build)
+  local out = {}
+  for _, member in ipairs(members) do table.insert(out, build(member)) end
+  return out
+end
+
 function setupLevel(_ctx)
   local echoes = Postretro.getMapEntities("ghostLink", { tag = "vault_echo" })
-  local revealSteps = {}
-  for _, l in ipairs(echoes) do
-    for _, step in ipairs(l:arm()) do table.insert(revealSteps, step) end
-  end
-  for _, l in ipairs(echoes) do
-    for _, step in ipairs(l:setColorFilter({ tint = { 1.0, 0.4, 0.3 }, opacity = 0.6, periodMs = 1500 })) do
-      table.insert(revealSteps, step)
-    end
-  end
-  local reveal = Postretro.defineReaction("echo.reveal", { sequence = revealSteps })
-  local fightSteps = {}
-  for _, l in ipairs(echoes) do
-    for _, step in ipairs(l:setMembers({ projectiles = false })) do table.insert(fightSteps, step) end
-  end
-  local fight = Postretro.defineReaction("echo.fight", { sequence = fightSteps })
-  local swell = Postretro.defineReaction("echo.swell",
-    Audio.setGhostAudio({ volume = 0.9, lowPassHz = 5000, periodMs = 1500 }))
+  local reveal = Postretro.defineReaction("echo.reveal", {
+    map(echoes, function(l) return l:arm() end),
+    map(echoes, function(l)
+      return l:setColorFilter({ tint = { 1.0, 0.4, 0.3 }, opacity = 0.6, periodMs = 1500 })
+    end),
+    Audio.setGhostAudio({ volume = 0.9, lowPassHz = 5000, periodMs = 1500 }),
+  })
+  local fight = Postretro.defineReaction("echo.fight",
+    map(echoes, function(l) return l:setMembers({ projectiles = false }) end))
   local triggerEvents = {}
   for _, t in ipairs(Postretro.getMapEntities("trigger", { tag = "echo_plate" })) do
-    table.insert(triggerEvents, t:on("enter", { reveal, swell }))
+    table.insert(triggerEvents, t:on("enter", { reveal }))
   end
-  return { reactions = { reveal, swell, fight }, triggerEvents = triggerEvents }
+  return { reactions = { reveal, fight }, triggerEvents = triggerEvents }
 end
 ```
 
@@ -439,7 +441,9 @@ copy B's. Until its cue, each closet stays shut and its monsters asleep.
 - **Copy A's north closet** opens fifteen seconds after the level loads, or
   as soon as a player walks up to the barrier, whichever comes first. The
   count starts at load, so a host still waiting for a partner may meet these
-  knights alone.
+  knights alone. At fifteen seconds a klaxon sounds once for everyone
+  connected then, on the host's timeline; a player who joins later never
+  hears it.
 - **The split** is the first press of copy A's purple pad. It sends whoever
   stands on that pad alone into copy B. The crossing opens copy A's south
   closet at once, and copy B's closets three seconds later. The split fires

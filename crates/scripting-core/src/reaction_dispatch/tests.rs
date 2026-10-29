@@ -1866,6 +1866,31 @@ fn wait_and_fire_survive_sequence_validation_but_unknown_action_is_dropped() {
     assert_eq!(surviving[0].name, "timedReveal");
 }
 
+// Regression: an `on.player` step names an entity-targeted reaction primitive
+// (`addSlot`, `applyDamage`) the id-step registry does not hold, as the other
+// subject tokens do, so a player event's tracer array installs.
+#[test]
+fn validate_sequence_primitives_admits_event_player_steps() {
+    let seq_reg = SequencedPrimitiveRegistry::new();
+    let reactions = vec![sequence_reaction(
+        "leveling.levelUp",
+        vec![
+            SequenceStep {
+                id: postretro_entities::SequenceTarget::EventPlayer,
+                primitive: "addSlot".into(),
+                args: serde_json::json!({ "slot": "leveling.level", "delta": 1 }),
+            },
+            SequenceStep {
+                id: postretro_entities::SequenceTarget::System,
+                primitive: "playSound".into(),
+                args: serde_json::json!({ "sound": "sfx/test_tone" }),
+            },
+        ],
+    )];
+    let surviving = validate_sequence_primitives(reactions, &seq_reg);
+    assert_eq!(surviving.len(), 1, "the on.player step is not an id step");
+}
+
 // O34: firing a named body that contains a wait runs only up to that wait,
 // including at hop depth >= 1 inside a deferred batch. `S = [x, fire(R)]`,
 // `R = [alarm, wait(800), moverStart]`; firing S dispatches R via the

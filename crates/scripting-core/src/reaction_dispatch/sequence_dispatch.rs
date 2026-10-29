@@ -188,6 +188,7 @@ fn sequence_primitives_are_valid(
                 | SequenceTarget::Activators
                 | SequenceTarget::FiredTrigger
                 | SequenceTarget::FiredTeleporter
+                | SequenceTarget::EventPlayer
         ) {
             continue;
         }

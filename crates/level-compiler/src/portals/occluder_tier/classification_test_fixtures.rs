@@ -1,6 +1,6 @@
 // Harness for the occluder classification rows: the first pass with its
-// exterior flood, the two-tier build, and point location to occluder-tier
-// leaves. It lives on the prl-build side because the library target compiles
+// exterior flood, the two-tier build, and point location to its runtime
+// cells. It lives on the prl-build side because the library target compiles
 // `partition` without portals, the exterior flood or the map parser.
 // See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
 
@@ -16,11 +16,11 @@ use crate::partition::occluder_classify::{
     OccluderClassification, OccluderVerdict, OpenSpace, classify_occluders,
 };
 use crate::partition::{
-    BspTree, OccluderTier, TierRole, build_bsp_from_brushes, build_bsp_with_occluder_tier,
-    find_leaf_for_point,
+    BspTree, CellTree, OccluderTier, TierRole, build_bsp_from_brushes,
+    build_bsp_with_occluder_tier, find_leaf_for_point,
 };
-use crate::portals::generate_portals;
-use crate::portals::occluder_tier::generate_occluder_tier_portals;
+use crate::portals::occluder_tier::{generate_runtime_portals, interior_pockets};
+use crate::portals::{Portal, generate_portals};
 use crate::visibility::find_exterior_leaves;
 
 /// The first pass the classifier reads: today's tree of every brush and its
@@ -53,12 +53,13 @@ pub(crate) fn classification(brushes: &[BrushVolume]) -> OccluderClassification 
     FirstPass::of(brushes).classification(brushes)
 }
 
-/// The two-tier tree on given tier roles, with its exterior flood. An
-/// occluder-tier leaf stands in for the runtime cell it becomes.
+/// The two-tier tree on given tier roles, with its exterior flood and the
+/// runtime cells it groups into.
 pub(crate) struct TierBuild {
     pub(crate) tree: BspTree,
     pub(crate) tier: OccluderTier,
     pub(crate) exterior: HashSet<usize>,
+    pub(crate) cells: CellTree,
 }
 
 impl TierBuild {
@@ -67,10 +68,17 @@ impl TierBuild {
             .expect("two-tier tree builds");
         let portals = generate_portals(&tree);
         let exterior = find_exterior_leaves(&tree, &portals);
+        let cells = CellTree::build(
+            &tree,
+            &tier,
+            &exterior,
+            &interior_pockets(&tree, &tier, &exterior),
+        );
         Self {
             tree,
             tier,
             exterior,
+            cells,
         }
     }
 
@@ -79,32 +87,25 @@ impl TierBuild {
         Self::new(brushes, &classification(brushes).tier_roles())
     }
 
-    /// Occluder-tier leaves holding interior space, and tier portals: the
-    /// empty cells and portals a brush that occludes nothing leaves as they
-    /// were.
-    pub(crate) fn interior_cells_and_portals(&self) -> (usize, usize) {
-        let interior = self
-            .tier
-            .leaves
-            .iter()
-            .filter(|leaf| {
-                leaf.leaf_range
-                    .clone()
-                    .any(|l| !self.tree.leaves[l].is_solid && !self.exterior.contains(&l))
-            })
-            .count();
-        let portals = generate_occluder_tier_portals(&self.tree, &self.tier, &self.exterior);
-        (interior, portals.len())
+    /// The runtime portals between the cells.
+    pub(crate) fn portals(&self) -> Vec<Portal> {
+        generate_runtime_portals(&self.tree, &self.tier, &self.cells)
     }
 
-    /// Occluder-tier leaf holding `point`, which must lie in interior space.
+    /// Interior cells and runtime portals: the empty cells and portals a
+    /// brush that occludes nothing leaves as they were.
+    pub(crate) fn interior_cells_and_portals(&self) -> (usize, usize) {
+        (self.cells.interior_cell_count(), self.portals().len())
+    }
+
+    /// Cell holding `point`, which must lie in interior space.
     pub(crate) fn cell_at(&self, point: DVec3) -> usize {
         let leaf = find_leaf_for_point(&self.tree, point);
         assert!(
             !self.tree.leaves[leaf].is_solid && !self.exterior.contains(&leaf),
             "point {point} is not in interior space"
         );
-        self.tier.leaf_tier_leaf[leaf]
+        self.cells.leaf_cell[leaf]
     }
 }
 

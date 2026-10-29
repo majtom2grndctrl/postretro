@@ -242,11 +242,7 @@ fn strip_facade_windows_join_the_cell_behind_and_cross_through_one_portal_each()
     let (x0, z0, z1) = (15.0, 20.0, 20.0 + 0.3);
     let windows = fixtures::facade_windows(31.0, 15.0);
     let behind = build.cell_at(glam::DVec3::new(30.5, 1.5, 25.0));
-    let tier_portals = crate::portals::occluder_tier::generate_occluder_tier_portals(
-        &build.tree,
-        &build.tier,
-        &build.exterior,
-    );
+    let tier_portals = build.portals();
     let on_facade: Vec<glam::DVec3> = tier_portals
         .iter()
         .filter(|portal| {

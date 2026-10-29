@@ -8,7 +8,7 @@ use crate::partition::{BspChild, BspTree};
 
 mod occluder_tier;
 
-pub use occluder_tier::{TierPortal, generate_occluder_tier_portals, runtime_portals};
+pub use occluder_tier::{generate_runtime_portals, interior_pockets};
 
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
@@ -20,8 +20,8 @@ pub(crate) const PORTAL_EPSILON: f64 = 0.01;
 pub(crate) const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
-/// In the runtime set (`runtime_portals`) the endpoints are cell ids, under
-/// the leaf-era field names the PRL format keeps.
+/// In the runtime set (`generate_runtime_portals`) the endpoints are cell
+/// ids, under the leaf-era field names the PRL format keeps.
 pub struct Portal {
     /// Convex polygon in engine coordinates.
     pub polygon: Vec<DVec3>,

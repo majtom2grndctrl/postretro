@@ -1570,7 +1570,7 @@ fn run_after_parsing(
         Some(
             cell_residency_bake::teleport_routes::TeleportResidencyInput {
                 section: &map_data.teleporters,
-                tree: &runtime.cells.tree,
+                hulls: &runtime.cells.hulls,
             },
         ),
         stage_cache.as_ref(),
@@ -1690,8 +1690,11 @@ fn run_after_parsing(
     let map_entities_section = pack::encode_map_entities(&map_data.map_entities);
     let fog_volumes_section =
         pack::encode_fog_volumes(&map_data.fog_volumes, map_data.fog_pixel_scale);
-    let fog_cell_masks_section =
-        fog_cell_masks::bake_fog_cell_masks(&runtime.cells.tree, &map_data.fog_volumes);
+    let fog_cell_masks_section = fog_cell_masks::bake_fog_cell_masks(
+        &runtime.cells.tree,
+        &runtime.cells.hulls,
+        &map_data.fog_volumes,
+    );
 
     let (animated_chunk_lights, _) = animated_baked_lights.to_parallel_vecs();
 

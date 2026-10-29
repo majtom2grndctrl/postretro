@@ -83,20 +83,6 @@ pub struct OccluderTier {
     pub leaf_tier_leaf: Vec<usize>,
 }
 
-impl OccluderTier {
-    /// Tier leaf owning a child the tier descent stopped at: a tier leaf's
-    /// sub-tree root. Every leaf under that root maps to the same tier leaf.
-    pub fn tier_leaf_of(&self, tree: &BspTree, child: &BspChild) -> usize {
-        let mut child = child;
-        loop {
-            match child {
-                BspChild::Leaf(leaf) => return self.leaf_tier_leaf[*leaf],
-                BspChild::Node(node) => child = &tree.nodes[*node].front,
-            }
-        }
-    }
-}
-
 /// What splits inside the occluder tier, in rank order: each brush's role,
 /// the shadow prisms, the doors, and the cell-size cap.
 #[derive(Clone, Copy)]

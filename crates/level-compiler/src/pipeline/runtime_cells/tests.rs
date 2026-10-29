@@ -14,7 +14,7 @@ use crate::affinity_grid::{light_portal_reach, portal_adjacency};
 use crate::cell_residency_bake::teleport_routes::{TeleportResidencyInput, build_routes};
 use crate::map_data::MapLight;
 use crate::partition::occluder_classify::{OccluderVerdict, see_over_override};
-use crate::partition::{BspChild, CellTree, OccluderTier, TierLeaf, find_leaf_for_point};
+use crate::partition::{BspChild, CellHull, CellTree, OccluderTier, TierLeaf, find_leaf_for_point};
 use crate::portals;
 
 // ---- fixtures ----
@@ -118,7 +118,7 @@ fn assert_view_classifies_like_the_full_tree(cells: &Cells) {
 // ---- cell view ----
 
 #[test]
-fn cell_tree_groups_each_occluder_tier_leaf_into_one_interior_cell() {
+fn cell_tree_groups_each_interior_pocket_of_a_tier_leaf_into_one_cell() {
     let cells = Cells::of(&occlusion_hall());
     assert_view_classifies_like_the_full_tree(&cells);
     assert_portals_join_interior_cells(&cells);
@@ -134,7 +134,7 @@ fn cell_tree_groups_each_occluder_tier_leaf_into_one_interior_cell() {
                 "solid and exterior stay alone"
             );
         } else {
-            assert_eq!(Some(cell), view.tier_leaf_cell[tier.leaf_tier_leaf[leaf]]);
+            assert!(view.tier_leaf_cells[tier.leaf_tier_leaf[leaf]].contains(&cell));
             let bounds = &cells.cell_tree().leaves[cell].bounds;
             assert!(bounds.min.cmple(entry.bounds.min).all());
             assert!(bounds.max.cmpge(entry.bounds.max).all());
@@ -318,7 +318,7 @@ fn seamless_teleporter_across_several_leaves_couples_each_cell_once() {
     let routes = build_routes(
         TeleportResidencyInput {
             section: teleporters,
-            tree: cells.cell_tree(),
+            hulls: &cells.runtime.cells.hulls,
         },
         &cells_section,
         &world,
@@ -333,7 +333,7 @@ fn seamless_teleporter_across_several_leaves_couples_each_cell_once() {
         build_routes(
             TeleportResidencyInput {
                 section: teleporters,
-                tree: cells.full_tree(),
+                hulls: &CellHull::per_leaf(cells.full_tree()),
             },
             &cells_section,
             &world,
@@ -369,9 +369,13 @@ fn multi_leaf_cell_holds_every_member_leaf_in_each_consumer() {
 
     // Fog: a volume touching only some member leaves sets the cell's bit.
     let fog = &cells.map_data.fog_volumes;
-    let leaf_masks = crate::fog_cell_masks::bake_fog_cell_masks(cells.full_tree(), fog)
-        .expect("fog masks")
-        .masks;
+    let leaf_masks = crate::fog_cell_masks::bake_fog_cell_masks(
+        cells.full_tree(),
+        &CellHull::per_leaf(cells.full_tree()),
+        fog,
+    )
+    .expect("fog masks")
+    .masks;
     let fogged = members
         .iter()
         .filter(|&&leaf| leaf_masks[leaf] & 1 != 0)
@@ -380,9 +384,13 @@ fn multi_leaf_cell_holds_every_member_leaf_in_each_consumer() {
         fogged > 0 && fogged < members.len(),
         "fog touches some members only"
     );
-    let cell_masks = crate::fog_cell_masks::bake_fog_cell_masks(cells.cell_tree(), fog)
-        .expect("fog masks")
-        .masks;
+    let cell_masks = crate::fog_cell_masks::bake_fog_cell_masks(
+        cells.cell_tree(),
+        &cells.runtime.cells.hulls,
+        fog,
+    )
+    .expect("fog masks")
+    .masks;
     assert_eq!(cell_masks[cell] & 1, 1, "the cell's fog bit is set");
 
     // Bounds enclose every member.
@@ -653,8 +661,8 @@ fn no_runtime_portal_leads_into_solid_or_joins_interior_to_exterior() {
     let slot_leaf = slot.leaf_at([300.0, 238.0, 100.0]);
     let slot_tier_leaf = slot.partition.tier.leaf_tier_leaf[slot_leaf];
     assert!(slot.cell_tree().leaves[slot.cell_at([300.0, 238.0, 100.0])].is_solid);
-    assert_eq!(
-        slot.runtime.cells.tier_leaf_cell[slot_tier_leaf], None,
+    assert!(
+        slot.runtime.cells.tier_leaf_cells[slot_tier_leaf].is_empty(),
         "the filled region gets no interior cell"
     );
     for map in [filled_slot(), plugged_window(), plugged_doorway()] {
@@ -1051,10 +1059,20 @@ fn merge_one_tier_subtree(cells: &Cells) -> OccluderTier {
                 tier_leaves_under(tree, tier, &tree.nodes[*node].front, out);
                 tier_leaves_under(tree, tier, &tree.nodes[*node].back, out);
             }
-            other => out.push(tier.tier_leaf_of(tree, other)),
+            // A tier leaf's sub-tree root: every leaf under it maps to it.
+            other => {
+                let mut child = other;
+                let leaf = loop {
+                    match child {
+                        BspChild::Leaf(leaf) => break *leaf,
+                        BspChild::Node(node) => child = &tree.nodes[*node].front,
+                    }
+                };
+                out.push(tier.leaf_tier_leaf[leaf]);
+            }
         }
     }
-    let interior = |t: &usize| cells.runtime.cells.tier_leaf_cell[*t].is_some();
+    let interior = |t: &usize| !cells.runtime.cells.tier_leaf_cells[*t].is_empty();
     let (node, merged) = (0..tree.nodes.len())
         .filter(|&node| tier.node_is_tier[node])
         .map(|node| {
@@ -1135,15 +1153,19 @@ fn merge_one_tier_subtree(cells: &Cells) -> OccluderTier {
 /// (face cell ids and cell-major order), and the SDF key, which reads only
 /// full-tree solidity.
 #[derive(Debug, PartialEq, Eq)]
-struct StageKeys {
-    cell_visibility: String,
-    cell_residency_set: String,
-    chunk_light_list: String,
-    geometry: [u8; 32],
-    sdf: String,
+pub(super) struct StageKeys {
+    pub(super) cell_visibility: String,
+    pub(super) cell_residency_set: String,
+    pub(super) chunk_light_list: String,
+    pub(super) geometry: [u8; 32],
+    pub(super) sdf: String,
 }
 
-fn stage_keys(cells: &Cells, view: &CellTree, runtime_portals: &[portals::Portal]) -> StageKeys {
+pub(super) fn stage_keys(
+    cells: &Cells,
+    view: &CellTree,
+    runtime_portals: &[portals::Portal],
+) -> StageKeys {
     let geometry = crate::geometry::extract_geometry(
         &cells.partition.result.faces,
         &view.tree,
@@ -1178,7 +1200,7 @@ fn stage_keys(cells: &Cells, view: &CellTree, runtime_portals: &[portals::Portal
             &portals_section,
             &locator,
             &cells.map_data.teleporters,
-            Some(&view.tree),
+            Some(&view.hulls),
         )
         .as_filename(),
         chunk_light_list: crate::chunk_light_list_bake::chunk_light_list_cache_key(

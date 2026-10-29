@@ -184,19 +184,19 @@ pub(crate) struct RuntimeCells {
 }
 
 impl RuntimeCells {
-    /// Group `tree`'s leaves into cells by `tier` and generate the runtime
-    /// portals at the tier's nodes. `exterior_leaves` is the full tree's
-    /// flood over its own portals, `full_tree_portal_count` their number,
-    /// for the log.
+    /// Group `tree`'s leaves into cells, one per connected interior pocket
+    /// of each of `tier`'s leaves, and generate the runtime portals at the
+    /// tier's nodes. `exterior_leaves` is the full tree's flood over its own
+    /// portals, `full_tree_portal_count` their number, for the log.
     pub(crate) fn build(
         tree: &BspTree,
         tier: &OccluderTier,
         exterior_leaves: &HashSet<usize>,
         full_tree_portal_count: usize,
     ) -> Self {
-        let cells = CellTree::build(tree, tier, exterior_leaves);
-        let tier_portals = portals::generate_occluder_tier_portals(tree, tier, exterior_leaves);
-        let portals = portals::runtime_portals(tier_portals, &cells);
+        let pockets = portals::interior_pockets(tree, tier, exterior_leaves);
+        let cells = CellTree::build(tree, tier, exterior_leaves, &pockets);
+        let portals = portals::generate_runtime_portals(tree, tier, &cells);
         let solid = cells
             .tree
             .leaves
@@ -204,11 +204,12 @@ impl RuntimeCells {
             .filter(|cell| cell.is_solid)
             .count();
         log::info!(
-            "[Compiler] Runtime cells: {} occluder-tier leaves; {} cells ({} interior, {} solid, \
-             {} exterior); {} runtime portals; full tree {} leaves, {} portals; cell-size cap \
-             {CELL_SIZE_CAP_M} m, least piece {CAP_MIN_PIECE_FRACTION}, open slice over \
-             {CAP_MIN_OPEN_SLICE_FRACTION}",
+            "[Compiler] Runtime cells: {} occluder-tier leaves ({} holding several interior \
+             pockets); {} cells ({} interior, {} solid, {} exterior); {} runtime portals; full \
+             tree {} leaves, {} portals; cell-size cap {CELL_SIZE_CAP_M} m, least piece \
+             {CAP_MIN_PIECE_FRACTION}, open slice over {CAP_MIN_OPEN_SLICE_FRACTION}",
             tier.leaves.len(),
+            cells.split_tier_leaf_count(),
             cells.tree.leaves.len(),
             cells.interior_cell_count(),
             solid,
@@ -241,3 +242,6 @@ mod leak_tests;
 
 #[cfg(test)]
 mod prism_tests;
+
+#[cfg(test)]
+mod pocket_tests;

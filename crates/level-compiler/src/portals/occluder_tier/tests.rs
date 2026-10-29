@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 use crate::map_data::{BrushPlane, BrushVolume};
 use crate::map_format::MapFormat;
@@ -65,14 +67,15 @@ fn first_pass(brushes: &[BrushVolume]) -> FirstPass {
     }
 }
 
-/// The two-tier tree, its full portal set and exterior flood, and its
-/// occluder-tier portals.
+/// The two-tier tree, its full portal set and exterior flood, its cells and
+/// their occluder-tier portals.
 struct TieredBuild {
     tree: BspTree,
     tier: OccluderTier,
     full_portal_count: usize,
     exterior: HashSet<usize>,
-    tier_portals: Vec<TierPortal>,
+    cells: CellTree,
+    tier_portals: Vec<Portal>,
 }
 
 fn tiered_build(brushes: &[BrushVolume], roles: &[TierRole]) -> TieredBuild {
@@ -80,19 +83,22 @@ fn tiered_build(brushes: &[BrushVolume], roles: &[TierRole]) -> TieredBuild {
         build_bsp_with_occluder_tier(brushes, roles, &[], &[], None).expect("two-tier tree builds");
     let portals = generate_portals(&tree);
     let exterior = find_exterior_leaves(&tree, &portals);
-    let tier_portals = generate_occluder_tier_portals(&tree, &tier, &exterior);
+    let pockets = interior_pockets(&tree, &tier, &exterior);
+    let cells = CellTree::build(&tree, &tier, &exterior, &pockets);
+    let tier_portals = generate_runtime_portals(&tree, &tier, &cells);
     TieredBuild {
         tree,
         tier,
         full_portal_count: portals.len(),
         exterior,
+        cells,
         tier_portals,
     }
 }
 
 impl TieredBuild {
-    fn tier_leaf_at(&self, point: DVec3) -> usize {
-        self.tier.leaf_tier_leaf[find_leaf_for_point(&self.tree, point)]
+    fn cell_at(&self, point: DVec3) -> usize {
+        self.cells.leaf_cell[find_leaf_for_point(&self.tree, point)]
     }
 
     fn is_interior_at(&self, point: DVec3) -> bool {
@@ -100,21 +106,21 @@ impl TieredBuild {
         !self.tree.leaves[leaf].is_solid && !self.exterior.contains(&leaf)
     }
 
-    /// Every tier portal joins two distinct tier leaves, each holding an
-    /// interior leaf, and lies on a tier node's plane.
+    /// Every tier portal joins interior cells of two distinct tier leaves
+    /// and lies on a tier node's plane.
     fn assert_tier_portals_well_formed(&self) {
+        let tier_leaf_of = |cell: usize| {
+            self.cells
+                .tier_leaf_cells
+                .iter()
+                .position(|cells| cells.contains(&cell))
+                .unwrap_or_else(|| panic!("tier portal names cell {cell}, which is not interior"))
+        };
         for portal in &self.tier_portals {
-            assert_ne!(portal.front_tier_leaf, portal.back_tier_leaf);
-            for tier_leaf in [portal.front_tier_leaf, portal.back_tier_leaf] {
-                let range = self.tier.leaves[tier_leaf].leaf_range.clone();
-                assert!(
-                    range
-                        .into_iter()
-                        .any(|leaf| !self.tree.leaves[leaf].is_solid
-                            && !self.exterior.contains(&leaf)),
-                    "tier portal names tier leaf {tier_leaf} with no interior leaf"
-                );
-            }
+            assert_ne!(
+                tier_leaf_of(portal.front_leaf),
+                tier_leaf_of(portal.back_leaf)
+            );
             let on_tier_plane = self.tree.nodes.iter().enumerate().any(|(idx, node)| {
                 self.tier.node_is_tier[idx]
                     && portal
@@ -195,10 +201,7 @@ fn exempt_pillar_adds_no_tier_portal_beside_an_occluding_wall() {
     let below = DVec3::new(20.0, 6.4, 30.0);
     let above = DVec3::new(20.0, 6.6, 30.0);
     assert!(build_with.is_interior_at(below) && build_with.is_interior_at(above));
-    assert_ne!(
-        build_with.tier_leaf_at(below),
-        build_with.tier_leaf_at(above)
-    );
+    assert_ne!(build_with.cell_at(below), build_with.cell_at(above));
 }
 
 /// Engine point of a Quake-unit point in occlusion-test.map.
@@ -323,8 +326,8 @@ fn occlusion_test_wall_top_bounds_occluder_tier_leaves_beyond_the_wall() {
     );
 
     assert_ne!(
-        build.tier_leaf_at(below),
-        build.tier_leaf_at(above),
+        build.cell_at(below),
+        build.cell_at(above),
         "points below and above the wall top beyond it share an occluder-tier leaf"
     );
 }
@@ -405,15 +408,15 @@ fn window_split_below_the_tier_into_pieces_under_the_cull_keeps_its_portal() {
 
     // The posts part the window's fragments into openings each under the
     // cull, so they share one hull.
-    let room = build.tier_leaf_at(DVec3::new(15.5, 2.25, 5.0));
-    let window = build.tier_leaf_at(DVec3::new(15.5, 2.25, (z0 + z1) / 2.0));
+    let room = build.cell_at(DVec3::new(15.5, 2.25, 5.0));
+    let window = build.cell_at(DVec3::new(15.5, 2.25, (z0 + z1) / 2.0));
     assert_ne!(room, window);
-    let across: Vec<&TierPortal> = build
+    let across: Vec<&Portal> = build
         .tier_portals
         .iter()
         .filter(|p| {
-            (p.front_tier_leaf, p.back_tier_leaf) == (room, window)
-                || (p.front_tier_leaf, p.back_tier_leaf) == (window, room)
+            (p.front_leaf, p.back_leaf) == (room, window)
+                || (p.front_leaf, p.back_leaf) == (window, room)
         })
         .collect();
     assert_eq!(

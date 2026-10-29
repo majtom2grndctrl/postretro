@@ -1,21 +1,22 @@
 // Fog cell masks bake: produces the FogCellMasks PRL section (ID 31).
 //
 // For each runtime cell, sets bit `i` of its mask when fog volume `i` intersects
-// the cell's exact BSP convex region. Compiler BSP leaf ids are preserved as
-// runtime cell ids, so solid leaves are written as `0`. The runtime unions
-// visible-cell masks each frame to derive the active fog-volume set.
+// the cell's hull, the convex regions of its member BSP leaves. Solid cells are
+// written as `0`. The runtime unions visible-cell masks each frame to derive the
+// active fog-volume set.
 //
-// Intersection uses a two-stage test:
-//   1. AABB fast-reject: if the fog's AABB does not overlap the leaf's bounds
-//      AABB, the leaf is skipped. This is conservative (AABB ⊇ exact region),
-//      so no false negatives.
-//   2. BSP-plane exact test: iterate the leaf's defining_planes. If the fog
+// Intersection uses a two-stage test per hull piece:
+//   1. AABB fast-reject: if the fog's AABB does not overlap the cell's or the
+//      piece's bounds AABB, the piece is skipped. This is conservative
+//      (AABB ⊇ exact region), so no false negatives.
+//   2. BSP-plane exact test: iterate the piece's defining_planes. If the fog
 //      AABB is entirely behind any single inward-facing plane, the fog lies
-//      outside the leaf's convex region. Skip setting the bit.
+//      outside that piece's convex region.
 //
-// Stage 1 eliminates most candidates cheaply; stage 2 catches false positives
-// from wide BSP-region bounds near map boundaries that overlap fog brushes
-// extending past visible geometry.
+// The bit is set when any piece passes both. Stage 1 eliminates most
+// candidates cheaply; stage 2 catches false positives from wide BSP-region
+// bounds near map boundaries that overlap fog brushes extending past visible
+// geometry.
 //
 // See: context/lib/build_pipeline.md §PRL section IDs
 
@@ -24,14 +25,16 @@ use postretro_level_format::fog_cell_masks::FogCellMasksSection;
 use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 
 use crate::map_data::MapFogVolume;
-use crate::partition::{Aabb, BspTree};
+use crate::partition::{Aabb, BspTree, CellHull};
 
-/// Bake the per-cell fog-volume bitmask section.
+/// Bake the per-cell fog-volume bitmask section over `tree`'s cells, whose
+/// hulls are `hulls`, one per cell.
 ///
 /// Returns `None` when `fog_volumes` is empty so the caller can omit the
 /// section entirely.
 pub fn bake_fog_cell_masks(
     tree: &BspTree,
+    hulls: &[CellHull],
     fog_volumes: &[MapFogVolume],
 ) -> Option<FogCellMasksSection> {
     if fog_volumes.is_empty() {
@@ -43,14 +46,15 @@ pub fn bake_fog_cell_masks(
         "fog volume count {} exceeds MAX_FOG_VOLUMES ({MAX_FOG_VOLUMES}); parse stage should cap",
         fog_volumes.len(),
     );
+    assert_eq!(hulls.len(), tree.leaves.len(), "one hull per cell");
 
     // Pre-build the fog AABBs in DVec3 form once; bounds tests run in f64 to
     // match the BSP's native precision (BspLeaf.bounds is DVec3).
     let fog_aabbs: Vec<Aabb> = fog_volumes.iter().map(fog_volume_aabb).collect();
 
     let mut masks = Vec::with_capacity(tree.leaves.len());
-    for leaf in &tree.leaves {
-        if leaf.is_solid {
+    for (cell, hull) in tree.leaves.iter().zip(hulls) {
+        if cell.is_solid {
             masks.push(0);
             continue;
         }
@@ -62,22 +66,23 @@ pub fn bake_fog_cell_masks(
             // Stage 1: AABB fast-reject. `intersects` is inclusive on shared
             // boundaries — conservative overlap prevents pop artifacts at leaf
             // boundary edges.
-            if !leaf.bounds.intersects(fog) {
+            if !cell.bounds.intersects(fog) {
                 continue;
             }
 
-            // Stage 2: exact BSP-plane test. If the fog AABB is entirely
-            // behind any inward-facing defining plane, it lies outside the
-            // leaf's convex region and should not activate this fog volume.
-            let outside = leaf
-                .defining_planes
-                .iter()
-                .any(|&(normal, distance)| fog.is_entirely_behind_plane(normal, distance));
-            if outside {
-                continue;
+            // Stage 2: exact BSP-plane test per piece. If the fog AABB is
+            // entirely behind any inward-facing defining plane, it lies
+            // outside that piece's convex region.
+            let meets = hull.pieces.iter().any(|piece| {
+                piece.bounds.intersects(fog)
+                    && !piece
+                        .defining_planes
+                        .iter()
+                        .any(|&(normal, distance)| fog.is_entirely_behind_plane(normal, distance))
+            });
+            if meets {
+                mask |= 1u32 << i;
             }
-
-            mask |= 1u32 << i;
         }
         masks.push(mask);
     }
@@ -152,14 +157,15 @@ mod tests {
     #[test]
     fn returns_none_when_no_fog_volumes() {
         let tree = make_tree(vec![empty_leaf(aabb([0.0; 3], [10.0; 3]))]);
-        assert!(bake_fog_cell_masks(&tree, &[]).is_none());
+        assert!(bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &[]).is_none());
     }
 
     #[test]
     fn overlapping_fog_sets_bit() {
         let tree = make_tree(vec![empty_leaf(aabb([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]))]);
         let volumes = vec![fog([5.0, 5.0, 5.0], [15.0, 15.0, 15.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(section.masks, vec![0b1]);
     }
 
@@ -167,7 +173,8 @@ mod tests {
     fn non_overlapping_fog_clears_bit() {
         let tree = make_tree(vec![empty_leaf(aabb([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]))]);
         let volumes = vec![fog([20.0, 20.0, 20.0], [30.0, 30.0, 30.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(section.masks, vec![0]);
     }
 
@@ -176,7 +183,8 @@ mod tests {
         // Solid leaf whose bounds would overlap the fog volume — must still mask 0.
         let tree = make_tree(vec![solid_leaf(aabb([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]))]);
         let volumes = vec![fog([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(section.masks, vec![0]);
     }
 
@@ -193,7 +201,8 @@ mod tests {
             fog([100.0, 0.0, 0.0], [105.0, 5.0, 5.0]), // 1: in B
             fog([-1.0, -1.0, -1.0], [6.0, 6.0, 6.0]),  // 2: in A
         ];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(section.masks, vec![0b101, 0b010, 0]);
     }
 
@@ -217,7 +226,8 @@ mod tests {
         let tree = make_tree(vec![leaf]);
         // Fog sits at x∈[5,9], fully below the x=10 boundary.
         let volumes = vec![fog([5.0, 10.0, 10.0], [9.0, 90.0, 90.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(
             section.masks,
             vec![0],
@@ -239,7 +249,8 @@ mod tests {
         // Fog AABB sits in leaf A's interior but its max.x rests exactly
         // on the shared plane.
         let volumes = vec![fog([2.0, 2.0, 2.0], [10.0, 8.0, 8.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(
             section.masks,
             vec![0b1, 0b1],
@@ -256,7 +267,8 @@ mod tests {
             empty_leaf(aabb([100.0, 0.0, 0.0], [110.0, 10.0, 10.0])),
         ]);
         let volumes = vec![fog([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])];
-        let section = bake_fog_cell_masks(&tree, &volumes).expect("section should exist");
+        let section = bake_fog_cell_masks(&tree, &CellHull::per_leaf(&tree), &volumes)
+            .expect("section should exist");
         assert_eq!(section.masks, vec![0b1, 0, 0]);
     }
 }

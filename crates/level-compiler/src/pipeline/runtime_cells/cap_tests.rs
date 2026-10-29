@@ -284,7 +284,8 @@ fn exterior_cells_uncapped(map: &MapText) -> usize {
     .expect("partition builds");
     let portals = crate::portals::generate_portals(&result.tree);
     let exterior = crate::visibility::find_exterior_leaves(&result.tree, &portals);
-    crate::partition::CellTree::build(&result.tree, &tier, &exterior)
+    let pockets = crate::portals::interior_pockets(&result.tree, &tier, &exterior);
+    crate::partition::CellTree::build(&result.tree, &tier, &exterior, &pockets)
         .exterior_cells
         .len()
 }

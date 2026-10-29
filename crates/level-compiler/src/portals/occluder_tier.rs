@@ -1,10 +1,9 @@
 // Occluder-tier portals: the runtime portal set of a two-tier BSP, one portal
-// per opening between adjacent occluder-tier leaves whose interiors meet.
+// per opening between two cells that adjacent occluder-tier leaves hold.
 // See: context/plans/in-progress/occluder-first-partition/plan.md §Approach notes
 
 mod openings;
-
-use std::collections::HashSet;
+mod pockets;
 
 use glam::DVec3;
 
@@ -13,81 +12,61 @@ use super::{
 };
 use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 use openings::openings;
+pub use pockets::interior_pockets;
 
 /// Collinear and duplicate hull points closer than this are dropped.
 const HULL_EPSILON: f64 = 1e-9;
 
 /// Sub-tier fragments below this area are clipping dust. The portal-area
-/// cull applies to the tier piece and to the pair's portal, never to the
-/// fragments below-tier planes cut a tier piece into: those fragments only
-/// tell interior from solid, and culling them drops real opening the tier
-/// portal must cover.
+/// cull applies to the tier piece and to each portal, never to the fragments
+/// below-tier planes cut a tier piece into: those fragments only tell
+/// interior from solid, and culling them drops real opening the tier portal
+/// must cover. Pockets join through fragments down to the same area.
 const FRAGMENT_DUST_AREA_M2: f64 = 1e-6;
 
 /// A portal corner this close to an axis-aligned plane bounding its leaves
 /// lies on it: far above clipping dust, far below any authored gap.
 const SNAP_EPSILON: f64 = 1e-9;
 
-/// A portal between two occluder-tier leaves, wound counter-clockwise seen
-/// from the front side of the tier node plane it lies on.
-pub struct TierPortal {
-    pub polygon: Vec<DVec3>,
-    /// Index into `OccluderTier::leaves` on the plane's front side.
-    pub front_tier_leaf: usize,
-    pub back_tier_leaf: usize,
-}
+/// The fragments of one tier piece joining one front cell to one back cell.
+type PairFragments = ((usize, usize), Vec<Vec<DVec3>>);
 
-/// Generate portals at occluder-tier nodes only. Each node's winding is cut
-/// among the tier-leaf pairs it separates, then pushed through both leaves'
-/// sub-trees; the fragments whose two sub-leaves are both interior (neither
-/// solid nor in `exterior_leaves`) survive at any area above clipping dust.
-/// Fragments sharing an edge form one opening, and each opening's convex
+/// Generate the runtime portals, in `cells`' ids, at occluder-tier nodes
+/// only. Each node's winding is cut among the tier-leaf pairs it separates,
+/// then pushed through both leaves' sub-trees; the fragments whose two
+/// sub-leaves are both interior survive at any area above clipping dust,
+/// each joining the cells of its two sub-leaves' pockets. Per cell pair,
+/// fragments sharing an edge form one opening, and each opening's convex
 /// hull is a portal, so a facade's windows each cross it through their own
 /// portal rather than one hull spanning the facade. An opening whose hull
 /// falls under the portal-area cull is no portal of its own: the pair's
 /// small openings share one hull, which takes the cull. The cull also runs
 /// on the tier piece, as on every portal set, never on the fragments. A hull
-/// can only widen what its fragments let through, and a pair no interior
-/// fragment joins gets no portal, so none leads into solid or joins interior
-/// to exterior.
-pub fn generate_occluder_tier_portals(
+/// can only widen what its fragments let through, and a cell pair no
+/// interior fragment joins gets no portal, so none leads into solid, joins
+/// interior to exterior, or joins two pockets of one tier leaf. Each portal
+/// is wound counter-clockwise seen from the front side of its tier node's
+/// plane; order follows the tree, then each piece's cell pairs in the order
+/// their first fragment appears.
+pub fn generate_runtime_portals(
     tree: &BspTree,
     tier: &OccluderTier,
-    exterior_leaves: &HashSet<usize>,
-) -> Vec<TierPortal> {
+    cells: &CellTree,
+) -> Vec<Portal> {
     let mut portals = Vec::new();
     if !tree.nodes.is_empty() && tier.node_is_tier[0] {
-        generate_recursive(tree, tier, exterior_leaves, 0, &[], &mut portals);
+        generate_recursive(tree, tier, cells, 0, &[], &mut portals);
     }
     portals
-}
-
-/// The runtime portal set in cell ids: each tier portal joins the interior
-/// cells of its two occluder-tier leaves. Every tier portal has interior
-/// space on both sides, so both cells exist; none touches a solid or exterior
-/// cell. Order follows `tier_portals`.
-pub fn runtime_portals(tier_portals: Vec<TierPortal>, cells: &CellTree) -> Vec<Portal> {
-    let interior_cell = |tier_leaf: usize| {
-        cells.tier_leaf_cell[tier_leaf]
-            .expect("a tier portal's occluder-tier leaf holds an interior cell")
-    };
-    tier_portals
-        .into_iter()
-        .map(|portal| Portal {
-            front_leaf: interior_cell(portal.front_tier_leaf),
-            back_leaf: interior_cell(portal.back_tier_leaf),
-            polygon: portal.polygon,
-        })
-        .collect()
 }
 
 fn generate_recursive(
     tree: &BspTree,
     tier: &OccluderTier,
-    exterior_leaves: &HashSet<usize>,
+    cells: &CellTree,
     node_idx: usize,
     ancestor_planes: &[PlaneEntry],
-    portals: &mut Vec<TierPortal>,
+    portals: &mut Vec<Portal>,
 ) {
     let node = &tree.nodes[node_idx];
     let (normal, distance) = (node.plane_normal, node.plane_distance);
@@ -107,10 +86,14 @@ fn generate_recursive(
             },
         );
 
-        let interior =
-            |leaf: usize| !tree.leaves[leaf].is_solid && !exterior_leaves.contains(&leaf);
+        let interior_cell = |leaf: usize| {
+            let cell = cells.leaf_cell[leaf];
+            (!cells.tree.leaves[cell].is_solid && !cells.exterior_cells.contains(&cell))
+                .then_some(cell)
+        };
         for (piece, front, back) in tier_pairs {
-            let mut fragments: Vec<Vec<DVec3>> = Vec::new();
+            // Per cell pair, in the order its first fragment appears.
+            let mut pairs: Vec<PairFragments> = Vec::new();
             distribute_winding(
                 tree,
                 &piece,
@@ -119,49 +102,55 @@ fn generate_recursive(
                 &|_| true,
                 FRAGMENT_DUST_AREA_M2,
                 &mut |fragment, front_leaf, back_leaf| {
-                    if let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front_leaf, back_leaf)
-                        && interior(*f)
-                        && interior(*b)
-                    {
-                        let bounding = tree.leaves[*f]
-                            .defining_planes
-                            .iter()
-                            .chain(&tree.leaves[*b].defining_planes);
-                        fragments.push(
-                            fragment
-                                .iter()
-                                .map(|&corner| snap_to_axis_planes(corner, bounding.clone()))
-                                .collect(),
-                        );
+                    let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front_leaf, back_leaf) else {
+                        return;
+                    };
+                    let (Some(front_cell), Some(back_cell)) =
+                        (interior_cell(*f), interior_cell(*b))
+                    else {
+                        return;
+                    };
+                    let bounding = tree.leaves[*f]
+                        .defining_planes
+                        .iter()
+                        .chain(&tree.leaves[*b].defining_planes);
+                    let fragment = fragment
+                        .iter()
+                        .map(|&corner| snap_to_axis_planes(corner, bounding.clone()))
+                        .collect();
+                    let pair = (front_cell, back_cell);
+                    match pairs.iter_mut().find(|(p, _)| *p == pair) {
+                        Some((_, fragments)) => fragments.push(fragment),
+                        None => pairs.push((pair, vec![fragment])),
                     }
                 },
             );
-            let (front_tier_leaf, back_tier_leaf) = (
-                tier.tier_leaf_of(tree, &front),
-                tier.tier_leaf_of(tree, &back),
-            );
-            let mut push = |polygon: Vec<DVec3>| {
-                portals.push(TierPortal {
-                    polygon,
-                    front_tier_leaf,
-                    back_tier_leaf,
-                })
-            };
-            let mut small: Vec<DVec3> = Vec::new();
-            for opening in openings(&fragments) {
-                let corners: Vec<DVec3> = opening
-                    .iter()
-                    .flat_map(|&f| fragments[f].iter().copied())
-                    .collect();
-                match coplanar_hull(&corners, normal) {
-                    Some(polygon) if polygon_area(&polygon) >= MIN_PORTAL_AREA_M2 => push(polygon),
-                    _ => small.extend(corners),
+            for ((front_cell, back_cell), fragments) in pairs {
+                let mut push = |polygon: Vec<DVec3>| {
+                    portals.push(Portal {
+                        polygon,
+                        front_leaf: front_cell,
+                        back_leaf: back_cell,
+                    })
+                };
+                let mut small: Vec<DVec3> = Vec::new();
+                for opening in openings(&fragments) {
+                    let corners: Vec<DVec3> = opening
+                        .iter()
+                        .flat_map(|&f| fragments[f].iter().copied())
+                        .collect();
+                    match coplanar_hull(&corners, normal) {
+                        Some(polygon) if polygon_area(&polygon) >= MIN_PORTAL_AREA_M2 => {
+                            push(polygon)
+                        }
+                        _ => small.extend(corners),
+                    }
                 }
-            }
-            if let Some(polygon) = coplanar_hull(&small, normal)
-                && polygon_area(&polygon) >= MIN_PORTAL_AREA_M2
-            {
-                push(polygon);
+                if let Some(polygon) = coplanar_hull(&small, normal)
+                    && polygon_area(&polygon) >= MIN_PORTAL_AREA_M2
+                {
+                    push(polygon);
+                }
             }
         }
     }
@@ -175,14 +164,7 @@ fn generate_recursive(
         {
             let mut child_ancestors = ancestor_planes.to_vec();
             child_ancestors.push(plane);
-            generate_recursive(
-                tree,
-                tier,
-                exterior_leaves,
-                *child_idx,
-                &child_ancestors,
-                portals,
-            );
+            generate_recursive(tree, tier, cells, *child_idx, &child_ancestors, portals);
         }
     }
 }

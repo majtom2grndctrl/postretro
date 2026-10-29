@@ -6,6 +6,7 @@
 
 pub(crate) mod brush_bsp;
 mod bsp;
+mod cell_hull;
 mod cell_tree;
 pub mod door_recognition;
 mod face_extract;
@@ -21,7 +22,8 @@ pub use brush_bsp::{
     build_bsp_from_brushes, build_bsp_with_occluder_tier, shadow_prisms,
 };
 pub use bsp::find_leaf_for_point;
-pub use cell_tree::CellTree;
+pub use cell_hull::{CellHull, HullPiece};
+pub use cell_tree::{CellTree, InteriorPockets};
 pub use door_recognition::{DoorSplitter, recognize_doors};
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
 pub use manifold::{OpenEdge, WatertightReport, check_watertight};

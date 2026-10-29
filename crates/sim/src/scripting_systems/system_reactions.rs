@@ -596,11 +596,16 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("loadLevel: failed to deserialize args: {e}"),
             })?;
-        queue.push(SystemReactionCommand::LoadLevel { map: parsed.map });
+        queue.push(SystemReactionCommand::LoadLevel {
+            map: parsed.map,
+            dispatch_source: queue.fire_context().source,
+        });
         Ok(())
     });
     registry.register("restartLevel", |_args, queue| {
-        queue.push(SystemReactionCommand::RestartLevel);
+        queue.push(SystemReactionCommand::RestartLevel {
+            dispatch_source: queue.fire_context().source,
+        });
         Ok(())
     });
     registry.register("returnToFrontend", |_args, queue| {
@@ -1508,6 +1513,7 @@ mod tests {
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
         let queue = SystemCommandQueue::new();
+        queue.replace_fire_context(fire_context("named:levelLoad", None));
 
         let args = serde_json::json!({ "map": "e1m1" });
         assert!(r.dispatch("loadLevel", &args, &queue).unwrap());
@@ -1515,6 +1521,7 @@ mod tests {
             queue.take(),
             vec![SystemReactionCommand::LoadLevel {
                 map: "e1m1".to_string(),
+                dispatch_source: "named:levelLoad".to_string(),
             }]
         );
     }
@@ -1524,12 +1531,18 @@ mod tests {
         let mut r = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut r);
         let queue = SystemCommandQueue::new();
+        queue.replace_fire_context(fire_context("crossing:3", None));
 
         assert!(
             r.dispatch("restartLevel", &serde_json::json!({}), &queue)
                 .unwrap()
         );
-        assert_eq!(queue.take(), vec![SystemReactionCommand::RestartLevel]);
+        assert_eq!(
+            queue.take(),
+            vec![SystemReactionCommand::RestartLevel {
+                dispatch_source: "crossing:3".to_string(),
+            }]
+        );
     }
 
     #[test]

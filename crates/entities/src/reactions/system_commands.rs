@@ -53,8 +53,15 @@ pub enum SystemReactionCommand {
     },
     LoadLevel {
         map: String,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
     },
-    RestartLevel,
+    RestartLevel {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+    },
     ReturnToFrontend,
     PopTree,
     SetState {
@@ -472,7 +479,7 @@ impl SystemReactionCommand {
             | Self::BackspaceText { .. }
             | Self::ClearText { .. } => SystemReactionClass::MachineLocal,
             Self::LoadLevel { .. }
-            | Self::RestartLevel
+            | Self::RestartLevel { .. }
             | Self::ReturnToFrontend
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }

@@ -220,3 +220,6 @@ mod hint_tests;
 
 #[cfg(test)]
 mod cap_tests;
+
+#[cfg(test)]
+mod leak_tests;

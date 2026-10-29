@@ -504,12 +504,13 @@ fn open_portal_beside_closed_seam_keeps_its_cells_visible_and_seam_far_side_out(
     .expect("two-portal visibility world must be valid");
     let eye = Vec3::new(0.25, 0.0, 0.0);
     // Wide FOV, looking diagonally, so both portals fall inside the frustum.
-    let view_proj = glam::camera::rh::proj::directx::perspective(
-        std::f32::consts::FRAC_PI_3 * 2.0,
-        1.0,
-        0.1,
-        16.0,
-    ) * glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::new(1.0, 1.0, 0.0), Vec3::Z);
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_3 * 2.0,
+            1.0,
+            0.1,
+            16.0,
+        ) * glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::new(1.0, 1.0, 0.0), Vec3::Z);
     let (visibility, _) = postretro_visibility::determine_visible_cells(
         eye,
         view_proj,

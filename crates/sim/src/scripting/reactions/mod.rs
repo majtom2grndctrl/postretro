@@ -69,6 +69,15 @@ pub fn dispatch_crossing_fires_with_sequences(
     let mut chained = Vec::new();
     for fire in &crossing_events {
         let dispatch_values = [("@rising".to_string(), IrValue::Bool(fire.rising))];
+        let source = data_registry.crossings.get(fire.source_id).map_or(
+            postretro_entities::MachineSource::HostMirrored,
+            |crossing| {
+                postretro_scripting_core::state_crossings::crossing_machine_source(
+                    crossing,
+                    &script_ctx.slot_table.borrow(),
+                )
+            },
+        );
         chained.extend(fire_named_event_with_sequences(
             &fire.reaction,
             data_registry,
@@ -77,9 +86,7 @@ pub fn dispatch_crossing_fires_with_sequences(
             system_registry,
             script_ctx,
             Some(NamedEventDispatchContext {
-                origin: postretro_entities::FireOrigin::EveryMachine(
-                    postretro_entities::MachineSource::HostMirrored,
-                ),
+                origin: postretro_entities::FireOrigin::EveryMachine(source),
                 source: format!("crossing:{}", fire.source_id),
                 values: &dispatch_values,
                 // Crossings publish no emitter.

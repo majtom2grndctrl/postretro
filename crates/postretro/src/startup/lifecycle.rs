@@ -1366,13 +1366,18 @@ fn reaction_uses_trigger_sentinel(
 
     match &reaction.descriptor {
         ReactionDescriptor::Primitive(primitive) => primitive.target.is_some(),
-        // A control step (`@wait`/`@fire`) is not trigger-sentinel work: a
-        // `levelLoad` body containing a wait must keep its crossing subscriptions
-        // and must not warn "levelLoad references trigger-sentinel work".
+        // Only a subject-token step is trigger-sentinel work. A control step
+        // (`@wait`/`@fire`), a group step and a system step run under any
+        // source: a `levelLoad` body holding them must keep its crossing
+        // subscriptions and must not warn "levelLoad references
+        // trigger-sentinel work".
         ReactionDescriptor::Sequence(steps) => steps.iter().any(|step| {
-            !matches!(
+            matches!(
                 step.id,
-                SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire
+                SequenceTarget::Activators
+                    | SequenceTarget::FiredTrigger
+                    | SequenceTarget::FiredTeleporter
+                    | SequenceTarget::EventPlayer
             )
         }),
         ReactionDescriptor::Progress(_) => false,
@@ -5162,6 +5167,60 @@ pub(crate) mod tests {
                         .contains("levelLoad references trigger-sentinel work")
             }),
             "legacy sentinel warning fired for an `@player`-only levelLoad"
+        );
+    }
+    // Regression: any non-entity step read as trigger-sentinel work, so a body
+    // of system or group steps lost its crossing subscription and a
+    // `levelLoad` holding one warned.
+    #[test]
+    fn system_and_group_steps_are_not_trigger_sentinel_work() {
+        use postretro_scripting_core::data_descriptors::{SequenceStep, SequenceTarget};
+        use postretro_test_log_capture::LogCapture;
+        let ctx = ScriptCtx::new();
+        let body = |name: &str| NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Sequence(vec![
+                SequenceStep {
+                    id: SequenceTarget::System,
+                    primitive: "playSound".to_string(),
+                    args: serde_json::json!({ "sound": "x" }),
+                },
+                SequenceStep {
+                    id: SequenceTarget::Group(postretro_entities::GroupTarget {
+                        kind: postretro_entities::GroupKind::Npc,
+                        tag: None,
+                    }),
+                    primitive: "updateNpcState".to_string(),
+                    args: serde_json::json!({ "aggro": true }),
+                },
+            ]),
+        };
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![body("warn"), body("levelLoad")],
+            vec![CrossingDescriptor {
+                slot: Some("player.health".to_string()),
+                condition: CrossingCondition::Below { threshold: 0.5 },
+                max: 100.0,
+                edge: None,
+                fire: vec!["warn".to_string()],
+            }],
+            &[],
+        );
+        let capture = LogCapture::start();
+        rebuild_reaction_subscribers(
+            &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+            &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+            &ctx,
+            SubscriberRebuild::LevelInstall,
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().crossings[0].fire,
+            ["warn"],
+            "the crossing keeps its address"
+        );
+        capture.assert_not_logged(
+            log::Level::Warn,
+            "levelLoad references trigger-sentinel work",
         );
     }
     #[test]

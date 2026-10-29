@@ -1387,12 +1387,19 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     time_sync.rtt_micros(),
                 ));
         }
-        session.scripting.scheduler.drain_landings(
+        session.scripting.scheduler.drain_landings_resolving_seats(
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
             &session.scripting.system_registry,
             &script_ctx,
+            &|player, registry| match player {
+                trigger_system::PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                trigger_system::PlayerId::Remote(client_id) => session
+                    .seat_table
+                    .as_ref()
+                    .and_then(|seats| seats.seat_for_client(client_id)),
+            },
         );
     }
 

@@ -198,61 +198,71 @@ pub enum IrNode {
 }
 
 impl IrNode {
-    /// Collect the distinct ephemeral dispatch inputs referenced by this tree,
-    /// preserving their first-seen order. The exhaustive walk is intentionally
-    /// colocated with the closed IR vocabulary: adding an opcode must update
-    /// this match instead of silently omitting its inputs.
-    pub fn dispatch_input_names(&self) -> Vec<String> {
-        fn walk(node: &IrNode, names: &mut Vec<String>) {
-            match node {
-                IrNode::Const { .. } => {}
-                IrNode::Input { name, owner } => {
-                    if name.starts_with('@') && !names.contains(name) {
-                        names.push(name.clone());
-                    }
-                    if let Some(owner) = owner
-                        && owner.starts_with('@')
-                        && !names.contains(owner)
-                    {
-                        names.push(owner.clone());
-                    }
-                }
-                IrNode::Add { a, b }
-                | IrNode::Sub { a, b }
-                | IrNode::Mul { a, b }
-                | IrNode::Div { a, b }
-                | IrNode::Lt { a, b }
-                | IrNode::Le { a, b }
-                | IrNode::Gt { a, b }
-                | IrNode::Ge { a, b }
-                | IrNode::Eq { a, b }
-                | IrNode::Ne { a, b }
-                | IrNode::And { a, b }
-                | IrNode::Or { a, b } => {
-                    walk(a, names);
-                    walk(b, names);
-                }
-                IrNode::Not { x } => walk(x, names),
-                IrNode::Clamp { x, lo, hi } => {
-                    walk(x, names);
-                    walk(lo, names);
-                    walk(hi, names);
-                }
-                IrNode::Lerp { a, b, t } => {
-                    walk(a, names);
-                    walk(b, names);
-                    walk(t, names);
-                }
-                IrNode::Select { cond, a, b } => {
-                    walk(cond, names);
-                    walk(a, names);
-                    walk(b, names);
-                }
+    /// Visit every input leaf `(name, owner)` in this tree, depth first. The
+    /// exhaustive walk is intentionally colocated with the closed IR
+    /// vocabulary: adding an opcode must update this match instead of
+    /// silently omitting its inputs.
+    pub fn for_each_input<'a>(&'a self, visit: &mut impl FnMut(&'a str, Option<&'a str>)) {
+        match self {
+            IrNode::Const { .. } => {}
+            IrNode::Input { name, owner } => visit(name, owner.as_deref()),
+            IrNode::Add { a, b }
+            | IrNode::Sub { a, b }
+            | IrNode::Mul { a, b }
+            | IrNode::Div { a, b }
+            | IrNode::Lt { a, b }
+            | IrNode::Le { a, b }
+            | IrNode::Gt { a, b }
+            | IrNode::Ge { a, b }
+            | IrNode::Eq { a, b }
+            | IrNode::Ne { a, b }
+            | IrNode::And { a, b }
+            | IrNode::Or { a, b } => {
+                a.for_each_input(visit);
+                b.for_each_input(visit);
+            }
+            IrNode::Not { x } => x.for_each_input(visit),
+            IrNode::Clamp { x, lo, hi } => {
+                x.for_each_input(visit);
+                lo.for_each_input(visit);
+                hi.for_each_input(visit);
+            }
+            IrNode::Lerp { a, b, t } => {
+                a.for_each_input(visit);
+                b.for_each_input(visit);
+                t.for_each_input(visit);
+            }
+            IrNode::Select { cond, a, b } => {
+                cond.for_each_input(visit);
+                a.for_each_input(visit);
+                b.for_each_input(visit);
             }
         }
+    }
 
-        let mut names = Vec::new();
-        walk(self, &mut names);
+    /// Collect the distinct ephemeral dispatch inputs referenced by this tree,
+    /// preserving their first-seen order.
+    pub fn dispatch_input_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        self.for_each_input(&mut |name, owner| {
+            for input in std::iter::once(name).chain(owner) {
+                if input.starts_with('@') && !names.iter().any(|known| known == input) {
+                    names.push(input.to_string());
+                }
+            }
+        });
+        names
+    }
+
+    /// The distinct store slots this tree reads, in first-seen order: every
+    /// input leaf that is not a dispatch input.
+    pub fn slot_read_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        self.for_each_input(&mut |name, _| {
+            if !name.starts_with('@') && !names.iter().any(|known| known == name) {
+                names.push(name.to_string());
+            }
+        });
         names
     }
 }

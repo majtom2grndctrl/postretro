@@ -2,8 +2,10 @@
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
 use postretro_entities::{
-    ClientLanding, DataRegistry, FireOrigin, FireSubject, ReactionDescriptor, ScriptCtx,
+    ClientLanding, DataRegistry, EntityRegistry, FireOrigin, FireSubject, ReactionDescriptor,
+    ScriptCtx,
 };
+use postretro_foundation::Seat;
 use postretro_scripting_core::reaction_dispatch::{
     PrepartitionedReactionStep, ResidualOrigin, dispatch_deferred_named_events_with_sequences,
     fire_prepartitioned_reactions_with_sequences,
@@ -14,6 +16,7 @@ use postretro_scripting_core::reaction_registry::{
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
 use super::{InstanceKey, Landing, ReactionScheduler, SchedulerRole, TailClass};
+use crate::trigger_system::PlayerId;
 
 impl ReactionScheduler {
     /// Mark the instance whose resumed TAIL is being dispatched, cleared on drop.
@@ -52,6 +55,10 @@ impl ReactionScheduler {
     /// writes as host-only overrides, across its tail and its follow-ups; a
     /// client lands only machine-local steps, converging state for a segment a
     /// late joiner found already due.
+    ///
+    /// Seats resolve from the registry alone, so a remote subject reads as
+    /// departed; a session with remote players uses
+    /// [`Self::drain_landings_resolving_seats`].
     pub fn drain_landings(
         &self,
         data_registry: &DataRegistry,
@@ -60,12 +67,38 @@ impl ReactionScheduler {
         system_registry: &SystemReactionRegistry,
         script_ctx: &ScriptCtx,
     ) {
+        self.drain_landings_resolving_seats(
+            data_registry,
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
+            &|player, registry| match player {
+                PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                PlayerId::Remote(_) => None,
+            },
+        );
+    }
+
+    /// [`Self::drain_landings`], resolving a host-only landing's subject to
+    /// the seat it holds now: the host's own player to `Seat(0)`, a player
+    /// who left to none, so what was routed to them presents nowhere.
+    pub fn drain_landings_resolving_seats(
+        &self,
+        data_registry: &DataRegistry,
+        sequence_registry: &SequencedPrimitiveRegistry,
+        reaction_registry: &ReactionPrimitiveRegistry,
+        system_registry: &SystemReactionRegistry,
+        script_ctx: &ScriptCtx,
+        resolve_seat: &dyn Fn(PlayerId, &EntityRegistry) -> Option<Seat>,
+    ) {
         let client = self.role() == SchedulerRole::Client;
         loop {
             for landing in self.take_landings() {
                 self.drain_one(
                     landing,
                     client,
+                    resolve_seat,
                     data_registry,
                     sequence_registry,
                     reaction_registry,
@@ -86,6 +119,7 @@ impl ReactionScheduler {
         &self,
         landing: Landing,
         client: bool,
+        resolve_seat: &dyn Fn(PlayerId, &EntityRegistry) -> Option<Seat>,
         data_registry: &DataRegistry,
         sequence_registry: &SequencedPrimitiveRegistry,
         reaction_registry: &ReactionPrimitiveRegistry,
@@ -93,7 +127,7 @@ impl ReactionScheduler {
         script_ctx: &ScriptCtx,
     ) {
         let _depth = self.begin_enrollment_depth(landing.depth);
-        let (address, body_ordinal, class, _subject) = landing.key.clone();
+        let (address, body_ordinal, class, subject) = landing.key.clone();
         let (origin, host_capture, client_landing) = if client {
             let mode = if self.is_late(landing.due_host_tick) {
                 ClientLanding::Converge
@@ -102,10 +136,13 @@ impl ReactionScheduler {
             };
             (landing.origin.clone(), false, Some(mode))
         } else {
-            // A host-only landing still drops its subject: subject routing at
-            // landing re-resolves the seat, which the host-only drains own.
             let origin = match &landing.origin {
-                FireOrigin::HostOnly(_) => FireOrigin::HostOnly(FireSubject::None),
+                FireOrigin::HostOnly(fired) => FireOrigin::HostOnly(subject_at_landing(
+                    fired,
+                    subject.map(|(_, player)| player),
+                    &script_ctx.registry.borrow(),
+                    resolve_seat,
+                )),
                 every_machine => every_machine.clone(),
             };
             (origin, class != TailClass::OwnState, None)
@@ -154,6 +191,69 @@ impl ReactionScheduler {
             system_registry,
             script_ctx,
         );
+    }
+}
+
+/// The subject a host-only landing routes to: the one its fire routed to,
+/// with the seat that player holds now. A subject seated at fire whose seat
+/// is gone has departed. A wait drops occupants with every other subject
+/// token, so a trigger landing carries none.
+fn subject_at_landing(
+    fired: &FireSubject,
+    player: Option<PlayerId>,
+    registry: &EntityRegistry,
+    resolve_seat: &dyn Fn(PlayerId, &EntityRegistry) -> Option<Seat>,
+) -> FireSubject {
+    let seat_now = |seated_at_fire: Option<Seat>| -> Result<Option<Seat>, ()> {
+        let Some(seated) = seated_at_fire else {
+            return Ok(None);
+        };
+        let Some(player) = player else {
+            return Ok(Some(seated));
+        };
+        if let Some(seat) = resolve_seat(player, registry) {
+            return Ok(Some(seat));
+        }
+        // A harness with no seat table binds its local pawn to no seat.
+        match player {
+            PlayerId::Local(pawn) if registry.local_player_pawn() == Some(pawn) => Ok(Some(seated)),
+            _ => Err(()),
+        }
+    };
+    match fired {
+        FireSubject::None | FireSubject::Departed { .. } => fired.clone(),
+        FireSubject::Trigger {
+            player: seated,
+            trigger,
+            ..
+        } => match seat_now(*seated) {
+            Ok(player) => FireSubject::Trigger {
+                player,
+                trigger: *trigger,
+                occupants: Vec::new(),
+            },
+            Err(()) => FireSubject::Departed {
+                sounds_everywhere: true,
+            },
+        },
+        FireSubject::Teleport {
+            player: seated,
+            teleporter,
+        } => match seat_now(*seated) {
+            Ok(player) => FireSubject::Teleport {
+                player,
+                teleporter: *teleporter,
+            },
+            Err(()) => FireSubject::Departed {
+                sounds_everywhere: true,
+            },
+        },
+        FireSubject::PlayerEvent { player: seated } => match seat_now(*seated) {
+            Ok(player) => FireSubject::PlayerEvent { player },
+            Err(()) => FireSubject::Departed {
+                sounds_everywhere: false,
+            },
+        },
     }
 }
 

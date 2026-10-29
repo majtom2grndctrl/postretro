@@ -570,3 +570,24 @@ fn s27_fire_target_steps_apply_after_the_firing_body() {
     assert_eq!(rig.number("pin.b"), 1.0, "`b` reads 1: the firing body's steps first");
     assert_eq!(rig.number("pin.a"), 2.0, "then `inner`'s");
 }
+
+// AC 8, token half: an audience token after a wait drops the reaction at
+// install, naming it and the step; `"everyone"` there installs.
+#[test]
+fn audience_token_after_a_wait_drops_the_reaction_and_everyone_survives() {
+    let flash = |audience: &str| {
+        system_step(
+            "flashScreen",
+            json!({ "color": [1, 1, 1, 1], "durationMs": 50, "audience": audience }),
+        )
+    };
+    let ctx = ctx_with_reactions(vec![
+        sequence("token", vec![wait_step(json!(300), false), flash("@activators")]),
+        sequence("everyone", vec![wait_step(json!(300), false), flash("everyone")]),
+    ]);
+    let capture = LogCapture::start();
+    validate_reaction_bodies_pass_a(&ctx);
+    assert!(is_dropped(&ctx, "token"));
+    assert!(!is_dropped(&ctx, "everyone"));
+    capture.assert_logged_once(log::Level::Error, "reaction `token` step 1 (`flashScreen`)");
+}

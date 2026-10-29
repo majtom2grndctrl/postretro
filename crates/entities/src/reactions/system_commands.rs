@@ -169,6 +169,13 @@ pub enum FireSubject {
         player: Option<Seat>,
         teleporter: EntityId,
     },
+    /// A `wait` landing whose subject left during the wait: what the same step
+    /// routed to them before the wait presents on no machine. A sound the
+    /// source plays everywhere by default (a trigger's, a teleport's) still
+    /// does.
+    Departed {
+        sounds_everywhere: bool,
+    },
 }
 
 impl FireOrigin {
@@ -315,6 +322,13 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         }
         (HostOnly(FireSubject::PlayerEvent { player }), Option::None | Some(Player)) => {
             player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
+        }
+        (HostOnly(FireSubject::Departed { sounds_everywhere }), Option::None) => {
+            if sound && *sounds_everywhere {
+                Recipients::Everyone
+            } else {
+                Recipients::Seats(Vec::new())
+            }
         }
         (HostOnly(FireSubject::None), Option::None) => Recipients::Local,
         (HostOnly(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
@@ -553,6 +567,8 @@ mod audience_tests {
         };
         let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
         let none = FireOrigin::HostOnly(FireSubject::None);
+        let departed =
+            |sounds_everywhere| FireOrigin::HostOnly(FireSubject::Departed { sounds_everywhere });
         let every = FireOrigin::EveryMachine(MachineSource::HostMirrored);
         let rows = [
             (every.clone(), None, false, Recipients::Local),
@@ -611,6 +627,11 @@ mod audience_tests {
             (none.clone(), Some(Everyone), false, Recipients::Everyone),
             (trigger(None), Some(Everyone), false, Recipients::Everyone),
             (event(None), Some(Everyone), true, Recipients::Everyone),
+            (departed(true), None, true, Recipients::Everyone),
+            (departed(true), None, false, Recipients::Seats(vec![])),
+            (departed(false), None, true, Recipients::Seats(vec![])),
+            (departed(false), Some(Everyone), false, Recipients::Everyone),
+            (departed(false), Some(Player), true, Recipients::Skip),
         ];
         for (origin, audience, sound, expected) in rows {
             let queue = SystemCommandQueue::new();

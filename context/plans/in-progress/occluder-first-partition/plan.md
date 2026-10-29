@@ -69,8 +69,8 @@ Owner rulings:
 - **Lightmap pool growth is fixed in this brief** (owner, 2026-10-28; Task 9f). The pool grows exactly to fit each drain, so overlapping growths defer texels and the bake-gap gate passes or fails on timing; the before build already had 177 hallway camera cells whose mandatory set exceeded the pool cap. The owner's reasoning: streaming was calibrated around a semi-quiet bug, so fix it and recalibrate its downstream consumers rather than choosing the cap to pass it. The cap value is then chosen on frame time (H3, run right after the sweep) and walk cost, not on the gate. `postretro-render-cpu` is outside F3's list; `crates/renderer` stays frozen.
 
 Independent direction review (owner-requested, cloud session, 2026-10-28): keep the brief's direction; it claims the cross-section ordering can leak cells behind the wall through other occluders' extended planes crossing the lanes, depending on tie-break (box model of the occlusion-test hall: 2.7% mean, 40% worst pose; shadow-prism splitters 0%). Calls, pending owner confirmation:
-- Shadow-prism splitters: decided by measurement here. Task 9h runs the review's leak metric on the real occlusion-test bakes (before, cap19, cap26). A material leak means prisms are built in this brief, since hiding what the wall top hides is the Problem's headline; a nil leak means they become a follow-up.
-- Stronger correctness row: adopted as an automated row, the lane plus second-occluder fixture and the same sweep on occlusion-test.map (Acceptance change; owner sign-off).
+- Shadow-prism splitters (owner agreed to decide by 9h): decided by measurement here. Task 9h runs the review's leak metric on the real occlusion-test bakes (before, cap19, cap26). A material leak means prisms are built in this brief, since hiding what the wall top hides is the Problem's headline; a nil leak means they become a follow-up.
+- Stronger correctness row: adopted (owner, 2026-10-28) as Acceptance row C18.
 - Stride order: moot, since every stride is built.
 - Cross-street overdraw poses: adopted into the tris-in-frustum reporting.
 - Measured sibling collapse: named as a follow-up at landing.
@@ -130,6 +130,7 @@ Row ids: A = Automated classification, C = Correctness, F = Format/cache/content
 | M5 | Reported: per-map structure counts and classifier output | report tool + prl-build log | reported |
 | M6 | Reported: per-pose walk and residency counts | sweep tool | reported |
 | M7 | Reported: arena cells, portals, riser/tread boundaries | sweep tool on `stress-warren-showcase` | reported |
+| C18 | Guard: behind-the-wall leak, fixture with lanes and a second occluder plus occlusion-test.map; no walk-visible cell holds a hidden sample point | compiler test (fixture) + 9h sweep (map) | achievable as stated if 9h finds no leak; otherwise after shadow-prism splitters |
 | H1 | Owner walks occlusion-test; no pillar behind the wall | owner, in-engine | manual |
 | H2 | Owner plays the street map | owner, in-engine | manual |
 | H3 | Live frame-cost runs at `measurement/frame-cost/poses.txt` | owner, named machine | manual |

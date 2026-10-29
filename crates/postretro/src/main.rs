@@ -5035,22 +5035,19 @@ impl App {
         )
     }
 
-    /// Whether a connected client must drop a host-only level verb. Map
-    /// authority is the host's: a client never changes level on its own and
-    /// never asks for one; it follows the host's relevel. Warns once per
-    /// `(firing source, verb)` for the session, so a crossing that keeps
-    /// firing does not repeat it. See: context/lib/networking.md §Slot lifecycle.
+    /// Whether this app drops a host-only level verb: true on a client role.
+    /// Warns once per `(firing source, verb)` for the session. The gate follows
+    /// the session's client role, not live connection state.
+    /// See: context/lib/scripting.md §10.4.
     fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
         if !self.is_connected_client() {
             return false;
         }
-        let Some(session) = self.session.as_mut() else {
-            return true;
-        };
-        if session
-            .scripting
-            .client_level_verb_warnings
-            .insert((dispatch_source.clone(), verb))
+        if let Some(session) = self.session.as_mut()
+            && session
+                .scripting
+                .client_level_verb_warnings
+                .insert((dispatch_source.clone(), verb))
         {
             log::warn!(
                 "[Scripting] {verb} from `{dispatch_source}` ignored on a connected client: \

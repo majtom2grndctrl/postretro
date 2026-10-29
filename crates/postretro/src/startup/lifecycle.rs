@@ -1817,6 +1817,20 @@ pub(crate) mod tests {
         ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), ctx).unwrap()
     }
 
+    /// Gives the test app a client endpoint, as `--connect` would.
+    pub(crate) fn connect_test_app_as_client(app: &mut App) {
+        app.session.as_mut().unwrap().net_endpoint = Some(
+            crate::netcode::NetEndpoint::from_role(
+                &crate::netcode::NetRole::Connect {
+                    addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
+            .expect("client endpoint constructs")
+            .expect("connect role yields an endpoint"),
+        );
+    }
+
     /// A windowless `App` with an installed session, for App-level tests.
     pub(crate) fn test_app() -> App {
         let script_ctx = ScriptCtx::new();
@@ -4299,19 +4313,6 @@ pub(crate) mod tests {
         assert!(app.level_requests.is_empty());
     }
 
-    fn connect_test_app_as_client(app: &mut App) {
-        app.session.as_mut().unwrap().net_endpoint = Some(
-            crate::netcode::NetEndpoint::from_role(
-                &crate::netcode::NetRole::Connect {
-                    addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
-                },
-                None,
-            )
-            .expect("client endpoint constructs")
-            .expect("connect role yields an endpoint"),
-        );
-    }
-
     /// Map authority is the host's (`networking.md` §Slot lifecycle): a
     /// connected client drops `loadLevel` and `restartLevel` from any local
     /// source, leaves its modal stack alone, and warns once per source and
@@ -4410,6 +4411,20 @@ pub(crate) mod tests {
             assert_eq!(
                 app.level_requests.pop_front(),
                 Some(LevelRequest::Load(LevelSource::Catalog("e1m2".to_string()))),
+                "host={host}",
+            );
+
+            app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::RestartLevel {
+                    dispatch_source: "crossing:7".into(),
+                },
+            );
+            app.dispatch_system_commands();
+
+            assert_eq!(
+                app.level_requests.pop_front(),
+                Some(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))),
                 "host={host}",
             );
             capture.assert_not_logged(log::Level::Warn, "ignored on a connected client");
@@ -4944,8 +4959,6 @@ pub(crate) mod tests {
     // only the connected client suppresses map placements.
     #[test]
     fn host_replicated_placement_suppression_gate_is_connected_client_only() {
-        use std::net::{Ipv4Addr, SocketAddr};
-
         use crate::netcode::{NetEndpoint, NetRole};
 
         // Single-player: net inert, no suppression.
@@ -4968,16 +4981,7 @@ pub(crate) mod tests {
         );
 
         // Connected client: the only role that suppresses the local spawn.
-        app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(
-                &NetRole::Connect {
-                    addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-                },
-                None,
-            )
-            .expect("client endpoint constructs")
-            .expect("connect role yields an endpoint"),
-        );
+        connect_test_app_as_client(&mut app);
         assert!(
             app.is_connected_client(),
             "connected client must suppress local authoritative AI-enemy spawns"

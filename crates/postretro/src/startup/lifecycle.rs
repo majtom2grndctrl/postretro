@@ -1893,6 +1893,7 @@ pub(crate) mod tests {
                     input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
                         script_ctx.clone(),
                     ),
+                    client_level_verb_warnings: Default::default(),
                 },
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
@@ -4259,6 +4260,7 @@ pub(crate) mod tests {
         script_ctx(&app).system_commands.push(
             postretro_entities::SystemReactionCommand::LoadLevel {
                 map: "e1m1".to_string(),
+                dispatch_source: "named:levelLoad".to_string(),
             },
         );
         app.dispatch_system_commands();
@@ -4281,9 +4283,11 @@ pub(crate) mod tests {
             "content/dev/maps/raw-dev-map.prl",
         )));
 
-        script_ctx(&app)
-            .system_commands
-            .push(postretro_entities::SystemReactionCommand::RestartLevel);
+        script_ctx(&app).system_commands.push(
+            postretro_entities::SystemReactionCommand::RestartLevel {
+                dispatch_source: "named:restart".to_string(),
+            },
+        );
         app.dispatch_system_commands();
 
         assert_eq!(
@@ -4293,6 +4297,123 @@ pub(crate) mod tests {
             ))))
         );
         assert!(app.level_requests.is_empty());
+    }
+
+    fn connect_test_app_as_client(app: &mut App) {
+        app.session.as_mut().unwrap().net_endpoint = Some(
+            crate::netcode::NetEndpoint::from_role(
+                &crate::netcode::NetRole::Connect {
+                    addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
+            .expect("client endpoint constructs")
+            .expect("connect role yields an endpoint"),
+        );
+    }
+
+    /// Map authority is the host's (`networking.md` §Slot lifecycle): a
+    /// connected client drops `loadLevel` and `restartLevel` from any local
+    /// source, leaves its modal stack alone, and warns once per source and
+    /// verb however often the source fires.
+    #[test]
+    fn connected_client_drops_level_verbs_and_warns_once_per_source() {
+        use postretro_test_log_capture::LogCapture;
+        let mut app = test_app();
+        connect_test_app_as_client(&mut app);
+        app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "deathScreen",
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .push_named("deathScreen", None);
+
+        let capture = LogCapture::start();
+        for _ in 0..2 {
+            for source in ["crossing:7", "named:levelLoad"] {
+                script_ctx(&app).system_commands.push(
+                    postretro_entities::SystemReactionCommand::LoadLevel {
+                        map: "e1m2".to_string(),
+                        dispatch_source: source.to_string(),
+                    },
+                );
+            }
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::RestartLevel {
+                    dispatch_source: "crossing:7".to_string(),
+                },
+            );
+            app.dispatch_system_commands();
+        }
+
+        assert!(
+            app.level_requests.is_empty(),
+            "a client never queues its own level change: {:?}",
+            app.level_requests,
+        );
+        assert_eq!(
+            app.session.as_mut().unwrap().modal_stack.active_name(),
+            Some("deathScreen"),
+            "a dropped level verb leaves the initiating modal in place",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "loadLevel from `crossing:7` ignored on a connected client",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "loadLevel from `named:levelLoad` ignored on a connected client",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "restartLevel from `crossing:7` ignored on a connected client",
+        );
+    }
+
+    /// The other side of the client gate: single-player (no endpoint) and a
+    /// listen host both run the level verbs, and neither warns.
+    #[test]
+    fn host_and_single_player_run_level_verbs_without_warning() {
+        use postretro_test_log_capture::LogCapture;
+        for host in [false, true] {
+            let mut app = test_app();
+            if host {
+                app.session.as_mut().unwrap().net_endpoint = Some(
+                    crate::netcode::NetEndpoint::from_role(
+                        &crate::netcode::NetRole::Host { port: 0 },
+                        None,
+                    )
+                    .expect("host endpoint constructs")
+                    .expect("host role yields an endpoint"),
+                );
+            }
+            let capture = LogCapture::start();
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::LoadLevel {
+                    map: "e1m2".to_string(),
+                    dispatch_source: "crossing:7".to_string(),
+                },
+            );
+            app.dispatch_system_commands();
+
+            assert_eq!(
+                app.level_requests.pop_front(),
+                Some(LevelRequest::Load(LevelSource::Catalog("e1m2".to_string()))),
+                "host={host}",
+            );
+            capture.assert_not_logged(log::Level::Warn, "ignored on a connected client");
+        }
     }
 
     #[test]

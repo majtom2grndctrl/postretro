@@ -3618,13 +3618,22 @@ impl App {
                         session.modal_stack.push_named(&tree, on_commit);
                     }
                 }
-                SystemReactionCommand::LoadLevel { map } => {
+                SystemReactionCommand::LoadLevel {
+                    map,
+                    dispatch_source,
+                } => {
+                    if self.refuse_client_level_verb("loadLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.clear_pushed();
                     }
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
-                SystemReactionCommand::RestartLevel => {
+                SystemReactionCommand::RestartLevel { dispatch_source } => {
+                    if self.refuse_client_level_verb("restartLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(source) = self.active_level_source.clone() {
                         if let Some(session) = self.session.as_mut() {
                             session.modal_stack.clear_pushed();
@@ -5024,6 +5033,31 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
+    }
+
+    /// Whether a connected client must drop a host-only level verb. Map
+    /// authority is the host's: a client never changes level on its own and
+    /// never asks for one; it follows the host's relevel. Warns once per
+    /// `(firing source, verb)` for the session, so a crossing that keeps
+    /// firing does not repeat it. See: context/lib/networking.md §Slot lifecycle.
+    fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
+        if !self.is_connected_client() {
+            return false;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return true;
+        };
+        if session
+            .scripting
+            .client_level_verb_warnings
+            .insert((dispatch_source.clone(), verb))
+        {
+            log::warn!(
+                "[Scripting] {verb} from `{dispatch_source}` ignored on a connected client: \
+                 only the host changes level"
+            );
+        }
+        true
     }
 
     /// Fix B — restore each connected-client pawn's authoritative `Transform` from the

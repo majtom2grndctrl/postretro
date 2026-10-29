@@ -458,6 +458,13 @@ frontend menu and reloads the declared backdrop if the frontend has one. Mods
 bind `playerDied` to whichever game-flow policy they want; the engine has no
 built-in death policy.
 
+`loadLevel` and `restartLevel` are host-only. A connected client drops them
+from every source it runs (levelLoad, crossings, UI presses), leaves its modal
+stack untouched, and warns once per firing source and verb for the session.
+The client still changes level, but only by following the host's relevel
+(`networking.md` §Slot lifecycle). `returnToFrontend` is not gated yet: on a
+client it unloads locally and keeps the connection.
+
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions
 intercepted before named-reaction dispatch; they are not reactions a mod

@@ -1,6 +1,6 @@
 # E25--landmark-level-change
 
-Brief · compact · Epic 25 U2 · reads: `context/lib/movement.md` §6 (Teleport) · `context/lib/entity_model.md` §7, §7d · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/boot_sequence.md` §3, §4 · `context/lib/networking.md` §Slot lifecycle, §Session-state ledger · `context/lib/scripting.md` §12 · `plans/ready/E18--player-life-states/` · `plans/done/E18--coop-activation-policy/` · hub `drafts/E25--map-transitions/` (D4, D5, D9–D11, AC 3–9, U2 pins, Boundary inventory) · read at ab08438
+Brief · compact · Epic 25 U2 · reads: `context/lib/movement.md` §6 (Teleport) · `context/lib/entity_model.md` §7, §7d · `context/lib/build_pipeline.md` §Custom FGD · `context/lib/boot_sequence.md` §3, §4 · `context/lib/networking.md` §Slot lifecycle, §Session-state ledger · `context/lib/scripting.md` §12 · `plans/in-progress/E18--player-life-states/` · `plans/done/E18--coop-activation-policy/` · hub `drafts/E25--map-transitions/` (D4, D5, D9–D11, AC 3–9, U2 pins, Boundary inventory) · read at ab08438
 
 **Sequence:** after `coop--client-spawn-view-handoff` (drafts), whose host-side spawn-pose resolver this brief extends. Concurrent with U1.
 

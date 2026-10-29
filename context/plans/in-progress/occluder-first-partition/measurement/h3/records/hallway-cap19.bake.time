@@ -1,0 +1,6 @@
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/bin/prl-build-cap19 dd9962f623e0
+start: 2026-10-28 15:52:05
+/dev/disk1s6   466Gi   427Gi    20Gi    96%    4.7M  214M    2%   /System/Volumes/Data
+exit: 0
+wall_seconds: 918
+/dev/disk1s6   466Gi   430Gi    18Gi    96%    4.7M  189M    2%   /System/Volumes/Data

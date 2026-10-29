@@ -1,0 +1,41 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+roof:A5.s2.c@225/0 5000 2034 1 PortalStepLimitFallback { considered: 5000, accepted: 2034 } 1067.32 999.76 37
+roof:B0.s0.c@45/-15 5000 1427 1 PortalStepLimitFallback { considered: 5000, accepted: 1427 } 1000.74 933.96 40
+roof:B1.s0.c@135/-15 5000 1946 1 PortalStepLimitFallback { considered: 5000, accepted: 1946 } 1127.35 1057.71 36
+roof:B1.s0.c@135/0 5000 1959 1 PortalStepLimitFallback { considered: 5000, accepted: 1959 } 1119.13 1049.51 36
+roof:B1.s0.e@135/-15 5000 1948 1 PortalStepLimitFallback { considered: 5000, accepted: 1948 } 1126.36 1056.50 36
+roof:B1.s0.e@135/0 5000 1927 1 PortalStepLimitFallback { considered: 5000, accepted: 1927 } 1114.75 1045.10 36
+roof:B1.s0.e@90/-15 5000 1769 1 PortalStepLimitFallback { considered: 5000, accepted: 1769 } 1037.52 970.86 39
+roof:B1.s0.e@90/0 5000 1841 1 PortalStepLimitFallback { considered: 5000, accepted: 1841 } 1046.74 979.32 39
+roof:B2.s1.c@135/-15 5000 1970 1 PortalStepLimitFallback { considered: 5000, accepted: 1970 } 1118.18 1049.46 36
+roof:B2.s1.c@135/0 5000 1968 1 PortalStepLimitFallback { considered: 5000, accepted: 1968 } 1108.03 1039.19 37
+roof:B2.s1.c@180/-15 5000 1911 1 PortalStepLimitFallback { considered: 5000, accepted: 1911 } 1090.18 1023.76 37
+roof:B2.s1.e@135/-15 5000 1978 1 PortalStepLimitFallback { considered: 5000, accepted: 1978 } 1114.20 1044.20 36
+roof:B2.s1.e@135/0 5000 2001 1 PortalStepLimitFallback { considered: 5000, accepted: 2001 } 1113.27 1042.67 36
+roof:B2.s1.e@180/-15 5000 1999 1 PortalStepLimitFallback { considered: 5000, accepted: 1999 } 1097.51 1030.17 37
+roof:B3.s1.c@180/-15 5000 1791 1 PortalStepLimitFallback { considered: 5000, accepted: 1791 } 1078.79 1009.42 37
+roof:B3.s1.c@180/0 5000 1909 1 PortalStepLimitFallback { considered: 5000, accepted: 1909 } 1098.06 1028.64 37
+roof:B3.s1.c@225/-15 5000 2093 1 PortalStepLimitFallback { considered: 5000, accepted: 2093 } 1105.16 1042.03 37
+roof:B3.s1.c@225/0 5000 2081 1 PortalStepLimitFallback { considered: 5000, accepted: 2081 } 1096.68 1033.19 37
+roof:B3.s1.e@180/-15 5000 1864 1 PortalStepLimitFallback { considered: 5000, accepted: 1864 } 1100.29 1030.69 37
+roof:B3.s1.e@180/0 5000 2023 1 PortalStepLimitFallback { considered: 5000, accepted: 2023 } 1118.53 1049.09 36
+roof:B3.s1.e@225/-15 5000 1780 1 PortalStepLimitFallback { considered: 5000, accepted: 1780 } 1055.01 991.90 38
+roof:B3.s1.e@225/0 5000 1890 1 PortalStepLimitFallback { considered: 5000, accepted: 1890 } 1074.45 1011.06 37
+roof:B4.s2.c@180/-15 5000 1671 1 PortalStepLimitFallback { considered: 5000, accepted: 1671 } 1047.15 978.38 39
+roof:B4.s2.c@180/0 5000 2032 1 PortalStepLimitFallback { considered: 5000, accepted: 2032 } 1119.90 1049.21 36
+roof:B4.s2.c@225/-15 5000 2102 1 PortalStepLimitFallback { considered: 5000, accepted: 2102 } 1113.81 1047.34 36
+roof:B4.s2.c@225/0 5000 2151 1 PortalStepLimitFallback { considered: 5000, accepted: 2151 } 1121.79 1053.77 36
+roof:B4.s2.e@180/-15 5000 1830 1 PortalStepLimitFallback { considered: 5000, accepted: 1830 } 1081.21 1011.61 37
+roof:B4.s2.e@180/0 5000 1920 1 PortalStepLimitFallback { considered: 5000, accepted: 1920 } 1095.65 1026.25 37
+roof:B4.s2.e@225/-15 5000 2100 1 PortalStepLimitFallback { considered: 5000, accepted: 2100 } 1130.39 1062.12 36
+roof:B4.s2.e@225/0 5000 2102 1 PortalStepLimitFallback { considered: 5000, accepted: 2102 } 1119.43 1051.42 36
+roof:free.c@45/-15 5000 1897 1 PortalStepLimitFallback { considered: 5000, accepted: 1897 } 1086.74 1016.40 37
+roof:free.e@0/-15 5000 1860 1 PortalStepLimitFallback { considered: 5000, accepted: 1860 } 1047.52 979.04 38
+roof:free.e@0/0 5000 1870 1 PortalStepLimitFallback { considered: 5000, accepted: 1870 } 1056.40 987.60 38
+roof:free.e@45/-15 5000 1888 1 PortalStepLimitFallback { considered: 5000, accepted: 1888 } 1084.12 1015.07 37
+roof:A5.s2.c@225/-15 4979 1774 0 PrlPortal { walk_reach: 481 } 1016.77 1003.48 39
+roof:B2.s1.e@180/0 4952 1920 0 PrlPortal { walk_reach: 461 } 1023.22 1010.69 39
+roof:B2.s1.c@180/0 4950 1859 0 PrlPortal { walk_reach: 463 } 1015.45 1002.87 40
+roof:B1.s0.c@90/-15 4942 1788 0 PrlPortal { walk_reach: 421 } 981.94 970.18 41
+roof:free.e@45/0 4870 1846 0 PrlPortal { walk_reach: 469 } 1000.40 986.65 40
+roof:B0.s0.e@45/-15 4820 1435 0 PrlPortal { walk_reach: 369 } 894.83 884.60 45

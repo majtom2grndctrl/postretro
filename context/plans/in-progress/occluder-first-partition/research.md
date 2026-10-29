@@ -207,6 +207,21 @@ An occluder-tier cell has no size limit. A long street or a hall of exempt pilla
 
 q3map's blocksize splits the world on a fixed grid before structural splitting. Here the equivalent is non-solid size-cap splitters through the same path doors use. It is deferred to the follow-up `occluder-cell-size-cap`, opened if the cell sizes, oversize-cluster counts or id-51 misses the sweep reports call for it.
 
+## Shadow prisms
+
+Added after Task 9h (owner, 2026-10-28). In a hall wider than it is deep, a free-standing wall's back face splits before its end planes; the region behind it then no longer holds the wall, so its end planes are never candidates there and only cap grid lines bound the hidden space (`measurement/9h/README.md`).
+
+Geometry. For an eye in front of a wall, within its length and below its top, the whole orthographic prism behind the wall (the broad face swept along its normal) is hidden at any depth. An eye past the wall's end at distance d in front, offset s beyond the end, sees into the prism a width of about s·D/d at depth D. So deep prism sections are hidden from fewer eyes, and the length bound is a cost limit, not a visibility limit; scaling it with the face's length follows that geometry.
+
+Precedent (abstracts and secondary sources; several PDFs unread):
+- Teller's thesis (UCB/CSD-92-708, 1992) subdivides cells along the planes of large opaque occluders first and treats small geometry as detail, the occluder tier's precedent. How it handled a back face splitting before end planes is not described.
+- Shadow-volume BSP trees (Chin & Feiner 1989), shadow frusta (Hudson et al. 1997; Coorg & Teller 1997), occluder fusion (Wonka et al. 2000) and Unreal antiportals cull per viewpoint or view cell; none builds cells from the planes. Chin & Feiner warn that many volumes grow and split the tree heavily.
+- Automatic cell-and-portal generators (Umbra; Haumont et al. 2003 watershed; Lefebvre & Hornus 2003; Lerner et al. 2003) place boundaries from free space or voxels, not occluder extrusions; Lefebvre & Hornus bound cells by size.
+- Source and Quake hint planes, placed by hand at top splitter priority, are the nearest analogue of a prism's side planes. Valve's guidance is that hints achieve little in open areas.
+- No source ranks extrusions that overlap, or ranks an occluder's end planes before its broad face; textbook splitter heuristics favour large faces, which is the defect.
+
+Rival: rank an occluder's end planes before its back face. It holds only while the wall is still in the region, so any other plane separating the wall from the space behind it first brings the leak back, and it reorders every floor and ceiling. Rejected.
+
 ## Bake gap and id-51 sampling
 
 `rendering_pipeline.md` §2 holds any change that can alter a visible set to the bake-gap gate, worded for a walk change over one bake: the pool defers no more blocks than under the walk it replaces. The walk's algorithm stays, but its cells and portals change on every map, so every visible set changes and the block count stops comparing:

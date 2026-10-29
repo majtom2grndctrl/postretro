@@ -5,9 +5,7 @@ use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::{
     ComponentKind, EntityId, EntityRegistry, RespawnPlacement, ScriptCtx, Transform,
 };
-use postretro_foundation::{
-    LifeStatePosture, MovementState, PlayerMovementComponent, enter_life_state,
-};
+use postretro_foundation::{PlayerMovementComponent, enter_life_state};
 
 pub(super) struct Arrival {
     pub pawn: EntityId,
@@ -79,15 +77,7 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
                 );
             }
         }
-        if movement.life_posture == LifeStatePosture::Crouch
-            && let Some(crouch) = movement.crouch.as_ref()
-        {
-            movement.capsule.half_height = crouch.half_height;
-            movement.capsule.eye_height = crouch.eye_height;
-            movement.movement_state = MovementState::Crouching {
-                eye_current: crouch.eye_height,
-            };
-        }
+        crate::sim::player_life::apply_spawn_life_posture(&mut movement);
         let seat_placement = registry
             .seat_for_pawn(pawn)
             .and_then(|seat| placements.seats.get(&seat).copied());

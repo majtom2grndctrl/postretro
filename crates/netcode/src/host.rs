@@ -410,6 +410,7 @@ pub fn host_handle_lifecycle(
     last_sent_tuning: &mut HashMap<u64, TuningPayload>,
     mut seat_table: Option<&mut SeatTable>,
     lifecycle: &[postretro_net::slots::SlotEvent],
+    life_state_names: &[String],
 ) -> Vec<NetworkId> {
     use postretro_net::slots::SlotEvent;
     let mut forgotten_presentation = Vec::new();
@@ -436,6 +437,7 @@ pub fn host_handle_lifecycle(
                     seat_table.as_deref_mut(),
                     *client_id,
                     durable_pawn,
+                    life_state_names,
                 ) {
                     forgotten_presentation.push(net_id);
                 }
@@ -477,10 +479,11 @@ pub fn host_handle_transport_disconnect(
     seat_table: Option<&mut SeatTable>,
     client_id: u64,
     durable_pawn: Option<EntityId>,
+    life_state_names: &[String],
 ) -> Option<NetworkId> {
     let previous_pawn = slot_pawns.pawn_for(client_id).or(durable_pawn);
     if let (Some(seats), Some(pawn)) = (seat_table, previous_pawn) {
-        seats.harvest_pawn(registry, pawn);
+        seats.harvest_pawn(registry, pawn, life_state_names);
     }
     if let Some(pawn) = previous_pawn {
         pending_hit_declarations.remove_pawn_shots(allocator, pawn);
@@ -628,6 +631,7 @@ mod tests {
                 &mut last_sent_tuning,
                 None,
                 std::slice::from_ref(event),
+                &[],
             );
             if let SlotEvent::Participating { client_id } = event {
                 replication.register_client(*client_id);
@@ -653,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_demotion_harvests_bound_pawn_health_before_despawn() {
+    fn life_state_lifecycle_demotion_harvests_bound_pawn_health_and_name_before_despawn() {
         use postretro_entities::components::health::HealthComponent;
         use postretro_foundation::Seat;
         use postretro_scripting_core::data_descriptors::HealthDescriptor;
@@ -695,6 +699,14 @@ mod tests {
         });
         health.current = 31.0;
         registry.set_component(pawn, health).unwrap();
+        let mut movement = crate::predict_reconcile_harness_test_fixtures::component();
+        postretro_foundation::enter_life_state(
+            &mut movement,
+            1,
+            &postretro_foundation::LifeStateProfile::default(),
+            0,
+        );
+        registry.set_component(pawn, movement).unwrap();
         seats.bind_pawn(&mut registry, seat, pawn);
 
         host_handle_lifecycle(
@@ -716,9 +728,14 @@ mod tests {
                 client_id: CLIENT_ID,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
+            &["alive".into(), "down".into()],
         );
 
         assert!(!registry.exists(pawn), "demotion despawns the remote pawn");
+        assert_eq!(
+            seats.carried_state(seat).unwrap().life_state.as_deref(),
+            Some("down")
+        );
         let carried_health = seats
             .carried_state(seat)
             .and_then(|state| state.health_current)
@@ -801,6 +818,7 @@ mod tests {
                 client_id: ORIGINAL_CLIENT,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
+            &[],
         );
         assert_eq!(
             seats.hold_disconnected_client(&mut registry, ORIGINAL_CLIENT),

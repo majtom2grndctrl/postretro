@@ -2334,7 +2334,7 @@ mod tests {
         );
         let mut seats = SeatTable::local_only();
         seats.bind_pawn(&mut registry, Seat(0), pawn);
-        seats.harvest_pawn(&registry, pawn);
+        seats.harvest_pawn(&registry, pawn, &[]);
         let carried = seats
             .carried_state(Seat(0))
             .expect("the level-transition ledger harvests the acquired inventory")

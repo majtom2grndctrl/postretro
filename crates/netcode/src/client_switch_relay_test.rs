@@ -313,6 +313,7 @@ impl SwitchRelay {
                         &mut self.last_sent_tuning,
                         None,
                         std::slice::from_ref(event),
+                        &[],
                     );
                 }
             }

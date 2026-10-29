@@ -10,6 +10,40 @@ use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_pools::TriggerPoolInstallReport;
 
 impl App {
+    /// CPU/session half of suspend, after window, renderer and debug UI retire.
+    /// Harvest while live bindings exist; parity then demotes remote slots for
+    /// the resumed lifecycle drain. Held seats and queued respawns stay intact.
+    pub(crate) fn suspend_level_state(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            if let Some(seats) = session.seat_table.as_mut() {
+                // Harvest state but retain bindings until lifecycle events drain
+                // after resume; their durable fallback resolves the old pawn.
+                seats.harvest_bound_pawns(
+                    &registry,
+                    &session
+                        .scripting
+                        .script_ctx
+                        .data_registry
+                        .borrow()
+                        .life_state_names,
+                );
+            }
+        }
+        self.clear_net_level_parity();
+        self.discard_pending_system_commands();
+        self.clear_surface_lifetime_level_state();
+        self.clear_fluid_eye_presentation();
+        // Drop any in-flight level-load worker handoff. On resume the splash
+        // state machine starts over from frame 0 and will spawn a fresh
+        // worker; holding a stale receiver/handle would either block install
+        // forever or deliver into the wrong boot phase.
+        self.level_load = None;
+        self.level_rx = None;
+        self.level_worker = None;
+        self.reset_boot_state_after_suspend();
+    }
+
     /// Install the immutable admission identity and current mod-parity digest on
     /// an already-constructed endpoint. This is deliberately a no-op for
     /// single-player, keeping hash work out of the ordinary boot path.
@@ -251,7 +285,15 @@ impl App {
             {
                 let registry = session.scripting.script_ctx.registry.borrow();
                 if let Some(seats) = session.seat_table.as_mut() {
-                    seats.harvest_bound_pawns(&registry);
+                    seats.harvest_bound_pawns(
+                        &registry,
+                        &session
+                            .scripting
+                            .script_ctx
+                            .data_registry
+                            .borrow()
+                            .life_state_names,
+                    );
                 }
             }
             {

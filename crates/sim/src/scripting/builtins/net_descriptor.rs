@@ -95,6 +95,7 @@ pub fn spawn_net_slot_pawn_with_carried_loadout(
     };
 
     restore_carried_health(carried_loadout, registry, id);
+    crate::sim::player_life::restore_carried_life_state(carried_loadout, registry, id, descriptor);
 
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
     // `getEntityProperty` works uniformly for net-slot pawns, matching the

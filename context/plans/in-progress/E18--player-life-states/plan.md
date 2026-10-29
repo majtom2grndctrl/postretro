@@ -8,8 +8,9 @@ read at: 834a09c51
 
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. Tasks 1–5 are complete as separately verified milestones. Next is Task 6
-carried state/rejoin, then the consumer/docs and final review gates. Tick-start
+`codex/player-life-states`. Tasks 1–5 are complete as separately verified milestones. Task 6
+carried state/rejoin is complete; next are the Task 7 consumer/docs, residual
+ordering proofs and final review gates. Tick-start
 and foot-anchor Path corrections are recorded below. The usage-window interruptions
 left edits intact; no scope or owner approval changed. Manual AC17/AC18 proof
 remains outstanding for the final runbook.
@@ -222,7 +223,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | done: 7 sim, 2 netcode and 2 app behavior tests pass |
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | done: catalog, publication, clock, remap, replication and SDK proofs pass |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | done: 20 library + 6 app respawn tests and regressions pass |
-| 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | not started |
+| 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | done: harvest, spawn, real App lifecycle and regressions pass |
 | 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
 
 First proof is Task 1's real descriptor/verb/condition/wire/fire slice: it
@@ -352,6 +353,35 @@ listed boundaries; no allocation is a passing result.
   and remote restore runs before seat binding, so it cannot require membership.
 - Tasks 6/7, review-panel/fix loop, final preflight and manual runbook are still
   outstanding. No full workspace suite has run.
+
+## Task 6 implementation checkpoint (2026-10-29)
+
+- Carried records store an authored name. All harvest routes receive current
+  DataRegistry names, including world-less/running disconnect/demotion polls,
+  host suspend and unload. Movement-only pawns harvest; absent movement keeps
+  the prior value, while a present undeclared/unknown state clears it.
+- Level unload clears names on live and held records. Suspend retains them.
+  The native callback delegates its existing CPU sequence unchanged through
+  `App::suspend_level_state`, enabling production lifecycle tests without a GPU.
+- Both actual spawn routes restore the current descriptor's rejoin target or
+  initial at elapsed zero, before net-slot seat binding. Spawn/respawn share
+  posture shaping so a forced crouch begins at the correct foot anchor even
+  before the first remote command.
+- All-target check passes; four must-use test warnings were repaired. Focused
+  harvest (4), real host demotion (1), spawn/first-tick `rejoin_` (8, including
+  one SDK surface case), exact O7 next-level materialization (1), and actual App
+  lifecycle (6) all pass. O23/O41 first used a forbidden faction-roster edit;
+  the fixture now changes a supported hashed trigger-pool declaration and both
+  actual staged-commit/demotion tests pass. Rejections surface diagnostics.
+- Shared spawn-posture/suspend changes regress cleanly: sim `respawn_` 16,
+  App `respawn_` 7. The new geometry starts crouched before a first command and
+  respawn still restores standing/ground coherently. Every filter matched.
+- Task 6 is complete. Source audit of the Ordering ledger identified remaining
+  Task 7 proof strengthening: O5 actual continuation tick; O14 profile-only
+  prediction correction counts; O24 real backlog trim -> replay -> UI clock;
+  O38 look sampling through actual receipt -> host facing agreement; O39 actual
+  reload while a wait is parked. O1/O2, AC3/AC15/AC20 and docs remain Task 7.
+  No full workspace suite or final preflight has run.
 
 ## Performance and resource constraints
 

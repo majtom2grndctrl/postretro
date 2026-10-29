@@ -2055,26 +2055,7 @@ impl ApplicationHandler for App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
-        if let Some(session) = self.session.as_mut() {
-            let registry = session.scripting.script_ctx.registry.borrow();
-            if let Some(seats) = session.seat_table.as_mut() {
-                // Harvest state but retain bindings until lifecycle events drain
-                // after resume; their durable fallback resolves the old pawn.
-                seats.harvest_bound_pawns(&registry);
-            }
-        }
-        self.clear_net_level_parity();
-        self.discard_pending_system_commands();
-        self.clear_surface_lifetime_level_state();
-        self.clear_fluid_eye_presentation();
-        // Drop any in-flight level-load worker handoff. On resume the splash
-        // state machine starts over from frame 0 and will spawn a fresh
-        // worker; holding a stale receiver/handle would either block install
-        // forever or deliver into the wrong boot phase.
-        self.level_load = None;
-        self.level_rx = None;
-        self.level_worker = None;
-        self.reset_boot_state_after_suspend();
+        self.suspend_level_state();
     }
 
     fn window_event(
@@ -2692,6 +2673,7 @@ impl App {
                     seat_table.as_deref_mut(),
                     *client_id,
                     durable_pawn,
+                    &script_ctx.data_registry.borrow().life_state_names,
                 );
                 // Mirror the client's per-despawn buffer forget: drop the disconnected
                 // pawn's delayed presentation samples so they do not leak across the
@@ -2778,6 +2760,7 @@ impl App {
                     last_sent_tuning,
                     seat_table.as_deref_mut(),
                     std::slice::from_ref(event),
+                    &script_ctx.data_registry.borrow().life_state_names,
                 );
                 // Mirror the client's per-despawn buffer forget: drop each closed
                 // pawn's delayed presentation samples so they do not leak across the
@@ -4028,6 +4011,7 @@ impl App {
                                     seat_table.as_deref_mut(),
                                     *client_id,
                                     durable_pawn,
+                                    &script_ctx.data_registry.borrow().life_state_names,
                                 );
                                 // Mirror the client's per-despawn buffer forget: drop
                                 // the disconnected pawn's delayed presentation samples
@@ -4139,6 +4123,7 @@ impl App {
                                     last_sent_tuning,
                                     seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
+                                    &script_ctx.data_registry.borrow().life_state_names,
                                 );
                                 // Mirror the client's per-despawn buffer forget: drop
                                 // each closed pawn's delayed presentation samples so

@@ -119,3 +119,81 @@ impl TriggerStageCapabilities {
             .unwrap_or(true)
     }
 }
+
+/// Resolve a departing pawn against the authority's current mod table.
+/// The caller distinguishes an absent movement source from an undeclared one.
+pub fn life_state_name(
+    registry: &EntityRegistry,
+    pawn: EntityId,
+    names: &[String],
+) -> Option<String> {
+    let movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .ok()?;
+    if movement.life_state == postretro_foundation::UNDECLARED_LIFE_STATE {
+        return None;
+    }
+    names.get(usize::from(movement.life_state)).cloned()
+}
+
+/// Materialization runs before a net-slot pawn is bound to its seat. Resolve
+/// through its lowered descriptor directly, without a membership/role query.
+pub fn restore_carried_life_state(
+    carried: Option<&postretro_combat_model::CarriedState>,
+    registry: &mut EntityRegistry,
+    pawn: EntityId,
+    descriptor: &postretro_entities::EntityTypeDescriptor,
+) {
+    let Some(states) = descriptor.life_states.as_ref() else {
+        return;
+    };
+    let target = carried
+        .and_then(|carried| carried.life_state.as_deref())
+        .filter(|name| states.states.contains_key(*name))
+        .and_then(|name| states.rejoin.get(name))
+        .and_then(|target| states.state(target));
+    let (id, profile) = target.unwrap_or_else(|| states.initial_state());
+    let delta = match registry
+        .get_component_value_mut(pawn, postretro_entities::ComponentKind::PlayerMovement)
+    {
+        Ok(postretro_entities::ComponentValue::PlayerMovement(movement)) => {
+            postretro_foundation::enter_life_state(movement, id, profile, states.table_revision);
+            apply_spawn_life_posture(movement)
+        }
+        _ => return,
+    };
+    if delta != 0.0
+        && let Ok(transform) = registry.get_component::<postretro_entities::Transform>(pawn)
+    {
+        let mut pose = *transform;
+        pose.position.y += delta;
+        let _ = registry.set_presentation_transform(pawn, pose);
+    }
+}
+
+/// A new pawn/respawn has no presented transition to ease. Its geometry starts
+/// in the target posture even before the first remote command, with feet held.
+pub(crate) fn apply_spawn_life_posture(movement: &mut PlayerMovementComponent) -> f32 {
+    let previous_height = movement.capsule.half_height;
+    let crouch = if movement.life_posture == postretro_foundation::LifeStatePosture::Crouch {
+        movement.crouch.as_ref()
+    } else {
+        None
+    };
+    if let Some(crouch) = crouch {
+        movement.capsule.half_height = crouch.half_height;
+        movement.capsule.eye_height = crouch.eye_height;
+        movement.movement_state = postretro_foundation::MovementState::Crouching {
+            eye_current: crouch.eye_height,
+        };
+    } else {
+        movement.capsule.half_height = movement.standing_half_height;
+        movement.capsule.eye_height = movement.standing_eye_height;
+        movement.movement_state = postretro_foundation::MovementState::Normal;
+    }
+    movement.capsule.half_height - previous_height
+}
+
+#[cfg(test)]
+#[path = "life_state_restore_tests.rs"]
+mod restore_tests;

@@ -51,11 +51,13 @@ enum CarriedField<'a> {
     Wieldables(&'a mut [Option<String>; WIELDABLE_SLOT_CAPACITY]),
     Magazines(&'a mut [Option<u32>; WIELDABLE_SLOT_CAPACITY]),
     ActiveSlot(&'a mut usize),
+    LifeState(&'a mut Option<String>),
 }
 
-fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 5] {
+fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 6] {
     let CarriedState {
         health_current,
+        life_state,
         reserve,
         wieldables,
         magazines,
@@ -67,6 +69,7 @@ fn carried_fields(state: &mut CarriedState) -> [CarriedField<'_>; 5] {
         CarriedField::Wieldables(wieldables),
         CarriedField::Magazines(magazines),
         CarriedField::ActiveSlot(active_slot),
+        CarriedField::LifeState(life_state),
     ]
 }
 
@@ -499,17 +502,32 @@ impl SeatTable {
     /// Lookup is by pawn identity, not current client binding: a same-poll
     /// disconnect/rebind cannot make the old dying pawn write into the new one.
     #[cfg(not(any(test, feature = "test-support")))]
-    pub(crate) fn harvest_pawn(&mut self, registry: &EntityRegistry, pawn: EntityId) {
-        self.harvest_pawn_inner(registry, pawn);
+    pub(crate) fn harvest_pawn(
+        &mut self,
+        registry: &EntityRegistry,
+        pawn: EntityId,
+        life_state_names: &[String],
+    ) {
+        self.harvest_pawn_inner(registry, pawn, life_state_names);
     }
 
     /// Test-support access for cross-crate level-transition harnesses.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn harvest_pawn(&mut self, registry: &EntityRegistry, pawn: EntityId) {
-        self.harvest_pawn_inner(registry, pawn);
+    pub fn harvest_pawn(
+        &mut self,
+        registry: &EntityRegistry,
+        pawn: EntityId,
+        life_state_names: &[String],
+    ) {
+        self.harvest_pawn_inner(registry, pawn, life_state_names);
     }
 
-    fn harvest_pawn_inner(&mut self, registry: &EntityRegistry, pawn: EntityId) {
+    fn harvest_pawn_inner(
+        &mut self,
+        registry: &EntityRegistry,
+        pawn: EntityId,
+        life_state_names: &[String],
+    ) {
         let Some(seat) = registry.seat_for_pawn(pawn) else {
             return;
         };
@@ -517,6 +535,12 @@ impl SeatTable {
             .get_component::<HealthComponent>(pawn)
             .ok()
             .map(|health| health.current);
+        // Presence is separate from the resolved name: a present undeclared or
+        // unknown state clears a prior name; an absent Movement source preserves it.
+        let life_state = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .ok()
+            .map(|_| crate::sim::player_life::life_state_name(registry, pawn, life_state_names));
         let reserve = registry.get_component::<AmmoReserve>(pawn).ok().cloned();
         let inventory = registry.get_component::<Inventory>(pawn).ok().cloned();
         let harvested_weapons: Option<[Option<(String, u32)>; WIELDABLE_SLOT_CAPACITY]> =
@@ -535,7 +559,11 @@ impl SeatTable {
                     Some((canonical_name, magazine))
                 })
             });
-        if health_current.is_none() && reserve.is_none() && inventory.is_none() {
+        if health_current.is_none()
+            && reserve.is_none()
+            && inventory.is_none()
+            && life_state.is_none()
+        {
             return;
         }
         let carried = self
@@ -546,6 +574,11 @@ impl SeatTable {
 
         for field in carried_fields(state) {
             match field {
+                CarriedField::LifeState(carried_name) => {
+                    if let Some(life_state) = life_state.as_ref() {
+                        *carried_name = life_state.clone();
+                    }
+                }
                 CarriedField::HealthCurrent(carried_health) => {
                     if let Some(health_current) = health_current {
                         *carried_health = Some(health_current);
@@ -588,10 +621,10 @@ impl SeatTable {
 
     /// Harvest every currently bound pawn. Missing pawns/components preserve
     /// their prior records exactly.
-    pub fn harvest_bound_pawns(&mut self, registry: &EntityRegistry) {
+    pub fn harvest_bound_pawns(&mut self, registry: &EntityRegistry, life_state_names: &[String]) {
         let pawns: Vec<EntityId> = self.pawn_bindings.values().copied().collect();
         for pawn in pawns {
-            self.harvest_pawn(registry, pawn);
+            self.harvest_pawn(registry, pawn, life_state_names);
         }
     }
 
@@ -611,6 +644,10 @@ impl SeatTable {
     /// despawned — entity indices are recycled, so a surviving entry could later
     /// be matched by an unrelated entity.
     pub fn clear_pawn_bindings_for_level_unload(&mut self, registry: &mut EntityRegistry) {
+        // A new level starts in initial even for held seats with no live pawn.
+        for state in self.carried.values_mut().flatten() {
+            state.life_state = None;
+        }
         for seat in self.pawn_bindings.keys().copied().collect::<Vec<_>>() {
             self.set_pawn_binding(registry, seat, None);
         }
@@ -752,6 +789,9 @@ pub fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) -> Vec<Se
     released_seats
 }
 
+#[cfg(test)]
+#[path = "seat/life_state_harvest_test.rs"]
+mod life_state_harvest_test;
 #[cfg(test)]
 mod roster_harness_test;
 
@@ -1002,7 +1042,7 @@ mod tests {
                 ..
             }]
         ));
-        seats.harvest_bound_pawns(&old_level);
+        seats.harvest_bound_pawns(&old_level, &[]);
         old_level.clear_for_level_unload();
         seats.clear_pawn_bindings_for_level_unload(&mut old_level);
         let carried = seats
@@ -1248,7 +1288,7 @@ mod tests {
             .unwrap();
         seats.bind_pawn(&mut old_registry, Seat(0), old_pawn);
 
-        seats.harvest_bound_pawns(&old_registry);
+        seats.harvest_bound_pawns(&old_registry, &[]);
         old_registry.clear_for_level_unload();
         seats.clear_pawn_bindings_for_level_unload(&mut old_registry);
 
@@ -1301,10 +1341,10 @@ mod tests {
             .set_component(first_pawn, health(100.0, 42.0))
             .unwrap();
         seats.bind_pawn(&mut registry, Seat(0), first_pawn);
-        seats.harvest_pawn(&registry, first_pawn);
+        seats.harvest_pawn(&registry, first_pawn, &[]);
         registry.despawn(first_pawn).unwrap();
 
-        seats.harvest_bound_pawns(&registry);
+        seats.harvest_bound_pawns(&registry, &[]);
         registry.clear_for_level_unload();
         seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
@@ -1357,7 +1397,7 @@ mod tests {
         registry.set_component(pawn, inventory).unwrap();
         seats.bind_pawn(&mut registry, Seat(0), pawn);
 
-        seats.harvest_pawn(&registry, pawn);
+        seats.harvest_pawn(&registry, pawn, &[]);
         registry.clear_for_level_unload();
         seats.clear_pawn_bindings_for_level_unload(&mut registry);
 
@@ -1385,7 +1425,7 @@ mod tests {
             .set_component(old_pawn, health(100.0, 0.0))
             .unwrap();
         seats.bind_pawn(&mut old_registry, Seat(0), old_pawn);
-        seats.harvest_pawn(&old_registry, old_pawn);
+        seats.harvest_pawn(&old_registry, old_pawn, &[]);
 
         let mut new_registry = EntityRegistry::new();
         let new_pawn = new_registry.spawn(Transform::default());

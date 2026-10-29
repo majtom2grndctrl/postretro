@@ -18,6 +18,8 @@ use crate::FluidMovementTable;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CarriedState {
     pub health_current: Option<f32>,
+    /// Host-local authored name, independent of reload-lowered numeric ids.
+    pub life_state: Option<String>,
     pub reserve: AmmoReserve,
     pub wieldables: [Option<String>; WIELDABLE_SLOT_CAPACITY],
     pub magazines: [Option<u32>; WIELDABLE_SLOT_CAPACITY],
@@ -28,6 +30,7 @@ impl Default for CarriedState {
     fn default() -> Self {
         Self {
             health_current: None,
+            life_state: None,
             reserve: AmmoReserve::new(),
             wieldables: std::array::from_fn(|_| None),
             magazines: [None; WIELDABLE_SLOT_CAPACITY],

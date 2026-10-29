@@ -964,6 +964,7 @@ mod tests {
                 client_id: CLIENT_A,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
+            &[],
         );
 
         assert_eq!(

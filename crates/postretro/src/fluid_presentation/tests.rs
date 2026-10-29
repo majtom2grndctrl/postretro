@@ -918,8 +918,8 @@ fn suspend_clears_the_fluid_eye_presentation() {
     let body = &main[start..];
     let body = &body[..body.find("\n    fn ").unwrap_or(body.len())];
     assert!(
-        body.contains("self.clear_fluid_eye_presentation();"),
-        "suspended() clears the fluid eye presentation"
+        body.contains("self.suspend_level_state();"),
+        "native suspend delegates to the CPU/session suspend seam"
     );
 
     let mut app = test_app();
@@ -933,7 +933,7 @@ fn suspend_clears_the_fluid_eye_presentation() {
         eye
     };
     assert_eq!(app.fluid_eye.tint(), WATER.tint);
-    app.clear_fluid_eye_presentation();
+    app.suspend_level_state();
     assert_eq!(app.fluid_eye.tint(), [0.0; 4]);
     assert_eq!(app.fluid_eye.muffle(), 0.0);
 }

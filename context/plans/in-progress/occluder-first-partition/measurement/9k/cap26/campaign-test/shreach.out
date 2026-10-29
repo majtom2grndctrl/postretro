@@ -1,0 +1,20 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap26/campaign-test/campaign-test.prl
+879 cells (165 camera), 734 clusters (17.598 MiB whole map), pinned + owners 0 clusters (0.000 MiB), id-51 max lead 32.0 m, 20254 entries
+lightmap: 156 blocks (154.742 MiB whole map), 0 pinned blocks
+
+## L = 16 m (165 camera cells)
+mandatory cells            median 100, p95 140, max 148
+SH mandatory bytes         median 16.240 MiB, p95 16.708 MiB, max 16.708 MiB
+SH mandatory clusters      median 15, p95 18, max 18
+lightmap mandatory bytes   median 83.025 MiB, p95 116.342 MiB, max 119.746 MiB
+  id-22 half bytes         median 35.582 MiB, p95 49.861 MiB, max 51.320 MiB
+  id-42 half bytes         median 47.443 MiB, p95 66.481 MiB, max 68.426 MiB
+lightmap blocks            median 91, p95 130, max 138
+lightmap pairs             median 91, p95 130, max 138
+lightmap pool layers       median 10, p95 13, max 13
+worst SH cell 860: 18 clusters, 16.708 MiB SH; lightmap 127 blocks, 108.018 MiB, 12 layers
+
+Gate (L = 16 m): worst-cell SH mandatory 16.708 MiB of the 256 MiB floor, before fixed metadata and whole-resident scatter
+

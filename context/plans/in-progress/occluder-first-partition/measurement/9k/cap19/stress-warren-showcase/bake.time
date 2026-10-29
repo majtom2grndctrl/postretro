@@ -1,0 +1,7 @@
+flags: --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache 
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/bin/prl-build-cap19 e912c05d6d72
+start: 2026-10-28 23:22:17
+/dev/disk1s6   466Gi   428Gi    20Gi    96%    4.7M  206M    2%   /System/Volumes/Data
+exit: 0
+wall_seconds: 11
+/dev/disk1s6   466Gi   428Gi    20Gi    96%    4.7M  206M    2%   /System/Volumes/Data

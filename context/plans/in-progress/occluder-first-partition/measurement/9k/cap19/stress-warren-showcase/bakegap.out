@@ -1,0 +1,29 @@
+
+running 1 test
+replaying /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/stress-warren-showcase/stress-warren-showcase.before.bakegap: 3 sequences
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap19/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.1 s
+bake read: id51=6cd9df068be05551 walk_epoch=3 size=37356678 mtime=1793254948 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap19/stress-warren-showcase/stress-warren-showcase.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 98360 frames in 17.8 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (1 occupied; headroom cost 1 layers, 14.0 MiB), growths 0
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 116745 frames in 13.4 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (1 occupied; headroom cost 1 layers, 14.0 MiB), growths 0
+pose tour stress-warren-showcase.poses, 2 frames per pose: 10232 frames in 2.4 s; deferred 0 blocks / 0 texels, left behind 6319 blocks / 31643696 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (1 occupied; headroom cost 1 layers, 14.0 MiB), growths 0
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap19/stress-warren-showcase/stress-warren-showcase.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 0 after 0; trip frames: before 0 after 0; frames deferring more texels after: 0 of 98360
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 0 after 0; trip frames: before 0 after 0; frames deferring more texels after: 0 of 116745
+pose tour stress-warren-showcase.poses, 2 frames per pose
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 9264208 after 31643696; trip frames: before 0 after 0; frames deferring more texels after: 0 of 10232
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 34.21s
+

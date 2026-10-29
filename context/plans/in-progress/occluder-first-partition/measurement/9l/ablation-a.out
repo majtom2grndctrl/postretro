@@ -1,0 +1,194 @@
+
+running 1 test
+
+######## occlusion-test: 141 brushes
+ROW occlusion-test none            tier_leaves   313 cells   484 interior   107 sliver<0.5    48 portals   241 faces   1303 prisms    0 prism_splits     0 (0.0s)
+  splits by plane kind: {}
+ROW occlusion-test all             tier_leaves   416 cells   592 interior   174 sliver<0.5    76 portals   430 faces   1376 prisms   17 prism_splits   116 (0.1s)
+  splits by plane kind: {"abutB": 19, "abutS": 14, "farB": 6, "farS": 5, "freeB": 72}
+  PRISMS occlusion-test: 17 prisms (12 brush, 5 section), truncated 6; plane kinds {"far (brush)": 3, "far (section)": 3, "side abutting (brush)": 21, "side abutting (section)": 20, "side free (brush)": 27}; edges with mixed open fraction 1
+  edge open fraction: 0 41 | (0,1/3) 0 | [1/3,1/2] 0 | (1/2,2/3) 1 | [2/3,1) 0 | 1 26
+  overlapping prism pairs 40; overlaps per prism p50 3 max 11
+  splits by source: brush-only 97 section-only 19 both/none 0
+  top prisms by splits:
+    #6 brush 102 splits 43: face n DVec3(0.00, 0.00, -1.00) d -7.62, depth 46.63, bounds DVec3(-75.8, 0.0, -39.0)..DVec3(-50.4, 13.0, 7.6), edges open [0.00, 0.00, 1.00, 0.00], kinds [abutB,abutB,freeB,abutB], overlaps 11
+    #13 section [134, 135, 136] splits 17: face n DVec3(-0.00, -0.00, 1.00) d -43.08, depth 21.13 (truncated), bounds DVec3(-48.4, 0.0, -43.1)..DVec3(-37.8, 6.5, -21.9), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS,farS], overlaps 1
+    #0 brush 37 splits 15: face n DVec3(1.00, 0.00, 0.00) d -30.07, depth 30.07, bounds DVec3(-30.1, 0.0, -26.0)..DVec3(0.0, 6.5, 0.0), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeB,freeB,freeB,abutB], overlaps 2
+    #8 brush 113 splits 14: face n DVec3(-0.00, 1.00, -0.00) d 3.66, depth 9.35, bounds DVec3(-58.1, 3.7, -5.8)..DVec3(-52.2, 13.0, 5.8), edges open [1.00, 1.00, 1.00, 1.00], kinds [freeB,freeB,freeB,freeB], overlaps 2
+    #7 brush 113 splits 8: face n DVec3(0.00, -1.00, 0.00) d -3.25, depth 3.25, bounds DVec3(-58.1, 0.0, -5.8)..DVec3(-52.2, 3.3, 5.8), edges open [1.00, 1.00, 1.00, 1.00], kinds [freeB,freeB,freeB,freeB], overlaps 8
+    #9 brush 102 splits 7: face n DVec3(-0.00, -0.00, 1.00) d 10.16, depth 2.84, bounds DVec3(-75.8, 0.0, 10.2)..DVec3(-50.4, 13.0, 13.0), edges open [0.00, 0.00, 1.00, 0.00], kinds [abutB,abutB,freeB,abutB], overlaps 0
+    #11 brush 124 splits 7: face n DVec3(-0.00, -0.00, 1.00) d -5.18, depth 11.79 (truncated), bounds DVec3(-58.1, 0.0, -5.2)..DVec3(-52.2, 3.3, 6.6), edges open [0.00, 0.00, 1.00, 1.00], kinds [abutB,abutB,freeB,freeB,farB], overlaps 7
+    #4 brush 124 splits 5: face n DVec3(0.00, 0.00, -1.00) d 5.59, depth 11.79 (truncated), bounds DVec3(-58.1, 0.0, -17.4)..DVec3(-52.2, 3.3, -5.6), edges open [0.67, 0.00, 1.00, 1.00], kinds [freeB,abutB,freeB,freeB,farB], overlaps 3
+    #1 brush 120 splits 2: face n DVec3(1.00, 0.00, 0.00) d -52.22, depth 21.54 (truncated), bounds DVec3(-52.2, 0.0, -5.4)..DVec3(-30.7, 3.3, 5.4), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeB,freeB,freeB,abutB,farB], overlaps 2
+    #5 section [114, 115, 116] splits 1: face n DVec3(0.00, 0.00, -1.00) d -5.38, depth 10.16 (truncated), bounds DVec3(-57.7, 0.0, -4.8)..DVec3(-52.6, 3.3, 5.4), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS,farS], overlaps 7
+  portals by plane: {"abutS (also a brush plane)": 20, "farB": 13, "farS": 14, "freeB (also a brush plane)": 145, "freeB+abutB (also a brush plane)": 10, "freeB+abutB+abutS (also a brush plane)": 62, "freeB+abutS (also a brush plane)": 32, "not on a prism plane": 134}
+ROW occlusion-test free+far        tier_leaves   386 cells   562 interior   165 sliver<0.5    73 portals   402 faces   1368 prisms   13 prism_splits    83 (0.0s)
+  splits by plane kind: {"farB": 6, "farS": 5, "freeB": 72}
+ROW occlusion-test free            tier_leaves   369 cells   545 interior   148 sliver<0.5    68 portals   358 faces   1339 prisms   10 prism_splits    65 (0.0s)
+  splits by plane kind: {"freeB": 65}
+ROW occlusion-test brush           tier_leaves   397 cells   573 interior   157 sliver<0.5    70 portals   384 faces   1357 prisms   12 prism_splits    94 (0.0s)
+  splits by plane kind: {"abutB": 19, "farB": 6, "freeB": 69}
+ROW occlusion-test section         tier_leaves   326 cells   497 interior   118 sliver<0.5    52 portals   274 faces   1317 prisms    5 prism_splits    19 (0.0s)
+  splits by plane kind: {"abutS": 14, "farS": 5}
+ROW occlusion-test abut            tier_leaves   337 cells   525 interior   110 sliver<0.5    49 portals   262 faces   1382 prisms   15 prism_splits    33 (0.0s)
+  splits by plane kind: {"abutB": 19, "abutS": 14}
+ROW occlusion-test brush-free+far  tier_leaves   378 cells   554 interior   157 sliver<0.5    70 portals   384 faces   1357 prisms   10 prism_splits    75 (0.0s)
+  splits by plane kind: {"farB": 6, "freeB": 69}
+ROW occlusion-test brush-free      tier_leaves   369 cells   545 interior   148 sliver<0.5    68 portals   358 faces   1339 prisms   10 prism_splits    65 (0.0s)
+  splits by plane kind: {"freeB": 65}
+ROW occlusion-test far             tier_leaves   327 cells   498 interior   121 sliver<0.5    51 portals   278 faces   1328 prisms    6 prism_splits    11 (0.0s)
+  splits by plane kind: {"farB": 6, "farS": 5}
+
+######## stress-warren-hallway-inspection: 1608 brushes
+ROW stress-warren-hallway-inspection none            tier_leaves  5110 cells  7465 interior  1516 sliver<0.5    11 portals  2368 faces  12560 prisms    0 prism_splits     0 (0.7s)
+  splits by plane kind: {}
+ROW stress-warren-hallway-inspection all             tier_leaves  6973 cells 10021 interior  3268 sliver<0.5    28 portals  5357 faces  14994 prisms 1000 prism_splits  2125 (1.3s)
+  splits by plane kind: {"abutB": 994, "abutB+abutS": 11, "abutB+freeS": 1, "abutS": 1, "farB": 555, "freeB": 562, "freeS": 1}
+  PRISMS stress-warren-hallway-inspection: 1000 prisms (994 brush, 6 section), truncated 164; plane kinds {"far (brush)": 164, "side abutting (brush)": 3685, "side abutting (section)": 22, "side free (brush)": 291, "side free (section)": 2}; edges with mixed open fraction 1127
+  edge open fraction: 0 2631 | (0,1/3) 120 | [1/3,1/2] 956 | (1/2,2/3) 2 | [2/3,1) 49 | 1 242
+  overlapping prism pairs 3230; overlaps per prism p50 5 max 77
+  splits by source: brush-only 2111 section-only 2 both/none 12
+  top prisms by splits:
+    #989 brush 29 splits 60: face n DVec3(-1.00, -0.00, -0.00) d -65.02, depth 65.02 (truncated), bounds DVec3(-0.0, 1.6, -37.4)..DVec3(65.0, 14.6, -4.9), edges open [0.40, 0.40, 0.00, 0.00], kinds [abutB,abutB,abutB,abutB,farB], overlaps 13
+    #141 brush 126 splits 51: face n DVec3(1.00, 0.00, 0.00) d -22.76, depth 65.02 (truncated), bounds DVec3(-22.8, 1.6, -37.4)..DVec3(42.3, 14.6, -4.9), edges open [0.40, 0.40, 0.00, 0.00], kinds [abutB,abutB,abutB,abutB,farB], overlaps 13
+    #615 brush 513 splits 21: face n DVec3(-0.00, -0.00, 1.00) d 50.39, depth 47.14 (truncated), bounds DVec3(77.2, 34.1, 50.4)..DVec3(100.8, 47.1, 97.5), edges open [0.00, 0.00, 0.00, 1.00], kinds [abutB,abutB,abutB,freeB,farB], overlaps 9
+    #69 brush 583 splits 20: face n DVec3(1.00, 0.00, 0.00) d 29.26, depth 47.14 (truncated), bounds DVec3(29.3, 34.1, -28.4)..DVec3(76.4, 47.1, -4.9), edges open [0.40, 1.00, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB,farB], overlaps 16
+    #119 brush 1329 splits 20: face n DVec3(1.00, 0.00, 0.00) d -13.00, depth 68.28, bounds DVec3(-13.0, 1.6, -17.9)..DVec3(55.3, 14.6, 37.4), edges open [0.00, 0.80, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB], overlaps 10
+    #360 brush 1321 splits 20: face n DVec3(0.00, 0.00, -1.00) d -34.14, depth 68.28 (truncated), bounds DVec3(-16.3, 1.6, -34.1)..DVec3(17.9, 14.6, 34.1), edges open [0.00, 0.00, 0.80, 0.00], kinds [abutB,abutB,freeB,abutB,farB], overlaps 9
+    #963 brush 1326 splits 20: face n DVec3(-1.00, -0.00, -0.00) d -55.27, depth 68.28, bounds DVec3(-13.0, 1.6, -17.9)..DVec3(55.3, 14.6, 37.4), edges open [0.00, 0.80, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB], overlaps 10
+    #274 brush 303 splits 19: face n DVec3(0.00, 0.00, -1.00) d 50.39, depth 47.14 (truncated), bounds DVec3(26.0, 17.9, -97.5)..DVec3(49.6, 30.9, -50.4), edges open [0.00, 0.00, 1.00, 0.00], kinds [abutB,abutB,freeB,abutB,farB], overlaps 20
+    #353 brush 281 splits 19: face n DVec3(0.00, 0.00, -1.00) d -34.14, depth 47.14 (truncated), bounds DVec3(26.0, 17.9, -13.0)..DVec3(49.6, 30.9, 34.1), edges open [0.00, 0.00, 1.00, 0.00], kinds [abutB,abutB,freeB,abutB,farB], overlaps 20
+    #118 brush 1330 splits 18: face n DVec3(1.00, 0.00, 0.00) d -13.00, depth 68.28, bounds DVec3(-13.0, 1.6, -79.7)..DVec3(55.3, 14.6, -24.4), edges open [0.80, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB], overlaps 10
+  portals by plane: {"abutB (also a brush plane)": 1501, "abutB+abutS (also a brush plane)": 301, "abutB+farB+freeS (also a brush plane)": 37, "farB": 739, "farB (also a brush plane)": 106, "freeB (also a brush plane)": 140, "freeB+abutB (also a brush plane)": 1980, "freeB+abutB+farB (also a brush plane)": 57, "freeB+abutB+freeS (also a brush plane)": 20, "not on a prism plane": 476}
+ROW stress-warren-hallway-inspection free+far        tier_leaves  6063 cells  8632 interior  2452 sliver<0.5    11 portals  4236 faces  14043 prisms  307 prism_splits  1110 (0.9s)
+  splits by plane kind: {"farB": 546, "freeB": 562, "freeS": 2}
+ROW stress-warren-hallway-inspection free            tier_leaves  5471 cells  7896 interior  1865 sliver<0.5    11 portals  2936 faces  12930 prisms  267 prism_splits   446 (0.8s)
+  splits by plane kind: {"freeB": 444, "freeS": 2}
+ROW stress-warren-hallway-inspection brush           tier_leaves  6971 cells 10019 interior  3266 sliver<0.5    28 portals  5355 faces  14993 prisms  994 prism_splits  2123 (1.3s)
+  splits by plane kind: {"abutB": 1006, "farB": 555, "freeB": 562}
+ROW stress-warren-hallway-inspection section         tier_leaves  5121 cells  7475 interior  1525 sliver<0.5    11 portals  2376 faces  12559 prisms    6 prism_splits    12 (0.6s)
+  splits by plane kind: {"abutS": 10, "freeS": 2}
+ROW stress-warren-hallway-inspection abut            tier_leaves  5826 cells  8571 interior  2137 sliver<0.5    28 portals  3084 faces  13145 prisms 1000 prism_splits   894 (1.0s)
+  splits by plane kind: {"abutB": 885, "abutB+abutS": 9}
+ROW stress-warren-hallway-inspection brush-free+far  tier_leaves  6061 cells  8630 interior  2450 sliver<0.5    11 portals  4234 faces  14038 prisms  306 prism_splits  1108 (0.9s)
+  splits by plane kind: {"farB": 546, "freeB": 562}
+ROW stress-warren-hallway-inspection brush-free      tier_leaves  5470 cells  7896 interior  1864 sliver<0.5    11 portals  2936 faces  12932 prisms  266 prism_splits   444 (0.7s)
+  splits by plane kind: {"freeB": 444}
+ROW stress-warren-hallway-inspection far             tier_leaves  5543 cells  8036 interior  1946 sliver<0.5    11 portals  3297 faces  13230 prisms  164 prism_splits   541 (0.7s)
+  splits by plane kind: {"farB": 541}
+
+######## campaign-test: 143 brushes
+ROW campaign-test none            tier_leaves   559 cells   832 interior   129 sliver<0.5    66 portals   288 faces   1545 prisms    0 prism_splits     0 (0.1s)
+  splits by plane kind: {}
+ROW campaign-test all             tier_leaves   606 cells   879 interior   165 sliver<0.5    75 portals   402 faces   1599 prisms   11 prism_splits    62 (0.1s)
+  splits by plane kind: {"abutB": 3, "abutS": 38, "farS": 12, "freeB": 9}
+  PRISMS campaign-test: 11 prisms (4 brush, 7 section), truncated 2; plane kinds {"far (section)": 2, "side abutting (brush)": 6, "side abutting (section)": 28, "side free (brush)": 10}; edges with mixed open fraction 0
+  edge open fraction: 0 34 | (0,1/3) 0 | [1/3,1/2] 0 | (1/2,2/3) 0 | [2/3,1) 0 | 1 10
+  overlapping prism pairs 22; overlaps per prism p50 3 max 8
+  splits by source: brush-only 12 section-only 50 both/none 0
+  top prisms by splits:
+    #10 section [35, 36, 37] splits 24: face n DVec3(-1.00, -0.00, -0.00) d 26.42, depth 45.92, bounds DVec3(-72.3, 0.0, -59.3)..DVec3(-26.4, 13.0, -33.3), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS], overlaps 3
+    #5 section [94, 95, 96] splits 17: face n DVec3(0.00, 0.00, -1.00) d -13.41, depth 66.65 (truncated), bounds DVec3(-69.5, 0.0, -53.2)..DVec3(-36.2, 13.0, 13.4), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS,farS], overlaps 8
+    #3 section [78, 79, 80] splits 8: face n DVec3(0.00, 0.00, -1.00) d 19.91, depth 39.42, bounds DVec3(-66.2, 0.0, -59.3)..DVec3(-39.4, 9.8, -19.9), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS], overlaps 4
+    #4 section [75, 76, 77] splits 5: face n DVec3(0.00, 0.00, -1.00) d -6.50, depth 53.64 (truncated), bounds DVec3(-66.2, 0.0, -47.1)..DVec3(-39.4, 9.8, 6.5), edges open [0.00, 0.00, 0.00, 0.00], kinds [abutS,abutS,abutS,abutS,farS], overlaps 8
+    #1 brush 85 splits 4: face n DVec3(1.00, 0.00, 0.00) d -44.70, depth 4.88, bounds DVec3(-44.7, 0.0, -19.5)..DVec3(-39.8, 3.3, -9.3), edges open [1.00, 0.00, 1.00, 0.00], kinds [freeB,abutB,freeB,abutB], overlaps 3
+    #9 brush 83 splits 4: face n DVec3(-1.00, -0.00, -0.00) d 46.33, depth 19.51, bounds DVec3(-65.8, 0.0, -6.5)..DVec3(-46.3, 3.3, 3.3), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeB,freeB,freeB,abutB], overlaps 3
+    #0 brush 83 splits 2: face n DVec3(1.00, 0.00, 0.00) d -43.08, depth 3.25, bounds DVec3(-43.1, 0.0, -6.5)..DVec3(-39.8, 3.3, 3.3), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeB,freeB,freeB,abutB], overlaps 3
+    #8 brush 85 splits 2: face n DVec3(-1.00, -0.00, -0.00) d 47.96, depth 17.88, bounds DVec3(-65.8, 0.0, -19.5)..DVec3(-48.0, 3.3, -9.3), edges open [1.00, 0.00, 1.00, 0.00], kinds [freeB,abutB,freeB,abutB], overlaps 3
+  portals by plane: {"abutB (also a brush plane)": 1, "abutB+abutS (also a brush plane)": 14, "abutS (also a brush plane)": 152, "farS": 6, "farS (also a brush plane)": 16, "freeB (also a brush plane)": 46, "not on a prism plane": 167}
+ROW campaign-test free+far        tier_leaves   568 cells   842 interior   138 sliver<0.5    66 portals   332 faces   1565 prisms    6 prism_splits    21 (0.1s)
+  splits by plane kind: {"farS": 12, "freeB": 9}
+ROW campaign-test free            tier_leaves   566 cells   840 interior   136 sliver<0.5    66 portals   306 faces   1558 prisms    4 prism_splits     9 (0.1s)
+  splits by plane kind: {"freeB": 9}
+ROW campaign-test brush           tier_leaves   569 cells   841 interior   137 sliver<0.5    67 portals   307 faces   1556 prisms    4 prism_splits    12 (0.0s)
+  splits by plane kind: {"abutB": 3, "freeB": 9}
+ROW campaign-test section         tier_leaves   596 cells   870 interior   157 sliver<0.5    74 portals   383 faces   1588 prisms    7 prism_splits    50 (0.1s)
+  splits by plane kind: {"abutS": 38, "farS": 12}
+ROW campaign-test abut            tier_leaves   577 cells   847 interior   136 sliver<0.5    67 portals   305 faces   1576 prisms   11 prism_splits    35 (0.1s)
+  splits by plane kind: {"abutB": 3, "abutS": 32}
+ROW campaign-test brush-free+far  tier_leaves   566 cells   840 interior   136 sliver<0.5    66 portals   306 faces   1558 prisms    4 prism_splits     9 (0.0s)
+  splits by plane kind: {"freeB": 9}
+ROW campaign-test brush-free      tier_leaves   566 cells   840 interior   136 sliver<0.5    66 portals   306 faces   1558 prisms    4 prism_splits     9 (0.0s)
+  splits by plane kind: {"freeB": 9}
+ROW campaign-test far             tier_leaves   561 cells   834 interior   131 sliver<0.5    66 portals   314 faces   1552 prisms    2 prism_splits    12 (0.0s)
+  splits by plane kind: {"farS": 12}
+
+######## stress-warren-showcase: 447 brushes
+ROW stress-warren-showcase none            tier_leaves  1131 cells  1393 interior   395 sliver<0.5     0 portals   608 faces   3400 prisms    0 prism_splits     0 (0.1s)
+  splits by plane kind: {}
+ROW stress-warren-showcase all             tier_leaves  1429 cells  1718 interior   683 sliver<0.5     0 portals  1128 faces   3859 prisms  238 prism_splits   402 (0.2s)
+  splits by plane kind: {"abutB": 40, "farB": 116, "freeB": 217, "freeB+abutB": 17, "freeB+farB": 12}
+  PRISMS stress-warren-showcase: 238 prisms (236 brush, 2 section), truncated 68; plane kinds {"far (brush)": 68, "side abutting (brush)": 692, "side abutting (section)": 7, "side free (brush)": 252, "side free (section)": 1}; edges with mixed open fraction 143
+  edge open fraction: 0 663 | (0,1/3) 26 | [1/3,1/2] 10 | (1/2,2/3) 5 | [2/3,1) 102 | 1 146
+  overlapping prism pairs 657; overlaps per prism p50 5 max 31
+  splits by source: brush-only 402 section-only 0 both/none 0
+  top prisms by splits:
+    #14 brush 334 splits 15: face n DVec3(1.00, 0.00, 0.00) d 19.51, depth 58.52, bounds DVec3(19.5, 1.6, -65.0)..DVec3(78.0, 17.9, -3.3), edges open [0.20, 0.40, 0.00, 0.00], kinds [abutB,abutB,abutB,abutB], overlaps 31
+    #30 brush 337 splits 13: face n DVec3(1.00, 0.00, 0.00) d -45.52, depth 58.52, bounds DVec3(-45.5, 1.6, -65.0)..DVec3(13.0, 17.9, -3.3), edges open [0.80, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB], overlaps 4
+    #31 brush 336 splits 13: face n DVec3(1.00, 0.00, 0.00) d -45.52, depth 58.52, bounds DVec3(-45.5, 1.6, 3.3)..DVec3(13.0, 17.9, 65.0), edges open [0.00, 0.80, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB], overlaps 4
+    #227 brush 334 splits 13: face n DVec3(-1.00, -0.00, -0.00) d -13.00, depth 58.52, bounds DVec3(-45.5, 1.6, -65.0)..DVec3(13.0, 17.9, -3.3), edges open [0.80, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB], overlaps 4
+    #228 brush 333 splits 13: face n DVec3(-1.00, -0.00, -0.00) d -13.00, depth 58.52, bounds DVec3(-45.5, 1.6, 3.3)..DVec3(13.0, 17.9, 65.0), edges open [0.00, 0.80, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB], overlaps 4
+    #19 brush 197 splits 10: face n DVec3(1.00, 0.00, 0.00) d -13.00, depth 47.14 (truncated), bounds DVec3(-13.0, 21.1, -88.6)..DVec3(34.1, 27.6, -65.0), edges open [0.80, 1.00, 0.00, 0.00], kinds [freeB,freeB,abutB,abutB,farB], overlaps 7
+    #219 brush 182 splits 10: face n DVec3(-1.00, -0.00, -0.00) d 19.51, depth 47.14 (truncated), bounds DVec3(-66.6, 21.1, 8.9)..DVec3(-19.5, 27.6, 32.5), edges open [0.00, 1.00, 0.00, 0.00], kinds [abutB,freeB,abutB,abutB,farB], overlaps 8
+    #12 brush 161 splits 9: face n DVec3(1.00, 0.00, 0.00) d 19.51, depth 47.14 (truncated), bounds DVec3(19.5, 21.1, 0.0)..DVec3(66.6, 27.6, 23.6), edges open [1.00, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB,farB], overlaps 9
+    #235 brush 150 splits 9: face n DVec3(-1.00, -0.00, -0.00) d -45.52, depth 47.14 (truncated), bounds DVec3(-1.6, 21.1, -97.5)..DVec3(45.5, 27.6, -74.0), edges open [1.00, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB,farB], overlaps 7
+    #11 brush 99 splits 8: face n DVec3(1.00, 0.00, 0.00) d 19.51, depth 47.14 (truncated), bounds DVec3(19.5, 11.4, -97.5)..DVec3(66.6, 17.9, -74.0), edges open [1.00, 0.00, 0.00, 0.00], kinds [freeB,abutB,abutB,abutB,farB], overlaps 5
+  portals by plane: {"abutB (also a brush plane)": 75, "farB": 152, "farB (also a brush plane)": 57, "freeB (also a brush plane)": 423, "freeB+abutB (also a brush plane)": 123, "freeB+abutB+abutS (also a brush plane)": 41, "freeB+abutB+farB (also a brush plane)": 73, "freeB+abutB+freeS+abutS (also a brush plane)": 33, "not on a prism plane": 151}
+ROW stress-warren-showcase free+far        tier_leaves  1401 cells  1685 interior   662 sliver<0.5     0 portals  1106 faces   3849 prisms  209 prism_splits   368 (0.2s)
+  splits by plane kind: {"farB": 116, "freeB": 240, "freeB+farB": 12}
+ROW stress-warren-showcase free            tier_leaves  1297 cells  1571 interior   558 sliver<0.5     0 portals   883 faces   3564 prisms  205 prism_splits   233 (0.2s)
+  splits by plane kind: {"freeB": 233}
+ROW stress-warren-showcase brush           tier_leaves  1429 cells  1718 interior   683 sliver<0.5     0 portals  1128 faces   3859 prisms  236 prism_splits   402 (0.2s)
+  splits by plane kind: {"abutB": 40, "farB": 116, "freeB": 217, "freeB+abutB": 17, "freeB+farB": 12}
+ROW stress-warren-showcase section         tier_leaves  1131 cells  1393 interior   395 sliver<0.5     0 portals   608 faces   3400 prisms    2 prism_splits     0 (0.1s)
+  splits by plane kind: {}
+ROW stress-warren-showcase abut            tier_leaves  1187 cells  1462 interior   441 sliver<0.5     0 portals   668 faces   3430 prisms  238 prism_splits    62 (0.2s)
+  splits by plane kind: {"abutB": 62}
+ROW stress-warren-showcase brush-free+far  tier_leaves  1401 cells  1685 interior   662 sliver<0.5     0 portals  1106 faces   3849 prisms  208 prism_splits   368 (0.2s)
+  splits by plane kind: {"farB": 116, "freeB": 240, "freeB+farB": 12}
+ROW stress-warren-showcase brush-free      tier_leaves  1297 cells  1571 interior   558 sliver<0.5     0 portals   883 faces   3564 prisms  204 prism_splits   233 (0.2s)
+  splits by plane kind: {"freeB": 233}
+ROW stress-warren-showcase far             tier_leaves  1211 cells  1484 interior   475 sliver<0.5     0 portals   783 faces   3620 prisms   68 prism_splits   125 (0.1s)
+  splits by plane kind: {"farB": 125}
+
+######## stress-street: 1259 brushes
+ROW stress-street none            tier_leaves  1897 cells  4792 interior  1607 sliver<0.5  1172 portals  3756 faces  10755 prisms    0 prism_splits     0 (0.4s)
+  splits by plane kind: {}
+ROW stress-street all             tier_leaves  3345 cells  6510 interior  3144 sliver<0.5  1930 portals  7667 faces  11415 prisms   88 prism_splits  1494 (0.6s)
+  splits by plane kind: {"abutB": 122, "abutS": 20, "farB": 36, "farS": 85, "freeB": 788, "freeB+abutB": 18, "freeB+freeS": 26, "freeS": 399}
+  PRISMS stress-street: 88 prisms (76 brush, 12 section), truncated 14; plane kinds {"far (brush)": 11, "far (section)": 3, "side abutting (brush)": 136, "side abutting (section)": 14, "side free (brush)": 168, "side free (section)": 34}; edges with mixed open fraction 65
+  edge open fraction: 0 121 | (0,1/3) 23 | [1/3,1/2] 6 | (1/2,2/3) 20 | [2/3,1) 16 | 1 166
+  overlapping prism pairs 244; overlaps per prism p50 4 max 41
+  splits by source: brush-only 964 section-only 504 both/none 26
+  top prisms by splits:
+    #62 brush 1166 splits 217: face n DVec3(-0.00, 1.00, -0.00) d 5.99, depth 24.00, bounds DVec3(-70.0, 6.0, -100.0)..DVec3(-26.0, 30.0, -92.0), edges open [1.00, 1.00, 1.00, 1.00], kinds [freeB,freeB,freeB,freeB], overlaps 11
+    #85 section [548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632] splits 169: face n DVec3(-1.00, -0.00, -0.00) d 18.01, depth 52.83 (truncated), bounds DVec3(-70.8, 0.0, -100.4)..DVec3(-18.0, 18.5, -74.0), edges open [0.80, 0.73, 1.00, 0.00], kinds [freeS,freeS,freeS,abutS,farS], overlaps 28
+    #78 section [759, 760, 761, 762, 763, 764, 765, 766, 767, 768, 769, 770, 771, 772, 773, 774, 775, 776, 777, 778, 779, 780, 781, 782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 810, 811, 812, 813, 814, 815, 816, 817, 818, 819, 820, 821, 822, 823, 824, 825, 826, 827, 828, 829, 830, 831, 832, 833, 834, 835, 836, 837, 838, 839, 840, 841, 842, 843, 844, 845, 846, 847, 848, 849, 850, 851, 852, 853, 854] splits 119: face n DVec3(-1.00, -0.00, -0.00) d 62.00, depth 22.00, bounds DVec3(-84.0, 0.0, -126.0)..DVec3(-62.0, 21.0, -100.4), edges open [1.00, 0.93, 1.00, 0.00], kinds [freeS,freeS,freeS,abutS], overlaps 12
+    #58 brush 1164 splits 80: face n DVec3(-0.00, 1.00, -0.00) d 16.00, depth 14.00, bounds DVec3(-35.6, 16.0, -23.6)..DVec3(-12.4, 30.0, -8.4), edges open [1.00, 1.00, 1.00, 1.00], kinds [freeB,freeB,freeB,freeB], overlaps 0
+    #2 section [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148] splits 74: face n DVec3(1.00, 0.00, 0.00) d -30.00, depth 30.00, bounds DVec3(-30.0, 0.0, -88.0)..DVec3(0.0, 21.0, -48.0), edges open [1.00, 0.80, 1.00, 0.00], kinds [freeS,freeS,freeS,abutS], overlaps 21
+    #25 brush 1166 splits 48: face n DVec3(0.00, -1.00, 0.00) d -5.51, depth 5.51, bounds DVec3(-70.0, -0.0, -100.0)..DVec3(-26.0, 5.5, -92.0), edges open [1.00, 1.00, 1.00, 0.60], kinds [freeB,freeB,freeB,freeB], overlaps 9
+    #5 brush 910 splits 46: face n DVec3(1.00, 0.00, 0.00) d -51.99, depth 42.01 (truncated), bounds DVec3(-52.0, 0.0, -126.0)..DVec3(-10.0, 21.0, -110.0), edges open [0.20, 1.00, 1.00, 0.00], kinds [abutB,freeB,freeB,abutB,farB], overlaps 4
+    #6 brush 909 splits 42: face n DVec3(1.00, 0.00, 0.00) d -54.00, depth 14.00, bounds DVec3(-54.0, 0.0, -87.6)..DVec3(-40.0, 21.0, -78.0), edges open [0.20, 0.40, 1.00, 0.00], kinds [abutB,abutB,freeB,abutB], overlaps 4
+    #3 section [981, 982, 983, 984, 985, 986, 987, 988, 989, 990, 991, 992, 993, 994, 995, 996, 997, 998, 999, 1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029] splits 39: face n DVec3(1.00, 0.00, 0.00) d -35.61, depth 23.22, bounds DVec3(-35.6, 0.0, -24.0)..DVec3(-12.4, 16.0, -8.0), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeS,freeS,freeS,abutS], overlaps 3
+    #86 section [932, 933, 934, 935, 936, 937, 938, 939, 940, 941, 942, 943, 944, 945, 946, 947, 948, 949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980] splits 39: face n DVec3(-1.00, -0.00, -0.00) d 12.40, depth 23.22, bounds DVec3(-35.6, 0.0, -24.0)..DVec3(-12.4, 16.0, -8.0), edges open [1.00, 1.00, 1.00, 0.00], kinds [freeS,freeS,freeS,abutS], overlaps 3
+  portals by plane: {"abutB (also a brush plane)": 11, "abutB+freeS (also a brush plane)": 203, "farB": 94, "farS": 92, "farS (also a brush plane)": 27, "freeB (also a brush plane)": 1614, "freeB+abutB (also a brush plane)": 1877, "freeB+abutB+freeS (also a brush plane)": 1095, "freeB+freeS (also a brush plane)": 1101, "freeS (also a brush plane)": 181, "freeS+abutS (also a brush plane)": 262, "not on a prism plane": 1110}
+ROW stress-street free+far        tier_leaves  3209 cells  6373 interior  2991 sliver<0.5  1789 portals  7355 faces  11565 prisms   80 prism_splits  1360 (0.6s)
+  splits by plane kind: {"farB": 36, "farS": 82, "freeB": 804, "freeB+freeS": 26, "freeS": 412}
+ROW stress-street free            tier_leaves  3024 cells  6156 interior  2822 sliver<0.5  1765 portals  6849 faces  11369 prisms   79 prism_splits  1186 (0.5s)
+  splits by plane kind: {"freeB": 770, "freeB+freeS": 26, "freeS": 390}
+ROW stress-street brush           tier_leaves  2838 cells  5939 interior  2642 sliver<0.5  1675 portals  6453 faces  11138 prisms   76 prism_splits   941 (0.5s)
+  splits by plane kind: {"abutB": 131, "farB": 30, "freeB": 762, "freeB+abutB": 18}
+ROW stress-street section         tier_leaves  2216 cells  5183 interior  1912 sliver<0.5  1338 portals  4440 faces  10906 prisms   12 prism_splits   381 (0.4s)
+  splits by plane kind: {"abutS": 11, "farS": 52, "freeS": 318}
+ROW stress-street abut            tier_leaves  2054 cells  5024 interior  1794 sliver<0.5  1320 portals  4094 faces  10645 prisms   68 prism_splits   157 (0.4s)
+  splits by plane kind: {"abutB": 136, "abutS": 21}
+ROW stress-street brush-free+far  tier_leaves  2709 cells  5799 interior  2513 sliver<0.5  1556 portals  6185 faces  11283 prisms   68 prism_splits   806 (0.5s)
+  splits by plane kind: {"farB": 30, "freeB": 776}
+ROW stress-street brush-free      tier_leaves  2651 cells  5735 interior  2457 sliver<0.5  1550 portals  5989 faces  11253 prisms   67 prism_splits   760 (0.5s)
+  splits by plane kind: {"freeB": 760}
+ROW stress-street far             tier_leaves  2009 cells  4944 interior  1702 sliver<0.5  1189 portals  4037 faces  10969 prisms   14 prism_splits    87 (0.4s)
+  splits by plane kind: {"farB": 31, "farS": 56}
+test pipeline::runtime_cells::prism_ablation_tests::scratch_9l_ablation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2039 filtered out; finished in 17.97s
+

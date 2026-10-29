@@ -10,7 +10,7 @@ use super::test_fixtures::{Cells, MapText, engine};
 use super::{classify, partition_with_occluders};
 use crate::map_data::BrushVolume;
 use crate::map_format::MapFormat;
-use crate::partition::occluder_classify::test_fixtures::{hall, turned_box};
+use crate::partition::occluder_classify::test_fixtures::{box_brush, hall, turned_box};
 use crate::partition::occluder_cluster::test_fixtures::facade_rects;
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::{Aabb, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M, CellSizeCap};
@@ -481,5 +481,70 @@ fn cell_size_cap_puts_no_cell_boundary_inside_an_axis_aligned_facade_slab() {
     assert!(
         ends_on(CELL_SIZE_CAP_M) > 0,
         "the line at one cap still splits"
+    );
+}
+
+// ---- open-slice guard on brush faces ----
+
+/// A hall 1.5 caps long on x, 3.25 m tall and 20 m wide, its only grid line
+/// at one cap, where two exempt blocks across its width meet: one 2.44 m
+/// tall on the near side, one 0.8 m tall on the far side. Just before the
+/// line the slice is a quarter open, just past it three quarters.
+fn blocks_meeting_on_a_grid_line() -> Vec<BrushVolume> {
+    let (length, height, width) = (1.5 * CELL_SIZE_CAP_M, 3.25, 20.0);
+    let mut brushes = hall(DVec3::new(length, height, width));
+    brushes.push(box_brush(
+        DVec3::new(CELL_SIZE_CAP_M - 1.6, 0.0, 0.0),
+        DVec3::new(CELL_SIZE_CAP_M, 2.44, width),
+    ));
+    brushes.push(box_brush(
+        DVec3::new(CELL_SIZE_CAP_M, 0.0, 0.0),
+        DVec3::new(CELL_SIZE_CAP_M + 1.6, 0.8, width),
+    ));
+    brushes
+}
+
+// Regression: the open-slice guard read a slice lying on brush faces from
+// whichever side the first pass's node plane, chosen by brush order, put in
+// front, so solid on either side of the line flipped its verdict.
+#[test]
+fn cell_size_cap_reads_a_grid_line_on_brush_faces_alike_in_every_brush_order() {
+    let brushes = blocks_meeting_on_a_grid_line();
+    let interior = RegionPolytope::from_aabb(&Aabb {
+        min: DVec3::ZERO,
+        max: DVec3::new(1.5 * CELL_SIZE_CAP_M, 3.25, 20.0),
+    });
+    let accepts = |brushes: &[BrushVolume]| {
+        let classification = classify(brushes).expect("classifies");
+        let first_pass = FirstPass::build(brushes)
+            .expect("first pass builds")
+            .expect("brushes");
+        CellSizeCap::new(first_pass.space(), &classification).accepts_line(
+            0,
+            CELL_SIZE_CAP_M,
+            &interior,
+        )
+    };
+    let orders: Vec<(&str, Vec<BrushVolume>)> = vec![
+        ("forward", brushes.clone()),
+        ("reversed", brushes.iter().rev().cloned().collect()),
+        ("blocks swapped", {
+            let mut swapped = brushes.clone();
+            let last = swapped.len() - 1;
+            swapped.swap(last - 1, last);
+            swapped
+        }),
+    ];
+    for (order, permuted) in orders {
+        assert!(
+            !accepts(&permuted),
+            "{order}: a slice a quarter open on one side of the line is refused"
+        );
+    }
+    let mut without_tall_block = brushes.clone();
+    without_tall_block.remove(brushes.len() - 2);
+    assert!(
+        accepts(&without_tall_block),
+        "precondition: with the low block alone, the slice is mostly open on both sides"
     );
 }

@@ -1,5 +1,6 @@
 // Cell-size cap of the occluder tier: world-grid splitters that divide an
-// occluder-tier leaf wider than the cap, ranked after occluder and door planes.
+// occluder-tier leaf wider than the cap, ranked after occluder, wall free-end
+// and door planes.
 // See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
 
 use glam::DVec3;
@@ -38,6 +39,12 @@ pub const CAP_MIN_OPEN_SLICE_FRACTION: f64 = 0.5;
 /// Clipping tolerance for a cap line's slice against the bounds of its
 /// region's open space, as region clipping uses.
 const SLICE_CLIP_EPSILON_M: f64 = 1e-6;
+
+/// How far to either side of a cap line the open-slice guard reads its
+/// slice. A slice on the line itself can lie on brush faces, where the first
+/// pass files it to whichever side its node plane, chosen by brush order,
+/// puts in front; just off the line, each reading is exact.
+const SLICE_SIDE_OFFSET_M: f64 = REGION_CLASSIFICATION_EPSILON;
 
 /// Share of a slice's area by which its open area must clear
 /// `CAP_MIN_OPEN_SLICE_FRACTION`, so a slice exactly half open on the
@@ -113,8 +120,9 @@ impl<'a> CellSizeCap<'a> {
         Self { space, slabs }
     }
 
-    /// The cap splitter for a region no occluder or door plane spans, or
-    /// `None` when the region fits the cap or no line passes the guards.
+    /// The cap splitter for a region no occluder, wall free-end or door plane
+    /// spans, or `None` when the region fits the cap or no line passes the
+    /// guards.
     /// Axes go widest first, ties in axis order; on each axis, world-grid
     /// lines at multiples of the cap go nearest the region's middle first,
     /// ties to the lower line. The choice reads only the region, the first
@@ -197,10 +205,27 @@ impl<'a> CellSizeCap<'a> {
         })
     }
 
-    /// True when strictly more than `CAP_MIN_OPEN_SLICE_FRACTION` of the
-    /// line's slice through `region`, clipped to `open`, the bounds of the
-    /// region's open space, lies in open space, by area.
+    /// True when, just to each side of the line, strictly more than
+    /// `CAP_MIN_OPEN_SLICE_FRACTION` of the slice through `region`, clipped
+    /// to `open`, the bounds of the region's open space, lies in open space,
+    /// by area. Open space crosses the line only where it is open on both
+    /// sides, and neither reading depends on how the first pass oriented a
+    /// node plane lying on the line.
     fn slice_mostly_open(
+        &self,
+        axis: usize,
+        (normal, line): (DVec3, f64),
+        region: &RegionPolytope,
+        open: &Aabb,
+    ) -> bool {
+        [-SLICE_SIDE_OFFSET_M, SLICE_SIDE_OFFSET_M]
+            .into_iter()
+            .all(|offset| self.slice_open_at(axis, (normal, line + offset), region, open))
+    }
+
+    /// The open-slice test on the slice of `region` along the plane
+    /// `normal · p = line`.
+    fn slice_open_at(
         &self,
         axis: usize,
         (normal, line): (DVec3, f64),

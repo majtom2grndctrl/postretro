@@ -726,8 +726,9 @@ const LANED_HALL_MIN: [f64; 3] = [-512.0, 672.0, 0.0];
 const LANED_HALL_MAX: [f64; 3] = [2048.0, 2720.0, 512.0];
 
 /// A hall crossed by a free-standing retaining wall with a lane past each
-/// end, and a brush-102 stand-in behind it in the left lane.
-fn laned_wall_hall() -> MapText {
+/// end, built as `layers` equal slabs back to back, and a brush-102 stand-in
+/// behind it in the left lane.
+fn laned_wall_hall(layers: usize) -> MapText {
     let (t, [x0, y0, z0], [x1, y1, z1]) = (16.0, LANED_HALL_MIN, LANED_HALL_MAX);
     let mut map = MapText::new();
     map.solid([x0 - t, y0 - t, z0 - t], [x1 + t, y1 + t, z0])
@@ -735,17 +736,21 @@ fn laned_wall_hall() -> MapText {
         .solid([x0 - t, y0 - t, z0], [x0, y1 + t, z1])
         .solid([x1, y0 - t, z0], [x1 + t, y1 + t, z1])
         .solid([x0, y0 - t, z0], [x1, y0, z1])
-        .solid([x0, y1, z0], [x1, y1 + t, z1])
-        .solid(LANED_WALL_MIN, LANED_WALL_MAX)
-        .solid(SECOND_OCCLUDER_MIN, SECOND_OCCLUDER_MAX)
+        .solid([x0, y1, z0], [x1, y1 + t, z1]);
+    let ([wx0, wy0, wz0], [wx1, wy1, wz1]) = (LANED_WALL_MIN, LANED_WALL_MAX);
+    let layer = (wy1 - wy0) / layers as f64;
+    for k in 0..layers {
+        let y = wy0 + layer * k as f64;
+        map.solid([wx0, y, wz0], [wx1, y + layer, wz1]);
+    }
+    map.solid(SECOND_OCCLUDER_MIN, SECOND_OCCLUDER_MAX)
         .light([768.0, 900.0, 400.0], 2000.0);
     map
 }
 
-/// Index of the retaining wall and of the second occluder in
-/// `laned_wall_hall`'s brushes.
+/// Index of the retaining wall's first layer in `laned_wall_hall`'s
+/// brushes; the second occluder follows its last layer.
 const LANED_WALL: usize = 6;
-const SECOND_OCCLUDER: usize = 7;
 
 /// The review's eye lattice, carried with the wall: 64 to 980 u along it,
 /// 84 to 484 u in front of it.
@@ -770,13 +775,29 @@ fn laned_wall_setup() -> BehindWall {
 // wall's free end planes into that space.
 #[test]
 fn walk_from_in_front_of_a_laned_wall_draws_no_cell_holding_space_hidden_behind_it() {
-    let map = laned_wall_hall();
+    assert_no_hidden_space_drawn_behind_laned_wall(1);
+}
+
+// Regression: each layer of a wall built in two found its inner face
+// fronting the other layer, so neither swept a shadow prism and lane eyes
+// saw the cells behind it again.
+#[test]
+fn walk_from_in_front_of_a_laned_two_layer_wall_draws_no_cell_holding_space_hidden_behind_it() {
+    assert_no_hidden_space_drawn_behind_laned_wall(2);
+}
+
+/// The behind-the-wall row on `laned_wall_hall(layers)`: no walk from the
+/// eye lattice in front reaches a cell holding a hidden sample.
+fn assert_no_hidden_space_drawn_behind_laned_wall(layers: usize) {
+    let map = laned_wall_hall(layers);
     let map_data = map.parse();
     let verdicts = classify(&map_data.brush_volumes)
         .expect("classifies")
         .verdicts;
-    assert_eq!(verdicts[LANED_WALL], OccluderVerdict::Occludes);
-    assert_eq!(verdicts[SECOND_OCCLUDER], OccluderVerdict::Occludes);
+    for (layer, &verdict) in verdicts[LANED_WALL..LANED_WALL + layers].iter().enumerate() {
+        assert_eq!(verdict, OccluderVerdict::Occludes, "layer {layer}");
+    }
+    assert_eq!(verdicts[LANED_WALL + layers], OccluderVerdict::Occludes);
 
     let setup = laned_wall_setup();
     // Ten times the default texel pitch: the row reads no texel.

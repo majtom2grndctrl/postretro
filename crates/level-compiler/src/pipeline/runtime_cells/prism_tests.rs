@@ -1,6 +1,7 @@
 // Shadow-prism rows: which occluding faces sweep a prism, which of their
 // vertical end edges are free and offer a splitter, the length bound
-// deciding eligibility both ways, and order independence.
+// deciding eligibility both ways, the overlap tolerance, and order
+// independence.
 // See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
 
 use glam::DVec3;
@@ -371,14 +372,221 @@ fn shadow_prisms_sweep_no_slab_face_and_no_cluster_section() {
     assert!(prisms.is_empty(), "the facade sweeps none: {prisms:#?}");
 }
 
+/// A wall 24 m long, 4 m tall and 0.3 m thick, x 8..32, z 3..3.3, in a hall
+/// 40 × 6 × 22 m. Its -z face stands 1 m, under the floor, off a filler
+/// block across the hall's -z end, except behind x 8..`niche_end`, where a
+/// niche in the filler deepens the gap to 3 m. The face's lattice samples
+/// stand at x 12, 20 and 28, so a niche to x 16 deepens one column of three
+/// and a niche to x 24 two.
+fn wall_before_niche(niche_end: f64) -> Vec<BrushVolume> {
+    let mut brushes = hall(DVec3::new(40.0, 6.0, 22.0));
+    brushes.push(box_brush(
+        DVec3::new(8.0, 0.0, 3.0),
+        DVec3::new(32.0, 4.0, 3.3),
+    ));
+    brushes.push(box_brush(DVec3::ZERO, DVec3::new(8.0, 6.0, 2.0)));
+    brushes.push(box_brush(
+        DVec3::new(niche_end, 0.0, 0.0),
+        DVec3::new(40.0, 6.0, 2.0),
+    ));
+    brushes
+}
+
+#[test]
+fn shadow_prism_needs_most_of_each_broad_face_open_samples_floor_deep() {
+    // The occluder rule's face test: a face counts when most of its open
+    // samples front open space at least the floor deep, not when any one
+    // does. With one column of the -z face's samples deep, the face does not
+    // count, so neither face sweeps a prism; with two, both do.
+    let wall_prisms = |niche_end: f64| {
+        let brushes = wall_before_niche(niche_end);
+        let classification = classify(&brushes).expect("classifies");
+        assert_eq!(
+            classification.verdicts[AFTER_HALL],
+            OccluderVerdict::Occludes,
+            "precondition: the wall occludes from its +z face"
+        );
+        let prisms = prisms_of(&brushes);
+        (
+            prisms_on_face(&prisms, DVec3::NEG_Z, -3.0).len(),
+            prisms_on_face(&prisms, DVec3::Z, 3.3).len(),
+        )
+    };
+    assert_eq!(
+        wall_prisms(16.0),
+        (0, 0),
+        "three of nine samples floor-deep: the -z face does not count"
+    );
+    assert_eq!(
+        wall_prisms(24.0),
+        (1, 1),
+        "six of nine samples floor-deep: the -z face counts"
+    );
+}
+
+/// A hall 48 × 8 × 20 m crossed by walls 4 m tall, one per
+/// `(x0, x1, z0, z1)`.
+fn walls_in_hall(walls: &[(f64, f64, f64, f64)]) -> Vec<BrushVolume> {
+    let mut brushes = hall(DVec3::new(48.0, 8.0, 20.0));
+    for &(x0, x1, z0, z1) in walls {
+        brushes.push(box_brush(DVec3::new(x0, 0.0, z0), DVec3::new(x1, 4.0, z1)));
+    }
+    brushes
+}
+
+/// Two walls 20 m long and 0.3 m thick, meeting end to end at x = 24.
+fn in_line_walls() -> Vec<BrushVolume> {
+    walls_in_hall(&[(4.0, 24.0, 8.0, 8.3), (24.0, 44.0, 8.0, 8.3)])
+}
+
+/// A wall 24 m long built as two layers 0.15 m thick, back to back.
+fn two_layer_wall() -> Vec<BrushVolume> {
+    walls_in_hall(&[(8.0, 32.0, 8.0, 8.15), (8.0, 32.0, 8.15, 8.3)])
+}
+
+/// True when `splitter` lies on the plane `normal · p = distance`, facing
+/// either way.
+fn on_plane(splitter: (DVec3, f64), (normal, distance): (DVec3, f64)) -> bool {
+    let same = |(n, d): (DVec3, f64)| {
+        (splitter.0 - n).length() < MEASURE_EPS && (splitter.1 - d).abs() < MEASURE_EPS
+    };
+    same((normal, distance)) || same((-normal, -distance))
+}
+
+// Regression: the free-end probes sat only in front of the face past the
+// end, never inside the wall's own thickness, so a joint between two walls
+// in line read as two free ends and cut the hall on the joint's plane.
+#[test]
+fn shadow_prism_joint_between_walls_in_line_adds_no_splitter() {
+    let brushes = in_line_walls();
+    let classification = classify(&brushes).expect("classifies");
+    for wall in [AFTER_HALL, AFTER_HALL + 1] {
+        assert_eq!(
+            classification.verdicts[wall],
+            OccluderVerdict::Occludes,
+            "precondition: wall {wall} occludes"
+        );
+    }
+    let prisms = prisms_of(&brushes);
+    for (normal, face) in [(DVec3::NEG_Z, -8.0), (DVec3::Z, 8.3)] {
+        let on_face = prisms_on_face(&prisms, normal, face);
+        assert_eq!(on_face.len(), 2, "each wall sweeps one: {prisms:#?}");
+        let mut splitters: Vec<(DVec3, f64)> = on_face
+            .iter()
+            .flat_map(|prism| prism.splitters.iter().copied())
+            .collect();
+        assert!(
+            !splitters
+                .iter()
+                .any(|&splitter| on_plane(splitter, (DVec3::X, 24.0))),
+            "the joint at x = 24 splits nothing: {splitters:?}"
+        );
+        splitters.sort_by(|a, b| a.1.total_cmp(&b.1));
+        assert_eq!(splitters.len(), 2, "the two outer ends: {splitters:?}");
+        assert!(on_plane(splitters[0], (DVec3::X, 44.0)), "{splitters:?}");
+        assert!(on_plane(splitters[1], (DVec3::X, 4.0)), "{splitters:?}");
+    }
+}
+
+// Regression: a perpendicular wall thinner than the free-end probes' offset
+// left every probe past the end open, so the end read as free.
+#[test]
+fn shadow_prism_end_meeting_a_thin_perpendicular_wall_adds_no_splitter() {
+    // The cross wall, 0.05 m thick, stands across the end at x = 24, from
+    // 6 m in front of the wall to 5.7 m behind it.
+    let brushes = walls_in_hall(&[(4.0, 24.0, 8.0, 8.3), (24.0, 24.05, 2.0, 14.0)]);
+    let classification = classify(&brushes).expect("classifies");
+    assert_eq!(
+        classification.verdicts[AFTER_HALL],
+        OccluderVerdict::Occludes,
+        "precondition: the wall occludes"
+    );
+    let prisms = prisms_of(&brushes);
+    for (normal, face) in [(DVec3::NEG_Z, -8.0), (DVec3::Z, 8.3)] {
+        assert_splitters(
+            prism_on_face(&prisms, normal, face),
+            &[(DVec3::X, 4.0)],
+            "the end meeting the cross wall splits nothing",
+        );
+    }
+}
+
+// Regression: each layer of a wall built in layers found its inner face
+// fronting the other layer, so neither swept a prism and the space behind
+// the wall stayed in cells that eyes past its ends saw.
+#[test]
+fn shadow_prisms_of_a_two_layer_wall_sweep_from_its_outer_faces() {
+    let brushes = two_layer_wall();
+    let classification = classify(&brushes).expect("classifies");
+    for layer in [AFTER_HALL, AFTER_HALL + 1] {
+        assert_eq!(
+            classification.verdicts[layer],
+            OccluderVerdict::Occludes,
+            "precondition: layer {layer} occludes from its outer face"
+        );
+    }
+    let prisms = prisms_of(&brushes);
+    assert_eq!(prisms.len(), 2, "one from each outer face: {prisms:#?}");
+    for (normal, face, depth) in [(DVec3::NEG_Z, -8.0, 8.0), (DVec3::Z, 8.3, 20.0 - 8.3)] {
+        let prism = prism_on_face(&prisms, normal, face);
+        assert!(
+            (prism.depth - depth).abs() < MEASURE_EPS,
+            "the prism ends at the hall wall: {} against {depth}",
+            prism.depth
+        );
+        assert_splitters(
+            prism,
+            &[(DVec3::X, 8.0), (DVec3::NEG_X, -32.0)],
+            "the composite wall's two ends",
+        );
+    }
+}
+
+#[test]
+fn shadow_prism_offers_no_end_plane_to_a_region_reaching_into_it_under_the_spanning_tolerance() {
+    // A plane splits only a region it spans by more than the region
+    // classification tolerance, so a region reaching less than that into a
+    // prism has no part inside it for the prism's end planes to bound.
+    let tolerance = crate::partition::brush_bsp::REGION_CLASSIFICATION_EPSILON;
+    let bound = bounded_wall_bound();
+    let prisms = prisms_of(&bounded_wall_hall(bound + BOUND_STEP_M));
+    let prism = prism_on_face(&prisms, DVec3::Z, WALL_BACK_Z);
+    let region = |min: DVec3, max: DVec3| RegionPolytope::from_aabb(&Aabb { min, max });
+    let far = WALL_BACK_Z + bound;
+    for (reach, overlaps) in [(0.5 * tolerance, false), (2.0 * tolerance, true)] {
+        let past_far_end = region(
+            DVec3::new(0.0, 0.0, far - reach),
+            DVec3::new(14.0, 6.0, far + 1.0),
+        );
+        assert_eq!(
+            prism.overlaps(&past_far_end),
+            overlaps,
+            "a region reaching {reach} m into the far end"
+        );
+        let beside_end = region(
+            DVec3::new(0.0, 0.0, WALL_BACK_Z),
+            DVec3::new(3.0 + reach, 6.0, far - 1.0),
+        );
+        assert_eq!(
+            prism.overlaps(&beside_end),
+            overlaps,
+            "a region reaching {reach} m across the end plane at x = 3"
+        );
+    }
+}
+
 #[test]
 fn shadow_prisms_do_not_depend_on_brush_order() {
     // Turned walls, a chain with abutting ends, a cube offering every face,
-    // a truncated prism, and an end at the free-probe threshold.
+    // walls meeting end to end, a wall in layers, a face counting by most of
+    // its samples, a truncated prism, and an end at the free-probe threshold.
     let fixtures: Vec<(String, Vec<BrushVolume>)> = vec![
         ("retaining wall".into(), retaining_wall().brushes),
         ("chain".into(), chain_walls().brushes),
         ("10 m cube".into(), cube_in_room().brushes),
+        ("walls in line".into(), in_line_walls()),
+        ("two-layer wall".into(), two_layer_wall()),
+        ("wall before a niche".into(), wall_before_niche(24.0)),
         (
             "bounded wall".into(),
             bounded_wall_hall(bounded_wall_bound() + 4.0),

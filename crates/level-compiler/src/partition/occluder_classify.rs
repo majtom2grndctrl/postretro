@@ -17,8 +17,9 @@ use crate::geometry_utils::{polygon_area, split_polygon};
 use crate::map_data::BrushVolume;
 
 pub(crate) use broad_face::{
-    broad_axes_reach_floor, broad_face_deepest_open_depth, broad_face_floor, broad_face_open_depth,
-    judge_box, judge_face, vertical_broad_axis,
+    broad_axes_reach_floor, broad_face_counts, broad_face_counts_through_solid,
+    broad_face_deepest_open_depth, broad_face_floor, broad_face_open_depth, judge_box, judge_face,
+    vertical_broad_axis,
 };
 
 /// Least broad-axis length, and least open depth in front of a broad face,
@@ -148,8 +149,29 @@ impl<'a> OpenSpace<'a> {
         } else {
             BspChild::Node(0)
         };
-        self.first_leaf(&root, origin, dir, 0.0, self.reach, true)
-            .unwrap_or(self.reach)
+        self.first_leaf(&root, origin, dir, 0.0, self.reach, &|leaf| {
+            self.blocks(leaf)
+        })
+        .unwrap_or(self.reach)
+    }
+
+    /// Distance along unit `dir` from `origin` to where the solid it starts
+    /// in ends, at the first leaf that is not solid, open or exterior alike:
+    /// the far face of the solid backing a face. Zero when `origin` is not in
+    /// solid; capped at `reach`.
+    pub fn distance_through_solid(&self, origin: DVec3, dir: DVec3) -> f64 {
+        if self.tree.leaves.is_empty() {
+            return 0.0;
+        }
+        let root = if self.tree.nodes.is_empty() {
+            BspChild::Leaf(0)
+        } else {
+            BspChild::Node(0)
+        };
+        self.first_leaf(&root, origin, dir, 0.0, self.reach, &|leaf| {
+            !self.tree.leaves[leaf].is_solid
+        })
+        .unwrap_or(self.reach)
     }
 
     /// Distance along unit `dir` from `origin`, through any solid or exterior
@@ -165,7 +187,9 @@ impl<'a> OpenSpace<'a> {
         } else {
             BspChild::Node(0)
         };
-        let Some(open) = self.first_leaf(&root, origin, dir, 0.0, self.reach, false) else {
+        let Some(open) = self.first_leaf(&root, origin, dir, 0.0, self.reach, &|leaf| {
+            !self.blocks(leaf)
+        }) else {
             return self.reach;
         };
         // Past the solid's face, so the search never starts on its plane.
@@ -177,8 +201,10 @@ impl<'a> OpenSpace<'a> {
         if from >= self.reach {
             return self.reach;
         }
-        self.first_leaf(&root, origin, dir, from, self.reach, true)
-            .unwrap_or(self.reach)
+        self.first_leaf(&root, origin, dir, from, self.reach, &|leaf| {
+            self.blocks(leaf)
+        })
+        .unwrap_or(self.reach)
     }
 
     /// True when `point` lies in a solid or exterior leaf.
@@ -186,7 +212,11 @@ impl<'a> OpenSpace<'a> {
         if self.tree.leaves.is_empty() {
             return true;
         }
-        let leaf = find_leaf_for_point(self.tree, point);
+        self.blocks(find_leaf_for_point(self.tree, point))
+    }
+
+    /// True when `leaf` is solid or exterior.
+    fn blocks(&self, leaf: usize) -> bool {
         self.tree.leaves[leaf].is_solid || self.exterior_leaves.contains(&leaf)
     }
 
@@ -290,7 +320,7 @@ impl<'a> OpenSpace<'a> {
     }
 
     /// First parameter in `t0..t1` along the segment where it enters a leaf
-    /// whose blocked state (solid or exterior) is `blocked`.
+    /// that `wanted` accepts.
     fn first_leaf(
         &self,
         child: &BspChild,
@@ -298,24 +328,20 @@ impl<'a> OpenSpace<'a> {
         dir: DVec3,
         t0: f64,
         t1: f64,
-        blocked: bool,
+        wanted: &impl Fn(usize) -> bool,
     ) -> Option<f64> {
         match child {
-            BspChild::Leaf(leaf) => {
-                let is_blocked =
-                    self.tree.leaves[*leaf].is_solid || self.exterior_leaves.contains(leaf);
-                (is_blocked == blocked).then_some(t0)
-            }
+            BspChild::Leaf(leaf) => wanted(*leaf).then_some(t0),
             BspChild::Node(node) => {
                 let node = &self.tree.nodes[*node];
                 let side = |t: f64| (origin + dir * t).dot(node.plane_normal) - node.plane_distance;
                 // Same sign rule as `find_leaf_for_point`: on the plane is front.
                 let (d0, d1) = (side(t0), side(t1));
                 if d0 >= 0.0 && d1 >= 0.0 {
-                    return self.first_leaf(&node.front, origin, dir, t0, t1, blocked);
+                    return self.first_leaf(&node.front, origin, dir, t0, t1, wanted);
                 }
                 if d0 < 0.0 && d1 < 0.0 {
-                    return self.first_leaf(&node.back, origin, dir, t0, t1, blocked);
+                    return self.first_leaf(&node.back, origin, dir, t0, t1, wanted);
                 }
                 let t_mid = t0 + (t1 - t0) * (d0 / (d0 - d1));
                 let (near, far) = if d0 >= 0.0 {
@@ -323,8 +349,8 @@ impl<'a> OpenSpace<'a> {
                 } else {
                     (&node.back, &node.front)
                 };
-                self.first_leaf(near, origin, dir, t0, t_mid, blocked)
-                    .or_else(|| self.first_leaf(far, origin, dir, t_mid, t1, blocked))
+                self.first_leaf(near, origin, dir, t0, t_mid, wanted)
+                    .or_else(|| self.first_leaf(far, origin, dir, t_mid, t1, wanted))
             }
         }
     }

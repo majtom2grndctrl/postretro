@@ -6,20 +6,21 @@
 
 use glam::DVec3;
 
-use super::planes_equivalent;
+use super::{REGION_CLASSIFICATION_EPSILON, planes_equivalent};
 use crate::map_data::BrushVolume;
 use crate::partition::occluder_classify::{
-    BrushFrame, OCCLUDER_FLOOR_M, OccluderClassification, OccluderVerdict, OpenSpace, at_least,
-    broad_axes_reach_floor, broad_face_deepest_open_depth, thinnest_axes, vertical_broad_axis,
+    BrushFrame, OccluderClassification, OccluderVerdict, OpenSpace, PROBE_OFFSET_M,
+    broad_axes_reach_floor, broad_face_counts, broad_face_counts_through_solid,
+    broad_face_deepest_open_depth, thinnest_axes, vertical_broad_axis,
 };
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::types::Aabb;
 
 /// A prism ends at most this multiple of its face's longer broad extent from
 /// the face. An eye past a wall's end sees into its prism a width growing
-/// with depth over distance in front, so deep prism sections are hidden from
-/// fewer eyes; the bound is a cost limit on how far a face's end planes cut
-/// the space behind it, scaled with the face as that geometry is.
+/// with depth over distance in front, so the deep parts of a prism are
+/// hidden from fewer eyes; the bound is a cost limit on how far a face's end
+/// planes cut the space behind it, scaled with the face as that geometry is.
 pub const SHADOW_PRISM_LENGTH_FACTOR: f64 = 2.0;
 
 /// How far past an end edge's plane the free-end probes sit, beyond the wall.
@@ -40,9 +41,21 @@ pub const FREE_END_PROBE_DEPTHS_M: [f64; 3] = [0.1, 0.5, 1.0];
 pub const FREE_END_MIN_OPEN_PROBES: usize =
     FREE_END_PROBE_FRACTIONS.len() * FREE_END_PROBE_DEPTHS_M.len() / 2 + 1;
 
-/// Depth a region must reach into a prism to overlap it, so a region that
-/// only touches the prism does not, as `DoorSplitter::overlaps` measures it.
-const OVERLAP_EPSILON: f64 = 1e-4;
+/// How far past an end edge's plane the joint probes sit, inside the wall's
+/// own thickness. The free-end probes stand farther out and in front of the
+/// face, so a wall continuing this one in line, or a cross wall thinner than
+/// their offset, leaves them open.
+const JOINT_PROBE_OFFSET_M: f64 = PROBE_OFFSET_M;
+
+/// Where across the wall's thickness the joint probes sit, as fractions of
+/// it from one broad face; along the end they sit at
+/// `FREE_END_PROBE_FRACTIONS`.
+const JOINT_PROBE_THICKNESS_FRACTIONS: [f64; 3] = [0.25, 0.5, 0.75];
+
+/// Depth a region must reach into a prism to overlap it: the tolerance by
+/// which a plane must span a region to split it, so a region reaching less
+/// far in, which no end plane could cut a piece of, is not offered them.
+const OVERLAP_EPSILON: f64 = REGION_CLASSIFICATION_EPSILON;
 
 /// The space one occluding wall face hides from an eye in front of the
 /// opposite face and within its ends: the face swept along its outward
@@ -66,14 +79,14 @@ pub struct ShadowPrism {
 }
 
 /// The shadow prisms of a classification: each wall face (one with a
-/// vertical broad axis) of an occluding brush that fronts open space at
-/// least the occluder floor deep while its opposite broad face does too, and
-/// has at least one free vertical end. Faces follow the classifier's tie
-/// rule, every face across each thinnest axis whose broad axes reach the
-/// floor. Slab faces, wall tops and bottoms, cluster sections and far ends
-/// add no splitter. Every prism reads only its own geometry and `space`, and
-/// the set is sorted and deduplicated by its hull, so it does not depend on
-/// brush order.
+/// vertical broad axis) of an occluding brush that counts under the occluder
+/// rule's face test while its opposite broad face does too, read through any
+/// solid backing it, and has at least one free vertical end. Faces follow
+/// the classifier's tie rule, every face across each thinnest axis whose
+/// broad axes reach the floor. Slab faces, wall tops and bottoms, cluster
+/// sections and far ends add no splitter. Every prism reads only its own
+/// geometry and `space`, and the set is sorted and deduplicated by its hull,
+/// so it does not depend on brush order.
 pub fn shadow_prisms(
     brushes: &[BrushVolume],
     classification: &OccluderClassification,
@@ -119,13 +132,14 @@ pub fn shadow_prisms(
 impl ShadowPrism {
     /// The prism of the wall face of `frame`'s box whose outward normal is
     /// `outward` (±1) along `normal_axis`, its ends running along
-    /// `vertical_axis`. `None` when the open space in front of it, or in
-    /// front of the opposite face, is under the floor at its deepest lattice
-    /// sample, or when neither end is free. The prism is the space hidden
-    /// from eyes in front of the opposite face, and no eye stands in a gap
-    /// under the floor or in void: a room's own wall, its outer face on the
-    /// void, hides the room from no one, so its prism would only cut the
-    /// room.
+    /// `vertical_axis`. `None` when the face, or the opposite face, does not
+    /// count under the occluder rule's face test, or when neither end is
+    /// free. The prism is the space hidden from eyes in front of the opposite
+    /// face, and no eye stands in a gap under the floor or in void: a room's
+    /// own wall, its outer face on the void, hides the room from no one, so
+    /// its prism would only cut the room. The opposite face is read through
+    /// any solid backing it, so each outer layer of a wall built in layers
+    /// counts the open space beyond the whole wall.
     fn of_wall_face(
         frame: &BrushFrame,
         normal_axis: usize,
@@ -133,8 +147,12 @@ impl ShadowPrism {
         outward: f64,
         space: &OpenSpace<'_>,
     ) -> Option<Self> {
-        let open_depth = floor_deep_open_depth(frame, normal_axis, outward, space)?;
-        floor_deep_open_depth(frame, normal_axis, -outward, space)?;
+        if !broad_face_counts(frame, normal_axis, outward, space)
+            || !broad_face_counts_through_solid(frame, normal_axis, -outward, space)
+        {
+            return None;
+        }
+        let open_depth = broad_face_deepest_open_depth(frame, normal_axis, outward, space)?;
         let splitters = free_end_planes(frame, normal_axis, vertical_axis, outward, space);
         if splitters.is_empty() {
             return None;
@@ -238,12 +256,14 @@ impl ShadowPrism {
 
 /// The inward plane of each vertical end edge of the wall face of `frame`'s
 /// box whose outward normal is `outward` along `normal_axis`, kept when the
-/// space beyond that end, behind the face, is free: at least
-/// `FREE_END_MIN_OPEN_PROBES` of the probes `FREE_END_PROBE_OFFSET_M` past
-/// the end's plane, along the end and at each depth behind the face, lie in
-/// open space. An end meeting solid adds no splitter: it hides nothing past
-/// itself, and its plane, infinite across the tier, would only cut open
-/// space elsewhere.
+/// end meets no solid and the space beyond it, behind the face, is free: at
+/// least `FREE_END_MIN_OPEN_PROBES` of the probes `FREE_END_PROBE_OFFSET_M`
+/// past the end's plane, along the end and at each depth behind the face,
+/// lie in open space. The end meets solid when most of the joint probes just
+/// past it, inside the wall's thickness, are blocked, as where another wall
+/// continues it in line or crosses it. An end meeting solid adds no
+/// splitter: it hides nothing past itself, and its plane, infinite across
+/// the tier, would only cut open space elsewhere.
 fn free_end_planes(
     frame: &BrushFrame,
     normal_axis: usize,
@@ -255,10 +275,25 @@ fn free_end_planes(
     let normal = frame.axes[normal_axis] * outward;
     let face_center = frame.center + normal * (frame.extents[normal_axis] * 0.5);
     let along = frame.axes[vertical_axis] * frame.extents[vertical_axis];
+    let across = frame.axes[normal_axis] * frame.extents[normal_axis];
     let half_length = frame.extents[end_axis] * 0.5;
+    let joint_probes = FREE_END_PROBE_FRACTIONS.len() * JOINT_PROBE_THICKNESS_FRACTIONS.len();
     let mut planes = Vec::with_capacity(2);
     for sign in [1.0, -1.0] {
         let out = frame.axes[end_axis] * sign;
+        let joint = frame.center + out * (half_length + JOINT_PROBE_OFFSET_M);
+        let blocked = FREE_END_PROBE_FRACTIONS
+            .iter()
+            .flat_map(|&fraction| {
+                JOINT_PROBE_THICKNESS_FRACTIONS
+                    .iter()
+                    .map(move |&depth| joint + along * (fraction - 0.5) + across * (depth - 0.5))
+            })
+            .filter(|&probe| space.is_blocked(probe))
+            .count();
+        if 2 * blocked > joint_probes {
+            continue;
+        }
         let beyond = face_center + out * (half_length + FREE_END_PROBE_OFFSET_M);
         let open = FREE_END_PROBE_FRACTIONS
             .iter()
@@ -275,19 +310,6 @@ fn free_end_planes(
         }
     }
     planes
-}
-
-/// The deepest open depth in front of the face of `frame`'s box whose
-/// outward normal is `outward` along `normal_axis`, when it is at least the
-/// floor.
-fn floor_deep_open_depth(
-    frame: &BrushFrame,
-    normal_axis: usize,
-    outward: f64,
-    space: &OpenSpace<'_>,
-) -> Option<f64> {
-    broad_face_deepest_open_depth(frame, normal_axis, outward, space)
-        .filter(|&depth| at_least(depth, OCCLUDER_FLOOR_M))
 }
 
 /// An exact total order on prism hulls, for an order-free sort.

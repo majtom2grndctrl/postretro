@@ -549,15 +549,8 @@ fn run_after_parsing(
     // its exterior cells, and the portals between occluder-tier cells. The
     // exterior set lets the cell encoder emit `face_count = 0` for
     // outside-the-map cells in lockstep with the geometry section.
-    let full_tree_portals = portals::generate_portals(&result.tree);
-    let full_exterior_leaves = visibility::find_exterior_leaves(&result.tree, &full_tree_portals);
-    let runtime = runtime_cells::RuntimeCells::build(
-        &result.tree,
-        &tier,
-        &full_exterior_leaves,
-        full_tree_portals.len(),
-    );
-    drop(full_tree_portals);
+    let (runtime, full_exterior_leaves) =
+        runtime_cells::RuntimeCells::of_partition(&result.tree, &tier);
     let portal_count = runtime.portals.len();
     if portal_count == 0 {
         log::warn!(

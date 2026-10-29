@@ -69,8 +69,8 @@ pub(crate) fn partition_with_occluders(
     Ok(OccluderPartition { result, tier })
 }
 
-/// Classify every brush against a first pass: today's tree of every brush and
-/// its exterior flood, which bound each face's open space.
+/// Classify every brush against a first pass: the single-tier tree of every
+/// static brush and its exterior flood, which bound each face's open space.
 #[cfg(test)]
 pub(crate) fn classify(brushes: &[BrushVolume]) -> Result<OccluderClassification> {
     Ok(match FirstPass::build(brushes)? {
@@ -93,14 +93,8 @@ pub(crate) struct ShippedCells {
 impl ShippedCells {
     pub(crate) fn build(brushes: &[BrushVolume], movers: &[MapKinematicMover]) -> Result<Self> {
         let partition = partition_with_occluders(brushes, movers)?;
-        let full_portals = portals::generate_portals(&partition.result.tree);
-        let full_exterior = visibility::find_exterior_leaves(&partition.result.tree, &full_portals);
-        let runtime = RuntimeCells::build(
-            &partition.result.tree,
-            &partition.tier,
-            &full_exterior,
-            full_portals.len(),
-        );
+        let (runtime, full_exterior) =
+            RuntimeCells::of_partition(&partition.result.tree, &partition.tier);
         Ok(Self {
             partition,
             full_exterior,
@@ -122,9 +116,9 @@ pub(crate) fn doors(
     })
 }
 
-/// Today's tree of every static brush and its exterior flood: the open space
-/// classification and door recognition measure against. `None` for a map
-/// with no brushes.
+/// The single-tier tree of every static brush and its exterior flood: the
+/// open space classification and door recognition measure against. `None`
+/// for a map with no brushes.
 struct FirstPass {
     tree: BspTree,
     exterior: HashSet<usize>,
@@ -151,8 +145,9 @@ fn log_prisms(prisms: &[ShadowPrism]) {
     log::info!(
         "[Compiler] Shadow prisms: {} occluding wall faces with a free end, {} end planes, \
          {} ended by the length bound ({SHADOW_PRISM_LENGTH_FACTOR} × the face's longer broad \
-         extent); an end is free when at least {FREE_END_MIN_OPEN_PROBES} of its {probes} \
-         probes {FREE_END_PROBE_OFFSET_M} m past it are open",
+         extent); an end is free when it meets no solid and at least \
+         {FREE_END_MIN_OPEN_PROBES} of its {probes} probes {FREE_END_PROBE_OFFSET_M} m past it \
+         are open",
         prisms.len(),
         prisms
             .iter()
@@ -223,6 +218,17 @@ pub(crate) struct RuntimeCells {
 }
 
 impl RuntimeCells {
+    /// The runtime cells of a two-tier partition as the pipeline ships them,
+    /// and the full tree's exterior flood over its own portals, which the
+    /// readers of exact sub-leaf solidity take. The full tree's portals feed
+    /// only that flood and are dropped here.
+    pub(crate) fn of_partition(tree: &BspTree, tier: &OccluderTier) -> (Self, HashSet<usize>) {
+        let full_tree_portals = portals::generate_portals(tree);
+        let full_exterior = visibility::find_exterior_leaves(tree, &full_tree_portals);
+        let runtime = Self::build(tree, tier, &full_exterior, full_tree_portals.len());
+        (runtime, full_exterior)
+    }
+
     /// Group `tree`'s leaves into cells, one per connected interior pocket
     /// of each of `tier`'s leaves, and generate the runtime portals at the
     /// tier's nodes. `exterior_leaves` is the full tree's flood over its own

@@ -83,6 +83,41 @@ fn rank(current: OccluderVerdict, candidate: OccluderVerdict) -> OccluderVerdict
     }
 }
 
+/// The rule's face test on the face of `frame`'s box whose outward normal is
+/// `outward` along `normal_axis`: it counts when most of its lattice's open
+/// samples front open space at least the floor deep. The rule passes a face
+/// only at samples that count, so a face the rule passes always counts.
+pub(crate) fn broad_face_counts(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> bool {
+    let face = BroadFace::of(frame, normal_axis, outward);
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    face.counts(face.sample_probes(frame, broad), space)
+}
+
+/// The face test read past the solid backing the face: a sample whose probe
+/// starts in solid is carried through it along the face's normal, so a face
+/// backed by another brush, as each layer of a wall built in layers is,
+/// counts by the open space in front of the composite's far face. A sample
+/// starting in exterior void, or carried into it, is skipped as the rule
+/// skips a blocked one.
+pub(crate) fn broad_face_counts_through_solid(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> bool {
+    let face = BroadFace::of(frame, normal_axis, outward);
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    let probes = face
+        .sample_probes(frame, broad)
+        .map(|(probe, offsets)| (face.past_backing_solid(probe, space), offsets));
+    face.counts(probes, space)
+}
+
 /// Mean open depth in front of the face of `frame`'s box whose outward
 /// normal is `outward` along `normal_axis`, over the face lattice's open
 /// samples; zero when none is open. The same probes the rule's depth test
@@ -218,6 +253,61 @@ impl BroadFace {
         self.center + offsets[0] + offsets[1] + self.normal * PROBE_OFFSET_M
     }
 
+    /// Each lattice sample's probe, with its offsets.
+    fn sample_probes(
+        &self,
+        frame: &BrushFrame,
+        broad: [usize; 2],
+    ) -> impl Iterator<Item = (DVec3, [DVec3; 2])> {
+        self.sample_offsets(frame, broad)
+            .map(|offsets| (self.probe(offsets), offsets))
+    }
+
+    /// `probe` carried along the face's normal past the solid it starts in,
+    /// off that solid's far face; unmoved when it starts outside solid.
+    fn past_backing_solid(&self, probe: DVec3, space: &OpenSpace<'_>) -> DVec3 {
+        let through = space.distance_through_solid(probe, self.normal);
+        if through > 0.0 {
+            probe + self.normal * (through + PROBE_OFFSET_M)
+        } else {
+            probe
+        }
+    }
+
+    /// True when `test` passes at most of `probes` that start in open space.
+    /// A probe starting in blocked space reads the brush touching the face
+    /// there, not the space in front, so it is skipped. The rule and the face
+    /// test both aggregate their samples here.
+    fn most_open_samples(
+        probes: impl Iterator<Item = (DVec3, [DVec3; 2])>,
+        space: &OpenSpace<'_>,
+        mut test: impl FnMut(DVec3, [DVec3; 2]) -> bool,
+    ) -> bool {
+        let (mut open, mut passing) = (0_usize, 0_usize);
+        for (probe, offsets) in probes {
+            if space.is_blocked(probe) {
+                continue;
+            }
+            open += 1;
+            if test(probe, offsets) {
+                passing += 1;
+            }
+        }
+        open > 0 && 2 * passing > open
+    }
+
+    /// The face test over `probes`: most of the open ones front open space
+    /// at least the floor deep.
+    fn counts(
+        &self,
+        probes: impl Iterator<Item = (DVec3, [DVec3; 2])>,
+        space: &OpenSpace<'_>,
+    ) -> bool {
+        Self::most_open_samples(probes, space, |probe, _| {
+            self.fronts_floor_deep(probe, space)
+        })
+    }
+
     /// Open depth in front of the face from `probe`, along its normal.
     fn open_depth(&self, probe: DVec3, space: &OpenSpace<'_>) -> f64 {
         PROBE_OFFSET_M + space.distance_to_blocking(probe, self.normal)
@@ -269,29 +359,25 @@ impl BroadFace {
     }
 
     /// Judge the face at each open sample of its lattice; it passes when
-    /// most of them pass. A sample whose probe starts in blocked space reads
-    /// the brush touching the face there, not the space in front, so it is
-    /// skipped.
+    /// most of them pass, and otherwise reads the furthest failing verdict.
     fn judge(
         &self,
         frame: &BrushFrame,
         broad: [usize; 2],
         space: &OpenSpace<'_>,
     ) -> OccluderVerdict {
-        let (mut open, mut passing) = (0_usize, 0_usize);
         let mut failing = OccluderVerdict::NoOpenFace;
-        for offsets in self.sample_offsets(frame, broad) {
-            let probe = self.probe(offsets);
-            if space.is_blocked(probe) {
-                continue;
-            }
-            open += 1;
-            match self.judge_sample(probe, offsets, frame, broad, space) {
-                OccluderVerdict::Occludes => passing += 1,
-                verdict => failing = rank(failing, verdict),
-            }
-        }
-        if open > 0 && 2 * passing > open {
+        let passes =
+            Self::most_open_samples(self.sample_probes(frame, broad), space, |probe, offsets| {
+                match self.judge_sample(probe, offsets, frame, broad, space) {
+                    OccluderVerdict::Occludes => true,
+                    verdict => {
+                        failing = rank(failing, verdict);
+                        false
+                    }
+                }
+            });
+        if passes {
             OccluderVerdict::Occludes
         } else {
             failing

@@ -111,6 +111,9 @@ fn compacted_static_lights<'a>(inputs: &ChunkLightListInputs<'a>) -> Vec<&'a Map
 
 /// Fold the parts of the BSP input the chunk-light bake actually consumes.
 ///
+/// In the pipeline the tree is the cell view, so cell grouping re-keys this
+/// fingerprint and leaf indices are cell ids.
+///
 /// Point location depends only on each split plane and its front/back child
 /// references; the bake additionally reads leaf solidity and the exterior set.
 /// Face lists, bounds, defining planes, and node parents are intentionally not
@@ -161,6 +164,9 @@ fn update_bsp_fingerprint(
 /// partition and leaf state, portal leaf-pair adjacency, compacted static
 /// lights, and the two bake controls. Dynamic lights and AlphaLights source
 /// indices are excluded because the bake never reads them for its output.
+///
+/// In the pipeline the BSP tree is the cell view, so cell grouping re-keys the
+/// result and the portal endpoints are cell ids.
 pub(crate) fn chunk_light_list_cache_key(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,

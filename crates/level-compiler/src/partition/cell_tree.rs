@@ -74,7 +74,9 @@ pub struct CellTree {
     /// occluder-tier leaf's, a convex region holding the cell, its bounds
     /// enclose every member leaf, and its faces are the members' in
     /// full-tree leaf order; a solid or exterior cell is a copy of its one
-    /// leaf. A cell's exact region is `hulls[c]`.
+    /// leaf. A cell's exact region is `hulls[c]`, the only region readers may
+    /// treat as the cell: an interior cell's `defining_planes` are its tier
+    /// leaf's, which for a pocket also bound sibling pockets and solid.
     pub tree: BspTree,
     /// Per cell, its hull: the convex regions of its member leaves.
     pub hulls: Vec<CellHull>,
@@ -177,7 +179,8 @@ impl CellTree {
 }
 
 /// An interior cell before its members join: the tier leaf's planes, empty
-/// bounds and no faces.
+/// bounds and no faces. The planes are the tier leaf's, not the pocket's; the
+/// cell's region is its `CellHull` pieces.
 fn interior_cell(tier_leaf: &TierLeaf) -> BspLeaf {
     BspLeaf {
         face_indices: Vec::new(),

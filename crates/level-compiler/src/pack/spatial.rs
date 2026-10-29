@@ -97,8 +97,8 @@ pub fn encode_cells(
         let back = portal.back_leaf as usize;
         if front >= leaves.leaves.len() || back >= leaves.leaves.len() {
             anyhow::bail!(
-                "Cells portal adjacency references leaf out of range: portal {portal_idx} \
-                 front={} back={} leaf_count={}",
+                "Cells portal adjacency references cell out of range: portal {portal_idx} \
+                 front={} back={} cell_count={}",
                 portal.front_leaf,
                 portal.back_leaf,
                 leaves.leaves.len()

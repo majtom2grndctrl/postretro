@@ -1,6 +1,7 @@
-// Brush contact for occluder clusters: two convex brushes touch when their
-// separating-axis distance is within the CSG contact epsilon.
-// See: context/lib/resource_management.md §5.2 (Contact)
+// Brush contact for occluder clusters and door recognition: two convex
+// brushes touch when their separating-axis distance is within the CSG contact
+// epsilon.
+// See: context/lib/resource_management.md §5.2 Capture (Contact bullet)
 
 use glam::DVec3;
 

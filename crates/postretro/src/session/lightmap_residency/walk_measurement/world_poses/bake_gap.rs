@@ -26,7 +26,15 @@ use super::poses::{WorldPose, read_poses};
 use super::{FILE_ENV, STEPS_ENV, env};
 use crate::render_preparation::VisibleRenderPreparation;
 
-const MAGIC: &str = "postretro-bake-gap-world-record 1";
+const MAGIC: &str = "postretro-bake-gap-world-record 2";
+
+/// The pool policy identity this build runs under, recorded so a pair never
+/// compares builds sized differently (rendering_pipeline.md §2: both builds of
+/// a paired comparison run the same pool policy). Mirrors the demand-sized
+/// growth in `crates/render-cpu/src/lightmap_pool/policy/growth.rs`:
+/// `GROWTH_HEADROOM` is 4/3 there but `pub(super)`, so it is restated here.
+/// Change this string whenever that policy or ratio changes.
+const POOL_POLICY: &str = "demand-sized growth headroom 4/3";
 /// Frames the pose tour holds each pose: drain 0's reads land in drain 1 of
 /// the first frame; the second shows what a retiring generation still holds.
 const POSE_TOUR_DWELL: u32 = 2;
@@ -74,6 +82,8 @@ pub(super) struct BakeGapRecord {
     pub(super) bake: String,
     /// Projection, pitch and read mode; a pair must match it.
     pub(super) modes: String,
+    /// Pool sizing policy and headroom ratio; a pair must match it.
+    pub(super) pool_policy: String,
     pub(super) sequences: Vec<Sequence>,
 }
 
@@ -128,6 +138,7 @@ pub(super) fn run(
     Some(BakeGapRecord {
         bake: bake_identity(path, world),
         modes: modes.label(),
+        pool_policy: POOL_POLICY.to_string(),
         sequences,
     })
 }
@@ -261,6 +272,7 @@ pub(super) fn format_record(record: &BakeGapRecord) -> String {
     writeln!(text, "{MAGIC}").expect("string write");
     writeln!(text, "bake {}", record.bake).expect("string write");
     writeln!(text, "modes {}", record.modes).expect("string write");
+    writeln!(text, "pool {}", record.pool_policy).expect("string write");
     for seq in &record.sequences {
         writeln!(text, "seq {}", seq.label).expect("string write");
         writeln!(
@@ -297,7 +309,10 @@ pub(super) fn format_record(record: &BakeGapRecord) -> String {
 pub(super) fn parse_record(text: &str) -> Result<BakeGapRecord, String> {
     let mut lines = text.lines();
     if lines.next() != Some(MAGIC) {
-        return Err("not a bake-gap world record".to_string());
+        return Err(format!(
+            "not a bake-gap world record of this format (expected `{MAGIC}`); records written \
+             under an older pool policy must be re-recorded"
+        ));
     }
     let field = |line: Option<&str>, key: &str| {
         line.and_then(|l| l.strip_prefix(key))
@@ -307,6 +322,7 @@ pub(super) fn parse_record(text: &str) -> Result<BakeGapRecord, String> {
     };
     let bake = field(lines.next(), "bake")?;
     let modes = field(lines.next(), "modes")?;
+    let pool_policy = field(lines.next(), "pool")?;
     let mut sequences = Vec::new();
     while let Some(line) = lines.next() {
         if line.trim().is_empty() {
@@ -340,6 +356,7 @@ pub(super) fn parse_record(text: &str) -> Result<BakeGapRecord, String> {
     Ok(BakeGapRecord {
         bake,
         modes,
+        pool_policy,
         sequences,
     })
 }
@@ -490,6 +507,13 @@ pub(super) fn verdict(before: Option<&BakeGapRecord>, this: &BakeGapRecord) -> B
             out.invalid = Some(format!(
                 "modes differ: before {:?}, this {:?}",
                 before.modes, this.modes
+            ));
+            return out;
+        }
+        if before.pool_policy != this.pool_policy {
+            out.invalid = Some(format!(
+                "pool policy differs: before {:?}, this {:?}",
+                before.pool_policy, this.pool_policy
             ));
             return out;
         }

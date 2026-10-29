@@ -50,7 +50,9 @@
 // Bake gap with planar on (§4): on a water map, run planar off with
 // `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT`, then planar on with the same
 // modes and `..._TRIP_RECORD_IN`; the planar flag stays out of the run label,
-// so the pair splits and prints the deferred-block verdict.
+// so the pair splits and prints the deferred-block verdict. That same-partition
+// pairing compares block counts because the cell layout matches; across
+// partitions use `world_poses`, whose unit is deferred texel area.
 //
 // Residency gate, per projection and pitch: run the pre-change build with
 // `POSTRETRO_LIGHTMAP_WALK_READS=completed` and

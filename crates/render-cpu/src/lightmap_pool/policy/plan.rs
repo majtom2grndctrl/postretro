@@ -91,8 +91,10 @@ pub struct DrainPlan {
     pub refused: Vec<u32>,
     /// Mandatory or visible pairs that needed growth while a generation was
     /// still retiring, or a layer past the device limit: a counted miss.
-    /// Transient while retiring, and only once demand outgrew the last
-    /// growth's reserve; at the device limit it lasts while that pair stays
+    /// Transient while retiring, and only once demand or pool fragmentation
+    /// outgrew the last growth's reserve (a second growth in one drain lands
+    /// exactly at need, and the all-resident clamp can remove headroom); at the
+    /// device limit it lasts while that pair stays
     /// wanted and the resident set leaves it no room.
     pub deferred: Vec<u32>,
     /// A pair was deferred because the pool holds the device's every usable

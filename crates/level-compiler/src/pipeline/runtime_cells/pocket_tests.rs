@@ -288,6 +288,10 @@ fn cell_and_portal_stage_keys_miss_when_pockets_regroup_the_same_leaves() {
     assert_ne!(pockets.cell_visibility, merged.cell_visibility);
     assert_ne!(pockets.cell_residency_set, merged.cell_residency_set);
     assert_ne!(pockets.chunk_light_list, merged.chunk_light_list);
+    assert_ne!(
+        pockets.lightmap_atlas_layout, merged.lightmap_atlas_layout,
+        "the lightmap layer keys fold the block cell ids"
+    );
     assert_ne!(pockets.geometry, merged.geometry);
     assert_eq!(
         pockets.sdf, merged.sdf,

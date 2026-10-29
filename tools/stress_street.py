@@ -34,8 +34,11 @@ from stress_environment import prism_brush, ramp_top
 
 UNIT_M = 0.0254
 
-# Classifier starting constants (research.md §Constants), recorded so the
-# tests and README can show which side of each a piece sits on.
+# Classifier starting constants (research.md §Constants), mirrored from the Rust
+# sources crates/level-compiler/src/partition/occluder_classify.rs and
+# crates/level-compiler/src/partition/occluder_cluster.rs; update here when
+# those are retuned. Recorded so the tests and README can show which side of
+# each a piece sits on.
 FLOOR_M = 1.2
 ABSOLUTE_M = 20.0
 SEE_OVER_M = 2.5

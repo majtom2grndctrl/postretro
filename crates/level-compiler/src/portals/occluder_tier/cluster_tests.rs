@@ -1,3 +1,5 @@
+// Cluster-section tests for the occluder classifier: coverage, step runs, the
+// occlusion-test map. See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
 use super::classification_test_fixtures::{
     TierBuild, assert_apart, brush_at_quake_box, classification, occlusion_test_brushes,
 };
@@ -95,8 +97,6 @@ fn occlusion_test_east_wall_occludes_as_one_cluster_section() {
     );
     let flags = classification.occluder_flags();
     assert!(wall.iter().all(|&brush| flags[brush]));
-
-    report("occlusion-test", &brushes, &classification);
 }
 
 /// Print the classifier's cluster output and the tier counts it makes,
@@ -186,7 +186,12 @@ fn cluster_coverage_decides_strictly_at_the_constant() {
         match edge {
             Edge::Under | Edge::At => {
                 if edge == Edge::At {
-                    assert_eq!(section.coverage, OCCLUDER_COVERAGE_FRACTION);
+                    assert!(
+                        (section.coverage - OCCLUDER_COVERAGE_FRACTION).abs() < 1e-9,
+                        "{}: coverage {} should land at the constant",
+                        cf.fixture.name,
+                        section.coverage
+                    );
                 }
                 assert!(!section.occludes, "{}", cf.fixture.name);
                 assert_adds_no_empty_cell_or_portal(&cf);
@@ -520,7 +525,6 @@ fn step_runs_put_no_riser_or_tread_plane_in_the_occluder_tier() {
         let cf = fixtures::step_run(steps);
         let classification = classify_exempt_added(&cf);
         assert_added_stay_exempt(&cf, &classification);
-        report(&cf.fixture.name, &cf.fixture.brushes, &classification);
     }
 }
 

@@ -1157,6 +1157,10 @@ pub(super) struct StageKeys {
     pub(super) cell_visibility: String,
     pub(super) cell_residency_set: String,
     pub(super) chunk_light_list: String,
+    /// The lightmap layer keys' atlas-layout fingerprint: every per-light
+    /// layer key and the composited section key fold it, and it reaches cells
+    /// only through the blocks' `cell_id`.
+    pub(super) lightmap_atlas_layout: Vec<u8>,
     pub(super) geometry: [u8; 32],
     pub(super) sdf: String,
 }
@@ -1182,6 +1186,45 @@ pub(super) fn stage_keys(
         portals: runtime_portals,
         exterior_leaves: &view.exterior_cells,
     };
+    // The lightmap stage's own charts and cell blocks over this view's
+    // geometry, packed by the production `pack_cut_charts`.
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(&cells.map_data.lights);
+    let mut atlas_geometry = geometry.clone();
+    let cut = crate::lightmap_bake::plan_cut_charts(
+        &mut atlas_geometry,
+        &static_lights,
+        0.25,
+        &cells.map_data.lightmap_scale_regions,
+        postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )
+    .expect("charts plan");
+    let prepared = crate::lightmap_bake::pack_cut_charts(
+        &mut atlas_geometry,
+        &static_lights,
+        cut.charts,
+        cut.cut_parents,
+        crate::lightmap_bake::BlockOrdering::by_cell_id(
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+        ),
+        postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE,
+        &crate::bake_control::BakeControl::unrestricted(),
+    )
+    .expect("blocks pack");
+    assert!(
+        !prepared.layout.blocks.is_empty(),
+        "the fixture's static light gives the atlas cell blocks"
+    );
+    let lightmap_atlas_layout =
+        crate::lightmap_layer::atlas_layout_fingerprint(&crate::lightmap_layer::SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            layout: &prepared.layout,
+        });
     let vis = crate::visibility::encode_vis(&view.tree, &view.exterior_cells);
     let portals_section = crate::pack::encode_portals(runtime_portals).expect("portals encode");
     let cells_section =
@@ -1209,6 +1252,7 @@ pub(super) fn stage_keys(
             crate::chunk_light_list_bake::DEFAULT_PER_CHUNK_LIGHT_CAP,
         )
         .as_filename(),
+        lightmap_atlas_layout,
         geometry: crate::sh_group::geometry_content_hash(&geometry),
         sdf: crate::sdf_bake::cache_key(
             &geometry,
@@ -1243,6 +1287,10 @@ fn cell_and_portal_stage_keys_miss_on_regrouped_cells_or_classification_only() {
     assert_ne!(keys.cell_visibility, unchanged.cell_visibility);
     assert_ne!(keys.cell_residency_set, unchanged.cell_residency_set);
     assert_ne!(keys.chunk_light_list, unchanged.chunk_light_list);
+    assert_ne!(
+        keys.lightmap_atlas_layout, unchanged.lightmap_atlas_layout,
+        "the lightmap layer keys fold the block cell ids"
+    );
     assert_ne!(keys.geometry, unchanged.geometry);
     assert_eq!(
         keys.sdf, unchanged.sdf,
@@ -1262,5 +1310,9 @@ fn cell_and_portal_stage_keys_miss_on_regrouped_cells_or_classification_only() {
     assert_ne!(keys.cell_visibility, unchanged.cell_visibility);
     assert_ne!(keys.cell_residency_set, unchanged.cell_residency_set);
     assert_ne!(keys.chunk_light_list, unchanged.chunk_light_list);
+    assert_ne!(
+        keys.lightmap_atlas_layout, unchanged.lightmap_atlas_layout,
+        "the lightmap layer keys fold the block cell ids"
+    );
     assert_ne!(keys.geometry, unchanged.geometry);
 }

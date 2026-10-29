@@ -163,6 +163,7 @@ fn gap(deferred_texels: &[u64]) -> BakeGapRecord {
     BakeGapRecord {
         bake: "id51=abc".to_string(),
         modes: "completed reads".to_string(),
+        pool_policy: "demand-sized growth headroom 4/3".to_string(),
         sequences: vec![Sequence {
             label: "random walk".to_string(),
             spawn: Vec3::new(0.25, 1.5, 0.75),
@@ -207,4 +208,20 @@ fn portal_shape_measures_a_unit_square() {
     assert!((area - 1.0).abs() < 1.0e-6);
     assert!((normal.z.abs() - 1.0).abs() < 1.0e-6);
     assert!((aspect - std::f32::consts::SQRT_2).abs() < 1.0e-5);
+}
+
+#[test]
+fn bake_gap_pair_is_invalid_when_pool_policy_differs() {
+    let before = gap(&[0, 64, 0]);
+    let mut this = gap(&[0, 64, 0]);
+    this.pool_policy = "per-drain sizing".to_string();
+    let verdict = bake_gap::verdict(Some(&before), &this);
+    assert!(verdict.invalid.is_some());
+    assert!(!verdict.passed());
+}
+
+#[test]
+fn bake_gap_rejects_record_one() {
+    let text = "postretro-bake-gap-world-record 1\nbake x\nmodes y\n";
+    assert!(bake_gap::parse_record(text).is_err());
 }

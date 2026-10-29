@@ -1,0 +1,943 @@
+use super::*;
+use serde_json::json;
+
+fn step(id: u32) -> SequenceStep {
+    SequenceStep {
+        id: postretro_entities::SequenceTarget::Entity(EntityId::from_raw(id)),
+        primitive: "setLightAnimation".to_string(),
+        args: json!({}),
+    }
+}
+
+fn enabled_scheduler() -> ReactionScheduler {
+    let scheduler = ReactionScheduler::default();
+    scheduler.set_enabled(true);
+    scheduler
+}
+
+// Convert ms→ticks the same way the control handler does (integer micros
+// against a 16_667us tick), so the row tests read against real durations.
+fn ticks_for(duration_ms: f64) -> u32 {
+    let micros = duration_ms * 1000.0;
+    (((micros / 16_667.0).ceil()) as u32).max(1)
+}
+
+// O1 / O31: a 800ms wait resolves to 48 ticks and lands at the drain of the
+// frame containing the 48th host tick, counting the first tick of the first
+// frame after install as tick 1.
+#[test]
+fn eight_hundred_ms_lands_on_the_forty_eighth_tick_frame() {
+    assert_eq!(ticks_for(800.0), 48);
+    let scheduler = enabled_scheduler();
+    // Enrolled at install: frame counter 0, so the stamp is 0 and the first
+    // frame (counter 1) advances it.
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(800.0), false);
+
+    // One tick per frame: 47 frames elapse with no landing.
+    for frame in 1..=47 {
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]);
+        assert!(
+            scheduler.take_landings().is_empty(),
+            "no landing before the 48th tick (frame {frame})"
+        );
+    }
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    let landings = scheduler.take_landings();
+    assert_eq!(landings.len(), 1, "presB lands at the 48th tick frame");
+    assert_eq!(landings[0].tail.len(), 1);
+    assert_eq!(scheduler.pending_len(), 0);
+}
+
+// O2: a 5ms wait resolves to 1 tick and resumes at the drain of the next
+// frame that delivers a tick (never in its own enrollment frame).
+#[test]
+fn sub_tick_wait_resolves_to_one_tick_and_lands_next_frame() {
+    assert_eq!(ticks_for(5.0), 1);
+    let scheduler = enabled_scheduler();
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(5.0), false);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    assert_eq!(scheduler.take_landings().len(), 1);
+}
+
+// O31: install-time enrollment lands at the first frame that delivers a
+// tick, identically for first frames of 1, 3, and 14 ticks.
+#[test]
+fn install_enrollment_lands_first_tick_frame_for_any_first_frame_tick_count() {
+    for ticks_in_first_frame in [1_usize, 3, 14] {
+        let scheduler = enabled_scheduler();
+        scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(17.0), false);
+        assert_eq!(ticks_for(17.0), 2);
+        // Frame 1 delivers `ticks_in_first_frame` ticks; a 2-tick wait needs
+        // the second advancing tick, so with >= 2 ticks it lands in frame 1,
+        // and with 1 tick it lands in frame 2 — but it NEVER advances in the
+        // enrollment frame (frame 0). Here we assert the invariant that the
+        // first advancing evaluate happens in frame 1, whatever its tick count.
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]);
+        // After one tick of frame 1: remaining went 2 -> 1 (advanced, not
+        // skipped), so no landing yet.
+        assert!(scheduler.take_landings().is_empty());
+        for _ in 1..ticks_in_first_frame {
+            scheduler.evaluate(&[]);
+        }
+        if ticks_in_first_frame >= 2 {
+            assert_eq!(
+                scheduler.take_landings().len(),
+                1,
+                "a 2-tick wait lands within a first frame of {ticks_in_first_frame} ticks"
+            );
+        } else {
+            assert!(scheduler.take_landings().is_empty());
+            scheduler.begin_frame();
+            scheduler.evaluate(&[]);
+            assert_eq!(scheduler.take_landings().len(), 1);
+        }
+    }
+}
+
+// O12 / O51: an instance enrolled DURING a frame (its counter already
+// advanced) does not advance during that frame's ticks — for 1, 3, and 14
+// tick counts — and first advances on the next frame's first tick.
+#[test]
+fn enrollment_never_advances_in_its_own_frame() {
+    for ticks_this_frame in [1_usize, 3, 14] {
+        let scheduler = enabled_scheduler();
+        // Frame F begins, then a pre-loop enrollment stamps the current frame.
+        scheduler.begin_frame();
+        scheduler.enroll("uiPress", 0, None, vec![step(1)], ticks_for(5.0), false);
+        // None of frame F's ticks advance it (stamp == current frame).
+        for _ in 0..ticks_this_frame {
+            scheduler.evaluate(&[]);
+            assert!(scheduler.take_landings().is_empty());
+        }
+        assert_eq!(scheduler.pending_len(), 1);
+        // Frame F+1's first tick advances and lands the 1-tick wait.
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]);
+        assert_eq!(scheduler.take_landings().len(), 1);
+    }
+}
+
+// O14: a frame with zero ticks runs no `evaluate`; countdowns are unchanged
+// and the landing queue drains but is empty.
+#[test]
+fn zero_tick_frame_leaves_countdowns_unchanged_and_lands_nothing() {
+    let scheduler = enabled_scheduler();
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(50.0), false);
+    let pending_before = scheduler.pending_len();
+    // A zero-tick frame: begin_frame, but no evaluate.
+    scheduler.begin_frame();
+    assert!(scheduler.take_landings().is_empty());
+    assert_eq!(scheduler.pending_len(), pending_before);
+}
+
+// O41: two same-named bodies each keyed by their own body ordinal park
+// independent instances; neither is conflated with the other.
+#[test]
+fn two_same_named_bodies_park_independent_instances() {
+    let scheduler = enabled_scheduler();
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(50.0), false);
+    scheduler.enroll("levelLoad", 1, None, vec![step(2)], ticks_for(50.0), false);
+    assert_eq!(
+        scheduler.pending_len(),
+        2,
+        "distinct ordinals, distinct keys"
+    );
+}
+
+// Client / disabled scheduler refuses enrollment: no tail parks, no tail
+// lands (O24 / O43 mechanism at the host-only guard).
+#[test]
+fn disabled_scheduler_refuses_enrollment() {
+    let scheduler = ReactionScheduler::default();
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(50.0), false);
+    assert_eq!(scheduler.pending_len(), 0);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    assert!(scheduler.take_landings().is_empty());
+}
+
+// O61 mechanism (counter half): a scheduler whose counter never advances
+// skips its instance forever; advancing it via begin_frame lets the wait land.
+#[test]
+fn counter_must_advance_or_the_instance_is_skipped_forever() {
+    let scheduler = enabled_scheduler();
+    scheduler.begin_frame();
+    assert_eq!(
+        scheduler.current_frame(),
+        1,
+        "one begin_frame advanced it once"
+    );
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], ticks_for(5.0), false);
+    // Counter frozen (begin_frame never called again): evaluate always skips.
+    for _ in 0..10 {
+        scheduler.evaluate(&[]);
+        assert!(scheduler.take_landings().is_empty());
+    }
+    assert_eq!(
+        scheduler.current_frame(),
+        1,
+        "evaluate never advances the counter"
+    );
+    assert_eq!(scheduler.pending_len(), 1);
+    // Advance the counter: now it lands.
+    scheduler.begin_frame();
+    assert_eq!(scheduler.current_frame(), 2);
+    scheduler.evaluate(&[]);
+    assert_eq!(scheduler.take_landings().len(), 1);
+}
+
+// O10: enrollment past the per-level cap warns and drops; already-parked
+// instances are unaffected. Distinct ordinals so each is its own instance.
+#[test]
+fn cap_drops_excess_enrollments_and_leaves_parked_instances_untouched() {
+    let scheduler = enabled_scheduler();
+    for ordinal in 0..MAX_PENDING_REACTION_INSTANCES {
+        scheduler.enroll("levelLoad", ordinal, None, vec![step(1)], 5, false);
+    }
+    assert_eq!(scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
+    scheduler.enroll(
+        "levelLoad",
+        MAX_PENDING_REACTION_INSTANCES,
+        None,
+        vec![step(2)],
+        5,
+        false,
+    );
+    assert_eq!(
+        scheduler.pending_len(),
+        MAX_PENDING_REACTION_INSTANCES,
+        "an over-cap enrollment is dropped; the parked instances stay",
+    );
+}
+
+// O8 / O25: two instances landing on one tick drain in ascending InstanceId
+// order — the enrollment order, not the BTreeMap key order.
+#[test]
+fn landings_drain_in_ascending_instance_id_order() {
+    let scheduler = enabled_scheduler();
+    // "b" enrolls first (id 0), "a" second (id 1); key order is a < b, but the
+    // landing order must follow InstanceId: b then a.
+    scheduler.enroll("b", 0, None, vec![step(1)], 1, false);
+    scheduler.enroll("a", 0, None, vec![step(2)], 1, false);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    let landings = scheduler.take_landings();
+    assert_eq!(landings.len(), 2);
+    assert_eq!(landings[0].key.0, "b", "id 0 (enrolled first) lands first");
+    assert_eq!(landings[1].key.0, "a");
+}
+
+// O38 / O39: a lifecycle clear drops every parked and queued instance. The
+// count `warn!` is emitted by `clear`; the drop is asserted structurally.
+#[test]
+fn clear_drops_all_pending_instances() {
+    let scheduler = enabled_scheduler();
+    scheduler.enroll("levelLoad", 0, None, vec![step(1)], 5, false);
+    scheduler.enroll("levelLoad", 1, None, vec![step(2)], 5, false);
+    assert_eq!(scheduler.pending_len(), 2);
+    scheduler.clear();
+    assert_eq!(scheduler.pending_len(), 0);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    assert!(
+        scheduler.take_landings().is_empty(),
+        "no cleared tail lands"
+    );
+}
+
+// O28b: a fresh (non-resume) enrollment starts at chain depth zero.
+#[test]
+fn fresh_enrollment_starts_at_depth_zero() {
+    let scheduler = enabled_scheduler();
+    scheduler.enroll("plate", 0, None, vec![step(1)], 5, false);
+    assert_eq!(
+        scheduler.instance_depth(&("plate".to_string(), 0, None)),
+        Some(0)
+    );
+}
+
+// O57 / O19b mechanism: a nested re-park (same key while a resume is live)
+// keeps the resuming instance's depth and is exempt from the cap. O65
+// mechanism: a `fire`-seeded enrollment during deferred dispatch inherits
+// depth + 1, but is a new instance and remains cap-tested.
+#[test]
+fn resume_context_governs_depth_and_cap_exemption() {
+    let scheduler = enabled_scheduler();
+    let resuming_key = ("body".to_string(), 0, None);
+    // Fill the cap so any cap-tested enrollment would be dropped.
+    for ordinal in 0..MAX_PENDING_REACTION_INSTANCES {
+        scheduler.enroll("filler", ordinal, None, vec![step(1)], 5, false);
+    }
+    assert_eq!(scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
+    {
+        // Depth attribution spans the whole landing drain.
+        let _depth = scheduler.begin_enrollment_depth(3);
+        {
+            // Re-park detection is live only during the tail dispatch. A
+            // same-key enrollment here is a nested re-park — depth stays 3,
+            // cap-exempt.
+            let _resume = scheduler.begin_resume(resuming_key.clone());
+            scheduler.enroll("body", 0, None, vec![step(2)], 5, false);
+            assert_eq!(scheduler.instance_depth(&resuming_key), Some(3));
+        }
+        // The tail dispatch is over; the deferred dispatch runs with only the
+        // depth scope live. A different-key `fire`-seeded child here inherits
+        // depth + 1 = 4, but the full pending cap drops the new instance.
+        scheduler.enroll("child", 0, None, vec![step(3)], 5, false);
+        assert_eq!(
+            scheduler.instance_depth(&("child".to_string(), 0, None)),
+            None,
+            "a fire-seeded child inherits depth for its chain check but remains cap-tested",
+        );
+    }
+    // The guard released the resume context; a fresh enrollment is cap-tested
+    // again and dropped (cap still full).
+    let before = scheduler.pending_len();
+    scheduler.enroll("post", 0, None, vec![step(4)], 5, false);
+    assert_eq!(
+        scheduler.pending_len(),
+        before,
+        "a post-resume enrollment is cap-tested again",
+    );
+}
+
+// O28 mechanism: a `fire`-seeded child past MAX_REACTION_CHAIN_DEPTH warns and
+// drops. Depth bounds a causal chain the concurrency cap cannot see.
+#[test]
+fn fire_seeded_child_past_max_chain_depth_is_dropped() {
+    let scheduler = enabled_scheduler();
+    // A `fire`-seeded child enrolls during the deferred dispatch, when only
+    // the depth scope is live (the re-park guard has dropped).
+    let _depth = scheduler.begin_enrollment_depth(MAX_REACTION_CHAIN_DEPTH);
+    // depth + 1 = MAX + 1 > MAX: dropped.
+    scheduler.enroll("child", 0, None, vec![step(1)], 5, false);
+    assert_eq!(
+        scheduler.instance_depth(&("child".to_string(), 0, None)),
+        None,
+        "an over-depth fire-seeded child is dropped",
+    );
+}
+
+// ---- Task 5: interruptible cancellation, origin, and re-fire ----
+
+fn trigger(id: u32) -> EntityId {
+    EntityId::from_raw(id)
+}
+
+fn player(id: u64) -> PlayerId {
+    PlayerId::Remote(id)
+}
+
+fn origin_key(address: &str, ordinal: usize, t: EntityId, p: PlayerId) -> InstanceKey {
+    (address.to_string(), ordinal, Some((t, p)))
+}
+
+// O3: an interruptible instance whose paired Exit arrives before the countdown
+// elapses is cancelled; its consequence never applies.
+#[test]
+fn interruptible_exit_before_landing_cancels() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, true);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p)]);
+    assert_eq!(
+        scheduler.pending_len(),
+        0,
+        "interruptible instance cancelled"
+    );
+    assert!(
+        scheduler.take_landings().is_empty(),
+        "no landing after cancel"
+    );
+}
+
+// O4: an Exit on the exact tick the countdown would reach zero still wins —
+// cancels apply before the countdown advance within `evaluate`.
+#[test]
+fn interruptible_exit_on_landing_tick_cancels() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    // A 1-tick countdown: without the cancel this evaluate would expire it.
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, true);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p)]);
+    assert_eq!(scheduler.pending_len(), 0);
+    assert!(
+        scheduler.take_landings().is_empty(),
+        "cancel wins over the landing on the exact tick"
+    );
+}
+
+// O5: a non-interruptible instance ignores its paired Exit during countdown and
+// lands on schedule.
+#[test]
+fn non_interruptible_ignores_exit_and_lands() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 2, false);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p)]); // Exit ignored; 2 -> 1
+    assert_eq!(
+        scheduler.pending_len(),
+        1,
+        "non-interruptible not cancelled"
+    );
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p)]); // Exit ignored; 1 -> 0 lands
+    assert_eq!(
+        scheduler.take_landings().len(),
+        1,
+        "non-interruptible lands on schedule"
+    );
+}
+
+// O6: re-firing an interruptible instance while parked cancels it and restarts
+// fresh from the top of the body.
+#[test]
+fn refire_interruptible_cancels_and_restarts() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("reveal", 0, t, p);
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, true);
+    let first_id = scheduler.instance_id(&key).unwrap();
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]); // 5 -> 3
+    assert_eq!(scheduler.instance_remaining(&key), Some(3));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.pending_len(),
+        1,
+        "still one instance under the key"
+    );
+    assert!(
+        scheduler.instance_id(&key).unwrap() > first_id,
+        "a fresh instance replaced the cancelled one"
+    );
+    assert_eq!(
+        scheduler.instance_remaining(&key),
+        Some(5),
+        "restart from the top of the body"
+    );
+}
+
+// O7: re-firing a non-interruptible instance while parked is ignored; the
+// running instance completes.
+#[test]
+fn refire_non_interruptible_is_ignored() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("reveal", 0, t, p);
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, false);
+    let first_id = scheduler.instance_id(&key).unwrap();
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]); // 5 -> 4
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, false);
+    assert_eq!(
+        scheduler.instance_id(&key),
+        Some(first_id),
+        "running instance kept, re-fire ignored"
+    );
+    assert_eq!(
+        scheduler.instance_remaining(&key),
+        Some(4),
+        "countdown not reset"
+    );
+}
+
+// O11: a per-player plate entered by two players yields one instance per key;
+// each player's Exit cancels only their own.
+#[test]
+fn two_players_one_plate_each_exit_cancels_own() {
+    let scheduler = enabled_scheduler();
+    let t = trigger(1);
+    let (p1, p2) = (player(1), player(2));
+    scheduler.enroll("reveal", 0, Some((t, p1)), vec![step(1)], 5, true);
+    scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.pending_len(),
+        2,
+        "one instance per (trigger, player)"
+    );
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p1)]);
+    assert_eq!(scheduler.pending_len(), 1, "only P1 cancelled");
+    assert!(
+        scheduler
+            .instance_id(&origin_key("reveal", 0, t, p2))
+            .is_some(),
+        "P2's instance survives"
+    );
+}
+
+// O59: one plate, two players, one residual handle — the drain enrolls two
+// instances with DISTINCT origins because `TickEvents.trigger_residuals`
+// carries `(trigger, player)` beside each handle. Carrying the handle alone
+// would collapse both to one instance.
+#[test]
+fn two_distinct_origins_from_one_handle_yield_two_instances() {
+    let scheduler = enabled_scheduler();
+    let t = trigger(7);
+    let (p1, p2) = (player(1), player(2));
+    // Two enrollments for one binding (one residual handle), distinct origins.
+    scheduler.enroll("reveal", 0, Some((t, p1)), vec![step(1)], 5, true);
+    scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.pending_len(),
+        2,
+        "distinct origins never collapse to one instance"
+    );
+}
+
+// O16: one reaction bound to two triggers yields two instances (the key
+// includes the trigger); each trigger's Exit cancels only its own.
+#[test]
+fn one_reaction_two_triggers_two_instances() {
+    let scheduler = enabled_scheduler();
+    let (t1, t2) = (trigger(1), trigger(2));
+    let p = player(1);
+    scheduler.enroll("R", 0, Some((t1, p)), vec![step(1)], 5, true);
+    scheduler.enroll("R", 0, Some((t2, p)), vec![step(2)], 5, true);
+    assert_eq!(scheduler.pending_len(), 2, "key includes the trigger");
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t1, p)]);
+    assert_eq!(scheduler.pending_len(), 1);
+    assert!(
+        scheduler.instance_id(&origin_key("R", 0, t2, p)).is_some(),
+        "T2's instance survives T1's Exit"
+    );
+}
+
+// O23: a player's death or disconnect fires the paired Exit and cancels an
+// interruptible instance, identically to walking off the plate.
+#[test]
+fn death_or_disconnect_cancels_via_paired_exit() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, true);
+    scheduler.begin_frame();
+    // The pawn leaving the capsule set fires the same paired Exit a walk-off
+    // does; the scheduler sees only `(trigger, player)`.
+    scheduler.evaluate(&[(t, p)]);
+    assert_eq!(scheduler.pending_len(), 0, "death/disconnect cancels");
+}
+
+// O17/O18: the wait currently parked at governs both Exit-cancel and re-fire.
+// Parked at a non-interruptible wait (modelled by a non-interruptible
+// instance), a paired Exit does not cancel and a re-fire is ignored — the same
+// rule as O5/O7, so the two never disagree.
+#[test]
+fn parked_at_non_interruptible_wait_governs() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("body", 0, t, p);
+    scheduler.enroll("body", 0, Some((t, p)), vec![step(9)], 5, false);
+    let id = scheduler.instance_id(&key).unwrap();
+    scheduler.begin_frame();
+    scheduler.evaluate(&[(t, p)]);
+    assert_eq!(
+        scheduler.pending_len(),
+        1,
+        "non-interruptible wait ignores Exit"
+    );
+    scheduler.enroll("body", 0, Some((t, p)), vec![step(8)], 5, false);
+    assert_eq!(
+        scheduler.instance_id(&key),
+        Some(id),
+        "re-fire ignored while parked at a non-interruptible wait"
+    );
+}
+
+// O18: parked at an interruptible wait, a re-fire is accepted and restarts the
+// body from the top.
+#[test]
+fn parked_at_interruptible_wait_accepts_refire() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("body", 0, t, p);
+    scheduler.enroll("body", 0, Some((t, p)), vec![step(9)], 5, true);
+    let id = scheduler.instance_id(&key).unwrap();
+    scheduler.enroll("body", 0, Some((t, p)), vec![step(8)], 5, true);
+    assert!(
+        scheduler.instance_id(&key).unwrap() > id,
+        "re-fire restarts a fresh instance from the top"
+    );
+}
+
+// O18b: an accepted re-fire re-runs the body forward; the scheduler holds no
+// step inverse, so effects an earlier run applied are not reverted. At this
+// layer that means the fresh instance simply carries the whole body tail.
+#[test]
+fn refire_reruns_forward_without_reverting() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("body", 0, t, p);
+    scheduler.enroll("body", 0, Some((t, p)), vec![step(1)], 5, true);
+    scheduler.enroll(
+        "body",
+        0,
+        Some((t, p)),
+        vec![step(1), step(2), step(3)],
+        5,
+        true,
+    );
+    assert_eq!(
+        scheduler.instance_tail_len(&key),
+        Some(3),
+        "the fresh instance re-runs the full body forward; nothing is rolled back"
+    );
+}
+
+// O19: a re-fire at a full cap still re-enrolls — the same-key cancel is applied
+// before the cap test, so re-enrollment never counts against the cap.
+#[test]
+fn refire_at_full_cap_still_reenrolls() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("reveal", 0, t, p);
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 5, true);
+    for ordinal in 0..(MAX_PENDING_REACTION_INSTANCES - 1) {
+        scheduler.enroll("filler", ordinal, None, vec![step(1)], 5, false);
+    }
+    assert_eq!(scheduler.pending_len(), MAX_PENDING_REACTION_INSTANCES);
+    let first_id = scheduler.instance_id(&key).unwrap();
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.pending_len(),
+        MAX_PENDING_REACTION_INSTANCES,
+        "cap unchanged; the re-fire cancelled its own slot first"
+    );
+    assert!(
+        scheduler.instance_id(&key).unwrap() > first_id,
+        "re-enrolled fresh rather than being dropped at the cap"
+    );
+}
+
+// O52: an interruptible instance whose origin's paired enter has already left
+// by enrollment time does not park — otherwise it would be uncancellable.
+#[test]
+fn enrollment_refused_when_paired_enter_already_left() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    {
+        // Residual drain sets the origin with standing = false (entered and
+        // left within one frame). The control arm resolves the same origin.
+        let _origin = scheduler.begin_origin(t, p, false);
+        let resolved = scheduler.effective_origin("reveal", 0);
+        scheduler.enroll("reveal", 0, resolved, vec![step(1)], 5, true);
+    }
+    assert_eq!(
+        scheduler.pending_len(),
+        0,
+        "no uncancellable instance parks"
+    );
+}
+
+// O52 companion: a standing paired enter parks; a non-interruptible enrollment
+// is unaffected by the standing check even when its origin has left.
+#[test]
+fn standing_enter_parks_and_non_interruptible_skips_the_check() {
+    let scheduler = enabled_scheduler();
+    let t = trigger(1);
+    let p1 = player(1);
+    {
+        let _origin = scheduler.begin_origin(t, p1, true);
+        let resolved = scheduler.effective_origin("reveal", 0);
+        scheduler.enroll("reveal", 0, resolved, vec![step(1)], 5, true);
+    }
+    assert_eq!(scheduler.pending_len(), 1, "standing enter parks");
+    let p2 = player(2);
+    {
+        let _origin = scheduler.begin_origin(t, p2, false);
+        let resolved = scheduler.effective_origin("reveal", 0);
+        scheduler.enroll("reveal", 0, resolved, vec![step(2)], 5, false);
+    }
+    assert_eq!(
+        scheduler.pending_len(),
+        2,
+        "non-interruptible parks regardless of standing"
+    );
+}
+
+// O53: an Exit that arrives between an instance's expiry and the frame-end
+// drain still cancels — the landing queue is checked alongside parked
+// instances. Sharpens O4.
+#[test]
+fn exit_between_expiry_and_drain_cancels_queued_landing() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, true);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]); // tick j: expires into the landing queue, no Exit
+    assert_eq!(scheduler.pending_len(), 0, "no longer parked");
+    scheduler.evaluate(&[(t, p)]); // tick k > j of the same frame: Exit arrives
+    assert!(
+        scheduler.take_landings().is_empty(),
+        "the queued-but-unrun landing is cancelled before the drain"
+    );
+}
+
+// Regression (O6/O7): a same-key re-fire that arrives after an instance
+// expired into the landing queue but before the frame-end drain must dedup
+// against the queued landing. Before the fix the re-fire path checked only
+// `instances` (empty by then) and parked a fresh instance beside the queued
+// landing, so the tail landed twice.
+#[test]
+fn refire_after_expiry_before_drain_does_not_double_land_non_interruptible() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, false);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]); // expires into the landing queue
+    assert_eq!(scheduler.pending_len(), 0, "no longer parked; it is queued");
+    // Re-fire the same key before the landing drains: a non-interruptible
+    // queued landing ignores the re-fire (O7), exactly as a parked one would.
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 1, false);
+    assert_eq!(
+        scheduler.pending_len(),
+        0,
+        "the re-fire is ignored; no fresh instance parks beside the queued landing",
+    );
+    assert_eq!(
+        scheduler.take_landings().len(),
+        1,
+        "the tail lands exactly once, not twice",
+    );
+}
+
+// O6 companion of the row above: an interruptible re-fire in the same window
+// cancels the queued landing and restarts fresh — the tail still lands once.
+#[test]
+fn refire_after_expiry_before_drain_cancels_queued_landing_interruptible() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 1, true);
+    scheduler.begin_frame();
+    scheduler.evaluate(&[]); // expires into the landing queue
+    assert_eq!(scheduler.pending_len(), 0, "no longer parked; it is queued");
+    // Re-fire the same key: the queued interruptible landing is cancelled and a
+    // fresh instance restarts from the top of the body (O6).
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.take_landings().len(),
+        0,
+        "the queued landing was cancelled by the re-fire; it does not also land",
+    );
+    assert_eq!(
+        scheduler.pending_len(),
+        1,
+        "a fresh instance restarted from the top",
+    );
+}
+
+// O54: enrollments seeded by a deferred batch run outside the origin guard, so
+// they resolve sourceless and their interruptible waits are demoted.
+#[test]
+fn deferred_batch_enrollments_are_sourceless_and_demoted() {
+    let scheduler = enabled_scheduler();
+    // No origin guard is live (the batch runs after each residual's guard drops).
+    let alpha = scheduler.effective_origin("alpha", 0);
+    assert_eq!(alpha, None, "no origin resolves outside the guard");
+    scheduler.enroll("alpha", 0, alpha, vec![step(1)], 5, true);
+    let beta = scheduler.effective_origin("beta", 0);
+    scheduler.enroll("beta", 0, beta, vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.instance_interruptible(&("alpha".to_string(), 0, None)),
+        Some(false),
+    );
+    assert_eq!(
+        scheduler.instance_interruptible(&("beta".to_string(), 0, None)),
+        Some(false),
+    );
+}
+
+// O55: a reaction reached by the `fire` path enrolls sourceless and is demoted,
+// while the same reaction's Enter-bound instance keeps its cancel source.
+#[test]
+fn fire_path_instance_demoted_enter_bound_keeps_source() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    {
+        let _origin = scheduler.begin_origin(t, p, true);
+        let resolved = scheduler.effective_origin("R", 0);
+        scheduler.enroll("R", 0, resolved, vec![step(1)], 5, true);
+    }
+    // Reached by the `fire` path (no guard live): sourceless, demoted.
+    scheduler.enroll("R", 0, None, vec![step(2)], 5, true);
+    assert_eq!(
+        scheduler.instance_interruptible(&origin_key("R", 0, t, p)),
+        Some(true),
+        "the Enter-bound instance keeps its cancel source"
+    );
+    assert_eq!(
+        scheduler.instance_interruptible(&("R".to_string(), 0, None)),
+        Some(false),
+        "the fire-path instance is demoted",
+    );
+}
+
+// O56: two same-named bodies, keyed by distinct ordinals, re-fire without
+// cancelling each other.
+#[test]
+fn two_same_named_bodies_refire_independently() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    scheduler.enroll("levelLoad", 0, Some((t, p)), vec![step(1)], 5, true);
+    scheduler.enroll("levelLoad", 1, Some((t, p)), vec![step(2)], 5, true);
+    let id0 = scheduler
+        .instance_id(&origin_key("levelLoad", 0, t, p))
+        .unwrap();
+    let id1 = scheduler
+        .instance_id(&origin_key("levelLoad", 1, t, p))
+        .unwrap();
+    // Re-fire body 0: its same-key cancel must not touch body 1.
+    scheduler.enroll("levelLoad", 0, Some((t, p)), vec![step(1)], 5, true);
+    assert!(
+        scheduler
+            .instance_id(&origin_key("levelLoad", 0, t, p))
+            .unwrap()
+            > id0,
+        "body 0 restarted"
+    );
+    assert_eq!(
+        scheduler.instance_id(&origin_key("levelLoad", 1, t, p)),
+        Some(id1),
+        "body 1 untouched"
+    );
+    assert_eq!(scheduler.pending_len(), 2);
+}
+
+// O57: a nested wait in a resumed tail carries its instance's address, ordinal,
+// and origin — it stays interruptible, warns nothing, and re-parks even with
+// the cap full. Re-deriving would make it sourceless (V3 would strip the flag).
+#[test]
+fn nested_wait_keeps_provenance_and_stays_interruptible() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let key = origin_key("R", 2, t, p);
+    // Fill the cap so a cap-tested enrollment would be dropped.
+    for ordinal in 0..MAX_PENDING_REACTION_INSTANCES {
+        scheduler.enroll("filler", ordinal, None, vec![step(1)], 5, false);
+    }
+    // The instance keyed (R, 2, (t,p)) at depth 4 is resuming its tail: both
+    // scopes are live during the tail dispatch, where a nested wait re-enters.
+    let _depth = scheduler.begin_enrollment_depth(4);
+    let _resume = scheduler.begin_resume(key.clone());
+    // The nested wait's control arm resolves the origin from `currently_resuming`.
+    let resolved = scheduler.effective_origin("R", 2);
+    assert_eq!(
+        resolved,
+        Some((t, p)),
+        "nested wait inherits the instance origin"
+    );
+    scheduler.enroll("R", 2, resolved, vec![step(9)], 5, true);
+    assert_eq!(
+        scheduler.instance_interruptible(&key),
+        Some(true),
+        "stays interruptible, no demotion"
+    );
+    assert_eq!(
+        scheduler.instance_depth(&key),
+        Some(4),
+        "depth carried unchanged, cap-exempt"
+    );
+}
+
+// O58: `BodyOrdinal` survives a landing — two same-named bodies each re-enroll
+// under their own ordinal, so a re-derived ordinal (which would be 0 for both)
+// never conflates them.
+#[test]
+fn body_ordinal_survives_landing() {
+    let scheduler = enabled_scheduler();
+    {
+        let _depth = scheduler.begin_enrollment_depth(0);
+        let _resume = scheduler.begin_resume(("S".to_string(), 0, None));
+        let resolved = scheduler.effective_origin("S", 0);
+        scheduler.enroll("S", 0, resolved, vec![step(1)], 5, false);
+    }
+    {
+        let _depth = scheduler.begin_enrollment_depth(0);
+        let _resume = scheduler.begin_resume(("S".to_string(), 1, None));
+        let resolved = scheduler.effective_origin("S", 1);
+        scheduler.enroll("S", 1, resolved, vec![step(2)], 5, false);
+    }
+    assert!(scheduler.instance_id(&("S".to_string(), 0, None)).is_some());
+    assert!(scheduler.instance_id(&("S".to_string(), 1, None)).is_some());
+    assert_eq!(
+        scheduler.pending_len(),
+        2,
+        "each body re-parks under its own ordinal"
+    );
+}
+
+// O60: the paired-enter check is membership for a specific `(trigger, player)`,
+// never "is anyone standing here". A bystander standing on the plate does not
+// rescue an enrollment for a player who already left.
+#[test]
+fn paired_enter_check_is_per_player_not_per_trigger() {
+    let scheduler = enabled_scheduler();
+    let t = trigger(1);
+    let p1 = player(1); // entered and left this frame
+    let p2 = player(2); // standing since an earlier frame
+    // P2's instance parked in an earlier frame while standing.
+    scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 5, true);
+    {
+        // P1's residual this frame: standing = false for (t, p1) specifically.
+        let _origin = scheduler.begin_origin(t, p1, false);
+        let resolved = scheduler.effective_origin("reveal", 0);
+        scheduler.enroll("reveal", 0, resolved, vec![step(1)], 5, true);
+    }
+    assert!(
+        scheduler
+            .instance_id(&origin_key("reveal", 0, t, p1))
+            .is_none(),
+        "P1's enrollment refused"
+    );
+    assert!(
+        scheduler
+            .instance_id(&origin_key("reveal", 0, t, p2))
+            .is_some(),
+        "P2's standing instance is unaffected"
+    );
+}
+
+// O63: an interruptible instance whose keyed trigger is removed mid-wait is
+// dropped rather than landing uncancelled; a non-interruptible instance on the
+// same trigger is untouched, and an instance whose enter still stands is kept.
+#[test]
+fn orphaned_interruptible_instance_is_dropped_when_trigger_removed() {
+    let scheduler = enabled_scheduler();
+    let (t, p) = (trigger(1), player(1));
+    let p2 = player(2);
+    let (t_live, p_live) = (trigger(9), player(3));
+    scheduler.enroll("reveal", 0, Some((t, p)), vec![step(1)], 50, true);
+    scheduler.enroll("reveal", 0, Some((t, p2)), vec![step(2)], 50, false);
+    scheduler.enroll("live", 0, Some((t_live, p_live)), vec![step(3)], 50, true);
+    // Trigger T is gone from `paired_enters`; T_live's enter still stands.
+    let standing: BTreeSet<(EntityId, PlayerId)> = BTreeSet::from([(t_live, p_live)]);
+    scheduler.drop_orphaned_interruptible_instances(&standing);
+    assert!(
+        scheduler
+            .instance_id(&origin_key("reveal", 0, t, p))
+            .is_none(),
+        "interruptible instance on the removed trigger dropped"
+    );
+    assert!(
+        scheduler
+            .instance_id(&origin_key("reveal", 0, t, p2))
+            .is_some(),
+        "non-interruptible instance untouched"
+    );
+    assert!(
+        scheduler
+            .instance_id(&origin_key("live", 0, t_live, p_live))
+            .is_some(),
+        "instance whose enter still stands is kept"
+    );
+}

@@ -1,0 +1,15 @@
+tag=occlusion-test.fc_V1.cap26.r1 side=cap26 map=occlusion-test pose=-32.004,1.0,-10.16,90,0 settle=2 cpu_windows=8 trace_s=6
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap26/occlusion-test/occlusion-test.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/baked
+start=2026-10-29 08:54:14
+pre: 2026-10-29 08:54:14 util=0 inUseVidMemoryBytes=581271552 vramFreeBytes=2752466944 mhz=0 temp=58 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=75 screensaver=no locked=absent
+cpu_done t=22 windows=10 at 2026-10-29 08:54:36 
+trace_start 2026-10-29 08:54:36
+trace_end 2026-10-29 08:55:48 record_s=71
+post: 2026-10-29 08:55:51 util=0 inUseVidMemoryBytes=579604480 vramFreeBytes=2752466944 mhz=0 temp=83 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=107 screensaver=no locked=absent
+export_bytes=34377403
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=142 error_lines=0
+end=2026-10-29 08:56:02
+verdict=OK
+gate: GATE_OK waited=59 temp=57

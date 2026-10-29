@@ -1,0 +1,19 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+fc:P1 415 137 0 PrlPortal { walk_reach: 56 } 66.23 64.74 590
+fc:P1~e150 371 127 0 PrlPortal { walk_reach: 56 } 60.33 58.85 661
+fc:P2 494 165 0 PrlPortal { walk_reach: 56 } 79.98 78.47 494
+fc:P2~e150 454 156 0 PrlPortal { walk_reach: 56 } 74.88 73.37 524
+fc:G1 68 20 0 PrlPortal { walk_reach: 16 } 10.95 10.23 3528
+fc:G1~e150 68 20 0 PrlPortal { walk_reach: 16 } 11.36 10.57 3221
+fc:G2 165 54 0 PrlPortal { walk_reach: 28 } 30.80 29.57 1278
+fc:G2~e150 165 54 0 PrlPortal { walk_reach: 28 } 25.99 24.95 1497
+fc:G3 51 16 0 PrlPortal { walk_reach: 11 } 8.27 7.61 4743
+fc:G3~e150 63 18 0 PrlPortal { walk_reach: 12 } 9.77 9.09 4025
+fc:L2 247 74 0 PrlPortal { walk_reach: 34 } 37.52 36.34 1063
+fc:L2~e150 223 67 0 PrlPortal { walk_reach: 32 } 33.45 32.35 1183
+fc:C1 9 4 0 PrlPortal { walk_reach: 5 } 1.92 1.43 19043
+fc:C1~e150 9 4 0 PrlPortal { walk_reach: 5 } 1.92 1.43 19086
+fc:C2 20 5 0 PrlPortal { walk_reach: 6 } 3.34 2.85 11370
+fc:C2~e150 20 5 0 PrlPortal { walk_reach: 6 } 3.34 2.85 10457
+fc:V1 495 205 0 PrlPortal { walk_reach: 74 } 84.80 82.70 470
+fc:V1~e150 518 211 0 PrlPortal { walk_reach: 74 } 88.15 86.03 451

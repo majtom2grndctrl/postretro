@@ -90,7 +90,8 @@ WCAG 2.3.3 (animation from interactions) concerns motion, not delay. A collapsed
   - UI time is a counting clock, not a key: the instance key stays by source class and tick clock, so a mixed body keeps one instance per key (ruling 2).
   - Install refuses every step a client would drop after a `uiWait`, so the client warn-once never fires for a `uiWait` segment. A tick `wait` before the `uiWait` still drops on a client what that brief drops there.
   - A `uiWait` inside a tick tail enrolls when its machine lands that tail: on the host timeline for `levelLoad`, on the machine's own tick clock otherwise.
-  - Late joiner: a joiner converges a due host-timeline segment at its first reading, and that convergence is its landing, so a following `uiWait` counts from the reading. Rival: treat the segment behind the `uiWait` as due too. Rejected: UI time has no host reading, so it has no due time to compare; the joiner paces the rest as a slow loader would.
+  - Late joiner: a joiner sees the level as it is now. When it converges a due tick segment, the `uiWait` segments after it in that tail count as due too; only machine-local steps and game-flow verbs follow a `uiWait`, so the whole rest of the tail converges at the reading. Rival: count the `uiWait` from the reading. Rejected: it replays presentation the host played long ago.
+  - A level-defined tail cut at unload warns with its count so a cut beat reads as teardown, not a bug. A reload drops `uiWait` tails because a tail is a copy of a body the author may have edited.
 - E18: V1 covers `uiWait` durations. V4a and V4b key on a wait, so they cover `uiWait` once the sentinel admits it. V2, V3 and V5 must match primitive `wait`; read by sentinel alone, V3 would drop every interruptible `uiWait` in a UI-fired reaction. Re-fire rules, caps and enrollment-frame protection carry over.
 - A trigger-bound body partitions at its first wait of either kind, so pre-`uiWait` consequential steps still bind in-tick.
 - `E16--player-events`: a player-event reaction's presentation targets one player's machine. A UI tail is machine-local, so on the host it would land on the host's screen; E16's machine-local rejection covers it.
@@ -109,7 +110,7 @@ WCAG 2.3.3 (animation from interactions) concerns motion, not delay. A collapsed
 | U9 | Level unload while a level-defined reaction is parked at an interruptible `uiWait` anchored to a level-tier tree | dropped by the unload and counted in its one warning; the anchor cancel at the next UI drain finds nothing |
 | U10 | A mod-global and a level-defined tail parked, then `restartLevel` | the level-defined tail drops with one warning naming one; the mod-global tail lands after the reload |
 | U11 | `[wait(300), playSound(a), uiWait(100), playSound(b)]` on loopback from `levelLoad` | each machine lands `a` at host `script_time` 300 ms ± one tick, enrolls the `uiWait` then, and plays `b` 100 ms of its own UI time after `a` |
-| U12 | U11 on a client whose first host-clock reading is at 10 s | `a` skipped at debug; the `uiWait` enrolls at that reading; `b` plays 100 ms of UI time later |
+| U12 | `[wait(300), playSound(a), uiWait(100), showDialog(d), playSound(b)]` from `levelLoad`, on a client whose first host-clock reading is at 10 s or at 350 ms | `d` shows at that reading; `a` and `b` skipped at debug; nothing counts from the reading |
 | U13 | Own-state crossing `[wait(300), playSound(a), uiWait(100), showDialog(d)]` on a client | `a` 300 ms after its own crossing on its own tick clock; `d` 100 ms of its UI time later; the host neither sends nor lands the client's copy |
 
 ## Precedents

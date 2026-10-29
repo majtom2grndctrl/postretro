@@ -560,3 +560,219 @@ fn client_landing_drops_host_consequences_and_lands_machine_local_steps() {
         ["playSound y", "showDialog objective", "setState tail.entry"]
     );
 }
+
+/// Fire `reaction` from a crossing on `player.health` (and, with `mixed`, a
+/// replicated slot too) on one machine only: each machine crosses for its own
+/// player.
+fn cross_own(app: &App, reaction: &str, mixed: bool) {
+    let ctx = script_ctx(app);
+    {
+        let mut data = ctx.data_registry.borrow_mut();
+        data.crossings.clear();
+        let health_low = postretro_foundation::IrNode::Lt {
+            a: Box::new(postretro_foundation::IrNode::Input {
+                name: "player.health".into(),
+                owner: None,
+            }),
+            b: Box::new(postretro_foundation::IrNode::Const {
+                value: postretro_foundation::ir::IrValue::Number(25.0),
+            }),
+        };
+        let condition = if mixed {
+            postretro_foundation::IrNode::And {
+                a: Box::new(health_low),
+                b: Box::new(postretro_foundation::IrNode::Eq {
+                    a: Box::new(postretro_foundation::IrNode::Input {
+                        name: "tail.shared".into(),
+                        owner: None,
+                    }),
+                    b: Box::new(postretro_foundation::IrNode::Const {
+                        value: postretro_foundation::ir::IrValue::Number(1.0),
+                    }),
+                }),
+            }
+        } else {
+            health_low
+        };
+        data.crossings.push(postretro_entities::CrossingDescriptor {
+            slot: None,
+            condition: postretro_entities::CrossingCondition::Ir(condition),
+            max: 1.0,
+            edge: None,
+            fire: vec![reaction.into()],
+        });
+    }
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    let _ = postretro_sim::scripting::reactions::dispatch_crossing_fires_with_sequences(
+        vec![postretro_scripting_core::state_crossings::CrossingFire {
+            reaction: reaction.into(),
+            rising: true,
+            source_id: 0,
+        }],
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
+fn own_state_warnings(capture: &LogCapture) -> Vec<String> {
+    capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Warn && record.message.contains("own-state tail")
+        })
+        .map(|record| record.message)
+        .collect()
+}
+
+// S13: an own-state crossing's tail plays on the machine that crossed, from
+// its own landing; the host never sends it.
+#[test]
+fn s13_own_state_crossing_tail_plays_on_the_machine_that_crossed() {
+    let _notes = counted_notes(&fixture_world());
+    let vignette = system_step("vignette", json!({ "strength": 0.5, "durationMs": 100 }));
+    let mut h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "low",
+            vec![
+                vignette,
+                wait_step(600.0),
+                system_step("playSound", json!({ "sound": "x" })),
+            ],
+        )],
+    );
+    h.advance(10);
+    cross_own(&h.peers[0].app, "low", false);
+    h.advance(45);
+    assert_eq!(
+        (
+            plays(&h.host_commands, "x"),
+            plays(&h.peers[0].commands, "x")
+        ),
+        (0, 1)
+    );
+    cross_own(&h.host, "low", false);
+    h.advance(45);
+    assert_eq!(
+        (
+            plays(&h.host_commands, "x"),
+            plays(&h.peers[0].commands, "x")
+        ),
+        (1, 1),
+        "the host's crossing plays on the host alone"
+    );
+}
+
+// S28, S33 (crossing form) and S37: an own-state tail's member step on a
+// client-local light runs on the host's own crossing uncaptured, so no client
+// sees the host's fade; a client's crossing drops its fade and warns once,
+// naming the reaction that landed and the step. A crossing that also reads a
+// replicated slot is still own-state.
+#[test]
+fn own_state_tail_member_step_stays_on_the_machine_that_crossed() {
+    let light = prl_light();
+    let cases: [(&str, bool, Vec<NamedReaction>, &str); 3] = [
+        (
+            "S28",
+            false,
+            vec![body("low", vec![wait_step(600.0), fade(light)])],
+            "reaction `low`: step `setLightAnimation`",
+        ),
+        (
+            "S33",
+            false,
+            vec![
+                body("low", vec![wait_step(100.0), fire_step("r")]),
+                body(
+                    "r",
+                    vec![
+                        wait_step(500.0),
+                        fade(light),
+                        system_step("playSound", json!({ "sound": "x" })),
+                    ],
+                ),
+            ],
+            "reaction `r`: step `setLightAnimation`",
+        ),
+        (
+            "S37",
+            true,
+            vec![body(
+                "low",
+                vec![
+                    wait_step(600.0),
+                    fade(light),
+                    system_step("playSound", json!({ "sound": "x" })),
+                ],
+            )],
+            "reaction `low`: step `setLightAnimation`",
+        ),
+    ];
+    for (pin, mixed, reactions, warned) in cases {
+        let _notes = counted_notes(&fixture_world());
+        let mut h = Harness::with_shared_reactions(fixture_world(), reactions);
+        h.advance(10);
+        let capture = LogCapture::start();
+        let client_before = h.peers[0].sample();
+        cross_own(&h.host, "low", mixed);
+        h.advance(50);
+        assert!(
+            !captured(&h.host, light),
+            "{pin}: the host records no override"
+        );
+        assert_eq!(
+            h.peers[0].sample(),
+            client_before,
+            "{pin}: no client sees the host's fade"
+        );
+        assert!(
+            own_state_warnings(&capture).is_empty(),
+            "{pin}: the host never warns"
+        );
+
+        cross_own(&h.peers[0].app, "low", mixed);
+        h.advance(50);
+        let warnings = own_state_warnings(&capture);
+        assert_eq!(warnings.len(), 1, "{pin}: {warnings:?}");
+        assert!(warnings[0].contains(warned), "{pin}: {warnings:?}");
+        if pin != "S28" {
+            assert_eq!(
+                plays(&h.host_commands, "x"),
+                1,
+                "{pin}: for the host's own crossing"
+            );
+            assert_eq!(
+                plays(&h.peers[0].commands, "x"),
+                1,
+                "{pin}: for the client's"
+            );
+        }
+    }
+}
+
+// S40: an own-state tail's step on a networked light is captured, as the same
+// step is before the wait, so every client sees the host's fade; none warns.
+#[test]
+fn s40_own_state_tail_on_a_networked_light_is_captured() {
+    let lit = {
+        let probe = installed_with_reactions(&fixture_world(), false, Vec::new());
+        tagged(&script_ctx(&probe), "lit_prop")
+    };
+    let _notes = counted_notes(&fixture_world());
+    let mut h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body("low", vec![wait_step(600.0), fade(lit)])],
+    );
+    h.advance(10);
+    let capture = LogCapture::start();
+    cross_own(&h.host, "low", false);
+    h.advance(40);
+    assert!(
+        captured(&h.host, lit),
+        "the networked light's change is captured"
+    );
+    assert!(own_state_warnings(&capture).is_empty());
+}

@@ -259,6 +259,9 @@ struct SchedulerState {
     /// trigger origin. The wait is demoted on every enrollment, but the warning
     /// is emitted once per reaction until level lifecycle state clears.
     warned_sourceless_interruptible_reactions: BTreeSet<(String, usize)>,
+    /// Client only: own-state reaction bodies whose landing already warned
+    /// that it dropped a host-only step, until level lifecycle state clears.
+    warned_own_state_drops: BTreeSet<(String, usize)>,
 }
 
 impl SchedulerState {
@@ -324,6 +327,7 @@ impl ReactionScheduler {
         state.reset_level_clock();
         state.warned_disabled_reactions.clear();
         state.warned_sourceless_interruptible_reactions.clear();
+        state.warned_own_state_drops.clear();
     }
 
     pub fn role(&self) -> SchedulerRole {
@@ -357,6 +361,7 @@ impl ReactionScheduler {
         state.reset_level_clock();
         state.warned_disabled_reactions.clear();
         state.warned_sourceless_interruptible_reactions.clear();
+        state.warned_own_state_drops.clear();
     }
 
     /// Advance the monotonic frame counter once per frame. Three call sites: the
@@ -411,9 +416,10 @@ impl ReactionScheduler {
     }
 
     /// Enroll the tail a `wait` step reached, under the source class and landing
-    /// origin of the fire context it was reached in. On a client, a tail that
-    /// holds no machine-local step and no `fire` parks nothing: every step in
-    /// it reaches the client by replication.
+    /// origin of the fire context it was reached in. On a client, a host-mirrored
+    /// tail that holds no machine-local step and no `fire` parks nothing: every
+    /// step in it reaches the client by replication. An own-state tail parks
+    /// whatever it holds, so its landing can report what it drops.
     pub(crate) fn enroll_fired(
         &self,
         script_ctx: &ScriptCtx,
@@ -425,6 +431,7 @@ impl ReactionScheduler {
     ) {
         let origin = script_ctx.system_commands.fire_context().origin;
         if self.role() == SchedulerRole::Client
+            && TailClass::of(&origin) != TailClass::OwnState
             && !client::tail_has_landing_work(tail, &script_ctx.slot_table.borrow())
         {
             log::debug!(
@@ -772,6 +779,8 @@ impl Drop for OriginGuard {
 mod client;
 mod landing;
 
+#[cfg(test)]
+mod client_tests;
 #[cfg(test)]
 mod landing_origin_tests;
 #[cfg(test)]

@@ -169,7 +169,7 @@ impl ReactionScheduler {
             let _resume = self.begin_resume(landing.key);
             fire_prepartitioned_reactions_with_sequences(
                 &[PrepartitionedReactionStep::Descriptor(
-                    address,
+                    address.clone(),
                     body_ordinal,
                     ReactionDescriptor::Sequence(landing.tail),
                 )],
@@ -191,6 +191,30 @@ impl ReactionScheduler {
             system_registry,
             script_ctx,
         );
+        if let Some(dropped) = script_ctx.landing.first_dropped() {
+            self.report_client_drop(&address, body_ordinal, class, &dropped);
+        }
+    }
+
+    /// A client drops what only the host lands. Only an own-state landing's
+    /// drop is the author's to hear about: nothing replicates the step to
+    /// this machine, so it ran nowhere for this player. Once per reaction body
+    /// until level teardown, suspend, hot reload or a role change; every other
+    /// drop is routine and stays at debug.
+    fn report_client_drop(&self, address: &str, body_ordinal: usize, class: TailClass, step: &str) {
+        let first = class == TailClass::OwnState
+            && self
+                .state
+                .borrow_mut()
+                .warned_own_state_drops
+                .insert((address.to_string(), body_ordinal));
+        if first {
+            log::warn!(
+                "[Scheduler] reaction `{address}`: step `{step}` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here"
+            );
+        } else {
+            log::debug!("[Scheduler] reaction `{address}`: client landing did not apply `{step}`");
+        }
     }
 }
 

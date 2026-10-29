@@ -291,3 +291,72 @@ fn every_system_reaction_kind_as_a_step_does_what_its_body_does_from_every_sourc
         }
     }
 }
+
+// Drift guard for the shared machine-local predicate, by exhaustive match: it
+// holds for exactly presentation and machine-local kinds, a `setState` on a
+// slot that does not replicate and, on a client only, `returnToFrontend`. A
+// client landing keeps exactly those; a player event refuses exactly those
+// minus presentation, which it forwards.
+#[test]
+fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_kind() {
+    use postretro_entities::{
+        ClientLanding, MachineRole, ReplicationScope, system_reaction_is_machine_local,
+    };
+    let mut slot_table = slots();
+    for (name, network) in [
+        ("shared", ReplicationScope::SharedGlobal),
+        ("local", ReplicationScope::None),
+    ] {
+        let mut record = slot(SlotType::Number, SlotValue::Number(0.0));
+        record.schema.network = network;
+        slot_table.insert(format!("drift.{name}"), record).unwrap();
+    }
+    for &kind in SystemReactionKind::ALL {
+        let slots_for_kind: &[(&str, bool)] = match kind {
+            SystemReactionKind::SetState => &[("drift.shared", true), ("drift.local", false)],
+            _ => &[("", false)],
+        };
+        for &(slot_name, replicated) in slots_for_kind {
+            let mut args = sample_args(kind);
+            if kind == SystemReactionKind::SetState {
+                args["slot"] = json!(slot_name);
+            }
+            for role in [MachineRole::Host, MachineRole::Client] {
+                use SystemReactionKind::*;
+                let expected = match kind {
+                    PlaySound | Rumble | FlashScreen | Vignette | ScreenShake => true,
+                    ShowDialog | OpenMenu | CloseDialog | CellWrite | AppendText
+                    | BackspaceText | ClearText => true,
+                    SetState => !replicated,
+                    ReturnToFrontend => role == MachineRole::Client,
+                    LoadLevel | RestartLevel | SetSentiment | AdjustSentiment | SetGhostAudio => {
+                        false
+                    }
+                };
+                let label = format!("`{}` {slot_name} on {role:?}", kind.primitive_name());
+                assert_eq!(
+                    system_reaction_is_machine_local(kind, &args, &slot_table, role),
+                    expected,
+                    "predicate: {label}"
+                );
+                if role == MachineRole::Client {
+                    assert_eq!(
+                        ClientLanding::Land.keeps(kind.primitive_name(), &args, &slot_table),
+                        expected,
+                        "client tail filter: {label}"
+                    );
+                } else {
+                    let presentation = matches!(
+                        kind,
+                        PlaySound | Rumble | FlashScreen | Vignette | ScreenShake
+                    );
+                    assert_eq!(
+                        crate::player_events::player_event_refuses(kind, &args, &slot_table),
+                        expected && !presentation,
+                        "player-event rule: {label}"
+                    );
+                }
+            }
+        }
+    }
+}

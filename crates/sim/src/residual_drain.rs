@@ -358,6 +358,91 @@ mod tests {
         );
     }
 
+    // A player event's fire list walks system steps as it does bodies: a
+    // machine-local step it cannot forward costs the address, named; a
+    // presentation step plays on the event player's machine.
+    #[test]
+    fn player_event_rejects_a_machine_local_step_and_routes_a_presentation_step() {
+        use postretro_entities::{SequenceStep, SequenceTarget};
+        let step = |id, primitive: &str, args| SequenceStep {
+            id,
+            primitive: primitive.to_string(),
+            args,
+        };
+        let damage = || {
+            step(
+                SequenceTarget::EventPlayer,
+                "applyDamage",
+                json!({ "amount": 5.0 }),
+            )
+        };
+        let mut world = World::new();
+        world.spawn_player(Some(Seat(1)), 20.0);
+        let capture = postretro_test_log_capture::LogCapture::start();
+        world.install(
+            vec![
+                NamedReaction {
+                    name: "dialog".to_string(),
+                    descriptor: ReactionDescriptor::Sequence(vec![
+                        damage(),
+                        step(SequenceTarget::System, "showDialog", json!({ "tree": "d" })),
+                    ]),
+                },
+                NamedReaction {
+                    name: "sting".to_string(),
+                    descriptor: ReactionDescriptor::Sequence(vec![
+                        damage(),
+                        step(SequenceTarget::System, "playSound", json!({ "sound": "x" })),
+                    ]),
+                },
+            ],
+            vec![player_event(
+                PlayerEventEdge::Becomes,
+                lt(input("player.health"), number(50.0)),
+                &["dialog", "sting"],
+            )],
+        );
+        capture.assert_logged_once(
+            log::Level::Error,
+            "drops address `dialog`: reaction `dialog` `showDialog` is machine-local",
+        );
+        capture.assert_not_logged(log::Level::Error, "drops address `sting`");
+        world.tick();
+        let mut system = SystemReactionRegistry::new();
+        register_system_reaction_primitives(&mut system);
+        drain_frame_residuals(
+            &[],
+            &Default::default(),
+            &TriggerSystem::default(),
+            &world.residuals,
+            &world.table,
+            &ReactionScheduler::default(),
+            ResidualRegistries {
+                sequence: &SequencedPrimitiveRegistry::new(),
+                reaction: &ReactionPrimitiveRegistry::new(),
+                system: &system,
+            },
+            &world.script_ctx,
+            &mut Vec::new(),
+            |_, _| None,
+        );
+        let commands = world.script_ctx.system_commands.take_ordered();
+        assert_eq!(commands.len(), 1, "only `sting` installed");
+        assert_eq!(
+            commands[0],
+            (
+                postretro_entities::Recipients::Seats(vec![Seat(1)]),
+                SystemReactionCommand::PlaySound {
+                    audience: None,
+                    sound: "x".to_string(),
+                    bus: None,
+                    at: None,
+                }
+            ),
+            "the step plays on the event player's machine"
+        );
+    }
+
     #[test]
     fn trigger_origin_resolves_captured_occupants_and_drops_unbound_players() {
         let mut world = World::new();

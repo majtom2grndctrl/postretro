@@ -20,6 +20,8 @@ pub mod slot_accumulators;
 #[cfg(test)]
 mod spawner_member_tests;
 pub mod system_reactions;
+#[cfg(test)]
+mod system_step_tests;
 pub mod trigger_volume_bridge;
 pub mod ui_proxy;
 pub mod vignette_decay;

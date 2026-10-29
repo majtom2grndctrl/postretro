@@ -5,7 +5,7 @@ use postretro_entities::ScriptCtx;
 use postretro_foundation::{
     BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, eval_and_write, ir_node_from_json,
 };
-use postretro_scripting_core::data_descriptors::ReactionDescriptor;
+use postretro_scripting_core::data_descriptors::{ReactionDescriptor, SequenceTarget};
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::ir::bind;
 use postretro_scripting_core::ir_scopes::DispatchScope;
@@ -82,114 +82,133 @@ impl SystemReactionIrBindings {
         let scope = DispatchScope::script(script_ctx.clone(), &APP_DRAIN_DISPATCH_INPUTS);
         self.warned_missing_inputs.borrow_mut().clear();
 
+        // A system `setState` body and a system `setState` sequence step queue
+        // the same command, so both bind here.
         for reaction in &data_registry.reactions {
-            let ReactionDescriptor::Primitive(primitive) = &reaction.descriptor else {
-                continue;
-            };
-            if primitive.primitive != "setState" || primitive.tag.is_some() {
-                continue;
-            }
-
-            let args: SetStateArgs = match serde_json::from_value(primitive.args.clone()) {
-                Ok(args) => args,
-                Err(error) => {
-                    log::warn!(
-                        "[Scripting] setState reaction `{}` has invalid args; not binding: {error}",
-                        reaction.name
-                    );
-                    continue;
+            match &reaction.descriptor {
+                ReactionDescriptor::Primitive(primitive)
+                    if primitive.primitive == "setState" && primitive.tag.is_none() =>
+                {
+                    self.bind_one(&reaction.name, &primitive.args, &scope, script_ctx);
                 }
-            };
-            let per_owner = script_ctx
-                .slot_table
-                .borrow()
-                .get(&args.slot)
-                .is_some_and(|record| record.schema.per_owner);
-            if per_owner {
-                log::warn!(
-                    "[Scripting] setState reaction `{}` rejects per-owner slot `{}`; not binding",
-                    reaction.name,
-                    args.slot
-                );
-                if is_ir_node(&args.value) {
-                    self.bindings.push(SystemSetStateBinding {
-                        name: reaction.name.clone(),
-                        slot: args.slot,
-                        value: args.value,
-                        program: None,
-                        required_dispatch_inputs: Vec::new(),
-                        reads_event_player: false,
-                        event_player_warned: std::cell::Cell::new(false),
-                    });
-                } else {
-                    self.rejected_literals.push(SystemSetStateLiteralRejection {
-                        slot: args.slot,
-                        value: args.value,
-                    });
+                ReactionDescriptor::Sequence(steps) => {
+                    for step in steps.iter().filter(|step| {
+                        matches!(step.id, SequenceTarget::System) && step.primitive == "setState"
+                    }) {
+                        self.bind_one(&reaction.name, &step.args, &scope, script_ctx);
+                    }
                 }
-                continue;
+                _ => {}
             }
-            if !is_ir_node(&args.value) {
-                continue;
-            }
-
-            // Retain even failed bindings. A queued command with the same raw
-            // identity is known-invalid, while a missing entry is genuinely
-            // unknown or stale and remains worth diagnosing at the drain.
-            let mut binding = SystemSetStateBinding {
-                name: reaction.name.clone(),
-                slot: args.slot,
-                value: args.value,
-                program: None,
-                required_dispatch_inputs: Vec::new(),
-                reads_event_player: false,
-                event_player_warned: std::cell::Cell::new(false),
-            };
-
-            let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
-                Ok(root) => root,
-                Err(error) => {
-                    log::warn!(
-                        "[Scripting] setState reaction `{}` has invalid runtime value; not binding: {error}",
-                        reaction.name
-                    );
-                    self.bindings.push(binding);
-                    continue;
-                }
-            };
-            let baked = BakedIr {
-                version: CURRENT_IR_VERSION,
-                output: Some(binding.slot.clone()),
-                root,
-            };
-            binding.required_dispatch_inputs = baked.root.dispatch_input_names();
-            // A `byPlayer(on.player)` value binds in-tick under its player
-            // event; no app-drain source publishes the event player. Install
-            // rejects the subscriptions it can see (triggers, crossings,
-            // `levelLoad`), but a UI action, a progress target or an
-            // `onComplete` chain can still queue it here, so `dispatch` warns
-            // once for this binding and skips.
-            if postretro_scripting_core::player_event_scope::reads_event_player(&binding.value) {
-                binding.reads_event_player = true;
-                self.bindings.push(binding);
-                continue;
-            }
-            match bind(&baked, &scope) {
-                Ok(program) => {
-                    binding.program = Some(program);
-                }
-                Err(error) => {
-                    // `StoreScope::script` makes readonly, unknown, and
-                    // non-projectable targets bind failures before any fire.
-                    log::warn!(
-                        "[Scripting] setState reaction `{}` cannot bind runtime value for `{}`: {error}",
-                        reaction.name,
-                        binding.slot
-                    );
-                }
-            }
-            self.bindings.push(binding);
         }
+    }
+
+    fn bind_one(
+        &mut self,
+        name: &str,
+        raw_args: &serde_json::Value,
+        scope: &DispatchScope,
+        script_ctx: &ScriptCtx,
+    ) {
+        let args: SetStateArgs = match serde_json::from_value(raw_args.clone()) {
+            Ok(args) => args,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] setState reaction `{}` has invalid args; not binding: {error}",
+                    name
+                );
+                return;
+            }
+        };
+        let per_owner = script_ctx
+            .slot_table
+            .borrow()
+            .get(&args.slot)
+            .is_some_and(|record| record.schema.per_owner);
+        if per_owner {
+            log::warn!(
+                "[Scripting] setState reaction `{}` rejects per-owner slot `{}`; not binding",
+                name,
+                args.slot
+            );
+            if is_ir_node(&args.value) {
+                self.bindings.push(SystemSetStateBinding {
+                    name: name.to_string(),
+                    slot: args.slot,
+                    value: args.value,
+                    program: None,
+                    required_dispatch_inputs: Vec::new(),
+                    reads_event_player: false,
+                    event_player_warned: std::cell::Cell::new(false),
+                });
+            } else {
+                self.rejected_literals.push(SystemSetStateLiteralRejection {
+                    slot: args.slot,
+                    value: args.value,
+                });
+            }
+            return;
+        }
+        if !is_ir_node(&args.value) {
+            return;
+        }
+
+        // Retain even failed bindings. A queued command with the same raw
+        // identity is known-invalid, while a missing entry is genuinely
+        // unknown or stale and remains worth diagnosing at the drain.
+        let mut binding = SystemSetStateBinding {
+            name: name.to_string(),
+            slot: args.slot,
+            value: args.value,
+            program: None,
+            required_dispatch_inputs: Vec::new(),
+            reads_event_player: false,
+            event_player_warned: std::cell::Cell::new(false),
+        };
+
+        let root = match ir_node_from_json(binding.value.clone(), "setState.value") {
+            Ok(root) => root,
+            Err(error) => {
+                log::warn!(
+                    "[Scripting] setState reaction `{}` has invalid runtime value; not binding: {error}",
+                    name
+                );
+                self.bindings.push(binding);
+                return;
+            }
+        };
+        let baked = BakedIr {
+            version: CURRENT_IR_VERSION,
+            output: Some(binding.slot.clone()),
+            root,
+        };
+        binding.required_dispatch_inputs = baked.root.dispatch_input_names();
+        // A `byPlayer(on.player)` value binds in-tick under its player
+        // event; no app-drain source publishes the event player. Install
+        // rejects the subscriptions it can see (triggers, crossings,
+        // `levelLoad`), but a UI action, a progress target or an
+        // `onComplete` chain can still queue it here, so `dispatch` warns
+        // once for this binding and skips.
+        if postretro_scripting_core::player_event_scope::reads_event_player(&binding.value) {
+            binding.reads_event_player = true;
+            self.bindings.push(binding);
+            return;
+        }
+        match bind(&baked, scope) {
+            Ok(program) => {
+                binding.program = Some(program);
+            }
+            Err(error) => {
+                // `StoreScope::script` makes readonly, unknown, and
+                // non-projectable targets bind failures before any fire.
+                log::warn!(
+                    "[Scripting] setState reaction `{}` cannot bind runtime value for `{}`: {error}",
+                    name,
+                    binding.slot
+                );
+            }
+        }
+        self.bindings.push(binding);
     }
 
     /// Evaluate an already-bound IR program at the app-drain write point.

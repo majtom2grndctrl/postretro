@@ -1350,14 +1350,22 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
             "@fire" => primitive == "fire",
             token => !control && subject_token_carries(token, primitive),
         },
-        Some(value) => {
+        Some(value) if !value.is_null() => {
             !control
                 && value
                     .as_u64()
                     .and_then(|id| u32::try_from(id).ok())
                     .is_some()
         }
-        None => false,
+        // A system step `{ primitive, args }` (`playSound`, `setState`) is a
+        // legal step that reserves no light slot. Mirror the runtime parser:
+        // only a system reaction, with no `tag` or `onComplete`.
+        _ => {
+            let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
+            absent("tag")
+                && absent("onComplete")
+                && postretro_foundation::SYSTEM_REACTION_PRIMITIVES.contains(&primitive)
+        }
     }
 }
 
@@ -2131,6 +2139,74 @@ mod tests {
             "the setLightAnimation step's levelLoad startActive was read through the mixed sequence",
         );
         assert!(!quickjs_manifest.lights[0].is_dynamic);
+    }
+
+    // A system step beside a light member step reserves exactly the
+    // membership the light step reserves alone, in both hosts, before a wait
+    // and after one. A targetless step naming no system reaction still makes
+    // the pass skip the sequence, because runtime drops that whole reaction.
+    #[test]
+    fn system_step_beside_a_light_step_reserves_the_same_membership_in_both_hosts() {
+        let manifests = |quickjs_steps: &str, luau_steps: &str| {
+            let quickjs = format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [ {{ name: "levelLoad", sequence: [{quickjs_steps}] }} ] }};
+                }}
+            "#
+            );
+            let luau = format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  return {{ reactions = {{ {{ name = "levelLoad", sequence = {{ {luau_steps} }} }} }} }}
+                end
+            "#
+            );
+            let quickjs = emit_light_membership_manifest(
+                &quickjs,
+                Path::new("fixture.ts"),
+                Path::new("."),
+                &table(),
+            )
+            .expect("QuickJS evaluates");
+            let luau = emit_light_membership_manifest(
+                &luau,
+                Path::new("fixture.luau"),
+                Path::new("."),
+                &table(),
+            )
+            .expect("Luau evaluates");
+            assert_eq!(quickjs.lights, luau.lights);
+            quickjs.lights
+        };
+        let alone = manifests(
+            r#"{ id: light.id, primitive: "setLightAnimation", args: { startActive: false } }"#,
+            r#"{ id = light.id, primitive = "setLightAnimation", args = { startActive = false } }"#,
+        );
+        assert_eq!(alone.len(), 1);
+        let with_system = manifests(
+            r#"{ primitive: "playSound", args: { sound: "x" } },
+               { id: light.id, primitive: "setLightAnimation", args: { startActive: false } },
+               { id: "@wait", primitive: "wait", args: { durationMs: 500 } },
+               { primitive: "setState", args: { slot: "s", value: 1 } }"#,
+            r#"{ primitive = "playSound", args = { sound = "x" } },
+               { id = light.id, primitive = "setLightAnimation", args = { startActive = false } },
+               { id = "@wait", primitive = "wait", args = { durationMs = 500 } },
+               { primitive = "setState", args = { slot = "s", value = 1 } }"#,
+        );
+        assert_eq!(with_system, alone, "system steps reserve no light slot");
+        let malformed = manifests(
+            r#"{ primitive: "applyDamage", args: { amount: 5 } },
+               { id: light.id, primitive: "setLightAnimation", args: {} }"#,
+            r#"{ primitive = "applyDamage", args = { amount = 5 } },
+               { id = light.id, primitive = "setLightAnimation", args = {} }"#,
+        );
+        assert!(
+            malformed.is_empty(),
+            "runtime drops the reaction, so it reserves nothing"
+        );
     }
 
     // A group step beside a light member step reserves exactly the

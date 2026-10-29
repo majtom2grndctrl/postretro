@@ -506,6 +506,22 @@ impl SystemReactionCommand {
 }
 
 #[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    // Drift guard: the foundation name list the script compiler reads is
+    // exactly `SystemReactionKind::ALL`, in order.
+    #[test]
+    fn foundation_system_reaction_names_match_every_kind() {
+        let names: Vec<_> = SystemReactionKind::ALL
+            .iter()
+            .map(|kind| kind.primitive_name())
+            .collect();
+        assert_eq!(names, postretro_foundation::SYSTEM_REACTION_PRIMITIVES);
+    }
+}
+
+#[cfg(test)]
 mod audience_tests {
     use super::*;
     fn command(sound: bool, audience: Option<Audience>) -> SystemReactionCommand {

@@ -1,0 +1,11 @@
+tag=stress-street.rd_promenade.before.val0 side=before map=stress-street pose=-32.00,0.81,-90.00,90,0 settle=2 cpu_windows=6 trace_s=0
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/stress-street/stress-street.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/baked
+start=2026-10-29 10:22:27
+pre: 2026-10-29 10:22:27 util=9 inUseVidMemoryBytes=596844544 vramFreeBytes=2730381312 mhz=57 temp=69 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=55 screensaver=no locked=absent
+cpu_done t=20 windows=8 at 2026-10-29 10:22:48 
+post: 2026-10-29 10:22:51 util=5 inUseVidMemoryBytes=584957952 vramFreeBytes=2730381312 mhz=93 temp=77 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=55 screensaver=no locked=absent
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=140 error_lines=0
+end=2026-10-29 10:22:51
+verdict=OK

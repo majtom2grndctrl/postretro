@@ -79,6 +79,21 @@ Independent direction review (owner-requested, cloud session, 2026-10-28): keep 
 
 M2 hallway trace (diagnostic, 2026-10-28; 0-based record frames 72 and 76 = README f73, f77). The eye's cell 5030 (3.3 × 62.6 m) walks down a straight corridor into 4922 and 1158. Of the 32 extra drawn cells, 28 (16.5 M texels) sit behind exempt pillar 1172, a full-height pillar rotated 45° that fills most of the 3.25 m corridor; 2 are genuinely visible; 2 are visible long cells demanded whole. None are reached only because the camera cell is big, so the cap cuts no drawn cell. Growth is forced by the id-51 mandatory set, not the drawn set: cell 5030's set is 97.9 M texels (23.3 layers against `DEFAULT_LIGHTMAP_POOL_CAP_LAYERS` 15), against 31.9 M before. Estimated mandatory maximum by horizontal cap: 26 m → 54.5 M, 19.5 m → 56.6 M (both near zero deferral, no margin), 13 m → 42.9 M (zero deferral, with margin). Levers outside the cap: pool growth timing in `postretro-render-cpu` (`place_with_growth`; owner call), a classifier rule bounding cross-section-filling pillars (conflicts with the pillars-exempt rows; owner call). Pool cap size lives in `crates/renderer` (F3).
 
+## Next (handoff, 2026-10-28, at 5ef95fe0e)
+
+1. **Shadow-prism splitters** (Task 9i, to add). C18's fixture fails (9h): in a hall wider than it is deep, an occluder's back face splits before its end planes, so the space behind it is bounded only by cap grid lines. The owner chose to plan prisms after this task list. Draft the Decision for owner sign-off. Each occluder's or section's broad face is swept through the open span in front of it, and the prism's side and far planes become non-solid tier splitters ranked first where they overlap, through the door and cap splitter path. Prisms need a length bound outdoors. Un-ignore the C18 fixture, then measure walk cost, street and rooftop trips, and cells and portals.
+2. Re-measure as 9g did (M1–M4, uncapped walks, C18 map sweep) with prisms in.
+3. **Live H3** with the owner at the machine: reboot first, keep the screen unlocked. Confirm the ≈1.4× live walk factor and the street GPU rise.
+4. Step-cap re-size, if live walks are cheap (≥ 2× the worst measured walk), and pick the cap value (19.5 or 26 m).
+5. Task 10, then the AC result column, then wait for "land the plane".
+
+Open owner questions:
+- Street lane cells: options (a), (b) and (c) in Corrections.
+- Cap value.
+- Step-cap re-size, after the live H3 runs.
+
+Follow-ups to propose at landing: `face-fragment-remerge`, measured sibling collapse, the SH compose upload stall (renderer, predates this branch), pool shrink and growth count, sliver and axis-extent guards on open bounds.
+
 ## AC-to-proof
 
 Row ids: A = Automated classification, C = Correctness, F = Format/cache/content, M = Measured, H = Manual.

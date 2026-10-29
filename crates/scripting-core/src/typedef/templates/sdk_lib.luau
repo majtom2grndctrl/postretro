@@ -361,6 +361,14 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
+--- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a body
+--- on its own, and a sequence step unspread, doing what the same reaction does
+--- as a body. It names no target.
+export type SystemReactionStep = {
+  primitive: string,
+  args: { [string]: any }?,
+}
+
 --- Trigger primitive `armTrigger` takes no payload; its target is a trigger
 --- member's id (a member handle's `:arm()`), a subject-token command
 --- (`on.trigger:arm()` carries `target = "@trigger"`), or a raw descriptor's
@@ -557,13 +565,19 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+
+--- Steps in authored order. Nested tables of steps flatten at any depth, so the
+--- tables member methods, `wait()` and `fire()` return need no `append`. A
+--- reaction handle, a `progress` body, a nested `{ sequence }` and an
+--- `onComplete` follow-up are bodies, not steps: `defineReaction` raises.
+export type ReactionStepList = { SequenceStep | ReactionStepList }
 
 --- Sequence reaction body: ordered member, group, subject-token and control
 --- steps. Steps begin in array order; `fire` queues a named dispatch, while
 --- `wait` stops the current drain and resumes the remaining tail later.
 export type SequenceReactionDescriptor = {
-  sequence: {SequenceStep},
+  sequence: ReactionStepList,
 }
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
@@ -869,18 +883,18 @@ export type LevelManifest = {
 --- names when TS and Luau scripts must agree. The returned handle can be passed
 --- to button `onPress` or crossing `fire` entries.
 declare defineReaction: (
-  ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
-  & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) -> NamedReactionDescriptor)
-  & ((tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
-  & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<CrossingParams>)
-  & ((tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TeleportEventParams>)
-  & ((name: string, tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TeleportEventParams>)
-  & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
-  & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<TriggerEventParams>)
-  & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
-  & ((name: string, tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<EmitterParams>)
-  & ((tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<PlayerEventParams>)
-  & ((name: string, tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)) -> Reaction<PlayerEventParams>)
+  ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
+  & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
+  & ((tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<CrossingParams>)
+  & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<CrossingParams>)
+  & ((tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
+  & ((name: string, tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
+  & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
+  & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
+  & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<EmitterParams>)
+  & ((name: string, tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<EmitterParams>)
+  & ((tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<PlayerEventParams>)
+  & ((name: string, tracer: (PlayerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<PlayerEventParams>)
 )
 
 --- Define a pure impact-policy descriptor. Register it only by returning it
@@ -1051,43 +1065,43 @@ declare onStateCrossing: (
 )
 
 --- System-reaction body: play `sound` through the audio module. Pure: returns
---- a `PrimitiveReactionDescriptor`, no FFI. Pass to
+--- a `SystemReactionStep`, no FFI. Pass to
 --- `defineReaction("name", playSound(...))`.
-declare function playSound(sound: string, options: PlaySoundOptions?): PrimitiveReactionDescriptor
+declare function playSound(sound: string, options: PlaySoundOptions?): SystemReactionStep
 
 --- System-reaction body: drive gilrs gamepad force feedback. `strong` and the
 --- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
 --- is the rumble length. Warn-once no-op without force-feedback hardware.
---- Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
+--- Pure: returns a `SystemReactionStep`, no FFI.
+declare function rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): SystemReactionStep
 
 --- System-reaction body: flash the screen by writing the engine-owned
 --- `screen.flash` RGBA slot, which decays to transparent. `color` is
 --- `{r, g, b, a}` (0-1); `durationMs` is the decay time. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): PrimitiveReactionDescriptor
+--- `SystemReactionStep`, no FFI.
+declare function flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): SystemReactionStep
 
 --- System-reaction body: darken (or tint) the screen edges by writing the
 --- engine-owned `screen.vignette` slot, which rises to peak then decays to rest.
 --- `strength` is the peak edge-darken amount; `durationMs` is the total
 --- rise-plus-decay time. Optional `color` is an `{r, g, b}` linear-RGB tint
 --- (omitted when nil -> black, a pure strength-only edge-darken). Pure: returns
---- a `PrimitiveReactionDescriptor`, no FFI.
-declare function vignette(strength: number, durationMs: number, color: {number}?, options: PresentationOptions?): PrimitiveReactionDescriptor
+--- a `SystemReactionStep`, no FFI.
+declare function vignette(strength: number, durationMs: number, color: {number}?, options: PresentationOptions?): SystemReactionStep
 
 --- System-reaction body: shake the screen by writing the engine-owned
 --- `screen.shake` offset slot, a decaying oscillation that fades to rest.
 --- `amplitude` is the peak displacement in logical-reference px; `durationMs`
 --- is the total decay time. Optional `frequency` is the oscillation rate in Hz
 --- (omitted when nil -> the engine applies its default frequency). Pure: returns
---- a `PrimitiveReactionDescriptor`, no FFI.
-declare function screenShake(amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
+--- a `SystemReactionStep`, no FFI.
+declare function screenShake(amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?): SystemReactionStep
 
 --- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
 --- with an optional `onCommit` reaction (omitted when nil). An unknown tree name
---- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- warns and no-ops at dispatch time. Pure: returns a `SystemReactionStep`,
 --- no FFI.
-declare function showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
+declare function showDialog(tree: string, onCommit: string?): SystemReactionStep
 
 --- The engine-shipped on-screen keyboard's registry name (M13 Text Entry).
 --- `openTextEntry` opens this tree; the engine loads its descriptor from
@@ -1126,49 +1140,49 @@ declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
 --- `done` key or hardware Enter); `nav.cancel` closes without firing it. The same
 --- `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps
---- `showDialog("keyboard", onCommit)`. Pure: returns a `PrimitiveReactionDescriptor`.
-declare function openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
+--- `showDialog("keyboard", onCommit)`. Pure: returns a `SystemReactionStep`.
+declare function openTextEntry(onCommit: string?): SystemReactionStep
 
 --- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
 --- An unknown tree name warns and no-ops at dispatch time. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function openMenu(tree: string): PrimitiveReactionDescriptor
+--- `SystemReactionStep`, no FFI.
+declare function openMenu(tree: string): SystemReactionStep
 
 --- System-reaction body: pop the top UI tree off the modal stack. An empty stack
---- warns and no-ops at dispatch time. Pure: returns a `PrimitiveReactionDescriptor`,
+--- warns and no-ops at dispatch time. Pure: returns a `SystemReactionStep`,
 --- no FFI.
-declare function closeDialog(): PrimitiveReactionDescriptor
+declare function closeDialog(): SystemReactionStep
 
 --- System-reaction body: load a map by catalog id. `id` must match a committed
 --- `ModMapEntry.id`; unknown ids warn and no-op at dispatch time. The engine
 --- queues the lifecycle load when the reaction fires. Pure: returns a
---- PrimitiveReactionDescriptor.
-declare function loadLevel(id: string): PrimitiveReactionDescriptor
+--- SystemReactionStep.
+declare function loadLevel(id: string): SystemReactionStep
 
 --- System-reaction body: reload the currently-active map source. Uses the
 --- retained catalog id for catalog loads or the raw dev path for direct path
 --- loads. Runtime no-ops when no level is active. Pure: returns a
---- PrimitiveReactionDescriptor.
-declare function restartLevel(): PrimitiveReactionDescriptor
+--- SystemReactionStep.
+declare function restartLevel(): SystemReactionStep
 
 --- System-reaction body: return to the frontend menu, including its optional
 --- declared backdrop level. Use from authored reactions; use
 --- `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
---- the same lifecycle path. Pure: returns a PrimitiveReactionDescriptor.
-declare function returnToFrontend(): PrimitiveReactionDescriptor
+--- the same lifecycle path. Pure: returns a SystemReactionStep.
+declare function returnToFrontend(): SystemReactionStep
 
 --- Set the live sentiment from faction `from` toward faction `to` at frame end.
 --- The pair is directional and baseline content remains immutable. Negative
 --- values degrade the relationship; positive values bond it. Unknown faction
 --- names warn and no-op.
-declare function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor
+declare function setSentiment(from: string, to: string, value: number): SystemReactionStep
 
 --- Add `delta` to the current live sentiment from faction `from` toward
 --- faction `to` at frame end, or its authored baseline when unchanged. The
 --- pair is directional. Negative deltas degrade the relationship; positive
 --- deltas bond it. Unknown faction names warn and no-op.
-declare function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor
+declare function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep
 
 --- System-reaction body (M13 Goal F): write a literal, fluent or runtime value
 --- at the game-logic stage. Literals use the normal readonly-gated coercion and
@@ -1178,27 +1192,27 @@ declare function adjustSentiment(from: string, to: string, delta: number): Primi
 --- slots, including readonly slots, project as inputs. The output target must
 --- be writable; unknown or nonprojectable inputs and readonly targets reject
 --- the IR before the reaction can fire. Pure:
---- returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor
+--- returns a `SystemReactionStep`, no FFI.
+declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): SystemReactionStep
 
 --- System-reaction body (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
 --- gated through the same writable-slot gate as `setState` -- a readonly slot
 --- warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`)
---- is valid. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor
+--- is valid. Pure: returns a `SystemReactionStep`, no FFI.
+declare function appendText(ref: Ref<string>, text: string): SystemReactionStep
 
 --- System-reaction body (M13 Text Entry): remove the last character -- one
 --- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
 --- not segment grapheme clusters) -- from the writable String slot `slot` at the
 --- game-logic stage. Empty is a no-op with no warning.
---- Readonly-gated like `setState`. Pure: returns a `PrimitiveReactionDescriptor`, no FFI.
-declare function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor
+--- Readonly-gated like `setState`. Pure: returns a `SystemReactionStep`, no FFI.
+declare function backspaceText(ref: Ref<string>): SystemReactionStep
 
 --- System-reaction body (M13 Text Entry): empty the writable String slot `slot`
 --- at the game-logic stage. Readonly-gated like `setState`. Pure: returns a
---- `PrimitiveReactionDescriptor`, no FFI.
-declare function clearText(ref: Ref<string>): PrimitiveReactionDescriptor
+--- `SystemReactionStep`, no FFI.
+declare function clearText(ref: Ref<string>): SystemReactionStep
 
 -- ---------------------------------------------------------------------------
 -- State-store declarations. `defineStore` is special-cased in the typedef
@@ -1624,7 +1638,7 @@ declare function stateEquals<T>(ref: ComputedRef<T>, value: T): Predicate
 --- an equality `Predicate` (comparand typed to the cell's `T`). Presentation-only.
 export type LocalStateHandle<T> = {
   get: (self: LocalStateHandle<T>) -> LocalBindRef,
-  set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  set: (self: LocalStateHandle<T>, value: T) -> SystemReactionStep,
   is: (self: LocalStateHandle<T>, value: T) -> Predicate,
 }
 --- Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. Returns a `{ scope, cells }` bundle.

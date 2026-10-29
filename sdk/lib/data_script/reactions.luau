@@ -112,23 +112,76 @@ local function autoReactionId(descriptor: any): string
   return string.format("reaction_%08x", hash)
 end
 
+-- Append `list`'s steps to `out` in authored order, flattening nested tables at
+-- any depth. A table holding `primitive` is a step; any other table is a list
+-- (an empty one adds nothing). A body that is not a step raises, naming
+-- `defineReaction`.
+local function flattenSteps(list: any, out: {any}): {any}
+  for _, entry in ipairs(list) do
+    if type(entry) ~= "table" then
+      error(string.format("defineReaction: a step must be a table, got %s", type(entry)), 3)
+    end
+    if entry.name ~= nil then
+      error(string.format(
+        "defineReaction: reaction `%s` is a reaction handle, not a step; fire it with `fire(r)`",
+        tostring(entry.name)
+      ), 3)
+    end
+    if entry.progress ~= nil then
+      error("defineReaction: a `progress` body is not a step", 3)
+    end
+    if entry.sequence ~= nil then
+      error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead", 3)
+    end
+    if entry.primitive == nil then
+      flattenSteps(entry, out)
+    elseif entry.onComplete ~= nil then
+      error(string.format(
+        "defineReaction: step `%s` carries `onComplete`, which only a body may",
+        tostring(entry.primitive)
+      ), 3)
+    else
+      table.insert(out, entry)
+    end
+  end
+  return out
+end
+
+-- Lower an authored body to the manifest's shape: a table of steps, plain or
+-- returned from the tracer, is a `{ sequence }` (an empty table an inert one),
+-- and every `sequence` list is flattened.
+local function lowerBody(body: any): any
+  if type(body) ~= "table" then
+    return body
+  end
+  if body.sequence ~= nil then
+    local lowered = table.clone(body)
+    lowered.sequence = flattenSteps(body.sequence, {})
+    return lowered
+  end
+  if body.progress == nil and body.primitive == nil then
+    return { sequence = flattenSteps(body, {}) }
+  end
+  return body
+end
+
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
---- `descriptor` accepts exactly one body shape: `progress`, `primitive`, or
---- `sequence`. `name` is optional; when omitted a deterministic, run-stable id
---- is derived from the body. Use explicit names when TS and Luau scripts must
---- agree. The returned handle can be passed to button `onPress` or crossing
---- `fire` entries.
+--- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
+--- or a table of steps, which lowers to a `sequence`. `name` is optional; when
+--- omitted a deterministic, run-stable id is derived from the lowered body.
+--- Use explicit names when TS and Luau scripts must agree. The returned handle
+--- can be passed to button `onPress` or crossing `fire` entries.
 function ReactionsSdk.defineReaction(
-  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)),
-  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor)))?
+  nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)),
+  descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)))?
 ): NamedReactionDescriptor
   local name: string
   local body: any
   if type(nameOrBody) == "string" then
     name = nameOrBody
-    body = if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor
+    body = lowerBody(if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor)
   else
-    body = if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody
+    body = lowerBody(if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody)
     name = autoReactionId(body)
   end
   local out: NamedReactionDescriptor = { name = name }

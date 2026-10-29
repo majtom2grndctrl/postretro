@@ -7,6 +7,7 @@ import type {
   CrossingParams,
   EmitterParams,
   EmitterTarget,
+  ManifestReactionBody,
   PlayerEventParams,
   Reaction,
   ReactionBody,
@@ -74,7 +75,7 @@ export function fire(reaction: Reaction<{}> | string): SequenceStep[] {
  * assume cross-runtime id parity; use an explicit `name` when the id must
  * match across both runtimes.
  */
-function autoReactionId(descriptor: ReactionBody): string {
+function autoReactionId(descriptor: ManifestReactionBody<any>): string {
   const serialized = stableStringify(descriptor);
   // FNV-1a (32-bit). Deterministic and dependency-free; collision risk is
   // acceptable for author-named reaction ids and an explicit `name` overrides it.
@@ -102,13 +103,58 @@ function stableStringify(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
+/** Append `list`'s steps to `out` in authored order, flattening nested arrays
+ * at any depth. A body that is not a step throws, naming `defineReaction`. */
+function flattenSteps(list: readonly unknown[], out: SequenceStep[]): SequenceStep[] {
+  for (const entry of list) {
+    if (Array.isArray(entry)) {
+      flattenSteps(entry, out);
+      continue;
+    }
+    if (entry === null || typeof entry !== "object") {
+      throw new Error(`defineReaction: a step must be an object, got ${entry === null ? "null" : typeof entry}`);
+    }
+    const step = entry as Record<string, unknown>;
+    if ("name" in step) {
+      throw new Error(
+        `defineReaction: reaction \`${String(step.name)}\` is a reaction handle, not a step; fire it with \`fire(r)\``,
+      );
+    }
+    if ("progress" in step) {
+      throw new Error("defineReaction: a `progress` body is not a step");
+    }
+    if ("sequence" in step) {
+      throw new Error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead");
+    }
+    if ("onComplete" in step) {
+      throw new Error(`defineReaction: step \`${String(step.primitive)}\` carries \`onComplete\`, which only a body may`);
+    }
+    out.push(entry as SequenceStep);
+  }
+  return out;
+}
+
+/** Lower an authored body to the manifest's shape: an array, plain or
+ * returned from the tracer, is a `{ sequence }`, and every `sequence` list is
+ * flattened. */
+function lowerBody(body: ReactionBody<any>): ManifestReactionBody<any> {
+  if (Array.isArray(body)) {
+    return { sequence: flattenSteps(body, []) };
+  }
+  const manifest = body as ManifestReactionBody<any>;
+  if ("sequence" in manifest && Array.isArray(manifest.sequence)) {
+    return { ...manifest, sequence: flattenSteps(manifest.sequence, []) };
+  }
+  return manifest;
+}
+
 /**
  * Build a named reaction descriptor. Pure: returns a plain object and performs
- * no FFI. `descriptor` accepts exactly one body shape: `progress`, `primitive`,
- * or `sequence`. `name` is optional; when omitted a deterministic, run-stable id
- * is derived from the body. Use explicit names when TS and Luau scripts must
- * agree. The returned handle can be passed to `Button.onPress` or crossing
- * `fire` entries.
+ * no FFI. `descriptor` accepts one body shape: `progress`, `primitive`,
+ * `sequence`, or an array of steps, which lowers to a `sequence`. `name` is
+ * optional; when omitted a deterministic, run-stable id is derived from the
+ * lowered body. Use explicit names when TS and Luau scripts must agree. The
+ * returned handle can be passed to `Button.onPress` or crossing `fire` entries.
  *
  * @param name Stable event/reaction name consumed by dispatch. Optional.
  * @param descriptor Reaction body data consumed later by Rust.
@@ -150,9 +196,9 @@ export function defineReaction(
     | ReactionTracer<any>,
 ): Reaction<any> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
-  const tracedBody = typeof authored === "function"
+  const tracedBody = lowerBody(typeof authored === "function"
     ? authored(DISPATCH_PARAMS)
-    : authored as ReactionBody<any>;
+    : authored as ReactionBody<any>);
   const [name, body] =
     typeof nameOrBody === "string"
       ? [nameOrBody, tracedBody]

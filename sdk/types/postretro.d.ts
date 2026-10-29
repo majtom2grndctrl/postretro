@@ -1984,6 +1984,16 @@ declare module "postretro" {
     args?: Record<string, unknown> | null;
     onComplete?: string;
   };
+  /** A system reaction (`playSound`, `updateState`, the Ghost bus setter, …): a body on its own, and a sequence step unspread, doing what the same reaction does as a body. It names no target. */
+  export type SystemReactionStep<S = {}> = ReactionBodyScope<S> & {
+    primitive: string;
+    args?: Record<string, unknown> | null;
+    id?: never;
+    kind?: never;
+    tag?: never;
+    target?: never;
+    onComplete?: never;
+  };
 
   /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
@@ -2134,17 +2144,26 @@ declare module "postretro" {
     | StopTrapStep
     | GroupCommand
     | SubjectTokenCommand
+    | SystemReactionStep<any>
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered member, group, subject-token and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** A step as an array or `sequence` entry. A reaction handle, a `progress` body, a nested `{ sequence }` and an `onComplete` follow-up are bodies, not steps: fire a handle with `fire(r)`. */
+  export type ReactionStepEntry = SequenceStep & { name?: never; progress?: never; sequence?: never; onComplete?: never };
+  /** Steps in authored order. Nested arrays flatten at any depth, so the arrays member methods, `wait()` and `fire()` return need no spread. */
+  export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
+
+  /** Sequence reaction body: ordered member, group, subject-token, system and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
-    sequence: SequenceStep[];
+    sequence: ReactionStepList;
   };
 
+  /** A body as the manifest carries it: one primitive, a `{ sequence }` or a `{ progress }`. */
+  export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
+  /** A reaction body: a manifest body, or an array of steps, which `defineReaction` lowers to a `{ sequence }`. An empty array is an inert reaction. */
+  export type ReactionBody<S = {}> = ManifestReactionBody<S> | ReactionStepList;
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type ReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
-  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
+  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
   /** Dispatch values published by a state-crossing fire. */
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
@@ -2891,7 +2910,7 @@ declare module "postretro/ui" {
     NumericArrayStateValue,
     GameStateRefs,
     ModUiTree,
-    PrimitiveReactionDescriptor,
+    SystemReactionStep,
     NamedReactionDescriptor,
     CrossingCondition,
     CrossingOptions,
@@ -3137,7 +3156,7 @@ declare module "postretro/ui" {
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
-  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
   /** Declare presentation-local cells. `init` keys are cell names; values may be number, boolean, string, or RGBA tuple. Pure; cells live only inside the nearest container using the returned `scope`. */
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
@@ -3154,8 +3173,8 @@ declare module "postretro/ui" {
   export type PresentationOptions = { audience?: PresentationAudience };
   export type AudienceScope<A> = (Extract<A, ActivatorsTarget> extends never ? {} : Pick<TriggerEventParams, "activators">) & (Extract<A, TriggerTarget> extends never ? {} : Pick<TriggerEventParams, "trigger">) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
   export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
-  export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
-  export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
+  export type PresentationBody<O extends PresentationOptions> = SystemReactionStep<AudienceScope<O["audience"]>>;
+  export type SoundBody<O extends PlaySoundOptions> = SystemReactionStep<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
   /** Play sound on its default or explicit audience, optionally at the event emitter. */
   export function playSound<O extends PlaySoundOptions = {}>(sound: string, options?: O): SoundBody<O>;
   export function rumble<O extends PresentationOptions = {}>(strong: number, durationMs: number, weak?: number | null, options?: O): PresentationBody<O>;
@@ -3163,7 +3182,7 @@ declare module "postretro/ui" {
   export function vignette<O extends PresentationOptions = {}>(strength: number, durationMs: number, color?: [number, number, number] | null, options?: O): PresentationBody<O>;
   export function screenShake<O extends PresentationOptions = {}>(amplitude: number, durationMs: number, frequency?: number | null, options?: O): PresentationBody<O>;
   /** Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit. Unknown tree names warn and no-op. */
-  export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
+  export function showDialog(tree: string, onCommit?: string | null): SystemReactionStep;
   export const KEYBOARD_TREE: "keyboard";
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
@@ -3189,30 +3208,30 @@ declare module "postretro/ui" {
   export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
   export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
   /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
-  export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
+  export function openTextEntry(onCommit?: string | null): SystemReactionStep;
   /** Push a menu tree by registry name. Unknown tree names warn and no-op. */
-  export function openMenu(tree: string): PrimitiveReactionDescriptor;
+  export function openMenu(tree: string): SystemReactionStep;
   /** Pop the active modal. Empty stack warns and no-ops. */
-  export function closeDialog(): PrimitiveReactionDescriptor;
+  export function closeDialog(): SystemReactionStep;
   /** Queue a catalog map load. `id` must match a committed `ModMapEntry.id`; unknown ids warn and no-op. */
-  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  export function loadLevel(id: string): SystemReactionStep;
   /** Reload the active level from retained catalog id or raw dev path. No active level means no-op. */
-  export function restartLevel(): PrimitiveReactionDescriptor;
+  export function restartLevel(): SystemReactionStep;
   /** Return to the frontend menu and reload its optional backdrop level. */
-  export function returnToFrontend(): PrimitiveReactionDescriptor;
+  export function returnToFrontend(): SystemReactionStep;
   /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
-  export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;
+  export function setSentiment(from: string, to: string, value: number): SystemReactionStep;
   /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */
-  export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;
+  export function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep;
   /** Write a literal, fluent or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. A fluent value (`read(…)` and its operators, `byPlayer(on.player)` reads in a player-event reaction included) or a raw runtime value binds once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
-  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;
-  export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;
-  export function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor;
-  export function clearText(ref: Ref<string>): PrimitiveReactionDescriptor;
+  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): SystemReactionStep;
+  export function appendText(ref: Ref<string>, text: string): SystemReactionStep;
+  export function backspaceText(ref: Ref<string>): SystemReactionStep;
+  export function clearText(ref: Ref<string>): SystemReactionStep;
 }
 
 declare module "postretro/audio" {
-  import type { PrimitiveReactionDescriptor } from "postretro";
+  import type { SystemReactionStep } from "postretro";
 
   /** Ghost bus fields `setGhostAudio` may set. Every field is optional, but a call must name at least one of `volume`, `highPassHz`, `lowPassHz` or `drive`. */
   export type GhostAudioFields = {
@@ -3228,6 +3247,6 @@ declare module "postretro/audio" {
     periodMs?: number;
   };
 
-  /** Change the mod-wide Ghost bus mix during play. Returns a primitive reaction body to pass whole to `defineReaction` (it names no target). Applies on the host at its next tick, in call order, and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; an omitted field keeps its value and any ramp in flight, and fields no script set follow the manifest `audio.ghost`. A non-finite or out-of-range field, a call naming no field, or targets that would leave `highPassHz` at or above `lowPassHz` warn and drop the reaction. */
-  export function setGhostAudio(fields: GhostAudioFields): PrimitiveReactionDescriptor;
+  /** Change the mod-wide Ghost bus mix during play. Returns a system reaction: a body on its own, or a step in a sequence or array body (it names no target). Applies on the host at its next tick, in call order, and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; an omitted field keeps its value and any ramp in flight, and fields no script set follow the manifest `audio.ghost`. A non-finite or out-of-range field, a call naming no field, or targets that would leave `highPassHz` at or above `lowPassHz` warn and drop the reaction. */
+  export function setGhostAudio(fields: GhostAudioFields): SystemReactionStep;
 }

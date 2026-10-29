@@ -79,33 +79,33 @@ export type PostretroUiModule = {
   onStateCrossing: ((ref: ComputedRef<number>, condition: CrossingCondition, fire: {Reaction<any> | string}) -> CrossingDescriptor)
     & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor),
   --- Play `sound`. `options.bus` routes to a mixer bus (SFX when omitted); `options.at = on.emitter` positions it where the named gameplay event happened, on the SFX bus.
-  playSound: (sound: string, options: PlaySoundOptions?) -> PrimitiveReactionDescriptor,
+  playSound: (sound: string, options: PlaySoundOptions?) -> SystemReactionStep,
   --- Trigger gamepad rumble. `strong` and optional `weak` are motor intensities in [0, 1]; `durationMs` is milliseconds.
-  rumble: (strong: number, durationMs: number, weak: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
+  rumble: (strong: number, durationMs: number, weak: number?, options: PresentationOptions?) -> SystemReactionStep,
   --- Flash the screen with linear RGBA `color`; `durationMs` is the decay time in milliseconds.
-  flashScreen: (color: {number}, durationMs: number, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
+  flashScreen: (color: {number}, durationMs: number, options: PresentationOptions?) -> SystemReactionStep,
   --- Apply a screen-edge vignette. `strength` is peak amount, `durationMs` is total rise+decay time, and optional `color` is linear RGB.
-  vignette: (strength: number, durationMs: number, color: {number}?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
+  vignette: (strength: number, durationMs: number, color: {number}?, options: PresentationOptions?) -> SystemReactionStep,
   --- Shake the screen. `amplitude` is logical-reference px, `durationMs` is milliseconds, and optional `frequency` is Hz.
-  screenShake: (amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?) -> PrimitiveReactionDescriptor,
+  screenShake: (amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?) -> SystemReactionStep,
   --- Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit.
-  showDialog: (tree: string, onCommit: string?) -> PrimitiveReactionDescriptor,
+  showDialog: (tree: string, onCommit: string?) -> SystemReactionStep,
   --- Push a menu tree by registry name. Unknown tree names warn and no-op.
-  openMenu: (tree: string) -> PrimitiveReactionDescriptor,
+  openMenu: (tree: string) -> SystemReactionStep,
   --- Pop the active modal. Empty stack warns and no-ops.
-  closeDialog: () -> PrimitiveReactionDescriptor,
+  closeDialog: () -> SystemReactionStep,
   --- Queue a catalog map load by committed `ModMapEntry.id`; unknown ids warn and no-op.
-  loadLevel: (id: string) -> PrimitiveReactionDescriptor,
+  loadLevel: (id: string) -> SystemReactionStep,
   --- Reload the active level from retained catalog id or raw dev path. No active level means no-op.
-  restartLevel: () -> PrimitiveReactionDescriptor,
+  restartLevel: () -> SystemReactionStep,
   --- Return to the frontend menu and reload its optional backdrop level.
-  returnToFrontend: () -> PrimitiveReactionDescriptor,
+  returnToFrontend: () -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
-  setSentiment: (from: string, to: string, value: number) -> PrimitiveReactionDescriptor,
+  setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
-  adjustSentiment: (from: string, to: string, delta: number) -> PrimitiveReactionDescriptor,
+  adjustSentiment: (from: string, to: string, delta: number) -> SystemReactionStep,
   --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
-  openTextEntry: (onCommit: string?) -> PrimitiveReactionDescriptor,
+  openTextEntry: (onCommit: string?) -> SystemReactionStep,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",
@@ -121,10 +121,10 @@ export type PostretroUiModule = {
   --- The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`.
   accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> string) & ((field: AccessibilityNumericField, op: "increase" | "decrease") -> string),
   --- Write a literal, fluent or runtime value at game-logic time. Fluent values (`byPlayer(on.player)` reads included) and runtime values may read known Number/Boolean slots, including readonly slots; unknown/nonprojectable inputs and readonly output targets reject.
-  updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> PrimitiveReactionDescriptor,
-  appendText: (ref: Ref<string>, text: string) -> PrimitiveReactionDescriptor,
-  backspaceText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
-  clearText: (ref: Ref<string>) -> PrimitiveReactionDescriptor,
+  updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> SystemReactionStep,
+  appendText: (ref: Ref<string>, text: string) -> SystemReactionStep,
+  backspaceText: (ref: Ref<string>) -> SystemReactionStep,
+  clearText: (ref: Ref<string>) -> SystemReactionStep,
 }
 
 --- Ghost bus fields `setGhostAudio` may set. Volume and drive are linear 0..=1; cutoffs are 20..=20000 Hz with the high-pass below the low-pass; `periodMs` (finite, >= 0, default 0) is the ramp length.
@@ -132,7 +132,7 @@ export type GhostAudioFields = { volume: number?, highPassHz: number?, lowPassHz
 
 export type PostretroAudioModule = {
   --- Change the mod-wide Ghost bus mix during play; a primitive reaction body (no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
-  setGhostAudio: (fields: GhostAudioFields) -> PrimitiveReactionDescriptor,
+  setGhostAudio: (fields: GhostAudioFields) -> SystemReactionStep,
 }
 
 export type PostretroModule = {

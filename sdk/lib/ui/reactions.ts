@@ -182,8 +182,8 @@ export type AudienceScope<A> =
   (Extract<A, import("../data_script/commands").ActivatorsTarget> extends never ? {} : Pick<import("../data_script").TriggerEventParams, "activators">)
   & (Extract<A, import("../data_script/commands").TriggerTarget> extends never ? {} : Pick<import("../data_script").TriggerEventParams, "trigger">)
   & (Extract<A, import("../data_script/commands").PlayerTarget> extends never ? {} : import("../data_script").PlayerEventParams);
-export type PresentationBody<O extends PresentationOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
-export type SoundBody<O extends PlaySoundOptions> = import("../data_script").PrimitiveReactionDescriptor<AudienceScope<O["audience"]>
+export type PresentationBody<O extends PresentationOptions> = import("../data_script").SystemReactionStep<AudienceScope<O["audience"]>>;
+export type SoundBody<O extends PlaySoundOptions> = import("../data_script").SystemReactionStep<AudienceScope<O["audience"]>
   & (Extract<O["at"], EmitterTarget> extends never ? {} : import("../data_script").EmitterParams)>;
 
 function presentationAudience(args: Record<string, unknown>, options: PresentationOptions | undefined): void {
@@ -211,10 +211,10 @@ export type PlaySoundOptions = PresentationOptions & {
 };
 
 /**
- * Play a sound through the audio module. Pure — returns a primitive reaction
- * body, no engine side effect. Pass the result as the descriptor of
- * `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
- * Without `at` the sound plays unpositioned.
+ * Play a sound through the audio module. Pure — returns a system reaction, no
+ * engine side effect: a body on its own (`defineReaction("name",
+ * playSound(...))`) or a step in a sequence or array body. `sound` is an audio
+ * asset id. Without `at` the sound plays unpositioned.
  */
 export function playSound<O extends PlaySoundOptions = {}>(
   sound: string,
@@ -332,7 +332,7 @@ export function screenShake<O extends PresentationOptions = {}>(
 export function showDialog(
   tree: string,
   onCommit?: string,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   const args: { tree: string; onCommit?: string } = { tree };
   if (onCommit !== undefined) args.onCommit = onCommit;
   return { primitive: "showDialog", args };
@@ -437,7 +437,7 @@ export function accessibilityAction(field: string, op: string): string {
  */
 export function openTextEntry(
   onCommit?: string,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return showDialog(KEYBOARD_TREE, onCommit);
 }
 
@@ -449,7 +449,7 @@ export function openTextEntry(
  */
 export function openMenu(
   tree: string,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "openMenu", args: { tree } };
 }
 
@@ -457,7 +457,7 @@ export function openMenu(
  * Pop the top UI tree off the modal stack. Pure — returns a primitive reaction
  * body, no engine side effect. An empty stack warns and no-ops at dispatch time.
  */
-export function closeDialog(): import("../data_script").PrimitiveReactionDescriptor {
+export function closeDialog(): import("../data_script").SystemReactionStep {
   return { primitive: "closeDialog", args: {} };
 }
 
@@ -467,7 +467,7 @@ export function closeDialog(): import("../data_script").PrimitiveReactionDescrip
  * engine queues the lifecycle load when the reaction fires; unknown ids warn and
  * no-op at dispatch time.
  */
-export function loadLevel(id: string): import("../data_script").PrimitiveReactionDescriptor {
+export function loadLevel(id: string): import("../data_script").SystemReactionStep {
   return { primitive: "loadLevel", args: { map: id } };
 }
 
@@ -476,7 +476,7 @@ export function loadLevel(id: string): import("../data_script").PrimitiveReactio
  * body, no FFI. Uses the retained catalog id for catalog loads or the raw dev
  * path for direct path loads; runtime no-ops when no level is active.
  */
-export function restartLevel(): import("../data_script").PrimitiveReactionDescriptor {
+export function restartLevel(): import("../data_script").SystemReactionStep {
   return { primitive: "restartLevel", args: {} };
 }
 
@@ -486,7 +486,7 @@ export function restartLevel(): import("../data_script").PrimitiveReactionDescri
  * use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
  * the same lifecycle path.
  */
-export function returnToFrontend(): import("../data_script").PrimitiveReactionDescriptor {
+export function returnToFrontend(): import("../data_script").SystemReactionStep {
   return { primitive: "returnToFrontend", args: {} };
 }
 
@@ -501,7 +501,7 @@ export function setSentiment(
   from: string,
   to: string,
   value: number,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "setSentiment", args: { from, to, value } };
 }
 
@@ -516,7 +516,7 @@ export function adjustSentiment(
   from: string,
   to: string,
   delta: number,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "adjustSentiment", args: { from, to, delta } };
 }
 
@@ -534,7 +534,7 @@ export function adjustSentiment(
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: Ref<T>,
   value: T | RuntimeValue | NumberRef | BoolRef,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   if (typeof ref === "object" && ref !== null && "owner" in ref && (ref as { owner?: unknown }).owner !== undefined) {
     throw new Error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot");
   }
@@ -554,7 +554,7 @@ export function updateState<T extends number | boolean | string | ReadonlyArray<
 export function appendText(
   ref: Ref<string>,
   text: string,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "appendText", args: { slot: stateSlot(ref, "appendText"), text } };
 }
 
@@ -568,7 +568,7 @@ export function appendText(
  */
 export function backspaceText(
   ref: Ref<string>,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "backspaceText", args: { slot: stateSlot(ref, "backspaceText") } };
 }
 
@@ -579,6 +579,6 @@ export function backspaceText(
  */
 export function clearText(
   ref: Ref<string>,
-): import("../data_script").PrimitiveReactionDescriptor {
+): import("../data_script").SystemReactionStep {
   return { primitive: "clearText", args: { slot: stateSlot(ref, "clearText") } };
 }

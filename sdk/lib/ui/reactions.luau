@@ -44,14 +44,13 @@ export type PredicateCrossingDescriptor = {
 
 export type CrossingDescriptor = ThresholdCrossingDescriptor | PredicateCrossingDescriptor
 
---- Primitive reaction body produced by the system-reaction constructors below.
---- Mirrors `data_script.luau`'s `PrimitiveReactionDescriptor`; redeclared here
---- to keep this module self-contained (the Luau prelude has no module loader).
-export type PrimitiveReactionDescriptor = {
+--- System reaction produced by the constructors below: a body on its own, or
+--- a step in a sequence or array body. Mirrors `data_script.luau`'s
+--- `SystemReactionStep`; redeclared here to keep this module self-contained
+--- (the Luau prelude has no module loader).
+export type SystemReactionStep = {
   primitive: string,
-  tag: string?,
   args: { [string]: any }?,
-  onComplete: string?,
 }
 
 local UiReactionsSdk = {}
@@ -209,7 +208,7 @@ end
 --- body, no engine side effect. Pass the result as the descriptor of
 --- `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
 --- Without `at` the sound plays unpositioned.
-function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): PrimitiveReactionDescriptor
+function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): SystemReactionStep
   -- Guard the shape before reading fields: a string indexes the string
   -- library, so the pre-options `playSound(sound, "sfx")` form would read
   -- nil fields and silently drop its bus.
@@ -238,7 +237,7 @@ end
 --- (omitted when nil) are 0-1 motor intensities; `durationMs` is the rumble
 --- length in milliseconds. A warn-once no-op when force feedback is
 --- unsupported.
-function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): PrimitiveReactionDescriptor
+function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): SystemReactionStep
   local args: { [string]: any } = { strong = strong, durationMs = durationMs }
   if weak ~= nil then
     args.weak = weak
@@ -251,7 +250,7 @@ end
 --- which decays back to transparent. Pure: returns a primitive reaction body,
 --- no engine side effect. `color` is an `{r, g, b, a}` tuple (0-1); `durationMs`
 --- is the decay time in milliseconds.
-function UiReactionsSdk.flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): PrimitiveReactionDescriptor
+function UiReactionsSdk.flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): SystemReactionStep
   local args = { color = color, durationMs = durationMs }
   presentationAudience(args, options)
   return { primitive = "flashScreen", args = args }
@@ -268,7 +267,7 @@ function UiReactionsSdk.vignette(
   durationMs: number,
   color: {number}?,
   options: PresentationOptions?
-): PrimitiveReactionDescriptor
+): SystemReactionStep
   local args: { [string]: any } = { strength = strength, durationMs = durationMs }
   if color ~= nil then
     args.color = color
@@ -288,7 +287,7 @@ function UiReactionsSdk.screenShake(
   durationMs: number,
   frequency: number?,
   options: PresentationOptions?
-): PrimitiveReactionDescriptor
+): SystemReactionStep
   local args: { [string]: any } = { amplitude = amplitude, durationMs = durationMs }
   if frequency ~= nil then
     args.frequency = frequency
@@ -301,7 +300,7 @@ end
 --- reaction body, no engine side effect. `tree` names the UI tree to show; the
 --- optional `onCommit` (omitted when nil) names a reaction fired when the
 --- dialog commits. An unknown tree name warns and no-ops at dispatch time.
-function UiReactionsSdk.showDialog(tree: string, onCommit: string?): PrimitiveReactionDescriptor
+function UiReactionsSdk.showDialog(tree: string, onCommit: string?): SystemReactionStep
   local args: { [string]: any } = { tree = tree }
   if onCommit ~= nil then
     args.onCommit = onCommit
@@ -362,7 +361,7 @@ end
 --- nil) names a reaction fired on commit (the on-screen `done` key or hardware
 --- Enter); `nav.cancel` (Escape / B) closes without firing it. The same
 --- `ui.textEntry` slot also receives the hardware-keyboard path's edits.
-function UiReactionsSdk.openTextEntry(onCommit: string?): PrimitiveReactionDescriptor
+function UiReactionsSdk.openTextEntry(onCommit: string?): SystemReactionStep
   return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
 end
 
@@ -370,13 +369,13 @@ end
 --- reaction body, no engine side effect. A v1 alias of `showDialog` (identical
 --- push behavior) without the `onCommit` hook. An unknown tree name warns and
 --- no-ops at dispatch time.
-function UiReactionsSdk.openMenu(tree: string): PrimitiveReactionDescriptor
+function UiReactionsSdk.openMenu(tree: string): SystemReactionStep
   return { primitive = "openMenu", args = { tree = tree } }
 end
 
 --- Pop the top UI tree off the modal stack. Pure: returns a primitive reaction
 --- body, no engine side effect. An empty stack warns and no-ops at dispatch time.
-function UiReactionsSdk.closeDialog(): PrimitiveReactionDescriptor
+function UiReactionsSdk.closeDialog(): SystemReactionStep
   return { primitive = "closeDialog", args = {} }
 end
 
@@ -384,14 +383,14 @@ end
 --- `id` must match a `ModMapEntry.id` committed from `ModManifest.maps`. The
 --- engine queues the lifecycle load when the reaction fires; unknown ids warn
 --- and no-op at dispatch time.
-function UiReactionsSdk.loadLevel(id: string): PrimitiveReactionDescriptor
+function UiReactionsSdk.loadLevel(id: string): SystemReactionStep
   return { primitive = "loadLevel", args = { map = id } }
 end
 
 --- Reload the currently-active map source. Pure: returns a primitive reaction
 --- body, no FFI. Uses the retained catalog id for catalog loads or the raw dev
 --- path for direct path loads; runtime no-ops when no level is active.
-function UiReactionsSdk.restartLevel(): PrimitiveReactionDescriptor
+function UiReactionsSdk.restartLevel(): SystemReactionStep
   return { primitive = "restartLevel", args = {} }
 end
 
@@ -399,7 +398,7 @@ end
 --- Pure: returns a primitive reaction body, no FFI. Use from authored reactions;
 --- use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
 --- the same lifecycle path.
-function UiReactionsSdk.returnToFrontend(): PrimitiveReactionDescriptor
+function UiReactionsSdk.returnToFrontend(): SystemReactionStep
   return { primitive = "returnToFrontend", args = {} }
 end
 
@@ -412,7 +411,7 @@ function UiReactionsSdk.setSentiment(
   from: string,
   to: string,
   value: number
-): PrimitiveReactionDescriptor
+): SystemReactionStep
   return { primitive = "setSentiment", args = { from = from, to = to, value = value } }
 end
 
@@ -425,7 +424,7 @@ function UiReactionsSdk.adjustSentiment(
   from: string,
   to: string,
   delta: number
-): PrimitiveReactionDescriptor
+): SystemReactionStep
   return { primitive = "adjustSentiment", args = { from = from, to = to, delta = delta } }
 end
 
@@ -438,7 +437,7 @@ end
 --- including readonly slots, project as inputs. The write target must be
 --- writable; unknown or nonprojectable inputs and readonly targets reject the
 --- IR before it can fire.
-function UiReactionsSdk.updateState(ref: any, value: any): PrimitiveReactionDescriptor
+function UiReactionsSdk.updateState(ref: any, value: any): SystemReactionStep
   if type(ref) == "table" and ref.owner ~= nil then
     error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot")
   end
@@ -453,7 +452,7 @@ end
 --- body, no engine side effect. Readonly-gated through the same writable-slot gate
 --- as `setState`: a readonly slot warns and is left unchanged; an engine-owned
 --- writable slot (e.g. `ui.textEntry`) is a valid target.
-function UiReactionsSdk.appendText(ref: any, text: string): PrimitiveReactionDescriptor
+function UiReactionsSdk.appendText(ref: any, text: string): SystemReactionStep
   return { primitive = "appendText", args = { slot = stateSlot(ref, "appendText"), text = text } }
 end
 
@@ -462,14 +461,14 @@ end
 --- from the writable String slot `slot` at the game-logic stage (M13 Text
 --- Entry). Pure: returns a primitive reaction body, no engine side effect.
 --- Empty is a no-op with no warning. Readonly-gated like `setState`.
-function UiReactionsSdk.backspaceText(ref: any): PrimitiveReactionDescriptor
+function UiReactionsSdk.backspaceText(ref: any): SystemReactionStep
   return { primitive = "backspaceText", args = { slot = stateSlot(ref, "backspaceText") } }
 end
 
 --- Empty the writable String slot `slot` at the game-logic stage (M13 Text
 --- Entry). Pure: returns a primitive reaction body, no engine side effect.
 --- Readonly-gated like `setState`.
-function UiReactionsSdk.clearText(ref: any): PrimitiveReactionDescriptor
+function UiReactionsSdk.clearText(ref: any): SystemReactionStep
   return { primitive = "clearText", args = { slot = stateSlot(ref, "clearText") } }
 end
 

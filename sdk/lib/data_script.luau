@@ -82,6 +82,14 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
+--- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a body
+--- on its own, and a sequence step unspread, doing what the same reaction does
+--- as a body. It names no target.
+export type SystemReactionStep = {
+  primitive: string,
+  args: { [string]: any }?,
+}
+
 --- Kinds a group command addresses.
 export type GroupKind = "npc" | "player"
 
@@ -311,7 +319,13 @@ export type FireStep = {
 --- Ordered member, group, subject-token and control steps. Steps begin in
 --- array order; `fire` queues a named dispatch, while `wait` stops the current
 --- drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+
+--- Steps in authored order. Nested tables of steps flatten at any depth, so the
+--- tables member methods, `wait()` and `fire()` return need no `append`. A
+--- reaction handle, a `progress` body, a nested `{ sequence }` and an
+--- `onComplete` follow-up are bodies, not steps: `defineReaction` raises.
+export type ReactionStepList = { SequenceStep | ReactionStepList }
 
 --- Descriptor produced by `defineReaction`. The `name` field is merged
 --- into the descriptor at the top level so the Rust deserializer can read

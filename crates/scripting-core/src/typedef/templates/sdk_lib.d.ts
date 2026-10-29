@@ -183,6 +183,16 @@
     args?: Record<string, unknown> | null;
     onComplete?: string;
   };
+  /** A system reaction (`playSound`, `updateState`, the Ghost bus setter, …): a body on its own, and a sequence step unspread, doing what the same reaction does as a body. It names no target. */
+  export type SystemReactionStep<S = {}> = ReactionBodyScope<S> & {
+    primitive: string;
+    args?: Record<string, unknown> | null;
+    id?: never;
+    kind?: never;
+    tag?: never;
+    target?: never;
+    onComplete?: never;
+  };
 
   /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
   export interface ArmTriggerArgs {
@@ -333,17 +343,26 @@
     | StopTrapStep
     | GroupCommand
     | SubjectTokenCommand
+    | SystemReactionStep<any>
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered member, group, subject-token and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** A step as an array or `sequence` entry. A reaction handle, a `progress` body, a nested `{ sequence }` and an `onComplete` follow-up are bodies, not steps: fire a handle with `fire(r)`. */
+  export type ReactionStepEntry = SequenceStep & { name?: never; progress?: never; sequence?: never; onComplete?: never };
+  /** Steps in authored order. Nested arrays flatten at any depth, so the arrays member methods, `wait()` and `fire()` return need no spread. */
+  export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
+
+  /** Sequence reaction body: ordered member, group, subject-token, system and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
-    sequence: SequenceStep[];
+    sequence: ReactionStepList;
   };
 
+  /** A body as the manifest carries it: one primitive, a `{ sequence }` or a `{ progress }`. */
+  export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
+  /** A reaction body: a manifest body, or an array of steps, which `defineReaction` lowers to a `{ sequence }`. An empty array is an inert reaction. */
+  export type ReactionBody<S = {}> = ManifestReactionBody<S> | ReactionStepList;
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type ReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
-  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
+  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
   /** Dispatch values published by a state-crossing fire. */
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
@@ -990,7 +1009,7 @@
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];
   /** A presentation-cell handle (`ui.createLocalState`): `.get()` yields a `{ local }` bind ref; `.set(v)` emits a `cellWrite` reaction (NEVER `setState`); `.is(v)` produces an equality `Predicate` (comparand typed to the cell's `T`). Presentation-only. */
-  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   /** The `{ scope, cells }` bundle `ui.createLocalState` returns: splice `scope` onto the declaring container's `localState`; bind widgets to `cells.<name>.get()`. */
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
   /** Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. `.set()` emits `cellWrite`, never writing the authoritative store. */

@@ -109,6 +109,19 @@ export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   onComplete?: string;
 };
 
+/** A system reaction (`playSound`, `updateState`, the Ghost bus setter, …): a body
+ * on its own, and a sequence step unspread, doing what the same reaction does
+ * as a body. It names no target. */
+export type SystemReactionStep<S = {}> = ReactionBodyScope<S> & {
+  primitive: string;
+  args?: Record<string, unknown> | null;
+  id?: never;
+  kind?: never;
+  tag?: never;
+  target?: never;
+  onComplete?: never;
+};
+
 /**
  * One step in a `sequence` reaction body. A member step targets a single
  * `EntityId`; a group command (`GroupCommand`) resolves its group when it runs;
@@ -187,18 +200,33 @@ export type SequenceStep =
   | StopTrapStep
   | GroupCommand
   | SubjectTokenCommand
+  | SystemReactionStep<any>
   | WaitStep
   | FireStep;
 
-/** Ordered member, group, subject-token and control steps. Steps begin in
- * array order; `fire` queues a named dispatch, while `wait` stops the current
- * drain and resumes the remaining tail after its delay. */
+/** A step as an array or `sequence` entry. A reaction handle, a `progress`
+ * body, a nested `{ sequence }` and an `onComplete` follow-up are bodies, not
+ * steps: fire a handle with `fire(r)`. */
+export type ReactionStepEntry = SequenceStep & {
+  name?: never;
+  progress?: never;
+  sequence?: never;
+  onComplete?: never;
+};
+
+/** Steps in authored order. Nested arrays flatten at any depth, so the arrays
+ * member methods, `wait()` and `fire()` return need no spread. */
+export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
+
+/** Ordered member, group, subject-token, system and control steps. Steps
+ * begin in array order; `fire` queues a named dispatch, while `wait` stops the
+ * current drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {
-  sequence: SequenceStep[];
+  sequence: ReactionStepList;
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
-export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
+export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
 /**
  * Deserialized once at level load; the data-script VM is dropped immediately after.
@@ -279,11 +307,18 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-export type ReactionBody<S = {}> = ReactionBodyScope<S> & (
+/** A body as the manifest carries it: one primitive, a `{ sequence }` or a
+ * `{ progress }`. */
+export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor<S>
   | SequenceReactionDescriptor
 );
+
+/** A reaction body: a manifest body, or an array of steps, which
+ * `defineReaction` lowers to a `{ sequence }`. An empty array is an inert
+ * reaction. */
+export type ReactionBody<S = {}> = ManifestReactionBody<S> | ReactionStepList;
 
 declare const reactionScopeBrand: unique symbol;
 

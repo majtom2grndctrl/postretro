@@ -596,6 +596,10 @@ mod tests {
     mod system_step_pins {
         include!("system_step_pin_tests.rs");
     }
+    // Array bodies through the SDK share this module's helpers.
+    mod array_bodies {
+        include!("array_body_tests.rs");
+    }
 
     use super::*;
     use postretro_entities::{

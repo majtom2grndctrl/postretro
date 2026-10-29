@@ -44,7 +44,9 @@ pub(super) fn resolve(
         .teleport
         .arrival_latches
         .retain(|index| teleporters.regions.contains(usize::from(*index), position));
-    if component.vault_barred {
+    if postretro_foundation::player_capability(component, postretro_foundation::Capability::Touch)
+        .map_or(component.vault_barred, |touch| !touch)
+    {
         return position;
     }
     let Some(index) = teleporters.regions.winner(position, |index| {

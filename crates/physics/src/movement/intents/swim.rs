@@ -80,7 +80,7 @@ pub(crate) fn swim_intent(
     let Some(swim) = component.swim.as_ref() else {
         return Some(leave_swim());
     };
-    let speed = swim.speed;
+    let speed = swim.speed * component.life_speed_scale;
     let accel = swim.accel;
     let sink_speed = swim.sink_speed;
     // The seam sets `fluid_jump` only when the velocity is `Some`.

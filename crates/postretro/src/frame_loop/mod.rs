@@ -428,8 +428,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .set_pending_weapon_slot(pending_weapon_slot);
         // Apply look rotation once at render rate, not once per tick —
         // so zero-tick frames still consume accumulated mouse motion.
-        app.camera
-            .rotate(look.yaw_delta(frame_dt), look.pitch_delta(frame_dt));
+        crate::life_state_eye::apply_look(
+            &session.scripting.script_ctx.registry.borrow(),
+            &mut app.camera,
+            look.yaw_delta(frame_dt),
+            look.pitch_delta(frame_dt),
+        );
         gameplay_snapshot
     };
 
@@ -1571,7 +1575,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // Gameplay rendering shares the pose used by post-loop shots.
     // A frontend menu opened by this frame's reactions has its own
     // camera hold, applied above after the command drains settle.
-    let presented_aim = app.render_aim_pose(presented_aim);
+    let mut presented_aim = app.render_aim_pose(presented_aim);
+    if app.is_connected_client() && !app.frontend_menu_is_present() {
+        presented_aim.position = app.life_state_eye.render(
+            &script_ctx.registry.borrow(),
+            presented_aim.position,
+            frame_result.alpha,
+            frame_dt,
+        );
+    }
 
     // M15 Phase 3 Task 5: the connected client's local-pawn presentation
     // offset is already baked into the camera pose `frame_timing` carries

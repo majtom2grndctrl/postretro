@@ -83,7 +83,7 @@ pub(super) fn environment_transition(
     let Some(swim) = component.swim.as_ref() else {
         component.swim_reentry_latched = false;
         return SwimSeam {
-            transition: swimming.then(leave_swim),
+            transition: swimming.then(|| leave_with_posture(component)),
             fluid_jump: false,
         };
     };
@@ -105,7 +105,7 @@ pub(super) fn environment_transition(
         });
         let stays = resolved.immersion >= exit_depth || fluid_jump;
         return SwimSeam {
-            transition: (!stays).then(leave_swim),
+            transition: (!stays).then(|| leave_with_posture(component)),
             fluid_jump,
         };
     }
@@ -117,6 +117,12 @@ pub(super) fn environment_transition(
         return SwimSeam::NONE;
     };
 
+    if crate::movement::life_capabilities::forced_crouch(component) {
+        return SwimSeam {
+            transition: (resolved.immersion >= enter_depth).then_some(enter_swim(fluid)),
+            fluid_jump: false,
+        };
+    }
     let crouched_half_height = component.capsule.half_height;
     let standing_half_height = component.standing_half_height;
     if crouched_half_height >= standing_half_height {
@@ -205,4 +211,16 @@ fn enter_swim(fluid: u16) -> Transition {
         next: MovementState::Swim { fluid },
         carry: CarryRule::KEEP_ALL,
     }
+}
+
+// A forced swimming capsule can remain crouched after the profile opens if
+// standing growth is blocked. Preserve the ordinary crouch clearance retry.
+fn leave_with_posture(component: &PlayerMovementComponent) -> Transition {
+    let mut transition = leave_swim();
+    if component.capsule.half_height < component.standing_half_height {
+        transition.next = MovementState::Crouching {
+            eye_current: component.capsule.eye_height,
+        };
+    }
+    transition
 }

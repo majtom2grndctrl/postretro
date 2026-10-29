@@ -219,7 +219,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approved | done: focused checks, conditioned fire and SDK proof pass |
-| 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | implementation in progress; focused verification pending |
+| 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | done: movement, relay ordering and eye/look proofs pass |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | done: 7 sim, 2 netcode and 2 app behavior tests pass |
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | implementation in progress; focused verification pending |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | not started |
@@ -279,8 +279,14 @@ update together.
   17, sim 19 and UI 1. App `life_state` tests are currently compiling (unified
   clock/display/eye/look/client weapon/conditioned paths); recover the active
   process or `/tmp/postretro-e18-app-tests.log` after any interruption.
-- Task 2 is auditing exact O9/O13/O43 proof assertions before its commit;
-  passing no-cut/settlement tests alone must not stand in for those rows.
+- Task 2 exact O9/O13 assertions pass in both directions at 150 ms RTT: at
+  most one correction exceeds the measured no-transition bound, k+1 and later
+  shared-state records stay within baseline + 0.0001 m. Both 11 m/s and 80 m/s
+  runs pass. O43's post-movement production verb ends the active vault before
+  T serializes; T+1/replay remain non-vault and k+1 matches the paired baseline.
+  The expanded netcode `life_state` filter passes all 17 tests.
+- Owner-private catalog-driven pawn lookup/replication passes all three tests,
+  including distinct elapsed values for two pawns and absence semantics.
 - App `life_state` passes all 15 tests, including the three eye/look proofs,
   four continuous-clock proofs, two UI projection proofs and conditioned weapon
   paths. Task 3 is complete: its seven sim, two netcode and two app cases pass.
@@ -288,7 +294,7 @@ update together.
   check assumed a contiguous old subset of player refs. It now checks the
   hierarchy while the existing source-derived catalog loop checks every leaf
   and capability. Focused retest is pending.
-- Still required before Tasks 2/4 commits: O9/O13/O43 exact outcome proofs,
+- Still required before Task 4 commit:
   SDK generation/typedef consistency and formatting/whitespace verification.
   Task 5 has not started; its two-phase tick start and foot-anchor corrections
   are recorded above.

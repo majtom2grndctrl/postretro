@@ -237,6 +237,8 @@ pub struct ClientPrediction {
     /// lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
+    /// Keep a life-transition glide smooth while its large offset decays.
+    life_state_glide: bool,
     /// Off-by-default client input send-rate diagnostics (see `netdiag`). Inert
     /// unless `postretro::netdiag=debug`; observability only.
     send_diag: crate::netcode::netdiag::ClientSendDiag,
@@ -255,7 +257,7 @@ impl ClientPrediction {
         self.first_record_hold = None;
         self.armed = None;
         self.history.clear();
-        self.presentation_offset = Vec3::ZERO;
+        self.clear_presentation_offset();
     }
 
     /// Arm (or re-arm) prediction with the local pawn baseline. Called by
@@ -506,13 +508,27 @@ impl ClientPrediction {
     /// instead, so nothing composes across them. A non-finite composed offset snaps
     /// the same way: kept, it would never decay or settle.
     #[must_use = "a composed offset at the teleport floor snaps; the caller emits the camera cut"]
+    #[cfg(test)]
     pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) -> bool {
+        self.seed_presentation_offset_with_life_change(correction, false)
+    }
+
+    /// A received life transition may remove more than the ordinary teleport
+    /// floor of predicted travel. Preserve its finite glide, including subsequent
+    /// compositions while that offset remains above the floor.
+    pub(crate) fn seed_presentation_offset_with_life_change(
+        &mut self,
+        correction: Vec3,
+        life_state_changed: bool,
+    ) -> bool {
         let composed = self.presentation_offset + correction;
-        if !composed.is_finite() || composed.length() >= TELEPORT_CORRECTION_MIN_M {
-            self.presentation_offset = Vec3::ZERO;
+        let glide = life_state_changed || self.life_state_glide;
+        if !composed.is_finite() || (!glide && composed.length() >= TELEPORT_CORRECTION_MIN_M) {
+            self.clear_presentation_offset();
             return true;
         }
         self.presentation_offset = composed;
+        self.life_state_glide = glide && composed.length() >= TELEPORT_CORRECTION_MIN_M;
         false
     }
 
@@ -522,6 +538,7 @@ impl ClientPrediction {
     /// discarded too, and the next correction composes from zero.
     pub(crate) fn clear_presentation_offset(&mut self) {
         self.presentation_offset = Vec3::ZERO;
+        self.life_state_glide = false;
     }
 
     /// The current local-pawn presentation offset (decaying toward zero). Added to the
@@ -562,6 +579,9 @@ impl ClientPrediction {
             return;
         }
         self.presentation_offset *= DECAY_PER_STEP;
+        if self.presentation_offset.length() < TELEPORT_CORRECTION_MIN_M {
+            self.life_state_glide = false;
+        }
         if self.presentation_offset.length() < OFFSET_SETTLED_EPSILON_M {
             self.presentation_offset = Vec3::ZERO;
         }

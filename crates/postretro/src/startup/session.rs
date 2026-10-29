@@ -309,6 +309,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         nav_stick_tracker: input::StickNavTrackers::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
+        life_state_eye: Default::default(),
         view_feel_followed_pawn: None,
         view_feel_descriptor: None,
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),

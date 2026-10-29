@@ -14,6 +14,7 @@ mod frame_eye;
 mod frame_loop;
 mod host_activations;
 mod host_overlays;
+mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
 #[cfg(test)]
@@ -855,6 +856,7 @@ pub(crate) struct App {
     /// fixed-tick `InterpolableState` (movement.md D5). Inert until a pawn
     /// carries `view_feel`. See: context/lib/movement.md
     view_feel_state: view_feel::ViewFeelState,
+    life_state_eye: life_state_eye::LifeStateEye,
     /// Pawn currently owning the app-level view-feel integrator. A change
     /// clears all state so no motion continuity leaks between camera drivers.
     view_feel_followed_pawn: Option<postretro_entities::EntityId>,

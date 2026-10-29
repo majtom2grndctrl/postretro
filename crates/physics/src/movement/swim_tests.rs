@@ -2117,3 +2117,40 @@ fn force_scales_the_drift_a_swimmer_settles_at() {
         assert_within_two_percent(settle(force), force * nominal);
     }
 }
+
+#[test]
+fn life_state_forced_crouch_swims_with_scaled_wish_and_keeps_its_capsule() {
+    use postretro_foundation::{
+        LifeStateMovementProfile, LifeStatePosture, LifeStateProfile, enter_life_state,
+    };
+    let descriptor = full_descriptor();
+    let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
+    let profile = LifeStateProfile {
+        movement: LifeStateMovementProfile {
+            speed_scale: 0.25,
+            abilities: false,
+            posture: LifeStatePosture::Crouch,
+        },
+        ..Default::default()
+    };
+    enter_life_state(&mut pawn, 1, &profile, 7);
+    let world = CollisionWorld::new();
+    let volumes = open_water(10.0);
+    let view = water_view(&volumes);
+    let mut position = Vec3::ZERO;
+    for _ in 0..120 {
+        step(
+            &mut pawn,
+            &world,
+            view,
+            &input(|input| input.wish_dir = Vec2::Y),
+            &mut position,
+        );
+    }
+    assert!(matches!(pawn.movement_state, MovementState::Swim { .. }));
+    assert_eq!(
+        pawn.capsule.half_height,
+        descriptor.crouch.as_ref().unwrap().half_height
+    );
+    assert!(pawn.velocity.z.abs() <= descriptor.swim.as_ref().unwrap().speed * 0.25 + 0.01);
+}

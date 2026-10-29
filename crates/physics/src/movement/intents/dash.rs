@@ -84,6 +84,11 @@ pub(crate) fn try_enter_dash(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
 ) -> Option<Transition> {
+    if !crate::movement::life_capabilities::abilities(component)
+        || crate::movement::life_capabilities::forced_crouch(component)
+    {
+        return None;
+    }
     component.dash.as_ref()?;
     if component.dash_cooldown_ms > 0.0 {
         return None;
@@ -140,7 +145,7 @@ pub(crate) fn try_enter_dash(
         let preserve_vertical =
             resolve_bool(&dash.preserve_vertical, &programs.preserve_vertical, &scope);
         (
-            boost_speed,
+            boost_speed * component.life_speed_scale,
             momentum_retention,
             cooldown_ms,
             preserve_vertical,
@@ -280,7 +285,7 @@ pub(crate) fn dash_intent(
         component.ground_params.speed.run
     } else {
         component.ground_params.speed.walk
-    };
+    } * component.life_speed_scale;
 
     // Input steering, scaled by `steer_control`. At 0 the term is omitted
     // entirely (committed dash); at 1 it is `Normal`'s full `pm_accelerate`.

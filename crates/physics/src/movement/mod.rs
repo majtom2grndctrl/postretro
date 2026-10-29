@@ -11,6 +11,7 @@ mod environment;
 mod intents;
 pub mod knockback;
 mod ledge_probe;
+mod life_capabilities;
 mod mover_carry;
 pub mod overlap_check;
 mod push;
@@ -280,6 +281,8 @@ pub fn tick_with_immersion_and_armed(
     if component.life_state != postretro_foundation::UNDECLARED_LIFE_STATE {
         component.life_state_elapsed_ticks = component.life_state_elapsed_ticks.saturating_add(1);
     }
+    let life_input = life_capabilities::input(component, input);
+    let input = &life_input;
     let mut resolved_environment = resolve_at_tick_start(component, environment, position);
     let mut events = MovementEvents::default();
     let previous_ground = component.ground;
@@ -328,6 +331,9 @@ pub fn tick_with_immersion_and_armed(
     // mover carry, ahead of the substrate's own check, so their segment is
     // checked on its own once the intent has run.
     let tick_start = (position, body_capsule(component));
+    if life_capabilities::posture(component, &collision, &mut position, dt, &mut events) {
+        resolved_environment = resolve_at_tick_start(component, environment, position);
+    }
     // Swim entry and exit by immersion apply here, before the intent, so the
     // entered state owns this tick (`swim_transition`), which also decides
     // whether the swim intent fires a fluid jump.
@@ -542,6 +548,7 @@ mod vault_tests;
 
 #[cfg(test)]
 mod tests {
+    mod life_states;
     use super::*;
     use crate::collision::CollisionWorld;
     use crate::collision::moving::{

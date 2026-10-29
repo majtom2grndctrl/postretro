@@ -122,6 +122,12 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     let previous_life_state = registry
         .get_component::<PlayerMovementComponent>(entity_id)
         .ok()?;
+    // Compare the received identity before the table-history gate: a new table
+    // may still be in flight, but its movement correction must already glide.
+    let life_state_changed = movement.is_some_and(|wire| {
+        (wire.life_state, wire.life_state_table_revision)
+            != (component.life_state, component.life_state_table_revision)
+    });
     let predicted_teleport = (
         component.teleport.generation,
         component.teleport.accumulated_yaw,
@@ -270,6 +276,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         );
     let class = if teleport_changed {
         CorrectionClass::Teleport
+    } else if life_state_changed
+        && magnitude.is_finite()
+        && magnitude >= crate::netcode::prediction::TELEPORT_CORRECTION_MIN_M
+    {
+        CorrectionClass::OversizedSmoothed
     } else {
         classify_correction(magnitude, included_dash)
     };
@@ -310,10 +321,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
             // pose over a few ticks.
             if matches!(class, CorrectionClass::OversizedSmoothed) {
                 log::debug!(
-                    "[Net] oversized local correction {magnitude:.3} m smoothed (above the ordinary cap, below the teleport floor)"
+                    "[Net] oversized local correction {magnitude:.3} m smoothed (above the ordinary cap)"
                 );
             }
-            if prediction.seed_presentation_offset(correction) {
+            if prediction.seed_presentation_offset_with_life_change(correction, life_state_changed)
+            {
                 // The composed offset reached the teleport floor (or was non-finite):
                 // the eye snaps, by the rule a single correction there follows. Only
                 // the eye cuts. The reconcile was ordinary, so history stays, the
@@ -360,6 +372,7 @@ impl MovementCollisionSource for ReplayCollisionSource<'_> {
 
 #[cfg(test)]
 mod tests {
+    mod life_states;
     use super::*;
 
     use crate::collision::CollisionWorld;

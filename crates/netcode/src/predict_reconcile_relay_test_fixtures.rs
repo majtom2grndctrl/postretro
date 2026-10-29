@@ -78,6 +78,9 @@ pub(crate) struct ClientCorrection {
     pub(crate) movement_state: Option<MovementStateKind>,
 }
 
+/// Test-only player-event boundary: movement has completed, serialization has not.
+pub(crate) type HostPostMovement = Box<dyn FnMut(&mut EntityRegistry, EntityId, u32)>;
+
 /// A host and a predicting client joined over a renet relay pair. One frame
 /// ([`Self::frame`]) runs the host's frame then the client's at the same
 /// virtual time, each polling its endpoint first; what a frame sends leaves at
@@ -114,6 +117,7 @@ pub(crate) struct RelayHarness {
     /// One record per host fixed tick: how the client's command resolved and
     /// the pawn's state after the tick.
     pub(crate) host_trace: Vec<HostTickTrace>,
+    pub(crate) post_movement: Option<HostPostMovement>,
 
     // --- Client ---
     /// The production client endpoint, its transport the relay `NetClient`
@@ -232,6 +236,7 @@ impl RelayHarness {
             host_tick: 0,
             last_emitted_snapshot_tick: None,
             host_trace: Vec::new(),
+            post_movement: None,
             endpoint,
             client_registry,
             client_mover_states: MoverTickStateTable::default(),
@@ -572,6 +577,9 @@ impl RelayHarness {
 
         let mut snapshot_due = false;
         self.host_fixed_tick();
+        if let Some(post_movement) = self.post_movement.as_mut() {
+            post_movement(&mut self.host_registry, self.host_pawn, self.host_tick);
+        }
         complete_host_fixed_tick(&mut self.host_tick, &mut snapshot_due);
 
         // Serialize: changed tuning queues ahead of the snapshot it shapes, for
@@ -641,6 +649,15 @@ impl RelayHarness {
     }
 
     fn host_send_tuning_if_changed(&mut self) {
+        // Use the same lowered mod table that the production host supplies.
+        let life_states = self
+            .descriptors
+            .iter()
+            .find_map(|descriptor| descriptor.life_states.as_ref());
+        let life_names: Vec<String> = life_states
+            .map(|states| states.state_ids.keys().cloned().collect())
+            .unwrap_or_default();
+        let life_revision = life_states.map_or(0, |states| states.table_revision);
         let payload = tuning_payload_for_pawn(
             &self.host_registry,
             self.host_pawn,
@@ -650,8 +667,8 @@ impl RelayHarness {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
             },
-            &[],
-            0,
+            &life_names,
+            life_revision,
         );
         host_send_tuning_if_changed(
             &mut self.server,

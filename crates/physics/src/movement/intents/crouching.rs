@@ -105,7 +105,7 @@ pub(crate) fn crouching_intent(
     // mirroring `Normal` steps 4/5 but with
     // the crouch speed tier as the target (and airborne cap). Crouch is
     // omnidirectional like walk/run — the tier just sits below them.
-    let ground_speed = component.ground_params.speed.crouch;
+    let ground_speed = component.ground_params.speed.crouch * component.life_speed_scale;
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     if component.is_grounded() {
         ground_locomotion(component, input_dir_3d, ground_speed, control, dt);
@@ -122,7 +122,7 @@ pub(crate) fn crouching_intent(
         } else {
             input_dir_3d
         };
-        let wish_speed = component.air.max_control_speed;
+        let wish_speed = component.air.max_control_speed * component.life_speed_scale;
         pm_accelerate(
             &mut component.velocity,
             wish_dir_3d,
@@ -168,7 +168,10 @@ pub(crate) fn crouching_intent(
     // entry's anchor) — clear ⇒ stand (resize) and exit to `Normal` carrying the
     // jump just launched; blocked ⇒ stay crouched, the jump still applies (lower
     // arc). Either way the jump is never swallowed.
-    if jumped_this_tick && input.crouch_intent {
+    if jumped_this_tick
+        && input.crouch_intent
+        && !crate::movement::life_capabilities::forced_crouch(component)
+    {
         if anchored_standup_clearance_probe(
             component,
             collision,
@@ -190,6 +193,7 @@ pub(crate) fn crouching_intent(
     // feet, down for head); CLEAR ⇒ resize to standing and exit to `Normal`;
     // BLOCKED ⇒ stay crouched and retry next tick.
     if !input.crouch_intent
+        && !crate::movement::life_capabilities::forced_crouch(component)
         && anchored_standup_clearance_probe(
             component,
             collision,

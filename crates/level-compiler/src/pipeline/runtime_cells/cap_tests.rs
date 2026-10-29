@@ -278,6 +278,7 @@ fn exterior_cells_uncapped(map: &MapText) -> usize {
         brushes,
         &classification.tier_roles(),
         &[],
+        &[],
         None,
     )
     .expect("partition builds");

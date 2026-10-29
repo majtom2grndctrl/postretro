@@ -719,7 +719,9 @@ const SECOND_OCCLUDER_MAX: [f64; 3] = [-44.0, 2984.0, 512.0];
 /// Hall interior, Quake units: x −512..2048, y 672..2720, z 0..512 (65 × 52 ×
 /// 13 m), so a 19.5 m lane runs past each end of the retaining wall. Wider
 /// than deep, the wall's back face slices more of the hall than its end planes
-/// do; at HEAD the same layout in a hall deeper than wide passes.
+/// do, so only the back face's shadow prism carries the end planes behind it;
+/// without prisms the same layout in a hall deeper than wide passes and this
+/// one leaks (task 9h).
 const LANED_HALL_MIN: [f64; 3] = [-512.0, 672.0, 0.0];
 const LANED_HALL_MAX: [f64; 3] = [2048.0, 2720.0, 512.0];
 
@@ -761,12 +763,12 @@ fn laned_wall_setup() -> BehindWall {
     }
 }
 
-// At HEAD the wall's back face splits before its end planes, so the end
-// planes never reach the space behind it; cap grid lines bound that space
-// inside the lanes, and lane eyes see its cells (task 9h:
-// measurement/9h/README.md).
+// Regression: the wall's back face split before its end planes, so the end
+// planes never reached the space behind it; cap grid lines bounded that
+// space inside the lanes, and lane eyes saw its cells (task 9h:
+// measurement/9h/README.md). The back face's shadow prism now carries the
+// end planes and the top into that space.
 #[test]
-#[ignore = "C18 fails until shadow-prism splitters; see plan.md 9h"]
 fn walk_from_in_front_of_a_laned_wall_draws_no_cell_holding_space_hidden_behind_it() {
     let map = laned_wall_hall();
     let map_data = map.parse();

@@ -27,13 +27,10 @@ pub(crate) fn judge_box(
     // Exempt verdicts rank by how far the box got; the furthest one wins.
     let mut verdict = OccluderVerdict::UnderFloor;
     for normal_axis in normal_axes {
-        let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
-        if broad
-            .iter()
-            .any(|&axis| !at_least(frame.extents[axis], OCCLUDER_FLOOR_M))
-        {
+        if !broad_axes_reach_floor(frame, normal_axis) {
             continue;
         }
+        let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
         verdict = rank(verdict, OccluderVerdict::NoOpenFace);
         for sign in [1.0, -1.0] {
             let face_verdict = BroadFace::of(frame, normal_axis, sign).judge(frame, broad, space);
@@ -44,6 +41,14 @@ pub(crate) fn judge_box(
         }
     }
     verdict
+}
+
+/// True when both broad axes of the faces across `normal_axis` reach the
+/// floor, so the rule judges those faces at all.
+pub(crate) fn broad_axes_reach_floor(frame: &BrushFrame, normal_axis: usize) -> bool {
+    [(normal_axis + 1) % 3, (normal_axis + 2) % 3]
+        .iter()
+        .all(|&axis| at_least(frame.extents[axis], OCCLUDER_FLOOR_M))
 }
 
 fn rank(current: OccluderVerdict, candidate: OccluderVerdict) -> OccluderVerdict {
@@ -73,18 +78,44 @@ pub(crate) fn broad_face_open_depth(
     outward: f64,
     space: &OpenSpace<'_>,
 ) -> f64 {
+    let depths = open_sample_depths(frame, normal_axis, outward, space);
+    if depths.is_empty() {
+        0.0
+    } else {
+        depths.iter().sum::<f64>() / depths.len() as f64
+    }
+}
+
+/// Deepest open depth in front of the face of `frame`'s box whose outward
+/// normal is `outward` along `normal_axis`, over the face lattice's open
+/// samples: where the open space in front of the face ends. `None` when no
+/// sample is open. The same probes the rule's depth test casts.
+pub(crate) fn broad_face_deepest_open_depth(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> Option<f64> {
+    open_sample_depths(frame, normal_axis, outward, space)
+        .into_iter()
+        .reduce(f64::max)
+}
+
+/// Open depth in front of the face at each lattice sample whose probe starts
+/// in open space, in lattice order.
+fn open_sample_depths(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> Vec<f64> {
     let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
     let face = BroadFace::of(frame, normal_axis, outward);
-    let (mut open, mut depth) = (0_usize, 0.0);
-    for offsets in face.sample_offsets(frame, broad) {
-        let probe = face.probe(offsets);
-        if space.is_blocked(probe) {
-            continue;
-        }
-        open += 1;
-        depth += face.open_depth(probe, space);
-    }
-    if open == 0 { 0.0 } else { depth / open as f64 }
+    face.sample_offsets(frame, broad)
+        .map(|offsets| face.probe(offsets))
+        .filter(|&probe| !space.is_blocked(probe))
+        .map(|probe| face.open_depth(probe, space))
+        .collect()
 }
 
 /// The broad axis of `frame`'s box across `normal_axis` that takes the

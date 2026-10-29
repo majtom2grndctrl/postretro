@@ -15,8 +15,8 @@ use crate::partition::occluder_classify::{
 use crate::partition::occluder_cluster::OCCLUDER_COVERAGE_FRACTION;
 use crate::partition::{
     self, BspTree, CAP_MIN_OPEN_SLICE_FRACTION, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M,
-    CellSizeCap, CellTree, DoorSplitter, OccluderTier, PartitionResult, build_bsp_from_brushes,
-    recognize_doors,
+    CellSizeCap, CellTree, DoorSplitter, OccluderTier, PartitionResult, SHADOW_PRISM_LENGTH_FACTOR,
+    ShadowPrism, build_bsp_from_brushes, recognize_doors, shadow_prisms,
 };
 use crate::portals::{self, Portal};
 use crate::visibility;
@@ -29,9 +29,9 @@ pub(crate) struct OccluderPartition {
 }
 
 /// Classify every static brush and recognise the doors among `movers`, then
-/// build the two-tier tree on the verdicts, the door splitters and the
-/// cell-size cap, and extract world faces. Classification and doors are
-/// logged at info.
+/// build the two-tier tree on the verdicts, the shadow prisms of the
+/// occluding faces, the door splitters and the cell-size cap, and extract
+/// world faces. Classification, prisms and doors are logged at info.
 pub(crate) fn partition_with_occluders(
     brushes: &[BrushVolume],
     movers: &[MapKinematicMover],
@@ -52,9 +52,15 @@ pub(crate) fn partition_with_occluders(
     let cap = first_pass
         .as_ref()
         .map(|first_pass| CellSizeCap::new(first_pass.space(), &classification));
+    let prisms = first_pass
+        .as_ref()
+        .map(|first_pass| shadow_prisms(brushes, &classification, &first_pass.space()))
+        .unwrap_or_default();
+    log_prisms(&prisms);
     let (result, tier) = partition::partition_with_occluder_tier(
         brushes,
         &classification.tier_roles(),
+        &prisms,
         &doors,
         cap.as_ref(),
     )?;
@@ -106,6 +112,15 @@ impl FirstPass {
     fn space(&self) -> OpenSpace<'_> {
         OpenSpace::new(&self.tree, &self.exterior)
     }
+}
+
+fn log_prisms(prisms: &[ShadowPrism]) {
+    log::info!(
+        "[Compiler] Shadow prisms: {} occluding faces, {} ended by the length bound \
+         ({SHADOW_PRISM_LENGTH_FACTOR} × the face's longer broad extent)",
+        prisms.len(),
+        prisms.iter().filter(|prism| prism.truncated).count(),
+    );
 }
 
 fn log_doors(doors: &[DoorSplitter], movers: &[MapKinematicMover]) {
@@ -223,3 +238,6 @@ mod cap_tests;
 
 #[cfg(test)]
 mod leak_tests;
+
+#[cfg(test)]
+mod prism_tests;

@@ -17,7 +17,8 @@ use crate::geometry_utils::{polygon_area, split_polygon};
 use crate::map_data::BrushVolume;
 
 pub(crate) use broad_face::{
-    broad_face_floor, broad_face_open_depth, judge_box, vertical_broad_axis,
+    broad_axes_reach_floor, broad_face_deepest_open_depth, broad_face_floor, broad_face_open_depth,
+    judge_box, vertical_broad_axis,
 };
 
 /// Least broad-axis length, and least open depth in front of a broad face,
@@ -415,9 +416,17 @@ fn classify_brush(brush: &BrushVolume, space: &OpenSpace<'_>) -> OccluderVerdict
     let Some(frame) = BrushFrame::of(brush) else {
         return OccluderVerdict::UnderFloor;
     };
+    judge_box(&frame, thinnest_axes(&frame), space)
+}
+
+/// The axes a brush's broad faces lie across: its thinnest, every axis tied
+/// with it within `AXIS_TIE_EPSILON_M`, so a cube offers every face and the
+/// choice cannot depend on side order.
+pub(crate) fn thinnest_axes(frame: &BrushFrame) -> Vec<usize> {
     let thinnest = frame.extents.iter().copied().fold(f64::INFINITY, f64::min);
-    let normal_axes = (0..3).filter(|&axis| frame.extents[axis] <= thinnest + AXIS_TIE_EPSILON_M);
-    judge_box(&frame, normal_axes, space)
+    (0..3)
+        .filter(|&axis| frame.extents[axis] <= thinnest + AXIS_TIE_EPSILON_M)
+        .collect()
 }
 
 pub(crate) fn at_least(measure: f64, constant: f64) -> bool {

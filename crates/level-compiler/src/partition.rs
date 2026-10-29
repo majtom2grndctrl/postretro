@@ -17,7 +17,8 @@ mod types;
 
 pub use brush_bsp::{
     CAP_MIN_OPEN_SLICE_FRACTION, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M, CellSizeCap,
-    OccluderTier, TierLeaf, TierRole, build_bsp_from_brushes, build_bsp_with_occluder_tier,
+    OccluderTier, SHADOW_PRISM_LENGTH_FACTOR, ShadowPrism, TierLeaf, TierRole,
+    build_bsp_from_brushes, build_bsp_with_occluder_tier, shadow_prisms,
 };
 pub use bsp::find_leaf_for_point;
 pub use cell_tree::CellTree;
@@ -48,7 +49,8 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 }
 
 /// Partition world brushes into a two-tier BSP tree (`roles[i]` says how
-/// brush `i` splits inside the occluder tier, each of `doors` splits the
+/// brush `i` splits inside the occluder tier, each of `prisms` splits the
+/// tier regions it overlaps on its edge planes, each of `doors` splits the
 /// tier leaf holding its doorway, and `cap` divides tier leaves wider than
 /// the cell-size cap), then extract world faces as `partition` does.
 /// Solidity and faces read the returned tree exactly as they read
@@ -56,6 +58,7 @@ pub fn partition(brush_volumes: &[BrushVolume]) -> Result<PartitionResult> {
 pub fn partition_with_occluder_tier(
     brush_volumes: &[BrushVolume],
     roles: &[TierRole],
+    prisms: &[ShadowPrism],
     doors: &[DoorSplitter],
     cap: Option<&CellSizeCap<'_>>,
 ) -> Result<(PartitionResult, OccluderTier)> {
@@ -67,7 +70,7 @@ pub fn partition_with_occluder_tier(
         };
         return Ok((empty_partition(), tier));
     }
-    let (tree, tier) = build_bsp_with_occluder_tier(brush_volumes, roles, doors, cap)?;
+    let (tree, tier) = build_bsp_with_occluder_tier(brush_volumes, roles, prisms, doors, cap)?;
     Ok((with_faces(tree, brush_volumes), tier))
 }
 

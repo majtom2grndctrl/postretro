@@ -77,7 +77,7 @@ struct TieredBuild {
 
 fn tiered_build(brushes: &[BrushVolume], roles: &[TierRole]) -> TieredBuild {
     let (tree, tier) =
-        build_bsp_with_occluder_tier(brushes, roles, &[], None).expect("two-tier tree builds");
+        build_bsp_with_occluder_tier(brushes, roles, &[], &[], None).expect("two-tier tree builds");
     let portals = generate_portals(&tree);
     let exterior = find_exterior_leaves(&tree, &portals);
     let tier_portals = generate_occluder_tier_portals(&tree, &tier, &exterior);
@@ -138,9 +138,14 @@ fn unclassified_build_keeps_todays_tree() {
     ));
 
     let today = build_bsp_from_brushes(&brushes).expect("tree builds");
-    let (tiered, tier) =
-        build_bsp_with_occluder_tier(&brushes, &vec![TierRole::Exempt; brushes.len()], &[], None)
-            .expect("tree builds");
+    let (tiered, tier) = build_bsp_with_occluder_tier(
+        &brushes,
+        &vec![TierRole::Exempt; brushes.len()],
+        &[],
+        &[],
+        None,
+    )
+    .expect("tree builds");
 
     assert_eq!(today.nodes.len(), tiered.nodes.len());
     assert_eq!(today.leaves.len(), tiered.leaves.len());

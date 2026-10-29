@@ -4,6 +4,7 @@
 
 mod cell_cap;
 mod occluder_tier;
+mod shadow_prism;
 
 use anyhow::{Result, bail};
 use glam::DVec3;
@@ -16,6 +17,7 @@ pub use cell_cap::{
 };
 pub use occluder_tier::{OccluderTier, TierLeaf, TierRole, build_bsp_with_occluder_tier};
 use occluder_tier::{TierPlanes, TierRecorder, build_tier_region};
+pub use shadow_prism::{SHADOW_PRISM_LENGTH_FACTOR, ShadowPrism, shadow_prisms};
 
 /// Classification tolerance for AABB corners against brush-derived planes.
 #[cfg(test)]
@@ -59,9 +61,10 @@ pub fn build_bsp_from_brushes(brushes: &[BrushVolume]) -> Result<BspTree> {
 /// How `build_recursive` picks a region's splitter.
 #[derive(Clone, Copy)]
 enum SplitTier<'a> {
-    /// Occluder-tier planes only, ranked by each brush's role, then door
-    /// splitters, then the cell-size cap's grid lines; a region none spans
-    /// becomes an occluder-tier leaf and continues as `Full`.
+    /// Occluder-tier planes only, ranked by each brush's role, then shadow
+    /// prism planes, then door splitters, then the cell-size cap's grid
+    /// lines; a region none spans becomes an occluder-tier leaf and
+    /// continues as `Full`.
     Occluder(TierPlanes<'a>),
     /// Every candidate brush's planes, scored by `select_splitter`.
     Full,

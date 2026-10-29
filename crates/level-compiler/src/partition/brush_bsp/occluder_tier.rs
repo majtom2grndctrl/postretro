@@ -8,6 +8,7 @@ use anyhow::Result;
 use glam::DVec3;
 
 use super::cell_cap::CellSizeCap;
+use super::shadow_prism::ShadowPrism;
 use super::{
     IMBALANCE_PENALTY, REGION_CLASSIFICATION_EPSILON, SPLIT_PENALTY, SplitTier, build_recursive,
     build_tree, count_partition, leaf_bounds, planes_equivalent, split_region,
@@ -96,41 +97,51 @@ impl OccluderTier {
     }
 }
 
-/// What splits inside the occluder tier: each brush's role, the doors, and
-/// the cell-size cap.
+/// What splits inside the occluder tier, in rank order: each brush's role,
+/// the shadow prisms, the doors, and the cell-size cap.
 #[derive(Clone, Copy)]
 pub(super) struct TierPlanes<'a> {
     roles: &'a [TierRole],
+    prisms: &'a [ShadowPrism],
     doors: &'a [DoorSplitter],
     cap: Option<&'a CellSizeCap<'a>>,
 }
 
 /// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
-/// inside the tier: occluder-rank planes split first, then the planes of
-/// each door in `doors` inside the region holding it, then, with `cap`, the
-/// cell-size cap's grid lines in any region still wider than the cap; each
-/// region none of them spans becomes an occluder-tier leaf, and every brush's
-/// planes split beneath it with `build_bsp_from_brushes`' scoring. Door and
-/// cap planes are never solid: solidity, leaves and face ownership read the
-/// returned tree exactly as they read a one-tier tree.
+/// inside the tier: occluder-rank planes split first, then the edge and far
+/// planes of each prism in `prisms` inside the regions it overlaps, then the
+/// planes of each door in `doors` inside the region holding it, then, with
+/// `cap`, the cell-size cap's grid lines in any region still wider than the
+/// cap; each region none of them spans becomes an occluder-tier leaf, and
+/// every brush's planes split beneath it with `build_bsp_from_brushes`'
+/// scoring. Prism, door and cap planes are never solid: solidity, leaves and
+/// face ownership read the returned tree exactly as they read a one-tier
+/// tree.
 pub fn build_bsp_with_occluder_tier(
     brushes: &[BrushVolume],
     roles: &[TierRole],
+    prisms: &[ShadowPrism],
     doors: &[DoorSplitter],
     cap: Option<&CellSizeCap<'_>>,
 ) -> Result<(BspTree, OccluderTier)> {
     assert_eq!(roles.len(), brushes.len(), "one tier role per brush");
     let mut recorder = TierRecorder::default();
-    let planes = TierPlanes { roles, doors, cap };
+    let planes = TierPlanes {
+        roles,
+        prisms,
+        doors,
+        cap,
+    };
     let tree = build_tree(brushes, SplitTier::Occluder(planes), &mut recorder)?;
     let tier = recorder.finish(&tree);
     Ok((tree, tier))
 }
 
 /// Build a region inside the occluder tier: split on the best occluder plane,
-/// or door plane once no occluder plane qualifies, or cap line once neither
-/// does, or, when none spans the region, close it as a tier leaf and build
-/// its sub-tree on every brush's planes.
+/// or prism plane once no occluder plane qualifies, or door plane once
+/// neither does, or cap line once none of those does, or, when none spans
+/// the region, close it as a tier leaf and build its sub-tree on every
+/// brush's planes.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_tier_region(
     tree: &mut BspTree,
@@ -146,10 +157,11 @@ pub(super) fn build_tier_region(
     parent: Option<usize>,
     depth: usize,
 ) -> Result<BspChild> {
-    // A solid region is a tier leaf as it stands; otherwise the tier
-    // continues while an occluder, door or cap plane spans the region. A
-    // region no brush reaches has no occluder plane, but a door may still
-    // stand in it, and it may still be wider than the cap.
+    // A solid region is a tier leaf as it stands, so no prism, door or cap
+    // plane splits solid; otherwise the tier continues while an occluder,
+    // prism, door or cap plane spans the region. A region no brush reaches
+    // has no occluder plane, but it may lie in a prism, a door may stand in
+    // it, and it may still be wider than the cap.
     let splitter = if !inside.is_empty() {
         None
     } else {
@@ -237,12 +249,22 @@ impl TierRecorder {
 /// Pick the occluder-tier splitter: among the occluder-rank planes of the
 /// candidates (occluders' planes, and section members' flagged planes)
 /// scored by today's spanning and balance terms over the occluder
-/// candidates; failing those, among the planes of the doors the region
-/// holds, broad-face planes before edge planes, scored over every candidate.
-/// Each of those ranks takes a credit for the plane's slice through the
-/// region. Failing both, the cap's grid line, chosen by its own rule and
-/// never scored, since the slice credit would fight its nearest-the-middle
-/// choice. `None` makes the region an occluder-tier leaf.
+/// candidates; failing those, among the planes of the shadow prisms the
+/// region overlaps, scored over every candidate; failing those, among the
+/// planes of the doors the region holds, broad-face planes before edge
+/// planes, scored over every candidate. Each of those ranks takes a credit
+/// for the plane's slice through the region. Failing all three, the cap's
+/// grid line, chosen by its own rule and never scored, since the slice
+/// credit would fight its nearest-the-middle choice. `None` makes the region
+/// an occluder-tier leaf.
+///
+/// Prism planes rank after occluder planes, so an occluder's own planes
+/// still split first wherever they reach (a wall's top carries across the
+/// hall before anything else cuts it), and the prisms then bound whatever
+/// region the occluder planes leave behind a face, whichever of them split
+/// first: a wall's back face can split before its end planes and leave the
+/// region behind it without the wall, and the back face's prism still
+/// carries the end planes into it.
 ///
 /// Door planes rank after occluder planes, so a door splits only what would
 /// otherwise be the occluder-tier leaf holding its doorway, and adds no
@@ -253,7 +275,12 @@ impl TierRecorder {
 fn select_occluder_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],
-    TierPlanes { roles, doors, cap }: TierPlanes<'_>,
+    TierPlanes {
+        roles,
+        prisms,
+        doors,
+        cap,
+    }: TierPlanes<'_>,
     region_polytope: &RegionPolytope,
     ancestor_planes: &[(DVec3, f64)],
 ) -> Option<(DVec3, f64)> {
@@ -281,13 +308,48 @@ fn select_occluder_splitter(
         region_polytope,
         ancestor_planes,
     )
+    .or_else(|| {
+        select_prism_splitter(
+            brushes,
+            candidates,
+            prisms,
+            region_polytope,
+            ancestor_planes,
+        )
+    })
     .or_else(|| select_door_splitter(brushes, candidates, doors, region_polytope, ancestor_planes))
     .or_else(|| cap.and_then(|cap| cap.splitter(region_polytope, ancestor_planes)))
 }
 
-/// The best door plane for a region no occluder plane spans: a broad-face
-/// plane of a door the region overlaps, or failing those, one of its edge
-/// planes, which then cut only the slab between its broad faces.
+/// The best prism plane for a region no occluder plane spans: an edge or far
+/// plane of a prism the region overlaps.
+fn select_prism_splitter(
+    brushes: &[BrushVolume],
+    candidates: &[usize],
+    prisms: &[ShadowPrism],
+    region_polytope: &RegionPolytope,
+    ancestor_planes: &[(DVec3, f64)],
+) -> Option<(DVec3, f64)> {
+    let planes: Vec<(DVec3, f64)> = prisms
+        .iter()
+        .filter(|prism| prism.overlaps(region_polytope))
+        .flat_map(|prism| prism.splitters.iter().copied())
+        .collect();
+    if planes.is_empty() {
+        return None;
+    }
+    best_plane(
+        brushes,
+        planes,
+        candidates,
+        region_polytope,
+        ancestor_planes,
+    )
+}
+
+/// The best door plane for a region no occluder or prism plane spans: a
+/// broad-face plane of a door the region overlaps, or failing those, one of
+/// its edge planes, which then cut only the slab between its broad faces.
 fn select_door_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],

@@ -28,7 +28,7 @@ pub use coverage::COVERAGE_GRID_CELLS;
 pub const OCCLUDER_COVERAGE_FRACTION: f64 = 0.5;
 
 /// Axis of a section's frame across its slab.
-const SECTION_NORMAL_AXIS: usize = 2;
+pub(crate) const SECTION_NORMAL_AXIS: usize = 2;
 
 /// A member plane whose normal is this close to a box axis can lie on the
 /// box's face.

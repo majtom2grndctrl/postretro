@@ -177,7 +177,8 @@ pub(crate) fn placed_bindings(
         WorldBounds::from_positions(world.geometry.geometry.vertices.iter().map(|v| &v.position))
             .expect("the level has static world");
     let tracer = SceneTracer::new(&world.bvh, &world.primitives, &world.geometry);
-    let classifier = PointClassifier::new(&world.tree, &world.exterior_leaves, environment);
+    let classifier =
+        PointClassifier::new(&world.full_tree, &world.full_exterior_leaves, environment);
     let control = BakeControl::unrestricted();
     let probes = place_probes(
         environment,

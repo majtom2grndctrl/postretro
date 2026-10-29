@@ -79,6 +79,36 @@ pub(crate) fn classify(brushes: &[BrushVolume]) -> Result<OccluderClassification
     })
 }
 
+/// The partition and runtime cells `pipeline.rs` builds across its
+/// partition and visibility stages, for tests that must exercise what ships.
+#[cfg(test)]
+pub(crate) struct ShippedCells {
+    pub(crate) partition: OccluderPartition,
+    /// The full tree's exterior flood over its own portals.
+    pub(crate) full_exterior: HashSet<usize>,
+    pub(crate) runtime: RuntimeCells,
+}
+
+#[cfg(test)]
+impl ShippedCells {
+    pub(crate) fn build(brushes: &[BrushVolume], movers: &[MapKinematicMover]) -> Result<Self> {
+        let partition = partition_with_occluders(brushes, movers)?;
+        let full_portals = portals::generate_portals(&partition.result.tree);
+        let full_exterior = visibility::find_exterior_leaves(&partition.result.tree, &full_portals);
+        let runtime = RuntimeCells::build(
+            &partition.result.tree,
+            &partition.tier,
+            &full_exterior,
+            full_portals.len(),
+        );
+        Ok(Self {
+            partition,
+            full_exterior,
+            runtime,
+        })
+    }
+}
+
 /// The doors among `movers`, recognised against the first pass as
 /// `partition_with_occluders` recognises them.
 #[cfg(test)]

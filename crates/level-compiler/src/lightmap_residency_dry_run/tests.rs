@@ -667,7 +667,8 @@ fn recompute_and_cluster_closure_grow_monotonically_and_deterministically() {
 fn dry_run_recovers_charts_and_repacks_a_compiler_cell_block_layout() {
     use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapHeader, LightmapMode};
 
-    let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+    // Several lit cells under the occluder partition, so several blocks.
+    let mut fixture = crate::fixture_pipeline::load_fixture("closet-reveal");
     let static_lights = crate::light_namespaces::StaticBakedLights::from_lights(&fixture.lights);
     let prepared =
         crate::lightmap_bake::prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[])

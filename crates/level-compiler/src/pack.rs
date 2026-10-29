@@ -2268,13 +2268,19 @@ mod tests {
         let map_data =
             crate::parse::parse_map_file(&map_path, crate::map_format::MapFormat::IdTech2)
                 .expect("campaign-test.map should parse");
-        let result =
-            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
+        // The production partition: runtime cells and the portals between them.
+        let shipped = crate::pipeline::runtime_cells::ShippedCells::build(
+            &map_data.brush_volumes,
+            &map_data.kinematic_movers,
+        )
+        .expect("occluder partition should succeed");
+        let result = &shipped.partition.result;
+        let cell_tree = &shipped.runtime.cells.tree;
+        let exterior = &shipped.runtime.cells.exterior_cells;
+        let generated_portals = &shipped.runtime.portals;
 
-        let exterior = std::collections::HashSet::new();
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
-        let generated_portals = crate::portals::generate_portals(&result.tree);
-        let vis_result = crate::visibility::encode_vis(&result.tree, &exterior);
+        let geo_result = crate::geometry::extract_geometry(&result.faces, cell_tree, exterior);
+        let vis_result = crate::visibility::encode_vis(cell_tree, exterior);
 
         let (bvh, primitives, bvh_section) =
             crate::bvh_build::build_bvh(&geo_result).expect("bvh build should succeed");
@@ -2289,8 +2295,8 @@ mod tests {
             bvh: &bvh,
             primitives: &primitives,
             geometry: &geo_result,
-            tree: &result.tree,
-            exterior_leaves: &exterior,
+            tree: cell_tree,
+            exterior_leaves: exterior,
             static_lights: &static_lights,
             animated_lights: &animated_lights,
             total_light_count: map_data.lights.len(),
@@ -2300,13 +2306,13 @@ mod tests {
             &crate::sh_bake::ShConfig { probe_spacing: 4.0 },
         );
 
-        let portals_section = encode_portals(&generated_portals).unwrap();
+        let portals_section = encode_portals(generated_portals).unwrap();
 
         let dir = std::env::temp_dir().join("postretro_test_pipeline");
         let _ = std::fs::create_dir_all(&dir);
         let output = dir.join("test_pipeline_portals.prl");
 
-        let alpha_lights = encode_alpha_lights(&alpha_ns, &result.tree);
+        let alpha_lights = encode_alpha_lights(&alpha_ns, cell_tree);
         let light_influence = encode_light_influence(&alpha_ns);
         let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
         let cell_draw_index_section = crate::cell_draw_index_bake::bake_cell_draw_index(
@@ -2318,9 +2324,9 @@ mod tests {
             &geo_result,
             &texture_cache_keys,
             &vis_result.leaves_section,
-            &result.tree,
+            cell_tree,
             &portals_section,
-            &exterior,
+            exterior,
             &bvh_section,
             &[],
             &alpha_lights,
@@ -2413,24 +2419,15 @@ mod tests {
                 .expect("closet-reveal.map should parse");
         // The production partition: occluder tier, door splitters and the
         // runtime cells and portals every later stage reads.
-        let crate::pipeline::runtime_cells::OccluderPartition { result, tier } =
-            crate::pipeline::runtime_cells::partition_with_occluders(
-                &map_data.brush_volumes,
-                &map_data.kinematic_movers,
-            )
-            .expect("occluder partition should succeed");
-        let full_tree_portals = crate::portals::generate_portals(&result.tree);
-        let full_exterior =
-            crate::visibility::find_exterior_leaves(&result.tree, &full_tree_portals);
-        let runtime = crate::pipeline::runtime_cells::RuntimeCells::build(
-            &result.tree,
-            &tier,
-            &full_exterior,
-            full_tree_portals.len(),
-        );
-        let cell_tree = &runtime.cells.tree;
-        let exterior = &runtime.cells.exterior_cells;
-        let generated_portals = &runtime.portals;
+        let shipped = crate::pipeline::runtime_cells::ShippedCells::build(
+            &map_data.brush_volumes,
+            &map_data.kinematic_movers,
+        )
+        .expect("occluder partition should succeed");
+        let result = &shipped.partition.result;
+        let cell_tree = &shipped.runtime.cells.tree;
+        let exterior = &shipped.runtime.cells.exterior_cells;
+        let generated_portals = &shipped.runtime.portals;
         let vis_result = crate::visibility::encode_vis(cell_tree, exterior);
         let mut geo_result = crate::geometry::extract_geometry(&result.faces, cell_tree, exterior);
         let kinematic_geometry = crate::kinematic_geometry::encode_kinematic_geometry_section(
@@ -2643,11 +2640,18 @@ mod tests {
             let map_data =
                 crate::parse::parse_map_file(&path, crate::map_format::MapFormat::IdTech2)
                     .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()));
-            let result = crate::partition::partition(&map_data.brush_volumes)
-                .unwrap_or_else(|e| panic!("failed to partition {}: {e}", path.display()));
-            let exterior = std::collections::HashSet::new();
-            let geo_result =
-                crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
+            let shipped = crate::pipeline::runtime_cells::ShippedCells::build(
+                &map_data.brush_volumes,
+                &map_data.kinematic_movers,
+            )
+            .unwrap_or_else(|e| panic!("failed to partition {}: {e}", path.display()));
+            let cell_tree = &shipped.runtime.cells.tree;
+            let exterior = &shipped.runtime.cells.exterior_cells;
+            let geo_result = crate::geometry::extract_geometry(
+                &shipped.partition.result.faces,
+                cell_tree,
+                exterior,
+            );
             let (bvh, primitives, _) = crate::bvh_build::build_bvh(&geo_result)
                 .unwrap_or_else(|e| panic!("bvh build failed on {}: {e}", path.display()));
 
@@ -2660,8 +2664,8 @@ mod tests {
                 bvh: &bvh,
                 primitives: &primitives,
                 geometry: &geo_result,
-                tree: &result.tree,
-                exterior_leaves: &exterior,
+                tree: cell_tree,
+                exterior_leaves: exterior,
                 static_lights: &static_lights,
                 animated_lights: &animated_lights,
                 total_light_count: map_data.lights.len(),

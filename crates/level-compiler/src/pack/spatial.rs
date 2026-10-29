@@ -76,8 +76,9 @@ pub fn encode_portals(portals: &[Portal]) -> anyhow::Result<PortalsSection> {
     })
 }
 
-/// Encode runtime cells from BSP leaf records plus explicit exterior
-/// classification. Cell ids stay one-to-one with BSP leaf ids.
+/// Encode runtime cells from the cell view's leaf records plus explicit
+/// exterior classification. Each record is one cell, grouping one or more
+/// BSP leaves, and its index is the cell id.
 pub fn encode_cells(
     leaves: &BspLeavesSection,
     portals: &PortalsSection,

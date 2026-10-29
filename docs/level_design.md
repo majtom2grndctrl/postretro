@@ -578,7 +578,12 @@ regions that match no portal/cell are compiler errors.
 
 Use this around a doorway or portal where early SH warm-up is useful. The brush
 must pass through positive portal area and have interior on both sides of the
-portal plane. It forces a cluster boundary across the matched portals. When
+portal plane. Portals exist only where the compiler divides the level into
+cells: across doorways a door seals, through openings in large walls, past the
+free ends of walls, and on its cell-size grid. Small props and pillars never
+make portals. A seam that crosses none of these fails the build, naming the
+seam. The volume never changes cells, portals or what is visible.
+It forces a cluster boundary across the matched portals. When
 the near-side cluster is visible, the runtime planner prefers warming the far
 side even if an opaque door currently blocks render visibility.
 

@@ -2,24 +2,27 @@
 use super::*;
 
 // Captured cold at 7e7614d36, before production edits: default map density,
-// four soft-shadow samples, compressed irradiance, empty stage cache.
+// four soft-shadow samples, compressed irradiance, empty stage cache. The
+// gate-heavily-lit, soft_shadow_test and test_animated_weight_maps_mixed rows
+// were recaptured when the fixture pipeline moved to the occluder partition,
+// whose cells regroup their lightmap blocks; four-layer-cut is synthetic.
 fn expected_sections(name: &str) -> (&'static str, &'static str) {
     match name {
         "gate-heavily-lit" => (
-            "85ed0cad0b9c3f2fbbf106fc6e138d8811879f3efd7a8b70bbcf2fe0423e7988",
-            "b6084630583ea0edb0e3f3d505aee4071ecd06886f911a217272a1998284540e",
+            "caab4444205fa6f56a846b87579a00e904b6927603cad775d7876c709c578007",
+            "89e8f975e5954ac82f7cabbc5610bb4a549f2303f46731b21d307c4a7f2a594d",
         ),
         "soft_shadow_test" => (
-            "aea7bcf1140d6b7197cf41237e670a6820144e2e38e2b0d88975a79ba7893818",
-            "6402ba73f82a1e86271987e4152f9c1dd403c84e78080770b39361d3d68e4b90",
+            "d115fedb4d31573430d1f456bd5d6c97df297c707454a245e0b822927f817464",
+            "0e45f8a66505cf8da16b2da5c088182f5f5932a24ba9bdad417ba0fe6f134567",
         ),
         "test_animated_weight_maps_cap" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
             "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
         ),
         "test_animated_weight_maps_mixed" => (
-            "40961fd54f94bfb0eb04a9c407b756b33604f2cc92478f1b4cac082587ff2a18",
-            "862f163f768233721ee44d87ccea4676f69a37ad5159e5d70484b5122982bfcd",
+            "97c932ecf437223b7a636298e9b98f9e6c3c9fa16184fe8cc0faa51c81b884ed",
+            "a5dd05f6606d47576fc23f9184d1aec3f05bfa463beb71b3a8fd00d493ddb488",
         ),
         "test_animated_weight_maps_occluded" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",

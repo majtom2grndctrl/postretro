@@ -17,7 +17,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_loader::LevelWorld;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
-use super::{OccluderPartition, RuntimeCells, partition_with_occluders};
+use super::{OccluderPartition, RuntimeCells, ShippedCells};
 use crate::map_data::MapData;
 use crate::map_format::MapFormat;
 use crate::partition::{self, BspTree, find_leaf_for_point};
@@ -209,17 +209,12 @@ impl Cells {
     }
 
     pub(super) fn of_map_data(map_data: MapData) -> Self {
-        let partition =
-            partition_with_occluders(&map_data.brush_volumes, &map_data.kinematic_movers)
-                .expect("occluder partition builds");
-        let full_portals = portals::generate_portals(&partition.result.tree);
-        let full_exterior = visibility::find_exterior_leaves(&partition.result.tree, &full_portals);
-        let runtime = RuntimeCells::build(
-            &partition.result.tree,
-            &partition.tier,
-            &full_exterior,
-            full_portals.len(),
-        );
+        let ShippedCells {
+            partition,
+            full_exterior,
+            runtime,
+        } = ShippedCells::build(&map_data.brush_volumes, &map_data.kinematic_movers)
+            .expect("occluder partition builds");
         Self {
             map_data,
             partition,

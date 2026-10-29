@@ -33,7 +33,7 @@ pub struct GeometryResult {
 }
 
 /// Fan-triangulate faces, compute texel-space UVs and tangent-space basis,
-/// and build a `GeometrySection` with faces ordered by empty BSP leaf.
+/// and build a `GeometrySection` with faces ordered by `tree` leaf.
 ///
 /// Per-vertex normals come from the face plane. Tangents come from the UV
 /// s-axis (texture U direction) projected onto the face plane and
@@ -45,12 +45,13 @@ pub struct GeometryResult {
 /// positions for texture projection.
 ///
 /// Only empty leaves contribute geometry. Solid leaves are skipped. The
-/// `leaf_index` field in `FaceMeta` stores the raw BSP leaf index. The
-/// compiler BSP leaf id is preserved as the runtime cell id in `Cells` and
-/// resolved through `CellLocator` / `LevelWorld::locate_cell`. This index
-/// becomes the BVH leaf's `cell_id` (one cell per BSP leaf), which the BVH
-/// traversal compute shader checks against the per-frame visible-cell
-/// bitmask before emitting a draw command.
+/// `leaf_index` field in `FaceMeta` stores the face's `tree` leaf index.
+/// The pipeline passes the cell view, whose leaves are runtime cells (many
+/// BSP leaves to one), so that index is the runtime cell id in `Cells`,
+/// resolved through `CellLocator` / `LevelWorld::locate_cell`. It becomes
+/// the BVH leaf's `cell_id`, which the BVH traversal compute shader checks
+/// against the per-frame visible-cell bitmask before emitting a draw
+/// command.
 ///
 /// Leaves listed in `exterior_leaves` contribute no faces but are still
 /// iterated. Pass `&HashSet::new()` to disable exterior culling.
@@ -99,7 +100,7 @@ pub fn extract_geometry_with_brushes(
         texture_indices.push(idx as u32);
     }
 
-    // Build a face ordering sorted by BSP leaf index. Exterior leaves
+    // Build a face ordering sorted by `tree` leaf index. Exterior leaves
     // contribute no faces but are iterated for ordering consistency.
     let ordered_faces = build_leaf_ordered_faces(tree, exterior_leaves);
 
@@ -516,15 +517,14 @@ fn valve_texel_uv(
     (u, v)
 }
 
-/// Build a list of (face_index, bsp_leaf_index) pairs ordered by BSP leaf.
+/// Build a list of (face_index, leaf_index) pairs ordered by `tree` leaf.
 ///
-/// Iterates BSP leaves in order, skipping solid leaves. Each empty leaf's
-/// raw BSP index is used as the `leaf_index` in face metadata. The compiler
-/// BSP leaf id is preserved as the runtime cell id in `Cells` and resolved
-/// through `CellLocator` / `LevelWorld::locate_cell`.
+/// Iterates `tree`'s leaves in order, skipping solid leaves. Each empty
+/// leaf's raw index is used as the `leaf_index` in face metadata: on the
+/// cell view the pipeline passes, the runtime cell id.
 ///
 /// Leaves in `exterior_leaves` contribute no faces but are still iterated
-/// so the output ordering follows the full BSP leaf array.
+/// so the output ordering follows `tree`'s whole leaf array.
 fn build_leaf_ordered_faces(
     tree: &BspTree,
     exterior_leaves: &HashSet<usize>,
@@ -869,8 +869,9 @@ mod tests {
         // Raw BSP indices:  0(solid), 1(empty), 2(solid), 3(empty), 4(empty)
         // Sequential empty: -, 0, -, 1, 2
         //
-        // Compiler BSP leaf ids (1, 3, 4) are preserved as runtime cell ids
-        // through Cells / CellLocator / locate_cell.
+        // Tree leaf ids (1, 3, 4) are preserved as runtime cell ids through
+        // Cells / CellLocator / locate_cell; the pipeline's tree is the cell
+        // view, whose leaves are cells.
         // leaf_index in FaceMeta must match these so the BVH leaf's cell_id
         // lines up with the visible-cell bitmask at runtime.
         let faces = vec![

@@ -1137,7 +1137,6 @@ mod tests {
     use crate::geometry::FaceIndexRange;
     use crate::light_namespaces::AlphaLightsNs;
     use crate::map_data::{FalloffModel, LightType, MapLight};
-    use crate::portals::generate_portals;
     use glam::DVec3;
     use log::Level;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -2917,36 +2916,20 @@ mod tests {
     /// normal (non-`#[ignore]`) test.
     #[test]
     fn chunk_light_list_includes_sdf_light_for_shadowed_floor() {
-        use crate::map_format::MapFormat;
-        use std::collections::HashSet;
-
         const K: usize = SDF_SHADOW_K;
 
         // 1. Build the map + chunk-light-list the SAME way prl-build does.
-        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root")
-            .join("content/dev/maps/sdf-shadow-test.map");
-        let map_data = crate::parse::parse_map_file(&map_path, MapFormat::IdTech2)
-            .expect("sdf-shadow-test.map should parse");
-        let result =
-            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
-        let portals = crate::portals::generate_portals(&result.tree);
-        let exterior: HashSet<usize> =
-            crate::visibility::find_exterior_leaves(&result.tree, &portals);
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
-        let (bvh, prims, _) = build_bvh(&geo_result).expect("bvh build should succeed");
-        let alpha_lights = AlphaLightsNs::from_lights(&map_data.lights);
+        let fixture = load_fixture("sdf-shadow-test");
+        let alpha_lights = AlphaLightsNs::from_lights(&fixture.lights);
 
         let inputs = ChunkLightListInputs {
-            bvh: &bvh,
-            primitives: &prims,
-            geometry: &geo_result,
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
             lights: &alpha_lights,
-            tree: &result.tree,
-            portals: &portals,
-            exterior_leaves: &exterior,
+            tree: &fixture.tree,
+            portals: &fixture.portals,
+            exterior_leaves: &fixture.exterior_leaves,
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -2968,7 +2951,7 @@ mod tests {
             peak: f32,
             is_sdf: bool,
         }
-        let specs: Vec<Spec> = map_data
+        let specs: Vec<Spec> = fixture
             .lights
             .iter()
             .filter(|l| !l.is_dynamic)
@@ -3053,9 +3036,11 @@ mod tests {
         //    transition; the air sample above it is the floor-surface receiver
         //    the forward shader shades — robust to a half-voxel offset.
         let in_solid = |p: Vec3| -> bool {
-            let leaf =
-                find_leaf_for_point(&result.tree, DVec3::new(p.x as f64, p.y as f64, p.z as f64));
-            result
+            let leaf = find_leaf_for_point(
+                &fixture.tree,
+                DVec3::new(p.x as f64, p.y as f64, p.z as f64),
+            );
+            fixture
                 .tree
                 .leaves
                 .get(leaf)
@@ -3322,7 +3307,6 @@ mod tests {
     #[ignore = "campaign-test is a slow, independent receiver-cull oracle"]
     fn campaign_test_vertex_receivers_in_range_are_not_omitted_from_chunk_light_lists() {
         let fixture = load_fixture("campaign-test");
-        let portals = generate_portals(&fixture.tree);
         let alpha_lights = AlphaLightsNs::from_lights(&fixture.lights);
         let inputs = ChunkLightListInputs {
             bvh: &fixture.bvh,
@@ -3330,7 +3314,7 @@ mod tests {
             geometry: &fixture.geometry,
             lights: &alpha_lights,
             tree: &fixture.tree,
-            portals: &portals,
+            portals: &fixture.portals,
             exterior_leaves: &fixture.exterior_leaves,
         };
         let section = bake_chunk_light_list(

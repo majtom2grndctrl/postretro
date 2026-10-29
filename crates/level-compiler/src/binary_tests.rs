@@ -153,7 +153,7 @@ fn partition_with_wedge_fixture_culls_internal_plane_and_bounds_faces() {
         );
     }
 
-    for (leaf_index, leaf) in fixture.tree.leaves.iter().enumerate() {
+    for (leaf_index, leaf) in fixture.full_tree.leaves.iter().enumerate() {
         assert!(
             leaf.bounds.is_valid(),
             "leaf {leaf_index} has invalid bounds: min={:?} max={:?}",

@@ -87,7 +87,12 @@ M2 hallway trace (diagnostic, 2026-10-28; 0-based record frames 72 and 76 = READ
 1. **Shadow-prism splitters** (Task 9i), narrowed to wall free ends (Task 9l): built, re-measured, C18 passes.
 1a. **One cell per connected pocket** (Task 9j, owner option (b)): done.
 2. Re-measure: done (9k with all prisms, 9l with the narrowing). Next is live H3 on the 9l PRLs.
-3. **Live H3** with the owner at the machine: reboot first, keep the screen unlocked. Confirm the ≈1.4× live walk factor and the street GPU rise.
+3. **Live H3** with the owner at the machine. Scripts: `measurement/h3/live/` (README there; binaries frozen in `target/occluder-h3live/bin/`; PRLs before `target/occluder-9g/before/`, cap26/cap19 `target/occluder-9l/`). Prepared 2026-10-29; the owner chose to reboot first (GPU idled at 77–80 °C under background apps, 9 days uptime). After the reboot, with only the Claude Code terminal open and the screen unlocked:
+   1. `L=context/plans/in-progress/occluder-first-partition/measurement/h3/live`; `sh $L/idle_temp.sh 10` → suggested `GATE_TEMP_C` (idle median + 4 °C).
+   2. Pilot: `sh $L/batch.sh --check --pilot <GATE>`, then `caffeinate -dimsu sh $L/batch.sh --pilot <GATE>` (sentinel + `rd:promenade` × 3 sides, ≈ 7–10 min).
+   3. Full: `sh $L/batch.sh --check <GATE>`, then `caffeinate -dimsu sh $L/batch.sh <GATE>` (45 traced runs + 6 sentinels + in-process walk timing, ≈ 90 min plus gate waits). Resume with the same `BATCH` name.
+   4. On `REGIME_ONSET`: record temperatures, idle 15–20 min with the lid open, re-run `sentinel.sh`; note whether cooling clears it before any reboot (owner's thermal hypothesis).
+   The batch confirms the live walk factor (`summary.md`) and the street GPU rise; hallway, campaign-test and arena are not in it (no 9l PRLs kept).
 4. Step-cap re-size, if live walks are cheap (≥ 2× the worst measured walk), and pick the cap value (19.5 or 26 m).
 5. Task 10, then the AC result column, then wait for "land the plane".
 

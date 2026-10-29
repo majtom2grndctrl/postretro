@@ -4249,6 +4249,34 @@ pub(crate) mod tests {
             }),
             "a typed admission refusal must reach the client-side incompatible-host diagnostic: {logs:?}"
         );
+        assert!(
+            !logs.iter().any(|(_, message)| message.contains("--mod")),
+            "a protocol refusal has no local mod remedy, so it must not carry a --mod hint: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn mod_id_closing_control_tells_the_client_how_to_relaunch_on_the_host_mod() {
+        let mut app = test_app();
+        let capture = postretro_test_log_capture::LogCapture::start();
+        crate::client_drain_control(
+            &mut app,
+            vec![postretro_net::wire::ServerControlMessage::Divergence(
+                postretro_net::wire::DivergenceReason::Closing(
+                    postretro_net::wire::ClosingCause::ModId {
+                        expected: "postretro.dev".to_string(),
+                        received: "acme.other".to_string(),
+                        expected_version: "1.2.0".to_string(),
+                        received_version: "0.4.0".to_string(),
+                    },
+                ),
+            )],
+        );
+
+        capture.assert_logged_once(
+            log::Level::Error,
+            "[Net] incompatible host: host runs mod postretro.dev (1.2.0), this client runs acme.other (0.4.0); relaunch with --mod <folder>, where content/<folder> declares mod id postretro.dev",
+        );
     }
 
     #[test]

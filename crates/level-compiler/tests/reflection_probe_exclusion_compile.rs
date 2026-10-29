@@ -6,9 +6,11 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_compiler::bc6h::decode_bc6h_block;
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
@@ -28,8 +30,26 @@ const TEXTURES: [(&str, [u8; 3]); 5] = [
 const PILLAR_MIN: [f32; 3] = [40.0, -8.0, 0.0];
 /// The wall behind the pillar from the capture point: map x = 128.
 const BACK_WALL_X: f32 = 128.0;
+/// The pool room's interior height, map units.
+const ROOM_HEIGHT: f32 = 128.0;
+/// The compiler's default lightmap density, metres per texel: a copy of
+/// `lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS`, which the library does not
+/// export.
+const DEFAULT_LIGHTMAP_DENSITY_M: f32 = 0.025;
+
+/// An interior height, map units, whose walls' charts pass one lightmap pool
+/// layer at the default density: one layer's span, on the 16 u grid, and
+/// 128 u more, so padding never decides it.
+fn oversize_room_height() -> f32 {
+    let layer = LIGHTMAP_POOL_LAYER_EDGE as f32 * DEFAULT_LIGHTMAP_DENSITY_M / UNIT;
+    (layer / 16.0).ceil() * 16.0 + 128.0
+}
 
 struct TempBuildDir(PathBuf);
+
+/// Distinguishes directories made in one process: tests run in parallel, and
+/// the clock alone can give two of them the same reading.
+static NEXT_BUILD_DIR: AtomicU64 = AtomicU64::new(0);
 
 impl TempBuildDir {
     fn new(label: &str) -> Self {
@@ -37,8 +57,9 @@ impl TempBuildDir {
             .duration_since(UNIX_EPOCH)
             .expect("system clock must be after the Unix epoch")
             .as_nanos();
+        let serial = NEXT_BUILD_DIR.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "postretro-probe-exclusion-{label}-{}-{nonce}",
+            "postretro-probe-exclusion-{label}-{}-{serial}-{nonce}",
             std::process::id()
         ));
         std::fs::create_dir_all(path.join("maps")).expect("create isolated compiler directory");
@@ -81,13 +102,13 @@ fn box_brush(min: [f32; 3], max: [f32; 3], texture: &str) -> String {
     )
 }
 
-/// The pool room: interior map x −128..128, y `y0`..`y1`, z 0..128, 16 u
+/// The pool room: interior map x −128..128, y −128..128, z 0..`z1`, 16 u
 /// walls and floor and a 32 u ceiling slab; water 16 u deep over x −96..56,
 /// y −96..96, its far edge flush with the pillar's back; a light off the
 /// pillar's line, so the wall behind it is lit and unshadowed. The pillar
 /// stands in a `func_group` whose properties are `pillar_properties`.
-fn pool_room_map(y0: f32, y1: f32, pillar_properties: &str) -> String {
-    let (x0, x1, z1, w) = (-128.0, 128.0, 128.0, 16.0);
+fn pool_room_map(z1: f32, pillar_properties: &str) -> String {
+    let (x0, x1, y0, y1, w) = (-128.0, 128.0, -128.0, 128.0, 16.0);
     let world = [
         box_brush([x0 - w, y0 - w, -w], [x1 + w, y1 + w, 0.0], "test/floor"),
         box_brush(
@@ -259,12 +280,12 @@ const ALWAYS: &str = "\"_reflection_capture\" \"always\"\n";
 // the same pillar set to `always`, the same hull, reads the pillar.
 #[test]
 fn prl_build_captures_the_wall_behind_a_pillar_the_rule_excludes() {
-    let (filtered, log) = compile(&pool_room_map(-128.0, 128.0, ""), 4);
+    let (filtered, log) = compile(&pool_room_map(ROOM_HEIGHT, ""), 4);
     assert!(
         log.contains("probe 0: 1 brush(es) excluded from its capture"),
         "{log}"
     );
-    let (kept, log) = compile(&pool_room_map(-128.0, 128.0, ALWAYS), 4);
+    let (kept, log) = compile(&pool_room_map(ROOM_HEIGHT, ALWAYS), 4);
     assert!(
         log.contains("probe 0: 0 brush(es) excluded from its capture"),
         "{log}"
@@ -273,24 +294,29 @@ fn prl_build_captures_the_wall_behind_a_pillar_the_rule_excludes() {
 }
 
 // The same with the oversize lightmap cut forced. The room
-// runs 91 m along y, so the long faces' charts pass one pool layer at the
+// stands over 51 m tall, so its walls' charts pass one pool layer at the
 // default density and are cut into sub-faces, renumbering the faces the
-// pillar's mask names.
+// pillar's mask names. It is tall rather than long because the cell-size cap
+// divides any horizontal run that long at cell boundaries, so no horizontal
+// face would stay oversize; the cap never splits along up. The pool, the
+// capture point and the pillar's footprint stay as in the room above.
 #[test]
 fn prl_build_captures_through_an_excluded_pillar_with_the_oversize_cut_forced() {
-    let (filtered, log) = compile(&pool_room_map(-200.0, 3400.0, ""), 4);
-    // The first face output is cut, so every face after it renumbers, the
-    // pillar's included.
+    let height = oversize_room_height();
+    let (filtered, log) = compile(&pool_room_map(height, ""), 4);
+    // The floor and the ceiling output first and stay whole; the first wall,
+    // face 2, is cut, so every face after it renumbers, the pillar's
+    // included, and the pillar's own sides are cut too.
     assert!(
         log.contains("oversize lightmap face(s)"),
         "the cut runs\n{log}"
     );
-    assert!(log.contains("cutting face 0 "), "{log}");
+    assert!(log.contains("cutting face 2 "), "{log}");
     assert!(
         log.contains("probe 0: 1 brush(es) excluded from its capture"),
         "{log}"
     );
-    let (kept, _) = compile(&pool_room_map(-200.0, 3400.0, ALWAYS), 4);
+    let (kept, _) = compile(&pool_room_map(height, ALWAYS), 4);
     assert_reads_through_the_pillar(&filtered, &kept);
 }
 
@@ -298,7 +324,7 @@ fn prl_build_captures_through_an_excluded_pillar_with_the_oversize_cut_forced() 
 // 54 for a level whose probe excludes a brush.
 #[test]
 fn prl_build_excluding_capture_is_byte_identical_at_one_and_four_jobs() {
-    let map = pool_room_map(-128.0, 128.0, "");
+    let map = pool_room_map(ROOM_HEIGHT, "");
     let (one, log) = compile(&map, 1);
     assert!(log.contains("probe 0: 1 brush(es) excluded from its capture"));
     let (four, _) = compile(&map, 4);

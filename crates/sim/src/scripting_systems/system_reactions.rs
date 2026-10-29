@@ -1720,7 +1720,9 @@ mod tests {
             source: "crossing:7".to_string(),
             values: vec![("@rising".to_string(), IrValue::Bool(true))],
             emitter: None,
-            origin: postretro_entities::FireOrigin::EveryMachine,
+            origin: postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
         });
 
         registry
@@ -1781,7 +1783,9 @@ mod tests {
             source: source.to_string(),
             values: Vec::new(),
             emitter,
-            origin: postretro_entities::FireOrigin::EveryMachine,
+            origin: postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
         }
     }
 

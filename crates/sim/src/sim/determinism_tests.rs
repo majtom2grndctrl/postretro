@@ -565,7 +565,7 @@ impl SimHarness {
         // `levelLoad` sequence so presA runs now and the wait enrolls its tail.
         let note_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut dispatch_sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut dispatch_sequence_registry, scheduler.clone());
         {

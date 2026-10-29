@@ -54,7 +54,12 @@ pub(super) fn dispatch_primitive(
             log::warn!("[Scripting] addSlot requires a target tag; reaction had no effect");
             return;
         }
-        dispatch_system_primitive(descriptor, system_registry, script_ctx);
+        dispatch_system_reaction(
+            &descriptor.primitive,
+            &descriptor.args,
+            system_registry,
+            script_ctx,
+        );
         return;
     };
 
@@ -73,7 +78,7 @@ pub(super) fn dispatch_primitive(
         return;
     }
 
-    log::info!(
+    log::debug!(
         "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
         descriptor.primitive,
         tag,
@@ -202,30 +207,21 @@ pub(super) fn dispatch_add_owner_slot(
 }
 
 /// System-reaction arm: no entity targets. The handler parses `args` and
-/// enqueues a typed command; the app drains the queue once per frame.
-fn dispatch_system_primitive(
-    descriptor: &PrimitiveDescriptor,
+/// enqueues a typed command; the app drains the queue once per frame. A system
+/// body and a system sequence step share it.
+pub(super) fn dispatch_system_reaction(
+    primitive: &str,
+    args: &serde_json::Value,
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
-    log::info!(
-        "[Scripting] dispatch system reaction '{}'",
-        descriptor.primitive,
-    );
+    log::debug!("[Scripting] dispatch system reaction '{primitive}'");
 
-    match system_registry.dispatch(
-        &descriptor.primitive,
-        &descriptor.args,
-        &script_ctx.system_commands,
-    ) {
+    match system_registry.dispatch(primitive, args, &script_ctx.system_commands) {
         Ok(true) => {}
         Ok(false) => log::warn!(
-            "[Scripting] system reaction '{}' is not registered; reaction had no effect",
-            descriptor.primitive,
+            "[Scripting] system reaction '{primitive}' is not registered; reaction had no effect",
         ),
-        Err(e) => log::warn!(
-            "[Scripting] system reaction '{}' dispatch failed: {e:?}",
-            descriptor.primitive,
-        ),
+        Err(e) => log::warn!("[Scripting] system reaction '{primitive}' dispatch failed: {e:?}",),
     }
 }

@@ -47,14 +47,15 @@ pub type SequencedPrimitiveFn =
 /// carry no entity target: they act on the reaction *tail* rather than on one
 /// resolved entity, so they receive the enrolling reaction's address and body
 /// ordinal (the first two components of a scheduler instance key), the remaining
-/// steps of the body, and the control step's `args`. Registered from the binary
+/// steps of the body, and the control step's `args`, beside the dispatching
+/// `ScriptCtx`, whose fire context names the source the tail parks under. Registered from the binary
 /// crate capturing a `ReactionScheduler` clone; the dispatcher's control arm
 /// consults this table and never reaches the inert `handlers` entry a control
 /// primitive also holds purely to satisfy sequence-validation admission.
 ///
 /// Main-thread only, matching [`SequencedPrimitiveFn`].
 pub type ControlSequencedPrimitiveFn =
-    Box<dyn Fn(&str, usize, &[SequenceStep], &serde_json::Value)>;
+    Box<dyn Fn(&crate::ctx::ScriptCtx, &str, usize, &[SequenceStep], &serde_json::Value)>;
 
 /// Lookup table: primitive name → handler. Populated before level load and
 /// consulted by both the registration-time validator (to reject sequences
@@ -109,7 +110,7 @@ impl SequencedPrimitiveRegistry {
     /// not contradictory — the dispatcher's control arm reads only this table.
     pub fn register_control<F>(&mut self, name: impl Into<String>, handler: F)
     where
-        F: Fn(&str, usize, &[SequenceStep], &serde_json::Value) + 'static,
+        F: Fn(&crate::ctx::ScriptCtx, &str, usize, &[SequenceStep], &serde_json::Value) + 'static,
     {
         let name = name.into();
         if self.control_handlers.contains_key(&name) {

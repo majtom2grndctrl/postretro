@@ -1,7 +1,9 @@
 // Frame-end landing drain for the timed-reaction scheduler (E18).
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
-use postretro_entities::{DataRegistry, ReactionDescriptor, ScriptCtx};
+use postretro_entities::{
+    ClientLanding, DataRegistry, FireOrigin, FireSubject, ReactionDescriptor, ScriptCtx,
+};
 use postretro_scripting_core::reaction_dispatch::{
     PrepartitionedReactionStep, ResidualOrigin, dispatch_deferred_named_events_with_sequences,
     fire_prepartitioned_reactions_with_sequences,
@@ -11,7 +13,7 @@ use postretro_scripting_core::reaction_registry::{
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use super::{InstanceKey, ReactionScheduler};
+use super::{InstanceKey, Landing, ReactionScheduler, SchedulerRole, TailClass};
 
 impl ReactionScheduler {
     /// Mark the instance whose resumed TAIL is being dispatched, cleared on drop.
@@ -43,6 +45,13 @@ impl ReactionScheduler {
     /// consequential-primitive guards (O62). The scheduler owns its tails as
     /// `Vec<SequenceStep>` and never mints a `TriggerResidualHandle` (O33). Must run
     /// AFTER the trigger follow-up dispatch and OUTSIDE the origin guard.
+    ///
+    /// A landing dispatches under the origin its tail parked with, so it routes
+    /// presentation as the same step does before the wait. On the host, a
+    /// host-only or host-mirrored landing captures light, fog and emitter
+    /// writes as host-only overrides, across its tail and its follow-ups; a
+    /// client lands only machine-local steps, converging state for a segment a
+    /// late joiner found already due.
     pub fn drain_landings(
         &self,
         data_registry: &DataRegistry,
@@ -51,52 +60,100 @@ impl ReactionScheduler {
         system_registry: &SystemReactionRegistry,
         script_ctx: &ScriptCtx,
     ) {
-        for landing in self.take_landings() {
-            let _depth = self.begin_enrollment_depth(landing.depth);
-            let (address, body_ordinal, _origin) = landing.key.clone();
-            let previous = script_ctx.system_commands.replace_fire_context(
-                postretro_entities::SystemCommandFireContext {
-                    source: format!("landing:{address}"),
-                    origin: postretro_entities::FireOrigin::HostOnly(
-                        postretro_entities::FireSubject::None,
-                    ),
-                    ..postretro_entities::SystemCommandFireContext::default()
-                },
-            );
-            let follow_ups = {
-                // Re-park detection spans ONLY the tail resume. A nested `wait`
-                // re-enters synchronously here and is the same instance continuing
-                // (same key: keep depth, cap-exempt). This guard MUST drop before
-                // the deferred dispatch below: a body that `fire`s its own name
-                // re-enters during that dispatch with the identical key, and would
-                // be misread as a nested re-park — depth would never increment and
-                // a self-fire loop would run unbounded (O28). The narrower scope
-                // for re-park than for depth is the whole point of the split; see
-                // the `currently_resuming` field doc.
-                let _resume = self.begin_resume(landing.key);
-                fire_prepartitioned_reactions_with_sequences(
-                    &[PrepartitionedReactionStep::Descriptor(
-                        address,
-                        body_ordinal,
-                        ReactionDescriptor::Sequence(landing.tail),
-                    )],
+        let client = self.role() == SchedulerRole::Client;
+        loop {
+            for landing in self.take_landings() {
+                self.drain_one(
+                    landing,
+                    client,
+                    data_registry,
                     sequence_registry,
                     reaction_registry,
                     system_registry,
                     script_ctx,
-                    ResidualOrigin::ResumedTail,
-                )
+                );
+            }
+            // A late joiner's due chain resolves at its first reading. Each pass
+            // consumes a wait or a chain-capped `fire`, so the loop ends.
+            if !(client && self.expire_late()) {
+                break;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drain_one(
+        &self,
+        landing: Landing,
+        client: bool,
+        data_registry: &DataRegistry,
+        sequence_registry: &SequencedPrimitiveRegistry,
+        reaction_registry: &ReactionPrimitiveRegistry,
+        system_registry: &SystemReactionRegistry,
+        script_ctx: &ScriptCtx,
+    ) {
+        let _depth = self.begin_enrollment_depth(landing.depth);
+        let (address, body_ordinal, class, _subject) = landing.key.clone();
+        let (origin, host_capture, client_landing) = if client {
+            let mode = if self.is_late(landing.due_host_tick) {
+                ClientLanding::Converge
+            } else {
+                ClientLanding::Land
             };
-            script_ctx.system_commands.replace_fire_context(previous);
-            dispatch_deferred_named_events_with_sequences(
-                follow_ups,
-                data_registry,
+            (landing.origin.clone(), false, Some(mode))
+        } else {
+            // A host-only landing still drops its subject: subject routing at
+            // landing re-resolves the seat, which the host-only drains own.
+            let origin = match &landing.origin {
+                FireOrigin::HostOnly(_) => FireOrigin::HostOnly(FireSubject::None),
+                every_machine => every_machine.clone(),
+            };
+            (origin, class != TailClass::OwnState, None)
+        };
+        let _anchor = self.begin_host_anchor(landing.due_host_tick);
+        let _scope = script_ctx.landing.enter(host_capture, client_landing);
+        let previous = script_ctx.system_commands.replace_fire_context(
+            postretro_entities::SystemCommandFireContext {
+                source: format!("landing:{address}"),
+                origin,
+                ..postretro_entities::SystemCommandFireContext::default()
+            },
+        );
+        let follow_ups = {
+            // Re-park detection spans ONLY the tail resume. A nested `wait`
+            // re-enters synchronously here and is the same instance continuing
+            // (same key: keep depth, cap-exempt). This guard MUST drop before
+            // the deferred dispatch below: a body that `fire`s its own name
+            // re-enters during that dispatch with the identical key, and would
+            // be misread as a nested re-park — depth would never increment and
+            // a self-fire loop would run unbounded (O28). The narrower scope
+            // for re-park than for depth is the whole point of the split; see
+            // the `currently_resuming` field doc.
+            let _resume = self.begin_resume(landing.key);
+            fire_prepartitioned_reactions_with_sequences(
+                &[PrepartitionedReactionStep::Descriptor(
+                    address,
+                    body_ordinal,
+                    ReactionDescriptor::Sequence(landing.tail),
+                )],
                 sequence_registry,
                 reaction_registry,
                 system_registry,
                 script_ctx,
-            );
-        }
+                ResidualOrigin::ResumedTail,
+            )
+        };
+        script_ctx.system_commands.replace_fire_context(previous);
+        // The follow-ups dispatch with their own fire contexts but inside the
+        // landing's scope, so a `fire` target lands as the tail does.
+        dispatch_deferred_named_events_with_sequences(
+            follow_ups,
+            data_registry,
+            sequence_registry,
+            reaction_registry,
+            system_registry,
+            script_ctx,
+        );
     }
 }
 

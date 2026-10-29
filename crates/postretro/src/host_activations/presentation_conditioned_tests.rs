@@ -891,7 +891,9 @@ fn conditioned_overrides_late_join_sample_finite_loop_fog_spin_and_display_copy_
     );
     crate::drain_named_events_with_sequences(
         [("lit.delta", None)],
-        postretro_entities::FireOrigin::EveryMachine,
+        postretro_entities::FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::HostMirrored,
+        ),
         &host_ctx.data_registry.borrow(),
         &session.scripting.sequence_registry,
         &session.scripting.reaction_registry,

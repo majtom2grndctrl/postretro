@@ -235,7 +235,9 @@ fn registries(app: &mut crate::App, ctx: &ScriptCtx) {
         &mut scripting.sequence_registry,
         scripting.scheduler.clone(),
     );
-    scripting.scheduler.set_enabled(true);
+    scripting
+        .scheduler
+        .set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
 }
 
 /// Real dev mod initialization and production registrars for CPU install tests.

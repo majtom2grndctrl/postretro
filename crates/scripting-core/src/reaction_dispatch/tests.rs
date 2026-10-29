@@ -1160,7 +1160,12 @@ fn deferred_named_events_are_breadth_first_and_batch_hop_bounded() {
     let sequence_registry = SequencedPrimitiveRegistry::new();
     let reaction_registry = ReactionPrimitiveRegistry::new();
     let dispatched = dispatch_deferred_named_events_with_sequences_up_to(
-        ["first".to_string(), "second".to_string()].map(|name| (name, FireOrigin::EveryMachine)),
+        ["first".to_string(), "second".to_string()].map(|name| {
+            (
+                name,
+                FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+            )
+        }),
         &data,
         &sequence_registry,
         &reaction_registry,
@@ -1300,7 +1305,10 @@ fn resumed_tail_with_consequential_step_does_not_trip_residual_guard() {
     );
     assert_eq!(
         follow_ups,
-        vec![("release".to_string(), FireOrigin::EveryMachine)],
+        vec![(
+            "release".to_string(),
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored)
+        )],
         "the tail's fire name is collected and the consequential step does not panic",
     );
 }
@@ -1888,7 +1896,7 @@ fn name_fired_body_runs_only_up_to_its_wait_across_a_deferred_hop() {
         Ok(())
     });
     let captured = Arc::clone(&enrolled_tail_len);
-    seq_reg.register_control("wait", move |_address, _ordinal, tail, _args| {
+    seq_reg.register_control("wait", move |_ctx, _address, _ordinal, tail, _args| {
         // Model enrollment: record the tail length; do NOT run it.
         *captured.lock().unwrap() = Some(tail.len());
     });
@@ -1944,7 +1952,10 @@ fn name_fired_body_runs_only_up_to_its_wait_across_a_deferred_hop() {
     );
     assert_eq!(
         chained,
-        vec![("R".to_string(), FireOrigin::EveryMachine)],
+        vec![(
+            "R".to_string(),
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored)
+        )],
         "the fire step collects R"
     );
     dispatch_deferred_named_events_with_sequences(
@@ -1974,7 +1985,7 @@ fn deferred_named_followups_keep_origin_clear_subject_and_restore_ambient_contex
         FireSubject, Recipients, SystemCommandFireContext, SystemReactionCommand,
     };
     for origin in [
-        FireOrigin::EveryMachine,
+        FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
         FireOrigin::HostOnly(FireSubject::Trigger {
             player: Some(Seat(2)),
             trigger: EntityId::from_raw(7),
@@ -2039,7 +2050,10 @@ fn deferred_named_followups_keep_origin_clear_subject_and_restore_ambient_contex
         dispatch_deferred_named_events_with_sequences(
             chained, &data, &sequences, &reactions, &system, &ctx,
         );
-        let expected = if matches!(origin, FireOrigin::EveryMachine) {
+        let expected = if matches!(
+            origin,
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored)
+        ) {
             Recipients::Local
         } else {
             Recipients::Everyone

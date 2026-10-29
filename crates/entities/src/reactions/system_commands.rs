@@ -124,11 +124,33 @@ pub enum Audience {
     Everyone,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FireOrigin {
-    #[default]
-    EveryMachine,
+    EveryMachine(MachineSource),
     HostOnly(FireSubject),
+}
+
+/// Why a source fires on every machine, which decides where and on which
+/// clock a `wait` tail it parks lands (`scripting.md` §12, Steps after a
+/// `wait`). Presentation routes the same for all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MachineSource {
+    /// `levelLoad`: every machine fires it at its own install, for a level
+    /// the host started, so its tails count on the host timeline.
+    HostTimeline,
+    /// A host decision each machine observes and fires for itself, on its own
+    /// clock: a crossing over shared slots, a weapon event or observer cue.
+    HostMirrored,
+    /// Each machine fires for its own player: a crossing over own, owner-private
+    /// or local slots, a movement event, a UI press.
+    OwnState,
+}
+
+/// A fire with no stated source is a host decision observed on every machine.
+impl Default for FireOrigin {
+    fn default() -> Self {
+        Self::EveryMachine(MachineSource::HostMirrored)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -153,7 +175,7 @@ impl FireOrigin {
     /// Named follow-ups preserve where they run but carry no scoped subject.
     pub fn follow_up(&self) -> Self {
         match self {
-            Self::EveryMachine => Self::EveryMachine,
+            Self::EveryMachine(source) => Self::EveryMachine(*source),
             Self::HostOnly(_) => Self::HostOnly(FireSubject::None),
         }
     }
@@ -269,8 +291,8 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
     use Audience::*;
     use FireOrigin::*;
     match (origin, audience) {
-        (EveryMachine, Option::None | Some(Everyone)) => Recipients::Local,
-        (EveryMachine, Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
+        (EveryMachine(_), Option::None | Some(Everyone)) => Recipients::Local,
+        (EveryMachine(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
         (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
         (
             HostOnly(FireSubject::Trigger { player, .. } | FireSubject::Teleport { player, .. }),
@@ -515,32 +537,13 @@ mod audience_tests {
         };
         let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
         let none = FireOrigin::HostOnly(FireSubject::None);
+        let every = FireOrigin::EveryMachine(MachineSource::HostMirrored);
         let rows = [
-            (FireOrigin::EveryMachine, None, false, Recipients::Local),
-            (
-                FireOrigin::EveryMachine,
-                Some(Everyone),
-                true,
-                Recipients::Local,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Activators),
-                true,
-                Recipients::Skip,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Trigger),
-                false,
-                Recipients::Skip,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Player),
-                false,
-                Recipients::Skip,
-            ),
+            (every.clone(), None, false, Recipients::Local),
+            (every.clone(), Some(Everyone), true, Recipients::Local),
+            (every.clone(), Some(Activators), true, Recipients::Skip),
+            (every.clone(), Some(Trigger), false, Recipients::Skip),
+            (every.clone(), Some(Player), false, Recipients::Skip),
             (trigger(Some(Seat(2))), None, true, Recipients::Everyone),
             (
                 trigger(Some(Seat(2))),
@@ -624,9 +627,15 @@ mod audience_tests {
         queue.push(SystemReactionCommand::PopTree);
         assert_eq!(queue.take(), [SystemReactionCommand::PopTree]);
         assert_eq!(origin.follow_up(), FireOrigin::HostOnly(FireSubject::None));
-        assert_eq!(
-            FireOrigin::EveryMachine.follow_up(),
-            FireOrigin::EveryMachine
-        );
+        for source in [
+            MachineSource::HostTimeline,
+            MachineSource::HostMirrored,
+            MachineSource::OwnState,
+        ] {
+            assert_eq!(
+                FireOrigin::EveryMachine(source).follow_up(),
+                FireOrigin::EveryMachine(source)
+            );
+        }
     }
 }

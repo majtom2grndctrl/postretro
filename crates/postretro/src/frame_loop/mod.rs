@@ -767,6 +767,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                             }),
                     );
                 }
+                // A client's own-clock `wait` tails count this machine's ticks.
+                if let Some(session) = app.session.as_ref() {
+                    session.scripting.scheduler.evaluate(&[]);
+                }
                 continue;
             }
 
@@ -1368,6 +1372,21 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .scripting
             .scheduler
             .drop_orphaned_interruptible_instances(session.trigger_system.paired_enters());
+        // A client's `levelLoad` tails land on the host timeline.
+        if let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = session.net_endpoint.as_ref()
+        {
+            session
+                .scripting
+                .scheduler
+                .advance_host_clock(replication.presentation_host_time(
+                    script_ctx.presentation_script_time.get(),
+                    time_sync.rtt_micros(),
+                ));
+        }
         session.scripting.scheduler.drain_landings(
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,

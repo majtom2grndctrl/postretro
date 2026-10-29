@@ -379,11 +379,19 @@ fn scoped_fire_targets(
                         SequenceTarget::EventPlayer => Some(format!(
                             "sequence step {step_index} target sentinel `@player`"
                         )),
-                        // Guards a sequenced step's raw args, not a live
-                        // `playSound` step: `playSound` is a system-only
-                        // primitive, so no sequence naming it survives
-                        // `validate_sequence_primitives` (`setupLevel`) to
-                        // reach V4b.
+                        // A system step reads the fire's context as the same
+                        // body does: `fire` dispatches with none.
+                        SequenceTarget::System => (args_read_emitter(&step.args)
+                            || args_read_audience(&step.args)
+                            || postretro_scripting_core::player_event_scope::reads_event_player(
+                                &step.args,
+                            ))
+                        .then(|| {
+                            format!(
+                                "sequence step {step_index} `{}` reads a token audience, `on.emitter` or `byPlayer(on.player)`",
+                                step.primitive
+                            )
+                        }),
                         SequenceTarget::Entity(_)
                         | SequenceTarget::Group(_)
                         | SequenceTarget::Wait
@@ -1361,7 +1369,7 @@ mod tests {
         // Runtime: the frame order of the session — trigger tick, Exit cancels
         // (`evaluate`), residual drain under the fire's origin, landings.
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let landings = std::rc::Rc::new(std::cell::Cell::new(0usize));
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
@@ -1597,7 +1605,7 @@ mod tests {
         steps: &[PrepartitionedReactionStep],
     ) -> (Vec<(String, postretro_entities::FireOrigin)>, usize) {
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         sequence_registry.register("note", |_id, _args| Ok(()));
@@ -1929,7 +1937,7 @@ mod tests {
         };
 
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let mut reaction_registry = ReactionPrimitiveRegistry::new();

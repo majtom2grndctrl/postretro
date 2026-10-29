@@ -4,10 +4,12 @@
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{NamedReaction, ReactionDescriptor, SequenceStep, SequenceTarget};
 use crate::data_registry::ScopedReaction;
-use crate::reaction_registry::ReactionPrimitiveRegistry;
+use crate::reaction_registry::{ReactionPrimitiveRegistry, SystemReactionRegistry};
 use crate::sequence::SequencedPrimitiveRegistry;
 
 use super::group_dispatch::dispatch_group;
+use super::primitive_dispatch::dispatch_system_reaction;
+use postretro_entities::reactions::system_commands::SystemReactionKind;
 
 /// Dispatch a `sequence` body. Returns the `fire`-step event names collected
 /// while walking the body (in authored order), which callers extend into their
@@ -23,20 +25,36 @@ use super::group_dispatch::dispatch_group;
 /// A group step resolves its kind against the registry as it runs, through the
 /// entity-targeted `reaction_registry` handler — so a group step after a `wait`
 /// reaches whoever exists at landing, in authored order with member steps.
+///
+/// A system step enqueues its command inside the caller's fire context, as the
+/// same reaction does as a body. Inside a client's `wait` landing only the
+/// steps its landing mode keeps apply; `wait` and `fire` still run.
 pub(super) fn dispatch_sequence(
     address: &str,
     body_ordinal: usize,
     steps: &[SequenceStep],
     sequence_registry: &SequencedPrimitiveRegistry,
     reaction_registry: &ReactionPrimitiveRegistry,
+    system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) -> Vec<String> {
     let mut fired = Vec::new();
     for (i, step) in steps.iter().enumerate() {
+        if !matches!(step.id, SequenceTarget::Wait | SequenceTarget::Fire)
+            && super::client_landing_drops(&step.primitive, &step.args, script_ctx)
+        {
+            continue;
+        }
         let id = match &step.id {
             SequenceTarget::Wait => {
                 if let Some(control) = sequence_registry.get_control(&step.primitive) {
-                    control(address, body_ordinal, &steps[i + 1..], &step.args);
+                    control(
+                        script_ctx,
+                        address,
+                        body_ordinal,
+                        &steps[i + 1..],
+                        &step.args,
+                    );
                 } else {
                     log::error!(
                         "[Scripting] sequence step {i}: control primitive '{}' has no registered handler; the tail will not run",
@@ -52,6 +70,10 @@ pub(super) fn dispatch_sequence(
                         "[Scripting] sequence step {i}: fire step is missing its `event` name; skipping"
                     ),
                 }
+                continue;
+            }
+            SequenceTarget::System => {
+                dispatch_system_reaction(&step.primitive, &step.args, system_registry, script_ctx);
                 continue;
             }
             SequenceTarget::Group(group) => {
@@ -169,7 +191,15 @@ fn sequence_primitives_are_valid(
         ) {
             continue;
         }
-        if !sequence_registry.contains(&step.primitive) {
+        // A system step names a system reaction kind, which the parser
+        // already proved; every kind is registered (drift-guarded in sim by
+        // `registers_exactly_the_classified_system_reaction_kinds`).
+        let known = if matches!(step.id, SequenceTarget::System) {
+            SystemReactionKind::from_primitive_name(&step.primitive).is_some()
+        } else {
+            sequence_registry.contains(&step.primitive)
+        };
+        if !known {
             log::error!(
                 "[Scripting] {source}: sequence step {i} names unknown primitive \"{}\"",
                 step.primitive

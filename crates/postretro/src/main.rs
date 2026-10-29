@@ -8561,7 +8561,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             event_names.iter().map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8622,7 +8624,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             [("activate", Some(emitter.clone())), ("activate", None)],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8732,7 +8736,9 @@ mod tests {
                     origin: edge.point.unwrap_or_default(),
                 }),
             )],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8854,7 +8860,9 @@ mod tests {
         register_system_reaction_primitives(&mut system_registry);
         drain_named_events_with_sequences(
             [(emission.address, Some(emission.emitter.clone()))],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8892,7 +8900,7 @@ mod tests {
 
         let script_ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let reaction_registry = ReactionPrimitiveRegistry::new();
@@ -8937,7 +8945,9 @@ mod tests {
 
         let chained = drain_named_events_with_sequences(
             ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8954,15 +8964,21 @@ mod tests {
             vec![
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
             ],
             "each source contributes its fire target to the shared deferred batch"

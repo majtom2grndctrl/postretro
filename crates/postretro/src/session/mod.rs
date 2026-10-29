@@ -680,12 +680,16 @@ impl Session {
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
-        // E18: refuse timed-reaction enrollment on a connected client. Named fires
-        // run there too, so the guard lives at the scheduler, not at a call site.
-        scripting.scheduler.set_enabled(!matches!(
-            &net_endpoint,
-            Some(netcode::NetEndpoint::Client { .. })
-        ));
+        // A connected client parks only every-machine tails and lands only their
+        // machine-local steps. Named fires run there too, so the role lives at
+        // the scheduler, not at a call site.
+        scripting.scheduler.set_role(
+            if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
+                scripting_systems::reaction_scheduler::SchedulerRole::Client
+            } else {
+                scripting_systems::reaction_scheduler::SchedulerRole::Host
+            },
+        );
         scripting
             .script_ctx
             .owner_slot_writes_enabled

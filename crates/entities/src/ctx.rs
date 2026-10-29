@@ -81,6 +81,8 @@ pub struct ScriptCtx {
     /// Injected by composition; scripting-core never depends upward on netcode.
     pub presentation_networked_predicate: Rc<Cell<Option<PresentationNetworkedPredicate>>>,
     pub presentation_override_validator: Rc<Cell<Option<PresentationOverrideValidator>>>,
+    /// The `wait` landing currently draining, if any (`reactions::machine_local`).
+    pub landing: Rc<crate::reactions::machine_local::LandingScope>,
 }
 
 impl ScriptCtx {
@@ -107,6 +109,7 @@ impl ScriptCtx {
             presentation_script_time: Rc::new(Cell::new(0.0)),
             presentation_networked_predicate: Rc::new(Cell::new(None)),
             presentation_override_validator: Rc::new(Cell::new(None)),
+            landing: Rc::default(),
         }
     }
 }

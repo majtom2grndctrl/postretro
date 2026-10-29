@@ -1,6 +1,64 @@
 use super::*;
 use serde_json::json;
 
+/// Test observability over the scheduler's private state.
+impl ReactionScheduler {
+    /// The current monotonic frame counter (test observability).
+    pub(crate) fn current_frame(&self) -> u64 {
+        self.state.borrow().frame_counter
+    }
+
+    /// Chain depth of a parked instance by key (test observability).
+    fn instance_depth(&self, key: &InstanceKey) -> Option<u32> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .map(|instance| instance.depth)
+    }
+
+    /// Monotonic id of a parked instance by key (test observability). A fresh id
+    /// after a re-fire proves the prior instance was cancelled and replaced.
+    fn instance_id(&self, key: &InstanceKey) -> Option<u64> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .map(|instance| instance.id)
+    }
+
+    /// Remaining tick countdown of a parked instance by key (test observability).
+    fn instance_remaining(&self, key: &InstanceKey) -> Option<u32> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .and_then(|instance| match instance.countdown {
+                Countdown::Ticks(remaining) => Some(remaining),
+                Countdown::HostTick(_) => None,
+            })
+    }
+
+    /// Interruptibility of a parked instance by key (test observability). Reflects
+    /// the wait currently parked at, after any sourceless demotion.
+    fn instance_interruptible(&self, key: &InstanceKey) -> Option<bool> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .map(|instance| instance.interruptible)
+    }
+
+    /// Stored tail length of a parked instance by key (test observability).
+    fn instance_tail_len(&self, key: &InstanceKey) -> Option<usize> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .map(|instance| instance.tail.len())
+    }
+}
+
 fn step(id: u32) -> SequenceStep {
     SequenceStep {
         id: postretro_entities::SequenceTarget::Entity(EntityId::from_raw(id)),
@@ -11,7 +69,7 @@ fn step(id: u32) -> SequenceStep {
 
 fn enabled_scheduler() -> ReactionScheduler {
     let scheduler = ReactionScheduler::default();
-    scheduler.set_enabled(true);
+    scheduler.set_role(SchedulerRole::Host);
     scheduler
 }
 
@@ -255,7 +313,7 @@ fn fresh_enrollment_starts_at_depth_zero() {
     let scheduler = enabled_scheduler();
     scheduler.enroll("plate", 0, None, vec![step(1)], 5, false);
     assert_eq!(
-        scheduler.instance_depth(&("plate".to_string(), 0, None)),
+        scheduler.instance_depth(&("plate".to_string(), 0, TailClass::HostOnly, None)),
         Some(0)
     );
 }
@@ -267,7 +325,7 @@ fn fresh_enrollment_starts_at_depth_zero() {
 #[test]
 fn resume_context_governs_depth_and_cap_exemption() {
     let scheduler = enabled_scheduler();
-    let resuming_key = ("body".to_string(), 0, None);
+    let resuming_key = ("body".to_string(), 0, TailClass::HostOnly, None);
     // Fill the cap so any cap-tested enrollment would be dropped.
     for ordinal in 0..MAX_PENDING_REACTION_INSTANCES {
         scheduler.enroll("filler", ordinal, None, vec![step(1)], 5, false);
@@ -289,7 +347,7 @@ fn resume_context_governs_depth_and_cap_exemption() {
         // depth + 1 = 4, but the full pending cap drops the new instance.
         scheduler.enroll("child", 0, None, vec![step(3)], 5, false);
         assert_eq!(
-            scheduler.instance_depth(&("child".to_string(), 0, None)),
+            scheduler.instance_depth(&("child".to_string(), 0, TailClass::HostOnly, None)),
             None,
             "a fire-seeded child inherits depth for its chain check but remains cap-tested",
         );
@@ -316,7 +374,7 @@ fn fire_seeded_child_past_max_chain_depth_is_dropped() {
     // depth + 1 = MAX + 1 > MAX: dropped.
     scheduler.enroll("child", 0, None, vec![step(1)], 5, false);
     assert_eq!(
-        scheduler.instance_depth(&("child".to_string(), 0, None)),
+        scheduler.instance_depth(&("child".to_string(), 0, TailClass::HostOnly, None)),
         None,
         "an over-depth fire-seeded child is dropped",
     );
@@ -333,7 +391,12 @@ fn player(id: u64) -> PlayerId {
 }
 
 fn origin_key(address: &str, ordinal: usize, t: EntityId, p: PlayerId) -> InstanceKey {
-    (address.to_string(), ordinal, Some((t, p)))
+    (
+        address.to_string(),
+        ordinal,
+        TailClass::HostOnly,
+        Some((t, p)),
+    )
 }
 
 // O3: an interruptible instance whose paired Exit arrives before the countdown
@@ -748,11 +811,11 @@ fn deferred_batch_enrollments_are_sourceless_and_demoted() {
     let beta = scheduler.effective_origin("beta", 0);
     scheduler.enroll("beta", 0, beta, vec![step(2)], 5, true);
     assert_eq!(
-        scheduler.instance_interruptible(&("alpha".to_string(), 0, None)),
+        scheduler.instance_interruptible(&("alpha".to_string(), 0, TailClass::HostOnly, None)),
         Some(false),
     );
     assert_eq!(
-        scheduler.instance_interruptible(&("beta".to_string(), 0, None)),
+        scheduler.instance_interruptible(&("beta".to_string(), 0, TailClass::HostOnly, None)),
         Some(false),
     );
 }
@@ -776,7 +839,7 @@ fn fire_path_instance_demoted_enter_bound_keeps_source() {
         "the Enter-bound instance keeps its cancel source"
     );
     assert_eq!(
-        scheduler.instance_interruptible(&("R".to_string(), 0, None)),
+        scheduler.instance_interruptible(&("R".to_string(), 0, TailClass::HostOnly, None)),
         Some(false),
         "the fire-path instance is demoted",
     );
@@ -857,18 +920,26 @@ fn body_ordinal_survives_landing() {
     let scheduler = enabled_scheduler();
     {
         let _depth = scheduler.begin_enrollment_depth(0);
-        let _resume = scheduler.begin_resume(("S".to_string(), 0, None));
+        let _resume = scheduler.begin_resume(("S".to_string(), 0, TailClass::HostOnly, None));
         let resolved = scheduler.effective_origin("S", 0);
         scheduler.enroll("S", 0, resolved, vec![step(1)], 5, false);
     }
     {
         let _depth = scheduler.begin_enrollment_depth(0);
-        let _resume = scheduler.begin_resume(("S".to_string(), 1, None));
+        let _resume = scheduler.begin_resume(("S".to_string(), 1, TailClass::HostOnly, None));
         let resolved = scheduler.effective_origin("S", 1);
         scheduler.enroll("S", 1, resolved, vec![step(2)], 5, false);
     }
-    assert!(scheduler.instance_id(&("S".to_string(), 0, None)).is_some());
-    assert!(scheduler.instance_id(&("S".to_string(), 1, None)).is_some());
+    assert!(
+        scheduler
+            .instance_id(&("S".to_string(), 0, TailClass::HostOnly, None))
+            .is_some()
+    );
+    assert!(
+        scheduler
+            .instance_id(&("S".to_string(), 1, TailClass::HostOnly, None))
+            .is_some()
+    );
     assert_eq!(
         scheduler.pending_len(),
         2,

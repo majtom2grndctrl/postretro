@@ -1,11 +1,12 @@
-// Host-only scheduler for timed/delayed reaction steps (E18).
-// See: context/plans/done/E18--timed-reaction-steps/index.md
+// Scheduler for `wait` tails (E18): the host lands every step, a client only
+// its machine-local ones.
+// See: context/lib/scripting.md §12 (Steps after a `wait`)
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use postretro_entities::EntityId;
+use postretro_entities::{EntityId, FireOrigin, FireSubject, MachineSource, ScriptCtx};
 use postretro_scripting_core::data_descriptors::SequenceStep;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
@@ -39,32 +40,37 @@ pub fn register_reaction_control_primitives(
     sequence_registry.register("wait", |_id, _args| Ok(()));
     sequence_registry.register("fire", |_id, _args| Ok(()));
 
-    sequence_registry.register_control("wait", move |address, body_ordinal, tail, args| {
-        let duration_ms = args
-            .get("durationMs")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let interruptible = args
-            .get("interruptible")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let ticks = ms_to_ticks(duration_ms);
-        // The real origin comes from the scheduler's scoped state, never from the
-        // control arm (which has no `(trigger, player)` in scope): the trigger
-        // residual drain sets `current_origin` per iteration; a nested wait in a
-        // resumed tail inherits its instance's origin from `currently_resuming`; every
-        // other fire (levelLoad / named / crossing / `fire`-seeded batch) resolves
-        // sourceless. Re-deriving here would be wrong — see O54/O55/O57.
-        let origin = scheduler.effective_origin(address, body_ordinal);
-        scheduler.enroll(
-            address,
-            body_ordinal,
-            origin,
-            tail.to_vec(),
-            ticks,
-            interruptible,
-        );
-    });
+    sequence_registry.register_control(
+        "wait",
+        move |script_ctx, address, body_ordinal, tail, args| {
+            let duration_ms = args
+                .get("durationMs")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let interruptible = args
+                .get("interruptible")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let ticks = ms_to_ticks(duration_ms);
+            // The real origin comes from the scheduler's scoped state, never from the
+            // control arm (which has no `(trigger, player)` in scope): the trigger
+            // residual drain sets `current_origin` per iteration; a nested wait in a
+            // resumed tail inherits its instance's origin from `currently_resuming`; every
+            // other fire (levelLoad / named / crossing / `fire`-seeded batch) resolves
+            // sourceless. Re-deriving here would be wrong — see O54/O55/O57. The
+            // source class and landing origin come from the fire context the tail
+            // was reached in, which a `fire`-seeded child inherits through its
+            // follow-up origin.
+            scheduler.enroll_fired(
+                script_ctx,
+                address,
+                body_ordinal,
+                tail,
+                ticks,
+                interruptible,
+            );
+        },
+    );
 }
 
 /// Convert authored milliseconds to a whole-tick countdown at enrollment.
@@ -86,12 +92,60 @@ pub(crate) fn ms_to_ticks(duration_ms: f64) -> u32 {
     }
 }
 
-/// Instance key: `(reaction address, body ordinal, origin)`. The address is the
-/// reaction *name* — stable across a `recompose_active_sets` where vector
-/// positions are not. The body ordinal keeps two same-named bodies from
-/// cancelling each other. Origin is `None` for sourceless (named / `levelLoad` /
-/// `fire`-seeded) enrollments; Task 5 populates the trigger-fired case.
-pub type InstanceKey = (String, usize, Option<(EntityId, PlayerId)>);
+/// Instance key: `(reaction address, body ordinal, source class, subject)`. The
+/// address is the reaction *name* — stable across a `recompose_active_sets`
+/// where vector positions are not. The body ordinal keeps two same-named bodies
+/// from cancelling each other. The class keeps one source's fire from absorbing
+/// another's beat. The subject is `None` for sourceless (named / `levelLoad` /
+/// `fire`-seeded) enrollments and `(trigger, player)` for a trigger fire.
+pub type InstanceKey = (String, usize, TailClass, Option<(EntityId, PlayerId)>);
+
+/// A tail's source class and clock (`scripting.md` §12, Steps after a `wait`):
+/// host-only sources park on the host; the rest park on every machine their
+/// source fires on, `levelLoad` on the host timeline and the others on each
+/// machine's own clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TailClass {
+    HostOnly,
+    HostTimeline,
+    HostMirrored,
+    OwnState,
+}
+
+impl TailClass {
+    pub fn of(origin: &FireOrigin) -> Self {
+        match origin {
+            FireOrigin::HostOnly(_) => Self::HostOnly,
+            FireOrigin::EveryMachine(MachineSource::HostTimeline) => Self::HostTimeline,
+            FireOrigin::EveryMachine(MachineSource::HostMirrored) => Self::HostMirrored,
+            FireOrigin::EveryMachine(MachineSource::OwnState) => Self::OwnState,
+        }
+    }
+}
+
+/// Which machine this scheduler runs for. `Disabled` refuses every
+/// enrollment with a warning; it is the default only for harnesses that never
+/// state a role.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SchedulerRole {
+    #[default]
+    Disabled,
+    /// Host or single player: every tail parks and lands every step.
+    Host,
+    /// Connected client: tails of every-machine sources park and land only
+    /// their machine-local steps.
+    Client,
+}
+
+/// When a parked instance lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Countdown {
+    /// Whole authoritative ticks of this machine still to elapse (>= 1).
+    Ticks(u32),
+    /// The host tick, counted from the current level's host `script_time` 0,
+    /// at which a client lands a host-timeline tail.
+    HostTick(u64),
+}
 
 #[derive(Debug, Clone)]
 struct PendingInstance {
@@ -99,8 +153,9 @@ struct PendingInstance {
     id: u64,
     /// The remainder of the reaction body after the wait step.
     tail: Vec<SequenceStep>,
-    /// Whole authoritative ticks still to elapse before landing (>= 1).
-    remaining_ticks: u32,
+    countdown: Countdown,
+    /// The fire origin the tail was reached under; the landing dispatches in it.
+    origin: FireOrigin,
     /// Whether the paired trigger Exit cancels this instance. Reflects the wait
     /// currently parked at, so in a multi-wait body the parked-at wait governs
     /// both Exit-cancel and re-fire (O17/O18).
@@ -125,23 +180,43 @@ pub struct Landing {
     pub key: InstanceKey,
     pub depth: u32,
     pub tail: Vec<SequenceStep>,
+    pub origin: FireOrigin,
+    /// The host tick a client's host-timeline landing was due at: the anchor
+    /// a wait or `fire` child reached in it counts from.
+    pub due_host_tick: Option<u64>,
+}
+
+/// An expired instance in the landing queue. A queued-but-unrun landing is
+/// still cancellable by a paired Exit that arrives between expiry and the
+/// drain (O53), so it keeps its interruptible flag.
+#[derive(Debug, Clone)]
+struct QueuedLanding {
+    id: u64,
+    interruptible: bool,
+    landing: Landing,
 }
 
 #[derive(Debug, Default)]
 struct SchedulerState {
-    /// Host/single-player only. Connected clients never enroll.
-    enabled: bool,
+    role: SchedulerRole,
     /// Monotonic frame counter — advanced by `begin_frame`, never reset. Distinct
     /// from `tick_index`, which resets every frame.
     frame_counter: u64,
     /// Monotonic instance-id source.
     next_instance_id: u64,
     instances: BTreeMap<InstanceKey, PendingInstance>,
-    /// Tails whose countdown reached zero, awaiting the frame-end landing drain.
-    /// Carries the instance id (for ascending-id resume order), key, depth, and
-    /// the interruptible flag — a queued-but-unrun landing is still cancellable by
-    /// a paired Exit that arrives between expiry and the drain (O53).
-    landings: Vec<(u64, InstanceKey, u32, bool, Vec<SequenceStep>)>,
+    /// Tails whose countdown reached zero, awaiting the frame-end landing drain,
+    /// resumed in ascending instance id.
+    landings: Vec<QueuedLanding>,
+    /// Client only: the host tick of the latest host-clock reading this level.
+    host_tick_now: Option<u64>,
+    /// Client only: the host tick of this level's first host-clock reading. A
+    /// host-timeline segment due before it belongs to a late joiner, which
+    /// converges state instead of replaying presentation.
+    first_host_reading: Option<u64>,
+    /// Client only: the host tick a host-timeline enrollment counts from while
+    /// a landing drains — that landing's due tick, never the reading.
+    current_host_anchor: Option<u64>,
     /// Origin of the trigger residual currently being drained, set by the scoped
     /// `OriginGuard` in `main.rs` for the residual loop ONLY (released before the
     /// deferred batch — O54). A `wait` reached while it is live keys its instance
@@ -186,6 +261,39 @@ struct SchedulerState {
     warned_sourceless_interruptible_reactions: BTreeSet<(String, usize)>,
 }
 
+impl SchedulerState {
+    /// Move expired instances into the landing queue.
+    fn expire(&mut self, keys: Vec<InstanceKey>) {
+        for key in keys {
+            if let Some(instance) = self.instances.remove(&key) {
+                let due_host_tick = match instance.countdown {
+                    Countdown::HostTick(due) => Some(due),
+                    Countdown::Ticks(_) => None,
+                };
+                self.landings.push(QueuedLanding {
+                    id: instance.id,
+                    interruptible: instance.interruptible,
+                    landing: Landing {
+                        key,
+                        depth: instance.depth,
+                        tail: instance.tail,
+                        origin: instance.origin,
+                        due_host_tick,
+                    },
+                });
+            }
+        }
+    }
+
+    /// Forget the per-level host clock (level teardown, suspend, hot reload,
+    /// role change): the next level's first reading decides lateness afresh.
+    fn reset_level_clock(&mut self) {
+        self.host_tick_now = None;
+        self.first_host_reading = None;
+        self.current_host_anchor = None;
+    }
+}
+
 /// Cloneable session-owned handle to the host-only timed-reaction scheduler. A
 /// `wait` control step inside a `sequence` reaction body enrolls the remainder of
 /// that body here and stops the synchronous drain; the scheduler counts
@@ -194,30 +302,32 @@ struct SchedulerState {
 ///
 /// Shaped exactly like `MoverAutoCloseTimers`: `Rc<RefCell<_>>`, main-thread only,
 /// owned on the session beside `slot_accumulator_bindings` and cloned into the
-/// control handler at registration. It does not participate in snapshots, digests,
-/// or the connected-client simulation — enrollment is refused host-side by the
-/// `enabled` latch, so no tail ever parks or lands on a client.
+/// control handler at registration. It does not participate in snapshots or
+/// digests. On a connected client it parks only every-machine tails that hold
+/// something the client can land, and lands only their machine-local steps.
 #[derive(Debug, Clone, Default)]
 pub struct ReactionScheduler {
     state: Rc<RefCell<SchedulerState>>,
 }
 
 impl ReactionScheduler {
-    /// Enable only for the host/single-player session. Connected clients keep no
-    /// active scheduler even though the control handler is registered on their
-    /// long-lived sequence registry. Clearing on disable mirrors the precedent.
-    pub fn set_enabled(&self, enabled: bool) {
+    /// Set the machine this scheduler runs for. A role change drops every
+    /// parked tail: what parked under one role means nothing under another.
+    pub fn set_role(&self, role: SchedulerRole) {
         let mut state = self.state.borrow_mut();
-        let role_changed = state.enabled != enabled;
-        state.enabled = enabled;
-        if !enabled {
-            state.instances.clear();
-            state.landings.clear();
+        if state.role == role {
+            return;
         }
-        if role_changed {
-            state.warned_disabled_reactions.clear();
-            state.warned_sourceless_interruptible_reactions.clear();
-        }
+        state.role = role;
+        state.instances.clear();
+        state.landings.clear();
+        state.reset_level_clock();
+        state.warned_disabled_reactions.clear();
+        state.warned_sourceless_interruptible_reactions.clear();
+    }
+
+    pub fn role(&self) -> SchedulerRole {
+        self.state.borrow().role
     }
 
     /// Drop all transient level state without changing the session role. Wired
@@ -226,16 +336,25 @@ impl ReactionScheduler {
     /// snapshot of a body that the next level, a suspend, or an author edit may
     /// invalidate, so a half-completed beat is dropped rather than replayed — the
     /// `warn!` naming the count keeps that distinguishable from a bug (O38-O40).
+    /// A client's tails hold only machine-local steps of beats the host owns,
+    /// so dropping them is routine and logs at debug.
     pub fn clear(&self) {
         let mut state = self.state.borrow_mut();
         let dropped = state.instances.len() + state.landings.len();
         if dropped > 0 {
-            log::warn!(
-                "[Scheduler] dropping {dropped} pending timed-reaction instance(s) on level teardown / suspend / hot reload; a half-completed beat will not resume"
-            );
+            if state.role == SchedulerRole::Client {
+                log::debug!(
+                    "[Scheduler] dropping {dropped} client wait tail(s) on level teardown / suspend / hot reload"
+                );
+            } else {
+                log::warn!(
+                    "[Scheduler] dropping {dropped} pending timed-reaction instance(s) on level teardown / suspend / hot reload; a half-completed beat will not resume"
+                );
+            }
         }
         state.instances.clear();
         state.landings.clear();
+        state.reset_level_clock();
         state.warned_disabled_reactions.clear();
         state.warned_sourceless_interruptible_reactions.clear();
     }
@@ -286,27 +405,98 @@ impl ReactionScheduler {
             && resume_key.0 == address
             && resume_key.1 == body_ordinal
         {
-            return resume_key.2;
+            return resume_key.3;
         }
         None
     }
 
-    /// Enroll the tail of a body reached by a `wait` step. Refused host-only at
-    /// this entry point (not at a call site), because named fires run on clients
-    /// too. `ticks` is the already-converted whole-tick countdown (>= 1); the
-    /// ms→ticks conversion happens in the control handler, which lives in the
-    /// binary crate and can read `TICK_DURATION`.
+    /// Enroll the tail a `wait` step reached, under the source class and landing
+    /// origin of the fire context it was reached in. On a client, a tail that
+    /// holds no machine-local step and no `fire` parks nothing: every step in
+    /// it reaches the client by replication.
+    pub(crate) fn enroll_fired(
+        &self,
+        script_ctx: &ScriptCtx,
+        address: &str,
+        body_ordinal: usize,
+        tail: &[SequenceStep],
+        ticks: u32,
+        interruptible: bool,
+    ) {
+        let origin = script_ctx.system_commands.fire_context().origin;
+        if self.role() == SchedulerRole::Client
+            && !client::tail_has_landing_work(tail, &script_ctx.slot_table.borrow())
+        {
+            log::debug!(
+                "[Scheduler] reaction `{address}`: client tail has no machine-local step; the host lands it"
+            );
+            return;
+        }
+        let subject = self.effective_origin(address, body_ordinal);
+        self.enroll_with_origin(
+            address,
+            body_ordinal,
+            subject,
+            origin,
+            tail.to_vec(),
+            ticks,
+            interruptible,
+        );
+    }
+
+    /// Enroll a sourceless host-only tail: the landing dispatches under
+    /// `HostOnly(FireSubject::None)`, keyed to `subject` when one is given.
+    /// `ticks` is the already-converted whole-tick countdown (>= 1).
     pub fn enroll(
         &self,
         address: &str,
         body_ordinal: usize,
-        origin: Option<(EntityId, PlayerId)>,
+        subject: Option<(EntityId, PlayerId)>,
         tail: Vec<SequenceStep>,
         ticks: u32,
         interruptible: bool,
     ) {
+        self.enroll_with_origin(
+            address,
+            body_ordinal,
+            subject,
+            FireOrigin::HostOnly(FireSubject::None),
+            tail,
+            ticks,
+            interruptible,
+        );
+    }
+
+    /// Refused when disabled at this entry point (not at a call site), because
+    /// named fires run on every machine.
+    #[allow(clippy::too_many_arguments)]
+    fn enroll_with_origin(
+        &self,
+        address: &str,
+        body_ordinal: usize,
+        subject: Option<(EntityId, PlayerId)>,
+        fire_origin: FireOrigin,
+        tail: Vec<SequenceStep>,
+        ticks: u32,
+        interruptible: bool,
+    ) {
+        let class = TailClass::of(&fire_origin);
+        let origin = subject;
         let mut state = self.state.borrow_mut();
-        if !state.enabled {
+        let client = state.role == SchedulerRole::Client;
+        if client && class == TailClass::HostOnly {
+            // A host-only source does not fire on a client; a tail reached here
+            // anyway belongs to the host.
+            log::debug!(
+                "[Scheduler] reaction `{address}`: host-only tail does not park on a client"
+            );
+            return;
+        }
+        // A client never sees the trigger Exit that would cancel a tail, so an
+        // interruptible wait lands as non-interruptible there, silently: every
+        // client would otherwise warn for a body the host handles correctly.
+        let interruptible = interruptible && !client;
+        if state.role == SchedulerRole::Disabled {
             // O24/O43: a client (or any disabled scheduler) parks nothing. Host
             // consequences arrive by replication.
             if state
@@ -319,7 +509,7 @@ impl ReactionScheduler {
             }
             return;
         }
-        let key: InstanceKey = (address.to_string(), body_ordinal, origin);
+        let key: InstanceKey = (address.to_string(), body_ordinal, class, origin);
         // O55: a sourceless instance (a `fire`-seeded child, or a batch-seeded
         // enrollment outside the origin guard) has no Exit to cancel on, so an
         // `interruptible` wait is demoted to non-interruptible and warned once at
@@ -376,13 +566,11 @@ impl ReactionScheduler {
                 match state
                     .landings
                     .iter()
-                    .find(|(_, landing_key, _, _, _)| *landing_key == key)
-                    .map(|(_, _, _, interruptible, _)| *interruptible)
+                    .find(|queued| queued.landing.key == key)
+                    .map(|queued| queued.interruptible)
                 {
                     Some(true) => {
-                        state
-                            .landings
-                            .retain(|(_, landing_key, ..)| *landing_key != key);
+                        state.landings.retain(|queued| queued.landing.key != key);
                     }
                     Some(false) => return,
                     None => {}
@@ -431,12 +619,19 @@ impl ReactionScheduler {
         let id = state.next_instance_id;
         state.next_instance_id += 1;
         let enrolled_frame = state.frame_counter;
+        let countdown = if client && class == TailClass::HostTimeline {
+            let anchor = state.current_host_anchor.unwrap_or(0);
+            Countdown::HostTick(anchor.saturating_add(u64::from(ticks.max(1))))
+        } else {
+            Countdown::Ticks(ticks.max(1))
+        };
         state.instances.insert(
             key,
             PendingInstance {
                 id,
                 tail,
-                remaining_ticks: ticks.max(1),
+                countdown,
+                origin: fire_origin,
                 interruptible,
                 enrolled_frame,
                 depth,
@@ -455,7 +650,7 @@ impl ReactionScheduler {
     /// between an instance's expiry and the frame-end drain still cancels (O53).
     pub fn evaluate(&self, exit_fires: &[(EntityId, PlayerId)]) {
         let mut state = self.state.borrow_mut();
-        if !state.enabled {
+        if state.role == SchedulerRole::Disabled {
             return;
         }
         // O4/O53: cancel matching interruptible instances (and queued landings)
@@ -464,10 +659,15 @@ impl ReactionScheduler {
         if !exit_fires.is_empty() {
             state.instances.retain(|key, instance| {
                 !(instance.interruptible
-                    && key.2.is_some_and(|origin| exit_fires.contains(&origin)))
+                    && key.3.is_some_and(|origin| exit_fires.contains(&origin)))
             });
-            state.landings.retain(|(_, key, _, interruptible, _)| {
-                !(*interruptible && key.2.is_some_and(|origin| exit_fires.contains(&origin)))
+            state.landings.retain(|queued| {
+                !(queued.interruptible
+                    && queued
+                        .landing
+                        .key
+                        .3
+                        .is_some_and(|origin| exit_fires.contains(&origin)))
             });
         }
         let current = state.frame_counter;
@@ -476,26 +676,19 @@ impl ReactionScheduler {
             if instance.enrolled_frame == current {
                 continue;
             }
-            instance.remaining_ticks = instance.remaining_ticks.saturating_sub(1);
-            if instance.remaining_ticks == 0 {
+            // A host-timeline instance on a client waits for the host clock
+            // (`advance_host_clock`), not for this machine's ticks.
+            let Countdown::Ticks(remaining) = &mut instance.countdown else {
+                continue;
+            };
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
                 expired.push(key.clone());
-            }
-        }
-        let mut landed: Vec<(u64, InstanceKey, u32, bool, Vec<SequenceStep>)> = Vec::new();
-        for key in expired {
-            if let Some(instance) = state.instances.remove(&key) {
-                landed.push((
-                    instance.id,
-                    key,
-                    instance.depth,
-                    instance.interruptible,
-                    instance.tail,
-                ));
             }
         }
         // No per-tick sort here: `take_landings` re-sorts the whole `landings` vec
         // by id at drain time (O8/O25), so sorting this batch first is dead work.
-        state.landings.extend(landed);
+        state.expire(expired);
     }
 
     /// Drop any parked interruptible instance whose origin's paired enter is no
@@ -513,12 +706,12 @@ impl ReactionScheduler {
         standing_enters: &BTreeSet<(EntityId, PlayerId)>,
     ) {
         let mut state = self.state.borrow_mut();
-        if !state.enabled {
+        if state.role == SchedulerRole::Disabled {
             return;
         }
         state.instances.retain(|key, instance| {
             let orphaned = instance.interruptible
-                && key.2.is_some_and(|origin| !standing_enters.contains(&origin));
+                && key.3.is_some_and(|origin| !standing_enters.contains(&origin));
             if orphaned {
                 log::warn!(
                     "[Scheduler] dropping interruptible instance for reaction `{}`: its keyed trigger left the level before the wait elapsed, so no Exit can cancel it",
@@ -530,10 +723,12 @@ impl ReactionScheduler {
         // An instance that expired the same tick its keyed trigger was removed sits
         // in the landing queue, not `instances`; sweep it under the same predicate
         // so it does not land uncancelled (O63).
-        state.landings.retain(|(_, key, _, interruptible, _)| {
-            !(*interruptible
-                && key
-                    .2
+        state.landings.retain(|queued| {
+            !(queued.interruptible
+                && queued
+                    .landing
+                    .key
+                    .3
                     .is_some_and(|origin| !standing_enters.contains(&origin)))
         });
     }
@@ -545,75 +740,14 @@ impl ReactionScheduler {
     pub(crate) fn take_landings(&self) -> Vec<Landing> {
         let mut state = self.state.borrow_mut();
         let mut landings = std::mem::take(&mut state.landings);
-        landings.sort_by_key(|(id, ..)| *id);
-        landings
-            .into_iter()
-            .map(|(_, key, depth, _interruptible, tail)| Landing { key, depth, tail })
-            .collect()
-    }
-
-    /// The current monotonic frame counter (test observability).
-    #[cfg(test)]
-    pub(crate) fn current_frame(&self) -> u64 {
-        self.state.borrow().frame_counter
+        landings.sort_by_key(|queued| queued.id);
+        landings.into_iter().map(|queued| queued.landing).collect()
     }
 
     /// Number of parked (not-yet-landed) instances (test observability).
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending_len(&self) -> usize {
         self.state.borrow().instances.len()
-    }
-
-    /// Chain depth of a parked instance by key (test observability).
-    #[cfg(test)]
-    fn instance_depth(&self, key: &InstanceKey) -> Option<u32> {
-        self.state
-            .borrow()
-            .instances
-            .get(key)
-            .map(|instance| instance.depth)
-    }
-
-    /// Monotonic id of a parked instance by key (test observability). A fresh id
-    /// after a re-fire proves the prior instance was cancelled and replaced.
-    #[cfg(test)]
-    fn instance_id(&self, key: &InstanceKey) -> Option<u64> {
-        self.state
-            .borrow()
-            .instances
-            .get(key)
-            .map(|instance| instance.id)
-    }
-
-    /// Remaining tick countdown of a parked instance by key (test observability).
-    #[cfg(test)]
-    fn instance_remaining(&self, key: &InstanceKey) -> Option<u32> {
-        self.state
-            .borrow()
-            .instances
-            .get(key)
-            .map(|instance| instance.remaining_ticks)
-    }
-
-    /// Interruptibility of a parked instance by key (test observability). Reflects
-    /// the wait currently parked at, after any sourceless demotion.
-    #[cfg(test)]
-    fn instance_interruptible(&self, key: &InstanceKey) -> Option<bool> {
-        self.state
-            .borrow()
-            .instances
-            .get(key)
-            .map(|instance| instance.interruptible)
-    }
-
-    /// Stored tail length of a parked instance by key (test observability).
-    #[cfg(test)]
-    fn instance_tail_len(&self, key: &InstanceKey) -> Option<usize> {
-        self.state
-            .borrow()
-            .instances
-            .get(key)
-            .map(|instance| instance.tail.len())
     }
 }
 
@@ -635,6 +769,7 @@ impl Drop for OriginGuard {
     }
 }
 
+mod client;
 mod landing;
 
 #[cfg(test)]

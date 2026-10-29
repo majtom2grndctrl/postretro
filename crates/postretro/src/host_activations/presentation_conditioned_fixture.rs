@@ -197,8 +197,9 @@ impl Peer {
         id: u64,
         world: &postretro_level_loader::LevelWorld,
         active: bool,
+        reactions: Vec<NamedReaction>,
     ) -> Self {
-        let app = installed(world, true);
+        let app = installed_with_reactions(world, true, reactions);
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut client = NetClient::new(
             socket,
@@ -295,9 +296,6 @@ impl Peer {
         sample(&mut self.app, self.clock)
     }
 }
-fn installed(world: &postretro_level_loader::LevelWorld, client: bool) -> App {
-    installed_with_reactions(world, client, Vec::new())
-}
 fn installed_with_reactions(
     world: &postretro_level_loader::LevelWorld,
     client: bool,
@@ -341,7 +339,14 @@ fn installed_with_reactions(
         &mut session.scripting.sequence_registry,
         session.scripting.scheduler.clone(),
     );
-    session.scripting.scheduler.set_enabled(!client);
+    session
+        .scripting
+        .scheduler
+        .set_role(if client {
+            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client
+        } else {
+            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host
+        });
     session
         .light_bridge
         .populate_from_level(&world.lights, &mut ctx.registry.borrow_mut(), 0);
@@ -406,6 +411,38 @@ fn installed_with_reactions(
     app.script_time = 0.0;
     app
 }
+/// One host frame of the `wait` scheduler: a tick, then the landing drain.
+fn land_host_tails(app: &mut App, clock: f64) {
+    let ctx = script_ctx(app);
+    ctx.presentation_script_time.set(clock);
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    scripting.scheduler.begin_frame();
+    scripting.scheduler.evaluate(&[]);
+    scripting.scheduler.drain_landings(
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
+/// One client frame of the `wait` scheduler, as the frame loop runs it: a
+/// tick of the own clock, the host-clock reading, then the landing drain.
+fn land_client_tails(app: &mut App, clock: f64, host_time: Option<f64>) {
+    let ctx = script_ctx(app);
+    ctx.presentation_script_time.set(clock);
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    scripting.scheduler.begin_frame();
+    scripting.scheduler.evaluate(&[]);
+    scripting.scheduler.advance_host_clock(host_time);
+    scripting.scheduler.drain_landings(
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
 fn sample(app: &mut App, clock: f64) -> Vec<f32> {
     sample_delta(app, clock, DT as f32)
 }
@@ -455,6 +492,8 @@ struct Harness {
     bindings: TriggerBindingTable,
     players: Vec<AuthoritativePlayer>,
     host_commands: Vec<SystemReactionCommand>,
+    /// Run every machine's `wait` scheduler in `step`, as the frame loop does.
+    drive_schedulers: bool,
 }
 impl Harness {
     fn new() -> Self {
@@ -467,6 +506,22 @@ impl Harness {
         world: postretro_level_loader::LevelWorld,
         reactions: Vec<NamedReaction>,
     ) -> Self {
+        Self::build(world, reactions, Vec::new(), false)
+    }
+    /// Every machine installs `reactions`, as every machine runs the same
+    /// scripts, and `step` drives each machine's `wait` scheduler.
+    fn with_shared_reactions(
+        world: postretro_level_loader::LevelWorld,
+        reactions: Vec<NamedReaction>,
+    ) -> Self {
+        Self::build(world, reactions.clone(), reactions, true)
+    }
+    fn build(
+        world: postretro_level_loader::LevelWorld,
+        reactions: Vec<NamedReaction>,
+        peer_reactions: Vec<NamedReaction>,
+        drive_schedulers: bool,
+    ) -> Self {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = socket.local_addr().unwrap();
         let mut server =
@@ -476,8 +531,8 @@ impl Harness {
         server.set_level_parity(Some(("presentation".into(), [0x6a; 32])));
         let host = installed_with_reactions(&world, false, reactions);
         let mut peers = vec![
-            Peer::new(address, CLIENT_A, &world, true),
-            Peer::new(address, CLIENT_B, &world, false),
+            Peer::new(address, CLIENT_A, &world, true, peer_reactions.clone()),
+            Peer::new(address, CLIENT_B, &world, false, peer_reactions),
         ];
         postretro_net::harness::reveal_both(&mut server, &mut peers[0].client, "presentation");
         server.add_relay_connection(CLIENT_A, None);
@@ -528,6 +583,7 @@ impl Harness {
             bindings: Default::default(),
             players,
             host_commands: Vec::new(),
+            drive_schedulers,
         }
     }
     fn connect_late(&mut self) {
@@ -633,10 +689,22 @@ impl Harness {
         self.clock += DT;
         self.publish();
         self.transport();
+        if self.drive_schedulers {
+            land_host_tails(&mut self.host, self.clock);
+            self.route();
+        }
         for peer in &mut self.peers {
             if peer.active {
                 peer.clock = self.clock - peer.clock_origin;
                 peer.receive(&self.world);
+                if self.drive_schedulers {
+                    let host_time = peer
+                        .replication
+                        .presentation_host_time(peer.clock, peer.rtt);
+                    land_client_tails(&mut peer.app, peer.clock, host_time);
+                    peer.commands
+                        .extend(script_ctx(&peer.app).system_commands.take());
+                }
                 peer.sample();
             }
         }

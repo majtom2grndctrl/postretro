@@ -395,7 +395,8 @@ impl TimedAlarmHarness {
         host_owners.set(host_remote_pawn, CLIENT_ID);
 
         let host_scheduler = ReactionScheduler::default();
-        host_scheduler.set_enabled(true);
+        host_scheduler
+            .set_role(postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut host_sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut host_sequence_registry, host_scheduler.clone());
         let host_reaction_registry = ReactionPrimitiveRegistry::new();

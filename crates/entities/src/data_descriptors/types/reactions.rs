@@ -134,6 +134,10 @@ pub enum SequenceTarget {
     /// Control step: `fire`. Dispatches a named reaction on the same app drain.
     /// Payload-free — the target `event` name rides in the step's `args`.
     Fire,
+    /// System step: a system reaction (`playSound`, `setState`, …) with no
+    /// entity target, doing what the same reaction does as a body. Payload-free
+    /// — the primitive names it and its args ride in the step's `args`.
+    System,
 }
 
 impl From<EntityId> for SequenceTarget {

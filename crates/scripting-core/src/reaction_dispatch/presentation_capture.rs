@@ -66,10 +66,15 @@ pub(super) fn after_apply(
     let Some(validate) = ctx.presentation_override_validator.get() else {
         return;
     };
-    let host_only = matches!(
-        ctx.system_commands.fire_context().origin,
-        FireOrigin::HostOnly(_)
-    );
+    // A host-only fire, or a host-only or host-mirrored `wait` landing on the
+    // host: no client applies the write itself, so it replicates as an
+    // override. The landing flag spans the landing's follow-ups, which run
+    // after its fire context is restored.
+    let host_only = ctx.landing.host_capture()
+        || matches!(
+            ctx.system_commands.fire_context().origin,
+            FireOrigin::HostOnly(_)
+        );
     let networked = ctx.presentation_networked_predicate.get();
     let mut table = ctx.presentation_overrides.borrow_mut();
     for &id in targets {

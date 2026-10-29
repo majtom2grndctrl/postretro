@@ -223,3 +223,35 @@ pub fn validate_subject_token_primitive(
         _ => Ok(()),
     }
 }
+
+/// A sequence entry with no `id`, `kind` or `target` is a system step: it
+/// names a system reaction and does what that reaction does as a body.
+/// `tag` would make it a raw tag-keyed command and `onComplete` a follow-up
+/// no step carries, so either rejects it, as does any primitive that is not a
+/// system reaction (`applyDamage` needs a target). Errors name the reaction
+/// and the step.
+pub fn validate_system_step(
+    reaction: &str,
+    site: &str,
+    primitive: &str,
+    has_tag: bool,
+    has_on_complete: bool,
+) -> Result<SequenceTarget, String> {
+    use postretro_entities::reactions::system_commands::SystemReactionKind;
+    if SystemReactionKind::from_primitive_name(primitive).is_none() {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` has no `id`, `kind` or `target`, and is not a system reaction"
+        ));
+    }
+    if has_tag {
+        return Err(format!(
+            "reaction `{reaction}` {site}: system step `{primitive}` cannot carry `tag`"
+        ));
+    }
+    if has_on_complete {
+        return Err(format!(
+            "reaction `{reaction}` {site}: system step `{primitive}` cannot carry `onComplete`"
+        ));
+    }
+    Ok(SequenceTarget::System)
+}

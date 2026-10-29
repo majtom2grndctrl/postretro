@@ -77,7 +77,9 @@ pub fn dispatch_crossing_fires_with_sequences(
             system_registry,
             script_ctx,
             Some(NamedEventDispatchContext {
-                origin: postretro_entities::FireOrigin::EveryMachine,
+                origin: postretro_entities::FireOrigin::EveryMachine(
+                    postretro_entities::MachineSource::HostMirrored,
+                ),
                 source: format!("crossing:{}", fire.source_id),
                 values: &dispatch_values,
                 // Crossings publish no emitter.

@@ -444,7 +444,7 @@ impl Scripting {
         spawn_context.replace_level_data([(ARCHETYPE.to_string(), descriptor)].into(), None);
 
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let diagnostics = crate::mover_commands::MoverCommandDiagnostics::default();
         let auto_close = crate::kinematic_mover::MoverAutoCloseTimers::default();
         let mut sequence_registry = SequencedPrimitiveRegistry::new();

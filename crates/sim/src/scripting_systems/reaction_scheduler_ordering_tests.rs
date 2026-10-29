@@ -54,7 +54,7 @@ impl Fixture {
     fn new() -> Self {
         let ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -456,15 +456,15 @@ fn suspend_path_clear_warns_with_the_dropped_count() {
 }
 
 // ---------------------------------------------------------------------------
-// O43: a client-local reaction containing a wait warns exactly once and drops
-// its tail, rather than failing silently. The scheduler's host-only guard is
-// driven the same way O24 drives it: `set_enabled(false)` directly, matching
-// `auto_close.rs`'s own precedent (no harness constructs a `NetEndpoint`).
+// O43: a scheduler with no stated role warns exactly once per reaction and
+// drops its tail, rather than failing silently. A connected client is no
+// longer such a scheduler: it parks every-machine tails (Steps after a `wait`).
 // ---------------------------------------------------------------------------
 #[test]
-fn client_local_reaction_with_wait_warns_once_and_parks_nothing() {
+fn disabled_scheduler_with_wait_warns_once_and_parks_nothing() {
     let fx = Fixture::new();
-    fx.scheduler.set_enabled(false);
+    fx.scheduler
+        .set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Disabled);
     let capture = LogCapture::start();
     for _ in 0..3 {
         fx.enroll("crossingPresentation", 0, None, vec![], 10, false);
@@ -472,10 +472,14 @@ fn client_local_reaction_with_wait_warns_once_and_parks_nothing() {
     fx.enroll("otherPresentation", 0, None, vec![], 10, false);
     capture.assert_logged_once(log::Level::Warn, "crossingPresentation");
     capture.assert_logged_once(log::Level::Warn, "otherPresentation");
-    assert_eq!(fx.scheduler.pending_len(), 0, "no tail parks client-side");
+    assert_eq!(
+        fx.scheduler.pending_len(),
+        0,
+        "a disabled scheduler parks nothing"
+    );
     fx.tick_and_frame();
     fx.drain();
-    assert!(fx.log().is_empty(), "no tail ever runs client-side");
+    assert!(fx.log().is_empty(), "no tail ever runs");
 
     // Regression: the refusal used to warn for every enrollment. The latch is
     // per reaction and resets with per-level scheduler lifecycle state.
@@ -483,6 +487,19 @@ fn client_local_reaction_with_wait_warns_once_and_parks_nothing() {
     fx.scheduler.clear();
     fx.enroll("crossingPresentation", 0, None, vec![], 10, false);
     capture.assert_logged_once(log::Level::Warn, "crossingPresentation");
+}
+
+// A host-only tail does not park on a client, and says so only at debug: the
+// host lands it, so the client has lost nothing.
+#[test]
+fn client_scheduler_parks_no_host_only_tail_and_logs_nothing_above_debug() {
+    let fx = Fixture::new();
+    fx.scheduler
+        .set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Client);
+    let capture = LogCapture::start();
+    fx.enroll("triggerBeat", 0, None, vec![], 10, true);
+    assert_eq!(fx.scheduler.pending_len(), 0);
+    capture.assert_nothing_above(log::Level::Debug);
 }
 
 #[test]
@@ -760,7 +777,9 @@ fn delayed_fire_of_a_system_reaction_dispatches_host_only_through_the_resumed_ta
         follow_ups,
         vec![(
             "raiseAlarm".to_string(),
-            postretro_entities::FireOrigin::EveryMachine
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored
+            )
         )],
         "the tail's `fire` step names its target for the next dispatch hop"
     );
@@ -1268,7 +1287,9 @@ fn landing_origins_are_host_only_for_sourceless_trigger_and_player_waits() {
     );
     assert_eq!(
         origins.borrow().last(),
-        Some(&FireOrigin::EveryMachine),
+        Some(&FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::HostMirrored
+        )),
         "the following every-machine fire must not inherit a landing's origin"
     );
 }

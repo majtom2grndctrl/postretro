@@ -144,41 +144,69 @@ fn cell_size_cap_sliver_guard_decides_at_a_quarter_cap() {
     );
 }
 
+/// Occluder-tier leaves ending on the grid line at one cap in a hall one and a
+/// half caps long, 128 u (3.25 m) tall and under a cap wide, whose only grid
+/// line inside it is that one. A block across the hall's whole width
+/// straddles the line, `block_top` units tall, under the see-over height so
+/// exempt; none when `block_top` is `None`. Any leaf ending on the line means
+/// the cap split there.
+fn tier_leaves_on_the_line_over_a_block(block_top: Option<f64>) -> usize {
+    let width = caps(0.78125);
+    let mut map = MapText::new();
+    hall_between(&mut map, [0.0, 0.0, 0.0], [caps(1.5), width, 128.0]);
+    if let Some(top) = block_top {
+        map.solid([cap_q() - 32.0, 0.0, 0.0], [cap_q() + 32.0, width, top]);
+    }
+    let cells = Cells::of(&map);
+    let line_z = engine([cap_q(), 0.0, 0.0]).z;
+    cells
+        .partition
+        .tier
+        .leaves
+        .iter()
+        .filter(|leaf| {
+            (leaf.bounds.min.z - line_z).abs() < 1e-6 || (leaf.bounds.max.z - line_z).abs() < 1e-6
+        })
+        .count()
+}
+
 #[test]
 fn cell_size_cap_refuses_a_line_whose_slice_is_mostly_solid() {
-    // A hall one and a half caps long and 128 u (3.25 m) tall; the only grid
-    // line inside it, at one cap, splits it in two. A block 96 u (2.44 m)
-    // tall across its whole width, under the see-over height so exempt,
-    // straddles that line: its slice is three quarters solid, and the line is
-    // refused.
-    let width = caps(0.78125);
-    let leaves_on_line = |with_block: bool| {
-        let mut map = MapText::new();
-        hall_between(&mut map, [0.0, 0.0, 0.0], [caps(1.5), width, 128.0]);
-        if with_block {
-            map.solid([cap_q() - 32.0, 0.0, 0.0], [cap_q() + 32.0, width, 96.0]);
-        }
-        let cells = Cells::of(&map);
-        let line_z = engine([cap_q(), 0.0, 0.0]).z;
-        cells
-            .partition
-            .tier
-            .leaves
-            .iter()
-            .filter(|leaf| {
-                (leaf.bounds.min.z - line_z).abs() < 1e-6
-                    || (leaf.bounds.max.z - line_z).abs() < 1e-6
-            })
-            .count()
-    };
+    // A block 96 u (2.44 m) tall leaves the line's slice three quarters
+    // solid.
     assert!(
-        leaves_on_line(false) > 0,
+        tier_leaves_on_the_line_over_a_block(None) > 0,
         "precondition: the open hall splits on the line"
     );
     assert_eq!(
-        leaves_on_line(true),
+        tier_leaves_on_the_line_over_a_block(Some(96.0)),
         0,
         "the line through the block is refused"
+    );
+}
+
+#[test]
+fn cell_size_cap_refuses_a_line_whose_slice_is_exactly_half_open() {
+    // A block 64 u tall leaves the slice exactly half open on the authoring
+    // grid: not strictly more than half, however its pieces' areas round.
+    assert_eq!(
+        tier_leaves_on_the_line_over_a_block(Some(64.0)),
+        0,
+        "the line through a half-solid slice is refused"
+    );
+}
+
+// Regression: the open-slice guard sampled an 8 × 8 lattice, which read a
+// slice just over half open as exactly half and refused it, leaving a 36 m
+// cell over the roofs on stress-street.
+#[test]
+fn cell_size_cap_splits_on_a_line_whose_slice_is_just_over_half_open() {
+    // A block 60 u tall leaves the slice 53% open by area. The lattice read
+    // it as exactly half: its four lower rows, centred at 8 to 56 u, lay in
+    // the block.
+    assert!(
+        tier_leaves_on_the_line_over_a_block(Some(60.0)) > 0,
+        "the line through a slice just over half open splits"
     );
 }
 

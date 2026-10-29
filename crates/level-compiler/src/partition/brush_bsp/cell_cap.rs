@@ -5,6 +5,7 @@
 use glam::DVec3;
 
 use super::{REGION_CLASSIFICATION_EPSILON, planes_equivalent};
+use crate::geometry_utils::{clip_winding_to_half_spaces, polygon_area};
 use crate::partition::occluder_classify::{BrushFrame, OccluderClassification, OpenSpace};
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::types::Aabb;
@@ -25,17 +26,24 @@ pub const CELL_SIZE_CAP_M: f64 = 26.0096;
 pub const CAP_MIN_PIECE_FRACTION: f64 = 0.25;
 
 /// A cap line's slice through its region, within the bounds of the region's
-/// open space, must be strictly more than this share open: neither solid nor
-/// exterior void in the first pass. A line run along a wall's thickness or
-/// through a solid filled by touching brushes adds a boundary where little
-/// crosses it, and a region of exterior void, such as the slack around the
-/// world, has no open slice to split. Solid outside the bounds of the
-/// region's open space, such as exempt mass over a corridor in a taller
+/// open space, must be strictly more than this share open by area: neither
+/// solid nor exterior void in the first pass. A line run along a wall's
+/// thickness or through a solid filled by touching brushes adds a boundary
+/// where little crosses it, and a region of exterior void, such as the slack
+/// around the world, has no open slice to split. Solid outside the bounds of
+/// the region's open space, such as exempt mass over a corridor in a taller
 /// region, is not judged: no open space lies across it to divide.
 pub const CAP_MIN_OPEN_SLICE_FRACTION: f64 = 0.5;
 
-/// Samples per axis of the lattice laid over a cap line's slice, cell centres.
-const SLICE_SAMPLES_PER_AXIS: usize = 8;
+/// Clipping tolerance for a cap line's slice against the bounds of its
+/// region's open space, as region clipping uses.
+const SLICE_CLIP_EPSILON_M: f64 = 1e-6;
+
+/// Share of a slice's area by which its open area must clear
+/// `CAP_MIN_OPEN_SLICE_FRACTION`, so a slice exactly half open on the
+/// authoring grid, such as a corridor under exempt mass as tall again, reads
+/// half open whatever the rounding of its summed pieces.
+const SLICE_AREA_TOLERANCE: f64 = 1e-9;
 
 /// A section whose slab normal lies within 30° of a cap axis runs along that
 /// axis's lines: one crossing its slab stays inside it for at least twice the
@@ -189,9 +197,9 @@ impl<'a> CellSizeCap<'a> {
         })
     }
 
-    /// True when strictly more than `CAP_MIN_OPEN_SLICE_FRACTION` of a
-    /// lattice over the line's slice through `region`, clipped to `open`, the
-    /// bounds of the region's open space, lies in open space.
+    /// True when strictly more than `CAP_MIN_OPEN_SLICE_FRACTION` of the
+    /// line's slice through `region`, clipped to `open`, the bounds of the
+    /// region's open space, lies in open space, by area.
     fn slice_mostly_open(
         &self,
         axis: usize,
@@ -202,40 +210,20 @@ impl<'a> CellSizeCap<'a> {
         let Some(slice) = region.slice(normal, line) else {
             return false;
         };
-        let mut slice_bounds = Aabb::empty();
-        for &corner in &slice {
-            slice_bounds.expand_point(corner);
+        let mut within_open = Vec::with_capacity(4);
+        for a in [(axis + 1) % 3, (axis + 2) % 3] {
+            let mut across = DVec3::ZERO;
+            across[a] = 1.0;
+            within_open.push((across, open.min[a]));
+            within_open.push((-across, -open.max[a]));
         }
-        let [u, v] = [(axis + 1) % 3, (axis + 2) % 3];
-        for a in [u, v] {
-            slice_bounds.min[a] = slice_bounds.min[a].max(open.min[a]);
-            slice_bounds.max[a] = slice_bounds.max[a].min(open.max[a]);
-            if slice_bounds.min[a] >= slice_bounds.max[a] {
-                return false;
-            }
-        }
-        let at = |a: usize, i: usize| {
-            slice_bounds.min[a]
-                + (slice_bounds.max[a] - slice_bounds.min[a]) * (i as f64 + 0.5)
-                    / SLICE_SAMPLES_PER_AXIS as f64
+        let Some(slice) = clip_winding_to_half_spaces(slice, &within_open, SLICE_CLIP_EPSILON_M)
+        else {
+            return false;
         };
-        let (mut sampled, mut unblocked) = (0_usize, 0_usize);
-        for i in 0..SLICE_SAMPLES_PER_AXIS {
-            for j in 0..SLICE_SAMPLES_PER_AXIS {
-                let mut point = DVec3::ZERO;
-                point[axis] = line;
-                point[u] = at(u, i);
-                point[v] = at(v, j);
-                if !region.contains_point(point, REGION_CLASSIFICATION_EPSILON) {
-                    continue;
-                }
-                sampled += 1;
-                if !self.space.is_blocked(point) {
-                    unblocked += 1;
-                }
-            }
-        }
-        sampled > 0 && unblocked as f64 > CAP_MIN_OPEN_SLICE_FRACTION * sampled as f64
+        let area = polygon_area(&slice);
+        let least_open = (CAP_MIN_OPEN_SLICE_FRACTION + SLICE_AREA_TOLERANCE) * area;
+        area > 0.0 && self.space.open_area(&slice) > least_open
     }
 }
 

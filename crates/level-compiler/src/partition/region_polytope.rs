@@ -186,15 +186,6 @@ impl RegionPolytope {
         self.cap_winding(normal, distance)
     }
 
-    /// True when `point` lies inside every facet's half-space, within `tol`.
-    pub(crate) fn contains_point(&self, point: DVec3, tol: f64) -> bool {
-        !self.facets.is_empty()
-            && self
-                .facets
-                .iter()
-                .all(|facet| point.dot(facet.normal) - facet.distance >= -tol)
-    }
-
     pub(crate) fn vertex_aabb(&self) -> Aabb {
         let mut bounds = Aabb::empty();
         for vertex in self.vertices() {

@@ -13,6 +13,7 @@ use super::find_leaf_for_point;
 use super::occluder_cluster::{Cluster, find_clusters};
 use super::region_polytope::RegionPolytope;
 use super::types::{Aabb, BspChild, BspTree};
+use crate::geometry_utils::{polygon_area, split_polygon};
 use crate::map_data::BrushVolume;
 
 pub(crate) use broad_face::{
@@ -79,6 +80,10 @@ pub(crate) mod see_over_override {
 /// floor, and well clear of the 1 mm region classification epsilon, so a probe
 /// never starts inside the brush it measures.
 pub(crate) const PROBE_OFFSET_M: f64 = 0.02;
+
+/// How near a node's plane a polygon vertex lies to count as on it, when an
+/// open-area query pushes a polygon down the first-pass tree.
+const ON_PLANE_EPSILON_M: f64 = 1e-6;
 
 /// Where a broad face is sampled along each of its broad axes: the centres
 /// of its thirds, a 3 × 3 lattice. One centre sample misreads a floor with a
@@ -179,6 +184,55 @@ impl<'a> OpenSpace<'a> {
         }
         let leaf = find_leaf_for_point(self.tree, point);
         self.tree.leaves[leaf].is_solid || self.exterior_leaves.contains(&leaf)
+    }
+
+    /// Area of the convex planar `polygon` lying in open leaves, neither solid
+    /// nor exterior. A part lying on a node's plane counts on its front, the
+    /// side `find_leaf_for_point` gives a point on the plane.
+    pub fn open_area(&self, polygon: &[DVec3]) -> f64 {
+        if self.tree.leaves.is_empty() || polygon.len() < 3 {
+            return 0.0;
+        }
+        let root = if self.tree.nodes.is_empty() {
+            BspChild::Leaf(0)
+        } else {
+            BspChild::Node(0)
+        };
+        let mut area = 0.0;
+        let mut pending = vec![(root, polygon.to_vec())];
+        while let Some((child, winding)) = pending.pop() {
+            match child {
+                BspChild::Leaf(index) => {
+                    if !self.tree.leaves[index].is_solid && !self.exterior_leaves.contains(&index) {
+                        area += polygon_area(&winding);
+                    }
+                }
+                BspChild::Node(index) => {
+                    let node = &self.tree.nodes[index];
+                    let (mut lowest, mut highest) = (f64::INFINITY, f64::NEG_INFINITY);
+                    for vertex in &winding {
+                        let side = vertex.dot(node.plane_normal) - node.plane_distance;
+                        lowest = lowest.min(side);
+                        highest = highest.max(side);
+                    }
+                    if lowest >= -ON_PLANE_EPSILON_M {
+                        pending.push((node.front.clone(), winding));
+                    } else if highest <= ON_PLANE_EPSILON_M {
+                        pending.push((node.back.clone(), winding));
+                    } else {
+                        let (front, back) = split_polygon(
+                            &winding,
+                            node.plane_normal,
+                            node.plane_distance,
+                            ON_PLANE_EPSILON_M,
+                        );
+                        pending.extend(front.map(|front| (node.front.clone(), front)));
+                        pending.extend(back.map(|back| (node.back.clone(), back)));
+                    }
+                }
+            }
+        }
+        area
     }
 
     /// Bounds of the open space inside `bounds`: the union of each open
@@ -515,3 +569,84 @@ pub(crate) fn brush_polytope(brush: &BrushVolume) -> RegionPolytope {
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) mod test_fixtures;
+
+#[cfg(test)]
+mod open_area_tests {
+    use std::collections::HashSet;
+
+    use glam::DVec3;
+
+    use super::OpenSpace;
+    use crate::partition::types::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
+
+    /// Solid behind x = 0, open space between x = 0 and x = 2, and exterior
+    /// past x = 2.
+    fn tree() -> (BspTree, HashSet<usize>) {
+        let leaf = |is_solid| BspLeaf {
+            face_indices: Vec::new(),
+            bounds: Aabb::empty(),
+            is_solid,
+            defining_planes: Vec::new(),
+        };
+        let tree = BspTree {
+            nodes: vec![
+                BspNode {
+                    plane_normal: DVec3::X,
+                    plane_distance: 0.0,
+                    front: BspChild::Node(1),
+                    back: BspChild::Leaf(0),
+                    parent: None,
+                },
+                BspNode {
+                    plane_normal: DVec3::X,
+                    plane_distance: 2.0,
+                    front: BspChild::Leaf(2),
+                    back: BspChild::Leaf(1),
+                    parent: Some(0),
+                },
+            ],
+            leaves: vec![leaf(true), leaf(false), leaf(false)],
+        };
+        (tree, HashSet::from([2]))
+    }
+
+    /// The square `x0..x1` by `y` 0..1 at z = 0.
+    fn strip(x0: f64, x1: f64) -> Vec<DVec3> {
+        vec![
+            DVec3::new(x0, 0.0, 0.0),
+            DVec3::new(x1, 0.0, 0.0),
+            DVec3::new(x1, 1.0, 0.0),
+            DVec3::new(x0, 1.0, 0.0),
+        ]
+    }
+
+    #[test]
+    fn open_area_counts_only_the_parts_in_open_leaves() {
+        let (tree, exterior) = tree();
+        let space = OpenSpace::new(&tree, &exterior);
+        let area = space.open_area(&strip(-1.0, 4.0));
+        assert!(
+            (area - 2.0).abs() < 1e-9,
+            "of 5 m² across solid, open and exterior, the 2 m² between the \
+             planes is open: {area}"
+        );
+    }
+
+    #[test]
+    fn open_area_counts_a_polygon_on_a_plane_on_its_front() {
+        // Lying on x = 0 its front is open, as a point on the plane locates
+        // there; on x = 2 its front is exterior.
+        let (tree, exterior) = tree();
+        let space = OpenSpace::new(&tree, &exterior);
+        let on_plane = |x: f64| {
+            vec![
+                DVec3::new(x, 0.0, 0.0),
+                DVec3::new(x, 1.0, 0.0),
+                DVec3::new(x, 1.0, 1.0),
+                DVec3::new(x, 0.0, 1.0),
+            ]
+        };
+        assert!((space.open_area(&on_plane(0.0)) - 1.0).abs() < 1e-9);
+        assert_eq!(space.open_area(&on_plane(2.0)), 0.0);
+    }
+}

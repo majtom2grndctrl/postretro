@@ -84,7 +84,7 @@ Facts read at 71eb28bf3. They inform the brief without deciding it.
   - an interruptible `wait` is rejected for this source.
   
   Its research hands body shape, system steps and post-wait routing to this brief.
-- `drafts/ui-timed-reactions` builds on this brief: system steps, array bodies and the machine-local predicate "cell writes included". It adds `uiWait` to this brief's client warn-once when it lands, and argues for one scheduler whose instances carry their own clock.
+- `drafts/ui-timed-reactions` builds on this brief: system steps, array bodies and the machine-local predicate "cell writes included". It adds `uiWait` to this brief's client warn-once when it lands, and extends each instance's own clock with UI time.
 
 ### Lib text to amend at promotion
 - `scripting.md` §10.4: system reactions as steps; `setGhostAudio` as "a target-less reaction body".
@@ -119,6 +119,7 @@ Why one brief: shipping system steps under today's landing would ship post-wait 
 - Whole ticks: each segment's wait rounds up to whole ticks on the host, and a nested `wait` re-parks during the landing. A client that compares host time with the summed milliseconds lands early by up to a tick per segment, and can split two same-tick landings across frames (S17, S25). Counting host ticks per segment matches the host.
 - Late joiner. A tail parked at the joiner's install can be due at its first reading while its pre-wait steps already ran, as in `[showDialog(d), wait(3000), closeDialog()]`. Dropping it leaves `d` open forever on that machine. Replaying it sounds a klaxon the host heard long ago. Applying due state and skipping due presentation gives the level as it is now. A due segment's re-park still happens, so later segments land on schedule.
 - Drift: the host scheduler counts whole ticks, the tick accumulator clamps at 250 ms, and host `script_time` adds unclamped frame time. After a host stall past the clamp, host `script_time` runs ahead of the host's tick count, so a client lands early by the clamped amount. Landing host tails on `script_time` instead would change every source's E18 landing for one stall case; the brief accepts the drift.
+- Rival: a sibling machine-local-only scheduler for client tails. Rejected: two schedulers can't hold E18's one-instance-per-key rule across a body whose waits use different clocks.
 - A crossing over shared state fires when replication arrives, the host decision as observed, so the client's own clock already tracks it. Each machine applies the same-key rule to the edges it sees, so a crossing that flaps near the landing can play a different number of times per machine.
 
 ## `fire(r)` after this brief

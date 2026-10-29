@@ -182,7 +182,7 @@ fn baseline_dir() -> PathBuf {
 // Multi-block packing leaves a map whose cells fit one layer exactly as it
 // was: the same blocks, and every vertex at the same block and lightmap UV.
 #[test]
-#[ignore = "long --release prl-build bakes against a baseline; run on demand with -- --ignored"]
+#[ignore = "opt-in comparison: set POSTRETRO_OVERSIZE_BASELINE_DIR to PRLs built at 19fb3fc40; multi-minute release bakes"]
 fn fitting_maps_keep_their_block_extents_and_chart_placements() {
     let baseline = baseline_dir();
     let mut compared = 0;

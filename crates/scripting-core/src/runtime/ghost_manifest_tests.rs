@@ -281,15 +281,13 @@ fn bundle_ts(source: &str) -> String {
     bundled
 }
 
+// Regression: successful SWC bundling can emit unrelated diagnostics into parser capture.
 #[test]
 fn the_ghost_style_scripting_example_parses_identically_in_ts_and_luau() {
+    let bundled = bundle_ts(SURFACE_EXAMPLE_TS);
     let capture = LogCapture::start();
-    let js = run_mod_init_quickjs(
-        &quickjs(),
-        &bundle_ts(SURFACE_EXAMPLE_TS),
-        "start-script.js",
-    )
-    .expect("the TS example is a valid manifest");
+    let js = run_mod_init_quickjs(&quickjs(), &bundled, "start-script.js")
+        .expect("the TS example is a valid manifest");
     let luau = run_mod_init_luau(
         &[],
         SURFACE_EXAMPLE_LUAU,

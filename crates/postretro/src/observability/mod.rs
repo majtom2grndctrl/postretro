@@ -173,9 +173,9 @@ mod tests {
         ActionVerb, AirParams, AmmoReserve, AttackParams, BehaviorActivityDescriptor,
         BehaviorGraphDescriptor, BehaviorGraphEnvelope, CapsuleParams, ComponentValue,
         DescriptorProvenance, DescriptorSpawnPath, EntityId, FallParams, FogVolumeComponent,
-        GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb, MoverCommand,
+        GroundParams, KinematicMoverComponent, KinematicMoverMode, MotionVerb,
         PlayerMovementDescriptor, ResolutionMode, SpeedParams, Transform, TriggerActivation,
-        TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
+        TriggerCommand, TriggerFireMode, TriggerVolumeComponent, WeaponDescriptor,
     };
     use std::collections::{BTreeSet, HashMap};
 
@@ -220,6 +220,8 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            vault: None,
+            swim: None,
             view_feel: None,
         }
     }

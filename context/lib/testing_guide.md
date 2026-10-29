@@ -146,20 +146,32 @@ Resource proof covers the full lifetime in [Development Guide](./development_gui
 
 Manual stress and performance runs pin the fixture, inputs, machine class, worker count, cache mode, metric, baseline, and cleanup. Name upstream limits that could stop the run before the target stage. Any measurement override must preserve the target workload.
 
-### No GPU context in tests
+### GPU tests
 
-Tests run via `cargo test` with no window and no GPU context. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) makes this a non-issue: data logic is testable as pure functions, and the thin GPU layer is verified by running the engine.
+Tests run via `cargo test` with no window. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) keeps most logic testable as pure functions. A test that needs a device builds a headless one through the renderer's shared harness and skips when no adapter exists, so adapter absence never fails CI. `POSTRETRO_REQUIRE_GPU` (any non-empty value but `0`) turns that skip into a failure; a run that must prove a GPU result sets it. App-crate tests that build an offscreen renderer adopt the same policy with the staged load (`boot_sequence.md` §9).
 
 ### Sandboxed test runs
 
 In the web/sandbox environment, run tests with `CARGO_PROFILE_TEST_SPLIT_DEBUGINFO=off cargo test` — split debuginfo fails to link there. Local runs need no flag.
 
+Network integration tests need permission to bind ephemeral localhost sockets.
+`Operation not permitted` at the bind is an environment restriction; rerun with
+local socket access before diagnosing gameplay or transport behavior.
+
 ### Slow / cold-bake suites — verify focused, not broad
 
 Some suites are expensive and must not be run reflexively:
 
-- `postretro-level-compiler`'s cold-bake coverage is `#[ignore]`-gated, so a bare `cargo test -p postretro-level-compiler` is cheap. Run the gated set on demand with `cargo test -p postretro-level-compiler -- --ignored`, or as part of the one-time integration preflight gate. Measured cost of that set: **~5–7 min** (two runs: 315s, 401s), and it is lopsided. The three SH/lightmap determinism gates in the **bin** target (`sh_group`, `lightmap_layer`) are ~80% of it — each loops `GATE_FIXTURES` (`fixture_pipeline.rs`) baking every fixture twice, grouped vs monolithic. The `tests/` integration suite, which shells out to `prl-build` for `--no-cache` bakes, is under a minute of the total.
+- `postretro-level-compiler`'s cold-bake coverage is `#[ignore]`-gated, so a bare `cargo test -p postretro-level-compiler` is cheap. Select the relevant target or filter for an on-demand run, for example `cargo test -p postretro-level-compiler --test animated_weight_maps_fixtures -- --ignored`. The measured cold-bake gate set took **~5–7 min** (two runs: 315s, 401s), and it is lopsided. The three SH/lightmap determinism gates in the **bin** target (`sh_group`, `lightmap_layer`) are ~80% of it — each loops `GATE_FIXTURES` (`fixture_pipeline.rs`) baking every fixture twice, grouped vs monolithic. The `tests/` integration suite, which shells out to `prl-build` for `--no-cache` bakes, is under a minute of the total.
 - Compiling the large maps (`stress-warren*`, `campaign-test`) is slow. Routine, non-`#[ignore]` tests use only small, focused fixtures — synthetic in-memory structures or tiny purpose-built fixture maps. Heavy-map harnesses are `#[ignore]`-gated, on-demand only.
+
+A blanket `--ignored` also selects manual measurements and historical comparisons.
+Read their ignore reasons and provide their inputs, or exclude them explicitly with
+`--skip`. The cluster and lightmap residency dry runs need compiled PRL paths;
+the fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
+from its named baseline commit. Old-compiler oracle and reseeding helpers can return
+without comparing anything when their opt-in variables are absent; a green result
+alone does not prove those comparisons ran.
 
 **Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake probes twice and weight large volumes far more heavily.
 

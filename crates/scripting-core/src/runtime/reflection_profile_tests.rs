@@ -288,13 +288,9 @@ fn bundle_ts(source: &str) -> String {
     bundled
 }
 
-fn surface_example_manifests() -> (ModManifestResult, ModManifestResult) {
-    let js = run_mod_init_quickjs(
-        &quickjs(),
-        &bundle_ts(SURFACE_EXAMPLE_TS),
-        "start-script.js",
-    )
-    .expect("the TS example is a valid manifest");
+fn surface_example_manifests(bundled: &str) -> (ModManifestResult, ModManifestResult) {
+    let js = run_mod_init_quickjs(&quickjs(), bundled, "start-script.js")
+        .expect("the TS example is a valid manifest");
     let luau = run_mod_init_luau(
         &[],
         SURFACE_EXAMPLE_LUAU,
@@ -305,10 +301,12 @@ fn surface_example_manifests() -> (ModManifestResult, ModManifestResult) {
     (js, luau)
 }
 
+// Regression: successful SWC bundling can emit unrelated diagnostics into parser capture.
 #[test]
 fn the_reflection_scripting_example_parses_identically_in_ts_and_luau() {
+    let bundled = bundle_ts(SURFACE_EXAMPLE_TS);
     let capture = LogCapture::start();
-    let (js, luau) = surface_example_manifests();
+    let (js, luau) = surface_example_manifests(&bundled);
     for manifest in [&js, &luau] {
         assert_eq!(manifest.render, reflections(ModReflectionStyle::Smooth));
         assert_eq!(

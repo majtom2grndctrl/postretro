@@ -61,7 +61,8 @@
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
-- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
+- **System reactions / system steps in a sequence** → `scripting.md` §10.4
 - **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md` · simulated lag, dev lag proxy, `POSTRETRO_NET_LAG`, Network tab: §Testing the conditioned link
@@ -96,6 +97,7 @@
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
+- **Staged level load / engine load pool / upload thread / per-load renderer resources / shared model cache / loading beside a running level** → `boot_sequence.md` §9 (decided, not yet built) · `plans/ready/level-load-pipeline/`
 - **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Full-window tree background / `Tree.background` / cover-fit image beneath a UI tree** → `ui.md` §1
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`

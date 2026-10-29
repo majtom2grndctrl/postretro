@@ -2328,7 +2328,17 @@ mod tests {
         )
         .unwrap();
 
-        let mut lane = StagedManifestBuildLane::new();
+        // Regression: the worker could start generation 2 before generation 3
+        // was queued, so that generation was never actually pending to coalesce.
+        let (request_tx, request_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let mut lane = StagedManifestBuildLane {
+            request_tx,
+            result_rx,
+            next_generation: 0,
+            latest_requested_generation: 0,
+            worker: None,
+        };
         let first_generation = lane
             .enqueue(first.0.clone(), StagedManifestBuildConfig::default())
             .unwrap();
@@ -2342,6 +2352,9 @@ mod tests {
         assert_eq!(second_generation, 2);
         assert_eq!(third_generation, 3);
         assert_eq!(lane.latest_requested_generation(), 3);
+
+        // All three requests are pending before the real worker drains them.
+        lane.worker = Some(thread::spawn(move || worker_loop(request_rx, result_tx)));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut completed = Vec::new();
@@ -2357,9 +2370,10 @@ mod tests {
             completed.iter().any(|r| r.generation == 3),
             "expected latest generation to complete, got {completed:?}"
         );
-        assert!(
-            !completed.iter().any(|r| r.generation == 2),
-            "middle pending generation should be coalesced, got {completed:?}"
+        assert_eq!(
+            completed.iter().map(|r| r.generation).collect::<Vec<_>>(),
+            vec![3],
+            "only the newest pending generation should build"
         );
     }
 

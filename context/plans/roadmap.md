@@ -197,6 +197,19 @@ Epic hub + research: `context/plans/ready/E23--accessibility/`. Five units, each
 
 ---
 
+## Epic 25: Map Transitions
+
+Players walk from one map into the next as if into the next room. A seam is a stretch of level built identically in two maps; the next map loads in the background, and the engine swaps maps once no player in the seam can see past it. Doors and bends keep a seam blind. Today a trigger can already fire `loadLevel`, but every change is a hard cut to the next map's player starts. Epic hub: `context/plans/drafts/E25--map-transitions/`.
+
+- [ ] **U1 — Off-main level load** — staged load pipeline; prep and GPU creation off the main thread, a short commit, stages free to run beside a live level. Brief: `context/plans/ready/level-load-pipeline/`. Concurrent with U2.
+- [ ] **U2 — Landmark level change** — seam entity, landmark-relative arrival through the seamless-teleport transform, carried state, co-op arrival; loading screen kept. After `coop--client-spawn-view-handoff` (draft), which makes a client spawn facing the pose the host sends.
+- [ ] **U3 — Seamless seam** — generated or authored prefetch region, background load during play, blind swap, door wait with `waiting` / `ready` events. Co-op clients take the classic relevel. After U1 and U2.
+- [ ] **U4 — Co-op seamless seam** — clients prefetch on host instruction and cross with no loading screen and no movement hold, predicting through the swap as through a teleport; participation stays one predicate. After U3.
+
+**Testable outcome:** a player opens an airlock door, or rounds a bend, into the next map with no loading screen and keeps their speed, facing and loadout; a co-op group crosses together.
+
+---
+
 ## Fluid Rendering
 
 Water-surface briefs outside a numbered epic.
@@ -244,6 +257,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **NPC entities** — additional enemy archetypes and behavior beyond the shipped navigation, line-of-sight, and statechart foundation.
 - **Baked spatial-AI data** — the Epic 10 navmesh bake is the first layer of a broader compile-time hint set for intelligent enemies. Speculative extensions reuse the same additive PRL section: cover points, jump/drop links, hint nodes (sniper perches, ambush spots), and precomputed influence/flow data. Authored in TrenchBroom where useful, derived in prl-build where it follows from geometry.
 - **World Entities** — common base scripts for doors, pickups, trigger volumes, timeline/sequence helpers; a scripted ambush set piece with destruction choreography.
+- **Revisited-map state** — a player returning to a map finds it as they left it: dead enemies stay dead, opened doors stay open, taken pickups stay gone. Today every load is fresh; only per-seat carried state and mod slots cross a level change. Follows Epic 25. The per-map record joins the session-state ledger (`networking.md` §Session-state ledger), so a host-migration handoff carries it too. Open: whether save games share its format.
 
 ### Moving and destructible geometry
 
@@ -257,6 +271,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Lighting extensions** — optional hybrid grafts, each behind its own gate: shadowmask-mode owner lights (crisp-or-soft edges from distance-to-edge masks), specular occlusion cones, mover rest poses as a second state-channel consumer, and glossy world reflections (after counsel on Tencent WO2026113651A1). `context/research/gi-rtx-lite/`.
 - **Directional fog** — the remaining fog enhancement. Existing fog volumes and portal-aware culling are shipped.
 - **Moving-light shadow-depth invalidation** — re-render a moving light's cached static depth only when its transform changes, so projectile-attached and other moving lights do not redraw the full world every frame. Not sequenced until a moving shadow-caster needs it.
+- **Cross-level vista** — see into the next map through an open seam: a straight hallway or a window onto it, with no door or bend hiding the swap. Needs two levels drawn in one frame, which Epic 25 forbids (its I2) and no plan owns; Epic 25 leaves a second level resident to draw from (`drafts/E25--map-transitions/`).
 - **Post-processing** — optional CRT/scanline filter. HDR scene color, additive emissive, tonemapping, and bloom are shipped.
 
 ### Infrastructure

@@ -339,12 +339,149 @@ fn portal_corners_snap_onto_axis_planes_within_clipping_dust_only() {
     let floor = (DVec3::Y, 1.6256);
     let oblique = (DVec3::new(1.0, 1.0, 0.0).normalize(), 2.0);
     let dusty = DVec3::new(19.5072, 1.6256 - 3e-13, 88.5952);
-    let snapped = snap_to_axis_planes(dusty, [floor, oblique].iter());
+    let snapped = snap_to_bounding_planes(dusty, [floor, oblique].iter(), floor);
     assert_eq!(snapped.y, 1.6256);
     assert_eq!((snapped.x, snapped.z), (dusty.x, dusty.z));
 
     let open_gap = DVec3::new(19.5072, 1.6256 - 1e-6, 88.5952);
-    assert_eq!(snap_to_axis_planes(open_gap, [floor].iter()), open_gap);
+    assert_eq!(
+        snap_to_bounding_planes(open_gap, [floor].iter(), floor),
+        open_gap
+    );
+}
+
+#[test]
+fn portal_corners_snap_onto_oblique_planes_and_end_on_the_door_side_of_their_own() {
+    // A door turned 45° in plan: its face is the portal's plane, pointing
+    // into the door as a door splitter does, and its edge and the floor are
+    // further planes bounding the portal's leaves. Dust off each must go, and
+    // the corner must end on the door's side of its face under the exact
+    // test sealing applies, whichever side the dust left it.
+    let face_normal = DVec3::new(1.0, 0.0, 1.0).normalize();
+    let edge_normal = DVec3::new(1.0, 0.0, -1.0).normalize();
+    let corner = DVec3::new(7.3, 1.2, 4.1);
+    let face = (face_normal, corner.dot(face_normal));
+    let edge = (edge_normal, corner.dot(edge_normal));
+    let floor = (DVec3::Y, 1.2);
+    // The leaf behind the face carries it reversed.
+    let behind = (-face_normal, -face.1);
+    for (face_dust, edge_dust, floor_dust) in [
+        (3e-13, -2e-13, 1e-13),
+        (-3e-13, 2e-13, -1e-13),
+        (-7e-10, 5e-10, 4e-10),
+        (0.0, 0.0, 0.0),
+    ] {
+        let dusty =
+            corner + face_normal * face_dust + edge_normal * edge_dust + DVec3::Y * floor_dust;
+        let snapped = snap_to_bounding_planes(dusty, [face, edge, floor, behind].iter(), face);
+        // The door's outward face, as `sealed_portal_ids_for_mover` reads it.
+        let (outward, outward_distance) = (-face_normal, -face.1);
+        assert!(
+            outward.dot(snapped) - outward_distance <= 0.0,
+            "corner dusted {face_dust:e} off the face ends past the door"
+        );
+        assert!((snapped.dot(edge_normal) - edge.1).abs() < 1e-14);
+        assert_eq!(snapped.y, 1.2, "the floor still takes the corner exactly");
+        assert!((snapped - corner).length() < 1e-12);
+    }
+}
+
+/// The 24 orders of four values.
+fn orders(values: [f64; 4]) -> Vec<[f64; 4]> {
+    let mut all = Vec::new();
+    for a in 0..4 {
+        for b in (0..4).filter(|&b| b != a) {
+            for c in (0..4).filter(|&c| c != a && c != b) {
+                let d = 6 - a - b - c;
+                all.push([values[a], values[b], values[c], values[d]]);
+            }
+        }
+    }
+    all
+}
+
+#[test]
+fn coplanar_hull_of_dusty_fragments_covers_the_whole_opening() {
+    // A 1.5 × 2 m opening on a wall turned 45° in plan, and on one at an
+    // arbitrary angle, split by a horizontal or a vertical plane into two
+    // fragments. The four corners on each line the split crosses carry
+    // clipping dust across that line, in every order. The hull must stay the
+    // whole opening and hold every corner: ordered by the dust, the chain
+    // dropped a real extreme corner as collinear.
+    let (width, height) = (1.5, 2.0);
+    let dust = [-2e-12, -1e-12, 1e-12, 2e-12];
+    for angle in [std::f64::consts::FRAC_PI_4, 1.1] {
+        let normal = DVec3::new(angle.cos(), 0.0, angle.sin());
+        let along = DVec3::new(-angle.sin(), 0.0, angle.cos());
+        let origin = DVec3::new(3.25, 0.5, -7.75);
+        for split_vertical in [false, true] {
+            // Corners as (along, up), the two fragments in turn; the corner
+            // indices on each line the split crosses; the dust's direction.
+            let (corners, lines, across) = if split_vertical {
+                let s = 0.6;
+                (
+                    [
+                        (0.0, 0.0),
+                        (s, 0.0),
+                        (s, height),
+                        (0.0, height),
+                        (s, 0.0),
+                        (width, 0.0),
+                        (width, height),
+                        (s, height),
+                    ],
+                    [[0, 1, 4, 5], [3, 2, 7, 6]],
+                    DVec3::Y,
+                )
+            } else {
+                let h = 1.2;
+                (
+                    [
+                        (0.0, 0.0),
+                        (width, 0.0),
+                        (width, h),
+                        (0.0, h),
+                        (0.0, h),
+                        (width, h),
+                        (width, height),
+                        (0.0, height),
+                    ],
+                    [[0, 3, 4, 7], [1, 2, 5, 6]],
+                    along,
+                )
+            };
+            for first in orders(dust) {
+                for second in orders(dust) {
+                    let mut points: Vec<DVec3> = corners
+                        .iter()
+                        .map(|&(s, up)| origin + along * s + DVec3::Y * up)
+                        .collect();
+                    for (line, offsets) in lines.iter().zip([first, second]) {
+                        for (&index, offset) in line.iter().zip(offsets) {
+                            points[index] += across * offset;
+                        }
+                    }
+                    let context = format!(
+                        "angle {angle}, split vertical {split_vertical}, dust {first:?} {second:?}"
+                    );
+                    let hull = coplanar_hull(&points, normal)
+                        .unwrap_or_else(|| panic!("no hull ({context})"));
+                    assert!(
+                        (polygon_area(&hull) - width * height).abs() < 1e-9,
+                        "hull area {} is not the opening's ({context})",
+                        polygon_area(&hull)
+                    );
+                    for point in &points {
+                        let inside = (0..hull.len()).all(|i| {
+                            let (a, b) = (hull[i], hull[(i + 1) % hull.len()]);
+                            (b - a).cross(*point - a).dot(normal) >= -1e-9
+                        });
+                        assert!(inside, "hull leaves out {point:?} ({context})");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

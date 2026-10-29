@@ -14,7 +14,9 @@ use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 use openings::openings;
 pub use pockets::interior_pockets;
 
-/// Collinear and duplicate hull points closer than this are dropped.
+/// Hull points whose plane-frame coordinates lie this close share them, so
+/// clipping dust neither orders nor separates them; collinear and duplicate
+/// points that close are dropped.
 const HULL_EPSILON: f64 = 1e-9;
 
 /// Sub-tier fragments below this area are clipping dust. The portal-area
@@ -24,8 +26,8 @@ const HULL_EPSILON: f64 = 1e-9;
 /// must cover. Pockets join through fragments down to the same area.
 const FRAGMENT_DUST_AREA_M2: f64 = 1e-6;
 
-/// A portal corner this close to an axis-aligned plane bounding its leaves
-/// lies on it: far above clipping dust, far below any authored gap.
+/// A portal corner this close to a plane bounding its leaves lies on it: far
+/// above clipping dust, far below any authored gap.
 const SNAP_EPSILON: f64 = 1e-9;
 
 /// The fragments of one tier piece joining one front cell to one back cell.
@@ -116,7 +118,9 @@ fn generate_recursive(
                         .chain(&tree.leaves[*b].defining_planes);
                     let fragment = fragment
                         .iter()
-                        .map(|&corner| snap_to_axis_planes(corner, bounding.clone()))
+                        .map(|&corner| {
+                            snap_to_bounding_planes(corner, bounding.clone(), (normal, distance))
+                        })
                         .collect();
                     let pair = (front_cell, back_cell);
                     match pairs.iter_mut().find(|(p, _)| *p == pair) {
@@ -169,23 +173,67 @@ fn generate_recursive(
     }
 }
 
-/// Move `point` exactly onto each axis-aligned plane of `planes` it lies
-/// within `SNAP_EPSILON` of. Clipping the base winding leaves corners about
-/// 1e-13 m off the planes that cut them; a door whose face bounds a portal
-/// covers it only if no corner lies past that face, so the dust must go.
-fn snap_to_axis_planes<'a>(
+/// Move `point` onto each plane of `planes` it lies within `SNAP_EPSILON`
+/// of, then onto the front of the plane of the portal it bounds, the third
+/// argument. Clipping the base winding leaves corners about 1e-13 m off the
+/// planes that cut them, and sealing certifies a closed door's cover with no
+/// tolerance: a door whose face or edge bounds a portal covers it only if no
+/// corner lies past that face or edge, so the dust must go.
+///
+/// An axis-aligned plane takes the corner exactly, after every other plane,
+/// so no projection moves it off again. Any other plane takes it by
+/// projection along that plane's normal, which rounding leaves a few ulps to
+/// either side. Past a door's edge that is a sliver under the sealing area
+/// cull; on the portal's own plane it would put the whole portal past a door
+/// face lying there. So the corner then steps onto the front of that plane,
+/// which faces into the door when the plane is one of the door's own: a
+/// door's tier splitters point into it (`DoorSplitter`).
+fn snap_to_bounding_planes<'a>(
     mut point: DVec3,
-    planes: impl Iterator<Item = &'a (DVec3, f64)>,
+    planes: impl Iterator<Item = &'a (DVec3, f64)> + Clone,
+    (portal_normal, portal_distance): (DVec3, f64),
 ) -> DVec3 {
+    let axis_of = |normal: DVec3| (0..3).find(|&axis| normal[axis].abs() == 1.0);
+    for &(normal, distance) in planes.clone() {
+        let offset = point.dot(normal) - distance;
+        if axis_of(normal).is_none() && offset.abs() <= SNAP_EPSILON {
+            point -= normal * (offset / normal.length_squared());
+        }
+    }
     for &(normal, distance) in planes {
-        let Some(axis) = (0..3).find(|&axis| normal[axis].abs() == 1.0) else {
-            continue;
-        };
-        if (point.dot(normal) - distance).abs() <= SNAP_EPSILON {
+        if let Some(axis) = axis_of(normal)
+            && (point.dot(normal) - distance).abs() <= SNAP_EPSILON
+        {
             point[axis] = distance / normal[axis];
         }
     }
+    if (point.dot(portal_normal) - portal_distance).abs() <= SNAP_EPSILON {
+        // Each step at least doubles the last, so a corner within rounding
+        // of the plane crosses it in a few steps; on an axis-aligned plane
+        // the exact snap already put it there.
+        let mut step = f64::EPSILON * point.abs().max_element().max(1.0);
+        while point.dot(portal_normal) - portal_distance < 0.0 {
+            point += portal_normal * step;
+            step *= 2.0;
+        }
+    }
     point
+}
+
+/// Each of `values` replaced by the first of its run: in ascending order, a
+/// value within `HULL_EPSILON` of its run's first value joins that run.
+fn on_hull_grid(values: &[f64]) -> Vec<f64> {
+    let mut order: Vec<usize> = (0..values.len()).collect();
+    order.sort_by(|&a, &b| values[a].total_cmp(&values[b]));
+    let mut grid = vec![0.0; values.len()];
+    let mut run_start = f64::NEG_INFINITY;
+    for index in order {
+        if values[index] - run_start > HULL_EPSILON {
+            run_start = values[index];
+        }
+        grid[index] = run_start;
+    }
+    grid
 }
 
 /// Convex hull of points lying on one plane, wound counter-clockwise about
@@ -205,13 +253,28 @@ fn coplanar_hull(points: &[DVec3], normal: DVec3) -> Option<Vec<DVec3>> {
     // Each hull corner is one of `points` itself, not re-projected from the
     // plane frame: a corner on an ancestor plane stays where clipping put it,
     // so a door whose face bounds the portal still covers it exactly.
-    let mut flat: Vec<(f64, f64, usize)> = points
-        .iter()
-        .enumerate()
-        .map(|(index, p)| (p.dot(u_axis), p.dot(v_axis), index))
+    //
+    // The chain runs on a `HULL_EPSILON` grid of the frame coordinates.
+    // Corners on one line across an axis, such as a sill's corners on a wall
+    // whose u axis is vertical, differ by clipping dust in that coordinate;
+    // ordered by the dust rather than along the line, they let the chain pop
+    // a real extreme corner as collinear and lose the area it bounds. On the
+    // grid each such run shares one coordinate, so it orders along the line.
+    // Ties fall back to the exact coordinates, so the first of a duplicate
+    // run kept is the lowest, as without dust.
+    let u: Vec<f64> = points.iter().map(|p| p.dot(u_axis)).collect();
+    let v: Vec<f64> = points.iter().map(|p| p.dot(v_axis)).collect();
+    let (grid_u, grid_v) = (on_hull_grid(&u), on_hull_grid(&v));
+    let mut flat: Vec<(f64, f64, usize)> = (0..points.len())
+        .map(|index| (grid_u[index], grid_v[index], index))
         .collect();
-    flat.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    flat.dedup_by(|a, b| (a.0 - b.0).abs() <= HULL_EPSILON && (a.1 - b.1).abs() <= HULL_EPSILON);
+    flat.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(u[a.2].total_cmp(&u[b.2]))
+            .then(v[a.2].total_cmp(&v[b.2]))
+    });
+    flat.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     // Andrew's monotone chain: lower hull, then upper, counter-clockwise.
     let cross = |o: (f64, f64, usize), a: (f64, f64, usize), b: (f64, f64, usize)| {

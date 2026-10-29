@@ -22,10 +22,10 @@ use crate::partition::types::{Aabb, BspChild, BspTree};
 /// largest among the qualifying occluder planes, scaled down linearly with
 /// slice area. A wall's top must beat its back face while the region still
 /// holds the open space beyond the wall, though the top also cuts that
-/// space's far walls. Worth eight spanning occluders: on occlusion-test two
-/// is too few (the back face wins), four just carries the top, and an
-/// area-dominant credit (sixteen or more) slices every room at every occluder
-/// height, doubling the tier's leaves and portals.
+/// space's far walls. Too small a credit lets the back face win; an
+/// area-dominant one slices every room at every occluder height. The sweep
+/// that set it: context/plans/in-progress/occluder-first-partition/plan.md
+/// §Corrections (the `CROSS_SECTION_WEIGHT` sweep).
 const CROSS_SECTION_WEIGHT: f64 = 8.0 * SPLIT_PENALTY as f64;
 
 /// How a brush's planes split inside the occluder tier.
@@ -252,12 +252,12 @@ impl TierRecorder {
 /// the region behind it without the wall, and the back face's prism still
 /// carries its free end planes into it.
 ///
-/// Door planes rank after occluder planes, so a door splits only what would
-/// otherwise be the occluder-tier leaf holding its doorway, and adds no
-/// boundary to any region it does not reach (pin R7). Cap lines rank last,
-/// so they split only what would otherwise be an occluder-tier leaf, and a
-/// cap line through a doorway cuts the door's portals into pieces the closed
-/// door still covers.
+/// Door planes rank after occluder and prism planes, so a door splits only
+/// what would otherwise be the occluder-tier leaf holding its doorway, and
+/// adds no boundary to any region it does not reach (pin R7). Cap lines rank
+/// last, so they split only what would otherwise be an occluder-tier leaf,
+/// and a cap line through a doorway cuts the door's portals into pieces the
+/// closed door still covers.
 fn select_occluder_splitter(
     brushes: &[BrushVolume],
     candidates: &[usize],

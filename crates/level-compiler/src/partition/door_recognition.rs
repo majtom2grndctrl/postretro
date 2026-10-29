@@ -28,14 +28,27 @@ const END_CONTACT_INSET_M: f64 = PROBE_OFFSET_M;
 /// the broad face.
 const BROAD_PARALLEL_COS: f64 = 1.0 - 1e-6;
 
-/// Depth a region must reach into a door brush to overlap it, so a region
-/// that only touches the door does not.
-const OVERLAP_EPSILON: f64 = 1e-4;
+/// Depth a region must reach into a door brush to overlap it: the tier's
+/// spanning tolerance, so a region that only touches the door, or meets it
+/// within that tolerance, does not. A region reaching past a broad plane of
+/// a brush it overlaps then reaches past it by more than that tolerance, so
+/// the plane spans it and splits first; the door's edge planes are reached
+/// only in a region lying between the broad planes of the brushes it
+/// overlaps. With a smaller depth, a door a fraction of a millimetre proud
+/// of a wall face would overlap the room in front, which no broad plane
+/// spans, and its edge planes would cut the room at the door's outline.
+const OVERLAP_EPSILON: f64 = REGION_CLASSIFICATION_EPSILON;
+
+/// Open space a door's shallower broad face must front, beyond its face:
+/// far above the probe offset, far below any closet a player can stand in.
+/// A mover resting flush on what lies behind it fronts none.
+const SHALLOW_FACE_MIN_DEPTH_M: f64 = 0.1;
 
 /// The occluder-tier splitters of one door. Its planes split only regions
 /// whose interior overlaps the door's closed brushes, and only after every
-/// occluder-rank plane, so they cut only the occluder-tier leaf that holds
-/// the doorway: a room the door does not reach keeps its cells (pin R7).
+/// occluder-rank and prism plane, so they cut only the occluder-tier leaf
+/// that holds the doorway: a room the door does not reach keeps its cells
+/// (pin R7).
 #[derive(Debug, Clone)]
 pub struct DoorSplitter {
     /// Index of the mover in `MapData::kinematic_movers`.
@@ -83,8 +96,10 @@ impl DoorSplitter {
 /// Recognise the doors among `movers`: a mover is a door when, at its closed
 /// (authored) pose, some pair of opposite faces of its own-frame box, its
 /// broad faces, has static solid touching both ends of at least one axis
-/// across them, within the contact epsilon, and open space at least the
-/// occluder floor deep in front of both.
+/// across them, within the contact epsilon, open space at least the
+/// occluder floor deep in front of one, and open space deeper than
+/// `SHALLOW_FACE_MIN_DEPTH_M` in front of the other: a door into a closet
+/// shallower than the floor still seals the closet off.
 /// A lift car docked in a room touches only the floor and is no door (pin
 /// R25). Movers are never part of `space` or `static_brushes`, so a door is
 /// never a blocking surface for its wall's classification (pin R17).
@@ -174,10 +189,13 @@ fn door_broad_normal(
                     .iter()
                     .all(|&sign| near.touches(&end_face(&frame, normal_axis, axis, other, sign)))
             });
+            let fronts = |sign: f64, depth: f64| {
+                fronts_open_space(&frame, normal_axis, broad, sign, depth, space)
+            };
             spans_opening
-                && [1.0, -1.0]
-                    .iter()
-                    .all(|&sign| fronts_open_space(&frame, normal_axis, broad, sign, space))
+                && [(1.0, -1.0), (-1.0, 1.0)].iter().any(|&(deep, shallow)| {
+                    fronts(deep, OCCLUDER_FLOOR_M) && fronts(shallow, SHALLOW_FACE_MIN_DEPTH_M)
+                })
         })
         .map(|normal_axis| frame.axes[normal_axis])
 }
@@ -216,13 +234,14 @@ fn end_face(frame: &BrushFrame, thin: usize, axis: usize, other: usize, sign: f6
 }
 
 /// True when most open samples of the broad face on side `sign` front open
-/// space at least the occluder floor deep, sampled as the classifier samples
-/// a broad face.
+/// space at least `min_depth` deep, sampled as the classifier samples a
+/// broad face.
 fn fronts_open_space(
     frame: &BrushFrame,
     normal_axis: usize,
     broad: [usize; 2],
     sign: f64,
+    min_depth: f64,
     space: &OpenSpace<'_>,
 ) -> bool {
     let normal = frame.axes[normal_axis] * sign;
@@ -239,7 +258,7 @@ fn fronts_open_space(
             }
             open += 1;
             let depth = PROBE_OFFSET_M + space.distance_to_blocking(probe, normal);
-            if at_least(depth, OCCLUDER_FLOOR_M) {
+            if at_least(depth, min_depth) {
                 deep += 1;
             }
         }

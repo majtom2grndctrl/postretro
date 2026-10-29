@@ -6,8 +6,10 @@ use std::collections::BTreeSet;
 
 use glam::DVec3;
 
-use super::test_fixtures::{Cells, MapText, engine, walk_blocked};
+use super::test_fixtures::{Cells, MapText, engine, quake_triple, walk_blocked};
 use super::{classify, doors};
+use crate::map_data::MapData;
+use crate::map_format::MapFormat;
 use crate::partition::Aabb;
 use crate::partition::occluder_classify::OccluderVerdict;
 
@@ -144,6 +146,229 @@ fn door_in_an_exempt_wall_bounds_its_opening_and_seals_every_portal_across_it() 
     );
 }
 
+// ---- a door turned 45° in plan ----
+
+/// The exempt wall's turn in plan, about the door's vertical axis.
+const TURN: f64 = std::f64::consts::FRAC_PI_4;
+
+/// A Quake-unit point turned by `TURN` about the vertical axis through
+/// `DOOR_CENTRE`.
+fn turned(q: [f64; 3]) -> [f64; 3] {
+    let (sin, cos) = TURN.sin_cos();
+    let (x, y) = (q[0] - DOOR_CENTRE[0], q[1] - DOOR_CENTRE[1]);
+    [
+        DOOR_CENTRE[0] + cos * x - sin * y,
+        DOOR_CENTRE[1] + sin * x + cos * y,
+        q[2],
+    ]
+}
+
+/// The `.map` text of the box `min`..`max` turned by `turned`. Each side's
+/// three points are two corners of its bottom edge and the first corner
+/// lifted, so its normal is exactly horizontal.
+fn turned_box_brush(min: [f64; 3], max: [f64; 3]) -> String {
+    const TEXTURE: &str = "debug_wall_grey";
+    let (z0, z1) = (min[2], max[2]);
+    // Counter-clockwise in plan, so each side faces out to the right of its
+    // edge, as the map format winds a plane's points.
+    let corners = [
+        [min[0], min[1]],
+        [max[0], min[1]],
+        [max[0], max[1]],
+        [min[0], max[1]],
+    ]
+    .map(|[x, y]| turned([x, y, 0.0]));
+    let mut faces: Vec<String> = (0..4)
+        .map(|i| {
+            let ([ax, ay, _], [bx, by, _]) = (corners[i], corners[(i + 1) % 4]);
+            format!("( {ax} {ay} {z0} ) ( {ax} {ay} {z1} ) ( {bx} {by} {z0} ) {TEXTURE} 0 0 0 1 1")
+        })
+        .collect();
+    faces.push(format!(
+        "( 0 0 {z0} ) ( 1 0 {z0} ) ( 0 1 {z0} ) {TEXTURE} 0 0 0 1 1"
+    ));
+    faces.push(format!(
+        "( 0 0 {z1} ) ( 0 1 {z1} ) ( 1 0 {z1} ) {TEXTURE} 0 0 0 1 1"
+    ));
+    format!("{{\n{}\n}}", faces.join("\n"))
+}
+
+/// `exempt_wall(true)` with its pieces and door turned by `TURN`, parsed as
+/// `prl-build` parses it. The hall stays square to the axes.
+fn turned_exempt_wall() -> MapData {
+    let mut map = MapText::new();
+    map.hall([640.0, 640.0, 128.0]);
+    let pieces: Vec<String> = PIECES
+        .iter()
+        .map(|&(min, max)| turned_box_brush(min, max))
+        .collect();
+    // The pieces close worldspawn, after the hall, as `exempt_wall` orders
+    // its brushes.
+    let world = map.text();
+    let world = world
+        .strip_suffix("}\n")
+        .expect("the text is worldspawn alone");
+    let mut text = format!("{world}{}\n}}\n", pieces.join("\n"));
+    // The door slides open upward from where it stands, as `MapText::mover`
+    // authors one.
+    let open = [DOOR_CENTRE[0], DOOR_CENTRE[1], DOOR_CENTRE[2] + 112.0];
+    text.push_str(&format!(
+        "{{\n\"classname\" \"kinematic_mover\"\n\"name\" \"door\"\n\"path\" \"door_closed\"\n\
+         \"speed\" \"4\"\n\"move_mode\" \"once\"\n\"start_on_spawn\" \"0\"\n{}\n}}\n\
+         {{\n\"classname\" \"kinematic_waypoint\"\n\"name\" \"door_closed\"\n\
+         \"next\" \"door_open\"\n\"origin\" \"{}\"\n}}\n\
+         {{\n\"classname\" \"kinematic_waypoint\"\n\"name\" \"door_open\"\n\
+         \"origin\" \"{}\"\n}}\n",
+        turned_box_brush(DOOR.0, DOOR.1),
+        quake_triple(DOOR_CENTRE),
+        quake_triple(open),
+    ));
+
+    let dir = tempfile::tempdir().expect("temporary map directory");
+    let maps = dir.path().join("maps");
+    std::fs::create_dir_all(&maps).expect("create fixture maps directory");
+    let path = maps.join("fixture.map");
+    std::fs::write(&path, text).expect("write fixture map");
+    crate::parse::parse_map_file(&path, MapFormat::IdTech2).expect("fixture map parses")
+}
+
+#[test]
+fn door_turned_45_degrees_in_plan_seals_its_opening_closed_and_passes_open() {
+    // Oblique door planes: clipping leaves the portal corners on the door's
+    // faces and edges only to within rounding, and sealing certifies cover
+    // with no tolerance.
+    let map_data = turned_exempt_wall();
+    let classification = classify(&map_data.brush_volumes).expect("classifies");
+    for piece in [
+        classification.verdicts.len() - 2,
+        classification.verdicts.len() - 1,
+    ] {
+        assert_ne!(
+            classification.verdicts[piece],
+            OccluderVerdict::Occludes,
+            "precondition: the turned wall pieces stay exempt, so the door's own planes bound \
+             its cell"
+        );
+    }
+    let recognised = doors(&map_data.brush_volumes, &map_data.kinematic_movers).expect("doors");
+    assert_eq!(recognised.len(), 1, "the turned mover fills a doorway");
+
+    let cells = Cells::of_map_data(map_data);
+    let (front, back) = (turned(FRONT), turned(BACK));
+    assert_ne!(
+        cells.cell_at(front),
+        cells.cell_at(back),
+        "closed, the door puts its two sides in different cells"
+    );
+    let door_cell = cells.cell_at(DOOR_CENTRE);
+    let onto_door: Vec<u32> = cells
+        .runtime
+        .portals
+        .iter()
+        .enumerate()
+        .filter(|(_, portal)| portal.front_leaf == door_cell || portal.back_leaf == door_cell)
+        .map(|(index, _)| index as u32)
+        .collect();
+    assert!(!onto_door.is_empty(), "runtime portals lead onto the door");
+    let sealed = &cells.sealed_portals()[0];
+    for portal in &onto_door {
+        assert!(
+            sealed.contains(portal),
+            "portal {portal} onto the door's cell is not sealed by the closed door \
+             (sealed {sealed:?})"
+        );
+    }
+
+    let world = cells.visibility_world();
+    let ahead: [f64; 3] = std::array::from_fn(|axis| back[axis] - front[axis]);
+    let (open, _) = walk_blocked(&world, front, ahead, &[]);
+    assert!(
+        open.contains(&(door_cell as u32)),
+        "open, the doorway passes"
+    );
+    let (closed, _) = walk_blocked(&world, front, ahead, sealed);
+    assert!(
+        !closed.contains(&(door_cell as u32)),
+        "closed, the doorway blocks"
+    );
+}
+
+// ---- a door into a closet shallower than the floor ----
+
+/// A wall across a hall 640 × 640 × 128 u, 24 u (0.6 m) short of its far
+/// wall: two pieces from the side walls to a doorway 60 u wide. Each piece's
+/// back face fronts only the closet and its front covers under half the
+/// span across the hall, so the wall stays exempt.
+const CLOSET_PIECES: [([f64; 3], [f64; 3]); 2] = [
+    ([0.0, 608.0, 0.0], [290.0, 616.0, 128.0]),
+    ([350.0, 608.0, 0.0], [640.0, 616.0, 128.0]),
+];
+const CLOSET_DOOR: ([f64; 3], [f64; 3]) = ([290.0, 608.0, 0.0], [350.0, 616.0, 128.0]);
+const IN_CLOSET: [f64; 3] = [320.0, 628.0, 64.0];
+const BEFORE_CLOSET: [f64; 3] = [320.0, 300.0, 60.0];
+
+fn closet() -> MapText {
+    let mut map = MapText::new();
+    map.hall([640.0, 640.0, 128.0]);
+    for (min, max) in CLOSET_PIECES {
+        map.solid(min, max);
+    }
+    map.mover("door", &[CLOSET_DOOR], 112.0);
+    map
+}
+
+#[test]
+fn door_into_a_closet_shallower_than_the_floor_seals_it_closed_and_passes_open() {
+    // One broad face fronts the room, the other only the closet. Without
+    // the door the exempt wall bounds no cell, so the door's own planes must
+    // part the closet from the room.
+    let map_data = closet().parse();
+    let classification = classify(&map_data.brush_volumes).expect("classifies");
+    for piece in [
+        classification.verdicts.len() - 2,
+        classification.verdicts.len() - 1,
+    ] {
+        assert_ne!(
+            classification.verdicts[piece],
+            OccluderVerdict::Occludes,
+            "precondition: the closet's wall stays exempt"
+        );
+    }
+    let recognised = doors(&map_data.brush_volumes, &map_data.kinematic_movers).expect("doors");
+    assert_eq!(
+        recognised.len(),
+        1,
+        "the mover fills the closet's doorway, though the closet is shallower than the floor"
+    );
+
+    let cells = Cells::of_map_data(map_data);
+    let closet_cell = cells.cell_at(IN_CLOSET);
+    assert_ne!(
+        cells.cell_at(BEFORE_CLOSET),
+        closet_cell,
+        "closed, the door parts the closet from the room"
+    );
+    let sealed = &cells.sealed_portals()[0];
+    let crossing = portals_inside(&cells, &engine_box(CLOSET_DOOR.0, CLOSET_DOOR.1));
+    assert!(!crossing.is_empty(), "runtime portals cross the door");
+    assert!(
+        crossing.iter().all(|portal| sealed.contains(portal)),
+        "the closed door seals every portal across it (sealed {sealed:?}, crossing {crossing:?})"
+    );
+
+    let world = cells.visibility_world();
+    let (open, _) = walk_blocked(&world, BEFORE_CLOSET, NORTH, &[]);
+    assert!(
+        open.contains(&(closet_cell as u32)),
+        "open, the closet shows"
+    );
+    let (closed, _) = walk_blocked(&world, BEFORE_CLOSET, NORTH, sealed);
+    assert!(
+        !closed.contains(&(closet_cell as u32)),
+        "closed, the closet is hidden"
+    );
+}
+
 // ---- rooms A, B and C (C12) ----
 
 /// A doorway 60 u (1.5 m) wide and 100 u tall in a wall on `x`: two jamb
@@ -268,6 +493,61 @@ fn removing_a_door_between_rooms_a_and_b_leaves_room_c_unchanged() {
         let (closed, _) = walk_blocked(&world, eye, EAST, sealed);
         assert!(!closed.contains(&c_cell));
     }
+}
+
+/// `FLUSH_DOOR` moved 0.5 mm into room A: proud of the wall face the
+/// dividing wall's tier boundary lies on, by less than the tier's spanning
+/// tolerance.
+fn proud_door() -> ([f64; 3], [f64; 3]) {
+    let shift = 0.5e-3 / MapFormat::IdTech2.units_to_meters();
+    let (min, max) = FLUSH_DOOR;
+    (
+        [min[0] - shift, min[1], min[2]],
+        [max[0] - shift, max[1], max[2]],
+    )
+}
+
+#[test]
+fn door_proud_of_its_wall_under_the_spanning_tolerance_cuts_no_room_and_still_seals() {
+    // Room A meets the proud door, but no broad plane of the door spans it,
+    // so the door must not hold it: its edge planes would cut room A at the
+    // door's outline.
+    let flush = Cells::of(&three_rooms(Some(FLUSH_DOOR)));
+    let proud = Cells::of(&three_rooms(Some(proud_door())));
+    assert_eq!(
+        doors(
+            &proud.map_data.brush_volumes,
+            &proud.map_data.kinematic_movers
+        )
+        .expect("doors")
+        .len(),
+        1
+    );
+    assert_eq!(
+        proud.cell_tree().leaves.len(),
+        flush.cell_tree().leaves.len(),
+        "the proud door adds no cell to the room beside it"
+    );
+    assert_eq!(
+        proud.runtime.cells.interior_cell_count(),
+        flush.runtime.cells.interior_cell_count()
+    );
+    assert_eq!(
+        proud.runtime.portals.len(),
+        flush.runtime.portals.len(),
+        "the proud door adds no portal to the room beside it"
+    );
+
+    // Room B is visible from A with the door open, hidden with it closed.
+    let sealed = &proud.sealed_portals()[0];
+    assert!(!sealed.is_empty(), "the closed door seals a portal");
+    let world = proud.visibility_world();
+    let eye = [100.0, 890.0, 60.0];
+    let b_cell = proud.cell_at([600.0, 890.0, 60.0]) as u32;
+    let (open, _) = walk_blocked(&world, eye, EAST, &[]);
+    assert!(open.contains(&b_cell));
+    let (closed, _) = walk_blocked(&world, eye, EAST, sealed);
+    assert!(!closed.contains(&b_cell));
 }
 
 // ---- a door deeper than it is tall (C10) ----

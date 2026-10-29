@@ -342,6 +342,68 @@ fn facades_joined_by_a_touching_sign_each_bound_cells() {
     assert_apart(&cf.fixture);
 }
 
+// Orientation: every member's own normal is tried, and a set is judged under
+// every normal it forms under, so world orientation decides nothing.
+
+#[test]
+fn facade_turned_45_degrees_bounds_cells_beside_a_sign_5_degrees_off_either_way() {
+    for tilt in [fixtures::OFF_TRUE_RAD, -fixtures::OFF_TRUE_RAD] {
+        let cf = fixtures::facade_with_tilted_sign(tilt).turned(TURN);
+        let classification = classify_exempt_added(&cf);
+        let facade = sections_holding(&classification, 6..cf.base);
+        assert!(
+            facade.iter().any(|section| section.occludes),
+            "{}: {facade:#?}",
+            cf.fixture.name
+        );
+        assert_added_stay_exempt(&cf, &classification);
+        assert_apart(&cf.fixture);
+    }
+}
+
+#[test]
+fn stacked_cubes_occlude_alike_turned_90_degrees() {
+    for cf in [
+        fixtures::stacked_cubes(),
+        fixtures::stacked_cubes().turned(std::f64::consts::FRAC_PI_2),
+    ] {
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+        assert!(
+            sections[0].occludes,
+            "{}: {:#?}",
+            cf.fixture.name, sections[0]
+        );
+        assert_apart(&cf.fixture);
+    }
+}
+
+// An occluding section bounds the occluder tier even when no member is
+// square to its box.
+
+#[test]
+fn louvred_screen_off_square_to_its_section_bounds_cells() {
+    let cf = fixtures::louvred_screen();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert!(section.occludes, "{section:#?}");
+    let bounding_planes = section
+        .members
+        .iter()
+        .zip(&section.outline)
+        .flat_map(|(&brush, flags)| cf.fixture.brushes[brush].planes.iter().zip(flags))
+        .filter(|&(plane, &flagged)| flagged && plane.normal.dot(section.bounding_face) > 0.9)
+        .count();
+    assert!(
+        bounding_planes > 0,
+        "no member plane bounds the section's bounding face in the tier"
+    );
+    assert_apart(&cf.fixture);
+}
+
 // Roofline coverage (index.md §Decisions, Clusters; owner ruling after
 // Task 9): a section's face counts each column up to the higher of its
 // solid and the see-over height above the floor in front.
@@ -428,7 +490,37 @@ fn low_wall_between_tall_posts_stays_exempt_under_the_roofline() {
     assert_adds_no_empty_cell_or_portal(&cf);
 }
 
-// A13: sparse clusters whose bounding face passes the rule add no cell.
+#[test]
+fn balustrade_on_a_balcony_edge_reads_porous_under_its_deck_roofline_and_stays_exempt() {
+    // Only the deck face passes the occluder rule, so coverage counts under
+    // the see-over line 2.5 m above the deck: the posts' columns to their
+    // tops, the gaps' to the line, of which the rail covers 0.3 m.
+    let cf = fixtures::balcony_balustrade();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(
+        section.box_verdict,
+        OccluderVerdict::Occludes,
+        "{section:#?}"
+    );
+    let posts =
+        fixtures::BALUSTRADE_POSTS as f64 * fixtures::BALUSTRADE_POST_M / fixtures::BALCONY_WIDTH_M;
+    let height = fixtures::BALUSTRADE_HEIGHT_M;
+    let expected = (posts * height + (1.0 - posts) * fixtures::BALUSTRADE_RAIL_M)
+        / (posts * height + (1.0 - posts) * OCCLUDER_SEE_OVER_M);
+    assert!(
+        (section.coverage - expected).abs() < 0.02,
+        "coverage {:.3} vs {expected:.3}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+// A13: sparse clusters a broad face of whose bounding box passes the rule
+// add no cell.
 
 #[test]
 fn l_lamp_post_in_an_alcove_adds_no_empty_cell() {
@@ -440,9 +532,9 @@ fn colonnade_under_a_touching_beam_adds_no_empty_cell() {
     assert_sparse_section_adds_no_empty_cell(&fixtures::colonnade());
 }
 
-/// Coverage alone decides: one section holds every added brush, its
-/// bounding face passes the occluder rule, and its solid covers no more
-/// than the constant.
+/// Coverage alone decides: one section holds every added brush, a broad
+/// face of its bounding box passes the occluder rule, and its solid covers
+/// no more than the constant.
 fn assert_sparse_section_adds_no_empty_cell(cf: &ClusterFixture) {
     let classification = classify_exempt_added(cf);
     let sections = sections_holding(&classification, cf.added());

@@ -4,21 +4,22 @@
 // See: context/plans/in-progress/occluder-first-partition/plan.md §Delegated answers (Clusters)
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use glam::DVec3;
 
 use crate::partition::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use crate::partition::occluder_classify::{
-    AXIS_TIE_EPSILON_M, BrushFrame, axis_order, canonical_direction,
+    BrushFrame, axis_order, canonical_direction, thinnest_axes,
 };
 
 /// Broad-face normals within this angle of a section's normal agree with it,
 /// so a facade a few degrees off true still reads as one plane while the arms
 /// of a corner, 90° apart, read as two sections. 10°.
-const SECTION_NORMAL_MAX_ANGLE_COS: f64 = 0.984_807_753_012_208;
+pub(super) const SECTION_NORMAL_MAX_ANGLE_COS: f64 = 0.984_807_753_012_208;
 
-/// In-plane frame candidates this close to parallel are one candidate.
+/// Directions this close to parallel are one candidate: normals or in-plane
+/// frame axes.
 const FRAME_PARALLEL_COS: f64 = 1.0 - 1e-9;
 
 /// Least share of the member face area within a slab that the members
@@ -41,10 +42,8 @@ impl Member<'_> {
     /// The member's broad-face normals: its thinnest own-frame axes, every
     /// one of them when extents tie, as the classifier offers broad faces.
     fn broad_normals(&self) -> impl Iterator<Item = DVec3> + '_ {
-        let extents = self.frame.extents;
-        let thinnest = extents.iter().copied().fold(f64::INFINITY, f64::min);
-        (0..3)
-            .filter(move |&axis| extents[axis] <= thinnest + AXIS_TIE_EPSILON_M)
+        thinnest_axes(self.frame)
+            .into_iter()
             .map(|axis| canonical_direction(self.frame.axes[axis]))
     }
 
@@ -79,21 +78,24 @@ impl Member<'_> {
 }
 
 /// A section before it is judged: its members (indices into the cluster's
-/// member list) and its own frame, the normal last.
+/// member list) and its own frame under each normal it forms under, the
+/// normal last in each, in the candidates' exact order.
 pub(super) struct SectionShape {
     pub(super) members: Vec<usize>,
-    pub(super) frame: BrushFrame,
+    pub(super) frames: Vec<BrushFrame>,
 }
 
 /// Find a cluster's sections. `members` is the cluster; `touching[i]` lists
 /// the members touching member `i`. For each candidate normal, the members
 /// agreeing with it split into touching components; each of the component's
 /// slabs keeps the members lying within it, which split again into touching
-/// components, and each of two or more members is a section. Every step
-/// works on sets, so the result does not depend on member order.
+/// components, and each of two or more members is a section. A set that
+/// forms under several normals is one section, judged under each: which
+/// normal comes first in world order must not decide it, or turning a map
+/// would change its verdict. Every step works on sets, so the result does
+/// not depend on member order.
 pub(super) fn find_sections(members: &[Member<'_>], touching: &[Vec<usize>]) -> Vec<SectionShape> {
-    let mut seen: BTreeSet<Vec<usize>> = BTreeSet::new();
-    let mut sections = Vec::new();
+    let mut normals_by_set: BTreeMap<Vec<usize>, Vec<DVec3>> = BTreeMap::new();
     for normal in candidate_normals(members) {
         let agreeing: Vec<bool> = members.iter().map(|m| m.agrees_with(normal)).collect();
         for component in components(touching, &agreeing) {
@@ -106,37 +108,48 @@ pub(super) fn find_sections(members: &[Member<'_>], touching: &[Vec<usize>]) -> 
                     in_slab[i] = within(members[i].interval(normal), slab);
                 }
                 for section in components(touching, &in_slab) {
-                    if section.len() < 2 || !seen.insert(section.clone()) {
+                    if section.len() < 2 {
                         continue;
                     }
-                    let frame = section_frame(members, &section, normal);
-                    sections.push(SectionShape {
-                        members: section,
-                        frame,
-                    });
+                    let normals = normals_by_set.entry(section).or_default();
+                    // Nested slabs can yield one set twice under one normal.
+                    if normals.last() != Some(&normal) {
+                        normals.push(normal);
+                    }
                 }
             }
         }
     }
-    sections
+    normals_by_set
+        .into_iter()
+        .map(|(section, normals)| SectionShape {
+            frames: normals
+                .into_iter()
+                .map(|normal| section_frame(members, &section, normal))
+                .collect(),
+            members: section,
+        })
+        .collect()
 }
 
-/// Every member's broad-face normals, one representative per group within
-/// the section angle, in an exact order so the choice of representative is
-/// fixed by the set of normals alone.
+/// Every distinct broad-face normal of every member, in an exact order.
+/// Each is tried: one standing for every normal within the section angle
+/// would be the first in world order, so a member a few degrees off could
+/// take a facade's normal from it in one orientation and not in another.
 fn candidate_normals(members: &[Member<'_>]) -> Vec<DVec3> {
     let mut normals: Vec<DVec3> = members.iter().flat_map(Member::broad_normals).collect();
     normals.sort_by(|a, b| axis_order(*a, *b));
-    let mut representatives: Vec<DVec3> = Vec::new();
+    let mut distinct: Vec<DVec3> = Vec::new();
     for normal in normals {
-        if !representatives
+        // Copies a rounding apart are one normal; the first in order stays.
+        if !distinct
             .iter()
-            .any(|r| r.dot(normal).abs() >= SECTION_NORMAL_MAX_ANGLE_COS)
+            .any(|kept| kept.dot(normal).abs() >= FRAME_PARALLEL_COS)
         {
-            representatives.push(normal);
+            distinct.push(normal);
         }
     }
-    representatives
+    distinct
 }
 
 /// Touching components among the members `keep` marks, each sorted.

@@ -353,6 +353,45 @@ fn cube_classifies_the_same_under_every_side_order() {
 }
 
 #[test]
+fn near_cube_seeds_the_same_frame_and_verdict_under_every_side_order() {
+    // Pin R18 off true: each ordered pair of near-perpendicular sides seeds
+    // its own frame, a hair apart, so which pairs are tried must not depend
+    // on which side comes first.
+    let fixture = fixtures::near_cube_in_room();
+    let cube = fixture.pins.last().expect("near-cube is pinned").brush;
+    let baseline = BrushFrame::of(&fixture.brushes[cube]).expect("near-cube has a frame");
+    for order in permutations(fixture.brushes[cube].planes.len()) {
+        let mut brushes = fixture.brushes.clone();
+        brushes[cube] = with_side_order(&brushes[cube], &order);
+        let frame = BrushFrame::of(&brushes[cube]).expect("near-cube has a frame");
+        // The axes come from the planes alone; the extents and centre also
+        // carry the rounding of the corners clipped in this side order.
+        assert_eq!(frame.axes, baseline.axes, "side order {order:?}");
+        assert!(
+            (frame.center - baseline.center).abs().max_element() < 1e-9
+                && frame
+                    .extents
+                    .iter()
+                    .zip(baseline.extents)
+                    .all(|(got, want)| (got - want).abs() < 1e-9),
+            "side order {order:?}: {frame:?} vs {baseline:?}"
+        );
+        assert_eq!(
+            classify(&brushes)[cube],
+            OccluderVerdict::Occludes,
+            "side order {order:?}"
+        );
+    }
+}
+
+#[test]
+fn wall_leaning_back_against_solid_occludes_from_its_face() {
+    // Its back is buried in the hall wall, so its face alone decides, and
+    // the see-over drop must clear the face's own foot.
+    assert_pins(&fixtures::leaning_wall(fixtures::LEAN_RAD));
+}
+
+#[test]
 fn chain_walls_occlude_in_every_brush_order() {
     // Pin R28: each 12 m wall's span ends at the wall it abuts, whichever
     // brush the classifier meets first.

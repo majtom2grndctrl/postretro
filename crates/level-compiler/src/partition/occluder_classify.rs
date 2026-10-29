@@ -18,7 +18,7 @@ use crate::map_data::BrushVolume;
 
 pub(crate) use broad_face::{
     broad_axes_reach_floor, broad_face_deepest_open_depth, broad_face_floor, broad_face_open_depth,
-    judge_box, vertical_broad_axis,
+    judge_box, judge_face, vertical_broad_axis,
 };
 
 /// Least broad-axis length, and least open depth in front of a broad face,
@@ -41,8 +41,9 @@ pub const OCCLUDER_SPAN_FRACTION: f64 = 0.5;
 pub const OCCLUDER_SEE_OVER_M: f64 = 2.5;
 
 /// The see-over height the rule and the cluster roofline read:
-/// `OCCLUDER_SEE_OVER_M`, or in tests a per-thread override that changes
-/// classification with every brush's geometry held fixed (pin R16).
+/// `OCCLUDER_SEE_OVER_M`, or in tests a per-thread override, so the build
+/// cache's tests can change classification with every brush's geometry held
+/// fixed.
 pub(crate) fn see_over_m() -> f64 {
     #[cfg(test)]
     if let Some(height) = see_over_override::get() {
@@ -64,6 +65,8 @@ pub(crate) mod see_over_override {
     }
 
     /// Run `f` with the see-over height set to `height` on this thread.
+    // Only the pipeline's tests call it, and the library target compiles
+    // `partition` without `pipeline`.
     #[allow(dead_code)]
     pub(crate) fn with<R>(height: f64, f: impl FnOnce() -> R) -> R {
         struct Restore(Option<f64>);
@@ -388,11 +391,16 @@ impl OccluderClassification {
     }
 
     /// One flag per brush: true when any of its planes split inside the
-    /// occluder tier.
+    /// occluder tier. A member of an occluding section none of whose planes
+    /// bounds the section's box splits only beneath it, as an exempt brush.
     pub fn occluder_flags(&self) -> Vec<bool> {
         self.tier_roles()
             .iter()
-            .map(|role| *role != TierRole::Exempt)
+            .map(|role| match role {
+                TierRole::Exempt => false,
+                TierRole::Occluder => true,
+                TierRole::SectionMember(outline) => outline.contains(&true),
+            })
             .collect()
     }
 }
@@ -438,9 +446,10 @@ pub(crate) fn within_rule_slack(a: f64, b: f64) -> bool {
     (a - b).abs() <= RULE_EPSILON_M
 }
 
-/// A brush's own-frame box: the minimum-volume box over every pair of its
-/// perpendicular side normals, so a rotated brush measures as it would
-/// unrotated. Brushes with no perpendicular sides measure on world axes.
+/// A brush's own-frame box: the minimum-volume box over every ordered pair
+/// of its perpendicular side normals, so a rotated brush measures as it
+/// would unrotated. Brushes with no perpendicular sides measure on world
+/// axes.
 #[derive(Debug, Clone)]
 pub(crate) struct BrushFrame {
     pub(crate) axes: [DVec3; 3],
@@ -454,8 +463,8 @@ impl BrushFrame {
     }
 
     /// The own-frame box of a union of brushes, such as a mover's closed
-    /// pose: the minimum-volume box over every brush's perpendicular side
-    /// pairs, fitted to every brush's corners.
+    /// pose: the minimum-volume box over every brush's ordered perpendicular
+    /// side pairs, fitted to every brush's corners.
     pub(crate) fn of_brushes(brushes: &[BrushVolume]) -> Option<Self> {
         let vertices: Vec<DVec3> = brushes.iter().flat_map(brush_vertices).collect();
         if vertices.is_empty() {
@@ -469,9 +478,15 @@ impl BrushFrame {
                     if a.normal.dot(b.normal).abs() > PERPENDICULAR_EPSILON {
                         continue;
                     }
-                    let u = a.normal.normalize();
-                    let v = (b.normal - u * u.dot(b.normal)).normalize();
-                    frames.push(Self::fit(canonical_axes([u, v, u.cross(v)]), &vertices));
+                    // A pair keeps its first normal and squares the second to
+                    // it, so sides only nearly perpendicular seed two frames a
+                    // hair apart; trying both orders keeps the candidates, and
+                    // so the box, free of side order.
+                    for (first, second) in [(a, b), (b, a)] {
+                        let u = first.normal.normalize();
+                        let v = (second.normal - u * u.dot(second.normal)).normalize();
+                        frames.push(Self::fit(canonical_axes([u, v, u.cross(v)]), &vertices));
+                    }
                 }
             }
         }

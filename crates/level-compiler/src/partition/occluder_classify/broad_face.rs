@@ -30,10 +30,9 @@ pub(crate) fn judge_box(
         if !broad_axes_reach_floor(frame, normal_axis) {
             continue;
         }
-        let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
         verdict = rank(verdict, OccluderVerdict::NoOpenFace);
         for sign in [1.0, -1.0] {
-            let face_verdict = BroadFace::of(frame, normal_axis, sign).judge(frame, broad, space);
+            let face_verdict = judge_face(frame, normal_axis, sign, space);
             if face_verdict == OccluderVerdict::Occludes {
                 return face_verdict;
             }
@@ -41,6 +40,22 @@ pub(crate) fn judge_box(
         }
     }
     verdict
+}
+
+/// The occluder rule on the one broad face of `frame`'s box across
+/// `normal_axis` whose outward normal points along `outward` (±1) times
+/// that axis: what `judge_box` reads from each face.
+pub(crate) fn judge_face(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+) -> OccluderVerdict {
+    if !broad_axes_reach_floor(frame, normal_axis) {
+        return OccluderVerdict::UnderFloor;
+    }
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    BroadFace::of(frame, normal_axis, outward).judge(frame, broad, space)
 }
 
 /// True when both broad axes of the faces across `normal_axis` reach the
@@ -154,7 +169,7 @@ pub(crate) fn broad_face_floor(
     face.sample_offsets(frame, broad)
         .filter(|&offsets| {
             let probe = face.probe(offsets);
-            !space.is_blocked(probe) && at_least(face.open_depth(probe, space), OCCLUDER_FLOOR_M)
+            !space.is_blocked(probe) && face.fronts_floor_deep(probe, space)
         })
         .map(|offsets| {
             let (top, see_over) =
@@ -208,6 +223,12 @@ impl BroadFace {
         PROBE_OFFSET_M + space.distance_to_blocking(probe, self.normal)
     }
 
+    /// The rule's face test at one sample: the open space in front of the
+    /// face from `probe` is at least the floor deep.
+    fn fronts_floor_deep(&self, probe: DVec3, space: &OpenSpace<'_>) -> bool {
+        at_least(self.open_depth(probe, space), OCCLUDER_FLOOR_M)
+    }
+
     /// The see-over drop: from just in front of the face's top along the
     /// broad `axis`, displaced `across` along the other broad axis, down
     /// through any ceiling or roof the top meets or sinks into, to the floor
@@ -224,10 +245,27 @@ impl BroadFace {
         let up = direction * direction.dot(DVec3::Y).signum();
         let top =
             self.center + across + up * (frame.extents[axis] * 0.5) + self.normal * PROBE_OFFSET_M;
-        // Start just under the top, so the drop never starts on its plane.
-        let start = top - DVec3::Y * PROBE_OFFSET_M;
+        // Start just under the top, so the drop never starts on its plane,
+        // and clear of the box: a face that leans back stands farther out
+        // below its top, so a drop from just in front of the top would meet
+        // the face itself and read it as the floor.
+        let start = self.clear_of_box(frame, top) - DVec3::Y * PROBE_OFFSET_M;
         let see_over = PROBE_OFFSET_M + space.distance_through_to_blocking(start, DVec3::NEG_Y);
         (top, see_over)
+    }
+
+    /// `point` moved out along the face's horizontal outward direction until
+    /// it lies the probe offset beyond every point of `frame`'s box. Unmoved
+    /// in front of an upright face, whose top is already that far out.
+    fn clear_of_box(&self, frame: &BrushFrame, point: DVec3) -> DVec3 {
+        let Some(out) = (self.normal - DVec3::Y * self.normal.y).try_normalize() else {
+            return point;
+        };
+        let reach = frame.center.dot(out)
+            + (0..3)
+                .map(|axis| frame.axes[axis].dot(out).abs() * frame.extents[axis] * 0.5)
+                .sum::<f64>();
+        point + out * (reach + PROBE_OFFSET_M - point.dot(out)).max(0.0)
     }
 
     /// Judge the face at each open sample of its lattice; it passes when
@@ -270,7 +308,7 @@ impl BroadFace {
         broad: [usize; 2],
         space: &OpenSpace<'_>,
     ) -> OccluderVerdict {
-        if !at_least(self.open_depth(probe, space), OCCLUDER_FLOOR_M) {
+        if !self.fronts_floor_deep(probe, space) {
             return OccluderVerdict::NoOpenFace;
         }
         for (slot, axis) in broad.into_iter().enumerate() {

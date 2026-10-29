@@ -9,7 +9,7 @@ use glam::{DQuat, DVec3};
 
 use crate::map_data::BrushVolume;
 use crate::partition::occluder_classify::test_fixtures::{
-    Edge, Fixture, box_brush, hall, turned_about_up,
+    Edge, Fixture, box_brush, hall, turned_about_up, turned_box,
 };
 
 /// Depth of every strip facade's slab.
@@ -94,6 +94,12 @@ pub(crate) fn cluster_fixtures() -> Vec<ClusterFixture> {
         tiled_floor_with_pillar(),
         facade_with_lamp(),
         step_run(STEP_RUN_STEPS),
+        facade_with_tilted_sign(OFF_TRUE_RAD).turned(std::f64::consts::FRAC_PI_4),
+        facade_with_tilted_sign(-OFF_TRUE_RAD).turned(std::f64::consts::FRAC_PI_4),
+        stacked_cubes(),
+        stacked_cubes().turned(std::f64::consts::FRAC_PI_2),
+        balcony_balustrade(),
+        louvred_screen(),
     ]);
     fixtures
 }
@@ -314,13 +320,151 @@ pub(crate) fn facade_with_lamp() -> ClusterFixture {
     fixture
 }
 
+/// A turn in plan inside the section angle, 5°: the tilted sign's off its
+/// facade, and each louvre's off its row.
+pub(crate) const OFF_TRUE_RAD: f64 = 5.0 * std::f64::consts::PI / 180.0;
+
+/// The strip facade with a sign 1 m square and 0.3 m deep turned `tilt`
+/// radians in plan off it, one vertical edge touching a pier's street face:
+/// its broad face agrees with the facade's within the section angle without
+/// being parallel to it. The sign is the row's brush.
+// Regression: one normal stood for every normal within the section angle,
+// the first in world xyz order; turned 45°, a sign 5° off could sort first,
+// and judged across the sign's normal no two strips shared a slab.
+pub(crate) fn facade_with_tilted_sign(tilt: f64) -> ClusterFixture {
+    let facade = strip_facade();
+    let mut fixture = ClusterFixture::new(
+        &format!("strip facade with a sign {:+.0}° off", tilt.to_degrees()),
+        facade.fixture.brushes,
+    );
+    fixture.fixture.apart = facade.fixture.apart;
+    let (half, depth) = (0.5, FACADE_DEPTH_M * 0.5);
+    let reach = half * tilt.sin().abs() + depth * tilt.cos();
+    fixture.add([turned_box(
+        DVec3::new(30.5, 4.0, 20.0 - reach),
+        DVec3::new(half, half, depth),
+        tilt,
+    )]);
+    fixture
+}
+
+/// Two cubes 1.5 m on a side stacked into a pillar 3 m tall, in a corridor
+/// 2.5 m wide along x between benches 2 m tall, in a hall 30 × 6 × 10 m.
+/// Every cube offers all three faces, so the pair forms one set under both
+/// horizontal normals. Faced down the corridor the pillar spans more than
+/// half its width on most of its face and occludes; faced across it, it
+/// does not. Alone, the lower cube stands under the see-over height and the
+/// upper one fronts the hall's full width over the benches on most of its
+/// face.
+// Regression: a set was judged under the first normal it formed under, in
+// world xyz order, so turning the map 90° flipped its verdict.
+pub(crate) fn stacked_cubes() -> ClusterFixture {
+    let (x0, z0, side) = (14.25, 4.25, 1.5);
+    let mut base = hall(DVec3::new(30.0, 6.0, 10.0));
+    base.extend([
+        box_brush(DVec3::ZERO, DVec3::new(30.0, 2.0, 3.75)),
+        box_brush(DVec3::new(0.0, 0.0, 6.25), DVec3::new(30.0, 2.0, 10.0)),
+    ]);
+    let mut fixture = ClusterFixture::new("cubes stacked in a benched corridor", base);
+    fixture.add([0.0, side].map(|y| {
+        box_brush(
+            DVec3::new(x0, y, z0),
+            DVec3::new(x0 + side, y + side, z0 + side),
+        )
+    }));
+    fixture
+        .fixture
+        .apart
+        .push((DVec3::new(10.0, 1.0, 5.0), DVec3::new(20.0, 1.0, 5.0)));
+    fixture
+}
+
+/// The balcony deck's height above the hall floor, and the balcony's width.
+pub(crate) const BALCONY_DECK_M: f64 = 5.0;
+pub(crate) const BALCONY_WIDTH_M: f64 = 12.0;
+
+/// Balustrade posts: how many, and how wide.
+pub(crate) const BALUSTRADE_POSTS: usize = 12;
+pub(crate) const BALUSTRADE_POST_M: f64 = 0.2;
+
+/// Balustrade rail and post heights above the deck.
+pub(crate) const BALUSTRADE_RAIL_M: f64 = 0.3;
+pub(crate) const BALUSTRADE_HEIGHT_M: f64 = 2.6;
+
+/// A balcony 12 m wide and 6 m deep off a hall 40 × 13 × 11 m, its deck a
+/// solid platform 5 m up between side walls full height, and on the deck's
+/// edge a balustrade 0.1 m deep, flush with it: a rail 0.3 m tall and twelve
+/// posts 0.2 m wide to 2.6 m above the deck, the end posts against the side
+/// walls. From the deck its bounding face passes the occluder rule; from the
+/// hall it sees 12 of 40 m and fails. The hall is shallow enough that the
+/// deck and side walls occlude with or without the balustrade shortening
+/// their spans. The balustrade is the row's brushes.
+// Regression: the roofline read the lower of the two faces' floors, the
+// hall's, whose see-over line lies under the balustrade's foot, so each gap
+// counted only its rail and the balustrade read solid.
+pub(crate) fn balcony_balustrade() -> ClusterFixture {
+    let (x0, deck, edge, t) = (14.0, BALCONY_DECK_M, 6.0, 0.5);
+    let x1 = x0 + BALCONY_WIDTH_M;
+    let mut base = hall(DVec3::new(40.0, 13.0, 11.0));
+    base.extend([
+        box_brush(DVec3::new(x0, 0.0, 0.0), DVec3::new(x1, deck, edge)),
+        box_brush(DVec3::new(x0 - t, 0.0, 0.0), DVec3::new(x0, 13.0, edge)),
+        box_brush(DVec3::new(x1, 0.0, 0.0), DVec3::new(x1 + t, 13.0, edge)),
+    ]);
+    let mut fixture = ClusterFixture::new("balustrade on a balcony edge", base);
+    let z0 = edge - 0.1;
+    let rail_top = deck + BALUSTRADE_RAIL_M;
+    fixture.add([box_brush(
+        DVec3::new(x0, deck, z0),
+        DVec3::new(x1, rail_top, edge),
+    )]);
+    let pitch = (x1 - x0 - BALUSTRADE_POST_M) / (BALUSTRADE_POSTS - 1) as f64;
+    fixture.add((0..BALUSTRADE_POSTS).map(|k| {
+        let x = x0 + k as f64 * pitch;
+        box_brush(
+            DVec3::new(x, rail_top, z0),
+            DVec3::new(x + BALUSTRADE_POST_M, deck + BALUSTRADE_HEIGHT_M, edge),
+        )
+    }));
+    fixture
+}
+
+/// Twelve louvres 1 m wide, 3 m tall and 0.3 m deep at 1 m centres, each
+/// turned 5° in plan and overlapping its neighbours, under a rail 12 m
+/// long, 0.5 m tall and 0.3 m deep square to the row, across a hall
+/// 20 × 6 × 30 m. The louvres share the section's slab, but only the rail is
+/// square to its box, and the rail stops inside every face of it but the
+/// top.
+// Regression: only member planes parallel to a box face bounded the section
+// in the occluder tier, so the screen occluded with no plane across it.
+pub(crate) fn louvred_screen() -> ClusterFixture {
+    let mut fixture = ClusterFixture::new("louvred screen", hall(DVec3::new(20.0, 6.0, 30.0)));
+    fixture.add((0..12).map(|k| {
+        turned_box(
+            DVec3::new(4.5 + k as f64, 1.5, 15.0),
+            DVec3::new(0.5, 1.5, 0.15),
+            OFF_TRUE_RAD,
+        )
+    }));
+    fixture.add([box_brush(
+        DVec3::new(4.0, 3.0, 14.85),
+        DVec3::new(16.0, 3.5, 15.15),
+    )]);
+    fixture
+        .fixture
+        .apart
+        .push((DVec3::new(10.0, 1.5, 10.0), DVec3::new(10.0, 1.5, 20.0)));
+    fixture
+}
+
 // ---- coverage edge ----
 
-/// A facade 24 m long and 6 m tall across a hall 40 × 10 × 30 m whose
-/// bounding face passes the occluder rule: a cap rail 1 m tall over sixteen
-/// strips 0.6 m wide at 1.5 m pitch, exactly half the face, with the last
-/// strip one coverage cell (0.1 m) narrower under the constant and wider
-/// over it (pin R12). Every edge lands on a cell boundary.
+/// A facade 24 m long and 6 m tall across a hall 40 × 10 × 30 m, a broad
+/// face of whose bounding box passes the occluder rule: a cap rail 1 m tall
+/// over sixteen strips 0.6 m wide at 1.5 m pitch, exactly half the face,
+/// with the last strip one coverage cell (0.1 m) narrower under the
+/// constant and wider over it (pin R12). Every edge lands on a cell
+/// boundary.
 pub(crate) fn coverage_edge(edge: Edge) -> ClusterFixture {
     let (x0, z0, length, height) = (8.0, 15.0, 24.0, 6.0);
     let cell = length / crate::partition::occluder_cluster::COVERAGE_GRID_CELLS as f64;

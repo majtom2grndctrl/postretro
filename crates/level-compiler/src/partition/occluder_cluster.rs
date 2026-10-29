@@ -1,6 +1,7 @@
 // Occluder clusters: touching brushes each exempt alone, judged per
-// near-planar section by the occluder rule on the section's bounding box and
-// by how much of that box's broad face, under its roofline, their solid covers.
+// near-planar section: a section occludes when a broad face of its bounding
+// box passes the occluder rule and their solid covers most of that face under
+// the face's roofline.
 // See: context/plans/in-progress/occluder-first-partition/research.md §Clusters
 
 pub(crate) mod contact;
@@ -12,27 +13,24 @@ use glam::{DVec2, DVec3};
 use super::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use super::occluder_classify::{
     BrushFrame, OccluderVerdict, OpenSpace, broad_face_floor, broad_face_open_depth,
-    brush_polytope, judge_box, see_over_m, vertical_broad_axis, within_rule_slack,
+    brush_polytope, judge_box, judge_face, see_over_m, vertical_broad_axis, within_rule_slack,
 };
 use crate::map_data::BrushVolume;
 use contact::{Hull, touching_pairs};
 use coverage::{SeeOverLine, covered_cells};
-use section::{Member, find_sections};
+use section::{Member, SECTION_NORMAL_MAX_ANGLE_COS, find_sections};
 
 pub use coverage::COVERAGE_GRID_CELLS;
 
 /// A section occludes only when its solid covers strictly more than this
-/// share of its bounding broad face under its roofline: "mostly solid".
+/// share of a broad face of its bounding box that passes the occluder rule,
+/// under that face's roofline: "mostly solid".
 /// Between a colonnade under a beam (about a third) and a facade a third
 /// windows (about two thirds).
 pub const OCCLUDER_COVERAGE_FRACTION: f64 = 0.5;
 
 /// Axis of a section's frame across its slab.
 pub(crate) const SECTION_NORMAL_AXIS: usize = 2;
-
-/// A member plane whose normal is this close to a box axis can lie on the
-/// box's face.
-const OUTLINE_PARALLEL_COS: f64 = 1.0 - 1e-9;
 
 /// Touching brushes, each exempt alone, and the sections they are judged by.
 #[derive(Debug, Clone)]
@@ -57,23 +55,29 @@ pub struct Section {
     /// The bounding box itself: the slab the cell-size cap's slab guard
     /// keeps its grid lines out of.
     pub(crate) frame: BrushFrame,
-    /// The individual occluder rule on the bounding box.
+    /// The individual occluder rule on the bounding box, from either broad
+    /// face.
     pub box_verdict: OccluderVerdict,
-    /// Share of the bounding broad face the members cover, on the grid:
-    /// of the cells under its roofline when the face has a vertical axis
-    /// (see `face_coverage`), of every cell when it is a slab's.
+    /// Share of a broad face of the bounding box the members cover, on the
+    /// grid: of the cells under that face's roofline when it has a vertical
+    /// axis (see `face_coverage`), of every cell when it is a slab's. The
+    /// higher share of the faces that pass the occluder rule, or of both
+    /// faces when neither does.
     pub coverage: f64,
+    /// True when a broad face of the bounding box passes the occluder rule
+    /// and the members cover strictly more than `OCCLUDER_COVERAGE_FRACTION`
+    /// of it under its roofline.
     pub occludes: bool,
     /// Outward normal of the one broad face that bounds the section in the
     /// occluder tier: `normal` or its negation (see `bounding_face`).
     pub bounding_face: DVec3,
-    /// Per member, one flag per brush plane: true when the plane lies, within
-    /// the contact epsilon, on the bounding face or on one of the box's four
-    /// edge faces. Those planes bound the section in the occluder tier; the
-    /// rest, the other broad face and the openings' jambs, sills and lintels,
-    /// split only beneath it, so each opening's air lies in the cell behind
-    /// the bounding face and, unless another tier plane crosses the slab,
-    /// crosses into the cell in front through one portal.
+    /// Per member, one flag per brush plane: true when the plane bounds the
+    /// box on the bounding face or on one of its four edge faces (see
+    /// `outline_planes`). Those planes bound the section in the occluder
+    /// tier; the rest, the other broad face and the openings' jambs, sills
+    /// and lintels, split only beneath it, so each opening's air lies in the
+    /// cell behind the bounding face and, unless another tier plane crosses
+    /// the slab, crosses into the cell in front through one portal.
     pub outline: Vec<Vec<bool>>,
 }
 
@@ -158,39 +162,21 @@ fn judge_cluster(
         .map(|&i| touching[i].iter().filter_map(|&j| local(j)).collect())
         .collect();
 
+    // A set is judged under every normal it forms under and occludes if it
+    // does under any; the first occluding judgment in the set's normal order
+    // stands for it, else the first.
     let sections = find_sections(&members, &member_touching)
         .into_iter()
         .map(|shape| {
-            let frame = shape.frame;
-            let box_verdict = judge_box(&frame, [SECTION_NORMAL_AXIS], space);
-            let solids: Vec<&[DVec3]> =
-                shape.members.iter().map(|&m| members[m].vertices).collect();
-            let (covered, counted) = face_coverage(&frame, &solids, space);
-            let coverage = if counted == 0 {
-                0.0
-            } else {
-                covered as f64 / counted as f64
-            };
-            // Strict, and exact on the integer cell counts (pin R12).
-            let dense = covered as f64 > OCCLUDER_COVERAGE_FRACTION * counted as f64;
-            let mut in_slab: Vec<usize> = shape.members.iter().map(|&m| members[m].brush).collect();
-            in_slab.sort_unstable();
-            let bounding_face = bounding_face(&frame, space);
-            let outline = in_slab
-                .iter()
-                .map(|&brush| outline_planes(&brushes[brush], &frame, bounding_face))
-                .collect();
-            Section {
-                members: in_slab,
-                normal: frame.axes[SECTION_NORMAL_AXIS],
-                extents: frame.extents,
-                box_verdict,
-                coverage,
-                occludes: box_verdict == OccluderVerdict::Occludes && dense,
-                bounding_face,
-                outline,
-                frame,
+            let mut first = None;
+            for frame in shape.frames {
+                let section = judge_section(brushes, &members, &shape.members, frame, space);
+                if section.occludes {
+                    return section;
+                }
+                first.get_or_insert(section);
             }
+            first.expect("a section forms under at least one normal")
         })
         .collect();
 
@@ -202,28 +188,101 @@ fn judge_cluster(
     }
 }
 
-/// The section's covered and counted cells over its bounding broad face.
+/// Judge one section: `in_section` indexes `members`, and `frame` is its
+/// box across one normal it forms under. Each broad face is judged as a
+/// single brush's is, by the occluder rule from that face, and must also be
+/// mostly covered under its own roofline.
+fn judge_section(
+    brushes: &[BrushVolume],
+    members: &[Member<'_>],
+    in_section: &[usize],
+    frame: BrushFrame,
+    space: &OpenSpace<'_>,
+) -> Section {
+    let box_verdict = judge_box(&frame, [SECTION_NORMAL_AXIS], space);
+    let solids: Vec<&[DVec3]> = in_section.iter().map(|&m| members[m].vertices).collect();
+    let floors = [1.0, -1.0].map(|outward| face_floor(&frame, outward, space));
+    let along = face_coverage(&frame, &solids, floors[0]);
+    // Both faces usually read one floor; the raster is the costly part.
+    let against = if floors[1] == floors[0] {
+        along
+    } else {
+        face_coverage(&frame, &solids, floors[1])
+    };
+    let share = |(covered, counted): (usize, usize)| {
+        if counted == 0 {
+            0.0
+        } else {
+            covered as f64 / counted as f64
+        }
+    };
+    let faces = [(1.0, along), (-1.0, against)].map(|(outward, cells)| {
+        let passes =
+            judge_face(&frame, SECTION_NORMAL_AXIS, outward, space) == OccluderVerdict::Occludes;
+        // Strict, and exact on the integer cell counts.
+        let dense = cells.0 as f64 > OCCLUDER_COVERAGE_FRACTION * cells.1 as f64;
+        (passes, dense, share(cells))
+    });
+    let occludes = faces.iter().any(|&(passes, dense, _)| passes && dense);
+    let coverage = faces
+        .iter()
+        .filter(|&&(passes, _, _)| passes)
+        .map(|&(_, _, share)| share)
+        .reduce(f64::max)
+        .unwrap_or(faces[0].2.max(faces[1].2));
+
+    let mut in_slab: Vec<&Member<'_>> = in_section.iter().map(|&m| &members[m]).collect();
+    in_slab.sort_unstable_by_key(|member| member.brush);
+    let bounding_face = bounding_face(&frame, space);
+    let outline = in_slab
+        .iter()
+        .map(|member| {
+            outline_planes(
+                &brushes[member.brush],
+                member.vertices,
+                &frame,
+                bounding_face,
+            )
+        })
+        .collect();
+    Section {
+        members: in_slab.iter().map(|member| member.brush).collect(),
+        normal: frame.axes[SECTION_NORMAL_AXIS],
+        extents: frame.extents,
+        box_verdict,
+        coverage,
+        occludes,
+        bounding_face,
+        outline,
+        frame,
+    }
+}
+
+/// World height of the floor the see-over test reads in front of the
+/// section's broad face whose outward normal is `outward` (±1) times its
+/// normal: the face's own, as the rule judges each face from its own side.
+/// `None` for a slab's face, both broad axes horizontal, or a face with no
+/// sample fronting open space at least the floor deep.
+fn face_floor(frame: &BrushFrame, outward: f64, space: &OpenSpace<'_>) -> Option<f64> {
+    let up = vertical_broad_axis(frame, SECTION_NORMAL_AXIS)?;
+    broad_face_floor(frame, SECTION_NORMAL_AXIS, up, outward, space)
+}
+
+/// The section's covered and counted cells over a broad face of its box.
 ///
 /// A face with a vertical broad axis (within 45° of up, the rule's vertical
-/// test) counts under its roofline: each column along the horizontal axis
-/// counts up to the higher of its members' solid and the see-over height
-/// above the floor in front. The floor is the lowest the see-over test reads
-/// in front of either broad face, as the rule passes from either. So sky over
-/// a lower neighbour's roof does not count against a row, while a low wall
-/// between tall posts, or a gap with no solid, still counts to see-over
-/// height. A slab's face, both broad axes horizontal, or a face with no
-/// sample fronting open space, counts every cell.
-fn face_coverage(frame: &BrushFrame, solids: &[&[DVec3]], space: &OpenSpace<'_>) -> (usize, usize) {
+/// test) and a `floor` in front counts under its roofline: each column along
+/// the horizontal axis counts up to the higher of its members' solid and the
+/// see-over height above that floor. So sky over a lower neighbour's roof
+/// does not count against a row, while a low wall between tall posts, or a
+/// gap with no solid, still counts to see-over height. A slab's face, both
+/// broad axes horizontal, or a face with no floor, counts every cell. Both
+/// broad faces project alike, so only the floor tells them apart.
+fn face_coverage(frame: &BrushFrame, solids: &[&[DVec3]], floor: Option<f64>) -> (usize, usize) {
     let normal = frame.axes[SECTION_NORMAL_AXIS];
     // `[along, up]` broad axes with the up one's sign, and the see-over line.
     let ([along, up], up_sign, roofline) = match vertical_broad_axis(frame, SECTION_NORMAL_AXIS) {
         Some(up) => {
-            let floor = [1.0, -1.0]
-                .into_iter()
-                .filter_map(|outward| {
-                    broad_face_floor(frame, SECTION_NORMAL_AXIS, up, outward, space)
-                })
-                .reduce(f64::min);
             let roofline = floor.map(|floor| SeeOverLine {
                 height: floor + see_over_m(),
                 plane_y: frame.center.dot(normal) * normal.y,
@@ -258,25 +317,40 @@ fn bounding_face(frame: &BrushFrame, space: &OpenSpace<'_>) -> DVec3 {
     }
 }
 
-/// One flag per plane of `brush`: true when the plane lies on `frame`'s
-/// box, on its bounding face (outward normal `bounding_face`) or on an edge
-/// face, never on the other broad face.
-fn outline_planes(brush: &BrushVolume, frame: &BrushFrame, bounding_face: DVec3) -> Vec<bool> {
+/// One flag per plane of `brush`, whose corners are `vertices`: true when
+/// the plane bounds `frame`'s box on its bounding face (outward normal
+/// `bounding_face`) or on an edge face, never on the other broad face. A
+/// plane bounds a box face when its normal lies within the section angle of
+/// the face's and a corner on it lies on the face. Members join a section
+/// within that angle, so members a few degrees off square to the box still
+/// bound it where they reach its faces, and an occluding section of box
+/// brushes always has a plane on its bounding face.
+fn outline_planes(
+    brush: &BrushVolume,
+    vertices: &[DVec3],
+    frame: &BrushFrame,
+    bounding_face: DVec3,
+) -> Vec<bool> {
+    let on = |point: DVec3, normal: DVec3, distance: f64| {
+        (point.dot(normal) - distance).abs() <= REGION_CLASSIFICATION_EPSILON
+    };
     brush
         .planes
         .iter()
         .map(|plane| {
             (0..3).any(|axis| {
                 let along = plane.normal.dot(frame.axes[axis]);
-                if along.abs() < OUTLINE_PARALLEL_COS {
+                if along.abs() < SECTION_NORMAL_MAX_ANGLE_COS {
                     return false;
                 }
-                if axis == SECTION_NORMAL_AXIS && plane.normal.dot(bounding_face) < 0.0 {
+                let outward = frame.axes[axis] * along.signum();
+                if axis == SECTION_NORMAL_AXIS && outward.dot(bounding_face) < 0.0 {
                     return false;
                 }
-                let face =
-                    frame.center.dot(frame.axes[axis]) * along.signum() + frame.extents[axis] * 0.5;
-                (plane.distance - face).abs() <= REGION_CLASSIFICATION_EPSILON
+                let face = frame.center.dot(outward) + frame.extents[axis] * 0.5;
+                vertices.iter().any(|&corner| {
+                    on(corner, plane.normal, plane.distance) && on(corner, outward, face)
+                })
             })
         })
         .collect()

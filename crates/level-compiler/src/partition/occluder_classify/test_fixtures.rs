@@ -59,6 +59,24 @@ pub(crate) fn turned_box(center: DVec3, half: DVec3, yaw: f64) -> BrushVolume {
     brush_from_planes(planes, center, half.length())
 }
 
+/// The box `min..max` turned by `rotation` about `pivot`.
+pub(crate) fn rotated_box(min: DVec3, max: DVec3, rotation: DQuat, pivot: DVec3) -> BrushVolume {
+    let planes = box_brush(min, max)
+        .planes
+        .iter()
+        .map(|plane| {
+            let normal = rotation * plane.normal;
+            let on_plane = pivot + rotation * (plane.normal * plane.distance - pivot);
+            BrushPlane {
+                normal,
+                distance: normal.dot(on_plane),
+            }
+        })
+        .collect();
+    let center = pivot + rotation * ((min + max) * 0.5 - pivot);
+    brush_from_planes(planes, center, (max - min).length() * 0.5)
+}
+
 /// `brush` turned `yaw` radians about engine up through the world origin.
 pub(crate) fn turned_about_up(brush: &BrushVolume, yaw: f64) -> BrushVolume {
     let turn = DQuat::from_rotation_y(yaw);
@@ -190,7 +208,9 @@ pub(crate) fn classification_fixtures() -> Vec<Fixture> {
         turned_curb(),
         turned_retaining_wall(),
         cube_in_room(),
+        near_cube_in_room(),
         chain_walls(),
+        leaning_wall(LEAN_RAD),
         wall_under_roof(6.0),
         wall_under_roof(OCCLUDER_SEE_OVER_M - EDGE_STEP_M),
     ];
@@ -653,6 +673,33 @@ pub(crate) fn turned_curb() -> Fixture {
     fixture
 }
 
+/// How far the leaning wall's face leans back: half a degree.
+pub(crate) const LEAN_RAD: f64 = 0.5 * std::f64::consts::PI / 180.0;
+
+/// A wall 26 m long, 6.5 m tall and 0.81 m thick across a hall 40 × 13 ×
+/// 30 m, its back against the hall's +z wall and its face leaning back
+/// `lean` radians about its foot, so only its face fronts open space.
+// Regression: the see-over drop fell straight down from just in front of
+// the top, met the face's lower part a few metres down, and read it as the
+// floor, so a wall leaning back half a degree read `LowTop`.
+pub(crate) fn leaning_wall(lean: f64) -> Fixture {
+    let size = DVec3::new(40.0, 13.0, 30.0);
+    let mut fixture =
+        Fixture::in_hall(format!("wall leaning back {:.1}°", lean.to_degrees()), size);
+    let front = size.z - 0.81;
+    fixture.add_pinned(
+        "leaning wall",
+        rotated_box(
+            DVec3::new(7.0, 0.0, front),
+            DVec3::new(33.0, 6.5, size.z),
+            DQuat::from_rotation_x(lean),
+            DVec3::new(0.0, 0.0, front),
+        ),
+        OccluderVerdict::Occludes,
+    );
+    fixture
+}
+
 /// The retaining-wall fixture turned 45° in plan, hall and all.
 pub(crate) fn turned_retaining_wall() -> Fixture {
     let mut fixture = retaining_wall();
@@ -675,6 +722,39 @@ pub(crate) fn cube_in_room() -> Fixture {
     fixture.add_pinned(
         "cube",
         box_brush(DVec3::new(4.0, 0.0, 10.0), DVec3::new(14.0, 10.0, 20.0)),
+        OccluderVerdict::Occludes,
+    );
+    fixture
+}
+
+/// `cube_in_room`'s cube with each side a few 1e-5 rad off true (pin R18):
+/// adjacent sides are perpendicular only within the frame's tolerance, so
+/// each ordered pair of them seeds its own frame, a hair apart.
+pub(crate) fn near_cube_in_room() -> Fixture {
+    let mut fixture = Fixture::in_hall("10 m near-cube", DVec3::new(18.0, 18.0, 30.0));
+    let center = DVec3::new(9.0, 5.0, 15.0);
+    let half = 5.0;
+    // Every adjacent pair's dot product is 1–5 × 1e-5.
+    let planes = [
+        DVec3::new(1.0, 2e-5, 3e-5),
+        DVec3::new(-1.0, 2e-5, -3e-5),
+        DVec3::new(1e-5, 1.0, -1e-5),
+        DVec3::new(3e-5, -1.0, 2e-5),
+        DVec3::new(-1e-5, 3e-5, 1.0),
+        DVec3::new(2e-5, 1e-5, -1.0),
+    ]
+    .into_iter()
+    .map(|normal| {
+        let normal = normal.normalize();
+        BrushPlane {
+            normal,
+            distance: normal.dot(center) + half,
+        }
+    })
+    .collect();
+    fixture.add_pinned(
+        "near-cube",
+        brush_from_planes(planes, center, half * 3.0_f64.sqrt()),
         OccluderVerdict::Occludes,
     );
     fixture

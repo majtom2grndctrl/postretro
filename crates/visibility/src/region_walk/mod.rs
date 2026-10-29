@@ -50,7 +50,7 @@ pub(crate) use trace::{WalkTrace, trace_out_of_range};
 /// worst walk measured on the fixtures and swept maps. A trip falls back to
 /// bounded frustum-culled sets on the camera entry and returns to the caller
 /// on the seeded entry.
-pub(crate) const MAX_PORTAL_WALK_STEPS: u32 = 5_000;
+pub(crate) const MAX_PORTAL_WALK_STEPS: u32 = 14_000;
 
 /// Eye-to-polygon distance within which a portal is crossed unclipped. Covers
 /// float and locator disagreement at a shared plane, where projection

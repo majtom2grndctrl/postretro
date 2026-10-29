@@ -2432,15 +2432,17 @@ fn apply_valid_hit_record(
     {
         return false;
     }
-    let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
+    let Ok(_) = registry.get_component::<HealthComponent>(target) else {
         return false;
     };
     // Every resolution rejects a target already committed to removal above.
     // Deferred direct-impact projectiles additionally share the local
-    // projectile liveness contract: once a target is down, their sole impact
-    // is spent without a second application. Hitscan/pellet declarations retain
+    // projectile spatial eligibility contract, including declared player life
+    // capabilities. An ineligible impact is spent without damage. Hitscan/pellet declarations retain
     // the common impact dispatch semantics used by authored zero-HP policies.
-    if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
+    if shot.is_projectile
+        && !crate::scripting_systems::health::is_damage_target_eligible(registry, target)
+    {
         return false;
     }
     let point = Vec3::from_array(record.point);
@@ -2691,6 +2693,7 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 
 #[cfg(test)]
 mod tests {
+    mod life_state_projectile_tests;
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;

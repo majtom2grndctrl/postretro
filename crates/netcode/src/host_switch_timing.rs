@@ -282,7 +282,12 @@ fn apply(
         .is_some_and(|weapon| {
             weapon.block_during_reload.unwrap_or(block_reload) && weapon.state.is_reload_activity()
         });
-    if target.is_none() || (slot != inventory.active_slot && blocked) {
+    let capability_refused = !crate::sim::player_life::permits(
+        registry,
+        pawn,
+        postretro_foundation::Capability::SwitchWeapon,
+    );
+    if target.is_none() || (slot != inventory.active_slot && (blocked || capability_refused)) {
         if let Some(parked) = original_repoint {
             abandon(registry, pawn, parked);
         }

@@ -349,6 +349,60 @@ fn conditioned_player_event_down_refuses_remote_fire_and_reaches_its_owner() {
 }
 
 #[test]
+fn life_state_o12_owner_refuses_locally_until_host_fire_permission_arrives() {
+    let mut life = LifeFixture::new(descriptor(false, false, 1, "press"), false);
+    life.zero_shooter(false);
+    for _ in 0..80 {
+        life.step(neutral());
+    }
+    life.assert_owner_down(false);
+    postretro_sim::life_state_commands::set_life_state(
+        &life.ctx,
+        &mut life.ctx.registry.borrow_mut(),
+        &[life.fixture.host_actors.pawn],
+        "alive",
+    );
+    let before_sent = life.fixture.sent.len();
+    let before_predicted = life.fixture.snapshots.len();
+    life.step(held(ActivationLane::Primary, true));
+    life.step(held(ActivationLane::Primary, false));
+    assert_eq!(
+        life.fixture.snapshots.len(),
+        before_predicted,
+        "the still-blocked owner predicts no shot in the return window"
+    );
+    assert!(
+        life.fixture.sent[before_sent..]
+            .iter()
+            .all(|command| command.activation.initiation.is_none()),
+        "a locally refused press sends no activation start"
+    );
+    life.fixture.assert_no_host_shot();
+    for _ in 0..80 {
+        life.step(neutral());
+    }
+    assert_eq!(
+        life.fixture
+            .local
+            .borrow()
+            .get_component::<PlayerMovementComponent>(life.fixture.local_actors.pawn)
+            .unwrap()
+            .life_state,
+        life.alive_id
+    );
+    life.step(held(ActivationLane::Primary, true));
+    for _ in 0..80 {
+        life.step(neutral());
+    }
+    assert_eq!(
+        life.fixture.authorized.len(),
+        1,
+        "a fresh press fires after the authoritative permission arrives"
+    );
+    life.assert_other_player_untouched();
+}
+
+#[test]
 fn conditioned_zero_hp_fire_true_hold_and_burst_survive_repeated_death_sweeps() {
     for (shots, trigger, ticks) in [(1, "hold", 150), (3, "press", 24)] {
         let mut life = LifeFixture::new(descriptor(false, false, shots, trigger), true);

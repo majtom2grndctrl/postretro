@@ -1,6 +1,8 @@
 // Binary orchestration exercised without a window or GPU.
 // See: context/lib/networking.md §Combat authority · context/lib/testing_guide.md
 use super::ClientWeaponFrame;
+#[path = "life_state_tests.rs"]
+mod life_state_tests;
 use crate::{sim, weapon};
 use glam::Vec3;
 use postretro_entities::components::{

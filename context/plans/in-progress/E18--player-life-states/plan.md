@@ -9,7 +9,7 @@ read at: 834a09c51
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
 `codex/player-life-states`. Task 1 implementation and focused verification are complete. Tasks 2–4 are
-the next approved phase. The usage-window interruption left edits intact; the
+in progress concurrently under their approved ownership boundaries. The usage-window interruption left edits intact; the
 session resumed on 2026-10-28 without changing the approved scope. A cold
 type-check found an import error and two missed test endpoint fields, now fixed.
 No acceptance row is proved until its tests run. A small presentation-clock
@@ -71,6 +71,22 @@ and recheck before starting; continue independent reads/edits in the meantime.
   downed crouch capsule to a standing centre otherwise leaves the pawn airborne.
   Preserve the placement foot anchor and apply the target profile coherently,
   including the no-command remote path. The Path now calls this out.
+- Joinable spawn eligibility permits differing descriptor capsules. Respawn
+  retains the pawn archetype, so a fallback's precomputed standing centre may
+  belong to another capsule; hot reload can also change capsule dimensions.
+  Publish each placement's map foot anchor beside its resolved pose, derive the
+  retained pawn's centre from the current target capsule at drain, and use that
+  centre for overlap and ground settle. This preserves same-class spawn poses
+  and AC13 without tightening join eligibility.
+- Task 5's existing App command preparation runs before the sim prelude, and
+  `host_resolve_remote_commands_with_switches` already judges switch requests.
+  A respawn drained only inside the sim would let old-state admission strip an
+  O33 activation, and judge T+1 switches against the old state. Preserve the
+  outcome by factoring a two-phase tick-start seam: snapshot/mutations/physical
+  respawn before resolution, finish arrival yaw against resolved facing, then
+  prepare activation admission and run the started simulation tick. Keep the
+  existing headless entry responsible for its own tick start. This is a Path
+  correction; no Decision or Acceptance requirement changes.
 - Existing surface harnesses are precedents, not complete AC20 proof:
   player-event `World` runs no movement/respawn, and the private teleporter
   `Level` harness binds no seats and runs no player-event pass. Build a focused
@@ -203,9 +219,9 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approved | done: focused checks, conditioned fire and SDK proof pass |
-| 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | not started |
-| 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | not started |
-| 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | not started |
+| 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | implementation in progress; focused verification pending |
+| 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | done: 7 sim, 2 netcode and 2 app behavior tests pass |
+| 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | implementation in progress; focused verification pending |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | not started |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | not started |
 | 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
@@ -241,6 +257,41 @@ update together.
   rerun after the usage-window interruption to recover its result.
 - Formatting and whitespace checks pass. No full workspace suite has run.
   Tasks 2–4 may now run concurrently under the approved ownership boundaries.
+
+### Tasks 2–4 integration checkpoint (2026-10-28)
+
+- Implementation is integrated: movement and teleport gates, look sampling,
+  forced-smoothed reconciliation and render-only eye easing; interaction/combat
+  gates with immutable Triggers-stage capture; exact elapsed facts, local names,
+  UI-only rate-corrected clock, authoritative reset witness and reload remap.
+- All-target `cargo check` for app, netcode, sim, physics, scripting-core and UI
+  with dev-tools passes. Initial fixture import/API mistakes were repaired.
+- First focused netcode run passed 15/16 cases, including both 150 ms relay
+  transitions and the above-teleport-floor glide, O14 profile-only payload
+  ordering and both authoritative reset-witness receive tests. The remaining
+  switch fixture had no movement component; it now installs a genuine component
+  before state entry. The same focused batch is rerunning. No failing behavior
+  has been accepted as proof.
+- A read-only source audit confirms finite ordinary state transitions on
+  zero-tick receive frames leave frame-timing and eye raw endpoints paired;
+  render correction remains continuous until the next predicted tick.
+- The repaired library batch now passes: netcode 16, physics 8, scripting-core
+  17, sim 19 and UI 1. App `life_state` tests are currently compiling (unified
+  clock/display/eye/look/client weapon/conditioned paths); recover the active
+  process or `/tmp/postretro-e18-app-tests.log` after any interruption.
+- Task 2 is auditing exact O9/O13/O43 proof assertions before its commit;
+  passing no-cut/settlement tests alone must not stand in for those rows.
+- App `life_state` passes all 15 tests, including the three eye/look proofs,
+  four continuous-clock proofs, two UI projection proofs and conditioned weapon
+  paths. Task 3 is complete: its seven sim, two netcode and two app cases pass.
+- SDK generation completed; typedef consistency first passed 49/50. The failed
+  check assumed a contiguous old subset of player refs. It now checks the
+  hierarchy while the existing source-derived catalog loop checks every leaf
+  and capability. Focused retest is pending.
+- Still required before Tasks 2/4 commits: O9/O13/O43 exact outcome proofs,
+  SDK generation/typedef consistency and formatting/whitespace verification.
+  Task 5 has not started; its two-phase tick start and foot-anchor corrections
+  are recorded above.
 
 These are required scenario allocations. Replace each with concrete executed
 test names/results as its task completes. Shared rows require proof at both

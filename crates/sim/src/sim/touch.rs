@@ -105,6 +105,7 @@ impl TouchSystem {
     /// Runs after trigger dispatch and before AI on every host/single-player
     /// fixed tick. Drop placement shares this pass so release, occupancy
     /// seeding, and touch evaluation use one authoritative ordering.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_authoritative_tick(
         &mut self,
@@ -114,6 +115,29 @@ impl TouchSystem {
         players: &[AuthoritativePlayer],
         use_pressed: &HashMap<PlayerId, bool>,
         drop_pressed: &HashMap<PlayerId, bool>,
+    ) -> TouchTickEvents {
+        let capabilities = super::player_life::TriggerStageCapabilities::capture(registry, players);
+        self.run_authoritative_tick_with_capabilities(
+            registry,
+            collision_world,
+            descriptors,
+            players,
+            use_pressed,
+            drop_pressed,
+            &capabilities,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_authoritative_tick_with_capabilities(
+        &mut self,
+        registry: &mut EntityRegistry,
+        collision_world: &CollisionWorld,
+        descriptors: &[EntityTypeDescriptor],
+        players: &[AuthoritativePlayer],
+        use_pressed: &HashMap<PlayerId, bool>,
+        drop_pressed: &HashMap<PlayerId, bool>,
+        capabilities: &super::player_life::TriggerStageCapabilities,
     ) -> TouchTickEvents {
         self.prompts.clear();
 
@@ -206,7 +230,11 @@ impl TouchSystem {
                     continue;
                 };
                 let facts = touch_facts(registry, pawn, item, player, use_pressed);
-                let effects = (self.policy)(&facts);
+                let effects = if capabilities.permits_touch(player) {
+                    (self.policy)(&facts)
+                } else {
+                    Vec::new()
+                };
                 let edge_contests = match mode {
                     TouchMode::Auto => overlap.entered,
                     TouchMode::Press => claims.get(&player) == Some(&item),

@@ -162,7 +162,7 @@ impl AiHost for SimAiHost<'_> {
     }
 
     fn is_quiescent(&self, registry: &EntityRegistry, entity: EntityId) -> bool {
-        crate::scripting_systems::health::is_quiescent(registry, entity)
+        crate::sim::player_life::ai_is_quiescent(registry, entity)
     }
 
     fn on_impact(&mut self, registry: &mut EntityRegistry) {

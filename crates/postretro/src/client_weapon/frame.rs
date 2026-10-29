@@ -141,6 +141,11 @@ impl ClientWeaponFrame {
         // Judged before this tick's movement is predicted: the pawn as the tick
         // starts, the state every fire path reads.
         let fire_blocked = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn);
+        let reload_allowed = postretro_sim::sim::player_life::permits(
+            registry,
+            pawn,
+            postretro_foundation::Capability::Reload,
+        );
         let ComponentValue::Weapon(component) = registry
             .get_component_value_mut(id, ComponentKind::Weapon)
             .ok()?
@@ -177,21 +182,23 @@ impl ClientWeaponFrame {
             self.records.request(token, id);
         }
         let before = component.cooldown_remaining_ms;
-        let advanced = weapon::activation_prediction::advance_predicted_weapon_tick(
-            component,
-            weapon::execution::ActivationCommand {
-                tick,
-                pawn: pawn_network,
-                real_command: true,
-                input: command.activation,
-                controller_starts: true,
-                primary: command.fire_button,
-                secondary: command.secondary_button,
-            },
-            command.reload,
-            dt_ms,
-            alive && !fire_blocked,
-        );
+        let advanced =
+            weapon::activation_prediction::advance_predicted_weapon_tick_with_reload_gate(
+                component,
+                weapon::execution::ActivationCommand {
+                    tick,
+                    pawn: pawn_network,
+                    real_command: true,
+                    input: command.activation,
+                    controller_starts: true,
+                    primary: command.fire_button,
+                    secondary: command.secondary_button,
+                },
+                command.reload,
+                dt_ms,
+                alive && !fire_blocked,
+                reload_allowed,
+            );
         if let Some(token) = advanced.initiated {
             command.activation.initiation = Some(token);
             self.records.request(token, id);

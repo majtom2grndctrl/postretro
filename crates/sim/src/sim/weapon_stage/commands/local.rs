@@ -208,7 +208,13 @@ fn run_local_weapon_command_inner(
     let block_during_reload = weapon_component
         .block_during_reload
         .unwrap_or(mod_block_during_reload);
-    let begin_lower = inventory.as_ref().is_some_and(|inventory| {
+    let begin_lower = pawn.is_none_or(|pawn| {
+        crate::sim::player_life::permits(
+            &registry,
+            pawn,
+            postretro_foundation::Capability::SwitchWeapon,
+        )
+    }) && inventory.as_ref().is_some_and(|inventory| {
         select_slot.is_some_and(|slot| {
             slot < inventory.wieldables.len()
                 && slot != inventory.active_slot

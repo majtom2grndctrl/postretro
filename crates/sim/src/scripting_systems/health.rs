@@ -49,13 +49,21 @@ pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: Ent
         })
 }
 
-/// A damage target must carry positive finite health and have no terminal
-/// lifecycle commitment or inventory ownership. Explicit script mutations use
+/// A damage target must carry Health and have no terminal lifecycle commitment
+/// or inventory ownership. Declared player life profiles supply damageability;
+/// all other targets retain the positive-finite-health gate. Explicit script mutations use
 /// their existing health chokepoint independently of this spatial target gate.
 pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
-        .is_ok_and(|health| !is_depleted(health))
+        .is_ok_and(|health| {
+            crate::sim::player_life::pawn_capability(
+                registry,
+                entity,
+                postretro_foundation::Capability::Damageable,
+            )
+            .unwrap_or(!is_depleted(health))
+        })
         && !registry.is_inventory_owned(entity)
         && !is_terminally_committed_to_removal(registry, entity)
 }

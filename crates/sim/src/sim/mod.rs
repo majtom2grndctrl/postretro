@@ -7,6 +7,9 @@ pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
 pub mod frame_timing;
 mod mesh_bindings;
+pub mod player_life;
+#[cfg(test)]
+mod player_life_tests;
 mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
@@ -17,7 +20,7 @@ pub mod touch;
 pub use crate::scripting::builtins::{acquire_wieldable_at_for_test, release_wieldable_for_test};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use glam::{EulerRot, Mat4, Vec3};
@@ -58,6 +61,7 @@ use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
     MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
@@ -189,7 +193,11 @@ pub fn simulate_client_wieldable_tick(
     tick_dt: f32,
 ) -> (bool, Option<EntityId>) {
     let requested_new_slot = pawn.is_some_and(|pawn| {
-        registry
+        player_life::permits(
+            &registry.borrow(),
+            pawn,
+            postretro_foundation::Capability::SwitchWeapon,
+        ) && registry
             .borrow()
             .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
             .is_ok_and(|inventory| {
@@ -231,6 +239,7 @@ pub fn simulate_client_wieldable_tick(
     (accepted, result.repointed_pawn)
 }
 
+#[cfg(test)]
 fn player_is_alive_for_trigger_occupancy(
     registry: &EntityRegistry,
     player: &AuthoritativePlayer,
@@ -732,130 +741,129 @@ where
     let mut trigger_fires = Vec::new();
     #[cfg(test)]
     let mut trigger_command_fires = Vec::new();
+    let stage_capabilities =
+        player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
     if let Some(trigger_context) = trigger_context {
-        let canonical_player_pawns = {
-            let registry = registry.borrow();
-            crate::trigger_system::canonical_player_pawns(&registry, &players)
-        };
-        let alive_players: HashSet<PlayerId> = {
-            let registry = registry.borrow();
-            players
-                .iter()
-                .filter(|player| player_is_alive_for_trigger_occupancy(&registry, player))
-                .map(|player| player.id)
-                .collect()
-        };
+        let canonical_player_pawns = &stage_capabilities.pawns;
+        let alive_players = &stage_capabilities.occupants;
         let mut registry = registry.borrow_mut();
         let bound_edges = trigger_context.bindings.bound_edges();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
-                alive_players: &alive_players,
+                alive_players,
                 bound_edges,
             };
-            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
-                &mut registry,
-                trigger_context.bridge,
-                crate::trigger_system::TriggerTickInputs {
-                    players: &players,
-                    use_pressed: trigger_context.use_edges,
-                    tick_dt,
-                },
-                dispatch_inputs,
-                |event, occupancy, occupants, registry| {
-                    let fire_context =
-                        trigger_fire_context(event, occupancy, &canonical_player_pawns);
-                    let execution = trigger_context.bindings.execute_with_script_ctx(
-                        event.fire.trigger,
-                        event.edge,
-                        registry,
-                        script_ctx,
-                        &fire_context,
-                    );
-                    #[cfg(test)]
-                    {
-                        trigger_fires.push(event.clone());
-                        trigger_command_fires.push(TriggerCommandFire {
-                            event: event.clone(),
-                            commands: execution.commands.clone(),
-                        });
-                    }
-                    if let Some(handle) = execution.residual() {
-                        // Carry the firing origin beside the handle so the
-                        // frame-end drain keys each enrolled instance to its
-                        // activator; one handle fired by two players yields two
-                        // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((
-                            handle,
+            let _report = trigger_context
+                .system
+                .run_authoritative_tick_with_capabilities(
+                    &mut registry,
+                    trigger_context.bridge,
+                    crate::trigger_system::TriggerTickInputs {
+                        players: &players,
+                        use_pressed: trigger_context.use_edges,
+                        tick_dt,
+                    },
+                    dispatch_inputs,
+                    &stage_capabilities,
+                    |event, occupancy, occupants, registry| {
+                        let fire_context =
+                            trigger_fire_context(event, occupancy, canonical_player_pawns);
+                        let execution = trigger_context.bindings.execute_with_script_ctx(
                             event.fire.trigger,
-                            event.fire.player,
-                            occupants.to_vec(),
-                        ));
-                    }
-                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
-                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
-                    }
-                },
-            );
+                            event.edge,
+                            registry,
+                            script_ctx,
+                            &fire_context,
+                        );
+                        #[cfg(test)]
+                        {
+                            trigger_fires.push(event.clone());
+                            trigger_command_fires.push(TriggerCommandFire {
+                                event: event.clone(),
+                                commands: execution.commands.clone(),
+                            });
+                        }
+                        if let Some(handle) = execution.residual() {
+                            // Carry the firing origin beside the handle so the
+                            // frame-end drain keys each enrolled instance to its
+                            // activator; one handle fired by two players yields two
+                            // origins, not one collapsed instance (O59).
+                            trigger_residuals.push((
+                                handle,
+                                event.fire.trigger,
+                                event.fire.player,
+                                occupants.to_vec(),
+                            ));
+                        }
+                        if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                            trigger_exit_fires.push((event.fire.trigger, event.fire.player));
+                        }
+                    },
+                );
         } else {
             let mut slot_table = trigger_context.slot_table.borrow_mut();
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
-                alive_players: &alive_players,
+                alive_players,
                 bound_edges,
             };
-            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
-                &mut registry,
-                trigger_context.bridge,
-                crate::trigger_system::TriggerTickInputs {
-                    players: &players,
-                    use_pressed: trigger_context.use_edges,
-                    tick_dt,
-                },
-                dispatch_inputs,
-                |event, _occupancy, occupants, registry| {
-                    let fire_context = TriggerFireContext::default();
-                    let execution = trigger_context.bindings.execute(
-                        event.fire.trigger,
-                        event.edge,
-                        registry,
-                        &mut slot_table,
-                        &fire_context,
-                    );
-                    #[cfg(test)]
-                    {
-                        trigger_fires.push(event.clone());
-                        trigger_command_fires.push(TriggerCommandFire {
-                            event: event.clone(),
-                            commands: execution.commands.clone(),
-                        });
-                    }
-                    if let Some(handle) = execution.residual() {
-                        // Carry the firing origin beside the handle so the
-                        // frame-end drain keys each enrolled instance to its
-                        // activator; one handle fired by two players yields two
-                        // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((
-                            handle,
+            let _report = trigger_context
+                .system
+                .run_authoritative_tick_with_capabilities(
+                    &mut registry,
+                    trigger_context.bridge,
+                    crate::trigger_system::TriggerTickInputs {
+                        players: &players,
+                        use_pressed: trigger_context.use_edges,
+                        tick_dt,
+                    },
+                    dispatch_inputs,
+                    &stage_capabilities,
+                    |event, _occupancy, occupants, registry| {
+                        let fire_context = TriggerFireContext::default();
+                        let execution = trigger_context.bindings.execute(
                             event.fire.trigger,
-                            event.fire.player,
-                            occupants.to_vec(),
-                        ));
-                    }
-                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
-                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
-                    }
-                },
-            );
+                            event.edge,
+                            registry,
+                            &mut slot_table,
+                            &fire_context,
+                        );
+                        #[cfg(test)]
+                        {
+                            trigger_fires.push(event.clone());
+                            trigger_command_fires.push(TriggerCommandFire {
+                                event: event.clone(),
+                                commands: execution.commands.clone(),
+                            });
+                        }
+                        if let Some(handle) = execution.residual() {
+                            // Carry the firing origin beside the handle so the
+                            // frame-end drain keys each enrolled instance to its
+                            // activator; one handle fired by two players yields two
+                            // origins, not one collapsed instance (O59).
+                            trigger_residuals.push((
+                                handle,
+                                event.fire.trigger,
+                                event.fire.player,
+                                occupants.to_vec(),
+                            ));
+                        }
+                        if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                            trigger_exit_fires.push((event.fire.trigger, event.fire.player));
+                        }
+                    },
+                );
         }
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();
-        touch_system.run_authoritative_tick(
+        touch_system.run_authoritative_tick_with_capabilities(
             &mut registry,
             collision_world,
             descriptors,
             &players,
             use_pressed,
             drop_pressed,
+            &stage_capabilities,
         )
     };
     drop(stage);

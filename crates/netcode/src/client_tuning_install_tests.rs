@@ -534,3 +534,149 @@ fn later_payload_dropping_the_active_weapon_lands_where_the_host_does() {
         "the released instance is despawned"
     );
 }
+
+#[test]
+fn life_state_o14_profile_only_payload_restamps_rebuild_before_or_after_snapshots_without_reset() {
+    use crate::predict_reconcile_harness_test_fixtures::{GRAVITY, floor_world, player_descriptor};
+    use postretro_foundation::{LifeStateProfile, PlayerMovementComponent};
+
+    for snapshots_first in [false, true] {
+        let mut endpoint = client_endpoint();
+        let mut registry = EntityRegistry::new();
+        let mut previous_profile = LifeStateProfile::default();
+        previous_profile.movement.speed_scale = 0.3;
+        previous_profile.fire = false;
+        let mut initial = TuningPayload::new(
+            Some(player_descriptor()),
+            std::array::from_fn(|_| None),
+            environment(),
+        );
+        initial.life_state_names = vec!["alive".into(), "down".into()];
+        initial.life_state_profiles = vec![(1, previous_profile)];
+        initial.life_state_table_revision = 9;
+        install(&mut endpoint, &mut registry, &bytes(&initial));
+        let pawn = arm(&mut endpoint, &mut registry);
+        let NetEndpoint::Client { prediction, .. } = &mut endpoint else {
+            unreachable!()
+        };
+        prediction.arm(PAWN, pawn);
+        prediction.mark_first_record_adopted();
+
+        let world = floor_world();
+        let merge = |endpoint: &mut NetEndpoint, registry: &mut EntityRegistry, elapsed: u32| {
+            let mut wire = movement_state::movement_state_to_wire(
+                registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap(),
+                0.0,
+            );
+            wire.life_state = 1;
+            wire.life_state_table_revision = 9;
+            wire.life_state_elapsed_ticks = elapsed;
+            let transform = *registry.get_component::<Transform>(pawn).unwrap();
+            let NetEndpoint::Client {
+                prediction,
+                life_state_tables,
+                ..
+            } = endpoint
+            else {
+                unreachable!()
+            };
+            reconcile::reconcile_local_pawn_with_mover_history(
+                registry,
+                prediction,
+                pawn,
+                transform,
+                Some(&wire),
+                Some(0),
+                elapsed,
+                None,
+                &world,
+                postretro_collision::EnvironmentView::level_only(GRAVITY),
+                postretro_foundation::TICK_DURATION.as_secs_f32(),
+                life_state_tables,
+            )
+            .unwrap();
+        };
+        merge(&mut endpoint, &mut registry, 123);
+        assert!(
+            !registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .unwrap()
+                .life_fire
+        );
+        let generation_before = match &endpoint {
+            NetEndpoint::Client {
+                tuning_generation, ..
+            } => *tuning_generation,
+            NetEndpoint::Host { .. } => unreachable!(),
+        };
+        let mut changed = initial.clone();
+        changed.life_state_profiles[0].1.movement.speed_scale = 0.6;
+        changed.life_state_profiles[0].1.fire = true;
+        assert_ne!(initial, changed);
+        assert_eq!(
+            initial.life_state_table_revision,
+            changed.life_state_table_revision
+        );
+        assert_eq!(
+            initial.movement, changed.movement,
+            "only life profiles changed"
+        );
+        let mut elapsed_at_install = 123;
+        if snapshots_first {
+            // A profile-only reload keeps the revision, so these records still
+            // resolve under the old installed profile until Control arrives.
+            for elapsed in [125, 127] {
+                merge(&mut endpoint, &mut registry, elapsed);
+                let movement = registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap();
+                assert!(!movement.life_fire);
+                assert!((movement.life_speed_scale - 0.3).abs() < f32::EPSILON);
+            }
+            elapsed_at_install = 127;
+        }
+        install(&mut endpoint, &mut registry, &bytes(&changed));
+        let NetEndpoint::Client {
+            tuning_generation,
+            applied_movement_tuning_generation,
+            ..
+        } = &endpoint
+        else {
+            unreachable!()
+        };
+        assert_ne!(
+            *tuning_generation, generation_before,
+            "profile-only payload must drive the production tuning rebuild"
+        );
+        assert_eq!(tuning_generation, applied_movement_tuning_generation);
+        let rebuilt = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap();
+        assert_eq!(
+            (
+                rebuilt.life_state,
+                rebuilt.life_state_table_revision,
+                rebuilt.life_state_elapsed_ticks
+            ),
+            (1, 9, elapsed_at_install)
+        );
+        assert!(rebuilt.life_fire);
+        assert!((rebuilt.life_speed_scale - 0.6).abs() < f32::EPSILON);
+        merge(&mut endpoint, &mut registry, 129);
+        let merged = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap();
+        assert_eq!(
+            (
+                merged.life_state,
+                merged.life_state_table_revision,
+                merged.life_state_elapsed_ticks
+            ),
+            (1, 9, 129)
+        );
+        assert!(merged.life_fire);
+        assert!((merged.life_speed_scale - 0.6).abs() < f32::EPSILON);
+    }
+}

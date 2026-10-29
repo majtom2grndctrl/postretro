@@ -1806,6 +1806,8 @@ declare module "postretro" {
       readonly health: PlayerComputedRef<number>;
       readonly heat: PlayerComputedRef<number>;
       readonly immersion: PlayerComputedRef<number>;
+      readonly lifeState: ComputedRef<string>;
+      readonly lifeStateMs: PlayerComputedRef<number>;
       readonly maxHealth: PlayerComputedRef<number>;
       readonly overheatAt: PlayerComputedRef<number>;
       readonly overheated: PlayerComputedRef<boolean>;

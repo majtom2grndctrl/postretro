@@ -1805,6 +1805,8 @@ export type GameStateRefs = {
     health: PlayerComputedRef<number>,
     heat: PlayerComputedRef<number>,
     immersion: PlayerComputedRef<number>,
+    lifeState: ComputedRef<string>,
+    lifeStateMs: PlayerComputedRef<number>,
     maxHealth: PlayerComputedRef<number>,
     overheatAt: PlayerComputedRef<number>,
     overheated: PlayerComputedRef<boolean>,

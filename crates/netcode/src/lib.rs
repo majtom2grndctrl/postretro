@@ -86,6 +86,7 @@ pub mod weapon_cues;
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
 // trackers stay registry-blind.
+pub mod life_state_elapsed;
 pub mod life_state_tables;
 mod state_slots;
 mod tuning_payload;

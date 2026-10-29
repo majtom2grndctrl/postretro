@@ -22,3 +22,5 @@ mod tween_panel;
 mod tween_text;
 mod value_text;
 mod visibility;
+
+mod life_state;

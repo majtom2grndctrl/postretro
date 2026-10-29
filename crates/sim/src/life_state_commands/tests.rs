@@ -115,6 +115,7 @@ fn life_state_player_event_applies_only_to_subject_and_same_state_preserves_elap
         .unwrap();
     assert_eq!(first_state.life_state, down);
     assert_eq!(first_state.life_state_elapsed_ticks, 0);
+    assert_eq!(life_ms(&registry, first), 0.0);
     assert_eq!(
         registry
             .get_component::<PlayerMovementComponent>(second)
@@ -182,7 +183,9 @@ fn life_state_clock_advances_for_remote_pawn_without_commands() {
     let pawn = world.spawn_player(Some(Seat(1)), 0.0);
     install_states(&world, &[pawn]);
     let mut registry = world.script_ctx.registry.borrow_mut();
+    assert_eq!(life_ms(&registry, pawn), 0.0);
     advance_unstepped_life_state_time(&mut registry, &[], None);
+    assert_eq!(life_ms(&registry, pawn), 16.0);
     assert_eq!(
         registry
             .get_component::<PlayerMovementComponent>(pawn)
@@ -304,7 +307,9 @@ fn life_state_o15_trigger_write_reads_zero_before_next_host_tick() {
             .life_state_elapsed_ticks,
         0
     );
+    assert_eq!(life_ms(&registry, pawn), 0.0);
     advance_unstepped_life_state_time(&mut registry, &[], None);
+    assert_eq!(life_ms(&registry, pawn), 16.0);
     assert_eq!(
         registry
             .get_component::<PlayerMovementComponent>(pawn)
@@ -390,7 +395,9 @@ fn life_state_o39_wait_tail_enters_at_drain_and_reload_drops_pending_tail() {
         "down"
     );
     assert_eq!(movement.life_state_elapsed_ticks, 0);
+    assert_eq!(life_ms(&world.script_ctx.registry.borrow(), pawn), 0.0);
     advance_unstepped_life_state_time(&mut world.script_ctx.registry.borrow_mut(), &[], None);
+    assert_eq!(life_ms(&world.script_ctx.registry.borrow(), pawn), 16.0);
     assert_eq!(
         world
             .script_ctx
@@ -425,5 +432,90 @@ fn life_state_o39_wait_tail_enters_at_drain_and_reload_drops_pending_tail() {
     assert_eq!(
         world.script_ctx.data_registry.borrow().life_state_names[usize::from(movement.life_state)],
         "alive"
+    );
+}
+
+fn life_ms(registry: &EntityRegistry, pawn: EntityId) -> f32 {
+    match postretro_scripting_core::player_slots::player_slot_value(
+        registry,
+        postretro_scripting_core::player_slots::PlayerSlot::LifeStateMs,
+        pawn,
+    ) {
+        Some(postretro_entities::SlotValue::Number(value)) => value,
+        other => panic!("missing life elapsed fact: {other:?}"),
+    }
+}
+
+#[test]
+fn life_state_o15_player_event_first_next_pass_reads_16_and_threshold_first_at_900() {
+    let mut world = World::new();
+    let pawn = world.spawn_player(Some(Seat(0)), 0.0);
+    install_states(&world, &[pawn]);
+    world.install(
+        vec![on_player("down", "setLifeState", json!({"state":"down"}))],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            lt(input("player.health"), number(1.0)),
+            &["down"],
+        )],
+    );
+    world.tick();
+    assert_eq!(life_ms(&world.script_ctx.registry.borrow(), pawn), 0.0);
+    for tick in 1..=900 {
+        advance_unstepped_life_state_time(&mut world.script_ctx.registry.borrow_mut(), &[], None);
+        let ms = life_ms(&world.script_ctx.registry.borrow(), pawn);
+        if tick == 1 {
+            assert_eq!(ms, 16.0);
+        }
+        assert_eq!(ms >= 15_000.0, tick == 900, "tick {tick}, {ms}ms");
+        world.tick();
+    }
+}
+
+#[test]
+fn life_state_o27_short_state_is_seen_for_exactly_one_host_pass() {
+    let mut world = World::new();
+    let pawn = world.spawn_player(Some(Seat(0)), 100.0);
+    install_states(&world, &[pawn]);
+    world.install(
+        vec![on_player("leave", "setLifeState", json!({"state":"alive"}))],
+        vec![player_event(
+            PlayerEventEdge::Becomes,
+            input("player.inLifeState:down"),
+            &["leave"],
+        )],
+    );
+    set_life_state(
+        &world.script_ctx,
+        &mut world.script_ctx.registry.borrow_mut(),
+        &[pawn],
+        "down",
+    );
+    let before = world
+        .script_ctx
+        .registry
+        .borrow()
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .life_state;
+    world.tick();
+    let after = world
+        .script_ctx
+        .registry
+        .borrow()
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .life_state;
+    assert_ne!(before, after);
+    world.tick();
+    assert_eq!(
+        world
+            .script_ctx
+            .registry
+            .borrow()
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .life_state,
+        after
     );
 }

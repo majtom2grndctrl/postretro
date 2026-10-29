@@ -14,6 +14,8 @@ mod frame_eye;
 mod frame_loop;
 mod host_activations;
 mod host_overlays;
+mod life_state_clock;
+mod life_state_display;
 mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
@@ -972,6 +974,7 @@ pub(crate) struct App {
     fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
+    life_state_display: life_state_display::LifeStateDisplay,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the
     /// cell sets its demand joins.
@@ -3080,8 +3083,10 @@ impl App {
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
         frontend_menu_is_present: bool,
+        life_state_projection: Option<life_state_display::UiProjection<'_>>,
     ) -> postretro_ui::UiReadSnapshot {
-        let slot_values = Self::build_ui_display_slot_snapshot(slot_table, net_endpoint);
+        let slot_values =
+            Self::build_ui_display_slot_snapshot(slot_table, net_endpoint, life_state_projection);
         let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
@@ -3376,6 +3381,7 @@ impl App {
             session.ui_input_mode,
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
+            None,
         );
         ui_snapshot.wheel = self.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
@@ -3424,10 +3430,16 @@ impl App {
     pub(crate) fn build_ui_display_slot_snapshot(
         slot_table: &postretro_entities::SlotTable,
         net_endpoint: Option<&netcode::NetEndpoint>,
+        life_state_projection: Option<life_state_display::UiProjection<'_>>,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
         let mut values = Self::build_ui_slot_snapshot(slot_table);
         if let Some(netcode::NetEndpoint::Client { state_slots, .. }) = net_endpoint {
             state_slots.apply_timed_slot_targets(&mut values);
+        }
+        if let Some(projection) = life_state_projection {
+            projection
+                .display
+                .project(&mut values, projection.sample, projection.frame_dt);
         }
         values
     }
@@ -12643,6 +12655,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         cells.write(
             "title".to_string(),
@@ -12660,6 +12673,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         assert_eq!(
             occluded
@@ -12687,6 +12701,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         assert_eq!(restored.trees[0].name, "title");
         assert_eq!(

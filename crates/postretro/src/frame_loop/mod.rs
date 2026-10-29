@@ -1406,6 +1406,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // a materialized local weapon so reload-feedback acknowledgement
     // cannot accumulate. A missing local weapon is a safe no-op.
     let is_connected_client = app.is_connected_client();
+    let client_life_state_name = app.session.as_ref().and_then(|session| {
+        let netcode::NetEndpoint::Client {
+            life_state_tables, ..
+        } = session.net_endpoint.as_ref()?
+        else {
+            return None;
+        };
+        let registry = script_ctx.registry.borrow();
+        let pawn = registry.local_player_pawn()?;
+        let movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .ok()?;
+        Some(life_state_tables.name(movement).to_owned())
+    });
     let hud_sampled_weapon = if let Some(session) = app.session.as_mut() {
         session
             .scripting
@@ -1414,7 +1428,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         session
             .scripting
             .player_hud_state
-            .tick_for_role_and_report_sampled_weapon(is_connected_client, None)
+            .tick_for_role_and_report_sampled_weapon(
+                is_connected_client,
+                client_life_state_name.as_deref(),
+            )
     } else {
         None
     };
@@ -2586,6 +2603,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session.ui_input_mode,
             app.ui_focused_id.clone(),
             frontend_menu_is_present,
+            Some(crate::life_state_display::UiProjection {
+                sample: crate::life_state_display::sample(
+                    &script_ctx,
+                    session.net_endpoint.as_ref(),
+                    frame_result.alpha,
+                ),
+                display: &mut app.life_state_display,
+                frame_dt: std::time::Duration::from_secs_f32(frame_script_delta.max(0.0)),
+            }),
         );
         ui_snapshot.wheel = app.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);

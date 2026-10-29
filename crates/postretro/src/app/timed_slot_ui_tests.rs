@@ -116,6 +116,7 @@ fn snapshot(app: &mut App, descriptor: &AnchoredTree, now: f64) -> UiReadSnapsho
         session.ui_input_mode,
         None,
         false,
+        None,
     )
 }
 

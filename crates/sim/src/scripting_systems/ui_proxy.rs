@@ -306,12 +306,13 @@ impl PlayerHudStatePublisher {
     pub fn tick_for_role_and_report_sampled_weapon(
         &mut self,
         is_connected_client: bool,
-        _legacy_active_wieldable: Option<EntityId>,
+        client_life_state_name: Option<&str>,
     ) -> Option<EntityId> {
         // A connected client suppresses host-authoritative HUD writes, but still
         // samples its locally-owned active component so the HUD feedback consumer
         // can acknowledge and drain its stream.
         if is_connected_client {
+            self.publish_life_state(true, client_life_state_name);
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
             let values = weapon_hud_values(&self.ctx.registry.borrow());
@@ -346,6 +347,7 @@ impl PlayerHudStatePublisher {
     }
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
+        self.publish_life_state(false, None);
         self.publish_local_per_owner_mod_slots();
         let values = weapon_hud_values(&self.ctx.registry.borrow());
         self.publish_local_weapon_state(&values);
@@ -445,6 +447,48 @@ impl PlayerHudStatePublisher {
     /// Publish the local pawn's `player.swimming` and `player.immersion`
     /// through the shared per-pawn lookup. A slot whose source the pawn lacks
     /// (no pawn, no movement or immersion component) keeps its last value.
+    /// Names are local presentation values; connected clients resolve through
+    /// the host table history before entering this publisher.
+    fn publish_life_state(&mut self, is_connected_client: bool, client_name: Option<&str>) {
+        let (name, elapsed) = {
+            let registry = self.ctx.registry.borrow();
+            let pawn = if is_connected_client {
+                registry.local_player_pawn()
+            } else {
+                registry.local_player_movement_pawn()
+            };
+            let Some(pawn) = pawn else {
+                return;
+            };
+            let Ok(movement) =
+                registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            else {
+                return;
+            };
+            let name = if is_connected_client {
+                client_name.unwrap_or("").to_owned()
+            } else if movement.life_state == postretro_foundation::UNDECLARED_LIFE_STATE {
+                String::new()
+            } else {
+                self.ctx
+                    .data_registry
+                    .borrow()
+                    .life_state_names
+                    .get(usize::from(movement.life_state))
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            (
+                name,
+                player_slot_value(&registry, PlayerSlot::LifeStateMs, pawn),
+            )
+        };
+        self.write_hud_slot("player.lifeState", SlotValue::String(name));
+        if !is_connected_client && let Some(elapsed) = elapsed {
+            self.write_hud_slot("player.lifeStateMs", elapsed);
+        }
+    }
+
     fn publish_swim_values(&mut self) {
         let (swimming, immersion) = {
             let registry = self.ctx.registry.borrow();
@@ -1700,7 +1744,7 @@ mod tests {
         // Regression: a failed reload-slot write advanced the HUD cursor and
         // discarded an endpoint that never reached the complete HUD surface.
         assert_eq!(
-            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            publisher.tick_for_role_and_report_sampled_weapon(false, None),
             None
         );
         assert_eq!(
@@ -1725,7 +1769,7 @@ mod tests {
             .schema
             .slot_type = SlotType::Boolean;
         assert_eq!(
-            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            publisher.tick_for_role_and_report_sampled_weapon(false, None),
             Some(weapon_id),
             "successful retry reports the weapon for acknowledgement"
         );
@@ -2288,3 +2332,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ui_proxy_life_state_tests.rs"]
+mod life_state_tests;

@@ -8,12 +8,11 @@ read at: 834a09c51
 
 The brief was claimed from current `origin/main` (4b59b3b93), moved to
 `in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. Task 1 implementation and focused verification are complete. Tasks 2–4 are
-in progress concurrently under their approved ownership boundaries. The usage-window interruption left edits intact; the
-session resumed on 2026-10-28 without changing the approved scope. A cold
-type-check found an import error and two missed test endpoint fields, now fixed.
-No acceptance row is proved until its tests run. A small presentation-clock
-design experiment is recorded below.
+`codex/player-life-states`. Tasks 1–4 are complete and committed as separate
+verified milestones. The next task is Task 5 respawn, with the tick-start and
+foot-anchor Path corrections recorded below. The usage-window interruptions
+left edits intact; no scope or owner approval changed. Manual AC17/AC18 proof
+remains outstanding for the final runbook.
 
 The legacy brief has no compact/resumable header. Use resumable coordination
 because its seven tasks cross descriptor validation, prediction, replication,
@@ -221,7 +220,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | 1 | Thin slice: shared descriptor validation → global table/profile stamps → spawn/state verb/predicate → tuning/wire history → production fire gates | integrating executor | plan approved | done: focused checks, conditioned fire and SDK proof pass |
 | 2 | Movement value/ability/posture gates, teleport touch gate, owner look sampling, forced-smoothed reconcile and presented eye ease | movement worker; shared stamps/reconcile integration owned by executor | 1 | done: movement, relay ordering and eye/look proofs pass |
 | 3 | Switch/reload/use/touch/occupancy/damage gates; single Triggers-stage capability capture and player_life helpers | simulation worker | 1 | done: 7 sim, 2 netcode and 2 app behavior tests pass |
-| 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | implementation in progress; focused verification pending |
+| 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | done: catalog, publication, clock, remap, replication and SDK proofs pass |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | not started |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | not started |
 | 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
@@ -293,11 +292,12 @@ update together.
 - SDK generation completed; typedef consistency first passed 49/50. The failed
   check assumed a contiguous old subset of player refs. It now checks the
   hierarchy while the existing source-derived catalog loop checks every leaf
-  and capability. Focused retest is pending.
-- Still required before Task 4 commit:
-  SDK generation/typedef consistency and formatting/whitespace verification.
-  Task 5 has not started; its two-phase tick start and foot-anchor corrections
-  are recorded above.
+  and capability. Focused retest passes all 50 tests.
+- Catalog tests pass all 14 cases; formatting and whitespace checks pass.
+  Task 4 is complete. The presentation value is tested separately from gameplay
+  slots; AC17/AC18 external visual proof remains outstanding.
+- Task 5 begins next, using its recorded two-phase tick-start and foot-anchor
+  corrections. No full workspace suite or final preflight has run.
 
 These are required scenario allocations. Replace each with concrete executed
 test names/results as its task completes. Shared rows require proof at both

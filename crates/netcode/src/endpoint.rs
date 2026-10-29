@@ -769,6 +769,7 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        state_slots.clear_life_state_elapsed_witness();
         *tuning = None;
         life_state_tables.clear();
         *applied_movement_tuning_generation = 0;
@@ -870,6 +871,7 @@ impl NetEndpoint {
         pending_switch_declarations.clear();
         time_sync.clear_retired_input_facts();
         state_slots.reset_timed_slot_targets();
+        state_slots.clear_life_state_elapsed_witness();
     }
 
     /// The host's level state (level gravity and fluid table) from this

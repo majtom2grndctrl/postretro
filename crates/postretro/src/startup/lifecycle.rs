@@ -563,6 +563,7 @@ impl App {
         // keeps it installed.
         self.install_environment_volumes(&world);
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
+        self.life_state_eye = Default::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
         self.retain_active_level_tags_for_install();
@@ -1975,6 +1976,7 @@ pub(crate) mod tests {
             fluid_surface_render:
                 postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(),
             fluid_eye: Default::default(),
+            life_state_display: Default::default(),
             planar_render: Default::default(),
             trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
             teleporter_bindings: Default::default(),

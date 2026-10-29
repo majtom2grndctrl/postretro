@@ -705,6 +705,7 @@ impl ScriptRuntime {
             // One mutable registry borrow commits the staged whole snapshot, so
             // a render frame cannot observe new descriptors without their
             // matching mod-global weapon-placement default.
+            let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
                 let mut faction_sentiment = ctx.faction_sentiment.borrow_mut();
@@ -724,6 +725,7 @@ impl ScriptRuntime {
                 data_registry.replace_global_trigger_pools(next_global_trigger_pools);
                 data_registry.replace_global_player_events(next_global_player_events);
             }
+            crate::life_state_remap::remap_live_life_states(ctx, &previous_life_state_names);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
 

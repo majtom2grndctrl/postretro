@@ -3,6 +3,9 @@
 
 #![deny(unsafe_code)]
 
+/// Canonical fixed simulation step, shared by tick scheduling and elapsed facts.
+pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_micros(16_667);
+
 pub mod brain;
 pub mod candidate;
 pub mod data_descriptors;

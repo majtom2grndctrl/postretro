@@ -36,6 +36,7 @@ pub enum PlayerSlot {
     WeaponCooldownMs,
     Swimming,
     Immersion,
+    LifeStateMs,
 }
 
 impl PlayerSlot {
@@ -54,6 +55,7 @@ impl PlayerSlot {
         PlayerSlot::WeaponCooldownMs,
         PlayerSlot::Swimming,
         PlayerSlot::Immersion,
+        PlayerSlot::LifeStateMs,
     ];
 
     /// The stable dotted wire name.
@@ -73,6 +75,7 @@ impl PlayerSlot {
             PlayerSlot::WeaponCooldownMs => "player.weaponCooldownMs",
             PlayerSlot::Swimming => "player.swimming",
             PlayerSlot::Immersion => "player.immersion",
+            PlayerSlot::LifeStateMs => "player.lifeStateMs",
         }
     }
 
@@ -92,7 +95,8 @@ impl PlayerSlot {
             | PlayerSlot::CellCapacity
             | PlayerSlot::ReloadProgress
             | PlayerSlot::WeaponCooldownMs
-            | PlayerSlot::Immersion => IrType::Number,
+            | PlayerSlot::Immersion
+            | PlayerSlot::LifeStateMs => IrType::Number,
         }
     }
 
@@ -103,7 +107,8 @@ impl PlayerSlot {
             PlayerSlot::Health
             | PlayerSlot::MaxHealth
             | PlayerSlot::Swimming
-            | PlayerSlot::Immersion => false,
+            | PlayerSlot::Immersion
+            | PlayerSlot::LifeStateMs => false,
             PlayerSlot::Ammo
             | PlayerSlot::AmmoReserve
             | PlayerSlot::Heat
@@ -199,6 +204,14 @@ pub fn player_slot_value_with(
             };
             return Some(SlotValue::Number(value));
         }
+        PlayerSlot::LifeStateMs => {
+            let movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()?;
+            return Some(SlotValue::Number(
+                life_state_milliseconds(movement.life_state_elapsed_ticks) as f32,
+            ));
+        }
         PlayerSlot::Swimming => {
             let movement = registry
                 .get_component::<PlayerMovementComponent>(pawn)
@@ -233,7 +246,8 @@ pub fn weapon_slot_value(
         PlayerSlot::Health
         | PlayerSlot::MaxHealth
         | PlayerSlot::Swimming
-        | PlayerSlot::Immersion => None,
+        | PlayerSlot::Immersion
+        | PlayerSlot::LifeStateMs => None,
         PlayerSlot::Ammo => weapon
             .effective()
             .ammo
@@ -268,4 +282,9 @@ pub fn weapon_slot_value(
             .is_finite()
             .then_some(SlotValue::Number(weapon.cooldown_remaining_ms)),
     }
+}
+
+/// Floor once after multiplying ticks, preserving the exact fixed-step duration.
+pub fn life_state_milliseconds(ticks: u32) -> u64 {
+    (u64::from(ticks) * postretro_foundation::TICK_DURATION.as_micros() as u64) / 1_000
 }

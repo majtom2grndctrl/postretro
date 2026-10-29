@@ -551,6 +551,10 @@ fn plan_movement_replace(
     // The vault bar is the caller's liveness verdict, not tuning; a reload while
     // dead must not let the pawn vault before the next verdict.
     refreshed.vault_barred = live.vault_barred;
+    refreshed.life_state = live.life_state;
+    refreshed.life_state_elapsed_ticks = live.life_state_elapsed_ticks;
+    refreshed.life_state_table_revision = live.life_state_table_revision;
+    postretro_foundation::carry_life_state_stamps(live, &mut refreshed);
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
     // budget reseeds from the new descriptor rather than carrying the live (now
     // stale-against-the-new-max) count across. `air_jumps_remaining` and

@@ -32,6 +32,7 @@ struct PawnState {
     weapon: Option<WeaponComponent>,
     reserve: u32,
     swim: Option<SwimState>,
+    life_ticks: Option<u32>,
 }
 
 /// A movement pawn's swim state and resolved immersion.
@@ -48,6 +49,7 @@ impl PawnState {
             weapon: None,
             reserve: 0,
             swim: None,
+            life_ticks: None,
         }
     }
 
@@ -57,6 +59,7 @@ impl PawnState {
             weapon: Some(weapon),
             reserve: 0,
             swim: None,
+            life_ticks: None,
         }
     }
 
@@ -184,6 +187,16 @@ fn differing_states(slot: PlayerSlot) -> [PawnState; 2] {
         ],
         PlayerSlot::Swimming => [PawnState::moving(true, 0.8), PawnState::moving(false, 0.2)],
         PlayerSlot::Immersion => [PawnState::moving(true, 0.8), PawnState::moving(false, 0.0)],
+        PlayerSlot::LifeStateMs => [
+            PawnState {
+                life_ticks: Some(900),
+                ..PawnState::healthy(0.0, 100.0)
+            },
+            PawnState {
+                life_ticks: Some(123),
+                ..PawnState::healthy(100.0, 100.0)
+            },
+        ],
     }
 }
 
@@ -212,6 +225,11 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
         registry
             .set_component(pawn, ImmersionComponent { immersion })
             .unwrap();
+    }
+    if let Some(ticks) = state.life_ticks {
+        let mut movement = movement_component();
+        movement.life_state_elapsed_ticks = ticks;
+        registry.set_component(pawn, movement).unwrap();
     }
     if let Some(weapon) = state.weapon {
         let weapon_id = registry.spawn(Transform::default());

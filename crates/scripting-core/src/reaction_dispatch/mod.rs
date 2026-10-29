@@ -95,7 +95,7 @@ pub fn fire_named_event_with_sequences(
         match &named.descriptor {
             ReactionDescriptor::Progress(_) => {}
             ReactionDescriptor::Primitive(p) => {
-                if client_landing_drops(&p.primitive, &p.args, script_ctx) {
+                if client_landing_drops(event_name, &p.primitive, &p.args, script_ctx) {
                     if let Some(on_complete) = &p.on_complete {
                         chained.push(on_complete.clone());
                     }
@@ -210,7 +210,7 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                 // kills — and then again at the real threshold.
             }
             PrepartitionedReactionStep::Descriptor(
-                _,
+                address,
                 _,
                 ReactionDescriptor::Primitive(primitive),
             ) => {
@@ -225,7 +225,8 @@ pub fn fire_prepartitioned_reactions_with_sequences(
                     "trigger residual contains consequential primitive `{}`; binding must execute it in the fixed tick",
                     primitive.primitive,
                 );
-                if !client_landing_drops(&primitive.primitive, &primitive.args, script_ctx) {
+                if !client_landing_drops(address, &primitive.primitive, &primitive.args, script_ctx)
+                {
                     dispatch_primitive(primitive, reaction_registry, system_registry, script_ctx);
                 }
                 if let Some(on_complete) = &primitive.on_complete {
@@ -353,15 +354,21 @@ fn dispatch_deferred_named_events_with_sequences_up_to(
 /// Inside a client's `wait` landing, whether `primitive` is a step this
 /// landing does not apply. The host lands everything; a client lands only
 /// machine-local steps (`scripting.md` §12, Steps after a `wait`). A dropped
-/// step is recorded for the landing's diagnostics.
-fn client_landing_drops(primitive: &str, args: &serde_json::Value, script_ctx: &ScriptCtx) -> bool {
+/// step is recorded, with the `reaction` holding it, for the landing's
+/// diagnostics.
+fn client_landing_drops(
+    reaction: &str,
+    primitive: &str,
+    args: &serde_json::Value,
+    script_ctx: &ScriptCtx,
+) -> bool {
     let Some(mode) = script_ctx.landing.client() else {
         return false;
     };
     if mode.keeps(primitive, args, &script_ctx.slot_table.borrow()) {
         return false;
     }
-    script_ctx.landing.note_dropped(primitive);
+    script_ctx.landing.note_dropped(reaction, primitive);
     true
 }
 

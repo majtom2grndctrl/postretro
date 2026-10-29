@@ -91,16 +91,17 @@ fn level_load_tail_sound_plays_once_on_each_machine_from_its_own_landing() {
 }
 
 /// Per machine, in install order (host, client A, client B): how many times a
-/// `note` member step ran. Registered on every machine before install.
+/// `note` member step ran. Registered on every machine installed while the
+/// returned hook guard lives.
 fn counted_notes(
     world: &postretro_level_loader::LevelWorld,
-) -> Vec<std::rc::Rc<std::cell::Cell<usize>>> {
+) -> (InstallHookGuard, Vec<std::rc::Rc<std::cell::Cell<usize>>>) {
     let _ = world;
     let counters: Vec<_> = (0..3)
         .map(|_| std::rc::Rc::new(std::cell::Cell::new(0)))
         .collect();
     let shared = counters.clone();
-    set_install_hook(move |index, scripting, ctx| {
+    let hook = set_install_hook(move |index, scripting, ctx| {
         let counter = shared[index].clone();
         scripting.sequence_registry.register("note", move |_, _| {
             counter.set(counter.get() + 1);
@@ -144,7 +145,7 @@ fn counted_notes(
                 .unwrap();
         }
     });
-    counters
+    (hook, counters)
 }
 fn note_step() -> SequenceStep {
     SequenceStep {
@@ -207,7 +208,7 @@ fn captured(app: &App, light: EntityId) -> bool {
 // host lands all three, presenting the sound locally.
 #[test]
 fn s9_host_mirrored_tail_lands_only_machine_local_steps_on_the_client() {
-    let notes = counted_notes(&fixture_world());
+    let (_hook, notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
         vec![body(
@@ -299,7 +300,7 @@ fn s11_member_step_in_a_landing_is_captured_on_the_host_and_replicates() {
 // nothing above debug; the host lands it.
 #[test]
 fn s38_client_parks_nothing_for_a_tail_with_nothing_to_land() {
-    let notes = counted_notes(&fixture_world());
+    let (_hook, notes) = counted_notes(&fixture_world());
     let capture = LogCapture::start();
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
@@ -320,7 +321,7 @@ fn s38_client_parks_nothing_for_a_tail_with_nothing_to_land() {
 // The host's write reaching the client is slot replication's own contract.
 #[test]
 fn s36_client_reads_across_its_own_dropped_write() {
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
         vec![body(
@@ -421,7 +422,7 @@ fn r_tail(sound: &str, wait_ms: f64) -> NamedReaction {
 // `x` before the wait.
 #[test]
 fn s12_one_reaction_under_two_source_classes_parks_twice() {
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
         vec![body("plate", vec![fire_step("r")]), r_tail("x", 2000.0)],
@@ -447,7 +448,7 @@ fn s12_one_reaction_under_two_source_classes_parks_twice() {
 // instance: the second, inside the first's wait, is a re-fire and ignored.
 #[test]
 fn s31_two_crossings_under_one_class_and_clock_share_an_instance() {
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(fixture_world(), vec![r_tail("x", 2000.0)]);
     h.advance(10);
     let capture = LogCapture::start();
@@ -498,7 +499,7 @@ fn s33_fire_seeded_level_load_tail_keeps_its_class() {
 // runs every one. UI-stack and local text edits land on each machine.
 #[test]
 fn client_landing_drops_host_consequences_and_lands_machine_local_steps() {
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
         vec![
@@ -631,7 +632,7 @@ fn own_state_warnings(capture: &LogCapture) -> Vec<String> {
 // its own landing; the host never sends it.
 #[test]
 fn s13_own_state_crossing_tail_plays_on_the_machine_that_crossed() {
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let vignette = system_step("vignette", json!({ "strength": 0.5, "durationMs": 100 }));
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
@@ -712,7 +713,7 @@ fn own_state_tail_member_step_stays_on_the_machine_that_crossed() {
         ),
     ];
     for (pin, mixed, reactions, warned) in cases {
-        let _notes = counted_notes(&fixture_world());
+        let (_hook, _notes) = counted_notes(&fixture_world());
         let mut h = Harness::with_shared_reactions(fixture_world(), reactions);
         h.advance(10);
         let capture = LogCapture::start();
@@ -761,7 +762,7 @@ fn s40_own_state_tail_on_a_networked_light_is_captured() {
         let probe = installed_with_reactions(&fixture_world(), false, Vec::new());
         tagged(&script_ctx(&probe), "lit_prop")
     };
-    let _notes = counted_notes(&fixture_world());
+    let (_hook, _notes) = counted_notes(&fixture_world());
     let mut h = Harness::with_shared_reactions(
         fixture_world(),
         vec![body("low", vec![wait_step(600.0), fade(lit)])],
@@ -826,7 +827,7 @@ fn ghost_links_klaxon_plays_once_per_connected_machine_and_never_for_a_late_join
     assert_eq!(reactions.len(), 2, "levelLoad and closet.a1 install");
     assert_eq!(reactions, ghost_links_reactions(true), "the twins agree");
     // `closet.a1` wakes its knights through the npc group verb.
-    set_install_hook(|_, scripting, _| {
+    let _hook = set_install_hook(|_, scripting, _| {
         postretro_sim::scripting::reactions::registry::register_npc_state_reaction_primitives(
             &mut scripting.reaction_registry,
         );

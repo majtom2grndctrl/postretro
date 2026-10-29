@@ -3,6 +3,7 @@
 // compile inside one.
 import {
   type EntityId,
+  type LevelManifest,
   type TriggerEventParams,
   defineReaction,
   fire,
@@ -53,6 +54,12 @@ const onCompleteEntry = defineReaction([{ primitive: "moverStart", id: doorId, a
 // @ts-expect-error The same rules hold inside a `sequence` list.
 const handleInSequence = defineReaction({ sequence: [playSound("a"), [closet]] });
 
+// A raw manifest reaction carries a flat `sequence`: only `defineReaction`
+// flattens, so a raw literal spreads the arrays builders return.
+const rawFlat: LevelManifest = { reactions: [{ name: "raw", sequence: [...wait(5), playSound("a")] }] };
+// @ts-expect-error A raw manifest `sequence` is flat; nothing lowers a nested one.
+const rawNested: LevelManifest = { reactions: [{ name: "raw", sequence: [wait(5), playSound("a")] }] };
+
 export {
   empty,
   handleEntry,
@@ -61,6 +68,8 @@ export {
   nested,
   onCompleteEntry,
   progressEntry,
+  rawFlat,
+  rawNested,
   sequenceEntry,
   swell,
   traced,

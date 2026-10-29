@@ -3,8 +3,8 @@
 -- `getMapEntities("fog")`. The handle composes the
 -- generated `FogVolumeEntity` snapshot with capability methods
 -- (`pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation`)
--- that return `{SetFogAnimationStep}` arrays suitable for splicing into
--- a `defineReaction("...", { sequence = ... })` body.
+-- that return `{SetFogAnimationStep}` arrays, usable directly in an array
+-- body or a `sequence` (nested tables flatten).
 --
 -- `wrapFogVolumeEntity` is included in the returned table; the Luau
 -- prelude evaluator (`luau.rs`) extracts it and installs it as a

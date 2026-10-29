@@ -204,10 +204,10 @@ local function presentationAudience(args, options)
   end
 end
 
---- Play a sound through the audio module. Pure: returns a primitive reaction
---- body, no engine side effect. Pass the result as the descriptor of
---- `defineReaction("name", playSound(...))`. `sound` is an audio asset id.
---- Without `at` the sound plays unpositioned.
+--- Play a sound through the audio module. Pure: returns a system reaction, no
+--- engine side effect: a body on its own (`defineReaction("name",
+--- playSound(...))`) or a step in a sequence or array body. `sound` is an audio
+--- asset id. Without `at` the sound plays unpositioned.
 function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): SystemReactionStep
   -- Guard the shape before reading fields: a string indexes the string
   -- library, so the pre-options `playSound(sound, "sfx")` form would read
@@ -232,8 +232,9 @@ function UiReactionsSdk.playSound(sound: string, options: PlaySoundOptions?): Sy
   return { primitive = "playSound", args = args }
 end
 
---- Drive gamepad force feedback through gilrs. Pure: returns a primitive
---- reaction body, no engine side effect. `strong` and the optional `weak`
+--- Drive gamepad force feedback through gilrs. Pure: returns a system
+--- reaction (a body on its own or a step in a sequence or array body), no
+--- engine side effect. `strong` and the optional `weak`
 --- (omitted when nil) are 0-1 motor intensities; `durationMs` is the rumble
 --- length in milliseconds. A warn-once no-op when force feedback is
 --- unsupported.
@@ -247,9 +248,10 @@ function UiReactionsSdk.rumble(strong: number, durationMs: number, weak: number?
 end
 
 --- Flash the screen by writing the engine-owned `screen.flash` RGBA slot,
---- which decays back to transparent. Pure: returns a primitive reaction body,
---- no engine side effect. `color` is an `{r, g, b, a}` tuple (0-1); `durationMs`
---- is the decay time in milliseconds.
+--- which decays back to transparent. Pure: returns a system reaction (a body
+--- on its own or a step in a sequence or array body), no engine side effect.
+--- `color` is an `{r, g, b, a}` tuple (0-1); `durationMs` is the decay time in
+--- milliseconds.
 function UiReactionsSdk.flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): SystemReactionStep
   local args = { color = color, durationMs = durationMs }
   presentationAudience(args, options)
@@ -258,7 +260,8 @@ end
 
 --- Darken (or tint) the screen edges by writing the engine-owned
 --- `screen.vignette` slot, which rises to peak then decays back to rest. Pure:
---- returns a primitive reaction body, no engine side effect. `strength` is the
+--- returns a system reaction (a body on its own or a step in a sequence or
+--- array body), no engine side effect. `strength` is the
 --- peak edge-darken amount; `durationMs` is the total rise-plus-decay time in
 --- milliseconds. The optional `color` is an `{r, g, b}` linear-RGB tint (omitted
 --- when nil ⇒ black, a pure strength-only edge-darken).
@@ -277,8 +280,9 @@ function UiReactionsSdk.vignette(
 end
 
 --- Shake the screen by writing the engine-owned `screen.shake` offset slot, a
---- decaying oscillation that fades to rest. Pure: returns a primitive reaction
---- body, no engine side effect. `amplitude` is the peak displacement in
+--- decaying oscillation that fades to rest. Pure: returns a system reaction
+--- (a body on its own or a step in a sequence or array body), no engine side
+--- effect. `amplitude` is the peak displacement in
 --- logical-reference px; `durationMs` is the total decay time in milliseconds.
 --- The optional `frequency` is the oscillation rate in Hz (omitted when nil ⇒
 --- the engine applies its default frequency).
@@ -296,8 +300,9 @@ function UiReactionsSdk.screenShake(
   return { primitive = "screenShake", args = args }
 end
 
---- Push a dialog UI tree onto the modal stack. Pure: returns a primitive
---- reaction body, no engine side effect. `tree` names the UI tree to show; the
+--- Push a dialog UI tree onto the modal stack. Pure: returns a system
+--- reaction (a body on its own or a step in a sequence or array body), no
+--- engine side effect. `tree` names the UI tree to show; the
 --- optional `onCommit` (omitted when nil) names a reaction fired when the
 --- dialog commits. An unknown tree name warns and no-ops at dispatch time.
 function UiReactionsSdk.showDialog(tree: string, onCommit: string?): SystemReactionStep
@@ -355,7 +360,8 @@ function UiReactionsSdk.accessibilityAction(field: string, op: string): string
 end
 
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
---- Pure: returns a primitive reaction body wrapping `showDialog`. The keyboard is
+--- Pure: returns a `showDialog` system reaction (a body on its own or a step in
+--- a sequence or array body). The keyboard is
 --- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
 --- `ui.textEntry` to show the live entry. The optional `onCommit` (omitted when
 --- nil) names a reaction fired on commit (the on-screen `done` key or hardware
@@ -365,21 +371,24 @@ function UiReactionsSdk.openTextEntry(onCommit: string?): SystemReactionStep
   return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
 end
 
---- Push a menu UI tree onto the modal stack. Pure: returns a primitive
---- reaction body, no engine side effect. A v1 alias of `showDialog` (identical
+--- Push a menu UI tree onto the modal stack. Pure: returns a system reaction
+--- (a body on its own or a step in a sequence or array body), no engine side
+--- effect. A v1 alias of `showDialog` (identical
 --- push behavior) without the `onCommit` hook. An unknown tree name warns and
 --- no-ops at dispatch time.
 function UiReactionsSdk.openMenu(tree: string): SystemReactionStep
   return { primitive = "openMenu", args = { tree = tree } }
 end
 
---- Pop the top UI tree off the modal stack. Pure: returns a primitive reaction
---- body, no engine side effect. An empty stack warns and no-ops at dispatch time.
+--- Pop the top UI tree off the modal stack. Pure: returns a system reaction (a
+--- body on its own or a step in a sequence or array body), no engine side
+--- effect. An empty stack warns and no-ops at dispatch time.
 function UiReactionsSdk.closeDialog(): SystemReactionStep
   return { primitive = "closeDialog", args = {} }
 end
 
---- Load a map by catalog id. Pure: returns a primitive reaction body, no FFI.
+--- Load a map by catalog id. Pure: returns a system reaction (a body on its own
+--- or a step in a sequence or array body), no FFI.
 --- `id` must match a `ModMapEntry.id` committed from `ModManifest.maps`. The
 --- engine queues the lifecycle load when the reaction fires; unknown ids warn
 --- and no-op at dispatch time.
@@ -387,15 +396,17 @@ function UiReactionsSdk.loadLevel(id: string): SystemReactionStep
   return { primitive = "loadLevel", args = { map = id } }
 end
 
---- Reload the currently-active map source. Pure: returns a primitive reaction
---- body, no FFI. Uses the retained catalog id for catalog loads or the raw dev
+--- Reload the currently-active map source. Pure: returns a system reaction (a
+--- body on its own or a step in a sequence or array body), no FFI. Uses the
+--- retained catalog id for catalog loads or the raw dev
 --- path for direct path loads; runtime no-ops when no level is active.
 function UiReactionsSdk.restartLevel(): SystemReactionStep
   return { primitive = "restartLevel", args = {} }
 end
 
 --- Return to the frontend menu, including its optional declared backdrop level.
---- Pure: returns a primitive reaction body, no FFI. Use from authored reactions;
+--- Pure: returns a system reaction (a body on its own or a step in a sequence or
+--- array body), no FFI. Use from authored reactions;
 --- use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
 --- the same lifecycle path.
 function UiReactionsSdk.returnToFrontend(): SystemReactionStep
@@ -429,8 +440,8 @@ function UiReactionsSdk.adjustSentiment(
 end
 
 --- Write `value` to the writable state reference at the game-logic stage.
---- Pure: returns the existing `setState` primitive reaction body, no engine
---- side effect. Literal values use the normal runtime readonly gate, coercion,
+--- Pure: returns the existing `setState` system reaction (a body on its own or
+--- a step in a sequence or array body), no engine side effect. Literal values use the normal runtime readonly gate, coercion,
 --- and range path. A fluent value (`read(...)` and its operators, including
 --- `byPlayer(on.player)` reads in a player-event reaction) or a raw
 --- `RuntimeValue` binds once at level install. Known Number and Boolean slots,
@@ -448,8 +459,9 @@ function UiReactionsSdk.updateState(ref: any, value: any): SystemReactionStep
 end
 
 --- Append `text` to the current string value of the writable String slot `slot`
---- at the game-logic stage (M13 Text Entry). Pure: returns a primitive reaction
---- body, no engine side effect. Readonly-gated through the same writable-slot gate
+--- at the game-logic stage (M13 Text Entry). Pure: returns a system reaction (a
+--- body on its own or a step in a sequence or array body), no engine side
+--- effect. Readonly-gated through the same writable-slot gate
 --- as `setState`: a readonly slot warns and is left unchanged; an engine-owned
 --- writable slot (e.g. `ui.textEntry`) is a valid target.
 function UiReactionsSdk.appendText(ref: any, text: string): SystemReactionStep
@@ -459,14 +471,16 @@ end
 --- Remove the last character -- one Unicode scalar value (the char-pop floor:
 --- never splits a UTF-8 sequence, but does not segment grapheme clusters) --
 --- from the writable String slot `slot` at the game-logic stage (M13 Text
---- Entry). Pure: returns a primitive reaction body, no engine side effect.
+--- Entry). Pure: returns a system reaction (a body on its own or a step in a
+--- sequence or array body), no engine side effect.
 --- Empty is a no-op with no warning. Readonly-gated like `setState`.
 function UiReactionsSdk.backspaceText(ref: any): SystemReactionStep
   return { primitive = "backspaceText", args = { slot = stateSlot(ref, "backspaceText") } }
 end
 
 --- Empty the writable String slot `slot` at the game-logic stage (M13 Text
---- Entry). Pure: returns a primitive reaction body, no engine side effect.
+--- Entry). Pure: returns a system reaction (a body on its own or a step in a
+--- sequence or array body), no engine side effect.
 --- Readonly-gated like `setState`.
 function UiReactionsSdk.clearText(ref: any): SystemReactionStep
   return { primitive = "clearText", args = { slot = stateSlot(ref, "clearText") } }

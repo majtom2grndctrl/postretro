@@ -573,9 +573,10 @@ export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlo
 --- `onComplete` follow-up are bodies, not steps: `defineReaction` raises.
 export type ReactionStepList = { SequenceStep | ReactionStepList }
 
---- Sequence reaction body: ordered member, group, subject-token and control
---- steps. Steps begin in array order; `fire` queues a named dispatch, while
---- `wait` stops the current drain and resumes the remaining tail later.
+--- An authored `{ sequence }` body: ordered member, group, subject-token,
+--- system and control steps. The list may nest; `defineReaction` flattens it.
+--- Steps begin in array order; `fire` queues a named dispatch, while `wait`
+--- stops the current drain and resumes the remaining tail after its delay.
 export type SequenceReactionDescriptor = {
   sequence: ReactionStepList,
 }
@@ -875,13 +876,12 @@ export type LevelManifest = {
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
---- `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
---- `primitive` (named Rust primitive with optional entity `tag` and typed
---- `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
---- steps). `name` is optional; when
---- omitted a deterministic, run-stable id is derived from the body. Use explicit
---- names when TS and Luau scripts must agree. The returned handle can be passed
---- to button `onPress` or crossing `fire` entries.
+--- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
+--- or a table of steps, which lowers to a `sequence`; nested tables flatten.
+--- Any other shape raises. `name` is optional; when omitted a deterministic,
+--- run-stable id is derived from the lowered body. Use explicit names when TS
+--- and Luau scripts must agree. The returned handle can be passed to button
+--- `onPress` or crossing `fire` entries.
 declare defineReaction: (
   ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
@@ -1064,24 +1064,24 @@ declare onStateCrossing: (
   & ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)
 )
 
---- System-reaction body: play `sound` through the audio module. Pure: returns
---- a `SystemReactionStep`, no FFI. Pass to
---- `defineReaction("name", playSound(...))`.
+--- Play `sound` through the audio module. Pure: returns a system reaction, no
+--- FFI: a body on its own (`defineReaction("name", playSound(...))`) or a step
+--- in a sequence or array body.
 declare function playSound(sound: string, options: PlaySoundOptions?): SystemReactionStep
 
---- System-reaction body: drive gilrs gamepad force feedback. `strong` and the
+--- System reaction: drive gilrs gamepad force feedback. `strong` and the
 --- optional `weak` (omitted when nil) are 0-1 motor intensities; `durationMs`
 --- is the rumble length. Warn-once no-op without force-feedback hardware.
 --- Pure: returns a `SystemReactionStep`, no FFI.
 declare function rumble(strong: number, durationMs: number, weak: number?, options: PresentationOptions?): SystemReactionStep
 
---- System-reaction body: flash the screen by writing the engine-owned
+--- System reaction: flash the screen by writing the engine-owned
 --- `screen.flash` RGBA slot, which decays to transparent. `color` is
 --- `{r, g, b, a}` (0-1); `durationMs` is the decay time. Pure: returns a
 --- `SystemReactionStep`, no FFI.
 declare function flashScreen(color: {number}, durationMs: number, options: PresentationOptions?): SystemReactionStep
 
---- System-reaction body: darken (or tint) the screen edges by writing the
+--- System reaction: darken (or tint) the screen edges by writing the
 --- engine-owned `screen.vignette` slot, which rises to peak then decays to rest.
 --- `strength` is the peak edge-darken amount; `durationMs` is the total
 --- rise-plus-decay time. Optional `color` is an `{r, g, b}` linear-RGB tint
@@ -1089,7 +1089,7 @@ declare function flashScreen(color: {number}, durationMs: number, options: Prese
 --- a `SystemReactionStep`, no FFI.
 declare function vignette(strength: number, durationMs: number, color: {number}?, options: PresentationOptions?): SystemReactionStep
 
---- System-reaction body: shake the screen by writing the engine-owned
+--- System reaction: shake the screen by writing the engine-owned
 --- `screen.shake` offset slot, a decaying oscillation that fades to rest.
 --- `amplitude` is the peak displacement in logical-reference px; `durationMs`
 --- is the total decay time. Optional `frequency` is the oscillation rate in Hz
@@ -1097,7 +1097,7 @@ declare function vignette(strength: number, durationMs: number, color: {number}?
 --- a `SystemReactionStep`, no FFI.
 declare function screenShake(amplitude: number, durationMs: number, frequency: number?, options: PresentationOptions?): SystemReactionStep
 
---- System-reaction body: push the dialog UI tree `tree` onto the modal stack,
+--- System reaction: push the dialog UI tree `tree` onto the modal stack,
 --- with an optional `onCommit` reaction (omitted when nil). An unknown tree name
 --- warns and no-ops at dispatch time. Pure: returns a `SystemReactionStep`,
 --- no FFI.
@@ -1135,7 +1135,7 @@ declare accessibilityAction: ((field: AccessibilityToggleField, op: "cycle") -> 
 --- frontend menu, and reload its optional backdrop level.
 declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
 
---- System-reaction body (M13 Text Entry): open the engine-shipped on-screen
+--- System reaction (M13 Text Entry): open the engine-shipped on-screen
 --- keyboard, a capturing modal that edits the `ui.textEntry` slot. Optional
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
 --- `done` key or hardware Enter); `nav.cancel` closes without firing it. The same
@@ -1143,30 +1143,30 @@ declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
 --- `showDialog("keyboard", onCommit)`. Pure: returns a `SystemReactionStep`.
 declare function openTextEntry(onCommit: string?): SystemReactionStep
 
---- System-reaction body: push the menu UI tree `tree` onto the modal stack. A
+--- System reaction: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
 --- An unknown tree name warns and no-ops at dispatch time. Pure: returns a
 --- `SystemReactionStep`, no FFI.
 declare function openMenu(tree: string): SystemReactionStep
 
---- System-reaction body: pop the top UI tree off the modal stack. An empty stack
+--- System reaction: pop the top UI tree off the modal stack. An empty stack
 --- warns and no-ops at dispatch time. Pure: returns a `SystemReactionStep`,
 --- no FFI.
 declare function closeDialog(): SystemReactionStep
 
---- System-reaction body: load a map by catalog id. `id` must match a committed
+--- System reaction: load a map by catalog id. `id` must match a committed
 --- `ModMapEntry.id`; unknown ids warn and no-op at dispatch time. The engine
 --- queues the lifecycle load when the reaction fires. Pure: returns a
 --- SystemReactionStep.
 declare function loadLevel(id: string): SystemReactionStep
 
---- System-reaction body: reload the currently-active map source. Uses the
+--- System reaction: reload the currently-active map source. Uses the
 --- retained catalog id for catalog loads or the raw dev path for direct path
 --- loads. Runtime no-ops when no level is active. Pure: returns a
 --- SystemReactionStep.
 declare function restartLevel(): SystemReactionStep
 
---- System-reaction body: return to the frontend menu, including its optional
+--- System reaction: return to the frontend menu, including its optional
 --- declared backdrop level. Use from authored reactions; use
 --- `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
 --- the same lifecycle path. Pure: returns a SystemReactionStep.
@@ -1184,7 +1184,7 @@ declare function setSentiment(from: string, to: string, value: number): SystemRe
 --- deltas bond it. Unknown faction names warn and no-op.
 declare function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep
 
---- System-reaction body (M13 Goal F): write a literal, fluent or runtime value
+--- System reaction (M13 Goal F): write a literal, fluent or runtime value
 --- at the game-logic stage. Literals use the normal readonly-gated coercion and
 --- range path. A fluent value (`read(...)` and its operators,
 --- `byPlayer(on.player)` reads in a player-event reaction included) or a raw
@@ -1195,21 +1195,21 @@ declare function adjustSentiment(from: string, to: string, delta: number): Syste
 --- returns a `SystemReactionStep`, no FFI.
 declare function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): SystemReactionStep
 
---- System-reaction body (M13 Text Entry): append `text` to the current string
+--- System reaction (M13 Text Entry): append `text` to the current string
 --- value of the writable String slot `slot` at the game-logic stage. Readonly-
 --- gated through the same writable-slot gate as `setState` -- a readonly slot
 --- warns and stays unchanged; an engine-owned writable slot (e.g. `ui.textEntry`)
 --- is valid. Pure: returns a `SystemReactionStep`, no FFI.
 declare function appendText(ref: Ref<string>, text: string): SystemReactionStep
 
---- System-reaction body (M13 Text Entry): remove the last character -- one
+--- System reaction (M13 Text Entry): remove the last character -- one
 --- Unicode scalar value (char-pop floor: never splits a UTF-8 sequence, but does
 --- not segment grapheme clusters) -- from the writable String slot `slot` at the
 --- game-logic stage. Empty is a no-op with no warning.
 --- Readonly-gated like `setState`. Pure: returns a `SystemReactionStep`, no FFI.
 declare function backspaceText(ref: Ref<string>): SystemReactionStep
 
---- System-reaction body (M13 Text Entry): empty the writable String slot `slot`
+--- System reaction (M13 Text Entry): empty the writable String slot `slot`
 --- at the game-logic stage. Readonly-gated like `setState`. Pure: returns a
 --- `SystemReactionStep`, no FFI.
 declare function clearText(ref: Ref<string>): SystemReactionStep

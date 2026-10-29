@@ -93,8 +93,13 @@ impl ReactionScheduler {
         resolve_seat: &dyn Fn(PlayerId, &EntityRegistry) -> Option<Seat>,
     ) {
         let client = self.role() == SchedulerRole::Client;
+        let parked_from = self.state.borrow().next_instance_id;
         loop {
-            for landing in self.take_landings() {
+            let batch = self.take_landing_batch();
+            if batch.is_empty() {
+                break;
+            }
+            for landing in batch {
                 self.drain_one(
                     landing,
                     client,
@@ -106,10 +111,13 @@ impl ReactionScheduler {
                     script_ctx,
                 );
             }
-            // A late joiner's due chain resolves at its first reading. Each pass
-            // consumes a wait or a chain-capped `fire`, so the loop ends.
-            if !(client && self.expire_late()) {
-                break;
+            // A reading past several due segments lands them one due tick at
+            // a time, each batch's re-parks and `fire` children joining the
+            // queue when the reading has passed them too. Each child falls due
+            // after its parent and no later than the reading, and the chain
+            // depth is capped, so the loop ends.
+            if client {
+                self.catch_up_host_timeline(parked_from);
             }
         }
     }
@@ -129,7 +137,7 @@ impl ReactionScheduler {
         let _depth = self.begin_enrollment_depth(landing.depth);
         let (address, body_ordinal, class, subject) = landing.key.clone();
         let (origin, host_capture, client_landing) = if client {
-            let mode = if self.is_late(landing.due_host_tick) {
+            let mode = if self.is_late(landing.due_tick) {
                 ClientLanding::Converge
             } else {
                 ClientLanding::Land
@@ -147,7 +155,7 @@ impl ReactionScheduler {
             };
             (origin, class != TailClass::OwnState, None)
         };
-        let _anchor = self.begin_host_anchor(landing.due_host_tick);
+        let _anchor = self.begin_anchor(landing.due_tick);
         let _scope = script_ctx.landing.enter(host_capture, client_landing);
         let previous = script_ctx.system_commands.replace_fire_context(
             postretro_entities::SystemCommandFireContext {
@@ -191,17 +199,30 @@ impl ReactionScheduler {
             system_registry,
             script_ctx,
         );
-        if let Some(dropped) = script_ctx.landing.first_dropped() {
-            self.report_client_drop(&address, body_ordinal, class, &dropped);
+        if let Some((owner, step)) = script_ctx.landing.first_dropped() {
+            self.report_client_drop(&address, body_ordinal, class, &owner, &step);
         }
     }
 
     /// A client drops what only the host lands. Only an own-state landing's
     /// drop is the author's to hear about: nothing replicates the step to
-    /// this machine, so it ran nowhere for this player. Once per reaction body
-    /// until level teardown, suspend, hot reload or a role change; every other
-    /// drop is routine and stays at debug.
-    fn report_client_drop(&self, address: &str, body_ordinal: usize, class: TailClass, step: &str) {
+    /// this machine, so it ran nowhere for this player. Once per landing
+    /// reaction body until level teardown, suspend, hot reload or a role
+    /// change; every other drop is routine and stays at debug. `owner` is the
+    /// reaction whose step dropped: the landing's own, or a `fire` target's.
+    fn report_client_drop(
+        &self,
+        address: &str,
+        body_ordinal: usize,
+        class: TailClass,
+        owner: &str,
+        step: &str,
+    ) {
+        let via = if owner == address {
+            String::new()
+        } else {
+            format!(" (via `fire({owner})`)")
+        };
         let first = class == TailClass::OwnState
             && self
                 .state
@@ -210,10 +231,23 @@ impl ReactionScheduler {
                 .insert((address.to_string(), body_ordinal));
         if first {
             log::warn!(
-                "[Scheduler] reaction `{address}`: step `{step}` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here"
+                "[Scheduler] reaction `{address}`{via}: step `{step}` after a `wait` lands only on the host, and this own-state tail fires for this machine's player; it is dropped here"
             );
         } else {
-            log::debug!("[Scheduler] reaction `{address}`: client landing did not apply `{step}`");
+            log::debug!(
+                "[Scheduler] reaction `{address}`{via}: client landing did not apply `{step}`"
+            );
+        }
+    }
+
+    /// Set the due tick a wait or `fire` child enrolled during one landing's
+    /// drain counts from; the previous anchor is restored when the returned
+    /// guard drops.
+    pub(super) fn begin_anchor(&self, due_tick: Option<u64>) -> AnchorGuard<'_> {
+        let previous = std::mem::replace(&mut self.state.borrow_mut().current_anchor, due_tick);
+        AnchorGuard {
+            scheduler: self,
+            previous,
         }
     }
 }
@@ -307,5 +341,19 @@ pub(super) struct DepthGuard<'a> {
 impl Drop for DepthGuard<'_> {
     fn drop(&mut self) {
         self.scheduler.state.borrow_mut().current_enrollment_depth = None;
+    }
+}
+
+/// Restores the scheduler's previous `current_anchor` when one landing's drain
+/// finishes. Holds a borrow of the scheduler struct, not a `RefCell` borrow,
+/// like the guards above.
+pub(super) struct AnchorGuard<'a> {
+    scheduler: &'a ReactionScheduler,
+    previous: Option<u64>,
+}
+
+impl Drop for AnchorGuard<'_> {
+    fn drop(&mut self) {
+        self.scheduler.state.borrow_mut().current_anchor = self.previous;
     }
 }

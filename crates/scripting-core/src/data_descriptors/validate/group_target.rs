@@ -1,7 +1,7 @@
 // Addressing wire validation shared by the QuickJS and Luau reaction
-// converters — group `kind` and subject-token `target` — so both runtimes
-// reject the same malformed entry with the same diagnostic.
-// See: context/lib/scripting.md §12 (Entity addressing)
+// converters — group `kind`, subject-token `target` and system steps — so both
+// runtimes reject the same malformed entry with the same diagnostic.
+// See: context/lib/scripting.md §12 (Entity addressing), §10.4 (System Reactions)
 
 use postretro_entities::GroupKind;
 use postretro_entities::data_descriptors::SequenceTarget;

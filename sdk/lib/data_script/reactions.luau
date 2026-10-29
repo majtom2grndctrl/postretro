@@ -112,33 +112,87 @@ local function autoReactionId(descriptor: any): string
   return string.format("reaction_%08x", hash)
 end
 
--- Append `list`'s steps to `out` in authored order, flattening nested tables at
--- any depth. A table holding `primitive` is a step; any other table is a list
--- (an empty one adds nothing). A body that is not a step raises, naming
--- `defineReaction`.
+-- Raised for a body that is none of `progress`, `primitive`, `sequence` or a
+-- list of steps, so a misspelled key never installs an empty reaction. Every
+-- `defineReaction` message here matches the TS SDK's word for word.
+local BODY_SHAPE_ERROR = "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps"
+local SEQUENCE_SHAPE_ERROR = "defineReaction: `sequence` must be a list of steps"
+
+-- Whether `t` reads as a list of steps: empty, or keyed exactly 1..n. Probes
+-- raw keys only, so no `__index` fires. A table whose metatable serves fields
+-- (a command target, a state ref) is never a list, though an empty one has no
+-- raw keys; mlua's array marker hides its metatable and passes.
+local function isList(t: any): boolean
+  local mt = getmetatable(t)
+  if type(mt) == "table" and rawget(mt, "__index") ~= nil then
+    return false
+  end
+  local n = rawlen(t)
+  local count = 0
+  for key in next, t do
+    if type(key) ~= "number" or key < 1 or key > n or key % 1 ~= 0 then
+      return false
+    end
+    count += 1
+  end
+  return count == n
+end
+
+-- The body key a table carries beside a list part, if any: the author meant
+-- one or the other.
+local function mixedKey(t: any): string?
+  if rawget(t, 1) == nil then
+    return nil
+  end
+  for _, key in ipairs({ "primitive", "progress", "sequence" }) do
+    if rawget(t, key) ~= nil then
+      return key
+    end
+  end
+  return nil
+end
+
+local function mixedError(key: string): string
+  return string.format("defineReaction: a list of steps cannot also carry `%s`", key)
+end
+
+-- Append `list`'s steps to `out` in authored order, flattening nested lists at
+-- any depth. A table holding `primitive` is a step and a list is recursed
+-- into; anything else raises, naming `defineReaction`. Every probe is raw, so
+-- a handle with a strict metatable raises this message, not its own.
 local function flattenSteps(list: any, out: {any}): {any}
-  for _, entry in ipairs(list) do
+  for i = 1, rawlen(list) do
+    local entry = rawget(list, i)
     if type(entry) ~= "table" then
       error(string.format("defineReaction: a step must be a table, got %s", type(entry)), 3)
     end
-    if entry.name ~= nil then
+    local name = rawget(entry, "name")
+    if name ~= nil then
       error(string.format(
         "defineReaction: reaction `%s` is a reaction handle, not a step; fire it with `fire(r)`",
-        tostring(entry.name)
+        tostring(name)
       ), 3)
     end
-    if entry.progress ~= nil then
+    if rawget(entry, "progress") ~= nil then
       error("defineReaction: a `progress` body is not a step", 3)
     end
-    if entry.sequence ~= nil then
+    if rawget(entry, "sequence") ~= nil then
       error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead", 3)
     end
-    if entry.primitive == nil then
+    local mixed = mixedKey(entry)
+    if mixed ~= nil then
+      error(mixedError(mixed), 3)
+    end
+    local primitive = rawget(entry, "primitive")
+    if primitive == nil then
+      if not isList(entry) then
+        error("defineReaction: an entry with no `primitive` is not a step", 3)
+      end
       flattenSteps(entry, out)
-    elseif entry.onComplete ~= nil then
+    elseif rawget(entry, "onComplete") ~= nil then
       error(string.format(
         "defineReaction: step `%s` carries `onComplete`, which only a body may",
-        tostring(entry.primitive)
+        tostring(primitive)
       ), 3)
     else
       table.insert(out, entry)
@@ -147,30 +201,49 @@ local function flattenSteps(list: any, out: {any}): {any}
   return out
 end
 
--- Lower an authored body to the manifest's shape: a table of steps, plain or
+-- Lower an authored body to the manifest's shape: a list of steps, plain or
 -- returned from the tracer, is a `{ sequence }` (an empty table an inert one),
 -- and every `sequence` list is flattened.
 local function lowerBody(body: any): any
   if type(body) ~= "table" then
-    return body
+    error(BODY_SHAPE_ERROR, 3)
   end
-  if body.sequence ~= nil then
+  local mixed = mixedKey(body)
+  if mixed ~= nil then
+    error(mixedError(mixed), 3)
+  end
+  local sequence = rawget(body, "sequence")
+  if sequence ~= nil then
+    if type(sequence) ~= "table" then
+      error(SEQUENCE_SHAPE_ERROR, 3)
+    end
+    local mixedInSequence = mixedKey(sequence)
+    if mixedInSequence ~= nil then
+      error(mixedError(mixedInSequence), 3)
+    end
+    if not isList(sequence) then
+      error(SEQUENCE_SHAPE_ERROR, 3)
+    end
     local lowered = table.clone(body)
-    lowered.sequence = flattenSteps(body.sequence, {})
+    lowered.sequence = flattenSteps(sequence, {})
     return lowered
   end
-  if body.progress == nil and body.primitive == nil then
-    return { sequence = flattenSteps(body, {}) }
+  if rawget(body, "progress") ~= nil or rawget(body, "primitive") ~= nil then
+    return body
   end
-  return body
+  if not isList(body) then
+    error(BODY_SHAPE_ERROR, 3)
+  end
+  return { sequence = flattenSteps(body, {}) }
 end
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 --- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
---- or a table of steps, which lowers to a `sequence`. `name` is optional; when
---- omitted a deterministic, run-stable id is derived from the lowered body.
---- Use explicit names when TS and Luau scripts must agree. The returned handle
---- can be passed to button `onPress` or crossing `fire` entries.
+--- or a table of steps, which lowers to a `sequence`; nested tables flatten.
+--- Any other shape raises. `name` is optional; when omitted a deterministic,
+--- run-stable id is derived from the lowered body. Use explicit names when TS
+--- and Luau scripts must agree. The returned handle can be passed to button
+--- `onPress` or crossing `fire` entries.
 function ReactionsSdk.defineReaction(
   nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)),
   descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)))?

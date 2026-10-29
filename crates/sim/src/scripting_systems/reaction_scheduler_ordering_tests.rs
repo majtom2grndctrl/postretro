@@ -1,9 +1,10 @@
 // E18 Task 7: cross-cutting ReactionScheduler ordering/lifecycle coverage that
 // does not need a tick-driven harness. Every test here drives `ReactionScheduler`
-// (Task 1/3/5, `reaction_scheduler.rs`) directly against a hand-built
-// `DataRegistry`/`ScriptCtx`, exactly like that module's own unit tests. It is a
-// separate file to keep these harness-free ordering rows apart from the
-// tick-driven ones, which need a different fixture.
+// (`reaction_scheduler/{mod,landing,client}.rs`) directly against a hand-built
+// `DataRegistry`/`ScriptCtx`, exactly like its own unit tests
+// (`reaction_scheduler/tests.rs`). It is a separate file to keep these
+// harness-free ordering rows apart from the tick-driven ones, which need a
+// different fixture.
 //
 // See: context/plans/done/E18--timed-reaction-steps/index.md — Ordering
 // scenarios, Task 3 (deferred frame-shaped rows), Task 7.
@@ -33,7 +34,7 @@ use super::reaction_scheduler::{
 use crate::trigger_system::PlayerId;
 
 /// Shared fixture: a `ScriptCtx` plus the four dispatch registries the resume
-/// path needs, and an enabled scheduler with `wait`/`fire` registered. Mirrors
+/// path needs, and a host-role scheduler with `wait`/`fire` registered. Mirrors
 /// the wiring `SimHarness::new` and `session/mod.rs` both do, minus anything
 /// tick/frame-specific.
 struct Fixture {
@@ -134,7 +135,7 @@ impl Fixture {
     }
 
     /// Enroll a wait directly (bypassing `dispatch_sequence`/the control-handler
-    /// path), matching how `reaction_scheduler.rs`'s own unit tests drive the
+    /// path), matching how `reaction_scheduler/tests.rs` drives the
     /// scheduler. `ticks` is already the whole-tick countdown.
     fn enroll(
         &self,

@@ -316,9 +316,9 @@ export type FireStep = {
 
 -- `SetFogAnimationStep` is declared in `postretro.d.luau` (the SDK lib
 -- block generated from the primitive registry) and is not redeclared here.
---- Ordered member, group, subject-token and control steps. Steps begin in
---- array order; `fire` queues a named dispatch, while `wait` stops the current
---- drain and resumes the remaining tail after its delay.
+--- Ordered member, group, subject-token, system and control steps. Steps
+--- begin in array order; `fire` queues a named dispatch, while `wait` stops
+--- the current drain and resumes the remaining tail after its delay.
 export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
@@ -342,7 +342,8 @@ export type NamedReactionDescriptor = {
   target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
-  -- sequence shape: member, group, subject-token and wait/fire control steps
+  -- sequence shape, flat: member, group, subject-token, system and wait/fire
+  -- control steps
   sequence: {SequenceStep}?,
 }
 

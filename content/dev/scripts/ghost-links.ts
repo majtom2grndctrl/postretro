@@ -11,8 +11,8 @@ import { playSound } from "postretro/ui";
 
 export function setupLevel() {
   const echoes = getMapEntities("ghostLink", { tag: "vault_echo" }); // map order
-  // One body: link steps, then the bus swell, a system step. No spreads, no
-  // wrapper reaction: an array is a body, and nested arrays flatten.
+  // One body: link steps, then the bus swell, a system step. An array is a
+  // body, and nested arrays flatten.
   const reveal = defineReaction("echo.reveal", [
     echoes.map((l) => l.arm()), // also: l.disarm()
     // Each named field ramps on its own; omitted fields keep their value and ramp. periodMs defaults to 0.

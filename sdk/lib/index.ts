@@ -49,6 +49,7 @@ export type {
   ProgressReactionDescriptor,
   PrimitiveReactionDescriptor,
   SequenceReactionDescriptor,
+  ManifestSequenceDescriptor,
   SequenceStep,
   SystemReactionStep,
   ReactionStepEntry,

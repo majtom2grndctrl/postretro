@@ -1912,8 +1912,8 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 | Body | Means |
 |------|-------|
-| One step | That step: a member, group or subject-token verb, or a system reaction. |
-| An array of steps | A sequence. Arrays nested in it flatten at any depth, so a member method's steps, `wait(…)` and `fire(…)` go in unspread. |
+| One step | That step: a group or subject-token verb, or a system reaction. |
+| An array of steps | A sequence. Member methods return arrays, so list them here. Arrays nested in it flatten at any depth, so a member method's steps, `wait(…)` and `fire(…)` go in unspread. |
 | `{ sequence: [...] }` | The same sequence. Nested arrays in the list flatten too. |
 | `(on) => …` | A tracer: it returns any of the shapes above, built from the event's tokens. |
 | `{ progress: … }` and the other keyed bodies | As documented for each. |
@@ -1930,17 +1930,16 @@ nested `{ sequence }` (list its steps instead), a reaction handle (fire it with
 A system reaction (`playSound`, `flashScreen`, `updateState`, `setGhostAudio`,
 `loadLevel` and the rest of [System reactions](#system-reactions)) is a step
 like any other. It does what the same reaction does as a body, on the machine
-that runs it, so one body can open a door and sound a klaxon:
+that runs it, so one body can open a door, sound a klaxon and flash the screen:
 
 ```typescript
-import { defineReaction, defineStore, getMapEntities } from "postretro";
-import { playSound, updateState } from "postretro/ui";
+import { defineReaction, getMapEntities } from "postretro";
+import { flashScreen, playSound } from "postretro/ui";
 
-const vault = defineStore("vault", { opened: { type: "number", default: 0, network: "shared" } });
 const open = defineReaction("vault.open", [
   getMapEntities("mover", { tag: "vault_door" }).map((door) => door.start()),
   playSound("sfx/test_tone"),
-  updateState(vault.opened, 1),
+  flashScreen([1, 0.3, 0.2, 0.4], 300),
 ]);
 ```
 
@@ -1958,10 +1957,9 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 - A step after a `wait` presents to the audience the same step reaches before
   the wait. A step routed to a player who has left presents nowhere.
-- Steps that change shared state (member and group verbs, `setState` on a
-  replicated slot, `loadLevel`, `restartLevel`, sentiment, `setGhostAudio`)
-  apply on the host only and reach clients by replication, after a `wait` as
-  before one.
+- After a `wait`, steps that change shared state (member and group verbs,
+  `setState` on a replicated slot, `loadLevel`, `restartLevel`, sentiment,
+  `setGhostAudio`) apply on the host only and reach clients by replication.
 - Steps that touch only one machine (sounds, flashes, shakes, rumble,
   vignettes, dialogs and menus, cell and text edits, `setState` on a slot
   that does not replicate) land on each machine the reaction fired on:
@@ -1971,12 +1969,18 @@ A `wait` changes when a step happens, never who sees or hears it.
     but still gets its dialogs, text and local state.
   - A crossing over shared slots fires on every machine, and each counts its
     waits on its own clock.
+  - Weapon events, NPC shots and observer cues fire on every machine too. The
+    host decides, and each machine counts its waits on its own clock.
   - A crossing over your own, owner-private or local slots, a movement event
     and a UI press fire on your machine for your player only, and land there.
     A step that would change shared state from such a tail is dropped on a
     client, with one warning per reaction naming the first dropped step.
-  - Triggers, teleports, per-player events, movers, NPCs and deaths fire on
-    the host; their tails park there, and their landings route as above.
+  - Triggers, teleports, per-player events, movers, NPC thinking (brains and
+    AI), deaths and kill-progress thresholds fire on the host; their tails park
+    there, and their landings route as above.
+  - `returnToFrontend()` after a `wait` returns only the client that runs it to
+    the frontend, and nothing the host owns changes. On the host it is a host
+    consequence, like `loadLevel`.
 - `fire(r)` after a `wait` runs `r` on the same terms, and `r`'s own waits
   count on the same clock.
 - A `wait(ms, { interruptible: true })` is cancelled by its trigger's Exit on
@@ -2122,12 +2126,10 @@ local traps = Postretro.getMapEntities("trap", { tag = "wave" })
 table.sort(traps, function(a, b) return a.position.x < b.position.x end)
 local periodMs = #traps * 250 + 1500
 local steps = {}
-for i, t in traps do
-  for _, step in t:start({ intervalMs = periodMs, phaseMs = (i - 1) * 250 }) do
-    table.insert(steps, step)
-  end
+for i, t in ipairs(traps) do
+  table.insert(steps, t:start({ intervalMs = periodMs, phaseMs = (i - 1) * 250 }))
 end
-local loopOn = Postretro.defineReaction("wave.loopOn", { sequence = steps })
+local loopOn = Postretro.defineReaction("wave.loopOn", steps) -- nested tables flatten
 ```
 
 ### LightEntityHandle
@@ -2251,7 +2253,7 @@ trigger.disarm();                // [{ id: trigger.id, primitive: "disarmTrigger
 trigger.on("enter", [reaction]); // { trigger: trigger.id, event: "enter", fire: [...] }
 ```
 
-Spread `arm()` or `disarm()` into a reaction's `sequence`. Return `on(…)`
+List `arm()` or `disarm()` in an array body or a reaction's `sequence`. Return `on(…)`
 entries from `setupLevel`'s `triggerEvents` (see [Trigger events](#trigger-events)).
 In Luau, call the same methods with `trigger:arm()`, `trigger:disarm()` and
 `trigger:on("enter", { reaction })`:
@@ -2380,7 +2382,7 @@ The full component state returned in `LightEntity.component`. All fields are rea
 
 ## Vocabulary helpers
 
-Light handles expose `flicker`, `pulse`, `fade`, `colorShift`, and `sweep`. Each returns a one-step `SequenceStep[]`; splice or concatenate those arrays into a reaction's `sequence`. Generic keyframe utilities (`timeline`, `sequence`, the `Keyframe` type) remain usable when constructing a raw `setLightAnimation` step.
+Light handles expose `flicker`, `pulse`, `fade`, `colorShift`, and `sweep`. Each returns a one-step `SequenceStep[]`. List those arrays in an array body or a `sequence`; nested arrays flatten. Generic keyframe utilities (`timeline`, `sequence`, the `Keyframe` type) remain usable when constructing a raw `setLightAnimation` step.
 
 None of the helpers set `phase`. Set it at the call site when staggering multiple lights.
 
@@ -3064,8 +3066,9 @@ export function setupLevel() {
 - **Presentation plays on that player's machine.** `playSound`, `rumble`,
   `flashScreen`, `vignette` and `screenShake` in a fired body play only for the
   player the event is about, on their own machine. A machine-local effect that
-  cannot be sent to another player — a UI-stack verb, a text edit, or `setState`
-  on a slot without `network` — is rejected at load.
+  cannot be sent to another player — a UI-stack verb, a text edit, a cell write
+  (a `createLocalState` cell's `.set(…)`, `:set(…)` in Luau), or `setState` on a
+  slot without `network` — is rejected at load.
 - **A player not yet seen counts as false.** When a player first appears, or
   comes back after a disconnect or respawn, `becomes` fires if the condition
   already holds and `ceases` never does. For a one-time milestone, put the guard

@@ -175,7 +175,9 @@ fn tracer_arrays_and_empty_bodies_install_as_sequences_in_both_runtimes() {
 }
 
 // AC 19: a body that is not a step raises at author time in both runtimes,
-// naming `defineReaction`; a reaction handle's error suggests `fire`.
+// naming `defineReaction`; a reaction handle's error suggests `fire`. A
+// map-shaped entry, a command target and a misspelled body key raise the same
+// text in both runtimes instead of installing an empty or missing reaction.
 #[test]
 fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
     let cases = [
@@ -199,15 +201,45 @@ fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
             "{ { primitive = \"setState\", args = {}, onComplete = \"next\" } }",
             "defineReaction: step `setState` carries `onComplete`, which only a body may",
         ),
+        (
+            "[{ foo: 1 }]",
+            "{ { foo = 1 } }",
+            "defineReaction: an entry with no `primitive` is not a step",
+        ),
+        (
+            "[playSound(\"a\"), npcs()]",
+            "{ UI.playSound(\"a\"), Postretro.npcs() }",
+            "defineReaction: an entry with no `primitive` is not a step",
+        ),
+        (
+            "npcs()",
+            "Postretro.npcs()",
+            "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps",
+        ),
+        (
+            "{ sequnce: [playSound(\"a\")] }",
+            "{ sequnce = { UI.playSound(\"a\") } }",
+            "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps",
+        ),
+        (
+            "{ sequence: { foo: 1 } }",
+            "{ sequence = { foo = 1 } }",
+            "defineReaction: `sequence` must be a list of steps",
+        ),
+        (
+            "Object.assign([playSound(\"a\")], { primitive: \"setState\" })",
+            "{ UI.playSound(\"a\"), primitive = \"setState\" }",
+            "defineReaction: a list of steps cannot also carry `primitive`",
+        ),
     ];
     for (ts_body, luau_body, expected) in cases {
         let capture = LogCapture::start();
         let reactions = ts(&format!(
             r#"
-            import {{ defineReaction }} from "postretro";
+            import {{ defineReaction, npcs }} from "postretro";
             import {{ playSound }} from "postretro/ui";
             export function setupLevel() {{
-              return {{ reactions: [defineReaction("bad", {ts_body} as any)] }};
+              return {{ reactions: [defineReaction("bad", ({ts_body}) as any)] }};
             }}
             "#
         ));

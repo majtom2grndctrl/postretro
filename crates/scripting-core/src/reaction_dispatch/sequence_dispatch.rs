@@ -41,7 +41,7 @@ pub(super) fn dispatch_sequence(
     let mut fired = Vec::new();
     for (i, step) in steps.iter().enumerate() {
         if !matches!(step.id, SequenceTarget::Wait | SequenceTarget::Fire)
-            && super::client_landing_drops(&step.primitive, &step.args, script_ctx)
+            && super::client_landing_drops(address, &step.primitive, &step.args, script_ctx)
         {
             continue;
         }

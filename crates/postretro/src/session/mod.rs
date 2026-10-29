@@ -411,11 +411,12 @@ pub(crate) struct ScriptingCore {
     pub(crate) slot_accumulator_bindings:
         scripting_systems::slot_accumulators::SlotAccumulatorBindings,
 
-    /// Host-only scheduler for timed/delayed reaction steps (E18). Sibling to the
-    /// slot accumulators and `auto_close_timers`; its `Rc<RefCell<_>>` clone is
-    /// captured into the `wait` control handler at registration. Intentionally out
-    /// of snapshots/digests/connected-client simulation — enrollment is refused
-    /// host-side by its `enabled` latch.
+    /// Per-session scheduler for `wait` tails (E18; `scripting.md` §12, Steps
+    /// after a `wait`). Sibling to the slot accumulators and `auto_close_timers`;
+    /// its `Rc<RefCell<_>>` clone is captured into the `wait` control handler at
+    /// registration. The host and single player land every step; a connected
+    /// client parks every-machine tails and lands only machine-local steps
+    /// (`SchedulerRole`). Out of snapshots and digests.
     pub(crate) scheduler: scripting_systems::reaction_scheduler::ReactionScheduler,
 
     /// Publishes live pawn health before each impact snapshot, then republishes
@@ -894,7 +895,7 @@ fn build_scripting_core(
     // `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
     timings.record("script_runtime_ctor");
 
-    // Host-only timed-reaction scheduler. Its clone is captured into the `wait`
+    // Timed-reaction scheduler. Its clone is captured into the `wait`
     // control primitive registered just below.
     let scheduler = scripting_systems::reaction_scheduler::ReactionScheduler::default();
 

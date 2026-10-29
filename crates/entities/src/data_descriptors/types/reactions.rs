@@ -57,15 +57,15 @@ pub enum TriggerPoolArm {
 pub enum ReactionDescriptor {
     Progress(ProgressDescriptor),
     Primitive(PrimitiveDescriptor),
-    /// Ordered reaction steps. Entity-targeted primitive steps run in order;
-    /// `fire` queues a named dispatch, while `wait` parks the remaining tail and
-    /// ends the current drain. Primitive failures and stale entity IDs warn
-    /// without aborting later steps in the same segment.
+    /// Ordered reaction steps. Entity, group, subject-token and system steps run
+    /// in order; `fire` queues a named dispatch, while `wait` parks the remaining
+    /// tail and ends the current drain. Primitive failures and stale entity IDs
+    /// warn without aborting later steps in the same segment.
     Sequence(Vec<SequenceStep>),
 }
 
-/// One entity-targeted primitive step or `wait`/`fire` control step in a
-/// `sequence` reaction.
+/// One entity, group, subject-token or system step, or a `wait`/`fire` control
+/// step, in a `sequence` reaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceStep {
     pub id: SequenceTarget,
@@ -127,8 +127,9 @@ pub enum SequenceTarget {
     FiredTeleporter,
     /// `on.player`: the player a player event fires for.
     EventPlayer,
-    /// Control step: `wait`. Enrolls the remainder of the body with the host-only
-    /// reaction scheduler and stops the drain. Payload-free — `durationMs` and
+    /// Control step: `wait`. Enrolls the remainder of the body with the reaction
+    /// scheduler and stops the drain; the scheduler lands the tail on the host,
+    /// or on a client for machine-local steps. Payload-free — `durationMs` and
     /// `interruptible` ride in the step's `args`.
     Wait,
     /// Control step: `fire`. Dispatches a named reaction on the same app drain.

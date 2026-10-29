@@ -129,6 +129,8 @@ pub(super) fn bind_sequence_step(
         // analogue for them. The amended `partition_direct_reaction` (Task 3)
         // routes a `Fire` to a `DeferredEvent` and a `Wait` plus its tail to the
         // residual before reaching here, so this arm is the belt-and-braces guard.
+        // `System` only keeps the match exhaustive: system steps bind earlier in
+        // this function.
         SequenceTarget::Wait | SequenceTarget::Fire | SequenceTarget::System => return None,
     });
     bind_command_at(

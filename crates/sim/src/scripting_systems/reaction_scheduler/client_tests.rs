@@ -1,6 +1,7 @@
 // A connected client's `wait` tails: which park, which steps land, on which
-// clock, and what a late joiner converges. The host clock is driven by hand,
-// one frame per tick, so landings are pinned to the tick.
+// clock, and what a late joiner converges. The host clock and the client's
+// reveal are driven by hand, one frame per tick, so landings are pinned to
+// the tick.
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
 use std::cell::Cell;
@@ -108,6 +109,9 @@ struct Machine {
     movers: Rc<Cell<usize>>,
     /// Commands queued by every fire and landing so far, in order.
     commands: Vec<SystemReactionCommand>,
+    /// Host `script_time` (seconds) at which this client revealed: where its
+    /// level clock reads zero.
+    revealed_at: f64,
 }
 
 impl Machine {
@@ -150,7 +154,15 @@ impl Machine {
             system,
             movers,
             commands: Vec::new(),
+            revealed_at: 0.0,
         }
+    }
+
+    /// Reveal this client a quarter into host tick `host_tick`, so its level
+    /// clock reads zero there. A client revealed at 0 was live from the host's
+    /// start.
+    fn reveal_at(&mut self, host_tick: u64) {
+        self.revealed_at = host_tick as f64 * TICK + TICK / 4.0;
     }
 
     fn client(reactions: Vec<NamedReaction>) -> Self {
@@ -195,11 +207,13 @@ impl Machine {
     }
 
     /// One frame of exactly one tick: the own clock advances, the host clock
-    /// reads `host_time` (seconds), and the landings drain.
+    /// reads `host_time` (seconds) beside the level clock counted from this
+    /// client's reveal, and the landings drain.
     fn frame(&mut self, host_time: Option<f64>) {
         self.scheduler.begin_frame();
         self.scheduler.evaluate(&[]);
-        self.scheduler.advance_host_clock(host_time);
+        let local_time = host_time.map_or(0.0, |time| (time - self.revealed_at).max(0.0));
+        self.scheduler.advance_host_clock(host_time, local_time);
         self.scheduler.drain_landings(
             &self.ctx.data_registry.borrow(),
             &self.sequence,
@@ -241,6 +255,21 @@ impl Machine {
             .iter()
             .filter(|command| matches!(command, SystemReactionCommand::PlaySound { sound, .. } if sound == name))
             .count()
+    }
+
+    /// The values written to `slot`, in order.
+    fn writes(&self, slot: &str) -> Vec<f64> {
+        self.commands
+            .iter()
+            .filter_map(|command| match command {
+                SystemReactionCommand::SetState {
+                    slot: written,
+                    value,
+                    ..
+                } if written == slot => value.as_f64(),
+                _ => None,
+            })
+            .collect()
     }
 
     fn kinds(&self) -> Vec<String> {
@@ -469,13 +498,14 @@ fn s35_re_park_lands_before_the_fire_child_on_one_frame() {
 }
 
 // S18: a host-timeline tail lands at its host tick for a slow loader and a
-// reading one tick early; a first reading one tick late is a late joiner's,
+// client revealed one tick early; one revealed a tick late is a late joiner,
 // which skips the sound at debug. The decision waits for the first reading.
 #[test]
 fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
     let level = || vec![body("levelLoad", vec![wait(5000.0), sound("x")])];
-    // Slow loader: first reading at host 2 s.
+    // Slow loader: revealed, and first read the host clock, at host 2 s.
     let mut client = Machine::client(level());
+    client.reveal_at(120);
     client.level_load();
     client.own_ticks(30);
     assert_eq!(
@@ -488,14 +518,16 @@ fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
     client.host_ticks(300, 301);
     assert_eq!(client.plays("x"), 1);
 
-    // First reading one tick before the landing.
+    // Revealed and first reading one tick before the landing.
     let mut client = Machine::client(level());
+    client.reveal_at(299);
     client.level_load();
     client.host_ticks(299, 301);
     assert_eq!(client.plays("x"), 1);
 
-    // First reading one tick after: a late joiner.
+    // Revealed and first reading one tick after: a late joiner.
     let mut client = Machine::client(level());
+    client.reveal_at(301);
     client.level_load();
     let capture = LogCapture::start();
     client.host_ticks(301, 302);
@@ -508,16 +540,18 @@ fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
     tail_quiet(&capture);
 }
 
-// S19: the first reading is per level. After a teardown the next level's
-// first reading decides afresh, so a reading from the previous level's
-// clock cannot make the new level's tail late. (The transport never hands a
-// previous level's snapshot to apply: `participation_epoch_rejects_stale_
+// S19: the join tick is per level. After a teardown the next level's first
+// reading fixes it afresh, so the previous level's join at host 30 s cannot
+// make the new level's tail late. (The transport never hands a previous
+// level's snapshot to apply: `participation_epoch_rejects_stale_
 // cross_boundary_traffic_and_accepts_current`.)
 #[test]
 fn s19_each_level_takes_its_own_first_host_reading() {
     let mut client = Machine::client(vec![body("levelLoad", vec![wait(5000.0), sound("x")])]);
+    client.reveal_at(1800);
     client.host_ticks(1800, 1801);
     client.scheduler.clear();
+    client.reveal_at(0);
     client.level_load();
     client.host_ticks(120, 301);
     assert_eq!(client.plays("x"), 1, "at the new level's host 5 s");
@@ -531,6 +565,7 @@ fn s26_late_joiner_converges_state_and_skips_presentation() {
         "levelLoad",
         vec![show("d"), wait(3000.0), close(), sound("k")],
     )]);
+    client.reveal_at(600);
     client.level_load();
     assert_eq!(client.kinds(), ["show d"], "the joiner's install opens `d`");
     client.host_ticks(600, 601);
@@ -551,6 +586,7 @@ fn s29_joiner_between_two_waits_converges_then_lands_on_schedule() {
             sound("y"),
         ],
     )]);
+    client.reveal_at(27);
     client.level_load();
     client.host_ticks(27, 28);
     assert_eq!(client.kinds(), ["set t.local"]);
@@ -572,6 +608,7 @@ fn s30_fire_from_a_level_load_tail_counts_on_the_host_timeline() {
         body("levelLoad", vec![wait(5000.0), fire("r")]),
         body("r", vec![wait(5000.0), sound("x")]),
     ]);
+    client.reveal_at(120);
     client.level_load();
     client.host_ticks(120, 600);
     assert_eq!(client.plays("x"), 0);
@@ -613,11 +650,13 @@ fn s34_late_joiner_meets_a_due_fire() {
         ]
     };
     let mut client = Machine::client(level());
+    client.reveal_at(600);
     client.level_load();
     client.host_ticks(600, 601);
     assert_eq!(client.kinds(), ["show d", "close"]);
 
     let mut client = Machine::client(level());
+    client.reveal_at(210);
     client.level_load();
     client.host_ticks(210, 211);
     assert_eq!(client.kinds(), ["show d"]);
@@ -638,6 +677,7 @@ fn s39_pre_wait_fire_from_level_load_counts_on_the_host_timeline() {
         ]
     };
     let mut client = Machine::client(level());
+    client.reveal_at(120);
     client.level_load();
     client.host_ticks(120, 300);
     assert_eq!(client.plays("x"), 0);
@@ -645,6 +685,7 @@ fn s39_pre_wait_fire_from_level_load_counts_on_the_host_timeline() {
     assert_eq!(client.plays("x"), 1);
 
     let mut client = Machine::client(level());
+    client.reveal_at(330);
     client.level_load();
     client.host_ticks(330, 331);
     assert_eq!(client.plays("x"), 0);
@@ -702,4 +743,97 @@ fn host_only_source_parks_nothing_on_a_client() {
     let mut client = Machine::client(vec![body("beat", vec![wait(300.0), sound("x")])]);
     client.fire("beat", FireOrigin::HostOnly(FireSubject::None));
     assert_eq!(client.scheduler.pending_len(), 0);
+}
+
+// A client live before a beat lands it, though its first host-clock reading
+// comes after the beat fell due: lateness is judged by the host tick the
+// client revealed at, never by the reading, which waits for a snapshot and an
+// RTT sample. A 16 ms wait is one tick, due at host tick 1; the first reading
+// is at host tick 3, and the level clock says the reveal was at host tick 0.
+#[test]
+fn client_live_before_a_beat_lands_it_when_its_first_reading_trails_the_beat() {
+    let mut client = Machine::client(vec![body("levelLoad", vec![wait(16.0), sound("x")])]);
+    client.level_load();
+    client.own_ticks(3);
+    assert_eq!(client.plays("x"), 0, "no reading yet: nothing decided");
+    let capture = LogCapture::start();
+    client.host_ticks(3, 4);
+    assert_eq!(client.plays("x"), 1, "landed late by the reading's latency");
+    assert_eq!(client.scheduler.pending_len(), 0);
+    tail_quiet(&capture);
+}
+
+// A client revealed at host 10 s, its level clock barely started, is a late
+// joiner for a beat due at 1 s: it converges and skips the sound at debug.
+#[test]
+fn client_revealed_after_a_beat_converges_and_skips_its_presentation() {
+    let mut client = Machine::client(vec![body("levelLoad", vec![wait(1000.0), sound("x")])]);
+    client.reveal_at(600);
+    client.level_load();
+    let capture = LogCapture::start();
+    client.host_ticks(600, 601);
+    assert_eq!(client.plays("x"), 0);
+    assert_eq!(client.scheduler.pending_len(), 0);
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `playSound`",
+    );
+    tail_quiet(&capture);
+}
+
+// A reading past several due segments lands them in the host's order: by due
+// tick, one at a time, a re-park joining the queue when the reading has passed
+// it too. Tail A writes 1 at 1 s and 2 at 2 s; tail B writes 3 at 2.5 s. The
+// host ends on 3, and so does a joiner whose first reading is at 3 s, or a
+// client live from the start whose first reading only comes then.
+#[test]
+fn reading_past_several_due_segments_lands_them_in_due_order() {
+    for revealed in [180, 0] {
+        let mut client = Machine::client(vec![
+            body(
+                "levelLoad",
+                vec![
+                    wait(1000.0),
+                    set("t.local", json!(1)),
+                    wait(1000.0),
+                    set("t.local", json!(2)),
+                ],
+            ),
+            body("levelLoad", vec![wait(2500.0), set("t.local", json!(3))]),
+        ]);
+        client.reveal_at(revealed);
+        client.level_load();
+        client.host_ticks(180, 181);
+        assert_eq!(
+            client.writes("t.local"),
+            [1.0, 2.0, 3.0],
+            "revealed at host tick {revealed}: `t.local` ends on 3, as on the host"
+        );
+        assert_eq!(client.scheduler.pending_len(), 0);
+    }
+}
+
+// A `fire` target's dropped step is reported under the landing reaction,
+// naming the target that owns it: the latch stays per landing body.
+#[test]
+fn own_state_drop_in_a_fire_target_names_the_target() {
+    let reactions = || {
+        vec![
+            body("moved", vec![wait(300.0), fire("r")]),
+            body("r", vec![mover_start()]),
+        ]
+    };
+    let mut client = Machine::client(reactions());
+    let capture = LogCapture::start();
+    for _ in 0..2 {
+        client.fire("moved", own_state());
+        client.own_ticks(20);
+    }
+    let warned = warnings(&capture);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(
+        warned[0].contains("reaction `moved` (via `fire(r)`): step `moverStart`"),
+        "{warned:?}"
+    );
+    assert_eq!(client.movers.get(), 0);
 }

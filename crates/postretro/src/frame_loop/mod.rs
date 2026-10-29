@@ -1358,10 +1358,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // deferred-dispatch call so a `fire`-seeded child's depth is
         // attributable per instance. The scheduler owns its tails as
         // `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`,
-        // so this never resolves through `app.trigger_bindings`.
-        // `take_landings` (inside `drain_landings`) `mem::take`s the
-        // queue, so nothing borrows it across the block — no need to
-        // move it onto `App`.
+        // so this never resolves through `app.trigger_bindings`. The
+        // drain takes each batch out of the queue before resuming it, so
+        // nothing borrows the queue across the block — no need to move it
+        // onto `App`.
         //
         // Before draining, drop any interruptible instance whose keyed
         // trigger left the level mid-wait: `paired_enters` retains only
@@ -1372,20 +1372,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .scripting
             .scheduler
             .drop_orphaned_interruptible_instances(session.trigger_system.paired_enters());
-        // A client's `levelLoad` tails land on the host timeline.
+        // A client's `levelLoad` tails land on the host timeline. The level
+        // clock counts from this client's reveal, so beside the host reading
+        // it tells the scheduler which host tick this client joined at.
         if let Some(netcode::NetEndpoint::Client {
             replication,
             time_sync,
             ..
         }) = session.net_endpoint.as_ref()
         {
-            session
-                .scripting
-                .scheduler
-                .advance_host_clock(replication.presentation_host_time(
-                    script_ctx.presentation_script_time.get(),
-                    time_sync.rtt_micros(),
-                ));
+            let local_time = script_ctx.presentation_script_time.get();
+            session.scripting.scheduler.advance_host_clock(
+                replication.presentation_host_time(local_time, time_sync.rtt_micros()),
+                local_time,
+            );
         }
         session.scripting.scheduler.drain_landings_resolving_seats(
             &script_ctx.data_registry.borrow(),

@@ -218,11 +218,19 @@ export type ReactionStepEntry = SequenceStep & {
  * member methods, `wait()` and `fire()` return need no spread. */
 export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
 
-/** Ordered member, group, subject-token, system and control steps. Steps
- * begin in array order; `fire` queues a named dispatch, while `wait` stops the
- * current drain and resumes the remaining tail after its delay. */
+/** An authored `{ sequence }` body: ordered member, group, subject-token,
+ * system and control steps. The list may nest; `defineReaction` flattens it.
+ * Steps begin in array order; `fire` queues a named dispatch, while `wait`
+ * stops the current drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {
   sequence: ReactionStepList;
+};
+
+/** A `{ sequence }` as the manifest and every `Reaction` carry it: one flat
+ * list of steps. Only `defineReaction` flattens, so a raw manifest literal
+ * spreads the arrays builders return. */
+export type ManifestSequenceDescriptor = {
+  sequence: readonly ReactionStepEntry[];
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
@@ -307,18 +315,24 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-/** A body as the manifest carries it: one primitive, a `{ sequence }` or a
- * `{ progress }`. */
+/** A body as the manifest carries it: one primitive, a flat `{ sequence }` or
+ * a `{ progress }`. */
 export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor<S>
-  | SequenceReactionDescriptor
+  | ManifestSequenceDescriptor
 );
 
-/** A reaction body: a manifest body, or an array of steps, which
- * `defineReaction` lowers to a `{ sequence }`. An empty array is an inert
- * reaction. */
-export type ReactionBody<S = {}> = ManifestReactionBody<S> | ReactionStepList;
+/** A reaction body as authored: a `{ progress }`, a primitive, a `{ sequence }`
+ * whose list may nest, or an array of steps, which `defineReaction` lowers to
+ * a flat `{ sequence }`. An empty array is an inert reaction. */
+export type ReactionBody<S = {}> =
+  | (ReactionBodyScope<S> & (
+    | ProgressReactionDescriptor
+    | PrimitiveReactionDescriptor<S>
+    | SequenceReactionDescriptor
+  ))
+  | ReactionStepList;
 
 declare const reactionScopeBrand: unique symbol;
 

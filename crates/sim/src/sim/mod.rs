@@ -1921,8 +1921,8 @@ pub use host_movement::drop_vault_if_dead;
 pub use host_movement::run_host_movement_tick;
 pub use movement_overlap::report_static_overlap;
 
-// `pub(crate)` so Task 5/7's timed-reaction test modules (new sibling files) can
-// reach `SimHarness` and its `frame`/`new`/`tick`/`record` methods.
+// Hosts `SimHarness` (`frame`/`new`/`tick`/`record`); the tick-driven
+// timed-reaction ordering tests live in its child module.
 #[cfg(test)]
 pub(crate) mod determinism_tests;
 #[cfg(test)]

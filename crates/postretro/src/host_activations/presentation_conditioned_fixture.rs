@@ -305,9 +305,24 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static INSTALL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-fn set_install_hook(hook: impl Fn(usize, &mut crate::session::ScriptingCore, &ScriptCtx) + 'static) {
+/// Set the install hook for the harnesses built while the returned guard
+/// lives. Dropping it clears the hook and its install count, so a later test
+/// on the same thread installs without it.
+#[must_use = "the hook is cleared when the guard drops; bind it for the test's lifetime"]
+fn set_install_hook(
+    hook: impl Fn(usize, &mut crate::session::ScriptingCore, &ScriptCtx) + 'static,
+) -> InstallHookGuard {
     INSTALL_COUNT.with(|count| count.set(0));
     INSTALL_HOOK.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::new(hook)));
+    InstallHookGuard
+}
+/// Clears the install hook on drop; see [`set_install_hook`].
+struct InstallHookGuard;
+impl Drop for InstallHookGuard {
+    fn drop(&mut self) {
+        INSTALL_HOOK.with(|slot| *slot.borrow_mut() = None);
+        INSTALL_COUNT.with(|count| count.set(0));
+    }
 }
 fn installed_with_reactions(
     world: &postretro_level_loader::LevelWorld,
@@ -448,14 +463,15 @@ fn land_host_tails(app: &mut App, clock: f64) {
     );
 }
 /// One client frame of the `wait` scheduler, as the frame loop runs it: a
-/// tick of the own clock, the host-clock reading, then the landing drain.
+/// tick of the own clock, the host-clock reading beside the level clock
+/// `clock`, then the landing drain.
 fn land_client_tails(app: &mut App, clock: f64, host_time: Option<f64>) {
     let ctx = script_ctx(app);
     ctx.presentation_script_time.set(clock);
     let scripting = &app.session.as_ref().unwrap().scripting;
     scripting.scheduler.begin_frame();
     scripting.scheduler.evaluate(&[]);
-    scripting.scheduler.advance_host_clock(host_time);
+    scripting.scheduler.advance_host_clock(host_time, clock);
     scripting.scheduler.drain_landings(
         &ctx.data_registry.borrow(),
         &scripting.sequence_registry,

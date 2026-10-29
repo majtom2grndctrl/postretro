@@ -8,8 +8,8 @@ local Postretro = require("postretro")
 local Audio = require("postretro/audio")
 local UI = require("postretro/ui")
 
--- Nested tables of steps flatten at any depth, so a member method's steps need
--- no `append`; mapping over members still needs a loop.
+-- Nested tables of steps flatten at any depth; mapping over members still needs
+-- a loop.
 local function map(members, build)
   local out = {}
   for _, member in ipairs(members) do table.insert(out, build(member)) end

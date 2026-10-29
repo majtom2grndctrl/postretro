@@ -1277,6 +1277,7 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     let Some(step) = step.as_object() else {
         return false;
     };
+    let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
     let Some(primitive) = step.get("primitive").and_then(JsonValue::as_str) else {
         return false;
     };
@@ -1306,7 +1307,6 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
     match step.get("target") {
         None | Some(JsonValue::Null) => {}
         Some(JsonValue::String(target)) => {
-            let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
             return absent("id")
                 && absent("kind")
                 && absent("tag")
@@ -1361,7 +1361,6 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
         // legal step that reserves no light slot. Mirror the runtime parser:
         // only a system reaction, with no `tag` or `onComplete`.
         _ => {
-            let absent = |field: &str| matches!(step.get(field), None | Some(JsonValue::Null));
             absent("tag")
                 && absent("onComplete")
                 && postretro_foundation::SYSTEM_REACTION_PRIMITIVES.contains(&primitive)

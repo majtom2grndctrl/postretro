@@ -352,15 +352,19 @@
   /** Steps in authored order. Nested arrays flatten at any depth, so the arrays member methods, `wait()` and `fire()` return need no spread. */
   export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
 
-  /** Sequence reaction body: ordered member, group, subject-token, system and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** An authored `{ sequence }` body: ordered member, group, subject-token, system and control steps. The list may nest; `defineReaction` flattens it. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
     sequence: ReactionStepList;
   };
+  /** A `{ sequence }` as the manifest and every `Reaction` carry it: one flat list of steps. Only `defineReaction` flattens, so a raw manifest literal spreads the arrays builders return. */
+  export type ManifestSequenceDescriptor = {
+    sequence: readonly ReactionStepEntry[];
+  };
 
-  /** A body as the manifest carries it: one primitive, a `{ sequence }` or a `{ progress }`. */
-  export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
-  /** A reaction body: a manifest body, or an array of steps, which `defineReaction` lowers to a `{ sequence }`. An empty array is an inert reaction. */
-  export type ReactionBody<S = {}> = ManifestReactionBody<S> | ReactionStepList;
+  /** A body as the manifest carries it: one primitive, a flat `{ sequence }` or a `{ progress }`. */
+  export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | ManifestSequenceDescriptor);
+  /** A reaction body as authored: a `{ progress }`, a primitive, a `{ sequence }` whose list may nest, or an array of steps, which `defineReaction` lowers to a flat `{ sequence }`. An empty array is an inert reaction. */
+  export type ReactionBody<S = {}> = (ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor)) | ReactionStepList;
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
   export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
@@ -578,13 +582,12 @@
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
-   * `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
-   * `primitive` (named Rust primitive with optional entity `tag` and typed
-   * `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
-   * steps). `name` is optional; when
-   * omitted a deterministic, run-stable id is derived from the body. Use explicit
-   * names when TS and Luau scripts must agree. The returned handle can be passed
-   * to `Button.onPress` or crossing `fire` entries.
+   * `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`, or
+   * an array of steps, which lowers to a `sequence`; nested arrays flatten. Any
+   * other shape throws. `name` is optional; when omitted a deterministic,
+   * run-stable id is derived from the lowered body. Use explicit names when TS
+   * and Luau scripts must agree. The returned handle can be passed to
+   * `Button.onPress` or crossing `fire` entries.
    * @param name Stable event/reaction name consumed by dispatch. Optional.
    * @param descriptor Reaction body data consumed later by Rust. */
   export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;

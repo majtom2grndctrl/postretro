@@ -84,6 +84,9 @@ impl ClientLanding {
 /// Set by the scheduler for the whole of one landing's drain: its tail and the
 /// follow-ups that tail queued, which dispatch after the tail's fire context
 /// is restored. Dispatch and presentation capture read it there.
+/// A step a client landing dropped: the reaction holding it and its primitive.
+pub type DroppedStep = (String, String);
+
 #[derive(Debug, Default)]
 pub struct LandingScope {
     /// A host-only or host-mirrored landing on the host: light, fog and
@@ -92,8 +95,10 @@ pub struct LandingScope {
     host_capture: Cell<bool>,
     /// A client landing: only steps this mode keeps apply.
     client: Cell<Option<ClientLanding>>,
-    /// The first step a client landing dropped, in authored order.
-    first_dropped: RefCell<Option<String>>,
+    /// The first step a client landing dropped, in authored order: the
+    /// reaction that holds it (the landing's own, or a `fire` target's) and
+    /// its primitive.
+    first_dropped: RefCell<Option<DroppedStep>>,
 }
 
 impl LandingScope {
@@ -103,9 +108,7 @@ impl LandingScope {
     pub fn client(&self) -> Option<ClientLanding> {
         self.client.get()
     }
-    /// Enter a landing's scope; the previous scope is restored on drop, so a
-    /// landing reached inside another (a late joiner's same-reading chain)
-    /// nests.
+    /// Enter a landing's scope; the previous scope is restored on drop.
     pub fn enter(
         &self,
         host_capture: bool,
@@ -122,21 +125,21 @@ impl LandingScope {
         }
     }
     /// Record a step a client landing did not apply.
-    pub fn note_dropped(&self, primitive: &str) {
+    pub fn note_dropped(&self, reaction: &str, primitive: &str) {
         let mut first = self.first_dropped.borrow_mut();
         if first.is_none() {
-            *first = Some(primitive.to_string());
+            *first = Some((reaction.to_string(), primitive.to_string()));
         }
     }
     /// The first dropped step of the landing in scope.
-    pub fn first_dropped(&self) -> Option<String> {
+    pub fn first_dropped(&self) -> Option<DroppedStep> {
         self.first_dropped.borrow().clone()
     }
 }
 
 pub struct LandingScopeGuard<'a> {
     scope: &'a LandingScope,
-    previous: Option<(bool, Option<ClientLanding>, Option<String>)>,
+    previous: Option<(bool, Option<ClientLanding>, Option<DroppedStep>)>,
 }
 
 impl Drop for LandingScopeGuard<'_> {

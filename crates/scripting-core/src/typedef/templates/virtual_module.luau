@@ -131,7 +131,7 @@ export type PostretroUiModule = {
 export type GhostAudioFields = { volume: number?, highPassHz: number?, lowPassHz: number?, drive: number?, periodMs: number? }
 
 export type PostretroAudioModule = {
-  --- Change the mod-wide Ghost bus mix during play; a primitive reaction body (no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
+  --- Change the mod-wide Ghost bus mix during play. Returns a system reaction: a body on its own, or a step in a sequence or array body (it names no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
   setGhostAudio: (fields: GhostAudioFields) -> SystemReactionStep,
 }
 
@@ -149,7 +149,7 @@ export type PostretroModule = {
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),
-  --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
+  --- Build a named reaction descriptor. Accepts a `progress`, `primitive` or `sequence` body, or a table of steps, which lowers to a `sequence`; nested tables flatten.
   defineReaction: typeof(defineReaction),
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),

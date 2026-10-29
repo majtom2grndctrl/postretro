@@ -2373,9 +2373,10 @@ export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlo
 --- `onComplete` follow-up are bodies, not steps: `defineReaction` raises.
 export type ReactionStepList = { SequenceStep | ReactionStepList }
 
---- Sequence reaction body: ordered member, group, subject-token and control
---- steps. Steps begin in array order; `fire` queues a named dispatch, while
---- `wait` stops the current drain and resumes the remaining tail later.
+--- An authored `{ sequence }` body: ordered member, group, subject-token,
+--- system and control steps. The list may nest; `defineReaction` flattens it.
+--- Steps begin in array order; `fire` queues a named dispatch, while `wait`
+--- stops the current drain and resumes the remaining tail after its delay.
 export type SequenceReactionDescriptor = {
   sequence: ReactionStepList,
 }
@@ -2675,13 +2676,12 @@ export type LevelManifest = {
 }
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
---- `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
---- `primitive` (named Rust primitive with optional entity `tag` and typed
---- `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
---- steps). `name` is optional; when
---- omitted a deterministic, run-stable id is derived from the body. Use explicit
---- names when TS and Luau scripts must agree. The returned handle can be passed
---- to button `onPress` or crossing `fire` entries.
+--- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
+--- or a table of steps, which lowers to a `sequence`; nested tables flatten.
+--- Any other shape raises. `name` is optional; when omitted a deterministic,
+--- run-stable id is derived from the lowered body. Use explicit names when TS
+--- and Luau scripts must agree. The returned handle can be passed to button
+--- `onPress` or crossing `fire` entries.
 declare defineReaction: (
   ((descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
   & ((name: string, descriptor: ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) -> NamedReactionDescriptor)
@@ -3592,7 +3592,7 @@ export type PostretroUiModule = {
 export type GhostAudioFields = { volume: number?, highPassHz: number?, lowPassHz: number?, drive: number?, periodMs: number? }
 
 export type PostretroAudioModule = {
-  --- Change the mod-wide Ghost bus mix during play; a primitive reaction body (no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
+  --- Change the mod-wide Ghost bus mix during play. Returns a system reaction: a body on its own, or a step in a sequence or array body (it names no target). Applies on the host at its next tick and replicates; does nothing on a connected client. Each named field ramps on its own over `periodMs`; omitted fields keep their value and ramp. Out-of-range, non-finite, empty, or crossing-cutoff calls warn and drop.
   setGhostAudio: (fields: GhostAudioFields) -> SystemReactionStep,
 }
 
@@ -3610,7 +3610,7 @@ export type PostretroModule = {
   getGameState: typeof(getGameState),
   timeline: typeof(timeline),
   sequence: typeof(sequence),
-  --- Build a named reaction descriptor. Accepts `progress`, `primitive`, or `sequence` body data.
+  --- Build a named reaction descriptor. Accepts a `progress`, `primitive` or `sequence` body, or a table of steps, which lowers to a `sequence`; nested tables flatten.
   defineReaction: typeof(defineReaction),
   --- Define a pure impact-policy descriptor. Register it only through `events`.
   defineImpactEvent: typeof(defineImpactEvent),

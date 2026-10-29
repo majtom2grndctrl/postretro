@@ -337,7 +337,9 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
 
 /// How a system reaction relates to the machine that drains it. A player
 /// event decides from this which reactions it may fire on the host for one
-/// player (`scripting.md` §12, Player events).
+/// player (`scripting.md` §12, Player events). `system_reaction_is_machine_local`
+/// (`reactions/machine_local.rs`) also reads it to decide what a client lands
+/// after a `wait`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionClass {
     /// A one-shot effect whose audience is resolved from its fire origin and

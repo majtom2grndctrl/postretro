@@ -16,12 +16,13 @@ The owner requested this capability. It surfaced while building the ghost-links 
   - Every other system step queues at the walk and applies at the frame-end system drain, in authored order among system steps.
   - IR-valued `setState` steps bind at install, as bodies do.
 - **Machine-local is one shared predicate.** A system step is machine-local when its `SystemReactionClass` is `Presentation` or `MachineLocal`, cell writes included, or when it is a `SlotWrite` to a slot that does not replicate. The rule moves out of `player_events::validate`'s private `machine_local_effect` into one public function. This brief's client filter, E16's install rule and `ui-timed-reactions` all call it. `HostConsequence` verbs, `setGhostAudio` and sentiment among them, are never machine-local; clients see their effect by replication.
-- **A wait changes when a step lands, never where.**
+- **A wait changes when a machine-local step lands, never where.** Member and other non-machine-local steps after a wait stay host-only (below).
   - A landing restores the origin its instance parked under: `FireOrigin::EveryMachine`, or `HostOnly` with `FireSubject::Trigger`, `Teleport` or `PlayerEvent`. The seat is re-resolved from the instance key's `PlayerId`. A host landing of an every-machine tail therefore presents locally, as its pre-wait copy does, and no sound plays twice.
   - Member light, fog and emitter steps in a host landing still record as host-only overrides and reach clients by replication, so `plans/done/coop--networked-by-default` AC10 stands.
   - Tails from sources every machine runs and the host mirrors (`levelLoad`, crossings over shared state, movement and weapon events) park on connected clients too. A client lands only the tail's machine-local steps and logs nothing above debug. The host lands every step.
   - For a local-only source (a UI press, a crossing over the machine's own owner-private or local slots), a client lands only its machine-local steps and warns once per reaction, naming it and the dropped step. This keeps E18's O43 diagnostic.
   - On a client, a post-wait `fire(r)` dispatches `r` through the same filter.
+  - **Clock.** A client tail from `levelLoad`, a host-mirrored source whose fire time differs per machine, lands at the host's fire time plus the wait, in host `script_time`: presentation that follows a host decision follows the host (`scripting.md` §12), as replicated animations rebase to host time (`networking.md` §Presentation state). A tail whose landing has already passed when the client parks it drops at debug and never lands late. Crossings over shared state fire when replication arrives, which is the host decision as observed, so they keep the client's own clock; so do own-state crossings and local-only sources.
   - Host-only sources (triggers, teleports, player events, AI, death and mover events) land on the host. Their presentation reaches the audience the same step would reach before the wait.
   - Every non-machine-local step after a wait stays host-only (E18 Invariants). This widens E18's named client-tail follow-up from presentation to machine-local steps and reverses its client-refusal default (owner ruling).
 - **Audience across a wait.** A pre-wait step carries `audience` exactly as a body does. A literal audience (`"everyone"`) survives a wait and routes as the pre-wait step would. A token audience after a wait stays dropped at install by V4a. This amends `scripting.md` §12 ("a presentation builder is never a sequence step, so no audience token reaches a `wait` landing") and `plans/done/coop--networked-by-default` Decision 11. Promotion updates the lib doc.
@@ -41,7 +42,7 @@ The owner requested this capability. It surfaced while building the ghost-links 
   - both descriptor parsers;
   - sequence dispatch and the trigger partition;
   - install validation;
-  - the scheduler, which gains a client role and keeps each instance's origin.
+  - the scheduler, which gains a client role, keeps each instance's origin, and counts client `levelLoad` tails on host time.
   
   The net wire and `WIRE_VERSION` do not change, and no message kind is added.
 - **Non-goals.**
@@ -70,7 +71,7 @@ export function setupLevel() {
     northDoor.map((door) => door.start()),
     npcs({ tag: "echo_monster_a1" }).update({ aggro: true }),
   ]);
-  // Every machine runs levelLoad. The host opens the closet; each machine sounds the klaxon once.
+  // Every machine runs levelLoad. The host opens the closet; each connected machine sounds the klaxon once, on the host's timeline.
   const northTimer = defineReaction("levelLoad", [
     wait(15000),
     fire(northCloset),                 // reuse: barrier_approach fires it too
@@ -121,6 +122,8 @@ export function setupLevel() {
 **Where tails land**
 - [ ] Loopback host plus client, `levelLoad = [wait(500), npcs().update({ aggro: true }), playSound(x), m.start()]`. The client plays `x` and applies neither other step. The host applies all three. Neither machine logs above debug about the tail (research S3).
 - [ ] Loopback host plus client, `levelLoad = [wait(500), playSound(x)]`, then `[wait(500), fire(r)]` where `r` plays `x`. In each case the client hears `x` exactly once and the host hears it exactly once.
+- [ ] A client joins after the host's `levelLoad = [wait(5000), playSound(x)]` tail has landed. It never plays `x` and logs nothing above debug about the tail.
+- [ ] A client finishes installing 2 s after the host under the same `levelLoad`. It plays `x` at host `script_time` 5 s, within one tick, not 5 s after its own install.
 - [ ] Loopback host plus client, `levelLoad = [wait(500), l.fade({ from: 1, to: 0.2, periodMs: 500 }), playSound(x)]` on a client-local light `l`. The light change reaches the client by replication, as it does without the system step, and `x` plays once per machine.
 - [ ] Loopback, a `player.health` crossing below 25 with `[vignette(…), wait(600), playSound(x)]`. Each machine plays `x` only for its own crossing, and the host sends the client nothing (research S4).
 - [ ] Loopback, the client's player fires a trigger bound to `[wait(300), flashScreen(…), playSound(y)]`. The flash presents on the client only and `y` plays on every machine once, matching the same steps before the wait.
@@ -157,7 +160,7 @@ export function setupLevel() {
 ### Manual
 - [ ] Host plus client playtest of ghost-links:
   - the plate reveals and swells;
-  - each machine hears the klaxon once when the north closet opens;
+  - every machine connected at the 15-second mark hears the klaxon once, together with the host, and a client that joins after it never hears it;
   - the split and the return behave as before.
 
 ## Path
@@ -171,6 +174,7 @@ export function setupLevel() {
 - **Landing origin.**
   - The scheduler stores each instance's `FireOrigin`, beside or in place of the `InstanceKey` origin pair. `drain_landings` installs that origin, re-resolving seats, instead of `HostOnly(FireSubject::None)`.
   - Trap: `presentation_capture::after_apply` decides override capture from that same `origin` field, so restoring `EveryMachine` would silently stop AC10 capture. Keep capture host-only for host landings separately from routing.
+- **Host-timeline landing.** No new replicated value is needed. The host resets `script_time` to 0 at level install (`lifecycle.rs`, `lifecycle_world_cpu.rs`) and fires `levelLoad` there, so on a client the host's fire time is host `script_time` 0. The client reads host time through `ClientReplication::presentation_host_time` (`netcode` `client/bindings.rs`, `clock_anchor`), which the presentation-state rebase uses: the latest applied `server_script_time` plus half the RTT. Until time sync initializes, a parked tail waits for that clock. Check whether a staged reload re-fires `levelLoad` without resetting host `script_time`.
 - **Client tails.** `ReactionScheduler` gains a client role that:
   - enrolls only tails holding a machine-local step;
   - lands only those steps;

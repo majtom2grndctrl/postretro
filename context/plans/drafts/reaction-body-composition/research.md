@@ -83,7 +83,10 @@ Facts read at 7eab3e3e7. They inform the brief without deciding it.
 |---|---|---|---|
 | Today: host lands, origin `HostOnly(None)` | the host broadcasts sounds and keeps screen effects; clients refuse their copy | sounds everywhere; screen effects on the host, not the activator | Rejected: the wait changes who sees the effect |
 | Host forwards over E16's lane | a client's own-state crossing tail is still lost | right audience | Rejected: a host own-state crossing (a low-health vignette) would shake every screen |
+| A `delayMs` option on presentation builders | every machine delays its own one-shot | delayed on the host's routing | Rejected: no Exit cancel or re-fire restart, and a second timing model beside `wait` |
 | A wait changes when, not where (chosen) | each machine lands its own machine-local steps; the host presents locally | the restored subject routes as before the wait | Chosen: one rule, no new message kind, E18's follow-up widened |
+
+Clock: `levelLoad` fires at each machine's own install, so a client counting from its own install would sound a late joiner's klaxon long after the host's. A client `levelLoad` tail lands at host `script_time` (fire time 0, since a host level change resets it) plus the wait, read through `ClientReplication::presentation_host_time`, the same anchor the presentation-state rebase uses (`networking.md` §Presentation state). A crossing over shared state fires when replication arrives, so the client's own clock already tracks the host decision.
 
 Client tails run machine-local steps only. Running every client-legal step after a wait would re-simulate delayed mover commands on clients, breaking E18's invariant that delayed consequences are host-authoritative and replicated, and it would let a client run `loadLevel` unguarded. Member light, fog and emitter steps need no client landing: the host's capture replicates them.
 
@@ -125,6 +128,8 @@ Recalled, not fetched.
 | S9 | Array lowering parity | `[a, [b, wait(5)], c]` vs `{ sequence: [a, b, ...wait(5), c] }` | byte-identical wire, TS and Luau |
 | S10 | No double play | loopback `levelLoad` `[wait(500), playSound(x)]`, and `[wait(500), fire(r)]` with `r` playing `x` | each machine hears `x` once |
 | S11 | Trigger tail audience | the client's player fires `[wait(300), flashScreen(…), playSound(y)]` | the flash on the client only; `y` on every machine once |
+| S12 | Late joiner, host-timeline tail | the host's `levelLoad` `[wait(5000), playSound(x)]` has landed; then a client joins | the client never plays `x`; it drops the tail at debug |
+| S13 | Slow loader inside the window | the client installs 2 s after the host, same tail | the client plays `x` at host `script_time` 5 s ± one tick |
 
 ## Consumers
 - `content/dev/scripts/ghost-links.{ts,luau}`, the motivating consumer and the proof surface:

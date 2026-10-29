@@ -112,10 +112,9 @@ POSTRETRO_NET_LAG=75,30,5 bin/postretro-tool run maps/<name>.prl --connect 127.0
 ```
 
 A `--connect` client needs no map: it loads whatever the host is running. It
-must run the same mod as the host, though. `postretro-tool run` and the
-launcher already pass the project's mod; when you start the engine yourself,
-add `--mod <folder>`, naming the folder under `content/` that holds the
-host's mod.
+must run the same mod as the host, though. `postretro-tool run` already passes
+the project's mod. When you start the engine yourself, add `--mod <folder>`,
+naming the folder under `content/` that holds the host's mod.
 
 On Windows PowerShell, set the variable first with
 `$env:POSTRETRO_NET_LAG = "75,30,5"`, then run the client command without the

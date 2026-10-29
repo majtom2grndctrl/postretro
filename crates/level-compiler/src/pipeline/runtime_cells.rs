@@ -15,8 +15,10 @@ use crate::partition::occluder_classify::{
 use crate::partition::occluder_cluster::OCCLUDER_COVERAGE_FRACTION;
 use crate::partition::{
     self, BspTree, CAP_MIN_OPEN_SLICE_FRACTION, CAP_MIN_PIECE_FRACTION, CELL_SIZE_CAP_M,
-    CellSizeCap, CellTree, DoorSplitter, OccluderTier, PartitionResult, SHADOW_PRISM_LENGTH_FACTOR,
-    ShadowPrism, build_bsp_from_brushes, recognize_doors, shadow_prisms,
+    CellSizeCap, CellTree, DoorSplitter, FREE_END_MIN_OPEN_PROBES, FREE_END_PROBE_DEPTHS_M,
+    FREE_END_PROBE_FRACTIONS, FREE_END_PROBE_OFFSET_M, OccluderTier, PartitionResult,
+    SHADOW_PRISM_LENGTH_FACTOR, ShadowPrism, build_bsp_from_brushes, recognize_doors,
+    shadow_prisms,
 };
 use crate::portals::{self, Portal};
 use crate::visibility;
@@ -30,7 +32,7 @@ pub(crate) struct OccluderPartition {
 
 /// Classify every static brush and recognise the doors among `movers`, then
 /// build the two-tier tree on the verdicts, the shadow prisms of the
-/// occluding faces, the door splitters and the cell-size cap, and extract
+/// occluding wall faces, the door splitters and the cell-size cap, and extract
 /// world faces. Classification, prisms and doors are logged at info.
 pub(crate) fn partition_with_occluders(
     brushes: &[BrushVolume],
@@ -115,10 +117,17 @@ impl FirstPass {
 }
 
 fn log_prisms(prisms: &[ShadowPrism]) {
+    let probes = FREE_END_PROBE_FRACTIONS.len() * FREE_END_PROBE_DEPTHS_M.len();
     log::info!(
-        "[Compiler] Shadow prisms: {} occluding faces, {} ended by the length bound \
-         ({SHADOW_PRISM_LENGTH_FACTOR} × the face's longer broad extent)",
+        "[Compiler] Shadow prisms: {} occluding wall faces with a free end, {} end planes, \
+         {} ended by the length bound ({SHADOW_PRISM_LENGTH_FACTOR} × the face's longer broad \
+         extent); an end is free when at least {FREE_END_MIN_OPEN_PROBES} of its {probes} \
+         probes {FREE_END_PROBE_OFFSET_M} m past it are open",
         prisms.len(),
+        prisms
+            .iter()
+            .map(|prism| prism.splitters.len())
+            .sum::<usize>(),
         prisms.iter().filter(|prism| prism.truncated).count(),
     );
 }

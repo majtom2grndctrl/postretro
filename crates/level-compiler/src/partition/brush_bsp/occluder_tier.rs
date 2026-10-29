@@ -94,7 +94,7 @@ pub(super) struct TierPlanes<'a> {
 }
 
 /// Build a two-tier BSP tree. `roles[i]` says how brush `i`'s planes split
-/// inside the tier: occluder-rank planes split first, then the edge and far
+/// inside the tier: occluder-rank planes split first, then the free end
 /// planes of each prism in `prisms` inside the regions it overlaps, then the
 /// planes of each door in `doors` inside the region holding it, then, with
 /// `cap`, the cell-size cap's grid lines in any region still wider than the
@@ -235,8 +235,8 @@ impl TierRecorder {
 /// Pick the occluder-tier splitter: among the occluder-rank planes of the
 /// candidates (occluders' planes, and section members' flagged planes)
 /// scored by today's spanning and balance terms over the occluder
-/// candidates; failing those, among the planes of the shadow prisms the
-/// region overlaps, scored over every candidate; failing those, among the
+/// candidates; failing those, among the free end planes of the shadow prisms
+/// the region overlaps, scored over every candidate; failing those, among the
 /// planes of the doors the region holds, broad-face planes before edge
 /// planes, scored over every candidate. Each of those ranks takes a credit
 /// for the plane's slice through the region. Failing all three, the cap's
@@ -247,10 +247,10 @@ impl TierRecorder {
 /// Prism planes rank after occluder planes, so an occluder's own planes
 /// still split first wherever they reach (a wall's top carries across the
 /// hall before anything else cuts it), and the prisms then bound whatever
-/// region the occluder planes leave behind a face, whichever of them split
-/// first: a wall's back face can split before its end planes and leave the
-/// region behind it without the wall, and the back face's prism still
-/// carries the end planes into it.
+/// region the occluder planes leave behind a wall face, whichever of them
+/// split first: a wall's back face can split before its end planes and leave
+/// the region behind it without the wall, and the back face's prism still
+/// carries its free end planes into it.
 ///
 /// Door planes rank after occluder planes, so a door splits only what would
 /// otherwise be the occluder-tier leaf holding its doorway, and adds no
@@ -307,7 +307,7 @@ fn select_occluder_splitter(
     .or_else(|| cap.and_then(|cap| cap.splitter(region_polytope, ancestor_planes)))
 }
 
-/// The best prism plane for a region no occluder plane spans: an edge or far
+/// The best prism plane for a region no occluder plane spans: a free end
 /// plane of a prism the region overlaps.
 fn select_prism_splitter(
     brushes: &[BrushVolume],

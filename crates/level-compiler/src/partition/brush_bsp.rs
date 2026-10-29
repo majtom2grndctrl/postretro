@@ -17,7 +17,10 @@ pub use cell_cap::{
 };
 pub use occluder_tier::{OccluderTier, TierLeaf, TierRole, build_bsp_with_occluder_tier};
 use occluder_tier::{TierPlanes, TierRecorder, build_tier_region};
-pub use shadow_prism::{SHADOW_PRISM_LENGTH_FACTOR, ShadowPrism, shadow_prisms};
+pub use shadow_prism::{
+    FREE_END_MIN_OPEN_PROBES, FREE_END_PROBE_DEPTHS_M, FREE_END_PROBE_FRACTIONS,
+    FREE_END_PROBE_OFFSET_M, SHADOW_PRISM_LENGTH_FACTOR, ShadowPrism, shadow_prisms,
+};
 
 /// Classification tolerance for AABB corners against brush-derived planes.
 #[cfg(test)]

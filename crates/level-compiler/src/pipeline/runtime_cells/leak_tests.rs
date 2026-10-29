@@ -767,7 +767,7 @@ fn laned_wall_setup() -> BehindWall {
 // planes never reached the space behind it; cap grid lines bounded that
 // space inside the lanes, and lane eyes saw its cells (task 9h:
 // measurement/9h/README.md). The back face's shadow prism now carries the
-// end planes and the top into that space.
+// wall's free end planes into that space.
 #[test]
 fn walk_from_in_front_of_a_laned_wall_draws_no_cell_holding_space_hidden_behind_it() {
     let map = laned_wall_hall();

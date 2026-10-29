@@ -1,12 +1,13 @@
 # coop--client-leave-session
 
-Brief · compact · reads: `context/lib/networking.md` §Role model, §Slot lifecycle, §Admission and content parity · `context/lib/scripting.md` §10.4 · `context/lib/boot_sequence.md` §1 · read at 7eab3e3
+Brief · compact · reads: `context/lib/networking.md` §Role model, §Slot lifecycle, §Admission and content parity · `context/lib/scripting.md` §10.4 · `context/lib/boot_sequence.md` §1 · read at 3d12c4e
 
 ## Problem
 The owner raised this while gating client level verbs. Basis: a defect read in source, not yet reported from play. On a connected client, `returnToFrontend()` and the `ui.quitToMenu` button unload the level locally and keep the connection. The cause is that `App::return_to_frontend` has no role branch, no dispatch says whether a player or the shared world fired it, and nothing can end a client's connection or its client role mid-run. The host demotes the slot and despawns the pawn but holds the seat. The client still follows the host, so the host's next relevel pulls it off the menu and back into play. From the menu, the client's own `loadLevel` is now dropped (host-only), so "New game" does nothing. A client whose host vanishes is left in the same dead state until relaunch. When this is done, a client player's own quit leaves the session: the host sees a clean disconnect, and the client stands at the frontend as a single-player process whose menu works. Losing the host lands there too. A world event such as a level-complete crossing never disconnects a client.
 
 ## Decisions
-- **A typed origin says whom a reaction speaks for.** `FireOrigin` gains `LocalPlayer`, set where a UI press or commit dispatches (`app/ui_actions.rs`). The origin carries through named follow-ups, as origin already does. `EveryMachine` keeps meaning the shared world (levelLoad, crossings, movement and weapon events, observer cues), and `HostOnly` is unchanged. A new dispatch site has to choose an origin. It cannot pick one up from a source string.
+- **A typed origin says whom a reaction speaks for.** `FireOrigin` gains `LocalPlayer`, set where a UI press or commit dispatches (`app/ui_actions.rs`). It means player input on this machine and nothing else. The origin carries through named follow-ups, as origin already does. `EveryMachine` keeps meaning the shared world (levelLoad, crossings, movement and weapon events, observer cues), and `HostOnly` is unchanged. A new dispatch site has to choose an origin. It cannot pick one up from a source string.
+- **`LocalPlayer` routes presentation like `EveryMachine`, except `@player`.** The reaction speaks for the local player, so `@player` is this machine. In `resolve_recipients` (`crates/entities/src/reactions/system_commands.rs`), a `LocalPlayer` origin with no audience, `everyone` or `@player` resolves to `Recipients::Local`. `@activators` and `@trigger` skip with the once-per-source warning, as for `EveryMachine`, which keeps skipping `@player`. Presentation capture (`presentation_capture::after_apply`) reads only whether the origin is `HostOnly`, so a `LocalPlayer` write is captured as an `EveryMachine` one is: on networked entities only.
 - **Game-flow verbs follow origin and role.**
 
   | Origin, on a connected client | `loadLevel` / `restartLevel` | `returnToFrontend` |
@@ -18,7 +19,7 @@ The owner raised this while gating client level verbs. Basis: a defect read in s
   - Host and single-player run every row as today.
   - Map authority is the host's (`networking.md` §Slot lifecycle), so the world-origin rows drop: the host's copy of the same event is the authoritative one. A level-complete crossing therefore moves the host, and clients follow its demotion. It never disconnects them.
 - **Leave.** Leave closes the connection cleanly, then unloads and presents the frontend as single-player does. The host closes the slot as a disconnect, not a timeout, and the existing seat hold applies (`netcode` `SeatTable::hold_disconnected_client`).
-- **A lost host leaves too.** When the transport reports that an established connection has ended, the client takes the same leave path, minus the disconnect send. This narrows `networking.md` §Role model, which says "nothing above the transport reacts to that ending". A connect that never succeeded keeps its bounded retries.
+- **A lost host leaves too.** When the transport reports that an established connection has ended, the client takes the same leave path, minus the disconnect send. A client refused at admission, such as by a mod-id refusal, ends the same way, at a working single-player frontend. This narrows `networking.md` §Role model, which says "nothing above the transport reacts to that ending". A connect that never succeeded keeps its bounded retries.
 - **The role moves one way, once.** This narrows `networking.md` §Role model ("selected once at startup"). A client may become single-player. It never becomes a host or connects again in the same process. Rejoining means relaunching with `--connect`; no in-app join UI exists to reconnect from.
 - **One derivation of role-bound state.** Every flag that `Session::build` derives from the endpoint is derived in one place, and leave reuses it, so the two cannot drift. Those flags are runtime-spawn authority, auto-close timers, the reaction scheduler latch, owner-slot writes and the seat table. A client that has left gets the same state a session built without `--connect` gets, including its local-only seat ledger. This is the precedent `authority_seat_table_or_local_only` already uses at boot when it demotes a failed host to single-player.
 - **Exit to desktop also disconnects cleanly.** `ui.exitToDesktop` on a client uses the same disconnect before the event loop exits, so the host holds the seat at once rather than after the keepalive timeout. No single-player teardown is needed there.
@@ -27,6 +28,7 @@ The owner raised this while gating client level verbs. Basis: a defect read in s
   - The host quitting to the menu. The host's unload already demotes every client, and ending a session for all players is a separate product decision.
   - Post-`wait` `returnToFrontend`. `drafts/reaction-body-composition` owns it and drops it on a client. That stands until the draft revisits it with leave semantics in view.
   - An in-app join, reconnect, or "connection lost" dialog.
+  - Crossings over this machine's own local or owner-private slots. Every crossing stays `EveryMachine`; classifying those is roadmap work under Epic 15. `drafts/reaction-body-composition` can cite `LocalPlayer` for UI presses.
 
 ## Acceptance
 ### Automated
@@ -34,7 +36,10 @@ The owner raised this while gating client level verbs. Basis: a defect read in s
 - [ ] `ui.quitToMenu` on a connected client leaves, the same as a `LocalPlayer` `returnToFrontend`.
 - [ ] An `EveryMachine`-origin `returnToFrontend` (levelLoad, a crossing) on a connected client queues nothing, keeps the endpoint, and warns once per source across repeated fires.
 - [ ] A named follow-up chained from a UI press keeps `LocalPlayer` origin. One chained from levelLoad keeps `EveryMachine`.
+- [ ] A UI-fired reaction with a `@player` sound plays it on this machine.
+- [ ] The same reaction fired from levelLoad skips the sound and warns once per source.
 - [ ] A client whose established connection ends unloads to the frontend as single-player, without a relaunch. A client whose first connect is still retrying does not.
+- [ ] A client the host refuses at admission for a mod-id mismatch ends at the frontend as single-player, and its menu starts a local game.
 - [ ] After leave, every role-bound flag equals the value a session built with no `--connect` holds. One test compares the two field by field.
 - [ ] Loopback host and client: the client leaves. The host closes that slot with the disconnect cause, not timeout, within one second of host time, and holds the seat. The seat is reclaimable by the same player claim within the hold window.
 - [ ] A relevel the host sends after the client has left loads nothing on the client.
@@ -48,8 +53,9 @@ The owner raised this while gating client level verbs. Basis: a defect read in s
 - Leave runs inside `return_to_frontend`, before it queues `LevelRequest::Unload`. The unload then runs as single-player: `clear_net_level_parity` finds no endpoint, so no `Revealed(None)` or parity re-declaration goes to a host that is already closing.
 - `App::is_connected_client` reads the endpoint, so dropping the endpoint flips every per-frame client branch. Grep for `NetEndpoint::Client` matches that cache the role elsewhere, such as scheduler or seat state.
 - Origin seam: `SystemCommandFireContext.origin`, filled by `fire_named_event_with_sequences` from its dispatch context. The UI sites pass `None` today, so their source reads `named:<name>`, the same shape levelLoad has. `ReturnToFrontend` gains the `dispatch_source` field that `LoadLevel` already carries, plus the origin. The once-per-source latch is the one the level-verb gate uses (`ScriptingCore::client_level_verb_warnings`).
-- Lost-host seam: `NetClient::update` already reports an established connection ending, once ("lost connection to host").
+- Lost-host seam: `NetClient::update` already reports an established connection ending, once ("lost connection to host"). Leave reads the close reason, not only that edge, so a future host-migration path can branch ahead of leave on E15's reserved `CloseCause::HostInitiatedLeave` (`crates/net/src/slots.rs`). `NetClient` exposes no reason today; netcode's `disconnect_reason()` stays inside the transport, so the transport surfaces one, as `close_cause_from` does host-side.
 - Rival direction: tag UI sources with a string prefix rather than a typed origin. It is cheaper now, but every later origin-sensitive rule becomes a string match a new source can fall through.
+- Rival scope: only `ui.quitToMenu` and `ui.exitToDesktop` leave, and a scripted `returnToFrontend` on a client always drops. It loses because `sdk/lib/ui/reactions.ts` promises `ui.quitToMenu` the same lifecycle path as `returnToFrontend()`, and mods build quit buttons as named reactions (`frontend.returnToFrontend` in `content/dev/scripts/frontend-level-select-fixture.ts`).
 - Rival shape: rebuild the `Session` without an endpoint. It is heavier, because the session owns the VM, audio and UI, and it buys nothing the shared derivation does not.
 - First slice: the transport disconnect plus a loopback test asserting the host's close cause. This falsifies the riskiest assumption, that renet_netcode delivers the disconnect before the endpoint drops.
 

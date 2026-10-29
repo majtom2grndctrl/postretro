@@ -1,0 +1,24 @@
+11:19:19 GATE_OK waited=30 temp=66
+11:19:33 SENTINEL sentinel_a total_ms=16.517 rc=0 2026-10-29 11:19:33 util=11 inUseVidMemoryBytes=1021845504 vramFreeBytes=1323143168 mhz=269 temp=71 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=100 screensaver=no locked=absent
+11:22:24 RUN stress-street.rd_promenade.before.rel.r1 rc=0 GATE_OK waited=30 temp=67 total=16.678 work=5.227 submit=3.332 record=0.683 walk=0.442 tests=1867.000 gpu_ms_per_frame=9.716
+11:22:54 GATE_OK waited=30 temp=71
+11:23:07 SENTINEL sentinel_end total_ms=16.521 rc=0 2026-10-29 11:23:07 util=11 inUseVidMemoryBytes=1025695744 vramFreeBytes=1314054144 mhz=2 temp=74 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=100 screensaver=no locked=absent
+11:23:07 DONE
+--- main batch, gate 74 + cpu_speed_limit wait
+11:26:03 RUN stress-street.rd_elevated.before.rel.r1 rc=0 GATE_OK waited=30 temp=70 cpuwait=0 total=16.648 work=5.522 submit=3.417 record=0.703 walk=0.651 tests=2762.000 gpu_ms_per_frame=10.016
+11:28:40 RUN stress-street.rd_elevated.cap26.rel.r1 rc=0 GATE_OK waited=30 temp=72 cpuwait=0 total=16.622 work=6.152 submit=3.701 record=0.779 walk=0.693 tests=2577.000 gpu_ms_per_frame=10.184
+11:31:42 RUN stress-street.rd_promenade.cap26.rel.r1 rc=0 GATE_OK waited=51 temp=74 cpuwait=0 total=16.709 work=6.172 submit=3.805 record=0.774 walk=0.528 tests=1935.274 gpu_ms_per_frame=9.545
+skip stress-street.rd_promenade.before.rel.r1
+11:34:25 RUN occlusion-test.fc_P1.before.rel.r1 rc=0 GATE_OK waited=30 temp=70 cpuwait=0 total=16.796 work=6.404 submit=4.026 record=1.100 walk=0.703 tests=2023.000 gpu_ms_per_frame=12.586
+11:36:54 RUN occlusion-test.fc_P1.cap26.rel.r1 rc=0 GATE_OK waited=30 temp=65 cpuwait=0 total=16.580 work=4.948 submit=3.480 record=0.885 walk=0.100 tests=310.000 gpu_ms_per_frame=12.068
+11:37:48 RUN stress-street.rd_elevated.cap26.rel.r2 rc=0 GATE_OK waited=30 temp=65 cpuwait=0 total=16.567 work=6.582 submit=3.890 record=0.911 walk=0.902 tests=2577.000 
+11:38:18 GATE_OK waited=30 temp=61
+11:38:31 SENTINEL sentinel_6 total_ms=16.530 rc=0 2026-10-29 11:38:31 util=0 inUseVidMemoryBytes=898424832 vramFreeBytes=1433681920 mhz=0 temp=66 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=100 screensaver=no locked=absent
+11:39:25 RUN stress-street.rd_elevated.before.rel.r2 rc=0 GATE_OK waited=30 temp=66 cpuwait=0 total=16.555 work=6.134 submit=3.659 record=0.855 walk=0.892 tests=2762.000 
+11:40:18 RUN stress-street.rd_promenade.before.rel.r2 rc=0 GATE_OK waited=30 temp=59 cpuwait=0 total=16.627 work=5.723 submit=3.563 record=0.822 walk=0.594 tests=1867.000 
+11:41:12 RUN stress-street.rd_promenade.cap26.rel.r2 rc=0 GATE_OK waited=30 temp=59 cpuwait=0 total=16.588 work=6.200 submit=3.823 record=0.882 walk=0.555 tests=1953.067 
+11:42:04 RUN occlusion-test.fc_P1.cap26.rel.r2 rc=0 GATE_OK waited=30 temp=59 cpuwait=0 total=16.554 work=4.762 submit=3.206 record=0.996 walk=0.114 tests=310.000 
+11:42:56 RUN occlusion-test.fc_P1.before.rel.r2 rc=0 GATE_OK waited=30 temp=60 cpuwait=0 total=16.550 work=5.568 submit=3.319 record=1.071 walk=0.713 tests=2023.000 
+11:43:26 GATE_OK waited=30 temp=63
+11:43:40 SENTINEL sentinel_end total_ms=16.528 rc=0 2026-10-29 11:43:40 util=0 inUseVidMemoryBytes=877793280 vramFreeBytes=1429147648 mhz=0 temp=69 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=25 screensaver=no locked=absent
+11:43:40 DONE

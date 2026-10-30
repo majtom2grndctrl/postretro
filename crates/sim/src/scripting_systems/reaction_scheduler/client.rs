@@ -22,8 +22,11 @@ pub(super) fn tail_has_landing_work(tail: &[SequenceStep], slot_table: &SlotTabl
 
 impl ReactionScheduler {
     /// Client only, once per frame before the landing drain: read the host's
-    /// level tick (`None` until a snapshot and an RTT sample anchor it) and
-    /// expire every host-timeline instance due by it. The reading counts the
+    /// level tick and expire every host-timeline instance due by it. The
+    /// reading is `None` until a snapshot and an RTT sample anchor it, and
+    /// while that anchor predates a restart of the local clock; a `None` frame
+    /// expires nothing and leaves the join tick unfixed, so only a fresh
+    /// snapshot decides which beats this client saw. The reading counts the
     /// fixed ticks the host lands its own tails on, so a host stall holds both
     /// alike. `local_time_secs` is this client's level clock, which counts
     /// unclamped frame time from its own reveal, the clock the reading

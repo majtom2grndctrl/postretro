@@ -925,15 +925,15 @@ fn frames_until_both_land(h: &mut Harness, limit: usize) -> (usize, usize, f64) 
     )
 }
 
-// Regression: after a host level change a client read the host's level tick
-// through the time-sync estimate, whose offset ran ahead by the host's whole
-// load and settle (the host's tick and its echoes stop meanwhile) and decayed
-// over seconds, so a client that loaded alongside the host fixed its join
-// tick that much late and converged an intro beat instead of playing it. The
-// host here spends five seconds loading and settling, neither ticking nor
+// A client revealed before a slow-loading host lands the host's intro beat.
+// The host spends five seconds loading and settling, neither ticking nor
 // sending, while the client, revealed first, runs its level clock. Once the
-// host reveals and snapshots flow, the client lands `[wait(1000),
-// playSound]` once, with the host.
+// host reveals and snapshots flow, the client's first reading sits within a
+// tick of the host's level tick, and it lands `[wait(1000), playSound]` once,
+// with the host. Here the join clamps to host tick 0 under any join formula,
+// so the lead assertion carries the reading's accuracy. The time-sync offset
+// bias that once skewed this scenario is excluded by the reading's API, which
+// takes no estimator input.
 #[test]
 fn client_revealed_before_a_slow_loading_host_lands_its_intro_beat() {
     let mut h = Harness::with_shared_reactions(fixture_world(), intro_beat(1000.0));
@@ -944,11 +944,22 @@ fn client_revealed_before_a_slow_loading_host_lands_its_intro_beat() {
     assert_eq!(reading_lead(&h), None, "no snapshot while the host loads");
     assert_eq!(pending(&h.peers[0].app), 1, "nothing decided yet");
 
+    let first_lead = (0..30)
+        .find_map(|_| {
+            h.step();
+            reading_lead(&h)
+        })
+        .expect("the first snapshot arrives within half a second");
+    assert!(
+        first_lead.abs() <= 1.0,
+        "the first reading is within a tick of the host's level tick: lead {first_lead}"
+    );
+
     let (host, client, landed_at) = frames_until_both_land(&mut h, 200);
     assert_eq!(landed_at, 60.0, "1000 ms is 60 host ticks");
     assert!(
         client - host <= 2,
-        "the client lands within a snapshot interval of the host: host frame {host}, client frame {client}"
+        "the client lands within two frames of the host: host frame {host}, client frame {client}"
     );
     h.advance(30);
     assert_eq!(plays(&h.host_commands, "x"), 1);
@@ -961,13 +972,68 @@ fn client_revealed_before_a_slow_loading_host_lands_its_intro_beat() {
     assert_tail_quiet(&capture);
 }
 
+// The mirror case: the host reveals first and a client reveals five seconds
+// later. Its join subtracts its own level clock, which starts at its reveal,
+// so the host's five seconds before it count as time it missed: the beat due
+// at 2 s converges there, skipping its sound at debug, and the beat due at
+// 7 s lands on the host and on that client, once each.
+#[test]
+fn client_revealed_after_the_host_converges_an_earlier_beat_and_lands_a_later_one() {
+    let mut h = Harness::with_shared_reactions(
+        fixture_world(),
+        vec![body(
+            "levelLoad",
+            vec![
+                wait_step(2000.0),
+                system_step("playSound", json!({ "sound": "early" })),
+                wait_step(5000.0),
+                system_step("playSound", json!({ "sound": "late" })),
+            ],
+        )],
+    );
+    let late = 1;
+    assert_eq!(pending(&h.peers[late].app), 1, "its install parks the tail");
+    let capture = LogCapture::start();
+    h.advance(300);
+    assert_eq!(
+        plays(&h.host_commands, "early"),
+        1,
+        "the host lands the 2 s beat at its tick 120"
+    );
+
+    h.connect_late();
+    // The host lands the 7 s beat at its tick 420, 120 frames on.
+    h.advance(150);
+    assert_eq!(
+        plays(&h.peers[late].commands, "early"),
+        0,
+        "the late client converges past the 2 s beat"
+    );
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `playSound`",
+    );
+    assert_eq!(plays(&h.host_commands, "late"), 1);
+    assert_eq!(
+        plays(&h.peers[late].commands, "late"),
+        1,
+        "the late client lands the 7 s beat"
+    );
+    h.advance(30);
+    assert_eq!(plays(&h.host_commands, "early"), 1);
+    assert_eq!(plays(&h.host_commands, "late"), 1);
+    assert_eq!(plays(&h.peers[late].commands, "late"), 1);
+    assert_eq!(pending(&h.peers[late].app), 0);
+    assert_tail_quiet(&capture);
+}
+
 // Regression: the client's host-timeline reading inherited the time-sync
 // estimate's offset after a host stall and ran ahead for seconds, landing
 // later beats early. A one-second host frame sends nothing while it runs and
 // then runs only the tick clamp's ticks. Through it the client's reading
 // holds at most the extrapolation cap past the host's stamped tick and its
 // transit, re-anchors on the next snapshot, and lands a beat due well after
-// the stall within one snapshot interval of the host, never before it.
+// the stall within two frames of the host, never before it.
 #[test]
 fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
     // The client extrapolates at most three 2-tick snapshot intervals past
@@ -1020,7 +1086,7 @@ fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
     assert_eq!(landed_at, 300.0, "the host lands on its tick 300");
     assert!(
         client - host <= 2,
-        "the client lands within a snapshot interval of the host: host frame {host}, client frame {client}"
+        "the client lands within two frames of the host: host frame {host}, client frame {client}"
     );
     let lead = reading_lead(&h).expect("a reading");
     assert!(

@@ -14,8 +14,14 @@ use postretro_net::wire;
 
 #[cfg(test)]
 mod conditioned_tests;
+// Both suites share the conditioned presentation fixture by `include!`, so
+// each leaves some fixture items unused.
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
 mod presentation_conditioned_tests;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod wait_tail_loopback_tests;
 
 fn wire_token(token: ActivationToken) -> wire::WireActivationToken {
     wire::WireActivationToken {

@@ -241,6 +241,7 @@ pub fn sequence_steps_from_lua(
         let id_value: LuaValue = step_table.get("id").map_err(lua_err)?;
         let has_id = !matches!(id_value, LuaValue::Nil);
         let authored_kind = authored_text_lua(&step_table, "kind")?;
+        let has_tag = !matches!(authored_text_lua(&step_table, "tag")?, AuthoredText::Absent);
         // A subject-token verb's `{ primitive, target, args }` is the same
         // descriptor as its reaction body, so the entry shares that check.
         let token = validate_authored_subject_token(
@@ -249,7 +250,7 @@ pub fn sequence_steps_from_lua(
             authored_text_lua(&step_table, "target")?,
             has_id,
             !matches!(authored_kind, AuthoredText::Absent),
-            !matches!(authored_text_lua(&step_table, "tag")?, AuthoredText::Absent),
+            has_tag,
         )
         .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         let kind =
@@ -277,6 +278,17 @@ pub fn sequence_steps_from_lua(
                         });
                     }
                 }
+            }
+            (None, None, LuaValue::Nil) => {
+                let on_complete: LuaValue = step_table.get("onComplete").map_err(lua_err)?;
+                validate_system_step(
+                    reaction,
+                    &site,
+                    &get_required_string_lua(&step_table, "primitive")?,
+                    has_tag,
+                    !matches!(on_complete, LuaValue::Nil),
+                )
+                .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?
             }
             (None, None, _) => {
                 SequenceTarget::Entity(EntityId::from_raw(get_required_u32_lua(&step_table, "id")?))

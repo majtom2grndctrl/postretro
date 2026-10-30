@@ -3514,6 +3514,7 @@ mod tests {
             faction_sentiment_record: None,
             ghost_audio: None,
             server_script_time: 0.0,
+            level_tick: 0,
         }
     }
 
@@ -3716,6 +3717,7 @@ mod tests {
             None,
             tick,
             SERVER_SCRIPT_TIME,
+            0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
@@ -3753,6 +3755,7 @@ mod tests {
             None,
             tick,
             0.0,
+            0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
@@ -3807,6 +3810,7 @@ mod tests {
             None,
             tick,
             0.0,
+            0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
@@ -7074,6 +7078,7 @@ mod tests {
                     faction_sentiment_record: None,
                     ghost_audio: None,
                     server_script_time: 0.0,
+                    level_tick: 0,
                 },
             );
         }
@@ -7148,6 +7153,7 @@ mod tests {
                 faction_sentiment_record: None,
                 ghost_audio: None,
                 server_script_time: 0.0,
+                level_tick: 0,
             },
         );
         let id = *replication
@@ -7265,6 +7271,7 @@ mod tests {
                 faction_sentiment_record: None,
                 ghost_audio: None,
                 server_script_time: 0.0,
+                level_tick: 0,
             },
         );
         replication.apply_snapshot(
@@ -7278,6 +7285,7 @@ mod tests {
                 faction_sentiment_record: None,
                 ghost_audio: None,
                 server_script_time: 0.0,
+                level_tick: 0,
             },
         );
         replication.cache_remote_player_locomotion(
@@ -7600,6 +7608,7 @@ mod tests {
                 faction_sentiment_record: None,
                 ghost_audio: None,
                 server_script_time: 0.0,
+                level_tick: 0,
             },
         );
         let remote = client_outcome
@@ -7869,6 +7878,7 @@ mod tests {
                     faction_sentiment_record: None,
                     ghost_audio: None,
                     server_script_time: 0.0,
+                    level_tick: 0,
                 },
             );
             replication

@@ -1366,13 +1366,18 @@ fn reaction_uses_trigger_sentinel(
 
     match &reaction.descriptor {
         ReactionDescriptor::Primitive(primitive) => primitive.target.is_some(),
-        // A control step (`@wait`/`@fire`) is not trigger-sentinel work: a
-        // `levelLoad` body containing a wait must keep its crossing subscriptions
-        // and must not warn "levelLoad references trigger-sentinel work".
+        // Only a subject-token step is trigger-sentinel work. A control step
+        // (`@wait`/`@fire`), a group step and a system step run under any
+        // source: a `levelLoad` body holding them must keep its crossing
+        // subscriptions and must not warn "levelLoad references
+        // trigger-sentinel work".
         ReactionDescriptor::Sequence(steps) => steps.iter().any(|step| {
-            !matches!(
+            matches!(
                 step.id,
-                SequenceTarget::Entity(_) | SequenceTarget::Wait | SequenceTarget::Fire
+                SequenceTarget::Activators
+                    | SequenceTarget::FiredTrigger
+                    | SequenceTarget::FiredTeleporter
+                    | SequenceTarget::EventPlayer
             )
         }),
         ReactionDescriptor::Progress(_) => false,
@@ -1817,6 +1822,20 @@ pub(crate) mod tests {
         ScriptRuntime::new(&registry, &ScriptRuntimeConfig::default(), ctx).unwrap()
     }
 
+    /// Gives the test app a client endpoint, as `--connect` would.
+    pub(crate) fn connect_test_app_as_client(app: &mut App) {
+        app.session.as_mut().unwrap().net_endpoint = Some(
+            crate::netcode::NetEndpoint::from_role(
+                &crate::netcode::NetRole::Connect {
+                    addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+                },
+                None,
+            )
+            .expect("client endpoint constructs")
+            .expect("connect role yields an endpoint"),
+        );
+    }
+
     /// A windowless `App` with an installed session, for App-level tests.
     pub(crate) fn test_app() -> App {
         let script_ctx = ScriptCtx::new();
@@ -1893,6 +1912,7 @@ pub(crate) mod tests {
                     input_mode_tracker: scripting_systems::input_mode::InputModeTracker::new(
                         script_ctx.clone(),
                     ),
+                    client_level_verb_warnings: Default::default(),
                 },
                 presentation_cells:
                     scripting_systems::presentation_cells::PresentationCellStore::new(),
@@ -4234,6 +4254,34 @@ pub(crate) mod tests {
             }),
             "a typed admission refusal must reach the client-side incompatible-host diagnostic: {logs:?}"
         );
+        assert!(
+            !logs.iter().any(|(_, message)| message.contains("--mod")),
+            "a protocol refusal has no local mod remedy, so it must not carry a --mod hint: {logs:?}"
+        );
+    }
+
+    #[test]
+    fn mod_id_closing_control_tells_the_client_how_to_relaunch_on_the_host_mod() {
+        let mut app = test_app();
+        let capture = postretro_test_log_capture::LogCapture::start();
+        crate::client_drain_control(
+            &mut app,
+            vec![postretro_net::wire::ServerControlMessage::Divergence(
+                postretro_net::wire::DivergenceReason::Closing(
+                    postretro_net::wire::ClosingCause::ModId {
+                        expected: "postretro.dev".to_string(),
+                        received: "acme.other".to_string(),
+                        expected_version: "1.2.0".to_string(),
+                        received_version: "0.4.0".to_string(),
+                    },
+                ),
+            )],
+        );
+
+        capture.assert_logged_once(
+            log::Level::Error,
+            "[Net] incompatible host: host runs mod postretro.dev (1.2.0), this client runs acme.other (0.4.0); relaunch with --mod <folder>, where content/<folder> declares mod id postretro.dev",
+        );
     }
 
     #[test]
@@ -4259,6 +4307,7 @@ pub(crate) mod tests {
         script_ctx(&app).system_commands.push(
             postretro_entities::SystemReactionCommand::LoadLevel {
                 map: "e1m1".to_string(),
+                dispatch_source: "named:levelLoad".to_string(),
             },
         );
         app.dispatch_system_commands();
@@ -4281,9 +4330,11 @@ pub(crate) mod tests {
             "content/dev/maps/raw-dev-map.prl",
         )));
 
-        script_ctx(&app)
-            .system_commands
-            .push(postretro_entities::SystemReactionCommand::RestartLevel);
+        script_ctx(&app).system_commands.push(
+            postretro_entities::SystemReactionCommand::RestartLevel {
+                dispatch_source: "named:restart".to_string(),
+            },
+        );
         app.dispatch_system_commands();
 
         assert_eq!(
@@ -4293,6 +4344,124 @@ pub(crate) mod tests {
             ))))
         );
         assert!(app.level_requests.is_empty());
+    }
+
+    /// Map authority is the host's (`networking.md` §Slot lifecycle): a
+    /// connected client drops `loadLevel` and `restartLevel` from any local
+    /// source, leaves its modal stack alone, and warns once per source and
+    /// verb however often the source fires.
+    #[test]
+    fn connected_client_drops_level_verbs_and_warns_once_per_source() {
+        use postretro_test_log_capture::LogCapture;
+        let mut app = test_app();
+        connect_test_app_as_client(&mut app);
+        app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .registry_mut()
+            .register(
+                "deathScreen",
+                postretro_ui::demo::build_frontend_menu_descriptor(),
+                postretro_ui::modal_stack::ScopeTier::Mod,
+                false,
+            );
+        app.session
+            .as_mut()
+            .unwrap()
+            .modal_stack
+            .push_named("deathScreen", None);
+
+        let capture = LogCapture::start();
+        for _ in 0..2 {
+            for source in ["crossing:7", "named:levelLoad"] {
+                script_ctx(&app).system_commands.push(
+                    postretro_entities::SystemReactionCommand::LoadLevel {
+                        map: "e1m2".to_string(),
+                        dispatch_source: source.to_string(),
+                    },
+                );
+            }
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::RestartLevel {
+                    dispatch_source: "crossing:7".to_string(),
+                },
+            );
+            app.dispatch_system_commands();
+        }
+
+        assert!(
+            app.level_requests.is_empty(),
+            "a client never queues its own level change: {:?}",
+            app.level_requests,
+        );
+        assert_eq!(
+            app.session.as_mut().unwrap().modal_stack.active_name(),
+            Some("deathScreen"),
+            "a dropped level verb leaves the initiating modal in place",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "loadLevel from `crossing:7` ignored on a connected client",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "loadLevel from `named:levelLoad` ignored on a connected client",
+        );
+        capture.assert_logged_once(
+            log::Level::Warn,
+            "restartLevel from `crossing:7` ignored on a connected client",
+        );
+    }
+
+    /// The other side of the client gate: single-player (no endpoint) and a
+    /// listen host both run the level verbs, and neither warns.
+    #[test]
+    fn host_and_single_player_run_level_verbs_without_warning() {
+        use postretro_test_log_capture::LogCapture;
+        for host in [false, true] {
+            let mut app = test_app();
+            if host {
+                app.session.as_mut().unwrap().net_endpoint = Some(
+                    crate::netcode::NetEndpoint::from_role(
+                        &crate::netcode::NetRole::Host { port: 0 },
+                        None,
+                    )
+                    .expect("host endpoint constructs")
+                    .expect("host role yields an endpoint"),
+                );
+            }
+            let capture = LogCapture::start();
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::LoadLevel {
+                    map: "e1m2".to_string(),
+                    dispatch_source: "crossing:7".to_string(),
+                },
+            );
+            app.dispatch_system_commands();
+
+            assert_eq!(
+                app.level_requests.pop_front(),
+                Some(LevelRequest::Load(LevelSource::Catalog("e1m2".to_string()))),
+                "host={host}",
+            );
+
+            app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+            script_ctx(&app).system_commands.push(
+                postretro_entities::SystemReactionCommand::RestartLevel {
+                    dispatch_source: "crossing:7".into(),
+                },
+            );
+            app.dispatch_system_commands();
+
+            assert_eq!(
+                app.level_requests.pop_front(),
+                Some(LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))),
+                "host={host}",
+            );
+            capture.assert_not_logged(log::Level::Warn, "ignored on a connected client");
+        }
     }
 
     #[test]
@@ -4823,8 +4992,6 @@ pub(crate) mod tests {
     // only the connected client suppresses map placements.
     #[test]
     fn host_replicated_placement_suppression_gate_is_connected_client_only() {
-        use std::net::{Ipv4Addr, SocketAddr};
-
         use crate::netcode::{NetEndpoint, NetRole};
 
         // Single-player: net inert, no suppression.
@@ -4847,16 +5014,7 @@ pub(crate) mod tests {
         );
 
         // Connected client: the only role that suppresses the local spawn.
-        app.session.as_mut().unwrap().net_endpoint = Some(
-            NetEndpoint::from_role(
-                &NetRole::Connect {
-                    addr: SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-                },
-                None,
-            )
-            .expect("client endpoint constructs")
-            .expect("connect role yields an endpoint"),
-        );
+        connect_test_app_as_client(&mut app);
         assert!(
             app.is_connected_client(),
             "connected client must suppress local authoritative AI-enemy spawns"
@@ -5162,6 +5320,60 @@ pub(crate) mod tests {
                         .contains("levelLoad references trigger-sentinel work")
             }),
             "legacy sentinel warning fired for an `@player`-only levelLoad"
+        );
+    }
+    // Regression: any non-entity step read as trigger-sentinel work, so a body
+    // of system or group steps lost its crossing subscription and a
+    // `levelLoad` holding one warned.
+    #[test]
+    fn system_and_group_steps_are_not_trigger_sentinel_work() {
+        use postretro_scripting_core::data_descriptors::{SequenceStep, SequenceTarget};
+        use postretro_test_log_capture::LogCapture;
+        let ctx = ScriptCtx::new();
+        let body = |name: &str| NamedReaction {
+            name: name.to_string(),
+            descriptor: ReactionDescriptor::Sequence(vec![
+                SequenceStep {
+                    id: SequenceTarget::System,
+                    primitive: "playSound".to_string(),
+                    args: serde_json::json!({ "sound": "x" }),
+                },
+                SequenceStep {
+                    id: SequenceTarget::Group(postretro_entities::GroupTarget {
+                        kind: postretro_entities::GroupKind::Npc,
+                        tag: None,
+                    }),
+                    primitive: "updateNpcState".to_string(),
+                    args: serde_json::json!({ "aggro": true }),
+                },
+            ]),
+        };
+        ctx.data_registry.borrow_mut().populate_level(
+            vec![body("warn"), body("levelLoad")],
+            vec![CrossingDescriptor {
+                slot: Some("player.health".to_string()),
+                condition: CrossingCondition::Below { threshold: 0.5 },
+                max: 100.0,
+                edge: None,
+                fire: vec!["warn".to_string()],
+            }],
+            &[],
+        );
+        let capture = LogCapture::start();
+        rebuild_reaction_subscribers(
+            &mut postretro_scripting_core::reaction_dispatch::ProgressTracker::new(),
+            &mut postretro_scripting_core::state_crossings::CrossingDetector::new(),
+            &ctx,
+            SubscriberRebuild::LevelInstall,
+        );
+        assert_eq!(
+            ctx.data_registry.borrow().crossings[0].fire,
+            ["warn"],
+            "the crossing keeps its address"
+        );
+        capture.assert_not_logged(
+            log::Level::Warn,
+            "levelLoad references trigger-sentinel work",
         );
     }
     #[test]

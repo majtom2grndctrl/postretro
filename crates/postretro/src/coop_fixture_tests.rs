@@ -2,7 +2,9 @@
 //! This uses the map's entity names/tags without baking geometry; the fresh PRL
 //! and visual source-producer checks remain separate P15 proofs.
 use crate::startup::lifecycle::tests::{install_capture_world, level_world, script_ctx, test_app};
-use postretro_entities::{ReactionDescriptor, ScriptCtx, ScriptError};
+use postretro_entities::{
+    NamedReaction, ReactionDescriptor, ScriptCtx, ScriptError, SequenceTarget,
+};
 use postretro_level_format::{
     data_script::DataScriptSection, fog_volumes::FogVolumeRecord, map_entity::MapEntityRecord,
     trigger_volumes::TriggerVolumeRecord,
@@ -235,7 +237,9 @@ fn registries(app: &mut crate::App, ctx: &ScriptCtx) {
         &mut scripting.sequence_registry,
         scripting.scheduler.clone(),
     );
-    scripting.scheduler.set_enabled(true);
+    scripting
+        .scheduler
+        .set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
 }
 
 /// Real dev mod initialization and production registrars for CPU install tests.
@@ -351,6 +355,48 @@ fn install(luau: bool, capture_return: bool) -> (crate::App, Value) {
     };
     assert_fixture_descriptors(&manifest);
     (app, raw)
+}
+
+/// The shipped player-events bodies (`player-events.{ts,luau}`) as an
+/// installed, validated registry must hold them: each tracer array is one
+/// sequence of every authored step, in order. A Pass A drop keeps the name and
+/// empties the body to `Sequence(vec![])`, so a name check alone passes it.
+pub(crate) fn assert_merged_player_event_bodies(reactions: &[NamedReaction], label: &str) {
+    use SequenceTarget::{EventPlayer, System};
+    let expected = [
+        (
+            "leveling.levelUp",
+            vec![
+                (EventPlayer, "addSlot"),
+                (System, "setState"),
+                (System, "playSound"),
+                (System, "flashScreen"),
+                (System, "screenShake"),
+            ],
+        ),
+        (
+            "heat.scald",
+            vec![(EventPlayer, "applyDamage"), (System, "playSound")],
+        ),
+    ];
+    for (name, steps) in expected {
+        let bodies: Vec<_> = reactions.iter().filter(|r| r.name == name).collect();
+        assert_eq!(bodies.len(), 1, "{label}: `{name}` installs one body");
+        let ReactionDescriptor::Sequence(installed) = &bodies[0].descriptor else {
+            panic!(
+                "{label}: `{name}` installs as a sequence, not {:?}",
+                bodies[0].descriptor
+            );
+        };
+        let installed: Vec<_> = installed
+            .iter()
+            .map(|step| (step.id.clone(), step.primitive.as_str()))
+            .collect();
+        assert_eq!(
+            installed, steps,
+            "{label}: `{name}` survives validation with every step, in authored order"
+        );
+    }
 }
 
 fn assert_fixture_descriptors(manifest: &postretro_scripting_core::runtime::ModManifestResult) {
@@ -526,7 +572,7 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
         e.descriptor
             .fire
             .iter()
-            .any(|name| name == "leveling.shake")
+            .any(|name| name == "leveling.levelUp")
     }));
     let mut ts_bindings =
         postretro_sim::trigger_bindings::TriggerBindingTable::build_with_script_ctx(
@@ -544,7 +590,7 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
     luau_bindings.install_manifest_events(&luau_ctx.registry.borrow(), &b, &luau_ctx);
     assert_eq!(ts_bindings.bound_edges(), luau_bindings.bound_edges());
     assert_eq!(ts_bindings.bound_edges().len(), 3);
-    assert!(a.reactions.iter().any(|r| r.name == "leveling.shake"));
+    assert_merged_player_event_bodies(&a.reactions, "coop fixture");
     let registry = ts_ctx.registry.borrow();
     for (tag, kind) in [
         (

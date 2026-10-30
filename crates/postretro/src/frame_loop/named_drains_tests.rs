@@ -301,7 +301,8 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
             .iter()
             .any(|event| format!("{}.follow", event.address) == name)
         {
-            FireOrigin::EveryMachine
+            // Movement events fire only for this machine's own pawn.
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::OwnState)
         } else {
             FireOrigin::HostOnly(postretro_entities::FireSubject::None)
         };
@@ -491,11 +492,8 @@ fn observer_delivery_and_weapon_aliases_remain_every_machine_through_followups()
         ctx.presentation_overrides.borrow().records.is_empty(),
         "every-machine AI activation, observer and weapon writes stay local"
     );
-    assert!(
-        follow
-            .iter()
-            .all(|(_, origin)| *origin == FireOrigin::EveryMachine)
-    );
+    assert!(follow.iter().all(|(_, origin)| *origin
+        == FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored)));
     postretro_scripting_core::reaction_dispatch::dispatch_deferred_named_events_with_sequences(
         follow,
         &ctx.data_registry.borrow(),

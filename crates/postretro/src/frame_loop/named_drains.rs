@@ -29,7 +29,8 @@ pub(crate) fn drain_frame_named_events(
             .movement
             .iter()
             .map(|emission| (emission.address, Some(emission.emitter.clone()))),
-        postretro_entities::FireOrigin::EveryMachine,
+        // Movement events fire only for this machine's own pawn.
+        postretro_entities::FireOrigin::EveryMachine(postretro_entities::MachineSource::OwnState),
         &script_ctx.data_registry.borrow(),
         &scripting.sequence_registry,
         &scripting.reaction_registry,
@@ -66,7 +67,9 @@ pub(crate) fn drain_frame_named_events(
                     )
                     .map(move |address| (address, Some(emission.emitter.clone())))
             }),
-        postretro_entities::FireOrigin::EveryMachine,
+        postretro_entities::FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::HostMirrored,
+        ),
         &script_ctx.data_registry.borrow(),
         &scripting.sequence_registry,
         &scripting.reaction_registry,
@@ -83,7 +86,9 @@ pub(crate) fn drain_frame_named_events(
                 .chain(cue.alias.as_deref())
                 .map(move |address| (address, Some(cue.emitter.clone())))
         }),
-        postretro_entities::FireOrigin::EveryMachine,
+        postretro_entities::FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::HostMirrored,
+        ),
         &script_ctx.data_registry.borrow(),
         &scripting.sequence_registry,
         &scripting.reaction_registry,
@@ -95,7 +100,9 @@ pub(crate) fn drain_frame_named_events(
             sound_events::weapon_emission_addresses(emission)
                 .map(move |address| (address, Some(emission.emitter.clone())))
         }),
-        postretro_entities::FireOrigin::EveryMachine,
+        postretro_entities::FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::HostMirrored,
+        ),
         &script_ctx.data_registry.borrow(),
         &scripting.sequence_registry,
         &scripting.reaction_registry,

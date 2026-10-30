@@ -172,9 +172,9 @@
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   const reactionBodyScopeBrand: unique symbol;
   export type ReactionBodyScope<S> = { readonly [reactionBodyScopeBrand]?: (scope: S) => void };
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
     primitive: string;
     kind?: GroupKind;
@@ -182,6 +182,16 @@
     target?: SubjectTokenTarget;
     args?: Record<string, unknown> | null;
     onComplete?: string;
+  };
+  /** A system reaction (`playSound`, `updateState`, the Ghost bus setter, …): a body on its own, and a sequence step unspread, doing what the same reaction does as a body. It names no target. */
+  export type SystemReactionStep<S = {}> = ReactionBodyScope<S> & {
+    primitive: string;
+    args?: Record<string, unknown> | null;
+    id?: never;
+    kind?: never;
+    tag?: never;
+    target?: never;
+    onComplete?: never;
   };
 
   /** Trigger primitive `armTrigger` takes no payload; its target is a trigger member's id (a member handle's `arm()`), a subject-token command (`on.trigger.arm()` carries `target: "@trigger"`), or a raw descriptor's `tag`. */
@@ -333,17 +343,30 @@
     | StopTrapStep
     | GroupCommand
     | SubjectTokenCommand
+    | SystemReactionStep<any>
     | WaitStep
     | FireStep;
 
-  /** Sequence reaction body: ordered member, group, subject-token and control steps. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
+  /** A step as an array or `sequence` entry. A reaction handle, a `progress` body, a nested `{ sequence }` and an `onComplete` follow-up are bodies, not steps: fire a handle with `fire(r)`. */
+  export type ReactionStepEntry = SequenceStep & { name?: never; progress?: never; sequence?: never; onComplete?: never };
+  /** Steps in authored order. Nested arrays flatten at any depth, so the arrays member methods, `wait()` and `fire()` return need no spread. */
+  export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
+
+  /** An authored `{ sequence }` body: ordered member, group, subject-token, system and control steps. The list may nest; `defineReaction` flattens it. Steps begin in array order; `fire` queues a named dispatch, while `wait` stops the current drain and resumes the remaining tail after its delay. */
   export type SequenceReactionDescriptor = {
-    sequence: SequenceStep[];
+    sequence: ReactionStepList;
+  };
+  /** A `{ sequence }` as the manifest and every `Reaction` carry it: one flat list of steps. Only `defineReaction` flattens, so a raw manifest literal spreads the arrays builders return. */
+  export type ManifestSequenceDescriptor = {
+    sequence: readonly ReactionStepEntry[];
   };
 
+  /** A body as the manifest carries it: one primitive, a flat `{ sequence }` or a `{ progress }`. */
+  export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | ManifestSequenceDescriptor);
+  /** A reaction body as authored: a `{ progress }`, a primitive, a `{ sequence }` whose list may nest, or an array of steps, which `defineReaction` lowers to a flat `{ sequence }`. An empty array is an inert reaction. */
+  export type ReactionBody<S = {}> = (ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor)) | ReactionStepList;
   /** Descriptor produced by `defineReaction`. The `name` field is merged into the descriptor at the top level so the Rust deserializer reads both fields from one flat object. */
-  export type ReactionBody<S = {}> = ReactionBodyScope<S> & (ProgressReactionDescriptor | PrimitiveReactionDescriptor<S> | SequenceReactionDescriptor);
-  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
+  export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
   /** Dispatch values published by a state-crossing fire. */
   export type CrossingParams = Readonly<{ rising: RuntimeRead }>;
@@ -559,13 +582,15 @@
   };
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
-   * `descriptor` accepts exactly one body shape: `progress` (kill-ratio trigger),
-   * `primitive` (named Rust primitive with optional entity `tag` and typed
-   * `args`), or `sequence` (entity-targeted primitive plus `wait`/`fire` control
-   * steps). `name` is optional; when
-   * omitted a deterministic, run-stable id is derived from the body. Use explicit
-   * names when TS and Luau scripts must agree. The returned handle can be passed
-   * to `Button.onPress` or crossing `fire` entries.
+   * `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`, or
+   * an array of steps, which lowers to a `sequence`; nested arrays flatten, and
+   * an empty array is an inert reaction. A list entry that is not a step
+   * throws. Any other body, a misspelled key or an empty object `{}` included,
+   * passes through, and the level load skips that one reaction with a warning.
+   * `name` is optional; when omitted a deterministic, run-stable id is derived
+   * from the lowered body. An explicit `name` wins over a body's own. Use
+   * explicit names when TS and Luau scripts must agree. The returned handle can
+   * be passed to `Button.onPress` or crossing `fire` entries.
    * @param name Stable event/reaction name consumed by dispatch. Optional.
    * @param descriptor Reaction body data consumed later by Rust. */
   export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;
@@ -990,7 +1015,7 @@
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];
   /** A presentation-cell handle (`ui.createLocalState`): `.get()` yields a `{ local }` bind ref; `.set(v)` emits a `cellWrite` reaction (NEVER `setState`); `.is(v)` produces an equality `Predicate` (comparand typed to the cell's `T`). Presentation-only. */
-  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   /** The `{ scope, cells }` bundle `ui.createLocalState` returns: splice `scope` onto the declaring container's `localState`; bind widgets to `cells.<name>.get()`. */
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
   /** Declare a presentation-cell scope (M13 G1b). SDK-lib function, not a registered primitive. Pure: no engine side effect. `.set()` emits `cellWrite`, never writing the authoritative store. */

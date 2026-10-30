@@ -187,7 +187,7 @@ use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
 use postretro_foundation::resolve_weapon_placement;
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
-use postretro_net::wire::{DivergenceReason, ServerControlMessage};
+use postretro_net::wire::{ClosingCause, DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::fire_named_event;
@@ -228,6 +228,19 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
             ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            // The client arm owns the next-step hint: `DivergenceReason`'s
+            // `Display` also feeds the host's rejection log. `--mod` names a
+            // folder under `content/`, which can differ from the declared id.
+            ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::ModId {
+                expected,
+                received,
+                expected_version,
+                received_version,
+            })) => {
+                log::error!(
+                    "[Net] incompatible host: host runs mod {expected} ({expected_version}), this client runs {received} ({received_version}); relaunch with --mod <folder>, where content/<folder> declares mod id {expected}"
+                );
+            }
             ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
                 log::error!(
                     "[Net] incompatible host: {}",
@@ -3618,13 +3631,22 @@ impl App {
                         session.modal_stack.push_named(&tree, on_commit);
                     }
                 }
-                SystemReactionCommand::LoadLevel { map } => {
+                SystemReactionCommand::LoadLevel {
+                    map,
+                    dispatch_source,
+                } => {
+                    if self.refuse_client_level_verb("loadLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.clear_pushed();
                     }
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
-                SystemReactionCommand::RestartLevel => {
+                SystemReactionCommand::RestartLevel { dispatch_source } => {
+                    if self.refuse_client_level_verb("restartLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(source) = self.active_level_source.clone() {
                         if let Some(session) = self.session.as_mut() {
                             session.modal_stack.clear_pushed();
@@ -4764,6 +4786,13 @@ impl App {
         );
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
+        // The host timeline clients land `levelLoad` tails on: the fixed ticks
+        // this host's scheduler counted this level, clamped as its own are.
+        // Serialization runs after this frame's fixed ticks and landing drain,
+        // so the stamp is the level tick as this snapshot was assembled: every
+        // host tail due by it has already landed here.
+        let level_tick =
+            u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -4879,6 +4908,7 @@ impl App {
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 tick.wrapping_add(1),
                 server_script_time,
+                level_tick,
                 snapshot_due,
                 last_emitted_snapshot_tick,
                 &script_ctx.presentation_overrides.borrow(),
@@ -5024,6 +5054,28 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
+    }
+
+    /// Whether this app drops a host-only level verb: true on a client role.
+    /// Warns once per `(firing source, verb)` for the session. The gate follows
+    /// the session's client role, not live connection state.
+    /// See: context/lib/scripting.md §10.4.
+    fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
+        if !self.is_connected_client() {
+            return false;
+        }
+        if let Some(session) = self.session.as_mut()
+            && session
+                .scripting
+                .client_level_verb_warnings
+                .insert((dispatch_source.clone(), verb))
+        {
+            log::warn!(
+                "[Scripting] {verb} from `{dispatch_source}` ignored on a connected client: \
+                 only the host changes level"
+            );
+        }
+        true
     }
 
     /// Fix B — restore each connected-client pawn's authoritative `Transform` from the
@@ -8561,7 +8613,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             event_names.iter().map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8622,7 +8676,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             [("activate", Some(emitter.clone())), ("activate", None)],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8732,7 +8788,9 @@ mod tests {
                     origin: edge.point.unwrap_or_default(),
                 }),
             )],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8854,7 +8912,9 @@ mod tests {
         register_system_reaction_primitives(&mut system_registry);
         drain_named_events_with_sequences(
             [(emission.address, Some(emission.emitter.clone()))],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8892,7 +8952,7 @@ mod tests {
 
         let script_ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let reaction_registry = ReactionPrimitiveRegistry::new();
@@ -8937,7 +8997,9 @@ mod tests {
 
         let chained = drain_named_events_with_sequences(
             ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8954,15 +9016,21 @@ mod tests {
             vec![
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
             ],
             "each source contributes its fire target to the shared deferred batch"

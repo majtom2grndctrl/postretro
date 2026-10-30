@@ -52,9 +52,13 @@ pub use reactions::emitter::{
     AiCue, AiEmission, ContactHit, EMITTER_AT_TOKEN, Emitter, ImpactContact, MovementEmission,
     WeaponEmission,
 };
+pub use reactions::machine_local::{
+    ClientLanding, LandingScope, MachineRole, primitive_is_machine_local,
+    system_reaction_is_machine_local,
+};
 pub use reactions::system_commands::{
-    Audience, FireOrigin, FireSubject, Recipients, SystemCommandFireContext, SystemCommandQueue,
-    SystemReactionCommand,
+    Audience, FireOrigin, FireSubject, MachineSource, Recipients, SystemCommandFireContext,
+    SystemCommandQueue, SystemReactionCommand,
 };
 pub use registry::{
     Component, ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,

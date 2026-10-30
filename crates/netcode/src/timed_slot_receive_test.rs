@@ -152,6 +152,7 @@ impl Receiver {
                 .collect(),
             faction_sentiment_record: None,
             server_script_time: f64::from(tick) / 60.0,
+            level_tick: 0,
             ghost_audio: None,
         }
     }

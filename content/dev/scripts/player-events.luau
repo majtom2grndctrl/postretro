@@ -19,20 +19,20 @@ local leveling = Postretro.defineStore("leveling", {
 local player = Postretro.getGameState().player
 local read = Postretro.read
 
--- One effect per reaction; a source's fire list runs several.
+-- One body per beat: the host's writes, then the presentation, which plays on
+-- that player's machine.
 local levelUp = Postretro.defineReaction("leveling.levelUp", function(on)
-  return on.player:addSlot(leveling.level, 1)
+  return {
+    on.player:addSlot(leveling.level, 1),
+    UI.updateState(leveling.lastLevelUpXp, read(progression.xp:byPlayer(on.player))),
+    UI.playSound("sfx/test_tone"),
+    UI.flashScreen({ 1, 0.9, 0.3, 0.4 }, 300),
+    UI.screenShake(6, 350, 18),
+  }
 end)
-local recordLevelUp = Postretro.defineReaction("leveling.recordLevelUp", function(on)
-  return UI.updateState(leveling.lastLevelUpXp, read(progression.xp:byPlayer(on.player)))
-end)
-local fanfare = Postretro.defineReaction("leveling.fanfare", UI.playSound("sfx/test_tone")) -- on that player's machine
-local goldFlash = Postretro.defineReaction("leveling.goldFlash", UI.flashScreen({ 1, 0.9, 0.3, 0.4 }, 300))
-local levelShake = Postretro.defineReaction("leveling.shake", UI.screenShake(6, 350, 18))
 local scald = Postretro.defineReaction("heat.scald", function(on)
-  return on.player:damage(5)
+  return { on.player:damage(5), UI.playSound("fixtures/bite") }
 end)
-local scaldHiss = Postretro.defineReaction("heat.scaldHiss", UI.playSound("fixtures/bite"))
 local cooled = Postretro.defineReaction("heat.cooled", UI.playSound("movers/door_close"))
 local bleeding = Postretro.defineReaction("health.bleeding", UI.vignette(0.6, 800, { 0.8, 0, 0 }))
 
@@ -41,12 +41,12 @@ function setupLevel(_ctx)
   local enoughXp = read(progression.xp):ge(100)
   local milestone = enoughXp["and"](enoughXp, read(leveling.level):lt(2))
   return {
-    reactions = { levelUp, recordLevelUp, fanfare, goldFlash, levelShake, scald, scaldHiss, cooled, bleeding },
+    reactions = { levelUp, scald, cooled, bleeding },
     playerEvents = {
       -- Host decisions: run on the host, once per player. The guard
       -- (`level < 2`) goes false once the fire raises the level.
-      Postretro.players():on(Postretro.becomes(milestone), { levelUp, recordLevelUp, fanfare, goldFlash, levelShake }),
-      Postretro.players():on(Postretro.becomes(read(player.overheated)), { scald, scaldHiss }), -- overheating burns the wielder
+      Postretro.players():on(Postretro.becomes(milestone), { levelUp }),
+      Postretro.players():on(Postretro.becomes(read(player.overheated)), { scald }), -- overheating burns the wielder
       Postretro.players():on(Postretro.ceases(read(player.overheated)), { cooled }),
     },
     crossings = {

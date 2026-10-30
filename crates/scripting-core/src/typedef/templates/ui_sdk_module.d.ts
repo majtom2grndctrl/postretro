@@ -8,7 +8,7 @@ declare module "postretro/ui" {
     NumericArrayStateValue,
     GameStateRefs,
     ModUiTree,
-    PrimitiveReactionDescriptor,
+    SystemReactionStep,
     NamedReactionDescriptor,
     CrossingCondition,
     CrossingOptions,
@@ -254,7 +254,7 @@ declare module "postretro/ui" {
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
-  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): PrimitiveReactionDescriptor; is(value: T): Predicate };
+  export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };
   /** Declare presentation-local cells. `init` keys are cell names; values may be number, boolean, string, or RGBA tuple. Pure; cells live only inside the nearest container using the returned `scope`. */
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
@@ -271,8 +271,8 @@ declare module "postretro/ui" {
   export type PresentationOptions = { audience?: PresentationAudience };
   export type AudienceScope<A> = (Extract<A, ActivatorsTarget> extends never ? {} : Pick<TriggerEventParams, "activators">) & (Extract<A, TriggerTarget> extends never ? {} : Pick<TriggerEventParams, "trigger">) & (Extract<A, PlayerTarget> extends never ? {} : PlayerEventParams);
   export type PlaySoundOptions = PresentationOptions & { bus?: string; at?: EmitterTarget };
-  export type PresentationBody<O extends PresentationOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]>>;
-  export type SoundBody<O extends PlaySoundOptions> = PrimitiveReactionDescriptor<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
+  export type PresentationBody<O extends PresentationOptions> = SystemReactionStep<AudienceScope<O["audience"]>>;
+  export type SoundBody<O extends PlaySoundOptions> = SystemReactionStep<AudienceScope<O["audience"]> & (Extract<O["at"], EmitterTarget> extends never ? {} : EmitterParams)>;
   /** Play sound on its default or explicit audience, optionally at the event emitter. */
   export function playSound<O extends PlaySoundOptions = {}>(sound: string, options?: O): SoundBody<O>;
   export function rumble<O extends PresentationOptions = {}>(strong: number, durationMs: number, weak?: number | null, options?: O): PresentationBody<O>;
@@ -280,7 +280,7 @@ declare module "postretro/ui" {
   export function vignette<O extends PresentationOptions = {}>(strength: number, durationMs: number, color?: [number, number, number] | null, options?: O): PresentationBody<O>;
   export function screenShake<O extends PresentationOptions = {}>(amplitude: number, durationMs: number, frequency?: number | null, options?: O): PresentationBody<O>;
   /** Push UI tree `tree` as a modal; optional `onCommit` names a reaction fired on commit. Unknown tree names warn and no-op. */
-  export function showDialog(tree: string, onCommit?: string | null): PrimitiveReactionDescriptor;
+  export function showDialog(tree: string, onCommit?: string | null): SystemReactionStep;
   export const KEYBOARD_TREE: "keyboard";
   export const CLOSE_DIALOG_ACTION: "ui.closeDialog";
   export const EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop";
@@ -306,24 +306,24 @@ declare module "postretro/ui" {
   export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
   export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
   /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
-  export function openTextEntry(onCommit?: string | null): PrimitiveReactionDescriptor;
+  export function openTextEntry(onCommit?: string | null): SystemReactionStep;
   /** Push a menu tree by registry name. Unknown tree names warn and no-op. */
-  export function openMenu(tree: string): PrimitiveReactionDescriptor;
+  export function openMenu(tree: string): SystemReactionStep;
   /** Pop the active modal. Empty stack warns and no-ops. */
-  export function closeDialog(): PrimitiveReactionDescriptor;
+  export function closeDialog(): SystemReactionStep;
   /** Queue a catalog map load. `id` must match a committed `ModMapEntry.id`; unknown ids warn and no-op. */
-  export function loadLevel(id: string): PrimitiveReactionDescriptor;
+  export function loadLevel(id: string): SystemReactionStep;
   /** Reload the active level from retained catalog id or raw dev path. No active level means no-op. */
-  export function restartLevel(): PrimitiveReactionDescriptor;
+  export function restartLevel(): SystemReactionStep;
   /** Return to the frontend menu and reload its optional backdrop level. */
-  export function returnToFrontend(): PrimitiveReactionDescriptor;
+  export function returnToFrontend(): SystemReactionStep;
   /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
-  export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;
+  export function setSentiment(from: string, to: string, value: number): SystemReactionStep;
   /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */
-  export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;
+  export function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep;
   /** Write a literal, fluent or runtime value at game-logic time. Literals use the normal readonly-gated coercion and range path. A fluent value (`read(…)` and its operators, `byPlayer(on.player)` reads in a player-event reaction included) or a raw runtime value binds once at level install: known Number and Boolean slots, including readonly slots, project as inputs; only a writable Number/Boolean output target is accepted. Unknown/nonprojectable inputs and readonly targets reject. */
-  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;
-  export function appendText(ref: Ref<string>, text: string): PrimitiveReactionDescriptor;
-  export function backspaceText(ref: Ref<string>): PrimitiveReactionDescriptor;
-  export function clearText(ref: Ref<string>): PrimitiveReactionDescriptor;
+  export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): SystemReactionStep;
+  export function appendText(ref: Ref<string>, text: string): SystemReactionStep;
+  export function backspaceText(ref: Ref<string>): SystemReactionStep;
+  export function clearText(ref: Ref<string>): SystemReactionStep;
 }

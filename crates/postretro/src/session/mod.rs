@@ -411,11 +411,12 @@ pub(crate) struct ScriptingCore {
     pub(crate) slot_accumulator_bindings:
         scripting_systems::slot_accumulators::SlotAccumulatorBindings,
 
-    /// Host-only scheduler for timed/delayed reaction steps (E18). Sibling to the
-    /// slot accumulators and `auto_close_timers`; its `Rc<RefCell<_>>` clone is
-    /// captured into the `wait` control handler at registration. Intentionally out
-    /// of snapshots/digests/connected-client simulation — enrollment is refused
-    /// host-side by its `enabled` latch.
+    /// Per-session scheduler for `wait` tails (E18; `scripting.md` §12, Steps
+    /// after a `wait`). Sibling to the slot accumulators and `auto_close_timers`;
+    /// its `Rc<RefCell<_>>` clone is captured into the `wait` control handler at
+    /// registration. The host and single player land every step; a connected
+    /// client parks every-machine tails and lands only machine-local steps
+    /// (`SchedulerRole`). Out of snapshots and digests.
     pub(crate) scheduler: scripting_systems::reaction_scheduler::ReactionScheduler,
 
     /// Publishes live pawn health before each impact snapshot, then republishes
@@ -439,6 +440,11 @@ pub(crate) struct ScriptingCore {
     /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+
+    /// `(firing source, verb)` pairs a connected client already warned about
+    /// when it dropped a host-only level verb. Role is fixed for the session,
+    /// so the latch lives as long as the session. See: context/lib/scripting.md §10.4.
+    pub(crate) client_level_verb_warnings: std::collections::HashSet<(String, &'static str)>,
 }
 
 /// Publish owner-local health and evaluate the damage call's pending impact in
@@ -680,12 +686,16 @@ impl Session {
             &net_endpoint,
             Some(netcode::NetEndpoint::Client { .. })
         ));
-        // E18: refuse timed-reaction enrollment on a connected client. Named fires
-        // run there too, so the guard lives at the scheduler, not at a call site.
-        scripting.scheduler.set_enabled(!matches!(
-            &net_endpoint,
-            Some(netcode::NetEndpoint::Client { .. })
-        ));
+        // A connected client parks only every-machine tails and lands only their
+        // machine-local steps. Named fires run there too, so the role lives at
+        // the scheduler, not at a call site.
+        scripting.scheduler.set_role(
+            if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
+                scripting_systems::reaction_scheduler::SchedulerRole::Client
+            } else {
+                scripting_systems::reaction_scheduler::SchedulerRole::Host
+            },
+        );
         scripting
             .script_ctx
             .owner_slot_writes_enabled
@@ -890,7 +900,7 @@ fn build_scripting_core(
     // `script_runtime_ctor`. See: context/lib/boot_sequence.md §1.
     timings.record("script_runtime_ctor");
 
-    // Host-only timed-reaction scheduler. Its clone is captured into the `wait`
+    // Timed-reaction scheduler. Its clone is captured into the `wait`
     // control primitive registered just below.
     let scheduler = scripting_systems::reaction_scheduler::ReactionScheduler::default();
 
@@ -995,6 +1005,7 @@ fn build_scripting_core(
         vignette_decay,
         shake_decay,
         input_mode_tracker,
+        client_level_verb_warnings: Default::default(),
     };
     Ok((scripting, classname_dispatch))
 }

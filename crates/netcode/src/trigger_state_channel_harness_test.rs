@@ -604,6 +604,7 @@ impl PersistentAtmosphereHarness {
             faction_sentiment_record: None,
             ghost_audio: None,
             server_script_time: 0.0,
+            level_tick: 0,
         };
         assert!(
             self.server

@@ -370,6 +370,7 @@ fn presentation_pawn_host_only_capture_keeps_player_start_and_network_slot_recor
                         faction_sentiment_record: None,
                         ghost_audio: None,
                         server_script_time: f64::from(tick),
+                        level_tick: 0,
                     },
                 );
                 let remote = client
@@ -417,6 +418,7 @@ fn presentation_pawn_host_only_capture_keeps_player_start_and_network_slot_recor
                     faction_sentiment_record: None,
                     ghost_audio: None,
                     server_script_time: 3.0,
+                    level_tick: 0,
                 },
             );
             assert!(late_outcome.refresh_requests.is_empty());

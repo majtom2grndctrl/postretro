@@ -211,6 +211,7 @@ pub fn sequence_steps_from_js<'js>(
         let id_value: JsValue = obj.get("id").map_err(js_err)?;
         let has_id = !(id_value.is_null() || id_value.is_undefined());
         let authored_kind = authored_text_js(&obj, "kind")?;
+        let has_tag = !matches!(authored_text_js(&obj, "tag")?, AuthoredText::Absent);
         // A subject-token verb's `{ primitive, target, args }` is the same
         // descriptor as its reaction body, so the entry shares that check.
         let token = validate_authored_subject_token(
@@ -219,7 +220,7 @@ pub fn sequence_steps_from_js<'js>(
             authored_text_js(&obj, "target")?,
             has_id,
             !matches!(authored_kind, AuthoredText::Absent),
-            !matches!(authored_text_js(&obj, "tag")?, AuthoredText::Absent),
+            has_tag,
         )
         .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         let kind =
@@ -248,6 +249,16 @@ pub fn sequence_steps_from_js<'js>(
                     });
                 }
             }
+        } else if !has_id {
+            let on_complete: JsValue = obj.get("onComplete").map_err(js_err)?;
+            validate_system_step(
+                reaction,
+                &site,
+                &get_required_string_js(&obj, "primitive")?,
+                has_tag,
+                !(on_complete.is_null() || on_complete.is_undefined()),
+            )
+            .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?
         } else {
             SequenceTarget::Entity(EntityId::from_raw(get_required_u32_js(&obj, "id")?))
         };

@@ -117,7 +117,7 @@ impl Rig {
             None,
         );
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut steps = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut steps, scheduler.clone());
         register_sequenced_trap_primitives(&mut steps, ctx.clone());

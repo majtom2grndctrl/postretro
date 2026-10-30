@@ -7,9 +7,11 @@ import type {
   CrossingParams,
   EmitterParams,
   EmitterTarget,
+  ManifestReactionBody,
   PlayerEventParams,
   Reaction,
   ReactionBody,
+  ReactionStepEntry,
   SequenceStep,
   TriggerEventParams,
   TeleportEventParams,
@@ -74,8 +76,9 @@ export function fire(reaction: Reaction<{}> | string): SequenceStep[] {
  * assume cross-runtime id parity; use an explicit `name` when the id must
  * match across both runtimes.
  */
-function autoReactionId(descriptor: ReactionBody): string {
-  const serialized = stableStringify(descriptor);
+function autoReactionId(descriptor: ManifestReactionBody<any>): string {
+  // `String`: a passed-through `undefined` body serializes to no JSON at all.
+  const serialized = String(stableStringify(descriptor));
   // FNV-1a (32-bit). Deterministic and dependency-free; collision risk is
   // acceptable for author-named reaction ids and an explicit `name` overrides it.
   let hash = 0x811c9dc5;
@@ -102,13 +105,100 @@ function stableStringify(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
+// Every `defineReaction` message here is the same literal the Luau SDK raises;
+// only an interpolated runtime type name, reaction name or primitive varies. A
+// body that is none of `progress`, `primitive`, `sequence` or an array passes
+// through, so the manifest parser skips that one reaction with a warning. What
+// a list holds, and a `sequence` that is not a list, throws here.
+const MISSING_ENTRY_ERROR = "defineReaction: a list of steps has a missing entry";
+const RUNTIME_VALUE_ERROR = "defineReaction: a runtime value is not a step";
+
+// A body key on an array beside its steps: the author meant one or the other.
+function rejectMixed(list: readonly unknown[]): void {
+  const keyed = list as unknown as Record<string, unknown>;
+  for (const key of ["primitive", "progress", "sequence"]) {
+    if (keyed[key] !== undefined) {
+      throw new Error(`defineReaction: a list of steps cannot also carry \`${key}\``);
+    }
+  }
+}
+
+/** Append `list`'s steps to `out` in authored order, flattening nested arrays
+ * at any depth. An object holding `primitive` is a step and an array is
+ * recursed into; anything else throws, naming `defineReaction`. */
+function flattenSteps(list: readonly unknown[], out: ReactionStepEntry[]): ReactionStepEntry[] {
+  // `for…of` visits a sparse array's holes as `undefined`.
+  for (const entry of list) {
+    if (entry === undefined || entry === null) {
+      throw new Error(MISSING_ENTRY_ERROR);
+    }
+    if (typeof entry !== "object") {
+      throw new Error(`defineReaction: a step must be an object (a table in Luau), got ${typeof entry}`);
+    }
+    const step = entry as Record<string, unknown>;
+    if (step.op !== undefined) {
+      throw new Error(RUNTIME_VALUE_ERROR);
+    }
+    if (step.name !== undefined) {
+      throw new Error(
+        `defineReaction: reaction \`${String(step.name)}\` is a reaction handle, not a step; fire it with \`fire(r)\``,
+      );
+    }
+    if (step.progress !== undefined) {
+      throw new Error("defineReaction: a `progress` body is not a step");
+    }
+    if (step.sequence !== undefined) {
+      throw new Error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead");
+    }
+    if (Array.isArray(entry)) {
+      rejectMixed(entry);
+      flattenSteps(entry, out);
+      continue;
+    }
+    if (step.primitive === undefined) {
+      throw new Error("defineReaction: an entry with no `primitive` is not a step");
+    }
+    if (step.onComplete !== undefined) {
+      throw new Error(`defineReaction: step \`${String(step.primitive)}\` carries \`onComplete\`, which only a body may`);
+    }
+    out.push(entry as ReactionStepEntry);
+  }
+  return out;
+}
+
+/** Lower an authored body to the manifest's shape: an array, plain or
+ * returned from the tracer, is a `{ sequence }`, and every `sequence` list is
+ * flattened. Any other body is returned as authored. */
+function lowerBody(body: ReactionBody<any>): ManifestReactionBody<any> {
+  if (Array.isArray(body)) {
+    rejectMixed(body);
+    return { sequence: flattenSteps(body, []) };
+  }
+  if (body === null || typeof body !== "object") {
+    return body;
+  }
+  const authored = body as Record<string, unknown>;
+  if (authored.sequence !== undefined) {
+    if (!Array.isArray(authored.sequence)) {
+      throw new Error("defineReaction: `sequence` must be a list of steps");
+    }
+    rejectMixed(authored.sequence);
+    return { ...authored, sequence: flattenSteps(authored.sequence, []) } as ManifestReactionBody<any>;
+  }
+  return body as ManifestReactionBody<any>;
+}
+
 /**
  * Build a named reaction descriptor. Pure: returns a plain object and performs
- * no FFI. `descriptor` accepts exactly one body shape: `progress`, `primitive`,
- * or `sequence`. `name` is optional; when omitted a deterministic, run-stable id
- * is derived from the body. Use explicit names when TS and Luau scripts must
- * agree. The returned handle can be passed to `Button.onPress` or crossing
- * `fire` entries.
+ * no FFI. `descriptor` accepts one body shape: `progress`, `primitive`,
+ * `sequence`, or an array of steps, which lowers to a `sequence`; nested
+ * arrays flatten, and an empty array is an inert reaction. A list entry that
+ * is not a step throws. Any other body, a misspelled key or an empty object
+ * `{}` included, passes through, and the level load skips that one reaction
+ * with a warning. `name` is optional; when omitted a deterministic, run-stable
+ * id is derived from the lowered body. An explicit `name` wins over a body's
+ * own. Use explicit names when TS and Luau scripts must agree. The returned
+ * handle can be passed to `Button.onPress` or crossing `fire` entries.
  *
  * @param name Stable event/reaction name consumed by dispatch. Optional.
  * @param descriptor Reaction body data consumed later by Rust.
@@ -150,14 +240,15 @@ export function defineReaction(
     | ReactionTracer<any>,
 ): Reaction<any> {
   const authored = typeof nameOrBody === "string" ? descriptor : nameOrBody;
-  const tracedBody = typeof authored === "function"
+  const tracedBody = lowerBody(typeof authored === "function"
     ? authored(DISPATCH_PARAMS)
-    : authored as ReactionBody<any>;
-  const [name, body] =
-    typeof nameOrBody === "string"
-      ? [nameOrBody, tracedBody]
-      : [autoReactionId(tracedBody), tracedBody];
-  return { name, ...body } as Reaction<any>;
+    : authored as ReactionBody<any>);
+  const name = typeof nameOrBody === "string" ? nameOrBody : autoReactionId(tracedBody);
+  // `name` stays the first key, and wins over a body's own: a handle passed as
+  // a body registers under the name given here, as in Luau.
+  const fields: Record<string, unknown> = { ...tracedBody };
+  delete fields.name;
+  return { name, ...fields } as Reaction<any>;
 }
 
 /** Stamp a shared map-tag scope onto each reaction in a plain list. `tags` are matched against `ModMapEntry.tags`; omit scoping for every level. */

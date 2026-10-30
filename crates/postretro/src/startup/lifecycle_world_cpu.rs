@@ -553,6 +553,8 @@ pub(crate) fn install_world_cpu(
     // `Primitive`'s `on_complete`) and feed them into the deferred dispatcher —
     // previously discarded here, so a `fire` step in `levelLoad` dispatched
     // nothing. A `wait` step enrolls its tail and returns before this point.
+    // Every machine fires `levelLoad` at its own install, for a level the host
+    // started: its `wait` tails count on the host timeline.
     let level_load_chained = fire_named_event_with_sequences(
         "levelLoad",
         &script_ctx.data_registry.borrow(),
@@ -560,7 +562,16 @@ pub(crate) fn install_world_cpu(
         reaction_registry,
         system_registry,
         script_ctx,
-        None,
+        Some(
+            postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
+                origin: postretro_entities::FireOrigin::EveryMachine(
+                    postretro_entities::MachineSource::HostTimeline,
+                ),
+                source: "named:levelLoad".to_string(),
+                values: &[],
+                emitter: None,
+            },
+        ),
     );
     if !level_load_chained.is_empty() {
         dispatch_deferred_named_events_with_sequences(

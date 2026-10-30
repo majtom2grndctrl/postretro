@@ -70,6 +70,8 @@ Transport, replication, prediction/reconciliation, state-slot replication, sessi
 
 - [ ] **coop--pre-arm-fire-resolves-slot-zero** — before a connected client's pawn arms, its Input carries `firing_slot` 0, and a fresh fire press there fires the host pawn's slot-0 weapon whatever its active slot. Traced in source, not yet seen in play. Trace: `context/plans/done/coop--client-inventory-awaits-tuning/research.md`. Needs a draft session.
 
+- [ ] **Local-slot crossing origin** — classify crossings over a machine's own local or owner-private slots as `LocalPlayer` origin, or a sibling origin. Those crossings speak for this machine, not the shared world, yet every crossing fires as `EveryMachine` today. `drafts/reaction-body-composition`'s local-only class and `coop--client-leave-session`'s `FireOrigin::LocalPlayer` need one shared classification. After `coop--client-leave-session`, which adds the origin for player input only. Needs a draft session.
+
 **Testable outcome:** two-plus players use the selected hosted-session flow, with one joining mid-level and another dropping while the session survives, through a mod-authored lobby.
 
 ---

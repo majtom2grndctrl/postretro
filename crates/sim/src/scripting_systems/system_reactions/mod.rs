@@ -313,11 +313,16 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             serde_json::from_value(args.clone()).map_err(|e| ReactionError::InvalidArgument {
                 reason: format!("loadLevel: failed to deserialize args: {e}"),
             })?;
-        queue.push(SystemReactionCommand::LoadLevel { map: parsed.map });
+        queue.push(SystemReactionCommand::LoadLevel {
+            map: parsed.map,
+            dispatch_source: queue.fire_context().source,
+        });
         Ok(())
     });
     registry.register("restartLevel", |_args, queue| {
-        queue.push(SystemReactionCommand::RestartLevel);
+        queue.push(SystemReactionCommand::RestartLevel {
+            dispatch_source: queue.fire_context().source,
+        });
         Ok(())
     });
     registry.register("returnToFrontend", |_args, queue| {

@@ -440,6 +440,11 @@ pub(crate) struct ScriptingCore {
     /// the engine-owned `input.mode` slot, drives `ui_input_mode`.
     /// See: context/lib/input.md §7.
     pub(crate) input_mode_tracker: scripting_systems::input_mode::InputModeTracker,
+
+    /// `(firing source, verb)` pairs a connected client already warned about
+    /// when it dropped a host-only level verb. Role is fixed for the session,
+    /// so the latch lives as long as the session. See: context/lib/scripting.md §10.4.
+    pub(crate) client_level_verb_warnings: std::collections::HashSet<(String, &'static str)>,
 }
 
 /// Publish owner-local health and evaluate the damage call's pending impact in
@@ -1000,6 +1005,7 @@ fn build_scripting_core(
         vignette_decay,
         shake_decay,
         input_mode_tracker,
+        client_level_verb_warnings: Default::default(),
     };
     Ok((scripting, classname_dispatch))
 }

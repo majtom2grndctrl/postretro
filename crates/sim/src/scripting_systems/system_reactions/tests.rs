@@ -654,6 +654,7 @@ fn load_level_dispatch_reads_map_key() {
     let mut r = SystemReactionRegistry::new();
     register_system_reaction_primitives(&mut r);
     let queue = SystemCommandQueue::new();
+    queue.replace_fire_context(fire_context("named:levelLoad", None));
 
     let args = serde_json::json!({ "map": "e1m1" });
     assert!(r.dispatch("loadLevel", &args, &queue).unwrap());
@@ -661,6 +662,7 @@ fn load_level_dispatch_reads_map_key() {
         queue.take(),
         vec![SystemReactionCommand::LoadLevel {
             map: "e1m1".to_string(),
+            dispatch_source: "named:levelLoad".to_string(),
         }]
     );
 }
@@ -670,12 +672,18 @@ fn restart_level_dispatch_enqueues_argumentless_command() {
     let mut r = SystemReactionRegistry::new();
     register_system_reaction_primitives(&mut r);
     let queue = SystemCommandQueue::new();
+    queue.replace_fire_context(fire_context("crossing:3", None));
 
     assert!(
         r.dispatch("restartLevel", &serde_json::json!({}), &queue)
             .unwrap()
     );
-    assert_eq!(queue.take(), vec![SystemReactionCommand::RestartLevel]);
+    assert_eq!(
+        queue.take(),
+        vec![SystemReactionCommand::RestartLevel {
+            dispatch_source: "crossing:3".to_string(),
+        }]
+    );
 }
 
 #[test]

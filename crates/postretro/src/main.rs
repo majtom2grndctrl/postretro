@@ -187,7 +187,7 @@ use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
 use postretro_foundation::resolve_weapon_placement;
 use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
-use postretro_net::wire::{DivergenceReason, ServerControlMessage};
+use postretro_net::wire::{ClosingCause, DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::fire_named_event;
@@ -228,6 +228,19 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
             ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            // The client arm owns the next-step hint: `DivergenceReason`'s
+            // `Display` also feeds the host's rejection log. `--mod` names a
+            // folder under `content/`, which can differ from the declared id.
+            ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::ModId {
+                expected,
+                received,
+                expected_version,
+                received_version,
+            })) => {
+                log::error!(
+                    "[Net] incompatible host: host runs mod {expected} ({expected_version}), this client runs {received} ({received_version}); relaunch with --mod <folder>, where content/<folder> declares mod id {expected}"
+                );
+            }
             ServerControlMessage::Divergence(DivergenceReason::Closing(cause)) => {
                 log::error!(
                     "[Net] incompatible host: {}",
@@ -3618,13 +3631,22 @@ impl App {
                         session.modal_stack.push_named(&tree, on_commit);
                     }
                 }
-                SystemReactionCommand::LoadLevel { map } => {
+                SystemReactionCommand::LoadLevel {
+                    map,
+                    dispatch_source,
+                } => {
+                    if self.refuse_client_level_verb("loadLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.clear_pushed();
                     }
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
-                SystemReactionCommand::RestartLevel => {
+                SystemReactionCommand::RestartLevel { dispatch_source } => {
+                    if self.refuse_client_level_verb("restartLevel", dispatch_source) {
+                        continue;
+                    }
                     if let Some(source) = self.active_level_source.clone() {
                         if let Some(session) = self.session.as_mut() {
                             session.modal_stack.clear_pushed();
@@ -5032,6 +5054,28 @@ impl App {
                 .and_then(|session| session.net_endpoint.as_ref()),
             Some(netcode::NetEndpoint::Client { .. })
         )
+    }
+
+    /// Whether this app drops a host-only level verb: true on a client role.
+    /// Warns once per `(firing source, verb)` for the session. The gate follows
+    /// the session's client role, not live connection state.
+    /// See: context/lib/scripting.md §10.4.
+    fn refuse_client_level_verb(&mut self, verb: &'static str, dispatch_source: String) -> bool {
+        if !self.is_connected_client() {
+            return false;
+        }
+        if let Some(session) = self.session.as_mut()
+            && session
+                .scripting
+                .client_level_verb_warnings
+                .insert((dispatch_source.clone(), verb))
+        {
+            log::warn!(
+                "[Scripting] {verb} from `{dispatch_source}` ignored on a connected client: \
+                 only the host changes level"
+            );
+        }
+        true
     }
 
     /// Fix B — restore each connected-client pawn's authoritative `Transform` from the

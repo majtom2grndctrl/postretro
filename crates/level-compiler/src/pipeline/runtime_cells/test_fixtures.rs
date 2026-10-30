@@ -2,7 +2,7 @@
 // Quake units, their runtime cells built in process by the production
 // functions, the pre-change build beside them, and full compiles loaded
 // through the runtime loader.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

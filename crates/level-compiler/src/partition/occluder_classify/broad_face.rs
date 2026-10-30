@@ -1,7 +1,7 @@
 // The broad-face rule: the occluder rule judged on one broad face of an
 // own-frame box, sampled on a lattice, and the face measures the cluster
 // pass reads from the same probes.
-// See: context/plans/in-progress/occluder-first-partition/research.md §Occluder rule
+// See: context/plans/done/occluder-first-partition/research.md §Occluder rule
 
 use std::f64::consts::FRAC_1_SQRT_2;
 

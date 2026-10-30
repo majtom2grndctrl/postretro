@@ -2,7 +2,7 @@
 // free-standing wall that no eye in front of it can see, eyes on a lattice in
 // front of it, and the camera walk's visible set. A hidden sample in a
 // walk-visible cell is a leak.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

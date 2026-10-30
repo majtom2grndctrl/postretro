@@ -1,6 +1,6 @@
 // Openings in an occluder-tier piece: its interior fragments grouped through
 // the edges they share, so each opening becomes its own runtime portal.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Block (Task 9), resolved
+// See: context/plans/done/occluder-first-partition/plan.md §Block (Task 9), resolved
 
 use glam::DVec3;
 

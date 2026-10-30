@@ -1,7 +1,7 @@
 // The occluder partition and the runtime cells it yields: classification on a
 // first-pass tree of every brush, the two-tier build, and the cell view and
 // cell-id portal set every runtime-cell reader takes.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Approach notes
+// See: context/plans/done/occluder-first-partition/plan.md §Approach notes
 
 use std::collections::HashSet;
 

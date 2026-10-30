@@ -1,6 +1,6 @@
 // Door rows: doors recognised before the occluder-tier build, their splitters
 // bounding the doorway, and sealing read against the runtime portals.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::BTreeSet;
 

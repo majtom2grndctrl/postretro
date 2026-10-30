@@ -2,7 +2,7 @@
 // leaves. Readers that test a volume against a cell (fog masks, teleport
 // routes) and the keys that hash those tests read these, never a single
 // plane set, because a connected pocket need not be convex.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions (Two tiers in one BSP)
+// See: context/plans/done/occluder-first-partition/index.md §Decisions (Two tiers in one BSP)
 
 use glam::DVec3;
 

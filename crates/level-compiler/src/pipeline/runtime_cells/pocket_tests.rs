@@ -1,6 +1,6 @@
 // Interior pockets: one runtime cell per connected pocket of an occluder-tier
 // leaf, on a fixture modelled on stress-street's lane cells.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Block (Task 9), resolved
+// See: context/plans/done/occluder-first-partition/plan.md §Block (Task 9), resolved
 
 use std::collections::HashMap;
 

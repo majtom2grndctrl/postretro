@@ -2,7 +2,7 @@
 // near-planar section: a section occludes when a broad face of its bounding
 // box passes the occluder rule and their solid covers most of that face under
 // the face's roofline.
-// See: context/plans/in-progress/occluder-first-partition/research.md §Clusters
+// See: context/plans/done/occluder-first-partition/research.md §Clusters
 
 pub(crate) mod contact;
 mod coverage;

@@ -1,5 +1,5 @@
 // Cluster-section tests for the occluder classifier: coverage, step runs, the
-// occlusion-test map. See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// occlusion-test map. See: context/plans/done/occluder-first-partition/index.md §Acceptance
 use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 

@@ -1,7 +1,7 @@
 // Near-planar sections of an occluder cluster: touching members whose
 // broad-face normals agree, kept to a slab they share, measured in the
 // section's own frame.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Delegated answers (Clusters)
+// See: context/plans/done/occluder-first-partition/plan.md §Delegated answers (Clusters)
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;

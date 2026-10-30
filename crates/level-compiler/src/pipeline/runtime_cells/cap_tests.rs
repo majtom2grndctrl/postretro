@@ -1,7 +1,7 @@
 // Cell-size cap rows: occluder-tier leaves wider than the cap divide on the
 // world grid, its guards refuse sliver, slab and mostly-blocked lines, and
 // doors keep sealing across a cap line.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
+// See: context/plans/done/occluder-first-partition/index.md §Decisions
 
 use glam::{DQuat, DVec3};
 

@@ -1,6 +1,6 @@
 // Streaming-hint rows: seams resolve against the runtime portals between
 // occluder-tier cells, and hint volumes never shape those cells.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

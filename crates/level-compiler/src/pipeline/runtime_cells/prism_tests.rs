@@ -2,7 +2,7 @@
 // vertical end edges are free and offer a splitter, the length bound
 // deciding eligibility both ways, the overlap tolerance, and order
 // independence.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
+// See: context/plans/done/occluder-first-partition/index.md §Decisions
 
 use glam::DVec3;
 

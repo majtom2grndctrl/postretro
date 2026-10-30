@@ -2,7 +2,7 @@
 // its broad face swept along its normal, whose free vertical end planes split
 // the regions the prism overlaps after occluder planes and before door and
 // cap planes.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
+// See: context/plans/done/occluder-first-partition/index.md §Decisions
 
 use glam::DVec3;
 

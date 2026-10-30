@@ -1,6 +1,6 @@
 // Interior pockets: the connected open space inside each occluder-tier leaf,
 // the grouping each runtime interior cell is made of.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Block (Task 9), resolved
+// See: context/plans/done/occluder-first-partition/plan.md §Block (Task 9), resolved
 
 use std::collections::HashSet;
 

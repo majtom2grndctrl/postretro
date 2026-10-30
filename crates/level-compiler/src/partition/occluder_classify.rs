@@ -1,6 +1,6 @@
 // Occluder classification of individual static brushes, from canonical brush
 // geometry and segment queries against a first-pass BSP of every brush.
-// See: context/plans/in-progress/occluder-first-partition/research.md §Occluder rule
+// See: context/plans/done/occluder-first-partition/research.md §Occluder rule
 
 mod broad_face;
 

@@ -1,7 +1,7 @@
 // Synthetic brush sets for the occluder classifier and the occluder tier: box
 // brushes, sealed halls, and each acceptance fixture with the verdicts and
 // cells it pins.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use glam::{DQuat, DVec3};
 

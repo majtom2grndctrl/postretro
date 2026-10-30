@@ -1,7 +1,7 @@
 # stress-street — occluder classifier proving ground
 
 A generated city street built to exercise occluder-first partitioning
-(`context/plans/in-progress/occluder-first-partition/`). It is the classifier's
+(`context/plans/done/occluder-first-partition/`). It is the classifier's
 first consumer: the sweep reads which of its buildings, decks, barriers and
 small brushes occlude, and the owner plays it. Every dimension below is world
 metres; the generator converts to map units (1 u = 0.0254 m) at emission.

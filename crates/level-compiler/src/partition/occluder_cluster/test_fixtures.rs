@@ -1,7 +1,7 @@
 // Synthetic brush sets for occluder clusters: strip facades, corners, mixed-
 // height rows, lamps, colonnades, low walls, tiled floors and step runs, each
 // split into the room without the row's brushes and the brushes the row adds.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::ops::Range;
 

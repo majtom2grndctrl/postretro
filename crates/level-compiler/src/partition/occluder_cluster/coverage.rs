@@ -1,7 +1,7 @@
 // Cluster-section coverage: the share of a broad face of a section's bounding
 // box, under that face's roofline, that its members' solid covers, rasterized
 // on a fixed grid in the section's frame.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions (Clusters)
+// See: context/plans/done/occluder-first-partition/index.md §Decisions (Clusters)
 
 use glam::{DVec2, DVec3};
 

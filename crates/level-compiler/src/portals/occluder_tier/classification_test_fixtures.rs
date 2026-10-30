@@ -2,7 +2,7 @@
 // exterior flood, the two-tier build, and point location to its runtime
 // cells. It lives on the prl-build side because the library target compiles
 // `partition` without portals, the exterior flood or the map parser.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::HashSet;
 use std::path::PathBuf;

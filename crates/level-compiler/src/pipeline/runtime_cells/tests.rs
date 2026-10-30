@@ -1,6 +1,6 @@
 // Runtime-cell rows: the cell view, cell-id portals and every consumer that
 // reads them, on fixture maps compiled in process and loaded by the runtime.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+// See: context/plans/done/occluder-first-partition/index.md §Acceptance
 
 use std::collections::HashSet;
 

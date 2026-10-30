@@ -1,7 +1,7 @@
 // Cell-size cap of the occluder tier: world-grid splitters that divide an
 // occluder-tier leaf wider than the cap, ranked after occluder, wall free-end
 // and door planes.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
+// See: context/plans/done/occluder-first-partition/index.md §Decisions
 
 use glam::DVec3;
 

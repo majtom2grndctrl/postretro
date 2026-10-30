@@ -158,8 +158,8 @@ fn flood_exterior(tree: &BspTree, portals: &[Portal], log_mode: FloodLog) -> Has
 /// is built here.
 ///
 /// In the pipeline `tree` is the cell view, so the encoded "leaves" are cell
-/// records. Zeroes face counts for any leaf in `exterior_leaves` so exterior geometry is dropped in
-/// lockstep with the geometry section.
+/// records. Zeroes face counts for any leaf in `exterior_leaves` so exterior
+/// geometry is dropped in lockstep with the geometry section.
 pub fn encode_vis(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> VisibilityResult {
     let nodes_section = encode_nodes(tree);
     let (leaves_section, empty_leaf_count) = encode_leaves(tree, exterior_leaves);
@@ -200,8 +200,9 @@ fn encode_nodes(tree: &BspTree) -> BspNodesSection {
 /// Encode BSP leaves into the PRL leaves section. In the pipeline the tree is
 /// the cell view, so each "leaf" here is a cell.
 ///
-/// Faces are ordered by leaf in the geometry section (all faces for leaf 0 first,
-/// then leaf 1, etc.; in the pipeline, cell 0 first, then cell 1). `face_start` / `face_count` index into that ordering.
+/// Faces are ordered by leaf in the geometry section (all faces for leaf 0
+/// first, then leaf 1, etc.; in the pipeline, cell 0 first, then cell 1).
+/// `face_start` / `face_count` index into that ordering.
 /// Only empty leaves contribute faces; solid leaves get face_start=0, face_count=0.
 fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeavesSection, usize) {
     let mut leaf_records: Vec<BspLeafRecord> = Vec::with_capacity(tree.leaves.len());

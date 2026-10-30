@@ -339,24 +339,21 @@ fn portal_corners_snap_onto_axis_planes_within_clipping_dust_only() {
     let floor = (DVec3::Y, 1.6256);
     let oblique = (DVec3::new(1.0, 1.0, 0.0).normalize(), 2.0);
     let dusty = DVec3::new(19.5072, 1.6256 - 3e-13, 88.5952);
-    let snapped = snap_to_bounding_planes(dusty, [floor, oblique].iter(), floor);
+    let snapped = snap_to_bounding_planes(dusty, [floor, oblique].iter());
     assert_eq!(snapped.y, 1.6256);
     assert_eq!((snapped.x, snapped.z), (dusty.x, dusty.z));
 
     let open_gap = DVec3::new(19.5072, 1.6256 - 1e-6, 88.5952);
-    assert_eq!(
-        snap_to_bounding_planes(open_gap, [floor].iter(), floor),
-        open_gap
-    );
+    assert_eq!(snap_to_bounding_planes(open_gap, [floor].iter()), open_gap);
 }
 
 #[test]
-fn portal_corners_snap_onto_oblique_planes_and_end_on_the_door_side_of_their_own() {
-    // A door turned 45° in plan: its face is the portal's plane, pointing
-    // into the door as a door splitter does, and its edge and the floor are
-    // further planes bounding the portal's leaves. Dust off each must go, and
-    // the corner must end on the door's side of its face under the exact
-    // test sealing applies, whichever side the dust left it.
+fn portal_corners_snap_onto_oblique_planes_within_clipping_dust() {
+    // A door turned 45° in plan: its face is the portal's plane, and its
+    // edge and the floor are further planes bounding the portal's leaves.
+    // Dust off each must go, whichever side it left the corner; which side
+    // of the face the corner rounds to is sealing's to read
+    // (`portal_on_an_oblique_door_face_within_parse_noise_either_side_is_sealed`).
     let face_normal = DVec3::new(1.0, 0.0, 1.0).normalize();
     let edge_normal = DVec3::new(1.0, 0.0, -1.0).normalize();
     let corner = DVec3::new(7.3, 1.2, 4.1);
@@ -373,12 +370,10 @@ fn portal_corners_snap_onto_oblique_planes_and_end_on_the_door_side_of_their_own
     ] {
         let dusty =
             corner + face_normal * face_dust + edge_normal * edge_dust + DVec3::Y * floor_dust;
-        let snapped = snap_to_bounding_planes(dusty, [face, edge, floor, behind].iter(), face);
-        // The door's outward face, as `sealed_portal_ids_for_mover` reads it.
-        let (outward, outward_distance) = (-face_normal, -face.1);
+        let snapped = snap_to_bounding_planes(dusty, [face, edge, floor, behind].iter());
         assert!(
-            outward.dot(snapped) - outward_distance <= 0.0,
-            "corner dusted {face_dust:e} off the face ends past the door"
+            (snapped.dot(face_normal) - face.1).abs() < 1e-14,
+            "corner dusted {face_dust:e} off the face lands on it"
         );
         assert!((snapped.dot(edge_normal) - edge.1).abs() < 1e-14);
         assert_eq!(snapped.y, 1.2, "the floor still takes the corner exactly");

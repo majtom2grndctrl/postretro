@@ -163,7 +163,7 @@ fn gap(deferred_texels: &[u64]) -> BakeGapRecord {
     BakeGapRecord {
         bake: "id51=abc".to_string(),
         modes: "completed reads".to_string(),
-        pool_policy: "demand-sized growth headroom 4/3".to_string(),
+        pool_policy: postretro_render_cpu::lightmap_pool::POOL_POLICY_IDENTITY.to_string(),
         sequences: vec![Sequence {
             label: "random walk".to_string(),
             spawn: Vec3::new(0.25, 1.5, 0.75),

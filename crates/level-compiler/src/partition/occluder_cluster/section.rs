@@ -15,12 +15,21 @@ use crate::partition::occluder_classify::{
 
 /// Broad-face normals within this angle of a section's normal agree with it,
 /// so a facade a few degrees off true still reads as one plane while the arms
-/// of a corner, 90° apart, read as two sections. 10°.
+/// of a corner, 90° apart, read as two sections. 10°. The same angle decides
+/// which member planes can bound a face of the section's box in the occluder
+/// tier (`outline`), since members join a section within it.
 pub(super) const SECTION_NORMAL_MAX_ANGLE_COS: f64 = 0.984_807_753_012_208;
 
-/// Directions this close to parallel are one candidate: normals or in-plane
-/// frame axes.
-const FRAME_PARALLEL_COS: f64 = 1.0 - 1e-9;
+/// Candidate normals this close to parallel are one normal: 1 − 1e-9, about
+/// 4.5e-5 rad (9 arc seconds). Tight enough that authored normals any real
+/// turn sets apart stay distinct, each tried in turn; loose enough to fuse
+/// one direction re-derived from different members' frames, whose rounding
+/// lies orders of magnitude under it.
+const NORMAL_PARALLEL_COS: f64 = 1.0 - 1e-9;
+
+/// In-plane frame axes this close to parallel are one candidate direction,
+/// for the same reasons and at the same angle as `NORMAL_PARALLEL_COS`.
+const FRAME_AXIS_PARALLEL_COS: f64 = 1.0 - 1e-9;
 
 /// Least share of the member face area within a slab that the members
 /// sharing the slab's own interval must carry for it to stand as a slab.
@@ -92,8 +101,9 @@ pub(super) struct SectionShape {
 /// components, and each of two or more members is a section. A set that
 /// forms under several normals is one section, judged under each: which
 /// normal comes first in world order must not decide it, or turning a map
-/// would change its verdict. Every step works on sets, so the result does
-/// not depend on member order.
+/// would change its verdict, and the judgment that stands for it is chosen
+/// by geometry (`standing_judgment`). Every step works on sets, so the
+/// result does not depend on member order.
 pub(super) fn find_sections(members: &[Member<'_>], touching: &[Vec<usize>]) -> Vec<SectionShape> {
     let mut normals_by_set: BTreeMap<Vec<usize>, Vec<DVec3>> = BTreeMap::new();
     for normal in candidate_normals(members) {
@@ -141,10 +151,11 @@ fn candidate_normals(members: &[Member<'_>]) -> Vec<DVec3> {
     normals.sort_by(|a, b| axis_order(*a, *b));
     let mut distinct: Vec<DVec3> = Vec::new();
     for normal in normals {
-        // Copies a rounding apart are one normal; the first in order stays.
+        // One direction re-derived from different members is one normal; the
+        // first in order stays.
         if !distinct
             .iter()
-            .any(|kept| kept.dot(normal).abs() >= FRAME_PARALLEL_COS)
+            .any(|kept| kept.dot(normal).abs() >= NORMAL_PARALLEL_COS)
         {
             distinct.push(normal);
         }
@@ -260,7 +271,7 @@ fn section_frame(members: &[Member<'_>], section: &[usize], normal: DVec3) -> Br
     // Sorted before merging, so which near-parallel copy stands for a
     // direction does not depend on member order.
     candidates.sort_by(|a, b| axis_order(*a, *b));
-    candidates.dedup_by(|later, earlier| later.dot(*earlier).abs() >= FRAME_PARALLEL_COS);
+    candidates.dedup_by(|later, earlier| later.dot(*earlier).abs() >= FRAME_AXIS_PARALLEL_COS);
 
     let frame_for = |u: DVec3| {
         let v = canonical_direction(normal.cross(u));

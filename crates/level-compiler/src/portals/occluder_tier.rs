@@ -1,6 +1,6 @@
 // Occluder-tier portals: the runtime portal set of a two-tier BSP, one portal
 // per opening between two cells that adjacent occluder-tier leaves hold.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Approach notes
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 mod openings;
 mod pockets;
@@ -118,9 +118,7 @@ fn generate_recursive(
                         .chain(&tree.leaves[*b].defining_planes);
                     let fragment = fragment
                         .iter()
-                        .map(|&corner| {
-                            snap_to_bounding_planes(corner, bounding.clone(), (normal, distance))
-                        })
+                        .map(|&corner| snap_to_bounding_planes(corner, bounding.clone()))
                         .collect();
                     let pair = (front_cell, back_cell);
                     match pairs.iter_mut().find(|(p, _)| *p == pair) {
@@ -174,24 +172,23 @@ fn generate_recursive(
 }
 
 /// Move `point` onto each plane of `planes` it lies within `SNAP_EPSILON`
-/// of, then onto the front of the plane of the portal it bounds, the third
-/// argument. Clipping the base winding leaves corners about 1e-13 m off the
-/// planes that cut them, and sealing certifies a closed door's cover with no
-/// tolerance: a door whose face or edge bounds a portal covers it only if no
-/// corner lies past that face or edge, so the dust must go.
+/// of. Clipping the base winding leaves corners about 1e-13 m off the
+/// planes that cut them, and sealing certifies a closed door's cover across
+/// its edges with no tolerance: a door whose edge bounds a portal covers it
+/// only if no corner lies past that edge by more than a sliver under the
+/// sealing area cull, so the dust must go.
 ///
 /// An axis-aligned plane takes the corner exactly, after every other plane,
 /// so no projection moves it off again. Any other plane takes it by
 /// projection along that plane's normal, which rounding leaves a few ulps to
-/// either side. Past a door's edge that is a sliver under the sealing area
-/// cull; on the portal's own plane it would put the whole portal past a door
-/// face lying there. So the corner then steps onto the front of that plane,
-/// which faces into the door when the plane is one of the door's own: a
-/// door's tier splitters point into it (`DoorSplitter`).
+/// either side: past a door's edge that is such a sliver. No side of the
+/// portal's own plane is chosen: the door face lying there may be the node
+/// plane reversed, or a wall's face the door shares up to parse noise, and
+/// sealing reads a portal that close to a face parallel to it as lying on
+/// it.
 fn snap_to_bounding_planes<'a>(
     mut point: DVec3,
     planes: impl Iterator<Item = &'a (DVec3, f64)> + Clone,
-    (portal_normal, portal_distance): (DVec3, f64),
 ) -> DVec3 {
     let axis_of = |normal: DVec3| (0..3).find(|&axis| normal[axis].abs() == 1.0);
     for &(normal, distance) in planes.clone() {
@@ -205,16 +202,6 @@ fn snap_to_bounding_planes<'a>(
             && (point.dot(normal) - distance).abs() <= SNAP_EPSILON
         {
             point[axis] = distance / normal[axis];
-        }
-    }
-    if (point.dot(portal_normal) - portal_distance).abs() <= SNAP_EPSILON {
-        // Each step at least doubles the last, so a corner within rounding
-        // of the plane crosses it in a few steps; on an axis-aligned plane
-        // the exact snap already put it there.
-        let mut step = f64::EPSILON * point.abs().max_element().max(1.0);
-        while point.dot(portal_normal) - portal_distance < 0.0 {
-            point += portal_normal * step;
-            step *= 2.0;
         }
     }
     point

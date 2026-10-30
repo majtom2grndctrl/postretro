@@ -1,5 +1,10 @@
 // Cluster-section tests for the occluder classifier: coverage, step runs, the
 // occlusion-test map. See: context/plans/in-progress/occluder-first-partition/index.md §Acceptance
+use std::collections::BTreeMap;
+use std::f64::consts::FRAC_PI_2;
+
+use glam::{DQuat, DVec3};
+
 use super::classification_test_fixtures::{
     TierBuild, assert_apart, brush_at_quake_box, classification, occlusion_test_brushes,
 };
@@ -14,6 +19,7 @@ use crate::partition::occluder_cluster::test_fixtures::{
 use crate::partition::occluder_cluster::{
     COVERAGE_GRID_CELLS, OCCLUDER_COVERAGE_FRACTION, Section,
 };
+use crate::partition::region_polytope::RegionPolytope;
 
 const TURN: f64 = std::f64::consts::FRAC_PI_4;
 
@@ -60,6 +66,19 @@ fn assert_adds_no_empty_cell_or_portal(cf: &ClusterFixture) {
         "{}: (interior cells, portals) with the row's brushes vs without",
         cf.fixture.name
     );
+}
+
+/// The planes `section`'s members split at occluder rank, as `(normal,
+/// distance)`.
+fn flagged_planes(cf: &ClusterFixture, section: &Section) -> Vec<(DVec3, f64)> {
+    section
+        .members
+        .iter()
+        .zip(&section.outline)
+        .flat_map(|(&brush, flags)| cf.fixture.brushes[brush].planes.iter().zip(flags))
+        .filter(|&(_, &flagged)| flagged)
+        .map(|(plane, _)| (plane.normal, plane.distance))
+        .collect()
 }
 
 /// No brush the row adds reaches the occluder tier.
@@ -342,8 +361,9 @@ fn facades_joined_by_a_touching_sign_each_bound_cells() {
     assert_apart(&cf.fixture);
 }
 
-// Orientation: every member's own normal is tried, and a set is judged under
-// every normal it forms under, so world orientation decides nothing.
+// Orientation: every member's own normal is tried, a set is judged under
+// every normal it forms under, and the judgment that stands for it is chosen
+// by geometry, so world orientation decides only an exact geometric tie.
 
 #[test]
 fn facade_turned_45_degrees_bounds_cells_beside_a_sign_5_degrees_off_either_way() {
@@ -379,6 +399,61 @@ fn stacked_cubes_occlude_alike_turned_90_degrees() {
     }
 }
 
+#[test]
+fn stacked_posts_in_an_uneven_collar_split_alike_turned_90_degrees() {
+    // Both judgments occlude with one box and full coverage, so the tie
+    // reaches the bounding faces' open depth: the faces across z front the
+    // 1.225 m gaps, those across x the 1.2 m ones. Before, the first
+    // occluding judgment in world xyz order stood, the one across world z in
+    // both maps: across the posts' z square, across their x turned.
+    let turn = DQuat::from_rotation_y(FRAC_PI_2);
+    let [(square, square_planes), (turned, turned_planes)] = [
+        fixtures::stacked_posts_in_collar(),
+        fixtures::stacked_posts_in_collar().turned(FRAC_PI_2),
+    ]
+    .map(|cf| {
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+        let section = sections[0].clone();
+        assert!(section.occludes, "{}: {section:#?}", cf.fixture.name);
+        assert_apart(&cf.fixture);
+        let planes = flagged_planes(&cf, &section);
+        (section, planes)
+    });
+    assert!(
+        square.normal.z.abs() > 1.0 - 1e-9,
+        "square, the faces across z bound the section: {square:#?}"
+    );
+    assert!(
+        (turn * square.normal).dot(turned.normal).abs() > 1.0 - 1e-9,
+        "section normal {} square, {} turned",
+        square.normal,
+        turned.normal
+    );
+    assert!(
+        (turn * square.bounding_face).dot(turned.bounding_face) > 1.0 - 1e-9,
+        "bounding face {} square, {} turned",
+        square.bounding_face,
+        turned.bounding_face
+    );
+    assert_eq!(
+        square_planes.len(),
+        turned_planes.len(),
+        "tier planes square {square_planes:?}, turned {turned_planes:?}"
+    );
+    for (normal, distance) in square_planes {
+        let normal = turn * normal;
+        assert!(
+            turned_planes
+                .iter()
+                .any(|&(n, d)| n.dot(normal) > 1.0 - 1e-9 && (d - distance).abs() < 1e-6),
+            "square tier plane ({normal}, {distance}), turned, is not a turned tier plane: \
+             {turned_planes:?}"
+        );
+    }
+}
+
 // An occluding section bounds the occluder tier even when no member is
 // square to its box.
 
@@ -402,6 +477,93 @@ fn louvred_screen_off_square_to_its_section_bounds_cells() {
         "no member plane bounds the section's bounding face in the tier"
     );
     assert_apart(&cf.fixture);
+}
+
+#[test]
+fn louvred_screen_splits_once_on_each_face_of_its_box() {
+    // Regression: every member plane within the section angle that touched a
+    // box face bounded it, so the twelve louvres' faces, parallel and 9 cm
+    // apart, each cut the regions in front of the screen at occluder rank
+    // into strips: 30 interior cells and 68 portals, against 5 and 8 for the
+    // screen as one solid slab. Now 8 and 13.
+    let cf = fixtures::louvred_screen();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert!(section.occludes, "{section:#?}");
+    let planes = flagged_planes(&cf, section);
+    let (front, rest): (Vec<_>, Vec<_>) = planes
+        .iter()
+        .partition(|&&(normal, _)| normal.dot(section.bounding_face) > 0.9);
+    let &(normal, distance) = *front.first().expect("a plane bounds the bounding face");
+    assert!(
+        front
+            .iter()
+            .all(|&&(n, d)| n.dot(normal) > 1.0 - 1e-9 && (d - distance).abs() < 1e-3),
+        "planes on the bounding face: {front:?}"
+    );
+    assert!(
+        rest.iter()
+            .all(|&&(n, _)| n.dot(section.bounding_face).abs() < 0.2),
+        "planes off the bounding face lie on the box's edge faces: {rest:?}"
+    );
+
+    // The strips themselves: no cell outside the screen's box is thinner
+    // than half a metre across any plane the section splits on. Inside the
+    // box a pocket between members may be thinner, as the 1 cm gap between
+    // the rail's end and the end louvre's tilted face is.
+    let build = TierBuild::classified(&cf.fixture.brushes);
+    let frame = &section.frame;
+    let in_box = |point: DVec3| {
+        (0..3).all(|axis| {
+            (point - frame.center).dot(frame.axes[axis]).abs() <= frame.extents[axis] * 0.5 + 1e-3
+        })
+    };
+    let mut cell_vertices: BTreeMap<usize, Vec<DVec3>> = BTreeMap::new();
+    for (leaf, bsp_leaf) in build.tree.leaves.iter().enumerate() {
+        if bsp_leaf.is_solid || build.exterior.contains(&leaf) {
+            continue;
+        }
+        let mut region = RegionPolytope::from_aabb(&bsp_leaf.bounds);
+        for &(normal, distance) in &bsp_leaf.defining_planes {
+            region = region.clip(normal, distance).0;
+        }
+        cell_vertices
+            .entry(build.cells.leaf_cell[leaf])
+            .or_default()
+            .extend(region.vertices());
+    }
+    for (cell, vertices) in &cell_vertices {
+        if vertices.iter().all(|&point| in_box(point)) {
+            continue;
+        }
+        for &(normal, _) in &planes {
+            let (lo, hi) = vertices
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), vertex| {
+                    (lo.min(vertex.dot(normal)), hi.max(vertex.dot(normal)))
+                });
+            assert!(
+                hi - lo >= 0.5,
+                "cell {cell}, outside the screen's box, is {:.3} m thick across {normal}",
+                hi - lo
+            );
+        }
+    }
+
+    // And the count. The screen's members leave recesses the slab has none
+    // of: each gap between neighbouring louvres may close off one pocket
+    // behind the bounding plane, opening through it and at most the top and
+    // an end plane. So the slab's cells plus one per gap, and its portals
+    // plus three per gap; strips add cells and portals with every plane.
+    let gaps = cf.added().len() - 2;
+    let screen = build.interior_cells_and_portals();
+    let slab = TierBuild::classified(&fixtures::solid_screen()).interior_cells_and_portals();
+    assert!(
+        screen.0 <= slab.0 + gaps && screen.1 <= slab.1 + 3 * gaps,
+        "(interior cells, portals): screen {screen:?}, solid slab {slab:?}, {gaps} gaps"
+    );
 }
 
 // Roofline coverage (index.md §Decisions, Clusters; owner ruling after
@@ -510,6 +672,42 @@ fn balustrade_on_a_balcony_edge_reads_porous_under_its_deck_roofline_and_stays_e
     let height = fixtures::BALUSTRADE_HEIGHT_M;
     let expected = (posts * height + (1.0 - posts) * fixtures::BALUSTRADE_RAIL_M)
         / (posts * height + (1.0 - posts) * OCCLUDER_SEE_OVER_M);
+    assert!(
+        (section.coverage - expected).abs() < 0.02,
+        "coverage {:.3} vs {expected:.3}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+#[test]
+fn balustrade_over_a_stairwell_reads_each_column_s_own_floor_and_stays_exempt() {
+    // The Clusters Decision's roofline: each point counts up to the
+    // see-over height above the floor in front of it. The deck face's
+    // middle third fronts the stairwell, whose see-over line lies under the
+    // balustrade's foot, so its columns count only their solid; the outer
+    // two thirds count up to 2.5 m above the deck. Read with the stairwell's
+    // floor across the whole face, as before, every column counted only its
+    // solid, coverage was 1 and the balustrade occluded.
+    let cf = fixtures::balustrade_over_stairwell();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(
+        section.box_verdict,
+        OccluderVerdict::Occludes,
+        "{section:#?}"
+    );
+    // Each third holds four posts, a fifth of its width, as the whole
+    // balustrade does.
+    let posts =
+        fixtures::BALUSTRADE_POSTS as f64 * fixtures::BALUSTRADE_POST_M / fixtures::BALCONY_WIDTH_M;
+    let height = fixtures::BALUSTRADE_HEIGHT_M;
+    let solid = posts * height + (1.0 - posts) * fixtures::BALUSTRADE_RAIL_M;
+    let over_deck = posts * height + (1.0 - posts) * OCCLUDER_SEE_OVER_M;
+    let expected = 3.0 * solid / (2.0 * over_deck + solid);
     assert!(
         (section.coverage - expected).abs() < 0.02,
         "coverage {:.3} vs {expected:.3}",

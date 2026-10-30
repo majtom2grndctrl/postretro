@@ -1187,7 +1187,10 @@ pub(super) fn stage_keys(
         exterior_leaves: &view.exterior_cells,
     };
     // The lightmap stage's own charts and cell blocks over this view's
-    // geometry, packed by the production `pack_cut_charts`.
+    // geometry, packed by `pack_cut_charts` with `BlockOrdering::by_cell_id`:
+    // its cluster table is empty, so blocks order by cell id alone, not as
+    // production orders them. The fingerprint still misses on a cell change
+    // because it folds each block's `cell_id`.
     let static_lights =
         crate::light_namespaces::StaticBakedLights::from_lights(&cells.map_data.lights);
     let mut atlas_geometry = geometry.clone();

@@ -1,7 +1,7 @@
 // Door recognition: which kinematic movers seal a doorway at their closed
 // pose, judged before the occluder-tier build from canonical brush geometry
 // and the first-pass tree; and the splitters each door feeds that tier.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Delegated answers
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::DVec3;
 
@@ -47,8 +47,7 @@ const SHALLOW_FACE_MIN_DEPTH_M: f64 = 0.1;
 /// The occluder-tier splitters of one door. Its planes split only regions
 /// whose interior overlaps the door's closed brushes, and only after every
 /// occluder-rank and prism plane, so they cut only the occluder-tier leaf
-/// that holds the doorway: a room the door does not reach keeps its cells
-/// (pin R7).
+/// that holds the doorway: a room the door does not reach keeps its cells.
 #[derive(Debug, Clone)]
 pub struct DoorSplitter {
     /// Index of the mover in `MapData::kinematic_movers`.
@@ -59,7 +58,7 @@ pub struct DoorSplitter {
     /// The closed brushes' other planes. They split only the slab the broad
     /// planes leave around the door, so the portals onto the door's faces
     /// end at its edges and the door covers each one; on a wall with gaps
-    /// beside the door, the gaps keep portals of their own (pin R8).
+    /// beside the door, the gaps keep portals of their own.
     pub edge_planes: Vec<(DVec3, f64)>,
     /// Per closed brush, its outward planes, for the overlap test.
     hulls: Vec<Vec<(DVec3, f64)>>,
@@ -97,12 +96,12 @@ impl DoorSplitter {
 /// (authored) pose, some pair of opposite faces of its own-frame box, its
 /// broad faces, has static solid touching both ends of at least one axis
 /// across them, within the contact epsilon, open space at least the
-/// occluder floor deep in front of one, and open space deeper than
-/// `SHALLOW_FACE_MIN_DEPTH_M` in front of the other: a door into a closet
-/// shallower than the floor still seals the closet off.
-/// A lift car docked in a room touches only the floor and is no door (pin
-/// R25). Movers are never part of `space` or `static_brushes`, so a door is
-/// never a blocking surface for its wall's classification (pin R17).
+/// occluder floor deep in front of one, and open space at least
+/// `SHALLOW_FACE_MIN_DEPTH_M` deep in front of the other: a door into a
+/// closet shallower than the floor still seals the closet off.
+/// A lift car docked in a room touches only the floor and is no door.
+/// Movers are never part of `space` or `static_brushes`, so a door is never
+/// a blocking surface for its wall's classification.
 pub fn recognize_doors(
     movers: &[MapKinematicMover],
     static_brushes: &[BrushVolume],

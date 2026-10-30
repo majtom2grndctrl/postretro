@@ -237,16 +237,19 @@ fn with_side_order(brush: &BrushVolume, order: &[usize]) -> BrushVolume {
 
 /// What classification decides, in the original brush order: each brush's
 /// verdict alone and whether it reaches the occluder tier, each cluster's
-/// members, and each section's in-slab members and outcome.
+/// members, and each section's in-slab members, outcome and tier planes.
 #[derive(Debug, PartialEq)]
 struct Outcome {
     verdicts: Vec<OccluderVerdict>,
     in_tier: Vec<bool>,
     clusters: BTreeSet<Vec<usize>>,
-    /// In-slab members, whether the section occludes, and whether its
-    /// bounding face faces along its normal.
-    sections: BTreeSet<(Vec<usize>, bool, bool)>,
+    sections: BTreeSet<SectionOutcome>,
 }
+
+/// A section's in-slab members, whether it occludes, whether its bounding
+/// face faces along its normal, and the planes it splits at occluder rank as
+/// (brush, plane) in the original brush and side order.
+type SectionOutcome = (Vec<usize>, bool, bool, BTreeSet<(usize, usize)>);
 
 /// Classify `brushes` visited in `order`, each brush's sides in the order
 /// `sides` gives for its plane count; the outcome names brushes by their
@@ -280,10 +283,19 @@ fn classify_reordered(
             .iter()
             .flat_map(|cluster| &cluster.sections)
             .map(|section| {
+                let mut outline = BTreeSet::new();
+                for (&position, flags) in section.members.iter().zip(&section.outline) {
+                    let brush = order[position];
+                    let side_order = sides(brushes[brush].planes.len());
+                    for (side, _) in flags.iter().enumerate().filter(|&(_, &flagged)| flagged) {
+                        outline.insert((brush, side_order[side]));
+                    }
+                }
                 (
                     original(&section.members),
                     section.occludes,
                     section.bounding_face.dot(section.normal) > 0.0,
+                    outline,
                 )
             })
             .collect(),

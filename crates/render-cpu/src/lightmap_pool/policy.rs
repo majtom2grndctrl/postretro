@@ -10,6 +10,7 @@ mod repack;
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
 use super::{BlockPlacement, BlockPool, BlockTableEntry, Slot, block_table_bytes};
+pub use growth::POOL_POLICY_IDENTITY;
 use journal::{JournalOp, Touched};
 pub use plan::{
     BlockUpload, DrainPlan, EvictionReason, NotAPlannedUpload, PlannedEviction, PoolCopy,

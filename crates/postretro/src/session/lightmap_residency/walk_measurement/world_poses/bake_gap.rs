@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use glam::Vec3;
 use postretro_level_loader::LevelWorld;
+use postretro_render_cpu::lightmap_pool::POOL_POLICY_IDENTITY;
 use postretro_visibility::{TimingGate, VisibilityPath};
 
 use super::super::baked_set::bake_identity;
@@ -28,13 +29,6 @@ use crate::render_preparation::VisibleRenderPreparation;
 
 const MAGIC: &str = "postretro-bake-gap-world-record 2";
 
-/// The pool policy identity this build runs under, recorded so a pair never
-/// compares builds sized differently (rendering_pipeline.md §2: both builds of
-/// a paired comparison run the same pool policy). Mirrors the demand-sized
-/// growth in `crates/render-cpu/src/lightmap_pool/policy/growth.rs`:
-/// `GROWTH_HEADROOM` is 4/3 there but `pub(super)`, so it is restated here.
-/// Change this string whenever that policy or ratio changes.
-const POOL_POLICY: &str = "demand-sized growth headroom 4/3";
 /// Frames the pose tour holds each pose: drain 0's reads land in drain 1 of
 /// the first frame; the second shows what a retiring generation still holds.
 const POSE_TOUR_DWELL: u32 = 2;
@@ -138,7 +132,9 @@ pub(super) fn run(
     Some(BakeGapRecord {
         bake: bake_identity(path, world),
         modes: modes.label(),
-        pool_policy: POOL_POLICY.to_string(),
+        // Recorded so a pair never compares builds sized differently
+        // (rendering_pipeline.md §2: both builds run the same pool policy).
+        pool_policy: POOL_POLICY_IDENTITY.to_string(),
         sequences,
     })
 }

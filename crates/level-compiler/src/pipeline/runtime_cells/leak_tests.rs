@@ -786,22 +786,60 @@ fn walk_from_in_front_of_a_laned_two_layer_wall_draws_no_cell_holding_space_hidd
     assert_no_hidden_space_drawn_behind_laned_wall(2);
 }
 
+/// The laned hall's retaining wall ending, at its +x end, at a doorway
+/// 96 u (2.44 m) wide and high under a lintel 160 u tall, over half the
+/// wall's height, with a wall running on from the doorway to the hall's +x
+/// wall. No second occluder.
+fn doorway_wall_hall() -> MapText {
+    let (t, [x0, y0, z0], [x1, y1, z1]) = (16.0, LANED_HALL_MIN, LANED_HALL_MAX);
+    let mut map = MapText::new();
+    map.solid([x0 - t, y0 - t, z0 - t], [x1 + t, y1 + t, z0])
+        .solid([x0 - t, y0 - t, z1], [x1 + t, y1 + t, z1 + t])
+        .solid([x0 - t, y0 - t, z0], [x0, y1 + t, z1])
+        .solid([x1, y0 - t, z0], [x1 + t, y1 + t, z1])
+        .solid([x0, y0 - t, z0], [x1, y0, z1])
+        .solid([x0, y1, z0], [x1, y1 + t, z1]);
+    let ([_, wy0, wz0], [wx1, wy1, wz1]) = (LANED_WALL_MIN, LANED_WALL_MAX);
+    let (door_x1, door_z1) = (wx1 + 96.0, wz0 + 96.0);
+    map.solid(LANED_WALL_MIN, LANED_WALL_MAX)
+        .solid([wx1, wy0, door_z1], [door_x1, wy1, wz1])
+        .solid([door_x1, wy0, wz0], [x1, wy1, wz1])
+        .light([768.0, 900.0, 400.0], 2000.0);
+    map
+}
+
+// Regression: the probes just past the wall's end mostly sat in the lintel
+// over the doorway, so the end read as meeting solid and added no splitter;
+// the space behind the wall then shared cells with the space eyes in front
+// see through the doorway.
+#[test]
+fn walk_from_in_front_of_a_wall_beside_a_lintelled_doorway_draws_no_cell_holding_space_hidden_behind_it()
+ {
+    assert_no_hidden_space_drawn(&doorway_wall_hall(), &[LANED_WALL]);
+}
+
 /// The behind-the-wall row on `laned_wall_hall(layers)`: no walk from the
 /// eye lattice in front reaches a cell holding a hidden sample.
 fn assert_no_hidden_space_drawn_behind_laned_wall(layers: usize) {
-    let map = laned_wall_hall(layers);
+    let occluders: Vec<usize> = (LANED_WALL..=LANED_WALL + layers).collect();
+    assert_no_hidden_space_drawn(&laned_wall_hall(layers), &occluders);
+}
+
+/// The behind-the-wall row on `map`, whose retaining wall stands where the
+/// laned hall's does and whose `occluders` brushes each occlude: no walk
+/// from the eye lattice in front reaches a cell holding a hidden sample.
+fn assert_no_hidden_space_drawn(map: &MapText, occluders: &[usize]) {
     let map_data = map.parse();
     let verdicts = classify(&map_data.brush_volumes)
         .expect("classifies")
         .verdicts;
-    for (layer, &verdict) in verdicts[LANED_WALL..LANED_WALL + layers].iter().enumerate() {
-        assert_eq!(verdict, OccluderVerdict::Occludes, "layer {layer}");
+    for &brush in occluders {
+        assert_eq!(verdicts[brush], OccluderVerdict::Occludes, "brush {brush}");
     }
-    assert_eq!(verdicts[LANED_WALL + layers], OccluderVerdict::Occludes);
 
     let setup = laned_wall_setup();
     // Ten times the default texel pitch: the row reads no texel.
-    let compiled = compile(&map, &["--lightmap-density", "0.25"]);
+    let compiled = compile(map, &["--lightmap-density", "0.25"]);
     let world = &compiled.world;
     let triangles = Triangles::of(world);
     let samples = HiddenSamples::of(&setup, &map_data.brush_volumes, &triangles);

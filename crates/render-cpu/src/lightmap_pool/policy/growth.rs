@@ -15,6 +15,14 @@ pub(super) const GROWTH_HEADROOM: Ratio = Ratio {
     denominator: 3,
 };
 
+/// The pool sizing policy's identity, recorded by measurement files so a
+/// paired comparison never spans two policies. Change this string whenever
+/// any lightmap pool sizing rule changes: the `GROWTH_HEADROOM` ratio, the
+/// all-resident clamp in `growth_reserve_layers`, or the
+/// at-need extension in `placement.rs`. A record written under the old string
+/// then reads as a different policy instead of a silent mismatch.
+pub const POOL_POLICY_IDENTITY: &str = "demand-sized growth headroom 4/3";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Ratio {
     pub numerator: u32,

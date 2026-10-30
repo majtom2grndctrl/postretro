@@ -1,6 +1,6 @@
-// Cluster-section coverage: the share of a section's bounding broad face,
-// under its roofline, that its members' solid covers, rasterized on a fixed
-// grid in the section's frame.
+// Cluster-section coverage: the share of a broad face of a section's bounding
+// box, under that face's roofline, that its members' solid covers, rasterized
+// on a fixed grid in the section's frame.
 // See: context/plans/in-progress/occluder-first-partition/index.md §Decisions (Clusters)
 
 use glam::{DVec2, DVec3};
@@ -15,12 +15,15 @@ pub const COVERAGE_GRID_CELLS: usize = 240;
 /// boundary never claims the cells on its other side.
 const INSIDE_EPSILON: f64 = 1e-9;
 
-/// The see-over line across a face whose second axis points up: the face's
-/// points at world height `height`. A face point at coordinates `(s, t)`
-/// stands at world height `plane_y + s·axes[0].y + t·axes[1].y`, where
-/// `plane_y` is the height the face plane's offset along its normal adds.
+/// The see-over line across a face whose second axis points up: over each
+/// column along the first axis, the face's points at world height
+/// `heights[column]`, the see-over height above the floor in front of that
+/// column. A face point at coordinates `(s, t)` stands at world height
+/// `plane_y + s·axes[0].y + t·axes[1].y`, where `plane_y` is the height the
+/// face plane's offset along its normal adds.
 pub(super) struct SeeOverLine {
-    pub(super) height: f64,
+    /// One height per column, `COVERAGE_GRID_CELLS` of them.
+    pub(super) heights: Vec<f64>,
     pub(super) plane_y: f64,
 }
 
@@ -32,9 +35,9 @@ pub(super) struct SeeOverLine {
 ///
 /// With no `roofline` every cell counts. With one, `axes[1]` points up and
 /// each column along `axes[0]` counts from the face's foot to the higher of
-/// its highest covered cell and the see-over line at the column's centre:
-/// sky over a lower roof does not count, while a column whose solid stops
-/// under the line, or that holds none, still counts up to it.
+/// its highest covered cell and its own see-over line at the column's
+/// centre: sky over a lower roof does not count, while a column whose solid
+/// stops under the line, or that holds none, still counts up to it.
 pub(super) fn covered_cells(
     axes: [DVec3; 2],
     lo: DVec2,
@@ -82,14 +85,16 @@ pub(super) fn covered_cells(
     let Some(line) = roofline else {
         return (covered_count, total);
     };
+    debug_assert_eq!(line.heights.len(), n, "one see-over height per column");
     let counted = (0..n)
-        .map(|i| {
+        .zip(&line.heights)
+        .map(|(i, &height)| {
             let solid_top = (0..n)
                 .rev()
                 .find(|&j| covered[j * n + i])
                 .map_or(0, |j| j + 1);
             let s = lo.x + (i as f64 + 0.5) / n as f64 * extent.x;
-            let t = (line.height - line.plane_y - s * axes[0].y) / axes[1].y;
+            let t = (height - line.plane_y - s * axes[0].y) / axes[1].y;
             // Rows whose centres lie at or under the line, within the face.
             let rows = (t - lo.y) / extent.y * n as f64;
             let under_line = (rows + 0.5 + INSIDE_EPSILON).floor().clamp(0.0, n as f64) as usize;
@@ -167,17 +172,22 @@ mod tests {
     /// standing on the floor with the see-over line 2.5 m up when
     /// `roofline`.
     fn cells(members: &[Vec<DVec3>], roofline: bool) -> (usize, usize) {
-        let members: Vec<&[DVec3]> = members.iter().map(Vec::as_slice).collect();
         let line = SeeOverLine {
-            height: 2.5,
+            heights: vec![2.5; COVERAGE_GRID_CELLS],
             plane_y: 0.0,
         };
+        cells_under(members, roofline.then_some(&line))
+    }
+
+    /// Coverage over `cells`' face under `roofline`.
+    fn cells_under(members: &[Vec<DVec3>], roofline: Option<&SeeOverLine>) -> (usize, usize) {
+        let members: Vec<&[DVec3]> = members.iter().map(Vec::as_slice).collect();
         covered_cells(
             [DVec3::X, DVec3::Y],
             DVec2::ZERO,
             DVec2::new(24.0, 6.0),
             &members,
-            roofline.then_some(&line),
+            roofline,
         )
     }
 
@@ -193,6 +203,25 @@ mod tests {
         let (covered, counted) = cells(&members, true);
         assert_eq!(covered, 60 * 240 + 60 * 160 + 60 * 40);
         assert_eq!(counted, 60 * 240 + 60 * 160 + 60 * 100 + 60 * 100);
+    }
+
+    #[test]
+    fn roofline_counts_each_column_up_to_its_own_see_over_line() {
+        // A wall 1 m tall the face's length. Over columns 0..120 the floor in
+        // front lies at the face's foot, so they count to 2.5 m; over
+        // 120..240 it lies 2 m lower, under a stairwell, so the line stands
+        // at 0.5 m and they count only to the wall's top.
+        let wall = [rect(DVec2::ZERO, DVec2::new(24.0, 1.0))];
+        let half = COVERAGE_GRID_CELLS / 2;
+        let line = SeeOverLine {
+            heights: (0..COVERAGE_GRID_CELLS)
+                .map(|i| if i < half { 2.5 } else { 0.5 })
+                .collect(),
+            plane_y: 0.0,
+        };
+        let (covered, counted) = cells_under(&wall, Some(&line));
+        assert_eq!(covered, 240 * 40);
+        assert_eq!(counted, 120 * 100 + 120 * 40);
     }
 
     // Regression: a pier whose clipped corners carried rounding of up to

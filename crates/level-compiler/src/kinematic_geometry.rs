@@ -21,6 +21,18 @@ use crate::portals::{PORTAL_EPSILON, Portal};
 const MIN_UNCOVERED_PORTAL_AREA_M2: f64 = 1.0e-12;
 const MIN_BRUSH_AABB_EXTENT: f64 = 1.0e-12;
 
+/// A portal fragment whose every corner lies this close to a brush plane
+/// parallel to the portal lies on that face. A portal on a flush door's face
+/// can lie on the wall's plane instead, and the map parser reads both planes
+/// in f32, so on an oblique face they lie up to tens of micrometres apart,
+/// either way, across a large map. Far below any authored offset: a door
+/// 0.5 mm proud of its wall stays off the wall's plane.
+const ON_FACE_EPSILON_M: f64 = 1.0e-4;
+
+/// A brush plane whose normal is this close to the portal's, either way, is
+/// parallel to it.
+const ON_FACE_PARALLEL_COS: f64 = 1.0 - 1.0e-6;
+
 pub fn encode_kinematic_geometry_section(
     movers: &[MapKinematicMover],
     waypoints: &[MapKinematicWaypoint],
@@ -218,10 +230,7 @@ fn portal_bounds(portal: &Portal) -> Option<Aabb> {
 /// the conservative failure mode if a malformed caller violates that contract:
 /// do not try to carve an arbitrary non-convex or non-planar polygon.
 fn portal_polygon_is_valid(vertices: &[glam::DVec3]) -> bool {
-    let mut unnormalized_normal = glam::DVec3::ZERO;
-    for index in 0..vertices.len() {
-        unnormalized_normal += vertices[index].cross(vertices[(index + 1) % vertices.len()]);
-    }
+    let unnormalized_normal = newell_normal(vertices);
     if unnormalized_normal.length_squared() <= f64::EPSILON {
         return false;
     }
@@ -258,10 +267,22 @@ fn portal_polygon_is_valid(vertices: &[glam::DVec3]) -> bool {
     winding_sign != 0.0
 }
 
+/// Twice the area-weighted normal of a polygon, by Newell's sum.
+fn newell_normal(vertices: &[glam::DVec3]) -> glam::DVec3 {
+    let mut normal = glam::DVec3::ZERO;
+    for index in 0..vertices.len() {
+        normal += vertices[index].cross(vertices[(index + 1) % vertices.len()]);
+    }
+    normal
+}
+
 /// Carve each convex brush from the still-uncovered portal fragments. The
 /// first pass uses the exact portal-generation tolerance. A second zero-
 /// tolerance certification prevents that intentionally forgiving clip margin
-/// from swallowing a physically open, sub-epsilon seam.
+/// from swallowing a physically open, sub-epsilon seam. In both, a fragment
+/// lying on a brush face parallel to the portal, within `ON_FACE_EPSILON_M`,
+/// counts as inside it: a seam opens across the portal, never along its
+/// normal.
 fn portal_fully_covered_by_brush_union(portal: &Portal, brushes: &[BrushVolume]) -> bool {
     portal_is_covered_with_clip_epsilon(portal, brushes, PORTAL_EPSILON)
         && portal_is_covered_with_clip_epsilon(portal, brushes, 0.0)
@@ -272,12 +293,18 @@ fn portal_is_covered_with_clip_epsilon(
     brushes: &[BrushVolume],
     clip_epsilon: f64,
 ) -> bool {
+    let normal = newell_normal(&portal.polygon).normalize_or_zero();
     let mut uncovered = vec![portal.polygon.clone()];
 
     for brush in brushes {
         let mut next_uncovered = Vec::new();
         for fragment in uncovered {
-            next_uncovered.extend(carve_fragment_outside_brush(fragment, brush, clip_epsilon));
+            next_uncovered.extend(carve_fragment_outside_brush(
+                fragment,
+                brush,
+                clip_epsilon,
+                normal,
+            ));
         }
         uncovered = next_uncovered;
 
@@ -294,18 +321,29 @@ fn portal_is_covered_with_clip_epsilon(
         .any(|fragment| polygon_area(fragment) > MIN_UNCOVERED_PORTAL_AREA_M2)
 }
 
-/// Split one convex uncovered fragment against every brush plane. At each
-/// plane the portion outside that plane stays uncovered; only the portion
-/// satisfying every brush half-space is discarded as covered.
+/// Split one convex uncovered fragment of the portal with normal
+/// `portal_normal` against every brush plane. At each plane the portion
+/// outside that plane stays uncovered; only the portion satisfying every
+/// brush half-space is discarded as covered.
 fn carve_fragment_outside_brush(
     fragment: Vec<glam::DVec3>,
     brush: &BrushVolume,
     clip_epsilon: f64,
+    portal_normal: glam::DVec3,
 ) -> Vec<Vec<glam::DVec3>> {
     let mut candidate_inside = fragment;
     let mut outside_fragments = Vec::new();
 
     for plane in &brush.planes {
+        // On a face parallel to the portal, the side of the face its
+        // corners fell on is noise, not a gap.
+        let on_face = plane.normal.dot(portal_normal).abs() >= ON_FACE_PARALLEL_COS
+            && candidate_inside.iter().all(|vertex| {
+                (plane.normal.dot(*vertex) - plane.distance).abs() <= ON_FACE_EPSILON_M
+            });
+        if on_face {
+            continue;
+        }
         let has_outside_area = candidate_inside
             .iter()
             .any(|vertex| plane.normal.dot(*vertex) - plane.distance > clip_epsilon);
@@ -495,6 +533,68 @@ mod tests {
         ]);
 
         assert!(sealed_portal_ids_for_mover(&door, &[portal_at_x(0.0)]).is_empty());
+    }
+
+    #[test]
+    fn portal_on_an_oblique_door_face_within_parse_noise_either_side_is_sealed() {
+        // A door turned 45° about the vertical, 0.2 m thick, 2 m wide and
+        // 2 m tall, and a portal 1 m square on its face, every corner off
+        // the face by the same amount, as a portal on the wall plane a flush
+        // door shares lands. Off by rounding or parse noise on either side,
+        // the portal lies on the face. A millimetre in front of it, or past
+        // the door's edge by a micrometre, the zero-tolerance pass still
+        // finds it open.
+        let u = DVec3::new(1.0, 0.0, 1.0).normalize();
+        let v = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let (face, middle) = (8.0, 2.0);
+        let point = |across: f64, along: f64, up: f64| u * across + v * along + DVec3::Y * up;
+        let mut corners = Vec::new();
+        for across in [face - 0.2, face] {
+            for along in [middle - 1.0, middle + 1.0] {
+                for up in [0.0, 2.0] {
+                    corners.push(point(across, along, up));
+                }
+            }
+        }
+        let plane = |normal: DVec3, distance: f64| BrushPlane { normal, distance };
+        let door = mover(vec![BrushVolume {
+            planes: vec![
+                plane(u, face),
+                plane(-u, -(face - 0.2)),
+                plane(v, middle + 1.0),
+                plane(-v, -(middle - 1.0)),
+                plane(DVec3::Y, 2.0),
+                plane(DVec3::NEG_Y, 0.0),
+            ],
+            sides: Vec::new(),
+            aabb: Aabb::from_points(&corners),
+        }]);
+        let on_face = |dust: f64, far_edge: f64| Portal {
+            polygon: vec![
+                point(face + dust, middle - 0.5, 0.5),
+                point(face + dust, far_edge, 0.5),
+                point(face + dust, far_edge, 1.5),
+                point(face + dust, middle - 0.5, 1.5),
+            ],
+            front_leaf: 0,
+            back_leaf: 1,
+        };
+
+        for dust in [3e-13, -3e-13, 7e-10, -7e-10, 5e-5, -5e-5, 0.0] {
+            assert_eq!(
+                sealed_portal_ids_for_mover(&door, &[on_face(dust, middle + 0.5)]),
+                vec![0],
+                "a portal {dust:e} m off the door's face is sealed"
+            );
+        }
+        assert!(
+            sealed_portal_ids_for_mover(&door, &[on_face(1e-3, middle + 0.5)]).is_empty(),
+            "a portal 1 mm in front of the door's face is not"
+        );
+        assert!(
+            sealed_portal_ids_for_mover(&door, &[on_face(0.0, middle + 1.0 + 1e-6)]).is_empty(),
+            "a portal running 1 µm past the door's edge is not"
+        );
     }
 
     #[test]

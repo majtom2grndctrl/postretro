@@ -571,7 +571,7 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_far_cluster_resident_befo
         "the doorway's portal is the only one"
     );
     // The fixture has a single portal, so it cannot express "unrelated portal
-    // traversal stays open" (closing the seam portal closes every portal).
+    // traversal stays open" (with one portal, closing the seam closes every portal).
     // The check lives in the synthetic test
     // `open_portal_beside_closed_seam_keeps_its_cells_visible_and_seam_far_side_out`.
     assert!(

@@ -17,6 +17,8 @@ use crate::partition::types::Aabb;
 /// authoring units at the 0.0254 m unit scale, q3map's blocksize, so grid
 /// lines fall on the coarse authoring grid where walls and floors already
 /// meet. Of the swept 512, 768 and 1024 units it walks least on every map.
+/// The portal-walk step-cap backstop (`rendering_pipeline.md` §2) was sized at
+/// this cap; resize it if this changes.
 pub const CELL_SIZE_CAP_M: f64 = 26.0096;
 
 /// A cap line must leave each piece at least this share of the cap along the
@@ -208,9 +210,10 @@ impl<'a> CellSizeCap<'a> {
     /// True when, just to each side of the line, strictly more than
     /// `CAP_MIN_OPEN_SLICE_FRACTION` of the slice through `region`, clipped
     /// to `open`, the bounds of the region's open space, lies in open space,
-    /// by area. Open space crosses the line only where it is open on both
-    /// sides, and neither reading depends on how the first pass oriented a
-    /// node plane lying on the line.
+    /// by area. Each side is read on its own, so a line passes only where
+    /// each side's slice is mostly open, not where the two sides together
+    /// are; neither reading depends on how the first pass oriented a node
+    /// plane lying on the line.
     fn slice_mostly_open(
         &self,
         axis: usize,

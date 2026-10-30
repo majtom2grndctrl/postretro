@@ -1,6 +1,6 @@
 // Occluder tier of the brush-volume BSP: splitter choice among occluder
 // planes, and the record of which nodes and leaves the tier produced.
-// See: context/plans/in-progress/occluder-first-partition/index.md §Decisions
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::ops::Range;
 
@@ -22,10 +22,10 @@ use crate::partition::types::{Aabb, BspChild, BspTree};
 /// largest among the qualifying occluder planes, scaled down linearly with
 /// slice area. A wall's top must beat its back face while the region still
 /// holds the open space beyond the wall, though the top also cuts that
-/// space's far walls. Too small a credit lets the back face win; an
-/// area-dominant one slices every room at every occluder height. The sweep
-/// that set it: context/plans/in-progress/occluder-first-partition/plan.md
-/// §Corrections (the `CROSS_SECTION_WEIGHT` sweep).
+/// space's far walls. Worth eight spanning occluders: on occlusion-test two
+/// is too few (the back face wins), four just carries the top, and an
+/// area-dominant credit (sixteen or more) slices every room at every occluder
+/// height, doubling the tier's leaves and portals.
 const CROSS_SECTION_WEIGHT: f64 = 8.0 * SPLIT_PENALTY as f64;
 
 /// How a brush's planes split inside the occluder tier.
@@ -36,11 +36,13 @@ pub enum TierRole {
     /// Every plane splits at occluder rank.
     Occluder,
     /// A member of an occluding cluster section, one flag per plane: a
-    /// flagged plane lies on the section's bounding face or its box's edge
-    /// faces and splits at occluder rank, bounding the section as a wall's
-    /// face and top bound the wall. The rest split only beneath the tier, so
-    /// each opening's air joins the occluder-tier leaf behind the bounding
-    /// face and crosses it through one portal.
+    /// flagged plane bounds the section's box on its bounding face or one of
+    /// its edge faces, one plane to a face, and splits at occluder rank,
+    /// bounding the section as a wall's face and top bound the wall. The rest
+    /// split only beneath the tier, so each opening's air joins the
+    /// occluder-tier leaf behind the bounding face and, unless another tier
+    /// plane crosses the slab, crosses into the leaf in front through one
+    /// portal.
     SectionMember(Vec<bool>),
 }
 
@@ -234,11 +236,11 @@ impl TierRecorder {
 
 /// Pick the occluder-tier splitter: among the occluder-rank planes of the
 /// candidates (occluders' planes, and section members' flagged planes)
-/// scored by today's spanning and balance terms over the occluder
-/// candidates; failing those, among the free end planes of the shadow prisms
-/// the region overlaps, scored over every candidate; failing those, among the
-/// planes of the doors the region holds, broad-face planes before edge
-/// planes, scored over every candidate. Each of those ranks takes a credit
+/// scored by the full tree's `SPLIT_PENALTY` and `IMBALANCE_PENALTY` terms
+/// over the occluder candidates; failing those, among the free end planes of
+/// the shadow prisms the region overlaps, scored over every candidate;
+/// failing those, among the planes of the doors the region holds, broad-face
+/// planes before edge planes, scored over every candidate. Each of those ranks takes a credit
 /// for the plane's slice through the region. Failing all three, the cap's
 /// grid line, chosen by its own rule and never scored, since the slice
 /// credit would fight its nearest-the-middle choice. `None` makes the region
@@ -254,7 +256,7 @@ impl TierRecorder {
 ///
 /// Door planes rank after occluder and prism planes, so a door splits only
 /// what would otherwise be the occluder-tier leaf holding its doorway, and
-/// adds no boundary to any region it does not reach (pin R7). Cap lines rank
+/// adds no boundary to any region it does not reach. Cap lines rank
 /// last, so they split only what would otherwise be an occluder-tier leaf,
 /// and a cap line through a doorway cuts the door's portals into pieces the
 /// closed door still covers.
@@ -394,8 +396,8 @@ fn best_plane(
     });
     planes.dedup_by(|later, earlier| planes_equivalent(*later, *earlier));
 
-    // (plane, today's score, cross-section area), gathered first so the
-    // area credit can be scaled to the region's largest slice.
+    // (plane, spanning and balance score, cross-section area), gathered
+    // first so the area credit can be scaled to the region's largest slice.
     let mut qualifying: Vec<((DVec3, f64), i32, f64)> = Vec::new();
     for key in planes {
         if ancestor_planes

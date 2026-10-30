@@ -1,7 +1,7 @@
 // Cell tree: the leaf → cell chokepoint of a two-tier BSP. Every reader of
 // runtime cell ids reads this view; readers that need exact sub-leaf
 // solidity keep the full tree.
-// See: context/plans/in-progress/occluder-first-partition/plan.md §Approach notes
+// See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::collections::HashSet;
 

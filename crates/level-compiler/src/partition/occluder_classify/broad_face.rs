@@ -30,13 +30,13 @@ pub(crate) fn judge_box(
         if !broad_axes_reach_floor(frame, normal_axis) {
             continue;
         }
-        verdict = rank(verdict, OccluderVerdict::NoOpenFace);
+        verdict = verdict.furthest(OccluderVerdict::NoOpenFace);
         for sign in [1.0, -1.0] {
             let face_verdict = judge_face(frame, normal_axis, sign, space);
             if face_verdict == OccluderVerdict::Occludes {
                 return face_verdict;
             }
-            verdict = rank(verdict, face_verdict);
+            verdict = verdict.furthest(face_verdict);
         }
     }
     verdict
@@ -66,20 +66,26 @@ pub(crate) fn broad_axes_reach_floor(frame: &BrushFrame, normal_axis: usize) -> 
         .all(|&axis| at_least(frame.extents[axis], OCCLUDER_FLOOR_M))
 }
 
-fn rank(current: OccluderVerdict, candidate: OccluderVerdict) -> OccluderVerdict {
-    fn order(verdict: OccluderVerdict) -> u8 {
-        match verdict {
-            OccluderVerdict::UnderFloor => 0,
-            OccluderVerdict::NoOpenFace => 1,
-            OccluderVerdict::ShortSpan => 2,
-            OccluderVerdict::LowTop => 3,
-            OccluderVerdict::Occludes => 4,
+impl OccluderVerdict {
+    /// The further of two verdicts through the rule's tests: exempt verdicts
+    /// rank by how far a box got, and `Occludes` passed them all. Folding a
+    /// box's face verdicts with it gives the box's verdict, so a caller that
+    /// already judged each face need not judge the box again.
+    pub(crate) fn furthest(self, other: Self) -> Self {
+        fn order(verdict: OccluderVerdict) -> u8 {
+            match verdict {
+                OccluderVerdict::UnderFloor => 0,
+                OccluderVerdict::NoOpenFace => 1,
+                OccluderVerdict::ShortSpan => 2,
+                OccluderVerdict::LowTop => 3,
+                OccluderVerdict::Occludes => 4,
+            }
         }
-    }
-    if order(candidate) > order(current) {
-        candidate
-    } else {
-        current
+        if order(other) > order(self) {
+            other
+        } else {
+            self
+        }
     }
 }
 
@@ -93,28 +99,49 @@ pub(crate) fn broad_face_counts(
     outward: f64,
     space: &OpenSpace<'_>,
 ) -> bool {
-    let face = BroadFace::of(frame, normal_axis, outward);
-    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
-    face.counts(face.sample_probes(frame, broad), space)
+    face_counts_from(frame, normal_axis, outward, space, |_, probe| probe)
 }
 
-/// The face test read past the solid backing the face: a sample whose probe
-/// starts in solid is carried through it along the face's normal, so a face
-/// backed by another brush, as each layer of a wall built in layers is,
-/// counts by the open space in front of the composite's far face. A sample
-/// starting in exterior void, or carried into it, is skipped as the rule
-/// skips a blocked one.
+/// The face test read past solid backing the face as a layer: when solid
+/// backs every lattice sample and runs on past neither of the face's ends
+/// along `end_axis`, each probe is carried through it along the face's
+/// normal, so each layer of a wall built in layers counts by the open space
+/// in front of the composite's far face. A cross wall abutting the face
+/// backs only the samples it covers, and a wall running on past the face's
+/// ends hides the space past them from every eye beyond it, so either
+/// leaves the plain face test. A sample carried into exterior void is
+/// skipped as the rule skips a blocked one.
 pub(crate) fn broad_face_counts_through_solid(
     frame: &BrushFrame,
     normal_axis: usize,
+    end_axis: usize,
     outward: f64,
     space: &OpenSpace<'_>,
 ) -> bool {
     let face = BroadFace::of(frame, normal_axis, outward);
     let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
+    if !face.backed_as_layer(frame, broad, end_axis, space) {
+        return broad_face_counts(frame, normal_axis, outward, space);
+    }
+    face_counts_from(frame, normal_axis, outward, space, |face, probe| {
+        face.past_backing_solid(probe, space)
+    })
+}
+
+/// The face test on the face of `frame`'s box whose outward normal is
+/// `outward` along `normal_axis`, each lattice probe first moved by `place`.
+fn face_counts_from(
+    frame: &BrushFrame,
+    normal_axis: usize,
+    outward: f64,
+    space: &OpenSpace<'_>,
+    place: impl Fn(&BroadFace, DVec3) -> DVec3,
+) -> bool {
+    let face = BroadFace::of(frame, normal_axis, outward);
+    let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
     let probes = face
         .sample_probes(frame, broad)
-        .map(|(probe, offsets)| (face.past_backing_solid(probe, space), offsets));
+        .map(|(probe, offsets)| (place(&face, probe), offsets));
     face.counts(probes, space)
 }
 
@@ -185,33 +212,40 @@ pub(crate) fn vertical_broad_axis(frame: &BrushFrame, normal_axis: usize) -> Opt
         })
 }
 
-/// World height of the lowest floor the see-over test reads in front of the
-/// face of `frame`'s box whose outward normal is `outward` along
-/// `normal_axis`: the drop from in front of the top along `vertical_axis`,
-/// at each lattice sample that fronts open space at least the floor deep.
-/// `None` when no sample does. The same drops the rule casts, so it reads
-/// only geometry and the first pass.
+/// World height of the floor the see-over test reads in front of the face of
+/// `frame`'s box whose outward normal is `outward` along `normal_axis`, per
+/// column of its lattice along the broad axis other than `vertical_axis`, in
+/// `FACE_SAMPLE_FRACTIONS` order: the drop from in front of the top along
+/// `vertical_axis` there. A column none of whose samples fronts open space
+/// at least the floor deep has none, as the rule skips those samples. `None`
+/// when `vertical_axis` is not a broad axis of the face. The same drops the
+/// rule casts, so it reads only geometry and the first pass.
 pub(crate) fn broad_face_floor(
     frame: &BrushFrame,
     normal_axis: usize,
     vertical_axis: usize,
     outward: f64,
     space: &OpenSpace<'_>,
-) -> Option<f64> {
+) -> Option<[Option<f64>; 3]> {
     let broad = [(normal_axis + 1) % 3, (normal_axis + 2) % 3];
     let slot = broad.iter().position(|&axis| axis == vertical_axis)?;
+    let along = broad[1 - slot];
     let face = BroadFace::of(frame, normal_axis, outward);
-    face.sample_offsets(frame, broad)
-        .filter(|&offsets| {
-            let probe = face.probe(offsets);
+    let offset =
+        |axis: usize, fraction: f64| frame.axes[axis] * ((fraction - 0.5) * frame.extents[axis]);
+    Some(FACE_SAMPLE_FRACTIONS.map(|column| {
+        let across = offset(along, column);
+        let fronts_open = FACE_SAMPLE_FRACTIONS.iter().any(|&row| {
+            let probe = face.probe([across, offset(vertical_axis, row)]);
             !space.is_blocked(probe) && face.fronts_floor_deep(probe, space)
-        })
-        .map(|offsets| {
-            let (top, see_over) =
-                face.drop_from_top(frame, vertical_axis, offsets[1 - slot], space);
+        });
+        // A column's samples share one drop: it depends only on where along
+        // the face it falls.
+        fronts_open.then(|| {
+            let (top, see_over) = face.drop_from_top(frame, vertical_axis, across, space);
             top.y - see_over
         })
-        .reduce(f64::min)
+    }))
 }
 
 /// One broad face of a brush's own-frame box, outward normal and centre.
@@ -272,6 +306,42 @@ impl BroadFace {
         } else {
             probe
         }
+    }
+
+    /// True when solid backs the face as one layer of a wall built in layers
+    /// does: every lattice sample's probe starts in solid, and past neither
+    /// end of the face along `end_axis` does solid run on just in front of
+    /// it, at most of the lattice's heights, where the box's own slab past
+    /// that end is open. Where the slab is blocked too, the end meets solid
+    /// whatever backs it, so that height decides nothing.
+    fn backed_as_layer(
+        &self,
+        frame: &BrushFrame,
+        broad: [usize; 2],
+        end_axis: usize,
+        space: &OpenSpace<'_>,
+    ) -> bool {
+        let backed = self
+            .sample_probes(frame, broad)
+            .all(|(probe, _)| space.distance_through_solid(probe, self.normal) > 0.0);
+        if !backed {
+            return false;
+        }
+        let other = broad[0] + broad[1] - end_axis;
+        let past = frame.extents[end_axis] * 0.5 + PROBE_OFFSET_M;
+        // From the box's mid-plane to just in front of the face.
+        let in_front = self.center - frame.center + self.normal * PROBE_OFFSET_M;
+        [1.0, -1.0].into_iter().all(|sign| {
+            let beyond = frame.center + frame.axes[end_axis] * (sign * past);
+            let runs_on = FACE_SAMPLE_FRACTIONS
+                .iter()
+                .map(|&fraction| {
+                    beyond + frame.axes[other] * ((fraction - 0.5) * frame.extents[other])
+                })
+                .filter(|&slab| space.is_blocked(slab + in_front) && !space.is_blocked(slab))
+                .count();
+            2 * runs_on <= FACE_SAMPLE_FRACTIONS.len()
+        })
     }
 
     /// True when `test` passes at most of `probes` that start in open space.
@@ -372,7 +442,7 @@ impl BroadFace {
                 match self.judge_sample(probe, offsets, frame, broad, space) {
                     OccluderVerdict::Occludes => true,
                     verdict => {
-                        failing = rank(failing, verdict);
+                        failing = failing.furthest(verdict);
                         false
                     }
                 }

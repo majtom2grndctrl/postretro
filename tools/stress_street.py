@@ -2,8 +2,8 @@
 Governing doc: `content/dev/maps/stress-street.README.md`.
 
 `gen_stress_map.py` owns the warren; this module lays out a city street instead,
-built to exercise occluder-first partitioning (context/plans/in-progress/
-occluder-first-partition) on purpose:
+built to exercise occluder-first partitioning (context/lib/build_pipeline.md
+§Compiler pipeline) on purpose:
 
 * A building-lined street canyon that snakes around two corners (a left turn,
   then a right). A promenade runs along its floor, an elevated street deck

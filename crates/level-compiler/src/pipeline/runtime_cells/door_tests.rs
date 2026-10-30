@@ -152,36 +152,66 @@ fn door_in_an_exempt_wall_bounds_its_opening_and_seals_every_portal_across_it() 
 const TURN: f64 = std::f64::consts::FRAC_PI_4;
 
 /// A Quake-unit point turned by `TURN` about the vertical axis through
-/// `DOOR_CENTRE`.
-fn turned(q: [f64; 3]) -> [f64; 3] {
+/// `centre`.
+fn turned_about(centre: [f64; 3], q: [f64; 3]) -> [f64; 3] {
     let (sin, cos) = TURN.sin_cos();
-    let (x, y) = (q[0] - DOOR_CENTRE[0], q[1] - DOOR_CENTRE[1]);
+    let (x, y) = (q[0] - centre[0], q[1] - centre[1]);
     [
-        DOOR_CENTRE[0] + cos * x - sin * y,
-        DOOR_CENTRE[1] + sin * x + cos * y,
+        centre[0] + cos * x - sin * y,
+        centre[1] + sin * x + cos * y,
         q[2],
     ]
 }
 
-/// The `.map` text of the box `min`..`max` turned by `turned`. Each side's
-/// three points are two corners of its bottom edge and the first corner
-/// lifted, so its normal is exactly horizontal.
+/// A Quake-unit point turned by `TURN` about the vertical axis through
+/// `DOOR_CENTRE`.
+fn turned(q: [f64; 3]) -> [f64; 3] {
+    turned_about(DOOR_CENTRE, q)
+}
+
+/// The `.map` text of the box `min`..`max` turned by `turned`.
 fn turned_box_brush(min: [f64; 3], max: [f64; 3]) -> String {
+    turned_brush(DOOR_CENTRE, min, max, None)
+}
+
+/// The `.map` text of the box `min`..`max` turned by `TURN` about `centre`.
+/// Each side's three points are two corners of its bottom edge and the first
+/// corner lifted, so its normal is exactly horizontal. With `broad_span`, the
+/// two sides across y take their points at those x and at heights 0 and 1
+/// instead, so every box authored with one span shares those two planes bit
+/// for bit.
+fn turned_brush(
+    centre: [f64; 3],
+    min: [f64; 3],
+    max: [f64; 3],
+    broad_span: Option<[f64; 2]>,
+) -> String {
     const TEXTURE: &str = "debug_wall_grey";
     let (z0, z1) = (min[2], max[2]);
     // Counter-clockwise in plan, so each side faces out to the right of its
     // edge, as the map format winds a plane's points.
-    let corners = [
+    let plan = [
         [min[0], min[1]],
         [max[0], min[1]],
         [max[0], max[1]],
         [min[0], max[1]],
-    ]
-    .map(|[x, y]| turned([x, y, 0.0]));
+    ];
     let mut faces: Vec<String> = (0..4)
         .map(|i| {
-            let ([ax, ay, _], [bx, by, _]) = (corners[i], corners[(i + 1) % 4]);
-            format!("( {ax} {ay} {z0} ) ( {ax} {ay} {z1} ) ( {bx} {by} {z0} ) {TEXTURE} 0 0 0 1 1")
+            let (mut a, mut b) = (plan[i], plan[(i + 1) % 4]);
+            let (mut low, mut high) = (z0, z1);
+            // Sides 0 and 2 run along x; side 2 runs back.
+            if let Some([x0, x1]) = broad_span
+                && i % 2 == 0
+            {
+                (a[0], b[0]) = if i == 0 { (x0, x1) } else { (x1, x0) };
+                (low, high) = (0.0, 1.0);
+            }
+            let [ax, ay, _] = turned_about(centre, [a[0], a[1], 0.0]);
+            let [bx, by, _] = turned_about(centre, [b[0], b[1], 0.0]);
+            format!(
+                "( {ax} {ay} {low} ) ( {ax} {ay} {high} ) ( {bx} {by} {low} ) {TEXTURE} 0 0 0 1 1"
+            )
         })
         .collect();
     faces.push(format!(
@@ -202,6 +232,21 @@ fn turned_exempt_wall() -> MapData {
         .iter()
         .map(|&(min, max)| turned_box_brush(min, max))
         .collect();
+    let door = turned_box_brush(DOOR.0, DOOR.1);
+    parse_with_turned_door(&map, &pieces, &door, DOOR_CENTRE, 112.0)
+}
+
+/// `map`, a hall alone, with the brush texts `pieces` closing its
+/// worldspawn and a door of the brush text `door` authored closed where it
+/// stands, its centre `centre`, sliding `rise` units upward to open, parsed
+/// as `prl-build` parses it.
+fn parse_with_turned_door(
+    map: &MapText,
+    pieces: &[String],
+    door: &str,
+    centre: [f64; 3],
+    rise: f64,
+) -> MapData {
     // The pieces close worldspawn, after the hall, as `exempt_wall` orders
     // its brushes.
     let world = map.text();
@@ -211,7 +256,7 @@ fn turned_exempt_wall() -> MapData {
     let mut text = format!("{world}{}\n}}\n", pieces.join("\n"));
     // The door slides open upward from where it stands, as `MapText::mover`
     // authors one.
-    let open = [DOOR_CENTRE[0], DOOR_CENTRE[1], DOOR_CENTRE[2] + 112.0];
+    let open = [centre[0], centre[1], centre[2] + rise];
     text.push_str(&format!(
         "{{\n\"classname\" \"kinematic_mover\"\n\"name\" \"door\"\n\"path\" \"door_closed\"\n\
          \"speed\" \"4\"\n\"move_mode\" \"once\"\n\"start_on_spawn\" \"0\"\n{}\n}}\n\
@@ -219,8 +264,8 @@ fn turned_exempt_wall() -> MapData {
          \"next\" \"door_open\"\n\"origin\" \"{}\"\n}}\n\
          {{\n\"classname\" \"kinematic_waypoint\"\n\"name\" \"door_open\"\n\
          \"origin\" \"{}\"\n}}\n",
-        turned_box_brush(DOOR.0, DOOR.1),
-        quake_triple(DOOR_CENTRE),
+        door,
+        quake_triple(centre),
         quake_triple(open),
     ));
 
@@ -291,6 +336,123 @@ fn door_turned_45_degrees_in_plan_seals_its_opening_closed_and_passes_open() {
         !closed.contains(&(door_cell as u32)),
         "closed, the doorway blocks"
     );
+}
+
+// ---- a door flush in an occluding wall turned 45° in plan ----
+
+/// A hall 1400 u (35.6 m) square and 160 u (4.1 m) tall, cut corner to
+/// corner by a wall 16 u (0.4 m) thick. Before the turn the wall runs along x
+/// through `DIAGONAL_CENTRE`, half the hall's diagonal (990 u) and 8 u more
+/// each way, so each end, turned, lies inside the hall's corner slabs.
+const DIAGONAL_HALL: [f64; 3] = [1400.0, 1400.0, 160.0];
+const DIAGONAL_CENTRE: [f64; 3] = [700.0, 700.0, 50.0];
+/// Two jambs over 20 m long, each occluding on the absolute length, and an
+/// exempt lintel over a doorway 60 u wide and 100 u tall, unturned.
+const DIAGONAL_WALL: [([f64; 3], [f64; 3]); 3] = [
+    ([-298.0, 692.0, 0.0], [670.0, 708.0, 160.0]),
+    ([730.0, 692.0, 0.0], [1698.0, 708.0, 160.0]),
+    ([670.0, 692.0, 100.0], [730.0, 708.0, 160.0]),
+];
+/// The door, unturned: flush with both faces of the wall, and running 4 u
+/// into each jamb, as a door hung in its frame does, so the doorway's sides
+/// lie inside it.
+const DIAGONAL_DOOR: ([f64; 3], [f64; 3]) = ([666.0, 692.0, 0.0], [734.0, 708.0, 100.0]);
+/// Points 160 u (4 m) in front of and behind the door, unturned.
+const DIAGONAL_FRONT: [f64; 3] = [700.0, 540.0, 60.0];
+const DIAGONAL_BACK: [f64; 3] = [700.0, 860.0, 60.0];
+
+/// The diagonal hall with its wall and door turned by `TURN` about
+/// `DIAGONAL_CENTRE`. With `shared_faces`, every wall piece and the door
+/// author their two broad faces through the same points, so the door's faces
+/// are the wall's planes bit for bit; without, each brush authors them
+/// through its own corners, and the parser's f32 planes put the door's faces
+/// off the wall's by parse noise.
+fn turned_occluding_wall(shared_faces: bool) -> MapData {
+    let span = shared_faces.then_some([DIAGONAL_DOOR.0[0], DIAGONAL_DOOR.1[0]]);
+    let mut map = MapText::new();
+    map.hall(DIAGONAL_HALL);
+    let pieces: Vec<String> = DIAGONAL_WALL
+        .iter()
+        .map(|&(min, max)| turned_brush(DIAGONAL_CENTRE, min, max, span))
+        .collect();
+    let door = turned_brush(DIAGONAL_CENTRE, DIAGONAL_DOOR.0, DIAGONAL_DOOR.1, span);
+    parse_with_turned_door(&map, &pieces, &door, DIAGONAL_CENTRE, 96.0)
+}
+
+#[test]
+fn door_flush_in_an_occluding_wall_turned_45_degrees_seals_closed_and_passes_open() {
+    // The wall's faces split at occluder rank, so the portals onto the door
+    // lie on a wall face, its outward plane, never on the door's own inward
+    // plane, and the door's face matches it only up to rounding or parse
+    // noise. Sealing must read the portal as lying on the door's face
+    // whichever side of it the corners fell.
+    let turn = |q: [f64; 3]| turned_about(DIAGONAL_CENTRE, q);
+    for shared_faces in [true, false] {
+        let map_data = turned_occluding_wall(shared_faces);
+        let classification = classify(&map_data.brush_volumes).expect("classifies");
+        // The hall's six slabs come first, then the two jambs.
+        for jamb in [6, 7] {
+            assert_eq!(
+                classification.verdicts[jamb],
+                OccluderVerdict::Occludes,
+                "precondition: each turned jamb occludes, so the wall's own faces bound the \
+                 doorway (shared faces {shared_faces})"
+            );
+        }
+        let recognised = doors(&map_data.brush_volumes, &map_data.kinematic_movers).expect("doors");
+        assert_eq!(
+            recognised.len(),
+            1,
+            "the turned mover fills its doorway (shared faces {shared_faces})"
+        );
+
+        let cells = Cells::of_map_data(map_data);
+        let (front, back) = (turn(DIAGONAL_FRONT), turn(DIAGONAL_BACK));
+        let door_cell = cells.cell_at(DIAGONAL_CENTRE);
+        assert!(
+            cells.is_interior_cell(door_cell),
+            "the doorway is an interior cell"
+        );
+        assert_ne!(cells.cell_at(front), door_cell);
+        assert_ne!(cells.cell_at(back), door_cell);
+        assert_ne!(
+            cells.cell_at(front),
+            cells.cell_at(back),
+            "the wall puts its two sides in different cells"
+        );
+
+        let onto_door: Vec<u32> = cells
+            .runtime
+            .portals
+            .iter()
+            .enumerate()
+            .filter(|(_, portal)| portal.front_leaf == door_cell || portal.back_leaf == door_cell)
+            .map(|(index, _)| index as u32)
+            .collect();
+        assert!(!onto_door.is_empty(), "runtime portals lead onto the door");
+        let sealed = &cells.sealed_portals()[0];
+        for portal in &onto_door {
+            assert!(
+                sealed.contains(portal),
+                "portal {portal} onto the door's cell is not sealed by the closed door \
+                 (sealed {sealed:?}, shared faces {shared_faces})"
+            );
+        }
+
+        let world = cells.visibility_world();
+        let back_cell = cells.cell_at(back) as u32;
+        let ahead: [f64; 3] = std::array::from_fn(|axis| back[axis] - front[axis]);
+        let (open, _) = walk_blocked(&world, front, ahead, &[]);
+        assert!(
+            open.contains(&(door_cell as u32)) && open.contains(&back_cell),
+            "open, the doorway passes (shared faces {shared_faces})"
+        );
+        let (closed, _) = walk_blocked(&world, front, ahead, sealed);
+        assert!(
+            !closed.contains(&(door_cell as u32)) && !closed.contains(&back_cell),
+            "closed, the doorway blocks (shared faces {shared_faces})"
+        );
+    }
 }
 
 // ---- a door into a closet shallower than the floor ----

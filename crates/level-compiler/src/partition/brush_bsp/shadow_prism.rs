@@ -35,22 +35,23 @@ pub const FREE_END_PROBE_FRACTIONS: [f64; 5] = [0.1, 0.3, 0.5, 0.7, 0.9];
 /// within the prism's depth.
 pub const FREE_END_PROBE_DEPTHS_M: [f64; 3] = [0.1, 0.5, 1.0];
 
-/// An end edge is free when most of its probes are open: 8 of 15. Solid and
+/// An end edge is free when most of its probes are open, 8 of 15, and it
+/// meets no solid: the joint probes just past it, inside the swept face, are
+/// not blocked at every height where a free-end probe is open. Solid and
 /// exterior void both block, so a wall end meeting another wall, or running
 /// into the void, splits nothing.
 pub const FREE_END_MIN_OPEN_PROBES: usize =
     FREE_END_PROBE_FRACTIONS.len() * FREE_END_PROBE_DEPTHS_M.len() / 2 + 1;
 
-/// How far past an end edge's plane the joint probes sit, inside the wall's
-/// own thickness. The free-end probes stand farther out and in front of the
-/// face, so a wall continuing this one in line, or a cross wall thinner than
-/// their offset, leaves them open.
+/// How far past an end edge's plane the joint probes sit, and how far
+/// inside the swept face, at most half the wall's thickness; along the end
+/// they sit at `FREE_END_PROBE_FRACTIONS`. The free-end probes stand farther
+/// out and behind the face, so a wall continuing this one in line, or a
+/// cross wall thinner than their offset, leaves them open. Read just inside
+/// the face, a thinner wall continuing this one flush with it blocks them on
+/// that face only, and a lintel over a doorway leaves the doorway's heights
+/// open.
 const JOINT_PROBE_OFFSET_M: f64 = PROBE_OFFSET_M;
-
-/// Where across the wall's thickness the joint probes sit, as fractions of
-/// it from one broad face; along the end they sit at
-/// `FREE_END_PROBE_FRACTIONS`.
-const JOINT_PROBE_THICKNESS_FRACTIONS: [f64; 3] = [0.25, 0.5, 0.75];
 
 /// Depth a region must reach into a prism to overlap it: the tolerance by
 /// which a plane must span a region to split it, so a region reaching less
@@ -80,13 +81,13 @@ pub struct ShadowPrism {
 
 /// The shadow prisms of a classification: each wall face (one with a
 /// vertical broad axis) of an occluding brush that counts under the occluder
-/// rule's face test while its opposite broad face does too, read through any
-/// solid backing it, and has at least one free vertical end. Faces follow
-/// the classifier's tie rule, every face across each thinnest axis whose
-/// broad axes reach the floor. Slab faces, wall tops and bottoms, cluster
-/// sections and far ends add no splitter. Every prism reads only its own
-/// geometry and `space`, and the set is sorted and deduplicated by its hull,
-/// so it does not depend on brush order.
+/// rule's face test and has at least one free vertical end, while its
+/// opposite broad face counts too, that face read through any solid backing
+/// it as a layer. Faces follow the classifier's tie rule, every face across
+/// each thinnest axis whose broad axes reach the floor. Slab faces, wall tops
+/// and bottoms, cluster sections and far ends add no splitter. Every prism
+/// reads only its own geometry and `space`, and the set is sorted and
+/// deduplicated by its hull, so it does not depend on brush order.
 pub fn shadow_prisms(
     brushes: &[BrushVolume],
     classification: &OccluderClassification,
@@ -138,8 +139,8 @@ impl ShadowPrism {
     /// face, and no eye stands in a gap under the floor or in void: a room's
     /// own wall, its outer face on the void, hides the room from no one, so
     /// its prism would only cut the room. The opposite face is read through
-    /// any solid backing it, so each outer layer of a wall built in layers
-    /// counts the open space beyond the whole wall.
+    /// solid backing it as a layer, so each outer layer of a wall built in
+    /// layers counts the open space beyond the whole wall.
     fn of_wall_face(
         frame: &BrushFrame,
         normal_axis: usize,
@@ -147,8 +148,9 @@ impl ShadowPrism {
         outward: f64,
         space: &OpenSpace<'_>,
     ) -> Option<Self> {
+        let end_axis = 3 - normal_axis - vertical_axis;
         if !broad_face_counts(frame, normal_axis, outward, space)
-            || !broad_face_counts_through_solid(frame, normal_axis, -outward, space)
+            || !broad_face_counts_through_solid(frame, normal_axis, end_axis, -outward, space)
         {
             return None;
         }
@@ -256,14 +258,17 @@ impl ShadowPrism {
 
 /// The inward plane of each vertical end edge of the wall face of `frame`'s
 /// box whose outward normal is `outward` along `normal_axis`, kept when the
-/// end meets no solid and the space beyond it, behind the face, is free: at
+/// edge meets no solid and the space beyond it, behind the face, is free: at
 /// least `FREE_END_MIN_OPEN_PROBES` of the probes `FREE_END_PROBE_OFFSET_M`
 /// past the end's plane, along the end and at each depth behind the face,
-/// lie in open space. The end meets solid when most of the joint probes just
-/// past it, inside the wall's thickness, are blocked, as where another wall
-/// continues it in line or crosses it. An end meeting solid adds no
-/// splitter: it hides nothing past itself, and its plane, infinite across
-/// the tier, would only cut open space elsewhere.
+/// lie in open space. The edge meets solid when, at every height along it
+/// where some of those probes are open, the joint probe just past it, just
+/// inside the face, is blocked, as where another wall continues the face in
+/// line or crosses the end. An edge meeting solid adds no splitter: it hides
+/// nothing past itself, and its plane, infinite across the tier, would only
+/// cut open space elsewhere. A height whose joint probe is open is a gap
+/// past the end, as a doorway under a lintel is, through which eyes see into
+/// the space behind the face, so one such height frees the edge.
 fn free_end_planes(
     frame: &BrushFrame,
     normal_axis: usize,
@@ -275,36 +280,26 @@ fn free_end_planes(
     let normal = frame.axes[normal_axis] * outward;
     let face_center = frame.center + normal * (frame.extents[normal_axis] * 0.5);
     let along = frame.axes[vertical_axis] * frame.extents[vertical_axis];
-    let across = frame.axes[normal_axis] * frame.extents[normal_axis];
     let half_length = frame.extents[end_axis] * 0.5;
-    let joint_probes = FREE_END_PROBE_FRACTIONS.len() * JOINT_PROBE_THICKNESS_FRACTIONS.len();
+    let joint_depth = JOINT_PROBE_OFFSET_M.min(frame.extents[normal_axis] * 0.5);
     let mut planes = Vec::with_capacity(2);
     for sign in [1.0, -1.0] {
         let out = frame.axes[end_axis] * sign;
-        let joint = frame.center + out * (half_length + JOINT_PROBE_OFFSET_M);
-        let blocked = FREE_END_PROBE_FRACTIONS
-            .iter()
-            .flat_map(|&fraction| {
-                JOINT_PROBE_THICKNESS_FRACTIONS
-                    .iter()
-                    .map(move |&depth| joint + along * (fraction - 0.5) + across * (depth - 0.5))
-            })
-            .filter(|&probe| space.is_blocked(probe))
-            .count();
-        if 2 * blocked > joint_probes {
-            continue;
-        }
+        let joint = face_center + out * (half_length + JOINT_PROBE_OFFSET_M) - normal * joint_depth;
         let beyond = face_center + out * (half_length + FREE_END_PROBE_OFFSET_M);
-        let open = FREE_END_PROBE_FRACTIONS
-            .iter()
-            .flat_map(|&fraction| {
-                FREE_END_PROBE_DEPTHS_M
-                    .iter()
-                    .map(move |&behind| beyond + along * (fraction - 0.5) + normal * behind)
-            })
-            .filter(|&probe| !space.is_blocked(probe))
-            .count();
-        if open >= FREE_END_MIN_OPEN_PROBES {
+        let (mut open, mut meets_solid) = (0, true);
+        for &fraction in &FREE_END_PROBE_FRACTIONS {
+            let height = along * (fraction - 0.5);
+            let open_here = FREE_END_PROBE_DEPTHS_M
+                .iter()
+                .filter(|&&behind| !space.is_blocked(beyond + height + normal * behind))
+                .count();
+            open += open_here;
+            if open_here > 0 && !space.is_blocked(joint + height) {
+                meets_solid = false;
+            }
+        }
+        if !meets_solid && open >= FREE_END_MIN_OPEN_PROBES {
             let edge = frame.center.dot(out) + half_length;
             planes.push((-out, -edge));
         }

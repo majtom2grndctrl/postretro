@@ -35,7 +35,7 @@
 | US8451270B2 "Real-time radiosity system in a video game" | Microsoft | 2008-06-25 | PTA 905 days → ≈2030-12 unless fees lapsed; fee status not checked | Full PDF | 3, 4, 6 |
 | US7408550 | Bunnell (no assignee on face) | filed 2007-07-23 | ≤ 2027-07-23; fee status not checked | Full PDF | 3 |
 | US20140327673A1 | Crytek | published 2014 | Unknown; if granted, live concern | Full PDF claims | 3, 4, 6 |
-| US11534688B2 / US12263404B2 | Take-Two | 2018-04-02 | '404 adjusted expiry 2039-09-04 (Google) | Description snippet; claims unread | 7 |
+| US11534688B2 / US12263404B2 | Take-Two | 2018-04-02 | '404 adjusted expiry 2039-09-04 (Google) | Full claims, Google Patents, read 2026-10-30 | 7 |
 
 **NVIDIA as prior art.** US20210012562A1 published 2021-01-14, before Tencent US12293451B2's 2021-04-02 priority. Its probes update by ray tracing, not transfer × coefficient, so its overlap with '451 is weak; it is better art for piece 1.
 
@@ -168,11 +168,11 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 | Filing | Element | Proposal | Reading |
 |---|---|---|---|
-| Take-Two '688 / '404 | Description: a new baked ambient layer over the door's area as it opens; ambient mask volumes | Direct-light visibility masks per (door, light), blended by door state | **Unclear; claims unread** |
+| Take-Two '688 / '404 | Claims: '688 cl. 1–7, a per-location dynamic terrain type selecting a surface shader plus a trail map of character marks, stored while off-camera and applied near it (snow, mud). '404 cl. 1–4, a top-down rendered reflected-light texture map plus a same-resolution height map, sampled for ground bounce per pixel (box blur; bent normal to the ground plane). Doors appear only in the shared description: "a new baked ambient is placed over the area of the door as it opens" | Direct-light visibility masks per (door or mover rest pose, light), blended by mover state | **Granted claims absent.** No claim element touches doors, movers or state-swapped baked layers |
 | '451 | Per-light transfer updated on change | Door bounce deltas (optional) | Same question as piece 5 |
 | Square Enix '372 | Doors as zone occluders | Door factor on direct-SH entries; probes never dropped | Absent while no probe is excluded |
 
-**Verdict: needs counsel** on Take-Two before building door masks as swapped ambient or AO layers. Contact AO swapped on mover state sits closest to its description.
+**Verdict: appears clear on the granted claims** (read 2026-10-30). The family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description.
 
 ## Summary
 
@@ -184,15 +184,15 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | 4 | Needs counsel | Tencent WO cl. 10; '451; Crytek '673 | ≈0 | +9.5–17.5 MB | ≈0.2 ms per door event |
 | 5 | Top counsel question | '451 cl. 1 | Shipped | Shipped | Shipped |
 | 6 | Appears clear | ARM '177 gather; '451 cl. 3 if per-light | Faster SH bake (*est.*) | Bake RAM ~24–100 MB | None new |
-| 7 | Needs counsel | Take-Two | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
+| 7 | Appears clear (granted claims) | Take-Two continuations | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
 
-**Top IP risks.** (1) Tencent US12293451B2 claim 1 against the shipped animated SH deltas and any light-change-triggered update; keep per-light terms scalar. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) Take-Two against door-driven baked layers. (5) Crytek US20140327673A1 against runtime links, if granted.
+**Top IP risks.** (1) Tencent US12293451B2 claim 1 against the shipped animated SH deltas and any light-change-triggered update; keep per-light terms scalar. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
 
 **Questions for counsel, ranked.**
 1. Can '451 claim 1 read on a per-light scalar curve × a baked per-light, per-probe delta? Is the light bridge's dirty upload "light source change information"? Weigh Quake lightstyles, Suntracker 2017, Sloan PRT 2002, NVIDIA's application.
 2. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
 3. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
-4. Take-Two '688 / '404 claims against the door channel.
+4. Take-Two: confirm no pending continuation of 18/056,862 claims the door-ambient description. The granted claims were read 2026-10-30 and do not touch doors.
 5. Tencent WO claim 1 against water and glossy world reflections; claim 10 against runtime probe gathers.
 6. Is Suntracker's "per vertex in a vertex shader" limiting against compute compose?
 7. ARM '177 against any future guided gather in the bake.

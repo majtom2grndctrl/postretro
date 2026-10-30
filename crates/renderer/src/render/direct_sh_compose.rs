@@ -880,7 +880,18 @@ mod tests {
 
     #[test]
     fn delta_loader_and_upload_paths_add_no_payload_clone() {
-        let loader = include_str!("../../../level-loader/src/prl_loader.rs");
+        let loader = [
+            include_str!("../../../level-loader/src/prl_loader/mod.rs"),
+            include_str!("../../../level-loader/src/prl_loader/cell_draw_index.rs"),
+            include_str!("../../../level-loader/src/prl_loader/cluster_directory.rs"),
+            include_str!("../../../level-loader/src/prl_loader/entities.rs"),
+            include_str!("../../../level-loader/src/prl_loader/geometry.rs"),
+            include_str!("../../../level-loader/src/prl_loader/lighting.rs"),
+            include_str!("../../../level-loader/src/prl_loader/lighting_sh.rs"),
+            include_str!("../../../level-loader/src/prl_loader/spatial.rs"),
+            include_str!("../../../level-loader/src/prl_loader/validation.rs"),
+        ]
+        .concat();
         for decode in [
             "DeltaShVolumesSection::from_bytes(&data)?",
             "AnimatedDirectShDeltaVolumesSection::from_bytes(&data)",

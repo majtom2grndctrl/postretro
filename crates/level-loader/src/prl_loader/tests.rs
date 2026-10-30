@@ -1,20 +1,39 @@
 // Unit tests for PRL section decoding and cross-validation (`prl_loader`).
 // See: context/lib/testing_guide.md
 
+use super::entities::{
+    convert_kinematic_geometry_section, drop_invalid_carried_light_links,
+    drop_out_of_range_sealed_portal_ids,
+};
+use super::spatial::convert_cell_visibility_section;
 use super::*;
 use crate::prl_load_test_fixtures::write_prl_load_fixture;
+use crate::{CoupledCellPair, FalloffModel, LightType, MapLight, ShadowType};
+use glam::Vec3;
 use log::Level;
-use postretro_level_format::alpha_lights::AlphaLightRecord;
-use postretro_level_format::cell_visibility::CoupledPairRecord;
-use postretro_level_format::cluster_directory::{
-    ClusterRecord, ClusterResourceDomain, ClusterResourceRecord,
+use postretro_level_format::alpha_lights::{
+    ALPHA_LIGHT_LEAF_UNASSIGNED, AlphaFalloffModel, AlphaLightRecord, AlphaLightType,
+    AlphaLightsSection, AlphaShadowType,
 };
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::cell_visibility::{CellVisibilitySection, CoupledPairRecord};
+use postretro_level_format::cluster_directory::{
+    CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectoryError, ClusterRecord,
+    ClusterResourceDomain, ClusterResourceRecord,
+};
+use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
+use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::geometry::{FaceMeta as PrlFaceMeta, Vertex as PrlVertex};
 use postretro_level_format::kinematic_geometry::{
     KINEMATIC_GEOMETRY_VERSION, KINEMATIC_GEOMETRY_VERSION_V4, KINEMATIC_GEOMETRY_VERSION_V5,
-    KINEMATIC_GEOMETRY_VERSION_V6, KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
+    KINEMATIC_GEOMETRY_VERSION_V6, KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH, KinematicGeometrySection,
+    KinematicMoverRecord, KinematicWaypointRecord, MemberLight,
 };
 use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+use postretro_level_format::{self as prl_format};
 use postretro_test_log_capture::LogCapture;
 use std::io::Cursor;
 

@@ -1,0 +1,7 @@
+flags: --sh-probe-spacing 4.0 --lightmap-density 0.25 --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/stress-street/cache
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/bin/prl-build-cap26-len10 c41db86646bc
+start: 2026-10-28 10:38:37
+exit: 0
+wall_seconds: 12
+ 24M	/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/stress-street/cache
+/dev/disk1s6   466Gi   419Gi    29Gi    94%    4.7M  302M    2%   /System/Volumes/Data

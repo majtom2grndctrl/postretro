@@ -1,0 +1,13 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1259 brushes, 72 occlude alone; exempt alone: 1174 under floor, 10 no open face, 3 short span, 0 low top; 29 clusters, 37 sections, 13 occlude (1070 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 0 of 0 kinematic movers seal a doorway at their closed pose
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 17 occluding wall faces with a free end, 28 end planes, 1 ended by the length bound (2 × the face's longer broad extent); an end is free when at least 8 of its 15 probes 0.1 m past it are open
+[INFO prl_build::partition] BSP leaves: 2942 solid, 3457 empty
+[INFO prl_build::partition] BSP leaves: 6399
+[INFO prl_build::partition] Total faces (after brush-side extraction): 11025
+[WARN prl_build::pipeline] [Compiler] Watertightness: 628 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 307 exterior leaves, 3150 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 2107 occluder-tier leaves (87 holding several interior pockets); 5080 cells (1831 interior, 2942 solid, 307 exterior); 4381 runtime portals; full tree 6399 leaves, 8594 portals; cell-size cap 19.5072 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 49437 eye candidates (49221 in cell, 175 inset, 41 rejected; missed into solid 198, exterior 0, other cell 18), 0 camera cells without an eye point, 296376 walks (4040 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 1831 camera cells, 3255555 entries (max 1831 per camera), 26064780 bytes, max lead 32 m, 13.428 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 26064780 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 628 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

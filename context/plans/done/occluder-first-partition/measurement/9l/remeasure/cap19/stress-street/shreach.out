@@ -1,0 +1,20 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap19/stress-street/stress-street.prl
+5080 cells (1831 camera), 3755 clusters (1.557 MiB whole map), pinned + owners 0 clusters (0.000 MiB), id-51 max lead 32.0 m, 3255555 entries
+lightmap: 1760 blocks (8.060 MiB whole map), 0 pinned blocks
+
+## L = 16 m (1831 camera cells)
+mandatory cells            median 1564, p95 1810, max 1828
+SH mandatory bytes         median 1.557 MiB, p95 1.557 MiB, max 1.557 MiB
+SH mandatory clusters      median 448, p95 505, max 506
+lightmap mandatory bytes   median 6.988 MiB, p95 7.888 MiB, max 7.965 MiB
+  id-22 half bytes         median 2.995 MiB, p95 3.381 MiB, max 3.414 MiB
+  id-42 half bytes         median 3.993 MiB, p95 4.508 MiB, max 4.552 MiB
+lightmap blocks            median 1495, p95 1739, max 1757
+lightmap pairs             median 1495, p95 1739, max 1757
+lightmap pool layers       median 2, p95 2, max 2
+worst SH cell 5070: 501 clusters, 1.557 MiB SH; lightmap 1744 blocks, 7.943 MiB, 2 layers
+
+Gate (L = 16 m): worst-cell SH mandatory 1.557 MiB of the 256 MiB floor, before fixed metadata and whole-resident scatter
+

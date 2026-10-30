@@ -263,7 +263,7 @@ fn mirror_forced_trips_take_the_camera_bounded_set_and_the_default_is_the_shared
         assert!(cpu.value(VisibilityStage::MirrorWalk).is_some());
     }
 
-    assert_eq!(MAX_PORTAL_WALK_STEPS, 5_000);
+    assert_eq!(MAX_PORTAL_WALK_STEPS, 14_000);
     let default = run(&world, &[1], &camera_sees_all(), &[], None).out;
     let capped = run(
         &world,

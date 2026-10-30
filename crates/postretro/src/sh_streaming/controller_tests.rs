@@ -431,12 +431,110 @@ fn closed_door_visibility_promotes_only_the_loader_resolved_seam_endpoint() {
     assert_eq!(culled_ids(&visibility.visible_cells), &[0]);
 }
 
+/// Closing the seam portal must not close unrelated traversal. The camera cell
+/// has two portals: portal 0 (the closed seam, +X, to cell 1) and portal 1
+/// (open, +Y, to cell 2). The open portal's cell stays in `VisibleCells`; the
+/// closed seam's far side stays out. The compiled doorway fixture has a single
+/// portal and cannot express this.
+#[test]
+fn open_portal_beside_closed_seam_keeps_its_cells_visible_and_seam_far_side_out() {
+    let world = LevelWorld::new_visibility_only(
+        vec![
+            CellData {
+                bounds_min: Vec3::new(0.0, -1.0, -1.0),
+                bounds_max: Vec3::new(1.0, 1.0, 1.0),
+                face_start: 0,
+                face_count: 1,
+                portal_ref_start: 0,
+                portal_ref_count: 2,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: true,
+            },
+            CellData {
+                bounds_min: Vec3::new(1.0, -1.0, -1.0),
+                bounds_max: Vec3::new(2.0, 1.0, 1.0),
+                face_start: 1,
+                face_count: 1,
+                portal_ref_start: 2,
+                portal_ref_count: 1,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: true,
+            },
+            CellData {
+                bounds_min: Vec3::new(0.0, 1.0, -1.0),
+                bounds_max: Vec3::new(1.0, 2.0, 1.0),
+                face_start: 2,
+                face_count: 1,
+                portal_ref_start: 3,
+                portal_ref_count: 1,
+                is_solid: false,
+                is_exterior: false,
+                is_drawable: true,
+            },
+        ],
+        vec![0, 1, 0, 1],
+        CellLocatorChild::Cell(0),
+        Vec::new(),
+        vec![
+            postretro_level_loader::PortalData {
+                polygon: vec![
+                    Vec3::new(1.0, -0.5, -0.5),
+                    Vec3::new(1.0, 0.5, -0.5),
+                    Vec3::new(1.0, 0.5, 0.5),
+                    Vec3::new(1.0, -0.5, 0.5),
+                ],
+                front_cell: 0,
+                back_cell: 1,
+            },
+            postretro_level_loader::PortalData {
+                polygon: vec![
+                    Vec3::new(0.2, 1.0, -0.5),
+                    Vec3::new(0.2, 1.0, 0.5),
+                    Vec3::new(0.8, 1.0, 0.5),
+                    Vec3::new(0.8, 1.0, -0.5),
+                ],
+                front_cell: 0,
+                back_cell: 2,
+            },
+        ],
+        true,
+    )
+    .expect("two-portal visibility world must be valid");
+    let eye = Vec3::new(0.25, 0.0, 0.0);
+    // Wide FOV, looking diagonally, so both portals fall inside the frustum.
+    let view_proj =
+        glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_3 * 2.0,
+            1.0,
+            0.1,
+            16.0,
+        ) * glam::camera::rh::view::look_at_mat4(eye, eye + Vec3::new(1.0, 1.0, 0.0), Vec3::Z);
+    let (visibility, _) = postretro_visibility::determine_visible_cells(
+        eye,
+        view_proj,
+        &world,
+        &[true, false],
+        false,
+        &mut postretro_visibility::PortalWalkScratch::new(),
+        postretro_visibility::TimingGate::OFF,
+    );
+    let ids = culled_ids(&visibility.visible_cells);
+    assert!(ids.contains(&0), "camera cell is visible");
+    assert!(ids.contains(&2), "open portal still lets its cell in");
+    assert!(
+        !ids.contains(&1),
+        "closed seam's far side stays out of render visibility"
+    );
+}
+
 /// Cross-crate fixture proof: this PRL was baked from Task 4's committed
 /// doorway source, then loaded through the public loader before the planner
 /// sees its validated seam endpoints. The blocked door exercises the same
 /// render-preparation visibility path used by the app.
 #[test]
-fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint() {
+fn compiled_hinted_doorway_keeps_closed_visibility_and_far_cluster_resident_before_door_opens() {
     let map_source = include_str!("../../../../content/dev/maps/sh-streaming-hinted-door.map");
     assert!(map_source.contains("\"classname\" \"streaming_seam_volume\""));
     assert!(map_source.contains("\"classname\" \"stream_resident_volume\""));
@@ -459,15 +557,23 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         let portal_index = usize::try_from(seam.portal_id).unwrap();
         closed_portals[portal_index] = true;
     }
+    // The runtime cells are the two rooms, the doorway's air joined to one of
+    // them, so the doorway's one portal is every portal, and the seam, which
+    // overhangs both faces of the divider, resolves to it.
     assert_eq!(
         closed_portals.iter().filter(|&&closed| closed).count(),
-        6,
-        "fixture's doorway resolves all six authored seam portal polygons"
+        1,
+        "fixture's doorway resolves the runtime portal across the doorway"
     );
-    assert!(
-        closed_portals.iter().any(|&closed| !closed),
-        "the visibility proof keeps unrelated portal traversal open"
+    assert_eq!(
+        closed_portals.len(),
+        1,
+        "the doorway's portal is the only one"
     );
+    // The fixture has a single portal, so it cannot express "unrelated portal
+    // traversal stays open" (with one portal, closing the seam closes every portal).
+    // The check lives in the synthetic test
+    // `open_portal_beside_closed_seam_keeps_its_cells_visible_and_seam_far_side_out`.
     assert!(
         manifest
             .cluster_directory()
@@ -523,10 +629,14 @@ fn compiled_hinted_doorway_keeps_closed_visibility_and_warms_far_seam_endpoint()
         .update_targets_two_hop(&visible, Some(near_cell as usize), 0.0)
         .unwrap();
     let far_cluster = controller.topology.hints.cell_to_cluster[far_cell as usize];
+    // The near cell holds the doorway's air out to the divider's far face, so
+    // its probe range reaches probes the far cluster writes; the far
+    // cluster then arrives as the near cluster's owner, a class above the
+    // seam warm. Synthetic topologies pin `SeamWarm` alone.
     assert_eq!(
         controller.states[far_cluster as usize].class,
-        Some(TargetClass::SeamWarm),
-        "validated seam metadata warms the exact far endpoint before the door opens"
+        Some(TargetClass::Visible),
+        "the far endpoint is resident before the door opens, as the near cluster's owner"
     );
     assert_eq!(
         culled_ids(&visible),

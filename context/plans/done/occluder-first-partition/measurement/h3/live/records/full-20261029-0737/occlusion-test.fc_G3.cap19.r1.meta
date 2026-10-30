@@ -1,0 +1,15 @@
+tag=occlusion-test.fc_G3.cap19.r1 side=cap19 map=occlusion-test pose=-22.86,1.0,-7.62,82,0 settle=2 cpu_windows=8 trace_s=6
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap19/occlusion-test/occlusion-test.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/baked
+start=2026-10-29 08:16:13
+pre: 2026-10-29 08:16:14 util=8 inUseVidMemoryBytes=562618368 vramFreeBytes=2769571840 mhz=124 temp=58 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=64 screensaver=no locked=absent
+cpu_done t=22 windows=10 at 2026-10-29 08:16:36 
+trace_start 2026-10-29 08:16:36
+trace_end 2026-10-29 08:17:52 record_s=75
+post: 2026-10-29 08:17:55 util=0 inUseVidMemoryBytes=579104768 vramFreeBytes=2769571840 mhz=0 temp=82 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=102 screensaver=no locked=absent
+export_bytes=35390889
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=142 error_lines=0
+end=2026-10-29 08:18:06
+verdict=OK
+gate: GATE_OK waited=67 temp=57

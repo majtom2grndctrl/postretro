@@ -1,0 +1,5 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/stress-street/stress-street.prl
+  SH grid 22x9x37 cell [4.0, 4.0, 4.0]; 3359 clusters, 900 interior cells
+  probe reach into another cluster's cells: 158 clusters (900 interior cells), 4116 cluster pairs, 47759 probe refs, max 63 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 158 clusters (900 interior cells), 3586 cluster pairs, 37818 probe refs
+  owner edges: patch 520 over 157 clusters; sparse halo 520 over 157 clusters

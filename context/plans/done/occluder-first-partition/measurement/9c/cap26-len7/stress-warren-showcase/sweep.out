@@ -1,0 +1,41 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.1 s
+bake read: id51=4b1e5739180b8240 walk_epoch=3 size=35409998 mtime=1793209453 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-showcase/stress-warren-showcase.prl
+swept 5116 poses x 160x90 rays on 16 threads in 9.7 s
+sweep record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-showcase/stress-warren-showcase.after.sweep
+
+=== this build: 5116 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=4b1e5739180b8240 walk_epoch=3 size=35409998 mtime=1793209453 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-showcase/stress-warren-showcase.prl
+paths [("portal", 5116)]
+per pose                   mean          p95          max
+considered                 55.2          290          768
+accepted                   21.3          112          345
+drawn                      10.0           37           82
+reach                      10.6           42           96
+seen                        8.7           31           75
+drawn_faces                65.0          208          409
+tris                      130.0          416          818
+tris_in_frustum            96.3          319          750
+lightmap_blocks            10.0           37           82
+lightmap_texels        104949.8       300544       691552
+sh_clusters                 2.4            5           10
+fog_volumes                 0.0            0            0
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0           68
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 9.86s
+

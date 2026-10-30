@@ -1,0 +1,12 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+loaded in 0.4 s
+bake read: id51=2a40e98aa948a4b1 walk_epoch=3 size=129785845 mtime=1793154539 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+grid spacing=4.5 m columns=19x32 (cap 600) floors=740 eye=1.5 m yaws=[0.0, 90.0, 180.0, 270.0] pitch=0 footprint=[-83.9978, -140.0048]..[-0, -0]
+bake=id51=2a40e98aa948a4b1 walk_epoch=3 size=129785845 mtime=1793154539 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+2960 poses written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.poses
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_record ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.49s
+

@@ -1,0 +1,21 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+st:g5.3.0@180 5000 1751 1 PortalStepLimitFallback { considered: 5000, accepted: 1751 } 1052.79 990.98 38
+st:g6.3.0@180 5000 1937 1 PortalStepLimitFallback { considered: 5000, accepted: 1937 } 1084.50 1022.81 37
+st:g5.4.0@180 5000 1762 1 PortalStepLimitFallback { considered: 5000, accepted: 1762 } 1057.10 995.11 38
+st:g6.6.0@180 5000 1911 1 PortalStepLimitFallback { considered: 5000, accepted: 1911 } 1076.52 1014.29 37
+st:g5.5.0@180 5000 1926 1 PortalStepLimitFallback { considered: 5000, accepted: 1926 } 1091.90 1030.06 37
+st:g13.30.0@0 5000 1876 1 PortalStepLimitFallback { considered: 5000, accepted: 1876 } 1060.42 998.23 38
+st:g8.7.0@180 5000 1956 1 PortalStepLimitFallback { considered: 5000, accepted: 1956 } 1088.53 1026.49 37
+st:g5.0.0@180 3329 1029 0 PrlPortal { walk_reach: 242 } 633.97 627.26 63
+roof:B4.s2.c@180/-15 5000 1765 1 PortalStepLimitFallback { considered: 5000, accepted: 1765 } 1059.54 998.28 38
+roof:B3.s1.e@180/-15 5000 1809 1 PortalStepLimitFallback { considered: 5000, accepted: 1809 } 1073.51 1012.06 38
+roof:B4.s2.e@180/-15 5000 1660 1 PortalStepLimitFallback { considered: 5000, accepted: 1660 } 1034.93 973.59 39
+roof:B2.s1.e@135/-15 5000 1889 1 PortalStepLimitFallback { considered: 5000, accepted: 1889 } 1083.68 1022.15 37
+roof:B3.s1.c@180/-15 5000 1781 1 PortalStepLimitFallback { considered: 5000, accepted: 1781 } 1062.21 1000.77 38
+roof:B4.s2.c@225/0 5000 2096 1 PortalStepLimitFallback { considered: 5000, accepted: 2096 } 1091.93 1032.07 37
+roof:A7.s2.c@225/-15 3360 1202 0 PrlPortal { walk_reach: 357 } 688.23 678.81 58
+roof:A6.s2.e@225/-15 4080 1460 0 PrlPortal { walk_reach: 427 } 821.22 809.88 49
+rd:plaza 2631 888 0 PrlPortal { walk_reach: 119 } 491.48 487.97 81
+rd:promenade 2146 661 0 PrlPortal { walk_reach: 180 } 414.30 409.32 97
+rd:elevated 2619 960 0 PrlPortal { walk_reach: 239 } 530.86 524.38 74
+rd:upperdeck 1927 576 0 PrlPortal { walk_reach: 112 } 347.24 343.78 110

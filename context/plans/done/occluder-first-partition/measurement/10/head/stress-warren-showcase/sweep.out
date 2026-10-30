@@ -1,0 +1,88 @@
+warning: function `widget_contains_text` is never used
+    --> crates\postretro\src\main.rs:9620:8
+     |
+9620 |     fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `button_action` is never used
+    --> crates\postretro\src\main.rs:9637:8
+     |
+9637 |     fn button_action<'a>(
+     |        ^^^^^^^^^^^^^
+
+warning: function `find_button` is never used
+    --> crates\postretro\src\main.rs:9657:8
+     |
+9657 |     fn find_button<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `find_slider` is never used
+    --> crates\postretro\src\main.rs:9677:8
+     |
+9677 |     fn find_slider<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `workspace_root` is never used
+    --> crates\postretro\src\main.rs:9697:8
+     |
+9697 |     fn workspace_root() -> PathBuf {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `focus_button_action` is never used
+    --> crates\postretro\src\main.rs:9704:8
+     |
+9704 |     fn focus_button_action(
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ensure_scripts_build` is never used
+    --> crates\postretro\src\main.rs:9762:8
+     |
+9762 |     fn ensure_scripts_build() -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `postretro` (bin "postretro" test) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 1.49s
+     Running unittests src\main.rs (target\release\deps\postretro-e1b57fd488fe154d.exe)
+
+running 1 test
+PRL: C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.0 s
+bake read: id51=923de83fa3fd980c walk_epoch=4 size=35241461 mtime=1793316485 prl=C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.prl
+swept 5116 poses x 160x90 rays on 6 threads in 10.6 s
+sweep record written: C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.after.sweep
+
+=== this build: 5116 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=923de83fa3fd980c walk_epoch=4 size=35241461 mtime=1793316485 prl=C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.prl
+paths [("portal", 5116)]
+per pose                   mean          p95          max
+considered                 37.0          153          359
+accepted                   14.5           63          173
+drawn                       9.6           30           70
+reach                      10.0           32           78
+seen                        8.5           25           60
+drawn_faces                62.2          208          390
+tris                      124.4          416          780
+tris_in_frustum            94.5          288          728
+lightmap_blocks             9.6           30           70
+lightmap_texels         97005.8       280608       637360
+sh_clusters                 2.3            5            8
+fog_volumes                 0.0            0            0
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0           68
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 10.66s
+

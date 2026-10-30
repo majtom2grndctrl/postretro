@@ -6,13 +6,13 @@ use postretro_level_format::bvh::BvhLeaf;
 use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
 
 /// Bake the per-cell draw index from the already-sorted flat BVH leaf array and
-/// the encoded BSP leaf records.
+/// the encoded cell records.
 ///
 /// `bvh_leaves` is the flattened, **sorted** leaf array from `bvh_build::build_bvh`
 /// (stable-sorted by `(material_bucket_id, cell_id, index_offset)`), so each cell's
 /// leaves within one material bucket form one contiguous run. `bsp_leaves` is the
-/// per-BSP-leaf record array (`vis_result.leaves_section.leaves`), indexed directly
-/// by `BvhLeaf.cell_id` because `cell_id == BSP leaf index`.
+/// leaf record array of the cell view (`vis_result.leaves_section.leaves`): one
+/// record per runtime cell, indexed directly by `BvhLeaf.cell_id`.
 ///
 /// A span is a maximal contiguous run of leaf slots owned by a cell **within a
 /// single material bucket** — the `CellDrawIndex` wire invariant (each span lies in
@@ -28,7 +28,7 @@ use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
 /// and its cell satisfies `is_solid == 0 && face_count > 0`. Non-drawable cells get
 /// an empty CSR row.
 ///
-/// The CSR serializes cells in ascending `cell_id` (one row per BSP leaf), and
+/// The CSR serializes cells in ascending `cell_id` (one row per cell record), and
 /// within each cell emits maximal contiguous spans in ascending global `leaf_start`
 /// order. Runs through `cell_span_offset` as a prefix sum over `cell_count`.
 pub fn bake_cell_draw_index(
@@ -41,7 +41,7 @@ pub fn bake_cell_draw_index(
 
     let cell_count = bsp_leaves.len();
 
-    // For each cell (BSP leaf index), the maximal contiguous runs of leaf slots it
+    // For each cell (record index), the maximal contiguous runs of leaf slots it
     // owns. The sort key clusters a cell's leaves per bucket into contiguous runs;
     // a new span starts whenever the previous slot was not this cell's predecessor.
     let mut spans_by_cell: Vec<Vec<Span>> = vec![Vec::new(); cell_count];
@@ -50,11 +50,11 @@ pub fn bake_cell_draw_index(
         let slot = slot as u32;
         let cell_id = leaf.cell_id as usize;
 
-        // `cell_id == BSP leaf index`; a leaf out of range would be a compiler
-        // invariant break upstream (BVH cell_ids are BSP leaf indices).
+        // `cell_id` indexes the cell records; one out of range would be a
+        // compiler invariant break upstream.
         debug_assert!(
             cell_id < cell_count,
-            "BVH leaf cell_id {cell_id} out of BSP leaf range {cell_count}",
+            "BVH leaf cell_id {cell_id} out of cell range {cell_count}",
         );
 
         if !is_drawable(leaf, bsp_leaves) {
@@ -108,7 +108,7 @@ pub fn bake_cell_draw_index(
 }
 
 /// A leaf draws when it carries geometry and its cell is an empty, face-bearing
-/// BSP leaf. `cell_id == BSP leaf index` makes the join a direct index.
+/// cell record, which `cell_id` indexes directly.
 fn is_drawable(leaf: &BvhLeaf, bsp_leaves: &[BspLeafRecord]) -> bool {
     if leaf.index_count == 0 {
         return false;
@@ -250,7 +250,7 @@ mod tests {
         }
     }
 
-    /// An empty (drawable) BSP leaf record with the given face count.
+    /// An empty (drawable) cell record with the given face count.
     fn empty_leaf(face_count: u32) -> BspLeafRecord {
         BspLeafRecord {
             face_start: 0,
@@ -261,7 +261,7 @@ mod tests {
         }
     }
 
-    /// A solid BSP leaf record (never drawable).
+    /// A solid cell record (never drawable).
     fn solid_leaf() -> BspLeafRecord {
         BspLeafRecord {
             face_start: 0,

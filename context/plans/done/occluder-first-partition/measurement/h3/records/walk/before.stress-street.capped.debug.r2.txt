@@ -1,0 +1,21 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+st:g5.3.0@180 5000 1639 1 PortalStepLimitFallback { considered: 5000, accepted: 1639 } 1068.95 974.50 37
+st:g6.3.0@180 5000 1559 1 PortalStepLimitFallback { considered: 5000, accepted: 1559 } 1062.73 967.47 38
+st:g5.4.0@180 5000 1536 1 PortalStepLimitFallback { considered: 5000, accepted: 1536 } 1047.17 955.54 38
+st:g6.6.0@180 5000 1713 1 PortalStepLimitFallback { considered: 5000, accepted: 1713 } 1078.87 990.80 37
+st:g5.5.0@180 5000 1548 1 PortalStepLimitFallback { considered: 5000, accepted: 1548 } 1054.98 964.94 38
+st:g13.30.0@0 5000 1653 1 PortalStepLimitFallback { considered: 5000, accepted: 1653 } 1123.88 1027.47 36
+st:g8.7.0@180 5000 1717 1 PortalStepLimitFallback { considered: 5000, accepted: 1717 } 1068.46 980.96 37
+st:g5.0.0@180 5000 1883 1 PortalStepLimitFallback { considered: 5000, accepted: 1883 } 1103.25 1007.63 35
+roof:B4.s2.c@180/-15 5000 1588 1 PortalStepLimitFallback { considered: 5000, accepted: 1588 } 1058.79 965.13 38
+roof:B3.s1.e@180/-15 4805 1679 0 PrlPortal { walk_reach: 380 } 994.39 984.92 41
+roof:B4.s2.e@180/-15 5000 1556 1 PortalStepLimitFallback { considered: 5000, accepted: 1556 } 1046.77 953.26 38
+roof:B2.s1.e@135/-15 5000 1796 1 PortalStepLimitFallback { considered: 5000, accepted: 1796 } 1095.42 1007.93 37
+roof:B3.s1.c@180/-15 5000 1701 1 PortalStepLimitFallback { considered: 5000, accepted: 1701 } 1081.54 992.77 37
+roof:B4.s2.c@225/0 5000 1740 1 PortalStepLimitFallback { considered: 5000, accepted: 1740 } 1070.91 982.14 38
+roof:A7.s2.c@225/-15 5000 1811 1 PortalStepLimitFallback { considered: 5000, accepted: 1811 } 1080.87 985.16 37
+roof:A6.s2.e@225/-15 5000 1775 1 PortalStepLimitFallback { considered: 5000, accepted: 1775 } 1079.79 985.94 37
+rd:plaza 3585 937 0 PrlPortal { walk_reach: 312 } 667.04 659.22 59
+rd:promenade 1925 609 0 PrlPortal { walk_reach: 207 } 372.42 367.11 108
+rd:elevated 2939 922 0 PrlPortal { walk_reach: 283 } 571.84 564.64 68
+rd:upperdeck 3771 1401 0 PrlPortal { walk_reach: 274 } 742.22 735.56 54

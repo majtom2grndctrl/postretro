@@ -1,0 +1,41 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+g10.4.0@180 5000 1910 1 PortalStepLimitFallback { considered: 5000, accepted: 1910 } 1076.06 1006.77 37
+g12.28.1@0 5000 1934 1 PortalStepLimitFallback { considered: 5000, accepted: 1934 } 1081.70 1012.27 37
+g12.29.0@0 5000 1975 1 PortalStepLimitFallback { considered: 5000, accepted: 1975 } 1093.27 1023.31 37
+g12.30.0@0 5000 2031 1 PortalStepLimitFallback { considered: 5000, accepted: 2031 } 1107.15 1036.56 36
+g13.26.0@0 5000 1889 1 PortalStepLimitFallback { considered: 5000, accepted: 1889 } 1062.40 994.13 38
+g13.28.1@0 5000 1865 1 PortalStepLimitFallback { considered: 5000, accepted: 1865 } 1072.63 1003.57 38
+g13.29.0@0 5000 1938 1 PortalStepLimitFallback { considered: 5000, accepted: 1938 } 1085.94 1016.45 37
+g13.30.0@0 5000 2011 1 PortalStepLimitFallback { considered: 5000, accepted: 2011 } 1102.96 1032.94 37
+g13.7.0@180 5000 1934 1 PortalStepLimitFallback { considered: 5000, accepted: 1934 } 1085.61 1019.20 37
+g14.26.0@0 5000 1773 1 PortalStepLimitFallback { considered: 5000, accepted: 1773 } 1046.57 978.04 39
+g14.28.1@0 5000 1954 1 PortalStepLimitFallback { considered: 5000, accepted: 1954 } 1088.33 1019.62 37
+g14.29.0@0 5000 1955 1 PortalStepLimitFallback { considered: 5000, accepted: 1955 } 1086.29 1017.02 37
+g14.30.0@0 5000 2085 1 PortalStepLimitFallback { considered: 5000, accepted: 2085 } 1114.20 1044.25 36
+g15.10.0@90 5000 1889 1 PortalStepLimitFallback { considered: 5000, accepted: 1889 } 1062.12 995.40 37
+g15.11.0@90 5000 1882 1 PortalStepLimitFallback { considered: 5000, accepted: 1882 } 1064.25 997.04 38
+g15.14.0@90 5000 1880 1 PortalStepLimitFallback { considered: 5000, accepted: 1880 } 1062.49 993.85 38
+g16.14.0@90 5000 1958 1 PortalStepLimitFallback { considered: 5000, accepted: 1958 } 1076.14 1007.13 38
+g5.3.0@180 5000 1813 1 PortalStepLimitFallback { considered: 5000, accepted: 1813 } 1070.33 1001.23 38
+g5.4.0@180 5000 1966 1 PortalStepLimitFallback { considered: 5000, accepted: 1966 } 1104.45 1034.90 36
+g5.5.0@180 5000 1919 1 PortalStepLimitFallback { considered: 5000, accepted: 1919 } 1097.80 1029.02 37
+g5.6.0@180 5000 1895 1 PortalStepLimitFallback { considered: 5000, accepted: 1895 } 1096.24 1026.69 37
+g6.3.0@180 5000 1967 1 PortalStepLimitFallback { considered: 5000, accepted: 1967 } 1100.20 1029.93 36
+g6.4.0@180 5000 1985 1 PortalStepLimitFallback { considered: 5000, accepted: 1985 } 1107.61 1038.25 37
+g6.5.0@180 5000 1996 1 PortalStepLimitFallback { considered: 5000, accepted: 1996 } 1111.23 1042.04 36
+g6.6.0@180 5000 1938 1 PortalStepLimitFallback { considered: 5000, accepted: 1938 } 1096.08 1026.20 37
+g7.30.0@0 5000 2055 1 PortalStepLimitFallback { considered: 5000, accepted: 2055 } 1105.78 1036.11 36
+g7.7.0@180 5000 2022 1 PortalStepLimitFallback { considered: 5000, accepted: 2022 } 1110.85 1041.02 36
+g8.7.0@180 5000 1933 1 PortalStepLimitFallback { considered: 5000, accepted: 1933 } 1103.85 1033.78 35
+g8.8.0@180 5000 2073 1 PortalStepLimitFallback { considered: 5000, accepted: 2073 } 1128.14 1059.06 35
+g7.8.0@180 4998 2021 0 PrlPortal { walk_reach: 532 } 1053.97 1039.56 38
+g12.27.1@0 4988 1904 0 PrlPortal { walk_reach: 415 } 1014.54 1002.87 38
+g13.27.1@0 4956 1838 0 PrlPortal { walk_reach: 413 } 1010.68 998.26 38
+g13.6.0@180 4919 1702 0 PrlPortal { walk_reach: 458 } 986.48 973.93 41
+g12.8.0@180 4917 1896 0 PrlPortal { walk_reach: 453 } 1010.99 998.78 40
+g13.8.0@180 4908 1918 0 PrlPortal { walk_reach: 447 } 1012.95 1001.09 40
+g15.9.0@90 4904 1799 0 PrlPortal { walk_reach: 432 } 964.46 952.91 42
+g10.3.0@180 4856 1779 0 PrlPortal { walk_reach: 439 } 987.36 975.46 41
+g13.5.0@180 4834 1608 0 PrlPortal { walk_reach: 439 } 957.06 945.04 42
+g12.7.0@180 4825 1803 0 PrlPortal { walk_reach: 435 } 984.19 972.51 41
+g9.4.0@180 4810 1781 0 PrlPortal { walk_reach: 438 } 978.97 966.93 41

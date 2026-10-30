@@ -1,0 +1,59 @@
+
+running 1 test
+
+=== before: 5116 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=76239ea11fe8366f walk_epoch=3 size=33143034 mtime=1793154499 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+paths [("portal", 5116)]
+per pose                   mean          p95          max
+considered                 58.8          202          686
+accepted                   20.1           71          283
+drawn                       9.6           28           61
+reach                       9.6           28           61
+seen                        8.2           22           51
+drawn_faces                40.2          116          275
+tris                       80.4          232          550
+tris_in_frustum            65.4          200          524
+lightmap_blocks             9.6           28           61
+lightmap_texels        119452.3       519520       834480
+sh_clusters                 2.0            4            7
+fog_volumes                 0.0            0            0
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            5
+hit_solid                   0.0            0           68
+hit_exterior                0.0            0            0
+
+=== after: 5116 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=f35573e79820bc6f walk_epoch=3 size=37392470 mtime=1793275909 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap19/stress-warren-showcase/stress-warren-showcase.prl
+paths [("portal", 5116)]
+per pose                   mean          p95          max
+considered                 53.1          220          639
+accepted                   21.7           93          312
+drawn                      13.2           42          124
+reach                      13.8           46          139
+seen                       11.3           35           99
+drawn_faces                62.1          203          438
+tris                      124.2          406          876
+tris_in_frustum           102.0          328          798
+lightmap_blocks            13.2           42          124
+lightmap_texels         85798.0       251888       644832
+sh_clusters                 2.5            6           10
+fog_volumes                 0.0            0            0
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0           68
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_diff ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.20s
+

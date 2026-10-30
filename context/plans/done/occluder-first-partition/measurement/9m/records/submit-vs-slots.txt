@@ -1,0 +1,92 @@
+map label side live_tests sweep_tests drawn_cells drawn_faces tris submit record work rec_cull
+occlusion-test fc:C1 before 9.0 9 5 36 72 4.419 0.936 6.059 0.074
+occlusion-test fc:C1 cap19 9.0 9 5 39 78 4.321 0.924 5.938 0.085
+occlusion-test fc:C1 cap26 9.0 9 5 39 78 4.337 0.925 5.949 0.082
+occlusion-test fc:C2 before 33.0 33 8 42 84 4.609 1.298 6.785 0.209
+occlusion-test fc:C2 cap19 20.0 20 6 45 90 4.393 1.307 6.542 0.236
+occlusion-test fc:C2 cap26 25.0 25 6 58 116 4.498 1.462 6.833 0.232
+occlusion-test fc:G1 before 1262.0 1251 172 603 1206 5.574 1.434 8.259 0.247
+occlusion-test fc:G1 cap19 68.0 68 16 59 118 4.771 1.401 7.056 0.21
+occlusion-test fc:G1 cap26 58.0 58 12 59 118 4.619 1.463 6.926 0.204
+occlusion-test fc:G2 before 1595.0 1595 199 694 1388 5.853 1.575 8.757 0.252
+occlusion-test fc:G2 cap19 165.0 165 28 106 212 4.791 1.397 7.038 0.184
+occlusion-test fc:G2 cap26 131.0 131 25 98 196 4.723 1.432 6.992 0.188
+occlusion-test fc:G3 before 529.92 515 65 229 458 5.101 1.415 7.503 0.206
+occlusion-test fc:G3 cap19 63.0 63 12 57 114 4.766 1.351 6.932 0.189
+occlusion-test fc:G3 cap26 68.0 68 11 64 128 4.761 1.496 7.096 0.188
+occlusion-test fc:L2 before 1279.0 1278 148 522 1044 5.625 1.46 8.319 0.231
+occlusion-test fc:L2 cap19 223.0 223 32 110 220 4.923 1.432 7.229 0.194
+occlusion-test fc:L2 cap26 209.0 209 27 96 192 4.905 1.501 7.268 0.192
+occlusion-test fc:P1 before 2023.0 2019 229 799 1598 5.943 1.589 8.99 0.271
+occlusion-test fc:P1 cap19 407.086 415 56 198 396 4.734 1.484 7.189 0.235
+occlusion-test fc:P1 cap26 310.0 302 40 148 296 4.641 1.52 7.087 0.228
+occlusion-test fc:P2 before 2031.0 2030 231 808 1616 5.855 1.611 8.953 0.284
+occlusion-test fc:P2 cap19 483.077 494 56 198 396 4.707 1.466 7.155 0.228
+occlusion-test fc:P2 cap26 377.0 377 40 148 296 4.605 1.502 7.032 0.206
+occlusion-test fc:V1 before 1652.0 1648 193 655 1310 5.806 1.123 8.245 0.203
+occlusion-test fc:V1 cap19 518.0 518 74 770 1540 6.097 1.111 8.178 0.197
+occlusion-test fc:V1 cap26 442.0 442 67 779 1558 6.061 1.134 8.153 0.196
+stress-street rd:elevated before 2762.0 2696 261 1270 2540 7.22 1.443 10.962 0.664
+stress-street rd:elevated cap19 2620.0 2620 421 3286 6570 10.639 1.69 15.268 1.0
+stress-street rd:elevated cap26 2577.0 2453 384 3152 6302 10.327 1.727 15.09 1.044
+stress-street rd:plaza before 3577.0 3585 312 1705 3411 7.148 1.929 12.059 1.184
+stress-street rd:plaza cap19 3364.0 3363 327 2219 4437 7.816 2.224 14.454 1.5
+stress-street rd:plaza cap26 3330.0 3329 316 2261 4521 7.924 2.131 14.959 1.428
+stress-street rd:promenade before 1867.0 1840 206 1019 2038 6.673 1.429 10.238 0.626
+stress-street rd:promenade cap19 1963.92 2232 332 2919 5838 9.683 1.704 14.423 1.011
+stress-street rd:promenade cap26 1935.598 1962 287 2778 5556 9.576 1.697 14.281 0.992
+stress-street rd:upperdeck before 3793.0 3771 274 1051 2102 6.921 1.224 10.414 0.411
+stress-street rd:upperdeck cap19 1802.0 1802 231 1230 2460 7.131 1.27 10.449 0.455
+stress-street rd:upperdeck cap26 1795.0 1795 233 1315 2630 7.252 1.284 10.566 0.478
+stress-street wk:g11.26.1@0 before 4812.0 4726 402 1857 3715 7.857 1.889 13.046 1.138
+stress-street wk:g11.26.1@0 cap19 4152.99 4147 398 2361 4721 8.687 2.252 15.069 1.497
+stress-street wk:g11.26.1@0 cap26 4155.908 4164 377 2360 4719 8.713 2.236 15.453 1.468
+stress-street wk:roof:A0.s0.e@0/-15 before 3771.0 3711 258 1228 2456 7.177 1.769 11.887 1.009
+stress-street wk:roof:A0.s0.e@0/-15 cap19 3478.0 3496 238 1608 3215 7.792 2.06 13.001 1.309
+stress-street wk:roof:A0.s0.e@0/-15 cap26 3382.0 3396 219 1625 3249 7.889 2.068 13.145 1.312
+fit submit = 4.559 + 1.797 us * drawn_faces  R2=0.977 n=45
+  occlus fc:C1                    before faces=   36 submit=4.42 pred=4.62 resid=-0.20
+  occlus fc:C1                    cap19  faces=   39 submit=4.32 pred=4.63 resid=-0.31
+  occlus fc:C1                    cap26  faces=   39 submit=4.34 pred=4.63 resid=-0.29
+  occlus fc:C2                    before faces=   42 submit=4.61 pred=4.63 resid=-0.03
+  occlus fc:C2                    cap19  faces=   45 submit=4.39 pred=4.64 resid=-0.25
+  occlus fc:C2                    cap26  faces=   58 submit=4.50 pred=4.66 resid=-0.16
+  occlus fc:G1                    before faces=  603 submit=5.57 pred=5.64 resid=-0.07
+  occlus fc:G1                    cap19  faces=   59 submit=4.77 pred=4.66 resid=+0.11
+  occlus fc:G1                    cap26  faces=   59 submit=4.62 pred=4.66 resid=-0.05
+  occlus fc:G2                    before faces=  694 submit=5.85 pred=5.81 resid=+0.05
+  occlus fc:G2                    cap19  faces=  106 submit=4.79 pred=4.75 resid=+0.04
+  occlus fc:G2                    cap26  faces=   98 submit=4.72 pred=4.73 resid=-0.01
+  occlus fc:G3                    before faces=  229 submit=5.10 pred=4.97 resid=+0.13
+  occlus fc:G3                    cap19  faces=   57 submit=4.77 pred=4.66 resid=+0.10
+  occlus fc:G3                    cap26  faces=   64 submit=4.76 pred=4.67 resid=+0.09
+  occlus fc:L2                    before faces=  522 submit=5.62 pred=5.50 resid=+0.13
+  occlus fc:L2                    cap19  faces=  110 submit=4.92 pred=4.76 resid=+0.17
+  occlus fc:L2                    cap26  faces=   96 submit=4.91 pred=4.73 resid=+0.17
+  occlus fc:P1                    before faces=  799 submit=5.94 pred=5.99 resid=-0.05
+  occlus fc:P1                    cap19  faces=  198 submit=4.73 pred=4.91 resid=-0.18
+  occlus fc:P1                    cap26  faces=  148 submit=4.64 pred=4.82 resid=-0.18
+  occlus fc:P2                    before faces=  808 submit=5.86 pred=6.01 resid=-0.16
+  occlus fc:P2                    cap19  faces=  198 submit=4.71 pred=4.91 resid=-0.21
+  occlus fc:P2                    cap26  faces=  148 submit=4.61 pred=4.82 resid=-0.22
+  occlus fc:V1                    before faces=  655 submit=5.81 pred=5.74 resid=+0.07
+  occlus fc:V1                    cap19  faces=  770 submit=6.10 pred=5.94 resid=+0.15
+  occlus fc:V1                    cap26  faces=  779 submit=6.06 pred=5.96 resid=+0.10
+  stress rd:elevated              before faces= 1270 submit=7.22 pred=6.84 resid=+0.38
+  stress rd:elevated              cap19  faces= 3286 submit=10.64 pred=10.46 resid=+0.18
+  stress rd:elevated              cap26  faces= 3152 submit=10.33 pred=10.22 resid=+0.11
+  stress rd:plaza                 before faces= 1705 submit=7.15 pred=7.62 resid=-0.47
+  stress rd:plaza                 cap19  faces= 2219 submit=7.82 pred=8.55 resid=-0.73
+  stress rd:plaza                 cap26  faces= 2261 submit=7.92 pred=8.62 resid=-0.70
+  stress rd:promenade             before faces= 1019 submit=6.67 pred=6.39 resid=+0.28
+  stress rd:promenade             cap19  faces= 2919 submit=9.68 pred=9.80 resid=-0.12
+  stress rd:promenade             cap26  faces= 2778 submit=9.58 pred=9.55 resid=+0.03
+  stress rd:upperdeck             before faces= 1051 submit=6.92 pred=6.45 resid=+0.47
+  stress rd:upperdeck             cap19  faces= 1230 submit=7.13 pred=6.77 resid=+0.36
+  stress rd:upperdeck             cap26  faces= 1315 submit=7.25 pred=6.92 resid=+0.33
+  stress wk:g11.26.1@0            before faces= 1857 submit=7.86 pred=7.90 resid=-0.04
+  stress wk:g11.26.1@0            cap19  faces= 2361 submit=8.69 pred=8.80 resid=-0.11
+  stress wk:g11.26.1@0            cap26  faces= 2360 submit=8.71 pred=8.80 resid=-0.09
+  stress wk:roof:A0.s0.e@0/-15    before faces= 1228 submit=7.18 pred=6.76 resid=+0.41
+  stress wk:roof:A0.s0.e@0/-15    cap19  faces= 1608 submit=7.79 pred=7.45 resid=+0.34
+  stress wk:roof:A0.s0.e@0/-15    cap26  faces= 1625 submit=7.89 pred=7.48 resid=+0.41

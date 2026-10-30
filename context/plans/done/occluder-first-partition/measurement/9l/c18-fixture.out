@@ -1,0 +1,19 @@
+C18 none                   cells   75 portals   42 hidden 12032 seen 0 | leak mean 28.46% worst 87.77% (10560 samples) at [320.0, 700.0, 59.0] yaw 70 | non-portal poses 0
+C18 all                    cells   80 portals   54 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 free+far               cells   80 portals   54 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 free                   cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 brush                  cells   80 portals   54 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 section                cells   75 portals   42 hidden 12032 seen 0 | leak mean 28.46% worst 87.77% (10560 samples) at [320.0, 700.0, 59.0] yaw 70 | non-portal poses 0
+C18 abut                   cells   75 portals   42 hidden 12032 seen 0 | leak mean 28.46% worst 87.77% (10560 samples) at [320.0, 700.0, 59.0] yaw 70 | non-portal poses 0
+C18 brush-free+far         cells   80 portals   54 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 brush-free             cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 far                    cells   79 portals   47 hidden 12032 seen 0 | leak mean 28.46% worst 87.77% (10560 samples) at [320.0, 700.0, 59.0] yaw 70 | non-portal poses 0
+C18 bf-wallface            cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 bf-vplanes             cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 bf-wall-vplanes        cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 free-wallface          cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 free-wall-vplanes      cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 bf-any-open            cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 bf-all-open            cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+C18 bf-wall-vplanes-any    cells   76 portals   49 hidden 12032 seen 0 | leak mean 0.00% worst 0.00% (0 samples) at [1236.0, 1100.0, 59.0] yaw 135 | non-portal poses 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2039 filtered out; finished in 19.65s

@@ -1,0 +1,88 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.1 s
+bake read: id51=76239ea11fe8366f walk_epoch=3 size=33143034 mtime=1793154499 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+
+=== structure
+cells 1479 (interior 560, solid 691, exterior 228, drawable 560)
+interior cell AABB volume: [<0.1 m3] 0 [0.1-1 m3] 1 [1-10 m3] 20 [10-100 m3] 116 [100-1000 m3] 310 [1000-10000 m3] 109 [>=10000 m3] 4
+interior cell smallest extent: [<0.1 m] 0 [0.1-0.25 m] 3 [0.25-0.5 m] 5 [0.5-1 m] 80 [1-2 m] 37 [2-4 m] 242 [4-8 m] 189 [>=8 m] 4
+interior cell largest extent: p50 16.26 p95 29.26 max 94.28
+portals 1894 (walkable, both cells interior: 1333; touching solid or exterior: 561)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 34 [1-10 m2] 290 [10-100 m2] 836 [100-1000 m2] 173 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 80 [1.5-2] 277 [2-4] 425 [4-8] 345 [8-16] 69 [16-32] 93 [32-64] 25 [>=64] 19
+walkable portal normals: horizontal 334, vertical 999, oblique 0
+faces 2239, triangles 4478, vertices 8956, BVH leaves 2239
+lightmap blocks 560 over 560 cells (max 1 per cell), texel area 4688512
+lightmap storage: streaming
+SH probe grid 17x4x20 = 1360 probes
+SH clusters 752 (indivisible oversize 0), max 32 cells per cluster
+cell visibility: 693 components, 13235 coupled pairs
+id 51: 1479 camera cells, 36968 entries; entries per interior camera cell p50 66.00 p95 111.00 max 132.00
+lights 94, fog volumes 0
+
+=== region [[6.5024, 1.6256, 35.7632]]..[[13.0048, 11.3792, 58.5216]]
+interior cells overlapping: 32
+  cell 904 [-16.26, 1.63, 32.51]..[6.50, 17.88, 55.27] faces 32
+  cell 905 [-16.26, 1.63, 55.27]..[6.50, 8.13, 61.77] faces 9
+  cell 906 [-16.26, 11.38, 55.27]..[6.50, 17.88, 61.77] faces 4
+  cell 938 [6.50, 11.38, 32.51]..[13.00, 17.88, 39.32] faces 3
+  cell 939 [6.50, 1.63, 32.51]..[13.00, 8.13, 35.76] faces 4
+  cell 950 [6.50, 11.38, 39.32]..[13.00, 17.88, 42.88] faces 3
+  cell 963 [6.50, 11.38, 42.88]..[13.00, 17.88, 46.43] faces 3
+  cell 965 [6.50, 8.03, 43.59]..[13.00, 8.13, 44.30] faces 4
+  cell 967 [6.50, 7.72, 44.30]..[13.00, 8.13, 45.01] faces 4
+  cell 970 [6.50, 7.42, 45.01]..[13.00, 8.13, 45.72] faces 4
+  cell 972 [6.50, 7.11, 45.72]..[13.00, 8.13, 46.43] faces 4
+  cell 975 [6.50, 6.81, 46.43]..[13.00, 8.13, 47.14] faces 4
+  cell 977 [6.50, 6.50, 47.14]..[13.00, 8.13, 47.85] faces 4
+  cell 979 [6.50, 6.20, 47.85]..[13.00, 8.13, 48.56] faces 4
+  cell 981 [6.50, 5.89, 48.56]..[13.00, 8.13, 49.28] faces 4
+  cell 983 [6.50, 11.38, 46.43]..[13.00, 17.88, 49.28] faces 3
+  cell 992 [6.50, 5.59, 49.28]..[13.00, 8.13, 49.99] faces 4
+  cell 994 [6.50, 5.28, 49.99]..[13.00, 8.13, 50.70] faces 4
+  cell 996 [6.50, 4.98, 50.70]..[13.00, 8.13, 51.41] faces 4
+  cell 998 [6.50, 4.67, 51.41]..[13.00, 8.13, 52.12] faces 4
+  cell 1000 [6.50, 4.37, 52.12]..[13.00, 8.13, 52.83] faces 4
+  cell 1002 [6.50, 4.06, 52.83]..[13.00, 8.13, 53.54] faces 4
+  cell 1004 [6.50, 3.76, 53.54]..[13.00, 8.13, 54.25] faces 4
+  cell 1006 [6.50, 3.45, 54.25]..[13.00, 8.13, 54.97] faces 4
+  cell 1008 [6.50, 3.15, 54.97]..[13.00, 8.13, 55.68] faces 4
+  cell 1010 [6.50, 11.38, 49.28]..[13.00, 17.88, 55.68] faces 3
+  cell 1022 [6.50, 11.38, 55.68]..[13.00, 17.88, 61.77] faces 4
+  cell 1025 [6.50, 2.84, 55.68]..[13.00, 8.13, 56.39] faces 4
+  cell 1027 [6.50, 2.54, 56.39]..[13.00, 8.13, 57.10] faces 4
+  cell 1029 [6.50, 2.24, 57.10]..[13.00, 8.13, 57.81] faces 4
+  cell 1031 [6.50, 1.63, 58.52]..[13.00, 8.13, 61.77] faces 5
+  cell 1032 [6.50, 1.93, 57.81]..[13.00, 8.13, 58.52] faces 4
+walkable portals overlapping: 58, on 25 planes
+  vertical x = 6.502 m: 30 portals, 279.51 m2, ids [1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077]
+  vertical z = 39.319 m: 1 portals, 42.28 m2, ids [1240]
+  vertical z = 42.875 m: 1 portals, 42.28 m2, ids [1238]
+  vertical z = 44.298 m: 1 portals, 0.66 m2, ids [1244]
+  vertical z = 45.009 m: 1 portals, 2.64 m2, ids [1243]
+  vertical z = 45.720 m: 1 portals, 4.62 m2, ids [1245]
+  vertical z = 46.431 m: 2 portals, 48.89 m2, ids [1241, 1242]
+  vertical z = 47.142 m: 1 portals, 8.59 m2, ids [1247]
+  vertical z = 47.854 m: 1 portals, 10.57 m2, ids [1246]
+  vertical z = 48.565 m: 1 portals, 12.55 m2, ids [1248]
+  vertical z = 49.276 m: 2 portals, 56.82 m2, ids [1235, 1236]
+  vertical z = 49.987 m: 1 portals, 16.52 m2, ids [1257]
+  vertical z = 50.698 m: 1 portals, 18.50 m2, ids [1256]
+  vertical z = 51.410 m: 1 portals, 20.48 m2, ids [1255]
+  vertical z = 52.121 m: 1 portals, 22.46 m2, ids [1258]
+  vertical z = 52.832 m: 1 portals, 24.44 m2, ids [1254]
+  vertical z = 53.543 m: 1 portals, 26.43 m2, ids [1260]
+  vertical z = 54.254 m: 1 portals, 28.41 m2, ids [1259]
+  vertical z = 54.966 m: 1 portals, 30.39 m2, ids [1261]
+  vertical z = 55.270 m: 2 portals, 295.97 m2, ids [1207, 1208]
+  vertical z = 55.677 m: 2 portals, 74.65 m2, ids [1252, 1253]
+  vertical z = 56.388 m: 1 portals, 34.35 m2, ids [1274]
+  vertical z = 57.099 m: 1 portals, 36.34 m2, ids [1273]
+  vertical z = 57.810 m: 1 portals, 38.32 m2, ids [1272]
+  vertical z = 58.522 m: 1 portals, 40.30 m2, ids [1275]
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.08s
+

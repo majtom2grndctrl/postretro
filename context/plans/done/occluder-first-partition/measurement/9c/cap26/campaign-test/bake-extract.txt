@@ -1,0 +1,22 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 143 brushes, 40 occlude alone; exempt alone: 14 under floor, 13 no open face, 65 short span, 11 low top; 8 clusters, 15 sections, 7 occlude (21 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 2 of 3 kinematic movers seal a doorway at their closed pose: movers 0, 1
+[INFO prl_build::partition] BSP leaves: 462 solid, 584 empty
+[INFO prl_build::partition] BSP leaves: 1046
+[INFO prl_build::partition] Total faces (after brush-side extraction): 1545
+[WARN prl_build::pipeline] [Compiler] Watertightness: 43 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 241 exterior leaves, 343 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 559 occluder-tier leaves; 832 cells (129 interior, 462 solid, 241 exterior); 288 runtime portals; full tree 1046 leaves, 1553 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 262
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 263
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 267
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 270
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 271
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 252
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 253
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 257
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 260
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 261
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 3483 eye candidates (3421 in cell, 34 inset, 28 rejected; missed into solid 38, exterior 0, other cell 24), 0 camera cells without an eye point, 20730 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 129 camera cells, 11831 entries (max 115 per camera), 97996 bytes, max lead 32 m, 0.055 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 97996 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 43 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

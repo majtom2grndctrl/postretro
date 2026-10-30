@@ -1,0 +1,34 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 447 brushes, 237 occlude alone; exempt alone: 3 under floor, 56 no open face, 148 short span, 3 low top; 49 clusters, 11 sections, 2 occlude (10 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 6 of 8 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5
+[INFO prl_build::partition] BSP leaves: 804 solid, 1212 empty
+[INFO prl_build::partition] BSP leaves: 2016
+[INFO prl_build::partition] Total faces (after brush-side extraction): 3785
+[WARN prl_build::pipeline] [Compiler] Watertightness: 51 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 206 exterior leaves, 1006 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 1291 occluder-tier leaves; 1561 cells (551 interior, 804 solid, 206 exterior); 906 runtime portals; full tree 2016 leaves, 2849 portals; cell-size cap 19.5072 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 788
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 837
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 880
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 478
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 558
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 626
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 725
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 729
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 730
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 736
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 751
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 765
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 766
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 780
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 122
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 123
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 160
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 676
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 721
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 725
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 726
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 736
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 14877 eye candidates (14729 in cell, 120 inset, 28 rejected; missed into solid 148, exterior 0, other cell 0), 0 camera cells without an eye point, 89094 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 551 camera cells, 42667 entries (max 205 per camera), 347600 bytes, max lead 32 m, 0.125 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 347600 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 51 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

@@ -1,0 +1,14 @@
+postretro-world-poses 1
+# live H3 poses (/Users/dhiester/Projects/Personal/postretro/context/plans/in-progress/occluder-first-partition/measurement/h3/live/poses.live): eye = floor+1.31 (settled live eye) and floor+1.5 (~e150)
+pose rd:plaza -26.00 1.3100 -40.00 0 0
+pose rd:plaza~e150 -26.00 1.5000 -40.00 0 0
+pose rd:promenade -32.00 1.3100 -90.00 90 0
+pose rd:promenade~e150 -32.00 1.5000 -90.00 90 0
+pose rd:elevated -30.00 7.3100 -96.00 90 0
+pose rd:elevated~e150 -30.00 7.5000 -96.00 90 0
+pose rd:upperdeck -70.00 12.3100 -100.00 0 0
+pose rd:upperdeck~e150 -70.00 12.5000 -100.00 0 0
+pose wk:g11.26.1@0 -32.247803 1.3100 -20.754807 0 0
+pose wk:g11.26.1@0~e150 -32.247803 1.5000 -20.754807 0 0
+pose wk:roof:A0.s0.e@0/-15 -31 17.3100 -55 0 -15
+pose wk:roof:A0.s0.e@0/-15~e150 -31 17.5000 -55 0 -15

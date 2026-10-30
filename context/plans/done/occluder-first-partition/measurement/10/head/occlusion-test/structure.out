@@ -1,0 +1,338 @@
+   Compiling smallvec v1.16.2
+   Compiling serde v1.0.229
+   Compiling bytemuck v1.25.2
+   Compiling either v1.18.0
+   Compiling zerocopy v0.8.59
+   Compiling mint v0.5.9
+   Compiling parking_lot_core v0.9.12
+   Compiling windows-sys v0.61.2
+   Compiling getrandom v0.2.17
+   Compiling glam v0.33.12
+   Compiling parking_lot v0.12.5
+   Compiling num-complex v0.4.6
+   Compiling rand_core v0.6.4
+   Compiling hashbrown v0.16.1
+   Compiling crypto-common v0.1.7
+   Compiling windows-result v0.4.1
+   Compiling windows-strings v0.5.1
+   Compiling windows-core v0.62.2
+   Compiling icu_normalizer v2.3.0
+   Compiling image v0.25.10
+   Compiling idna_adapter v1.2.2
+   Compiling gltf-json v1.4.1
+   Compiling triomphe v0.1.16
+   Compiling ordered-float v2.10.1
+   Compiling blake3 v1.8.7
+   Compiling serde-value v0.7.0
+   Compiling idna v1.1.0
+   Compiling bytes-str v0.2.9
+   Compiling form_urlencoded v1.2.2
+   Compiling ahash v0.8.12
+   Compiling windows-threading v0.2.1
+   Compiling hashbrown v0.14.5
+   Compiling windows-future v0.3.2
+   Compiling gltf v1.4.1
+   Compiling hstr v4.0.2
+   Compiling mlua v0.12.2
+   Compiling swc_atoms v10.0.0
+   Compiling url v2.5.8
+   Compiling windows-collections v0.3.2
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-format)
+   Compiling windows-numerics v0.3.1
+   Compiling num-bigint v0.4.8
+   Compiling swc_visit v2.0.2
+   Compiling swc_common v26.0.0
+   Compiling windows v0.62.2
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\foundation)
+   Compiling windows_x86_64_msvc v0.53.1
+   Compiling phf v0.11.3
+   Compiling winapi-util v0.1.11
+   Compiling same-file v1.0.6
+   Compiling swc_ecma_ast v29.0.2
+   Compiling windows-targets v0.53.5
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\render-data)
+   Compiling windows-sys v0.60.2
+   Compiling postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\entities)
+   Compiling inout v0.1.4
+   Compiling rustc-hash v1.1.0
+   Compiling subtle v2.6.1
+   Compiling zeroize v1.9.0
+   Compiling cipher v0.4.4
+   Compiling universal-hash v0.5.1
+   Compiling naga-types v30.0.1
+   Compiling swc_ecma_visit v29.0.0
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-loader)
+   Compiling walkdir v2.5.0
+   Compiling symphonia-core v0.6.1
+   Compiling notify-types v2.1.0
+   Compiling libloading v0.8.9
+   Compiling core_maths v0.1.1
+   Compiling raw-window-handle v0.6.2
+   Compiling bit-vec v0.9.1
+   Compiling opaque-debug v0.3.1
+   Compiling poly1305 v0.8.0
+   Compiling bit-set v0.10.0
+   Compiling notify v8.2.0
+   Compiling chacha20 v0.9.1
+   Compiling file-id v0.2.3
+   Compiling half v2.7.1
+   Compiling aead v0.5.2
+   Compiling safe_arch v1.2.0
+   Compiling safe_arch v0.7.4
+   Compiling codespan-reporting v0.13.1
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling unicode-ident v1.0.26
+   Compiling regex-lite v0.1.9
+   Compiling swc_ecma_utils v35.0.2
+   Compiling wide v1.7.1
+   Compiling wide v0.7.33
+   Compiling naga v30.0.1
+   Compiling symphonia-metadata v0.6.1
+   Compiling chacha20poly1305 v0.10.1
+   Compiling notify-debouncer-full v0.7.0
+   Compiling ash v0.38.0+1.3.281
+   Compiling wgpu-types v30.0.1
+   Compiling font-types v0.12.6
+   Compiling font-types v0.11.3
+   Compiling presser v0.3.1
+   Compiling octets v0.3.7
+   Compiling read-fonts v0.37.0
+   Compiling renet v2.0.0
+   Compiling simba v0.10.2
+   Compiling read-fonts v0.41.0
+   Compiling wgpu-naga-bridge v30.0.1
+   Compiling postretro-scripting-core v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\scripting-core)
+   Compiling gpu-allocator v0.28.0
+   Compiling glutin_wgl_sys v0.6.1
+   Compiling renetcode v2.0.0
+   Compiling slotmap v1.1.1
+   Compiling khronos-egl v6.0.0
+   Compiling swc_ecma_parser v45.1.6
+   Compiling itertools v0.14.0
+   Compiling profiling v1.0.18
+   Compiling range-alloc v0.1.5
+   Compiling once_cell_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling utf8parse v0.2.2
+   Compiling glow v0.17.0
+   Compiling renderdoc-sys v1.1.0
+   Compiling anstyle-wincon v3.0.11
+   Compiling anstyle-parse v1.0.0
+   Compiling spade v2.15.1
+   Compiling bitcode v0.6.9
+   Compiling unicode-truncate v2.0.1
+   Compiling strum v0.28.0
+   Compiling wgpu-hal v30.0.1
+   Compiling renet_netcode v2.0.0
+   Compiling skrifa v0.44.0
+   Compiling rstar v0.13.0
+   Compiling glamx v0.3.1
+   Compiling symphonia-common v0.6.1
+   Compiling ttf-parser v0.25.1
+   Compiling env_filter v2.0.0
+   Compiling swc_ecma_transforms_base v49.0.1
+   Compiling postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\model)
+   Compiling compact_str v0.9.1
+   Compiling anstyle-query v1.1.5
+   Compiling kasuari v0.4.12
+   Compiling lru v0.18.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling jiff-core v0.1.1
+   Compiling colorchoice v1.0.5
+   Compiling zeno v0.3.3
+   Compiling yazi v0.2.1
+   Compiling memmap2 v0.9.11
+   Compiling tinyvec v1.13.3
+   Compiling parry3d v0.31.1
+   Compiling ratatui-core v0.1.2
+   Compiling fontdb v0.23.0
+   Compiling swash v0.2.10
+   Compiling jiff v0.2.37
+   Compiling anstream v1.0.0
+   Compiling digest v0.10.7
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling wgpu-core-deps-windows-linux-android v30.0.1
+   Compiling derive_more v2.1.1
+   Compiling postretro-net v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\net)
+   Compiling postretro-lighting v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\lighting)
+   Compiling harfrust v0.5.2
+   Compiling skrifa v0.40.0
+   Compiling postretro-collision v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\collision)
+   Compiling smol_str v0.3.6
+   Compiling extended v0.1.0
+   Compiling unicode-linebreak v0.1.5
+   Compiling linebender_resource_handle v0.1.1
+   Compiling sys-locale v0.3.2
+   Compiling unicode-script v0.5.8
+   Compiling self_cell v1.3.0
+   Compiling rangemap v1.8.0
+   Compiling unicode-bidi v0.3.18
+   Compiling symphonia-format-riff v0.6.1
+   Compiling cosmic-text v0.19.0
+   Compiling nom v7.1.3
+   Compiling swc_allocator v5.0.0
+   Compiling postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\physics)
+   Compiling postretro-combat-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\combat-model)
+   Compiling env_logger v0.11.11
+   Compiling rayon v1.12.0
+   Compiling crossterm v0.29.0
+   Compiling wgpu-core v30.0.1
+   Compiling windows-targets v0.52.6
+   Compiling sha1 v0.10.7
+   Compiling symphonia-codec-vorbis v0.6.1
+   Compiling symphonia-format-ogg v0.6.1
+   Compiling tempfile v3.27.0
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\visibility)
+   Compiling simba v0.8.1
+   Compiling simba v0.9.1
+   Compiling symphonia-codec-pcm v0.6.1
+   Compiling swc_ecma_hooks v1.0.0
+   Compiling dashmap v6.2.1
+   Compiling swc_config v6.0.1
+   Compiling spin v0.9.9
+   Compiling euclid v0.22.14
+   Compiling dasp_sample v0.11.0
+   Compiling futures-core v0.3.34
+   Compiling swc_ecma_loader v27.0.0
+   Compiling cpal v0.18.2
+   Compiling swc_ecma_codegen v32.0.3
+   Compiling etagere v0.3.0
+   Compiling nalgebra v0.32.6
+   Compiling swc_ecma_transforms_react v55.0.1
+   Compiling ratatui-widgets v0.3.2
+   Compiling postretro-sim v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\sim)
+   Compiling nalgebra v0.34.2
+   Compiling heapless v0.7.17
+   Compiling wgpu v30.0.1
+   Compiling swc_ecma_transforms_optimization v52.0.2
+   Compiling symphonia v0.6.1
+   Compiling usage v1.4.0
+   Compiling ratatui-crossterm v0.1.2
+   Compiling windows-sys v0.52.0
+   Compiling shalrath v0.2.6
+   Compiling taffy v0.14.0
+   Compiling triple_buffer v9.0.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling cobs v0.3.0
+   Compiling dpi v0.1.2
+   Compiling cursor-icon v1.2.0
+   Compiling rtrb v0.4.0
+   Compiling parking v2.2.1
+   Compiling uuid v1.27.0
+   Compiling lru v0.16.4
+   Compiling futures-io v0.3.34
+   Compiling atomic-arena v0.1.2
+   Compiling winnow v1.0.4
+   Compiling option-ext v0.2.0
+   Compiling smol_str v0.2.2
+   Compiling dirs-sys v0.5.0
+   Compiling winit v0.30.13
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling kira v0.12.5
+   Compiling futures-lite v2.6.1
+   Compiling gilrs-core v0.6.8
+   Compiling glyphon v0.12.0
+   Compiling postretro-ui v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\ui)
+   Compiling rusty-fork v0.3.1
+   Compiling swc_bundler v56.0.1
+   Compiling postcard v1.1.3
+   Compiling rand_chacha v0.9.0
+   Compiling shambler v0.2.0
+   Compiling bvh v0.12.0
+   Compiling ratatui v0.30.2
+   Compiling swc_ecma_transforms_typescript v55.0.4
+   Compiling futures-channel v0.3.34
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\render-cpu)
+   Compiling fs4 v1.1.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling beul v1.0.0
+   Compiling vec_map v0.8.2
+   Compiling pollster v1.0.1
+   Compiling proptest v1.11.0
+   Compiling gilrs v0.11.2
+   Compiling postretro-renderer v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\renderer)
+   Compiling mundy v0.2.3
+   Compiling toml v1.1.6+spec-1.1.0
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-compiler)
+   Compiling postretro-script-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\script-compiler)
+   Compiling postretro-audio v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\audio)
+   Compiling directories v6.0.0
+   Compiling postretro-ai v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\ai)
+   Compiling postretro-netcode v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\netcode)
+   Compiling postretro v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\postretro)
+warning: function `widget_contains_text` is never used
+    --> crates\postretro\src\main.rs:9620:8
+     |
+9620 |     fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `button_action` is never used
+    --> crates\postretro\src\main.rs:9637:8
+     |
+9637 |     fn button_action<'a>(
+     |        ^^^^^^^^^^^^^
+
+warning: function `find_button` is never used
+    --> crates\postretro\src\main.rs:9657:8
+     |
+9657 |     fn find_button<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `find_slider` is never used
+    --> crates\postretro\src\main.rs:9677:8
+     |
+9677 |     fn find_slider<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `workspace_root` is never used
+    --> crates\postretro\src\main.rs:9697:8
+     |
+9697 |     fn workspace_root() -> PathBuf {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `focus_button_action` is never used
+    --> crates\postretro\src\main.rs:9704:8
+     |
+9704 |     fn focus_button_action(
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ensure_scripts_build` is never used
+    --> crates\postretro\src\main.rs:9762:8
+     |
+9762 |     fn ensure_scripts_build() -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `postretro` (bin "postretro" test) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 8m 42s
+     Running unittests src\main.rs (target\release\deps\postretro-e1b57fd488fe154d.exe)
+
+running 1 test
+PRL: C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/occlusion-test/occlusion-test.prl
+loaded in 0.1 s
+bake read: id51=738188be6a398ea5 walk_epoch=4 size=117452185 mtime=1793316269 prl=C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/occlusion-test/occlusion-test.prl
+
+=== structure
+cells 510 (interior 119, solid 255, exterior 136, drawable 117)
+interior cell AABB volume: [<0.1 m3] 0 [0.1-1 m3] 0 [1-10 m3] 20 [10-100 m3] 47 [100-1000 m3] 42 [1000-10000 m3] 10 [>=10000 m3] 0
+interior cell smallest extent: [<0.1 m] 0 [0.1-0.25 m] 8 [0.25-0.5 m] 47 [0.5-1 m] 0 [1-2 m] 10 [2-4 m] 44 [4-8 m] 10 [>=8 m] 0
+interior cell largest extent: p50 13.00 p95 26.01 max 26.01
+portals 270 (walkable, both cells interior: 270; touching solid or exterior: 0)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 16 [1-10 m2] 98 [10-100 m2] 114 [100-1000 m2] 42 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 8 [1.5-2] 48 [2-4] 80 [4-8] 57 [8-16] 24 [16-32] 20 [32-64] 24 [>=64] 9
+walkable portal normals: horizontal 109, vertical 161, oblique 0
+faces 1055, triangles 2110, vertices 4220, BVH leaves 1055
+lightmap blocks 117 over 117 cells (max 1 per cell), texel area 25958624
+lightmap storage: streaming
+SH probe grid 71x15x68 = 72420 probes
+SH clusters 404 (indivisible oversize 2), max 24 cells per cluster
+cell visibility: 392 components, 2350 coupled pairs
+id 51: 510 camera cells, 13805 entries; entries per interior camera cell p50 117.00 p95 118.00 max 118.00
+lights 9, fog volumes 7
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 0.09s
+

@@ -22,6 +22,8 @@ fn dvec3_to_f32_array(v: DVec3) -> [f32; 3] {
 pub struct VisibilityResult {
     pub nodes_section: BspNodesSection,
     pub leaves_section: BspLeavesSection,
+    /// Non-solid leaves of the tree given to `encode_vis` (cells, when the
+    /// pipeline passes the cell view).
     pub empty_leaf_count: usize,
 }
 
@@ -37,6 +39,22 @@ pub struct VisibilityResult {
 /// boundary), so culling becomes a no-op and ambiguous boundary maps keep their
 /// geometry.
 pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
+    flood_exterior(tree, portals, FloodLog::Report)
+}
+
+/// `find_exterior_leaves` without its log lines, for a pass whose leak
+/// status is not the build's: the occluder classifier's first-pass tree.
+pub fn find_exterior_leaves_quietly(tree: &BspTree, portals: &[Portal]) -> HashSet<usize> {
+    flood_exterior(tree, portals, FloodLog::Quiet)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FloodLog {
+    Report,
+    Quiet,
+}
+
+fn flood_exterior(tree: &BspTree, portals: &[Portal], log_mode: FloodLog) -> HashSet<usize> {
     if tree.leaves.is_empty() {
         return HashSet::new();
     }
@@ -67,6 +85,9 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     let seed = partition::find_leaf_for_point(tree, probe);
 
     if tree.leaves[seed].is_solid {
+        if log_mode == FloodLog::Quiet {
+            return HashSet::new();
+        }
         log::warn!(
             "Exterior probe landed in a solid leaf — exterior culling is disabled for this \
              compile (no leaves classified as exterior, all geometry treated as interior). \
@@ -99,6 +120,9 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
         }
     }
 
+    if log_mode == FloodLog::Quiet {
+        return exterior;
+    }
     let exterior_count = exterior.len();
     if log::log_enabled!(log::Level::Info) {
         let interior_empty_count = tree
@@ -130,11 +154,12 @@ pub fn find_exterior_leaves(tree: &BspTree, portals: &[Portal]) -> HashSet<usize
     exterior
 }
 
-/// Build BSP leaf and portal sections for the PRL file.
+/// Encode the BSP node and leaf sections for the PRL file; no portal section
+/// is built here.
 ///
-/// Encodes BSP nodes and leaves into their PRL sections, zeroing face counts
-/// for any leaf in `exterior_leaves` so exterior geometry is dropped in
-/// lockstep with the geometry section.
+/// In the pipeline `tree` is the cell view, so the encoded "leaves" are cell
+/// records. Zeroes face counts for any leaf in `exterior_leaves` so exterior
+/// geometry is dropped in lockstep with the geometry section.
 pub fn encode_vis(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> VisibilityResult {
     let nodes_section = encode_nodes(tree);
     let (leaves_section, empty_leaf_count) = encode_leaves(tree, exterior_leaves);
@@ -172,10 +197,12 @@ fn encode_nodes(tree: &BspTree) -> BspNodesSection {
     BspNodesSection { nodes }
 }
 
-/// Encode BSP leaves into the PRL leaves section.
+/// Encode BSP leaves into the PRL leaves section. In the pipeline the tree is
+/// the cell view, so each "leaf" here is a cell.
 ///
-/// Faces are ordered by leaf in the geometry section (all faces for leaf 0 first,
-/// then leaf 1, etc.). `face_start` / `face_count` index into that ordering.
+/// Faces are ordered by leaf in the geometry section (all faces for leaf 0
+/// first, then leaf 1, etc.; in the pipeline, cell 0 first, then cell 1).
+/// `face_start` / `face_count` index into that ordering.
 /// Only empty leaves contribute faces; solid leaves get face_start=0, face_count=0.
 fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeavesSection, usize) {
     let mut leaf_records: Vec<BspLeafRecord> = Vec::with_capacity(tree.leaves.len());
@@ -185,7 +212,8 @@ fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeaves
     // section's leaf-ordered face list.
     let mut face_cursor: u32 = 0;
 
-    for (bsp_leaf_idx, leaf) in tree.leaves.iter().enumerate() {
+    for (leaf_idx, leaf) in tree.leaves.iter().enumerate() {
+        // `leaf_idx` is a cell index when `tree` is the cell view.
         let b = &leaf.bounds;
 
         if leaf.is_solid {
@@ -205,7 +233,7 @@ fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeaves
         // stay valid, but carry zero faces so no geometry references them.
         // Must stay in lockstep with the exterior filter in
         // `geometry::build_leaf_ordered_faces`.
-        let face_count = if exterior_leaves.contains(&bsp_leaf_idx) {
+        let face_count = if exterior_leaves.contains(&leaf_idx) {
             0u32
         } else {
             leaf.face_indices.len() as u32
@@ -233,7 +261,7 @@ fn encode_leaves(tree: &BspTree, exterior_leaves: &HashSet<usize>) -> (BspLeaves
 /// Log visibility statistics.
 pub fn log_stats(result: &VisibilityResult, portal_count: usize) {
     log::info!(
-        "Visibility: {} empty leaves, {} portals",
+        "Visibility: {} non-solid cells, {} portals",
         result.empty_leaf_count,
         portal_count,
     );

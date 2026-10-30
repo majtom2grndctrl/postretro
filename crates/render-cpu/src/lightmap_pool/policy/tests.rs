@@ -1,4 +1,4 @@
-// Placement policy tests: AC 9, AC 10 (plan half), AC 15 (table half), P6, P7 (model half), P8.
+// Placement policy tests: AC 9, AC 10 (plan half), AC 15 (table half), P6, P7 (model half), P8, growth sizing.
 
 use postretro_level_loader::{LightmapBlockClass, LightmapTarget};
 
@@ -402,27 +402,136 @@ fn band_pairs_never_grow_or_repack_the_pool() {
     assert_eq!(h.model.texture_allocations(), 1);
 }
 
+// Mandatory 0 and 1 grow the pool to their two layers plus headroom: three.
+// Visible 2 and 3 arrive while that generation retires: 2 takes the reserved
+// layer, and 3, past the reserve, waits for the release.
 #[test]
 fn a_mandatory_pair_needing_growth_while_a_generation_retires_is_deferred() {
-    let mut h = Harness::new(&[(64, 64), (64, 64), (64, 64)], 1);
+    let mut h = Harness::new(&[(64, 64); 4], 1);
     let plan = h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
-    assert!(plan.growth.is_some());
-    let plan = h.drain(&[visible(2)], &[], &[2]);
-    assert_eq!(plan.deferred, vec![2]);
-    assert!(plan.installed.is_empty() && plan.refused.is_empty());
+    assert_eq!(
+        plan.growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 3
+        })
+    );
+    let plan = h.drain(&[visible(2), visible(3)], &[], &[2, 3]);
+    assert_eq!(plan.installed, vec![2], "2 lands in the reserved layer");
+    assert_eq!(plan.deferred, vec![3]);
+    assert!(plan.refused.is_empty());
     assert!(plan.growth.is_none());
     assert_eq!(h.model.texture_allocations(), 2);
     h.model.release_retirement();
-    let plan = h.drain(&[], &[], &[2]);
-    assert_eq!(plan.installed, vec![2]);
+    let plan = h.drain(&[], &[], &[3]);
+    assert_eq!(plan.installed, vec![3]);
     assert_eq!(h.model.texture_allocations(), 3);
+}
+
+// Regression: growth sized to one drain's admitted pairs left the rest of a
+// targeted set to a second growth while the first generation retired, so
+// those pairs were deferred.
+#[test]
+fn a_targeted_set_admitted_over_two_drains_grows_once_and_defers_nothing() {
+    let run = |sizing| {
+        let mut h = Harness::new(&[(64, 64); 4], 1);
+        h.model.growth_sizing = sizing;
+        let set: Vec<_> = (0..4).map(mandatory).collect();
+        let growth = h.drain(&set, &[], &[0, 1]).growth;
+        let deferred = h.drain(&[], &[], &[2, 3]).deferred.clone();
+        assert_disjoint_within_layers(&h.model);
+        (growth, deferred, h.model.texture_allocations())
+    };
+    let (growth, deferred, _) = run(growth::GrowthSizing::PerDrain);
+    assert_eq!(
+        growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 2
+        }),
+        "per-drain sizing fits only blocks 0 and 1"
+    );
+    assert_eq!(deferred, vec![2, 3], "2 and 3 wait behind the retirement");
+
+    let (growth, deferred, allocations) = run(growth::GrowthSizing::Demand);
+    assert_eq!(
+        growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 4
+        }),
+        "demand sizing reserves all four targeted blocks"
+    );
+    assert!(deferred.is_empty(), "{deferred:?}");
+    assert_eq!(allocations, 2, "one growth, one generation");
+}
+
+// Three full-layer mandatory blocks pack into three layers, four with
+// headroom, but the level needs only three all-resident. A device limit of
+// two holds a four-block demand to the two layers its first drain needs.
+#[test]
+fn growth_headroom_stops_at_the_all_resident_layers_and_the_device_limit() {
+    let set: Vec<_> = (0..3).map(mandatory).collect();
+    let mut h = Harness::new(&[(64, 64); 3], 1);
+    let plan = h.drain(&set, &[], &[0, 1]);
+    assert_eq!(
+        plan.growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 3
+        })
+    );
+
+    let mut h = Harness::with_layer_limit(&[(64, 64); 6], 1, 2);
+    let set: Vec<_> = (0..4).map(mandatory).collect();
+    let plan = h.drain(&set, &[], &[0, 1]);
+    assert_eq!(
+        plan.growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 2
+        })
+    );
+    assert!(plan.deferred.is_empty());
+    assert_disjoint_within_layers(&h.model);
+}
+
+// Mandatory 0 fills the top of the one-layer cap. Mandatory 1 and 2 grow the
+// pool to four layers, the last left empty as headroom. Band block 3 would
+// fit that layer but is refused past the cap; band block 4 fits beside 0.
+#[test]
+fn growth_headroom_past_the_cap_adds_no_band_headroom() {
+    let extents = [(64, 32), (64, 64), (64, 64), (64, 64), (32, 32)];
+    let mut h = Harness::new(&extents, 1);
+    h.drain(&[mandatory(0)], &[], &[0]);
+    let set = [mandatory(1), mandatory(2), band(3, 1), band(4, 2)];
+    h.drain(&set, &[], &[1, 2, 3, 4]);
+    let plan = h.model.plan();
+    assert_eq!(
+        plan.growth,
+        Some(PoolGrowth {
+            from_layers: 1,
+            to_layers: 4
+        })
+    );
+    assert_eq!(h.model.occupied_layers(), 3, "the fourth layer is headroom");
+    assert_eq!(plan.installed, vec![1, 2, 4]);
+    assert_eq!(plan.refused, vec![3], "band never fills the headroom");
+    let layer_texels = u64::from(EDGE * EDGE);
+    assert_eq!(
+        plan.report.band_headroom_texels,
+        layer_texels - 64 * 32 - 32 * 32
+    );
+    assert!(plan.report.band_headroom_texels <= u64::from(h.cap) * layer_texels);
+    assert_eq!(h.model.placement(4).map(|p| p.layer), Some(0));
+    assert_disjoint_within_layers(&h.model);
 }
 
 /// Mandatory 0 fills layer 0 and mandatory 1 the top of layer 1 under a
 /// two-layer cap; band block 2 sits below block 1. A full-layer mandatory
 /// pair then fits nowhere even with block 2 evicted.
 fn band_beside_a_full_pool() -> Harness {
-    let extents = [(64, 64), (64, 48), (16, 16), (64, 64), (64, 64)];
+    let extents = [(64, 64), (64, 48), (16, 16), (64, 64), (64, 64), (64, 64)];
     let mut h = Harness::new(&extents, 2);
     assert_eq!(h.model.layers(), 2);
     let plan = h.drain(&[mandatory(0), mandatory(1), band(2, 5)], &[], &[0, 1, 2]);
@@ -440,8 +549,9 @@ fn growth_keeps_the_band_blocks_its_pair_could_not_use() {
         plan.growth,
         Some(PoolGrowth {
             from_layers: 2,
-            to_layers: 3
-        })
+            to_layers: 4
+        }),
+        "mandatory 0, 1 and 3 pack into three layers, four with headroom"
     );
     assert_eq!(plan.installed, vec![3]);
     assert!(plan.evicted.is_empty(), "{:?}", plan.evicted);
@@ -455,8 +565,12 @@ fn a_deferral_while_retiring_keeps_the_band_blocks_its_pair_could_not_use() {
     let band_region = h.model.placement(2);
     h.drain(&[mandatory(3)], &[], &[3]);
     assert!(h.model.retiring());
+    // Visible 4 fills the growth's headroom layer; visible 5 then needs
+    // growth.
     let plan = h.drain(&[visible(4)], &[], &[4]);
-    assert_eq!(plan.deferred, vec![4]);
+    assert_eq!(plan.installed, vec![4]);
+    let plan = h.drain(&[visible(5)], &[], &[5]);
+    assert_eq!(plan.deferred, vec![5]);
     assert!(plan.evicted.is_empty(), "{:?}", plan.evicted);
     assert!(plan.table_writes.is_empty() && plan.uploads.is_empty());
     assert!(plan.growth.is_none() && !plan.report.repacked);
@@ -492,30 +606,35 @@ fn a_pair_keeps_only_the_evictions_its_slot_needs() {
     assert_disjoint_within_layers(&h.model);
 }
 
-// A pool grown past its one-layer cap holds block 0 on layer 0 and block 2
-// mid-layer 1. Block 1 leaves and block 3 (40 tall) fits no shelf of layer
-// 1, nor anything under the cap, but layer 1 compacted holds 3 and 2: the
-// drain repacks within its two layers rather than growing a third.
+// Mandatory 0 and 1 grow a one-layer cap to three layers, the third reserved.
+// Blocks 2 (24 tall) and 3 (16 tall) then fill the top of layer 2. Block 2
+// leaves and block 4 (40 tall) fits no shelf, nor anything under the cap,
+// but layer 2 compacted holds 4 and 3: the drain repacks within its three
+// layers rather than growing a fourth.
 #[test]
 fn a_pool_grown_past_the_cap_repacks_within_its_layers_before_growing() {
-    let mut h = Harness::new(&[(64, 64), (64, 24), (64, 16), (64, 40)], 1);
-    let plan = h.drain(&[mandatory(0), mandatory(1), mandatory(2)], &[], &[0, 1, 2]);
-    assert_eq!(plan.installed, vec![0, 1, 2]);
-    assert_eq!(h.model.layers(), 2);
-    assert_eq!(h.model.placement(2).map(|p| (p.layer, p.y)), Some((1, 24)));
+    let extents = [(64, 64), (64, 64), (64, 24), (64, 16), (64, 40)];
+    let mut h = Harness::new(&extents, 1);
+    let plan = h.drain(&[mandatory(0), mandatory(1)], &[], &[0, 1]);
+    assert_eq!(plan.installed, vec![0, 1]);
+    assert_eq!(h.model.layers(), 3);
     h.model.release_retirement();
+    let plan = h.drain(&[mandatory(2), mandatory(3)], &[], &[2, 3]);
+    assert_eq!(plan.installed, vec![2, 3]);
+    assert!(plan.growth.is_none() && !plan.report.repacked);
+    assert_eq!(h.model.placement(3).map(|p| (p.layer, p.y)), Some((2, 24)));
 
-    let plan = h.drain(&[mandatory(3)], &[1], &[3]);
+    let plan = h.drain(&[mandatory(4)], &[2], &[4]);
     assert!(plan.report.repacked, "compacted in place");
     assert!(plan.growth.is_none() && !plan.allocates_texture());
-    assert_eq!(plan.installed, vec![3]);
+    assert_eq!(plan.installed, vec![4]);
     assert!(plan.deferred.is_empty());
     assert_repack_copies_between_distinct_layers(plan);
-    assert_eq!(h.evicted(), vec![(1, EvictionReason::Untargeted)]);
-    assert_eq!(h.model.layers(), 2);
+    assert_eq!(h.evicted(), vec![(2, EvictionReason::Untargeted)]);
+    assert_eq!(h.model.layers(), 3);
     assert_eq!(h.model.texture_allocations(), 2, "one growth, no second");
-    assert_eq!(h.model.placement(3).map(|p| (p.layer, p.y)), Some((1, 0)));
-    assert_eq!(h.model.placement(2).map(|p| (p.layer, p.y)), Some((1, 40)));
+    assert_eq!(h.model.placement(4).map(|p| (p.layer, p.y)), Some((2, 0)));
+    assert_eq!(h.model.placement(3).map(|p| (p.layer, p.y)), Some((2, 40)));
     assert_disjoint_within_layers(&h.model);
 }
 

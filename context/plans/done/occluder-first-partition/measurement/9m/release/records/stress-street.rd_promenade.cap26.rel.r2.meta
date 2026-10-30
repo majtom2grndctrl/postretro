@@ -1,0 +1,11 @@
+tag=stress-street.rd_promenade.cap26.rel.r2 side=cap26 map=stress-street pose=-32.00,0.81,-90.00,90,0 settle=2 cpu_windows=6 trace_s=0
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap26/stress-street/stress-street.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/baked
+start=2026-10-29 11:40:48
+pre: 2026-10-29 11:40:49 util=0 inUseVidMemoryBytes=878862336 vramFreeBytes=1429147648 mhz=0 temp=59 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=67 screensaver=no locked=absent
+cpu_done t=20 windows=8 at 2026-10-29 11:41:09 
+post: 2026-10-29 11:41:12 util=0 inUseVidMemoryBytes=881537024 vramFreeBytes=1429147648 mhz=0 temp=64 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=55 screensaver=no locked=absent
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=30 error_lines=0
+end=2026-10-29 11:41:12
+verdict=OK

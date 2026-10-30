@@ -1,7 +1,7 @@
 use super::*;
 use crate::cell_residency_bake::lead_map::{LeadSources, build_lead_map};
 use crate::cell_residency_bake::{cell_residency_set_bake_cached, cell_residency_set_cache_key};
-use crate::partition::BspLeaf;
+use crate::partition::{BspLeaf, BspTree, CellHull};
 use postretro_level_format::cell_locator::{
     CellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
@@ -112,7 +112,7 @@ fn teleport_residency_source_closed_face_edge_vertex_contacts_ignore_solid_and_e
     let routes = build_routes(
         TeleportResidencyInput {
             section: &section,
-            tree: &tree,
+            hulls: &CellHull::per_leaf(&tree),
         },
         &cells,
         &world(&cells, &locator()),
@@ -136,7 +136,7 @@ fn teleport_residency_rejects_overlapping_aabbs_when_convex_regions_are_disjoint
     let routes = build_routes(
         TeleportResidencyInput {
             section: &section,
-            tree: &tree,
+            hulls: &CellHull::per_leaf(&tree),
         },
         &cells,
         &world(&cells, &locator()),
@@ -176,7 +176,7 @@ fn teleport_residency_seamless_four_rotations_map_whole_union_with_vertical_offs
         let routes = build_routes(
             TeleportResidencyInput {
                 section: &section,
-                tree: &tree,
+                hulls: &CellHull::per_leaf(&tree),
             },
             &cells,
             &world(&cells, &locator()),
@@ -210,7 +210,7 @@ fn teleport_residency_classic_uses_locator_on_plane_front_rule() {
     let routes = build_routes(
         TeleportResidencyInput {
             section: &section,
-            tree: &tree,
+            hulls: &CellHull::per_leaf(&tree),
         },
         &cells,
         &world(&cells, &locator),
@@ -317,7 +317,7 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
             &locator,
             Some(TeleportResidencyInput {
                 section,
-                tree: &tree,
+                hulls: &CellHull::per_leaf(&tree),
             }),
             cache,
             &crate::bake_control::BakeControl::unrestricted(),
@@ -347,7 +347,8 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
     .unwrap();
     assert_ne!(without.to_bytes(), cold.to_bytes());
     let key = |s: &TeleportersSection, t: &BspTree| {
-        cell_residency_set_cache_key(&cells, &portals, &locator, s, Some(t)).as_filename()
+        cell_residency_set_cache_key(&cells, &portals, &locator, s, Some(&CellHull::per_leaf(t)))
+            .as_filename()
     };
     let base = key(&section, &tree);
     for field in 0..5 {
@@ -394,7 +395,7 @@ fn teleport_residency_leaf_prefilter_matches_exhaustive_routes() {
     for section in [&classic, &seamless, &nowhere] {
         let input = TeleportResidencyInput {
             section,
-            tree: &tree,
+            hulls: &CellHull::per_leaf(&tree),
         };
         let filtered = build_routes_with(input, &cells, &corridor, LeafPrefilter::On).unwrap();
         let exhaustive = build_routes_with(input, &cells, &corridor, LeafPrefilter::Off).unwrap();
@@ -417,7 +418,7 @@ fn teleport_residency_leaf_prefilter_matches_exhaustive_routes() {
     };
     let input = TeleportResidencyInput {
         section: &contact,
-        tree: &contact_tree,
+        hulls: &CellHull::per_leaf(&contact_tree),
     };
     let contact_world = world(&contact_cells, &locator());
     let filtered = build_routes_with(input, &contact_cells, &contact_world, LeafPrefilter::On);

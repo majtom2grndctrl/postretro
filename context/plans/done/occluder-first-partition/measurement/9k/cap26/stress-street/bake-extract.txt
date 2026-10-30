@@ -1,0 +1,13 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1259 brushes, 72 occlude alone; exempt alone: 1174 under floor, 10 no open face, 3 short span, 0 low top; 29 clusters, 37 sections, 13 occlude (1070 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 0 of 0 kinematic movers seal a doorway at their closed pose
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 88 occluding faces, 14 ended by the length bound (2 × the face's longer broad extent)
+[INFO prl_build::partition] BSP leaves: 3059 solid, 4068 empty
+[INFO prl_build::partition] BSP leaves: 7127
+[INFO prl_build::partition] Total faces (after brush-side extraction): 11415
+[WARN prl_build::pipeline] [Compiler] Watertightness: 624 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 307 exterior leaves, 3761 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 3345 occluder-tier leaves (179 holding several interior pockets); 6510 cells (3144 interior, 3059 solid, 307 exterior); 7667 runtime portals; full tree 7127 leaves, 10530 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 84888 eye candidates (84741 in cell, 86 inset, 61 rejected; missed into solid 129, exterior 0, other cell 18), 0 camera cells without an eye point, 508962 walks (40505 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 3144 camera cells, 9077308 entries (max 3144 per camera), 72644524 bytes, max lead 32 m, 46.103 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 72644524 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 624 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

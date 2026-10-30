@@ -37,8 +37,8 @@ pub(crate) const LATTICE_FRACTIONS: [f32; 3] = [0.1, 0.5, 0.9];
 pub(crate) const LATTICE_STEPS: usize = LATTICE_FRACTIONS.len();
 /// Lattice points per cell: every combination of `LATTICE_FRACTIONS`.
 pub(crate) const LATTICE_POINTS: usize = LATTICE_STEPS * LATTICE_STEPS * LATTICE_STEPS;
-/// A lattice point outside its cell (cells are convex, their AABBs are not
-/// the cell) retries at these fractions of its offset from the centroid.
+/// A lattice point outside its cell (a cell's AABB is not the cell) retries
+/// at these fractions of its offset from the centroid.
 const INSET_SCALES: [f32; 2] = [0.5, 0.25];
 /// 90° per cube face plus 2° either side, so cells on a face seam are inside
 /// both neighbouring frusta rather than clipped by both.

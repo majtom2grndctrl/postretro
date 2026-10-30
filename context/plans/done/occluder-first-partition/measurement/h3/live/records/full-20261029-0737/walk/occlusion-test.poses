@@ -1,0 +1,20 @@
+postretro-world-poses 1
+# live H3 poses (/Users/dhiester/Projects/Personal/postretro/context/plans/in-progress/occluder-first-partition/measurement/h3/live/poses.live): eye = floor+1.31 (settled live eye) and floor+1.5 (~e150)
+pose fc:P1 -17.78 1.3100 -13.8176 90 0
+pose fc:P1~e150 -17.78 1.5000 -13.8176 90 0
+pose fc:P2 -17.78 1.3100 -13.8176 90 15
+pose fc:P2~e150 -17.78 1.5000 -13.8176 90 15
+pose fc:G1 -14.224 1.3100 -13.8176 98 15
+pose fc:G1~e150 -14.224 1.5000 -13.8176 98 15
+pose fc:G2 -17.78 1.3100 -13.8176 64 0
+pose fc:G2~e150 -17.78 1.5000 -13.8176 64 0
+pose fc:G3 -22.86 1.3100 -7.62 82 0
+pose fc:G3~e150 -22.86 1.5000 -7.62 82 0
+pose fc:L2 -22.86 1.3100 -13.8176 102 15
+pose fc:L2~e150 -22.86 1.5000 -13.8176 102 15
+pose fc:C1 -3.2512 1.3100 -3.2512 0 0
+pose fc:C1~e150 -3.2512 1.5000 -3.2512 0 0
+pose fc:C2 -7.62 1.3100 -13.8176 90 0
+pose fc:C2~e150 -7.62 1.5000 -13.8176 90 0
+pose fc:V1 -32.004 1.3100 -10.16 90 0
+pose fc:V1~e150 -32.004 1.5000 -10.16 90 0

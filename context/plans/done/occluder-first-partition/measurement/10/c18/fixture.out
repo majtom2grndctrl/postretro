@@ -1,0 +1,408 @@
+   Compiling libm v0.2.16
+   Compiling arrayvec v0.7.8
+   Compiling getrandom v0.3.4
+   Compiling safe_arch v1.2.0
+   Compiling hash32 v0.3.1
+   Compiling regex-automata v0.4.18
+   Compiling heapless v0.8.0
+   Compiling blake3 v1.8.7
+   Compiling rand_core v0.9.5
+   Compiling wide v1.7.1
+   Compiling robust v1.2.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling num-traits v0.2.19
+   Compiling ena v0.14.4
+   Compiling num-derive v0.5.1
+   Compiling wait-timeout v0.2.1
+   Compiling downcast-rs v2.0.2
+   Compiling quick-error v1.2.3
+   Compiling approx v0.5.1
+   Compiling num-complex v0.4.6
+   Compiling moxcms v0.8.1
+   Compiling glam v0.33.12
+   Compiling num-integer v0.1.47
+   Compiling simba v0.8.1
+   Compiling num-rational v0.4.2
+   Compiling simba v0.9.1
+   Compiling image v0.25.10
+   Compiling nalgebra v0.32.6
+   Compiling simba v0.10.2
+   Compiling nalgebra v0.34.2
+   Compiling gltf v1.4.1
+   Compiling postretro-level-format v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-format)
+   Compiling postretro-render-data v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\render-data)
+   Compiling postretro-foundation v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\foundation)
+   Compiling glamx v0.3.1
+   Compiling regex v1.13.1
+   Compiling ordered-float v5.5.0
+   Compiling rstar v0.13.0
+   Compiling postretro-level-loader v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-loader)
+   Compiling spade v2.15.1
+   Compiling fnv v1.0.7
+   Compiling slab v0.4.12
+   Compiling bit-vec v0.8.0
+   Compiling postretro-visibility v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\visibility)
+   Compiling postretro-entities v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\entities)
+   Compiling bit-set v0.8.0
+   Compiling postretro-model v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\model)
+   Compiling parry3d v0.31.1
+   Compiling rusty-fork v0.3.1
+   Compiling bvh v0.12.0
+   Compiling env_filter v2.0.0
+   Compiling shambler v0.2.0
+   Compiling postretro-collision v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\collision)
+   Compiling rand_chacha v0.9.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rand v0.9.5
+   Compiling unarray v0.1.4
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-compiler)
+   Compiling proptest v1.11.0
+   Compiling postretro-physics v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\physics)
+   Compiling postretro-render-cpu v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\render-cpu)
+   Compiling postretro-test-log-capture v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\test-log-capture)
+    Finished `release` profile [optimized] target(s) in 3m 03s
+     Running unittests src\main.rs (target\release\deps\prl_build-7a23b88e393a34fc.exe)
+
+running 2 tests
+  0.00s  Parsing map...
+  0.00s  Parsing map...
+  0.00s  BSP partitioning...
+  0.00s  BSP partitioning...
+  0.00s  Data script compilation...
+  0.00s  Data script compilation...
+  DataScript: skipped
+  DataScript: skipped
+  0.01s  Visibility computation...
+  0.01s  Visibility computation...
+  0.01s  Geometry extraction...
+  0.01s  Geometry extraction...
+  0.01s  BVH build...
+  0.01s  BVH build...
+  0.01s  Cell visibility bake...
+  0.01s  Cell visibility bake...
+  Cell Visibility:  50%  ETA 0.0s
+  Cell Visibility:  86%  ETA 0.0s
+  Cell Visibility: 100%  ETA 0.0s
+  Cell Visibility: 100%  ETA 0.0s
+  0.01s  NavMesh bake...
+  0.01s  NavMesh bake...
+  0.15s  Texture color-space validation...
+  0.15s  Texture color-space validation...
+  0.15s  World material bake...
+  0.15s  World material bake...
+  0.15s  SH volume bake...
+  0.15s  SH volume bake...
+  SH Bake: 100%  ETA 0.0s
+  0.26s  Delta SH volume bake...
+  SH Bake: 100%  ETA 0.0s
+  0.26s  Delta SH volume bake...
+  Delta SH Bake: skipped
+  0.26s  Direct SH volume bake...
+  Delta SH Bake: skipped
+  0.26s  Direct SH volume bake...
+  Direct SH Bake: 100%  ETA 0.0s
+  0.27s  Animated direct SH delta bake...
+  Direct SH Bake: 100%  ETA 0.0s
+  0.27s  Animated direct SH delta bake...
+  Animated Direct SH Bake: skipped
+  0.27s  Entity shadow light selection...
+  0.27s  Direct SH delta volume bake...
+  Animated Direct SH Bake: skipped
+  0.27s  Entity shadow light selection...
+  0.27s  Direct SH delta volume bake...
+  Direct SH Delta Bake: 100%  ETA 0.0s
+  Direct SH Delta Bake: 100%  ETA 0.0s
+  0.29s  Billboard direct scatter bake...
+  0.29s  Billboard direct scatter bake...
+  0.30s  Chunk light list bake...
+  0.30s  Chunk light list bake...
+  0.30s  Atlas preparation...
+  0.30s  Atlas preparation...
+  0.30s  Cell residency set bake...
+  0.30s  Cell residency set bake...
+  Cell Residency Set:   0%  ETA --
+  Cell Residency Set: 100%  ETA 0.0s
+  0.36s  Lightmap bake...
+  Cell Residency Set: 100%  ETA 0.0s
+  0.36s  Lightmap bake...
+  0.36s  Shadowmask atlas bake...
+  0.36s  Shadowmask atlas bake...
+  ShadowmaskAtlas:   0%  ETA --
+  Lightmap Bake:   0%  ETA --
+  Lightmap Bake:  88%  ETA 0.1s
+  ShadowmaskAtlas:   0%  ETA --
+  Lightmap Bake: 100%  ETA 0.0s
+  ShadowmaskAtlas: 100%  ETA 0.0s
+  0.99s  Animated light chunks...
+  AnimLightChunks: skipped
+  0.99s  Animated light weight maps...
+  AnimWeightMaps: skipped
+  0.99s  Texture mip bake...
+  0.99s  Reflection probe capture...
+  Reflection Probes: skipped
+  0.99s  SH cluster directory...
+  0.99s  Packing and writing...
+
+Build Summary:
+  Parsing           0.00s
+  Partitioning      0.00s
+  DataScript        0.00s
+  Visibility        0.00s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.00s
+  NavMesh           0.14s
+  TexValidation     0.00s
+  Materials         0.00s
+  SH Bake           0.11s
+  Delta SH Bake     0.00s
+  Direct SH Bake    0.01s
+  Animated Direct SH Bake   0.00s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.01s
+  Billboard Direct Scatter Bake   0.00s
+  ChunkLightList    0.00s
+  Atlas Preparation   0.00s
+  Cell Residency Set   0.06s
+  Lightmap Bake     0.62s
+    TexelSteps      0.00s
+  ShadowmaskAtlas   0.01s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.00s
+    TexelSteps      0.00s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.00s
+  Packing           0.03s
+  Total             1.02s
+
+Warnings: 0
+setup: wall [256.0, 1184.0, 0.0]..[1280.0, 1216.0, 256.0]; eyes x [320.0, 556.0, 800.0, 1056.0, 1236.0] × y [700.0, 900.0, 1100.0], z 59 u, yaws [45.0, 70.0, 90.0, 110.0, 135.0]°, 100° HFOV at 16:9; samples: 32 u cell-centred lattice, nudged 0.5 u, over x [256, 1280], y [1216, 2720], z [0, 256]
+12032 lattice points: 0 inside brushes, 0 seen by some eye (dropped), 12032 hidden
+== laned wall hall: 81 cells, 54 portals
+leak mean 0.00% over 75 poses; worst 0.00% (0 of 12032 samples) at eye [1236.0, 1100.0, 59.0] yaw 135°
+non-portal paths: []
+per pose (eye x, eye y, yaw: leaked samples / visible cells):
+  320 700 45: 0 / 11
+  320 700 70: 0 / 19
+  320 700 90: 0 / 15
+  320 700 110: 0 / 15
+  320 700 135: 0 / 13
+  320 900 45: 0 / 11
+  320 900 70: 0 / 13
+  320 900 90: 0 / 11
+  320 900 110: 0 / 11
+  320 900 135: 0 / 13
+  320 1100 45: 0 / 8
+  320 1100 70: 0 / 1
+  320 1100 90: 0 / 9
+  320 1100 110: 0 / 9
+  320 1100 135: 0 / 9
+  556 700 45: 0 / 11
+  556 700 70: 0 / 13
+  556 700 90: 0 / 13
+  556 700 110: 0 / 14
+  556 700 135: 0 / 12
+  556 900 45: 0 / 10
+  556 900 70: 0 / 8
+  556 900 90: 0 / 7
+  556 900 110: 0 / 9
+  556 900 135: 0 / 11
+  556 1100 45: 0 / 8
+  556 1100 70: 0 / 1
+  556 1100 90: 0 / 1
+  556 1100 110: 0 / 1
+  556 1100 135: 0 / 8
+  800 700 45: 0 / 11
+  800 700 70: 0 / 11
+  800 700 90: 0 / 17
+  800 700 110: 0 / 13
+  800 700 135: 0 / 11
+  800 900 45: 0 / 9
+  800 900 70: 0 / 8
+  800 900 90: 0 / 1
+  800 900 110: 0 / 9
+  800 900 135: 0 / 11
+  800 1100 45: 0 / 7
+  800 1100 70: 0 / 1
+  800 1100 90: 0 / 1
+  800 1100 110: 0 / 1
+  800 1100 135: 0 / 8
+  1056 700 45: 0 / 11
+  1056 700 70: 0 / 12
+  1056 700 90: 0 / 14
+  1056 700 110: 0 / 18
+  1056 700 135: 0 / 13
+  1056 900 45: 0 / 9
+  1056 900 70: 0 / 8
+  1056 900 90: 0 / 8
+  1056 900 110: 0 / 4
+  1056 900 135: 0 / 11
+  1056 1100 45: 0 / 7
+  1056 1100 70: 0 / 6
+  1056 1100 90: 0 / 1
+  1056 1100 110: 0 / 1
+  1056 1100 135: 0 / 9
+  1236 700 45: 0 / 9
+  1236 700 70: 0 / 11
+  1236 700 90: 0 / 14
+  1236 700 110: 0 / 18
+  1236 700 135: 0 / 14
+  1236 900 45: 0 / 9
+  1236 900 70: 0 / 8
+  1236 900 90: 0 / 8
+  1236 900 110: 0 / 12
+  1236 900 135: 0 / 12
+  1236 1100 45: 0 / 8
+  1236 1100 70: 0 / 8
+  1236 1100 90: 0 / 8
+  1236 1100 110: 0 / 8
+  1236 1100 135: 0 / 9
+leaking cells (0; * = leaks at the worst pose):
+cells holding hidden samples (2):
+  cell 50: Quake bounds [256.0, 1216.0, -0.0]..[1280.0, 1984.0, 256.0]; 6144 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 5, 6] +2", "z=256 brushes [6, 7]", "y=1984 brushes [8]", "y=1216 brushes [7]", "x=256 brushes [6, 7]", "x=1280 brushes [6, 7]"]
+  cell 63: Quake bounds [256.0, 1984.0, -0.0]..[1280.0, 2720.0, 256.0]; 5888 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 5, 6] +2", "z=256 brushes [6, 7]", "y=1984 brushes [8]", "y=2720 brushes [5]", "x=256 brushes [6, 7]", "x=1280 brushes [6, 7]"]
+before: mean 78.18%, worst 12032 samples at [1236.0, 1100.0, 59.0] yaw 110°
+test pipeline::runtime_cells::leak_tests::walk_from_in_front_of_a_laned_two_layer_wall_draws_no_cell_holding_space_hidden_behind_it ... ok
+  ShadowmaskAtlas:  16%  ETA 5.1s
+  Lightmap Bake:  78%  ETA 0.3s
+  Lightmap Bake: 100%  ETA 0.0s
+  ShadowmaskAtlas: 100%  ETA 0.0s
+  1.53s  Animated light chunks...
+  AnimLightChunks: skipped
+  1.53s  Animated light weight maps...
+  AnimWeightMaps: skipped
+  1.53s  Texture mip bake...
+  1.53s  Reflection probe capture...
+  Reflection Probes: skipped
+  1.53s  SH cluster directory...
+  1.53s  Packing and writing...
+
+Build Summary:
+  Parsing           0.00s
+  Partitioning      0.00s
+  DataScript        0.00s
+  Visibility        0.00s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.00s
+  NavMesh           0.14s
+  TexValidation     0.00s
+  Materials         0.00s
+  SH Bake           0.11s
+  Delta SH Bake     0.00s
+  Direct SH Bake    0.01s
+  Animated Direct SH Bake   0.00s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.01s
+  Billboard Direct Scatter Bake   0.00s
+  ChunkLightList    0.00s
+  Atlas Preparation   0.00s
+  Cell Residency Set   0.06s
+  Lightmap Bake     1.16s
+    TexelSteps      0.00s
+  ShadowmaskAtlas   0.01s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.00s
+    TexelSteps      0.00s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.00s
+  Packing           0.03s
+  Total             1.57s
+
+Warnings: 0
+setup: wall [256.0, 1184.0, 0.0]..[1280.0, 1216.0, 256.0]; eyes x [320.0, 556.0, 800.0, 1056.0, 1236.0] × y [700.0, 900.0, 1100.0], z 59 u, yaws [45.0, 70.0, 90.0, 110.0, 135.0]°, 100° HFOV at 16:9; samples: 32 u cell-centred lattice, nudged 0.5 u, over x [256, 1280], y [1216, 2720], z [0, 256]
+12032 lattice points: 0 inside brushes, 0 seen by some eye (dropped), 12032 hidden
+== laned wall hall: 76 cells, 49 portals
+leak mean 0.00% over 75 poses; worst 0.00% (0 of 12032 samples) at eye [1236.0, 1100.0, 59.0] yaw 135°
+non-portal paths: []
+per pose (eye x, eye y, yaw: leaked samples / visible cells):
+  320 700 45: 0 / 10
+  320 700 70: 0 / 17
+  320 700 90: 0 / 14
+  320 700 110: 0 / 14
+  320 700 135: 0 / 12
+  320 900 45: 0 / 10
+  320 900 70: 0 / 12
+  320 900 90: 0 / 10
+  320 900 110: 0 / 10
+  320 900 135: 0 / 12
+  320 1100 45: 0 / 7
+  320 1100 70: 0 / 1
+  320 1100 90: 0 / 8
+  320 1100 110: 0 / 8
+  320 1100 135: 0 / 8
+  556 700 45: 0 / 10
+  556 700 70: 0 / 12
+  556 700 90: 0 / 12
+  556 700 110: 0 / 13
+  556 700 135: 0 / 11
+  556 900 45: 0 / 9
+  556 900 70: 0 / 7
+  556 900 90: 0 / 6
+  556 900 110: 0 / 8
+  556 900 135: 0 / 10
+  556 1100 45: 0 / 7
+  556 1100 70: 0 / 1
+  556 1100 90: 0 / 1
+  556 1100 110: 0 / 1
+  556 1100 135: 0 / 7
+  800 700 45: 0 / 10
+  800 700 70: 0 / 10
+  800 700 90: 0 / 15
+  800 700 110: 0 / 12
+  800 700 135: 0 / 10
+  800 900 45: 0 / 8
+  800 900 70: 0 / 7
+  800 900 90: 0 / 1
+  800 900 110: 0 / 8
+  800 900 135: 0 / 10
+  800 1100 45: 0 / 6
+  800 1100 70: 0 / 1
+  800 1100 90: 0 / 1
+  800 1100 110: 0 / 1
+  800 1100 135: 0 / 7
+  1056 700 45: 0 / 10
+  1056 700 70: 0 / 11
+  1056 700 90: 0 / 13
+  1056 700 110: 0 / 16
+  1056 700 135: 0 / 12
+  1056 900 45: 0 / 8
+  1056 900 70: 0 / 7
+  1056 900 90: 0 / 7
+  1056 900 110: 0 / 4
+  1056 900 135: 0 / 10
+  1056 1100 45: 0 / 6
+  1056 1100 70: 0 / 5
+  1056 1100 90: 0 / 1
+  1056 1100 110: 0 / 1
+  1056 1100 135: 0 / 8
+  1236 700 45: 0 / 8
+  1236 700 70: 0 / 10
+  1236 700 90: 0 / 13
+  1236 700 110: 0 / 16
+  1236 700 135: 0 / 13
+  1236 900 45: 0 / 8
+  1236 900 70: 0 / 7
+  1236 900 90: 0 / 7
+  1236 900 110: 0 / 11
+  1236 900 135: 0 / 11
+  1236 1100 45: 0 / 7
+  1236 1100 70: 0 / 7
+  1236 1100 90: 0 / 7
+  1236 1100 110: 0 / 7
+  1236 1100 135: 0 / 8
+leaking cells (0; * = leaks at the worst pose):
+cells holding hidden samples (2):
+  cell 45: Quake bounds [256.0, 1216.0, -0.0]..[1280.0, 1984.0, 256.0]; 6144 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 5, 6] +1", "z=256 brushes [6]", "y=1984 brushes [7]", "y=1216 brushes [6]", "x=256 brushes [6]", "x=1280 brushes [6]"]
+  cell 58: Quake bounds [256.0, 1984.0, -0.0]..[1280.0, 2720.0, 256.0]; 5888 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 5, 6] +1", "z=256 brushes [6]", "y=1984 brushes [7]", "y=2720 brushes [5]", "x=256 brushes [6]", "x=1280 brushes [6]"]
+before: mean 78.18%, worst 12032 samples at [1236.0, 1100.0, 59.0] yaw 110°
+test pipeline::runtime_cells::leak_tests::walk_from_in_front_of_a_laned_wall_draws_no_cell_holding_space_hidden_behind_it ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2054 filtered out; finished in 1.73s
+

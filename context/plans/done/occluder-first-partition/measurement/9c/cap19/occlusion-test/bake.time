@@ -1,0 +1,7 @@
+flags:  --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap19/occlusion-test/cache
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/bin/prl-build-cap19 7a45639749a8
+start: 2026-10-28 09:33:11
+exit: 0
+wall_seconds: 15
+192M	/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap19/occlusion-test/cache
+/dev/disk1s6   466Gi   414Gi    33Gi    93%    4.7M  348M    1%   /System/Volumes/Data

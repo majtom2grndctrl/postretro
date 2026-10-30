@@ -10,7 +10,8 @@ pub struct PortalRecord {
     pub vertex_start: u32,
     /// Number of vertices in this portal polygon.
     pub vertex_count: u32,
-    /// Runtime cell id on the front side of this portal.
+    /// Runtime cell id on the front side of this portal. The `_leaf` names
+    /// predate cells that group several BSP leaves.
     pub front_leaf: u32,
     /// Runtime cell id on the back side of this portal.
     pub back_leaf: u32,

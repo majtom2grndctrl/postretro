@@ -793,10 +793,11 @@
 // visibility, lightmap, SDF, and navmesh construction. The hull only
 // influences later SH cluster metadata and never creates a runtime entity.
 //
-// A seam must pass through generated portal area with brush interior on both
-// portal-plane sides. It cuts clustering and asks the runtime planner to warm
-// the far side while the near side is visible; it does not block or change a
-// door, gameplay, or portal visibility.
+// A seam must pass through runtime portal area with brush interior on both
+// portal-plane sides; a seam that matches no runtime portal fails the build.
+// It cuts clustering and asks the runtime planner to warm the far side while
+// the near side is visible; it never changes cells, portals, a door, gameplay,
+// or portal visibility.
 @SolidClass = streaming_seam_volume : "SH streaming seam and far-side warm-up (brush)"
 [
 ]

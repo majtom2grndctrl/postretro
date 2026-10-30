@@ -1,0 +1,7 @@
+flags: --sh-probe-spacing 4.0 --no-cache 
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/bin/prl-build-cap26 71fa88a6a140
+start: 2026-10-28 23:04:24
+/dev/disk1s6   466Gi   425Gi    23Gi    95%    4.7M  238M    2%   /System/Volumes/Data
+exit: 0
+wall_seconds: 1024
+/dev/disk1s6   466Gi   428Gi    20Gi    96%    4.7M  211M    2%   /System/Volumes/Data

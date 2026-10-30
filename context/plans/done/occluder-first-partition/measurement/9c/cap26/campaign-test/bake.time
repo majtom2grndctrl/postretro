@@ -1,0 +1,7 @@
+flags:  --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26/campaign-test/cache
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/bin/prl-build-cap26 86e98bcd26a1
+start: 2026-10-28 10:15:29
+exit: 0
+wall_seconds: 34
+668M	/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26/campaign-test/cache
+/dev/disk1s6   466Gi   416Gi    32Gi    93%    4.7M  335M    1%   /System/Volumes/Data

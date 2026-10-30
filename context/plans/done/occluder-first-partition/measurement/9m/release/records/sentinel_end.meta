@@ -1,0 +1,11 @@
+tag=sentinel_end side=before map=occlusion-test pose=-17.78,1.0,-13.8176,90,0 settle=1 cpu_windows=3 trace_s=0
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/occlusion-test/occlusion-test.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/baked
+start=2026-10-29 11:43:26
+pre: 2026-10-29 11:43:26 util=0 inUseVidMemoryBytes=876576768 vramFreeBytes=1429147648 mhz=0 temp=63 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=26 screensaver=no locked=absent
+cpu_done t=10 windows=4 at 2026-10-29 11:43:36 
+post: 2026-10-29 11:43:40 util=0 inUseVidMemoryBytes=877793280 vramFreeBytes=1429147648 mhz=0 temp=69 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=25 screensaver=no locked=absent
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=142 error_lines=0
+end=2026-10-29 11:43:40
+verdict=OK

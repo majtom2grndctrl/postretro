@@ -1,0 +1,7 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/occlusion-test/occlusion-test.prl: L 16 m, 505 camera cells; mandatory texels p50 0.0 M p95 24.0 M max 24.1 M (pool cap 15 layers ~62.9 M)
+  cell 335: 24.1 M, 124 entries
+  cell 332: 24.1 M, 124 entries
+  cell 299: 24.1 M, 124 entries
+  cell 298: 24.1 M, 124 entries
+  cell 223: 24.1 M, 124 entries
+  cells over 62.9 M: 0

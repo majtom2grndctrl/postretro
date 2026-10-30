@@ -1,0 +1,12 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/campaign-test/campaign-test.prl
+loaded in 0.3 s
+bake read: id51=5c544323c31e5cd6 walk_epoch=3 size=329971748 mtime=1793154458 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/campaign-test/campaign-test.prl
+grid spacing=3.75 m columns=20x30 (cap 600) floors=362 eye=1.5 m yaws=[0.0, 90.0, 180.0, 270.0] pitch=0 footprint=[-72.3392, -65.8368]..[-0, 46.3296]
+bake=id51=5c544323c31e5cd6 walk_epoch=3 size=329971748 mtime=1793154458 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/campaign-test/campaign-test.prl
+1448 poses written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/campaign-test/campaign-test.poses
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_record ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.32s
+

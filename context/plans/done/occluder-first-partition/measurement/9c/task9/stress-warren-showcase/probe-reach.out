@@ -1,0 +1,5 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-warren-showcase/stress-warren-showcase.prl
+  SH grid 17x4x20 cell [10.0, 10.0, 10.0]; 1033 clusters, 199 interior cells
+  probe reach into another cluster's cells: 52 clusters (199 interior cells), 622 cluster pairs, 5543 probe refs, max 25 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 52 clusters (199 interior cells), 601 cluster pairs, 4016 probe refs
+  owner edges: patch 93 over 51 clusters; sparse halo 99 over 51 clusters

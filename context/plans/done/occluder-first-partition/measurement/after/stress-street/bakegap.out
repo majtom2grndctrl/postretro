@@ -1,0 +1,27 @@
+
+running 1 test
+replaying /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.before.bakegap: 3 sequences
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-street/stress-street.prl
+loaded in 0.5 s
+bake read: id51=e90b4b779e761f5d walk_epoch=3 size=137799405 mtime=1793164694 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-street/stress-street.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 75374 frames in 31.5 s; deferred 0 blocks / 0 texels, left behind 552872 blocks / 658793040 texels, 2746 trip frames
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap has been running for over 60 seconds
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 106267 frames in 45.3 s; deferred 0 blocks / 0 texels, left behind 484919 blocks / 637638464 texels, 4457 trip frames
+pose tour stress-street.poses, 2 frames per pose: 5920 frames in 1.7 s; deferred 0 blocks / 0 texels, left behind 5842 blocks / 7634304 texels, 58 trip frames
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-after/stress-street/stress-street.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 2020796272 after 658793040; trip frames: before 19554 after 2746; frames deferring more texels after: 0 of 75374
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 2686359120 after 637638464; trip frames: before 25858 after 4457; frames deferring more texels after: 0 of 106267
+pose tour stress-street.poses, 2 frames per pose
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 82482400 after 7634304; trip frames: before 1036 after 58; frames deferring more texels after: 0 of 5920
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 79.20s
+

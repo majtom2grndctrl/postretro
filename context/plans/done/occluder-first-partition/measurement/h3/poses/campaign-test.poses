@@ -1,0 +1,6 @@
+postretro-world-poses 1
+# H3 campaign-test: 4 poses where tris in frustum rose most against before (9g sweep, pick_tris.py)
+pose ct:g5.26.0@0 -51.714203 1.499999 33.5382 0 0
+pose ct:g0.8.0@270 -70.4642 1.5 -33.9618 270 0
+pose ct:g15.17.1@0 -14.214203 1.4999998 -0.21179962 0 0
+pose ct:g1.9.0@270 -66.7142 8.4088 -30.2118 270 0

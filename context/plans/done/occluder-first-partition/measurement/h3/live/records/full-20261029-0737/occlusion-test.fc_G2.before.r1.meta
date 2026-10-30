@@ -1,0 +1,15 @@
+tag=occlusion-test.fc_G2.before.r1 side=before map=occlusion-test pose=-17.78,1.0,-13.8176,64,0 settle=2 cpu_windows=8 trace_s=6
+prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/occlusion-test/occlusion-test.prl baked=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/baked
+start=2026-10-29 08:04:32
+pre: 2026-10-29 08:04:32 util=0 inUseVidMemoryBytes=579911680 vramFreeBytes=2785099776 mhz=0 temp=56 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=26 screensaver=no locked=absent
+cpu_done t=22 windows=10 at 2026-10-29 08:04:55 
+trace_start 2026-10-29 08:04:55
+trace_end 2026-10-29 08:06:12 record_s=77
+post: 2026-10-29 08:06:16 util=0 inUseVidMemoryBytes=580182016 vramFreeBytes=2785099776 mhz=0 temp=87 | cpu_speed_limit=74 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=121 screensaver=no locked=absent
+export_bytes=34815106
+extents: surface=2560x1440 scene=1280x720 divisor=2
+vsync: vsync on
+warn_lines=142 error_lines=0
+end=2026-10-29 08:06:27
+verdict=OK
+gate: GATE_OK waited=30 temp=57

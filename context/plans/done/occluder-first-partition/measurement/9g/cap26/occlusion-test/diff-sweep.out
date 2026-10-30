@@ -1,0 +1,59 @@
+
+running 1 test
+
+=== before: 1217 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=75d9e439c2fda728 walk_epoch=3 size=138360125 mtime=1793154350 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/occlusion-test/occlusion-test.prl
+paths [("portal", 1217)]
+per pose                   mean          p95          max
+considered                464.3         1749         2084
+accepted                  190.2          758          895
+drawn                      66.6          242          256
+reach                      66.6          242          256
+seen                       43.8          188          214
+drawn_faces               233.6          834          878
+tris                      467.3         1668         1756
+tris_in_frustum           385.9         1516         1696
+lightmap_blocks            66.6          242          256
+lightmap_texels       9409102.9     24888096     27752720
+sh_clusters                 8.1           19           21
+fog_volumes                 2.6            5            5
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0            0
+hit_exterior                0.0            0            0
+
+=== after: 1217 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=bbf0549829b85fb9 walk_epoch=3 size=113267665 mtime=1793221340 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.prl
+paths [("portal", 1217)]
+per pose                   mean          p95          max
+considered                179.6          467          596
+accepted                   65.9          182          253
+drawn                      27.8           65           85
+reach                      27.8           65           85
+seen                       18.1           40           56
+drawn_faces               354.2          793          897
+tris                      708.4         1586         1794
+tris_in_frustum           398.3         1472         1738
+lightmap_blocks            27.8           65           85
+lightmap_texels       7741362.3     16828848     19988048
+sh_clusters                 6.1           12           13
+fog_volumes                 3.3            5            6
+id51_outside                0.0            0            0
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.0            0            0
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 0, 0 with rays that did not miss before
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_diff ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.02s
+

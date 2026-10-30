@@ -1,0 +1,13 @@
+07:26:23 batch pilot-20261029-0726 mode=pilot gate=57C min_pause=30s max_wait=600s reps=1 sentinel_every=9 caffeinate_pid=2960
+07:26:55 gate sentinel01: GATE_OK waited=30 temp=56
+07:27:23 SENTINEL batch-start: sentinel01 total_ms=16.520 rc=0 2026-10-29 07:27:22 util=0 inUseVidMemoryBytes=580771840 vramFreeBytes=2898669568 mhz=0 temp=67 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=27 screensaver=no locked=absent
+07:28:03 gate stress-street.rd_promenade.before.r1: GATE_OK waited=40 temp=57
+07:30:14 [1/3] stress-street.rd_promenade.before.r1 rc=0 total=16.585 work=10.269 portal_walk=0.522 walk_considered=1867.000 render_submit=6.678 walk_step_limit=0 us_per_test=0.280 gpu_ms_per_frame=11.225
+07:31:07 gate stress-street.rd_promenade.cap26.r1: GATE_OK waited=52 temp=57
+07:33:03 [2/3] stress-street.rd_promenade.cap26.r1 rc=0 total=16.834 work=14.181 portal_walk=0.555 walk_considered=1935.633 render_submit=9.524 walk_step_limit=0 us_per_test=0.287 gpu_ms_per_frame=10.821
+07:34:01 gate stress-street.rd_promenade.cap19.r1: GATE_OK waited=58 temp=57
+07:35:57 [3/3] stress-street.rd_promenade.cap19.r1 rc=0 total=16.889 work=14.359 portal_walk=0.581 walk_considered=1963.567 render_submit=9.644 walk_step_limit=0 us_per_test=0.296 gpu_ms_per_frame=10.848
+07:37:00 gate sentinel02: GATE_OK waited=63 temp=57
+07:37:14 SENTINEL closing: sentinel02 total_ms=16.521 rc=0 2026-10-29 07:37:13 util=0 inUseVidMemoryBytes=568766464 vramFreeBytes=2835546112 mhz=0 temp=63 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=68 screensaver=no locked=absent
+07:37:14 summary: /Users/dhiester/Projects/Personal/postretro/target/occluder-h3live/runs/pilot-20261029-0726/summary.md
+07:37:14 BATCH_DONE

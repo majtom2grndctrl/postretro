@@ -50,7 +50,9 @@
 // Bake gap with planar on (§4): on a water map, run planar off with
 // `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT`, then planar on with the same
 // modes and `..._TRIP_RECORD_IN`; the planar flag stays out of the run label,
-// so the pair splits and prints the deferred-block verdict.
+// so the pair splits and prints the deferred-block verdict. That same-partition
+// pairing compares block counts because the cell layout matches; across
+// partitions use `world_poses`, whose unit is deferred texel area.
 //
 // Residency gate, per projection and pitch: run the pre-change build with
 // `POSTRETRO_LIGHTMAP_WALK_READS=completed` and
@@ -63,6 +65,10 @@
 // INVALID and no verdict (O14). Each run also prints the bake it read. A run's
 // split against its own record prints totals only; the verdict is the paired
 // split's.
+//
+// A change to the cell partition breaks that pairing: paths and eyes derive
+// from cell ids. `world_poses` records the walks' frames in world space,
+// replays them in the other build, and compares deferred texel area.
 
 mod baked_set;
 mod completed_reads;
@@ -77,14 +83,16 @@ mod report;
 mod tests;
 mod trip_record;
 mod walk;
+mod world_poses;
 
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::SectionId;
 use postretro_level_loader::{LevelWorld, PrlReadCounters};
 use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells};
 
-use super::{LightmapLevelView, LightmapStreamingSession};
+use super::{LightmapLevelView, LightmapPreloadSummary, LightmapStreamingSession};
 use crate::render_preparation::VisibleRenderPreparation;
 use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
@@ -115,6 +123,12 @@ struct Levers {
     cap_layers: u32,
 }
 
+/// The shipped levers: the run every lever sweep varies one lever from.
+const DEFAULT_LEVERS: Levers = Levers {
+    lead_metres: 16.0,
+    cap_layers: 15,
+};
+
 fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     (
         counters.section_bytes(SectionId::Lightmap as u32),
@@ -132,6 +146,71 @@ fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     )
 }
 
+/// One run's streaming state before its first frame: the level's lightmap
+/// session at its levers inside `LevelStreaming`, driven over a fresh pool
+/// mirror. The walks and the world-pose replay (`world_poses`) share it.
+struct Rig<'w> {
+    view: LightmapLevelView<'w>,
+    /// Each cell's blocks: what a drawn cell draws.
+    cell_blocks: Vec<Range<u32>>,
+    /// The lead L in fixed point.
+    lead: u32,
+    driver: FrameDriver,
+}
+
+impl<'w> Rig<'w> {
+    fn new(world: &'w LevelWorld, levers: Levers, reads: ReadsMode) -> Self {
+        let view = LightmapLevelView::of(world).expect("the PRL streams its lightmap");
+        let cell_blocks = cell_block_ranges(
+            view.manifest
+                .lightmap_index()
+                .records
+                .iter()
+                .map(|record| record.cell_id),
+            world.cells.len(),
+        );
+
+        let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
+        let mut session =
+            LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
+        session
+            .controller
+            .levers_mut()
+            .set_pool_cap_layers(levers.cap_layers);
+        // L is the level's: set on the stage, which every frame hands the
+        // lightmap demand.
+        let mut stage = CellDemand::new(view.residency_set.max_lead);
+        stage.set_lead_metres(levers.lead_metres);
+        let lead = stage.lead();
+        session.controller.set_lead(lead);
+        let mirror = PoolMirror::new(view.manifest, levers.cap_layers, reads.retire_clock());
+        let mut level = LevelStreaming::default();
+        level.install_cell_demand(stage);
+        level.install_lightmap(session);
+        let driver = FrameDriver::new(level, mirror, reads, cell_blocks.clone());
+        Self {
+            view,
+            cell_blocks,
+            lead,
+            driver,
+        }
+    }
+
+    /// A synchronous preload approximating a settled entry: the spawn cell's
+    /// mandatory set, read and installed in one drain before the first frame.
+    fn preload(&mut self, spawn_cell: u32) -> LightmapPreloadSummary {
+        let (session, mirror) = self.driver.session_and_mirror();
+        session.update_camera_set(self.view.residency_set, spawn_cell);
+        let summary = session
+            .preload(&[], |batch| Ok(mirror.drain(batch)))
+            .expect("settled-entry preload");
+        assert_eq!(summary.deferred, 0, "a fresh pool never defers a preload");
+        assert!(session.settled(), "spawn set resident after preload");
+        mirror.begin_play();
+        summary
+    }
+}
+
 /// One run of `walk` at `levers`. `planar` is this run's own freshly
 /// installed mirror in planar mode, so selection's hysteresis starts clean.
 fn run(
@@ -142,39 +221,17 @@ fn run(
     bake: &str,
     mut planar: Option<WalkMirror>,
 ) -> RunReport {
-    let view = LightmapLevelView::of(world).expect("the PRL streams its lightmap");
-    let read_counters = view.manifest.read_counters().clone();
-    let cell_blocks = cell_block_ranges(
-        view.manifest
-            .lightmap_index()
-            .records
-            .iter()
-            .map(|record| record.cell_id),
-        world.cells.len(),
-    );
-
-    let hints = decode_level_hints(world.cluster_directory()).expect("id-49 hints");
-    let mut session =
-        LightmapStreamingSession::new(view, hints.as_deref()).expect("lightmap session");
-    session
-        .controller
-        .levers_mut()
-        .set_pool_cap_layers(levers.cap_layers);
-    // L is the level's: set on the stage, which every frame hands the
-    // lightmap demand.
-    let mut stage = CellDemand::new(view.residency_set.max_lead);
-    stage.set_lead_metres(levers.lead_metres);
-    let lead = stage.lead();
-    session.controller.set_lead(lead);
-    let mirror = PoolMirror::new(view.manifest, levers.cap_layers, modes.reads.retire_clock());
-    let mut level = LevelStreaming::default();
-    level.install_cell_demand(stage);
-    level.install_lightmap(session);
-    let mut driver = FrameDriver::new(level, mirror, modes.reads, cell_blocks.clone());
+    let mut rig = Rig::new(world, levers, modes.reads);
+    let read_counters = rig.view.manifest.read_counters().clone();
 
     let mut report = RunReport {
-        layer_bytes: driver.mirror().layer_bytes(),
-        mandatory_set: mandatory_set_sizes(world, view.residency_set, &cell_blocks, lead),
+        layer_bytes: rig.driver.mirror().layer_bytes(),
+        mandatory_set: mandatory_set_sizes(
+            world,
+            rig.view.residency_set,
+            &rig.cell_blocks,
+            rig.lead,
+        ),
         record: RunRecord {
             label: run_label(walk, levers, modes),
             bake: bake.to_string(),
@@ -186,23 +243,18 @@ fn run(
     let started = Instant::now();
     let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
 
-    // A synchronous preload approximating a settled entry: the spawn cell's
-    // mandatory set, read and installed in one drain before the first frame.
     let spawn_eye = eye_point(world, walk.cells[0], &mut rng);
     let spawn_cell = world.locate_cell(spawn_eye) as u32;
     let before = section_reads(&read_counters);
-    {
-        let (session, mirror) = driver.session_and_mirror();
-        session.update_camera_set(view.residency_set, spawn_cell);
-        let summary = session
-            .preload(&[], |batch| Ok(mirror.drain(batch)))
-            .expect("settled-entry preload");
-        assert_eq!(summary.deferred, 0, "a fresh pool never defers a preload");
-        assert!(session.settled(), "spawn set resident after preload");
-        report.preload_pairs = summary.reads.pairs;
-        report.preload_millis = summary.elapsed.as_secs_f64() * 1000.0;
-        mirror.begin_play();
-    }
+    let summary = rig.preload(spawn_cell);
+    let Rig {
+        view,
+        cell_blocks,
+        lead,
+        mut driver,
+    } = rig;
+    report.preload_pairs = summary.reads.pairs;
+    report.preload_millis = summary.elapsed.as_secs_f64() * 1000.0;
     let after = section_reads(&read_counters);
     report.preload_bytes = (after.0 - before.0) + (after.1 - before.1);
 
@@ -460,10 +512,7 @@ fn lightmap_residency_walks_from_prl() {
         None => println!("planar off: camera walk only"),
     }
 
-    let default = Levers {
-        lead_metres: 16.0,
-        cap_layers: 15,
-    };
+    let default = DEFAULT_LEVERS;
     let mut configs = vec![default];
     if runs == "all" {
         for cap in [7, 12, 25] {

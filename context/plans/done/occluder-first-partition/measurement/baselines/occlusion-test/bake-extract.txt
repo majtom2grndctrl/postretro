@@ -1,0 +1,24 @@
+# log extract from target/occluder-baselines/occlusion-test/bake.log (frozen prl-build 8a9a341, RUST_LOG=info, -v)
+[INFO prl_build::partition] BSP leaves: 171 solid, 384 empty
+[INFO prl_build::partition] BSP nodes: 554
+[INFO prl_build::partition] BSP leaves: 555
+[INFO prl_build::partition] Total faces (after brush-side extraction): 1207
+[INFO prl_build::partition] Average faces per leaf: 2.2
+[INFO prl_build::pipeline] [Compiler] Watertightness: world geometry is closed (0 open edges)
+[INFO prl_build::visibility] Exterior flood-fill: 97 exterior leaves, 287 interior empty leaves
+[INFO prl_build::visibility] Visibility: 384 empty leaves, 960 portals
+[INFO prl_build::geometry] Vertices: 4072 (28 bytes each)
+[INFO prl_build::geometry] Triangles: 2036
+[INFO prl_build::geometry] Faces: 1018
+[INFO prl_build::geometry] Empty leaves: 287
+[INFO prl_build::geometry] Unique textures: 7
+[INFO prl_build::bvh_build] Bvh: 2035 nodes (1017 internal, 1018 leaf), 1018 leaf entries
+  Cell Visibility: 100%  ETA 0.0s
+[INFO prl_build::chunk_light_list_bake] [ChunkLightList] grid 10x3x10 (300 chunks), 9 static lights, avg 0.52 / chunk, max 4, total indices 155, payload 3020 bytes
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 7749 eye candidates (7623 in cell, 126 inset, 0 rejected; missed into solid 12, exterior 0, other cell 114), 0 camera cells without an eye point, 46494 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 287 camera cells, 81199 entries (max 286 per camera), 651832 bytes, max lead 32 m, 0.507 s
+[INFO prl_build::pipeline] [Compiler] Lightmap runtime all-resident pool: 10 pool layers
+[INFO prl_build::animated_light_chunks] [AnimatedLightChunks] 96 chunks, 4 animated lights, max 2 / chunk, mean 1.29 / chunk, 0 chunks bottomed out at min-extent floor
+[INFO prl_build::pipeline::animated_atlas_stage] [AnimatedLightWeightMaps] Packed layout: 18 blocks on 2 pages of 1024² (25165824 bytes; identity layout 5 pages of 2048², 251658240 bytes)
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 651832 payload bytes
+## open-edge sample lines

@@ -8,7 +8,7 @@ use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use thiserror::Error;
 
 use crate::bvh_build::BvhPrimitive;
@@ -111,6 +111,9 @@ fn compacted_static_lights<'a>(inputs: &ChunkLightListInputs<'a>) -> Vec<&'a Map
 
 /// Fold the parts of the BSP input the chunk-light bake actually consumes.
 ///
+/// In the pipeline the tree is the cell view, so cell grouping re-keys this
+/// fingerprint and leaf indices are cell ids.
+///
 /// Point location depends only on each split plane and its front/back child
 /// references; the bake additionally reads leaf solidity and the exterior set.
 /// Face lists, bounds, defining planes, and node parents are intentionally not
@@ -161,6 +164,9 @@ fn update_bsp_fingerprint(
 /// partition and leaf state, portal leaf-pair adjacency, compacted static
 /// lights, and the two bake controls. Dynamic lights and AlphaLights source
 /// indices are excluded because the bake never reads them for its output.
+///
+/// In the pipeline the BSP tree is the cell view, so cell grouping re-keys the
+/// result and the portal endpoints are cell ids.
 pub(crate) fn chunk_light_list_cache_key(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,
@@ -405,44 +411,19 @@ pub fn bake_chunk_light_list(
 
     let cap = per_chunk_cap as usize;
 
-    let mut adjacency: HashMap<usize, Vec<usize>> = HashMap::new();
-    for p in inputs.portals {
-        adjacency.entry(p.front_leaf).or_default().push(p.back_leaf);
-        adjacency.entry(p.back_leaf).or_default().push(p.front_leaf);
-    }
+    let adjacency = crate::affinity_grid::portal_adjacency(inputs.portals);
 
     // `None` means portal filter is bypassed: directional sources, or origin in
-    // solid/exterior leaf — fall back to spatial overlap + BVH shadow rays only.
+    // solid/exterior cell — fall back to spatial overlap + BVH shadow rays only.
     let light_reachable: Vec<Option<HashSet<usize>>> = static_slots
         .iter()
         .map(|&(_, light)| {
-            if matches!(light.light_type, LightType::Directional) {
-                return None;
-            }
-            let source = find_leaf_for_point(inputs.tree, light.origin);
-            if source >= inputs.tree.leaves.len() {
-                return None;
-            }
-            if inputs.tree.leaves[source].is_solid || inputs.exterior_leaves.contains(&source) {
-                return None;
-            }
-            let mut reachable: HashSet<usize> = HashSet::new();
-            reachable.insert(source);
-            let mut queue: VecDeque<usize> = VecDeque::new();
-            queue.push_back(source);
-            while let Some(leaf) = queue.pop_front() {
-                if let Some(neighbors) = adjacency.get(&leaf) {
-                    for &n in neighbors {
-                        if inputs.exterior_leaves.contains(&n) {
-                            continue;
-                        }
-                        if reachable.insert(n) {
-                            queue.push_back(n);
-                        }
-                    }
-                }
-            }
-            Some(reachable)
+            crate::affinity_grid::light_portal_reach(
+                light,
+                inputs.tree,
+                inputs.exterior_leaves,
+                &adjacency,
+            )
         })
         .collect();
 
@@ -1162,7 +1143,6 @@ mod tests {
     use crate::geometry::FaceIndexRange;
     use crate::light_namespaces::AlphaLightsNs;
     use crate::map_data::{FalloffModel, LightType, MapLight};
-    use crate::portals::generate_portals;
     use glam::DVec3;
     use log::Level;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
@@ -2942,36 +2922,20 @@ mod tests {
     /// normal (non-`#[ignore]`) test.
     #[test]
     fn chunk_light_list_includes_sdf_light_for_shadowed_floor() {
-        use crate::map_format::MapFormat;
-        use std::collections::HashSet;
-
         const K: usize = SDF_SHADOW_K;
 
         // 1. Build the map + chunk-light-list the SAME way prl-build does.
-        let map_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root")
-            .join("content/dev/maps/sdf-shadow-test.map");
-        let map_data = crate::parse::parse_map_file(&map_path, MapFormat::IdTech2)
-            .expect("sdf-shadow-test.map should parse");
-        let result =
-            crate::partition::partition(&map_data.brush_volumes).expect("partition should succeed");
-        let portals = crate::portals::generate_portals(&result.tree);
-        let exterior: HashSet<usize> =
-            crate::visibility::find_exterior_leaves(&result.tree, &portals);
-        let geo_result = crate::geometry::extract_geometry(&result.faces, &result.tree, &exterior);
-        let (bvh, prims, _) = build_bvh(&geo_result).expect("bvh build should succeed");
-        let alpha_lights = AlphaLightsNs::from_lights(&map_data.lights);
+        let fixture = load_fixture("sdf-shadow-test");
+        let alpha_lights = AlphaLightsNs::from_lights(&fixture.lights);
 
         let inputs = ChunkLightListInputs {
-            bvh: &bvh,
-            primitives: &prims,
-            geometry: &geo_result,
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
             lights: &alpha_lights,
-            tree: &result.tree,
-            portals: &portals,
-            exterior_leaves: &exterior,
+            tree: &fixture.tree,
+            portals: &fixture.portals,
+            exterior_leaves: &fixture.exterior_leaves,
         };
         let section = bake_chunk_light_list(
             &inputs,
@@ -2993,7 +2957,7 @@ mod tests {
             peak: f32,
             is_sdf: bool,
         }
-        let specs: Vec<Spec> = map_data
+        let specs: Vec<Spec> = fixture
             .lights
             .iter()
             .filter(|l| !l.is_dynamic)
@@ -3078,9 +3042,11 @@ mod tests {
         //    transition; the air sample above it is the floor-surface receiver
         //    the forward shader shades — robust to a half-voxel offset.
         let in_solid = |p: Vec3| -> bool {
-            let leaf =
-                find_leaf_for_point(&result.tree, DVec3::new(p.x as f64, p.y as f64, p.z as f64));
-            result
+            let leaf = find_leaf_for_point(
+                &fixture.tree,
+                DVec3::new(p.x as f64, p.y as f64, p.z as f64),
+            );
+            fixture
                 .tree
                 .leaves
                 .get(leaf)
@@ -3347,7 +3313,6 @@ mod tests {
     #[ignore = "campaign-test is a slow, independent receiver-cull oracle"]
     fn campaign_test_vertex_receivers_in_range_are_not_omitted_from_chunk_light_lists() {
         let fixture = load_fixture("campaign-test");
-        let portals = generate_portals(&fixture.tree);
         let alpha_lights = AlphaLightsNs::from_lights(&fixture.lights);
         let inputs = ChunkLightListInputs {
             bvh: &fixture.bvh,
@@ -3355,7 +3320,7 @@ mod tests {
             geometry: &fixture.geometry,
             lights: &alpha_lights,
             tree: &fixture.tree,
-            portals: &portals,
+            portals: &fixture.portals,
             exterior_leaves: &fixture.exterior_leaves,
         };
         let section = bake_chunk_light_list(

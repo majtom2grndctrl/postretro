@@ -3238,7 +3238,9 @@ fn shadowmask_coverage_threshold_uses_one_shared_comparison() {
 /// the chart's continuous texel over the layer extent.
 #[test]
 fn block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv() {
-    let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+    // closet-reveal's door splits its rooms into several lit cells under the
+    // occluder partition; soft_shadow_test is one lit cell, one block.
+    let mut fixture = crate::fixture_pipeline::load_fixture("closet-reveal");
     let static_lights = StaticBakedLights::from_lights(&fixture.lights);
     assert!(!static_lights.is_empty(), "fixture must bake static light");
     let prepared = prepare_atlas(&mut fixture.geometry, &static_lights, 0.25, &[]).unwrap();

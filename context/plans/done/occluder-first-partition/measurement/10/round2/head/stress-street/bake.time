@@ -1,0 +1,5 @@
+flags: --sh-probe-spacing 4.0 --lightmap-density 0.25 --cache-dir target/occluder-10r2/head/stress-street/cache
+binary: 441144d88369
+start: 2026-10-29 20:45:06
+exit: 0
+wall_seconds: 15

@@ -107,7 +107,7 @@ fn residency_set_bake_matches_direct_evaluation() {
 #[test]
 fn teleport_residency_baked_set_checks_as_superset_with_arrival_delta() {
     use crate::cell_residency_bake::teleport_routes::TeleportResidencyInput;
-    use crate::partition::{Aabb, BspLeaf, BspTree};
+    use crate::partition::{Aabb, BspLeaf, BspTree, CellHull};
     use glam::DVec3;
     use postretro_level_format::environment_volumes::{EnvironmentBrush, EnvironmentPlane};
     use postretro_level_format::teleporters::{TeleportMode, TeleporterRecord, TeleportersSection};
@@ -178,7 +178,7 @@ fn teleport_residency_baked_set_checks_as_superset_with_arrival_delta() {
     };
     let with_teleporter = bake(Some(TeleportResidencyInput {
         section: &section,
-        tree: &tree,
+        hulls: &CellHull::per_leaf(&tree),
     }));
     let without = bake(None);
 

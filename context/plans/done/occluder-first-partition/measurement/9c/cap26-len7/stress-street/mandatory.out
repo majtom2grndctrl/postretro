@@ -1,0 +1,7 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-street/stress-street.prl: L 16 m, 3913 camera cells; mandatory texels p50 0.0 M p95 2.4 M max 2.4 M (pool cap 15 layers ~62.9 M)
+  cell 3001: 2.4 M, 826 entries
+  cell 2781: 2.4 M, 826 entries
+  cell 2615: 2.4 M, 826 entries
+  cell 2456: 2.4 M, 826 entries
+  cell 2439: 2.4 M, 812 entries
+  cells over 62.9 M: 0

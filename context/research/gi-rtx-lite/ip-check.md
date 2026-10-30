@@ -4,7 +4,8 @@
 **Status:** Engineering triage for counsel, not legal advice. Companion to [index.md](index.md). "Appears present", "appears absent" and "reads on" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate.
 
 > **Read this when:** designing probe selection, a runtime radiosity update, any probe that changes with lighting at runtime, door-driven lighting, or a bake-only artefact.
-> **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. Google's legacy PDF path (`patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`) still serves grants below ~US 8.8M and pre-2015 applications: **full claim text** was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1. **Every other filing is charted from search-snippet paraphrase** (column *Source*). Statuses and expiry projections are unverified. To chart the rest, allow `patents.google.com`, `patents.justia.com`, `ppubs.uspto.gov`, `worldwide.espacenet.com` and `patentscope.wipo.int`. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
+> **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. Google's legacy PDF path (`patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`) still serves grants below ~US 8.8M and pre-2015 applications: **full claim text** was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1. **Every other filing is charted from search-snippet paraphrase** (column *Source*).
+> **Update 2026-10-30:** `patents.google.com` and `patentscope.wipo.int` are now allowed. Full claims were read for Take-Two '688 / '404 and Tencent WO2026113651A1 (machine translation). Google Patents then rate-limited (HTTP 503) the US12293451B2 page and Patentscope refuses automated queries (HTTP 403), so '451 claim text is still unread; see §Prior art verified 2026-10-30. Statuses and expiry projections are unverified. To chart the rest, allow `patents.google.com`, `patents.justia.com`, `ppubs.uspto.gov`, `worldwide.espacenet.com` and `patentscope.wipo.int`. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
 
 ---
 
@@ -23,9 +24,9 @@
 | Document | Owner | Priority | Status (unverified) | Source | Pieces |
 |---|---|---|---|---|---|
 | US20210012562A1 "Probe-based dynamic GI" | NVIDIA | 2019-07-11 | Reported abandoned 2023-08-23 (not re-confirmed); published 2021-01-14, citable art | Summary | 1, 2 |
-| WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending; US national phase ≈2027-05, EP ≈2027-06 | Machine translation (earlier check) | 2, 4 |
+| WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending (published 2026-06-04; PCT/CN2025/126544); US national phase ≈2027-05, EP ≈2027-06 | Machine translation, all 23 claims, Google Patents 2026-10-30 | 2, 4 |
 | US10137372B2 "Light probe culling based upon visibility" | Square Enix (Eidos Montréal) | filed 2016-12-14 | Granted 2018-11-27; ≈2036-12 + PTA | Abstract verbatim; claims snippet | 2, 4, 7 |
-| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 | Granted 2025-05-06; ≈2042 + PTA | Snippet, claims 1–3 | 3, 4, 5, 7 |
+| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 | Granted 2025-05-06; ≈2042 + PTA | Snippet, claims 1–3; USPTO-record snippet 2026-10-30 (claim 1 says "radiance transfer parameter"); same title as CN114419240B, family link unconfirmed | 3, 4, 5, 7 |
 | US8558837B2 "Modular radiance transfer" | Disney | 2010-01-18 | PTA 835 days → ≈2032-06-30 if fees paid | Full PDF | 3 |
 | US10290148B2 / US10796479B2 | Suntracker (Ashdown) | CIP chain to 2012-04-13 | ≈2032-04, counsel to confirm CIP term | Snippet, claim 1 and dependents | 3, 5 |
 | US10672177 (from US20170116773A1) | Geomerics → ARM | 2015-10-23 | Granted; ≈2036 | Title and abstract | 3, 6 |
@@ -174,6 +175,38 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 **Verdict: appears clear on the granted claims** (read 2026-10-30). The family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description.
 
+## Prior art verified 2026-10-30
+
+Checked from primary sources where reachable; otherwise from search-result text, marked *(snippet)*. Engineering triage, not an opinion on validity.
+
+**Against Tencent WO2026113651A1** (priority 2024-11-28). Claim map from the full machine translation:
+
+| Claims | Element | Art | Level |
+|---|---|---|---|
+| 1–3 | Parallax-correct a probe from the reflecting point and view; sample from the probe toward the reflected ray's hit on a second object | Szirmay-Kalos, Aszódi, Lazányi, Premecz, "Approximate Ray-Tracing on the GPU with Distance Impostors", CGF 24(3) 2005: colour + distance cube map, hit point "based on the distance values stored in environment map texels" *(snippet)*. Umenhoffer, Patow, Szirmay-Kalos, GPU Gems 3 ch. 17 (2007): ray march + secant search against stored distance. Bjorke, GPU Gems ch. 19 (2004): proxy-sphere correction. Lagarde & Zanuttini, SIGGRAPH 2012 talk 36: parallax-corrected cubemaps. Unity 5.1 Box Projection (2015). UE4 parallax-corrected captures (Epic staff, 2014) *(snippet)* | Verified (Szirmay-Kalos, Bjorke, Lagarde bibliographic, Unity); the search detail partly verified via the 2007 follow-up |
+| 4–8 | Probe generated at the camera; moved past a distance threshold, on entering a grid cell, or after a dwell time | Camera-following realtime probes in community practice (Unity forum, ≈2015, date unconfirmed; dynamic cubemaps in racing games) | Generic idea partly verified; the specific triggers not found |
+| 10–13 | Re-capture when objects in range move or light changes; re-shade from stored texture info | None found | — |
+| 14 | Cube faces updated in sequence with a per-face interval | Unity 5.0 `ReflectionProbeTimeSlicingMode.IndividualFaces` (2015) | Verified |
+| 15 | Occlusion test: probe's stored depth along the direction vs probe-to-hit distance | Distance impostors (2005) and GPU Gems 3 ch. 17 compare stored distance with the candidate's distance | Verified via the 2007 follow-up |
+| 16–17 | Move the probe to an unobstructed position | None found | — |
+| 18 | Fall back to a stored lighting database at the hit | None found | — |
+
+Shipped water reflection (compile-time capture, colour + distance tiles, distance search, no camera-following probe, no runtime re-capture, no time slicing, nothing added where the capture shadow fires) sits on the claim 1–3 / 15 elements, which the 2005 distance-impostor art and its 2007 follow-up anticipate closely. Elements without art found (4–8 triggers, 10–13, 16–18) are ones the engine does not use. Keep it that way: probes stay compile-time and hard-bound; never re-capture on change, follow the camera, or relocate a probe at runtime.
+
+**Against Tencent US12293451B2** (priority 2021-04-02). Claim 1 per the USPTO-record snippet, unconfirmed wording: on a light source change, determine change information; derive the current light projection coefficient; compute a target pixel's indirect value from its precomputed *radiance transfer parameter* and that coefficient; combine with direct light under the changed source. Claim 2: the coefficient from an illumination transform matrix and the pre-change coefficient.
+
+| Element | Art | Level |
+|---|---|---|
+| Runtime scalar × baked per-light layer | Quake `gl_rsurf.c` (1996; GPL 1999): `blocklights[i] += lightmap[i] * scale;` with `scale = d_lightstylevalue[...]`, up to 4 styled lightmaps per surface | Verified, verbatim |
+| Styled (per-light) baked layers carrying bounce | ericw-tools changelog 2017-06-10, "styled lights no longer bounce by default, set "_bouncestyled" "1" to enable"; docs: "allows styled lights to bounce (e.g. flickering or switchable lights)" | Verified, verbatim |
+| Projection coefficient × precomputed transfer | Sloan, Kautz, Snyder, PRT, SIGGRAPH 2002 | Verified |
+| Runtime indirect from precomputed data, direct rendered separately, updated on light change | Martin & Einarsson, SIGGRAPH 2010 Advances course (Enlighten in Frostbite 2); Unity 5 `DynamicGI.updateThreshold` | Verified (existence, architecture) |
+| Per-light baked direct pages merged by name | Valve VRAD named lights (direct only; named lights do not bounce) | Partly verified |
+| Dynamic probes without transfer | NVIDIA US20210012562A1, published 2021-01-14 | Verified; weak match |
+| Suntracker US20170345208A1 / US10290148B2 | Not re-found this pass; earlier snippet chart stands | — |
+
+**For door and mover light flow.** The door channel and mover rest-pose channel blend direct-light visibility masks by mover state; no light source changes and no transfer × coefficient step exists, so '451's indirect elements stay absent for direct-only channels. Door bounce deltas (optional) keep the '451 question, now with Quake styles + ericw-tools `_bouncestyled` as the closest art for a scalar × baked per-light bounce layer. Compose on a mover dock event is an occluder event, not light source change information; still frame any compose gate as residency or visibility (piece 5 design-around).
+
 ## Summary
 
 | Piece | IP verdict | Watch | Bake Δ (est.) | Memory Δ (est.) | Runtime (est.) |
@@ -189,6 +222,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 **Top IP risks.** (1) Tencent US12293451B2 claim 1 against the shipped animated SH deltas and any light-change-triggered update; keep per-light terms scalar. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
 
 **Questions for counsel, ranked.**
+0. Obtain '451's verbatim claims (Google Patents rate-limited this session; USPTO and Patentscope automated access blocked).
 1. Can '451 claim 1 read on a per-light scalar curve × a baked per-light, per-probe delta? Is the light bridge's dirty upload "light source change information"? Weigh Quake lightstyles, Suntracker 2017, Sloan PRT 2002, NVIDIA's application.
 2. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
 3. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.

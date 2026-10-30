@@ -255,10 +255,10 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
             })
             .collect();
         renderer.set_mesh_draws(&draws);
-        let source = include_str!("../mesh_pass.rs");
+        let source = include_str!("../mesh_pass/lighting.rs");
         let count = site_writes(
             &renderer,
-            "mesh_pass.rs",
+            "mesh_pass/lighting.rs",
             source,
             "queue.write_buffer(&self.light_params_buffer",
         );
@@ -271,7 +271,7 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
         assert_eq!(
             site_writes(
                 &renderer,
-                "mesh_pass.rs",
+                "mesh_pass/lighting.rs",
                 source,
                 "queue.write_buffer(&self.light_params_buffer"
             ) - count,

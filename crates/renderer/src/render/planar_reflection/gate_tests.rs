@@ -201,7 +201,7 @@ fn planar_recording_uses_only_the_frame_encoder() {
     // meshes reach a draw call, so the extraction followed the recording.
     let shared: [(&str, &[&str], bool); 3] = [
         ("kinematic_brush.rs", &["record_mirror_draws"], true),
-        ("mesh_pass.rs", &["record_mirror_draws"], true),
+        ("mesh_pass/record.rs", &["record_mirror_draws"], true),
         (
             "smoke.rs",
             &[

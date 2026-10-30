@@ -692,7 +692,9 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         ("render/smoke.rs", "", "create_sprite_placeholder_array") => Some("load"),
         ("render/smoke.rs", "SmokePass", "upload_sprite_asset") => Some("install"),
         ("render/ui/mod.rs", "", "upload_ui_texture") => Some("load"),
-        ("render/mesh_pass.rs", "MeshPass", "upload_identity_palette") => Some("install"),
+        ("render/mesh_pass/frame_upload.rs", "MeshPass", "upload_identity_palette") => {
+            Some("install")
+        }
         ("render/fluid_surface.rs", "FluidSurfacePass", "set_drift") => {
             Some("install/commit/tuning refresh (drift re-resolve; never batched)")
         }

@@ -189,9 +189,22 @@ mod tests {
 
     #[test]
     fn mesh_pose_sampling_no_longer_reads_the_gpu_timing_gate() {
-        let source = include_str!("mesh_pass.rs");
-        assert!(!source.contains("POSTRETRO_GPU_TIMING"));
-        assert!(source.contains("RenderStage::MeshPoseSampling"));
+        let sources = [
+            include_str!("mesh_pass.rs"),
+            include_str!("mesh_pass/frame_upload.rs"),
+            include_str!("mesh_pass/lighting.rs"),
+            include_str!("mesh_pass/models.rs"),
+            include_str!("mesh_pass/pipeline.rs"),
+            include_str!("mesh_pass/pose.rs"),
+            include_str!("mesh_pass/record.rs"),
+            include_str!("mesh_pass/tests.rs"),
+        ];
+        for source in sources {
+            assert!(!source.contains("POSTRETRO_GPU_TIMING"));
+        }
+        assert!(
+            include_str!("mesh_pass/frame_upload.rs").contains("RenderStage::MeshPoseSampling")
+        );
     }
 
     #[test]

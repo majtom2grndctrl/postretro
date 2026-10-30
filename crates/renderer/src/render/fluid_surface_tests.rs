@@ -2916,7 +2916,7 @@ fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
     );
     assert!(code_only(wgsl_fn(sh, "write_descriptor")).contains("self.dirty=true;"));
     assert!(code_only(wgsl_fn(sh, "set_active")).contains("self.dirty=true;"));
-    let lighting = include_str!("renderer_lighting.rs");
+    let lighting = include_str!("renderer_lighting/light_bridge.rs");
     assert!(
         code_only(wgsl_fn(lighting, "upload_light_bridge_snapshot"))
             .contains(".animation.write_descriptor(*slotasusize,bytes);")
@@ -3360,6 +3360,11 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         include_str!("renderer_render_frame.rs"),
         include_str!("renderer_extent.rs"),
         include_str!("renderer_resources.rs"),
+        include_str!("renderer_resources/lightmap_shadow.rs"),
+        include_str!("renderer_resources/lights.rs"),
+        include_str!("renderer_resources/sh_family.rs"),
+        include_str!("renderer_resources/shadow_pools.rs"),
+        include_str!("renderer_resources/world_geometry.rs"),
         include_str!("renderer_full_init.rs"),
     ] {
         assert!(!code_only(other).contains("set_reflection_quality("));
@@ -3384,7 +3389,17 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .expect("fluid group 5 rebuild");
     assert!(depth < colour && colour < fog && fog < fluid);
     // Unload, and every level change, reaches group 5 only through the clear.
-    let resources = code_only(include_str!("renderer_resources.rs"));
+    let resources = code_only(
+        &[
+            include_str!("renderer_resources.rs"),
+            include_str!("renderer_resources/lightmap_shadow.rs"),
+            include_str!("renderer_resources/lights.rs"),
+            include_str!("renderer_resources/sh_family.rs"),
+            include_str!("renderer_resources/shadow_pools.rs"),
+            include_str!("renderer_resources/world_geometry.rs"),
+        ]
+        .concat(),
+    );
     assert!(!resources.contains("rebuild_scene_inputs"));
     assert!(resources.contains("full.fluid_surface.clear(device);"));
 
@@ -3754,7 +3769,7 @@ fn the_fluid_grid_takes_the_lattice_the_sh_sampler_reads() {
         None
     );
     // The renderer offers the legacy mirrors only while a section is bound.
-    let types = code_only(include_str!("renderer_types.rs"));
+    let types = code_only(include_str!("renderer_types/full_renderer.rs"));
     assert!(types.contains(
         "self.sh_volume_resources.present.then_some((self.sh_volume_resources.grid_origin,\
          self.sh_volume_resources.cell_size,)),"

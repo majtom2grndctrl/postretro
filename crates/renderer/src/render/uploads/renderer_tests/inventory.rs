@@ -432,26 +432,26 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
     );
     let expected = [
         (
-            "renderer_lighting.rs",
-            include_str!("../../renderer_lighting.rs"),
+            "renderer_lighting/light_bridge.rs",
+            include_str!("../../renderer_lighting/light_bridge.rs"),
             "&full.lights_buffer",
             0,
         ),
         (
-            "renderer_lighting.rs",
-            include_str!("../../renderer_lighting.rs"),
+            "renderer_lighting/light_bridge.rs",
+            include_str!("../../renderer_lighting/light_bridge.rs"),
             "&full.influence_buffer",
             0,
         ),
         (
-            "renderer_lighting.rs",
-            include_str!("../../renderer_lighting.rs"),
+            "renderer_lighting/light_bridge.rs",
+            include_str!("../../renderer_lighting/light_bridge.rs"),
             "&full.sh_volume_resources.scripted_light_descriptors",
             0,
         ),
         (
-            "renderer_lighting.rs",
-            include_str!("../../renderer_lighting.rs"),
+            "renderer_lighting/light_bridge.rs",
+            include_str!("../../renderer_lighting/light_bridge.rs"),
             "&full.sh_volume_resources.animation.anim_samples",
             0,
         ),

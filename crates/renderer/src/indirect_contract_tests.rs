@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const INSTALL: &str = "render/renderer_resources.rs";
+const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
 const INIT: &str = "render/renderer_init.rs";
 const PIPELINES: &str = "render/renderer_init_pipelines.rs";
@@ -35,18 +36,18 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             }
             ("path" | "macro" | "import", "INDIRECT_FIRST_INSTANCE") => false,
             ("call", "ComputeCullPipeline::new") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
+                is_owner(site, WORLD_GEOMETRY, "", "install_bvh_and_cull")
                     || is_owner(site, BOOT, "", "build_full_renderer")
             }
             ("call", "build_world_vertex_buffers") => {
                 is_owner(site, BOOT, "", "build_full_renderer")
             }
             ("literal", "World Index Buffer") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
+                is_owner(site, WORLD_GEOMETRY, "", "install_world_buffers")
                     || is_owner(site, PIPELINES, "", "build_world_vertex_buffers")
             }
             ("assign", "full.index_buffer") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
+                is_owner(site, WORLD_GEOMETRY, "", "install_world_buffers")
                     && format!("{};", site.text) == compact(WORLD_INDEX_UPLOAD)
             }
             ("call", "draw_indirect_buckets") => is_owner(
@@ -445,20 +446,50 @@ fn indirect_contract_compiled_pipeline_sources_ban_index_builtins() {
 fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
     let sources = load_sources(&source_root());
     let (functions, _) = scan(&sources);
+    // The install is a sequencer: the buffer phase uploads the index buffer,
+    // and the cull phase, called after it, recreates every cull owner.
     let install = function(&functions, INSTALL, "install_level_geometry");
+    let buffers = function(&functions, WORLD_GEOMETRY, "install_world_buffers");
     require(
-        install,
+        buffers,
         &[
             "let (vertex_data, index_data, index_count) = if has_geometry { let count = geometry.indices.len() as u32; (cast_world_vertices_to_bytes(geometry.vertices), bytemuck_cast_slice_u32(geometry.indices), count,) } else { (vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], vec![0u8; 4], 0u32,) };",
             WORLD_INDEX_UPLOAD,
-            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
             "full.index_count = index_count;",
+        ],
+    );
+    let cull = function(&functions, WORLD_GEOMETRY, "install_bvh_and_cull");
+    require(
+        cull,
+        &[
+            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
             "full.bvh_leaves = bvh_leaves;",
+        ],
+    );
+    require(
+        function(
+            &functions,
+            "render/renderer_resources/lightmap_shadow.rs",
+            "plan_lightmap_family",
+        ),
+        &[
             "let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();",
         ],
     );
+    for phase in [
+        "world_geometry::install_world_buffers(",
+        "lightmap_shadow::plan_lightmap_family(",
+        "world_geometry::install_bvh_and_cull(",
+    ] {
+        assert_eq!(install.matches(phase).count(), 1, "{phase}");
+    }
     assert!(
-        install.find("full.index_buffer=").unwrap() < install.find("full.compute_cull=").unwrap()
+        install
+            .find("world_geometry::install_world_buffers(")
+            .unwrap()
+            < install
+                .find("world_geometry::install_bvh_and_cull(")
+                .unwrap()
     );
     let boot = function(&functions, BOOT, "build_full_renderer");
     // This explicit None makes the boot constructor closures unreachable. Only

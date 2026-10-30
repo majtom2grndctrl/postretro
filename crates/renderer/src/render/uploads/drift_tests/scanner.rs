@@ -684,9 +684,11 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("off-main upload flush")
         }
-        ("render/loaded_texture.rs", "", "upload_texture_data" | "upload_texture_array_data") => {
-            Some("load")
-        }
+        (
+            "render/loaded_texture/upload.rs",
+            "",
+            "upload_texture_data" | "upload_texture_array_data",
+        ) => Some("load"),
         ("render/sh_atlas.rs", "", "upload_depth_moment_texture") => Some("load"),
         ("render/sdf_atlas.rs", "SdfAtlasResources", "new") => Some("load"),
         ("render/smoke.rs", "", "create_sprite_placeholder_array") => Some("load"),

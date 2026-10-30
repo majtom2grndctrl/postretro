@@ -379,7 +379,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         level_timings: StartupTimings::new(),
         active_level_tags: Vec::new(),
         active_level_source,
-        followed_level_life: None,
+        last_relevel: None,
         level_load: None,
         level_rx: None,
         level_worker: None,

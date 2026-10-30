@@ -5,7 +5,7 @@ use glam::Vec3;
 use crate::App;
 use crate::camera::Camera;
 use crate::frame_timing::InterpolableState;
-use crate::startup::BootState;
+use crate::startup::{BootState, LevelSource};
 use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_pools::TriggerPoolInstallReport;
 
@@ -303,7 +303,7 @@ impl App {
         // Retract this peer's reveal with its parity: a host's own reveal is
         // cleared here at unload and at suspend (a resumed install runs no
         // unload), and a client sends `Revealed(None)`.
-        endpoint.set_revealed_level(None);
+        endpoint.set_revealed_level(None, None);
         endpoint.reset_level_scoped_host_state();
     }
 
@@ -325,12 +325,18 @@ impl App {
     /// installed level. A host records its own reveal, which may promote
     /// revealed, parity-matched clients; the world poll later this frame
     /// consumes that promotion and spawns their pawns. A client declares
-    /// its reveal to the host. A timed-out reveal publishes the same.
+    /// its reveal to the host, naming the host level life it followed when
+    /// the last relevel named the installed map. A timed-out reveal publishes
+    /// the same.
     pub(crate) fn publish_net_reveal(&mut self) {
         // The identity install published as parity, so the two match by
         // construction.
         let Some(identity) = self.published_level_identity.clone() else {
             return;
+        };
+        let level_life = match (&self.active_level_source, &self.last_relevel) {
+            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
+            _ => None,
         };
         let Some(endpoint) = self
             .session
@@ -339,6 +345,6 @@ impl App {
         else {
             return;
         };
-        endpoint.set_revealed_level(Some(identity));
+        endpoint.set_revealed_level(Some(identity), level_life);
     }
 }

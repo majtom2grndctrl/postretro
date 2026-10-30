@@ -46,7 +46,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// they need no bump of their own; the ghost-link record takes discriminant 26.
 /// A declaration kind separates a timed switch from an immediate active-slot resync.
 /// The snapshot envelope's host level tick advances it to 36 (`SNAPSHOT_VERSION` 23).
-/// `Relevel`'s host level life advances it to 37.
+/// The host level life, on `Relevel` and on the client's `Revealed`, advances it to 37.
 pub const WIRE_VERSION: u32 = 37;
 
 #[must_use]
@@ -711,7 +711,7 @@ mod switch_tick_epoch_tests {
     // cannot land `levelLoad` tails on the host's fixed ticks: both gates
     // refuse it across the bump, and the application protocol stays PRLC.
     #[test]
-    fn level_tick_refuses_wire_35_peers() {
+    fn level_tick_refuses_wire_35_peers_and_admits_current_wire() {
         const PRE_LEVEL_TICK_WIRE_VERSION: u32 = 35;
         const {
             assert!(
@@ -747,9 +747,10 @@ mod switch_tick_epoch_tests {
         );
     }
 
-    // A wire-36 `Relevel` carries no host level life, so its client cannot
-    // tell a host restart of its active map from a duplicate. Both gates
-    // refuse it; the snapshot layout and the vocabulary are unchanged.
+    // A wire-36 `Relevel` and `Revealed` carry no host level life, so a client
+    // cannot tell a host restart of its active map from a duplicate, and a
+    // reveal of the previous install would promote into the restart. Both
+    // gates refuse it; the snapshot layout and the vocabulary are unchanged.
     #[test]
     fn relevel_level_life_refuses_wire_36_peers_and_admits_wire_37() {
         const PRE_LEVEL_LIFE_WIRE_VERSION: u32 = 36;

@@ -15,7 +15,7 @@ const PRLC_33: u64 = (0x_5052_4C43_u64 << 32) | 33;
 const PRLC_34: u64 = (0x_5052_4C43_u64 << 32) | 34;
 /// The pair the snapshot's host level tick replaced: PRLC / wire 35.
 const PRLC_35: u64 = (0x_5052_4C43_u64 << 32) | 35;
-/// The pair `Relevel`'s host level life replaced: PRLC / wire 36.
+/// The pair the host level life replaced: PRLC / wire 36.
 const PRLC_36: u64 = (0x_5052_4C43_u64 << 32) | 36;
 
 const STEP: Duration = Duration::from_millis(16);

@@ -137,10 +137,33 @@ pub enum ClientControlMessage {
     JoinSeed {
         slots: BTreeMap<String, JoinSeedValue>,
     },
-    /// The level identity this client has revealed: the same opaque string as
-    /// its parity declaration's identity. `None` retracts a reveal at unload or
-    /// suspend. Re-sent on change; the host keeps the last one per slot.
-    Revealed(Option<String>),
+    /// The level install this client has revealed. `None` retracts a reveal
+    /// at unload or suspend. Re-sent on change; the host keeps the last one
+    /// per slot.
+    Revealed(Option<RevealedLevel>),
+}
+
+/// One revealed level install: which map, and which host install of it.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RevealedLevel {
+    /// The same opaque string as the parity declaration's level identity.
+    pub identity: String,
+    /// The host level life (`ServerControlMessage::Relevel`) this install
+    /// followed, or `None` for a level the host never named: an uncatalogued
+    /// one, or a reveal before the first relevel. On a catalog level the host
+    /// promotes only a reveal of its current life, so a reveal from before a
+    /// restart of the same map never counts.
+    pub level_life: Option<u64>,
+}
+
+impl RevealedLevel {
+    #[must_use]
+    pub fn new(identity: impl Into<String>, level_life: Option<u64>) -> Self {
+        Self {
+            identity: identity.into(),
+            level_life,
+        }
+    }
 }
 
 /// A terminal immutable-admission mismatch.
@@ -189,8 +212,8 @@ pub enum HoldingCause {
         identity: String,
     },
     /// Content parity holds and the host has revealed, but this client has not
-    /// declared that it revealed the host's level. Carries the host's level
-    /// identity.
+    /// declared that it revealed the host's installed level: that map, and on
+    /// a catalog level that install's life. Carries the host's level identity.
     ClientNotRevealed {
         identity: String,
     },
@@ -502,7 +525,10 @@ mod tests {
             )]),
         }));
         assert!(round_trips(&ClientControlMessage::Revealed(Some(
-            "map-a".to_string()
+            RevealedLevel::new("map-a", Some(4))
+        ))));
+        assert!(round_trips(&ClientControlMessage::Revealed(Some(
+            RevealedLevel::new("map-a", None)
         ))));
         assert!(round_trips(&ClientControlMessage::Revealed(None)));
         assert!(round_trips(&ServerControlMessage::Divergence(

@@ -1,5 +1,4 @@
-// A host restart of the client's active catalog map, followed through the
-// client's lifecycle: teardown, reinstall, `levelLoad` again.
+// Host same-map restart followed through the client lifecycle.
 // See: context/lib/networking.md §Slot lifecycle
 
 use super::tests::{
@@ -13,6 +12,7 @@ use postretro_entities::{
     NamedReaction, ReactionDescriptor, ScopedReaction, SequenceStep, SequenceTarget,
     SystemReactionCommand,
 };
+use postretro_net::wire::RevealedLevel;
 use serde_json::json;
 use std::collections::VecDeque;
 
@@ -30,10 +30,21 @@ fn played(app: &App) -> Vec<String> {
 
 /// The client installs the catalog map as the production install does: the
 /// in-flight entry becomes the active source, then segment B fires `levelLoad`.
-fn install_e1m1(app: &mut App) {
+/// The reveal edge follows: Running, and the reveal declared to the host.
+fn install_and_reveal_e1m1(app: &mut App) {
     app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
-    app.boot_state = BootState::Running;
     install_capture_world(app, &level_world("e1m1", 1));
+    app.published_level_identity = Some("e1m1".to_string());
+    app.boot_state = BootState::Running;
+    app.publish_net_reveal();
+}
+
+/// The level install this client declares revealed to the host.
+fn declared_reveal(app: &App) -> Option<RevealedLevel> {
+    match app.session.as_ref()?.net_endpoint.as_ref()? {
+        crate::netcode::NetEndpoint::Client { client, .. } => client.revealed_level().cloned(),
+        crate::netcode::NetEndpoint::Host { .. } => None,
+    }
 }
 
 // Regression: a client treated the host's same-map restart as a duplicate
@@ -83,8 +94,13 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
         scripting.scheduler.clone()
     };
 
-    install_e1m1(&mut app);
+    install_and_reveal_e1m1(&mut app);
     assert_eq!(played(&app), ["intro"], "the first life's levelLoad");
+    assert_eq!(
+        declared_reveal(&app),
+        Some(RevealedLevel::new("e1m1", None)),
+        "revealed before the host named a life"
+    );
     assert_eq!(scheduler.pending_len(), 1, "the klaxon tail parks");
     for _ in 0..3 {
         scheduler.evaluate(&[]);
@@ -99,6 +115,11 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
     assert!(
         app.level_requests.is_empty(),
         "the joined life and its duplicate keep the active map"
+    );
+    assert_eq!(
+        declared_reveal(&app),
+        Some(RevealedLevel::new("e1m1", Some(1))),
+        "keeping the map re-declares the reveal with the adopted life"
     );
 
     // The host restarts the same map: a new life of it.
@@ -123,6 +144,7 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
     assert_eq!(scheduler.pending_len(), 0, "the old life's tail is gone");
     assert_eq!(scheduler.level_tick(), 0, "the level clock restarts");
     assert_eq!(scheduler.join_host_tick(), None, "the join tick refixes");
+    assert_eq!(declared_reveal(&app), None, "teardown retracts the reveal");
     app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert!(
         app.level_requests.is_empty(),
@@ -131,7 +153,7 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
 
     // The worker cannot load a fixture path; install its payload directly.
     drop_in_flight_worker(&mut app);
-    install_e1m1(&mut app);
+    install_and_reveal_e1m1(&mut app);
     assert_eq!(played(&app), ["intro"], "levelLoad fires for the new life");
     assert_eq!(
         scheduler.pending_len(),
@@ -139,4 +161,31 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
         "only the new life's tail is parked"
     );
     assert_eq!(scheduler.join_host_tick(), None);
+    assert_eq!(
+        declared_reveal(&app),
+        Some(RevealedLevel::new("e1m1", Some(2))),
+        "the reveal names the restart's life, so only it promotes"
+    );
+}
+
+// A restart can land while the client is still settling the previous life:
+// that life is installed, not in flight, so it reloads like a Running one.
+#[test]
+fn host_restart_during_settling_reloads_the_settling_life() {
+    let mut app = test_app();
+    connect_test_app_as_client(&mut app);
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
+    app.follow_relevel_catalog("e1m1".to_string(), 1);
+    app.level_requests.clear();
+    app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
+    app.boot_state = BootState::Settling;
+
+    app.follow_relevel_catalog("e1m1".to_string(), 2);
+    assert_eq!(
+        app.level_requests,
+        VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
+    );
 }

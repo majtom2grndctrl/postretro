@@ -119,12 +119,13 @@ impl App {
     /// request path. A catalog mismatch is recoverable content divergence, not
     /// a transport failure: leave the connection alive for a later relevel.
     ///
-    /// `level_life` names the host install. A repeat of the life already
-    /// followed changes nothing, and a load already in flight or queued for
-    /// the id serves any life. The active map is kept on this connection's
-    /// first relevel, but a new life of a map this client already followed is
-    /// a host restart: it reinstalls, so `levelLoad` fires again and the
-    /// teardown clears the previous life's level state.
+    /// `level_life` names the host install. A repeat of the last life changes
+    /// nothing, and a load already in flight or queued for the id serves any
+    /// life. The connection's first relevel naming a known id keeps a matching
+    /// active map and adopts its life, re-declaring the reveal if already
+    /// revealed. Any later life naming the active map is a host reinstall: the
+    /// client reloads, so `levelLoad` fires again and teardown clears the
+    /// previous life's level state.
     pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String, level_life: u64) {
         let catalog_has_id = self.session.as_ref().is_some_and(|session| {
             session
@@ -141,19 +142,29 @@ impl App {
             return;
         }
 
-        let followed = self.followed_level_life.replace(level_life);
-        if followed == Some(level_life) || self.relevel_load_is_selected(&catalog_id) {
+        let previous = self.last_relevel.replace((catalog_id.clone(), level_life));
+        let first = previous.is_none();
+        if previous.is_some_and(|(_, life)| life == level_life)
+            || self.relevel_load_is_selected(&catalog_id)
+        {
             return;
         }
         let active = matches!(
             &self.active_level_source,
             Some(LevelSource::Catalog(id)) if *id == catalog_id
         );
-        if active && followed.is_none() {
+        if active && first {
+            // A reveal declared before the host named a life cannot promote
+            // into a catalog level; declare the adopted one.
+            if self.boot_state == BootState::Running {
+                self.publish_net_reveal();
+            }
             return;
         }
         if active {
-            log::info!("[Net] host restarted `{catalog_id}`; reinstalling it");
+            log::info!(
+                "[Net] host reinstalled `{catalog_id}` (level life {level_life}); reloading it"
+            );
         }
 
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));

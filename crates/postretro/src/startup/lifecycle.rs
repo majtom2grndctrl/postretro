@@ -2035,7 +2035,7 @@ pub(crate) mod tests {
             level_timings: StartupTimings::new(),
             active_level_tags: Vec::new(),
             active_level_source: None,
-            followed_level_life: None,
+            last_relevel: None,
             level_load: None,
             level_rx: None,
             level_worker: None,

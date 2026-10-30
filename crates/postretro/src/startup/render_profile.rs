@@ -388,17 +388,9 @@ mod tests {
             .expect("full init calls ensure_full_ready");
         assert!(apply < full_ready, "applied before full init builds");
 
-        let lifecycle = include_str!("lifecycle.rs")
-            .split("#[cfg(test)]\npub(crate) mod tests")
-            .next()
-            .unwrap();
-        let install = lifecycle
-            .split("fn install_level_payload(")
-            .nth(1)
-            .expect("install_level_payload exists")
-            .split("\n    fn ")
-            .next()
-            .unwrap();
+        // The sequencer with every stage it calls spliced in at its call.
+        let install =
+            crate::startup::lifecycle::lifecycle_test_fixtures::install_level_payload_source();
         let apply = install
             .find("self.apply_player_reflection_quality(reflection_quality);")
             .expect("level install re-applies the kept reflection tier");

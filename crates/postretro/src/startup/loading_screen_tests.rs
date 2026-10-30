@@ -251,17 +251,9 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
 /// none reaches Running without Settling.
 #[test]
 fn loading_screen_ends_at_reveal_and_on_failure() {
-    let source = include_str!("lifecycle.rs")
-        .split("#[cfg(test)]\npub(crate) mod tests")
-        .next()
-        .unwrap();
-    let success = source
-        .split("fn finish_level_payload(")
-        .nth(1)
-        .unwrap()
-        .split("fn finish_level_failure(")
-        .next()
-        .unwrap();
+    use crate::startup::lifecycle::lifecycle_test_fixtures::method_source;
+    let success =
+        method_source(include_str!("lifecycle_finish.rs"), "finish_level_payload").unwrap();
     let installed = success.find("self.install_level_payload(").unwrap();
     let settling = success.find("self.enter_settling(").unwrap();
     assert!(installed < settling);
@@ -285,13 +277,7 @@ fn loading_screen_ends_at_reveal_and_on_failure() {
         .unwrap();
     assert!(ended < running);
 
-    let failure = source
-        .split("fn finish_level_failure(")
-        .nth(1)
-        .unwrap()
-        .split("fn install_level_payload(")
-        .next()
-        .unwrap();
+    let failure = method_source(include_str!("lifecycle.rs"), "finish_level_failure").unwrap();
     let ended = failure.find("self.end_loading_screen();").unwrap();
     let boot_exit = failure.find("if was_boot_load {").unwrap();
     assert!(
@@ -794,10 +780,9 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
             .find(&format!("fn {function}("))
             .unwrap_or_else(|| panic!("`{function}` exists"));
         let rest = &source[start + 3..];
-        &rest[..rest
-            .find("\n    fn ")
-            .or(rest.find("\n    pub"))
-            .unwrap_or(rest.len())]
+        // Methods sit at four-space indent: the first closing brace there ends
+        // this one, so the check reads its body and nothing after it.
+        &rest[..rest.find("\n    }\n").unwrap_or(rest.len())]
     }
     for (file, source, function) in [
         ("settling.rs", include_str!("settling.rs"), "reveal_level"),

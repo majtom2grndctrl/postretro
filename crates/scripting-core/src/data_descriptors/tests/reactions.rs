@@ -2130,3 +2130,67 @@ fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
         assert_eq!(js_reaction, lua_reaction);
     }
 }
+
+// A sequence entry with no `id`, `kind` or `target` is a system step: every
+// system reaction kind parses as one in both runtimes.
+#[test]
+fn every_system_reaction_kind_parses_as_a_system_step_in_both_runtimes() {
+    use postretro_entities::reactions::system_commands::SystemReactionKind;
+    for kind in SystemReactionKind::ALL {
+        let name = kind.primitive_name();
+        let js = eval_js(
+            &format!(r#"({{ name: "r", sequence: [{{ primitive: "{name}", args: {{}} }}] }})"#),
+            |ctx, value| named_reaction_from_js(ctx, value).unwrap(),
+        );
+        let lua = eval_lua(
+            &format!(
+                r#"return {{ name = "r", sequence = {{ {{ primitive = "{name}", args = {{}} }} }} }}"#
+            ),
+            |value| named_reaction_from_lua(value).unwrap(),
+        );
+        for reaction in [js, lua] {
+            let ReactionDescriptor::Sequence(steps) = reaction.descriptor else {
+                panic!("`{name}` parses as a sequence");
+            };
+            assert_eq!(steps[0].id, SequenceTarget::System, "`{name}`");
+            assert_eq!(steps[0].primitive, name);
+        }
+    }
+}
+
+// A targetless step must name a system reaction, and carries neither `tag`
+// nor `onComplete`; each rejection names the reaction and the step.
+#[test]
+fn malformed_system_steps_are_rejected_naming_the_reaction_and_step_in_both_runtimes() {
+    let cases = [
+        (
+            r#"{ primitive: "applyDamage", args: { amount: 5 } }"#,
+            r#"{ primitive = "applyDamage", args = { amount = 5 } }"#,
+            "reaction `bad` sequence step 1: `applyDamage` has no `id`, `kind` or `target`, and is not a system reaction",
+        ),
+        (
+            r#"{ primitive: "playSound", tag: "door", args: { sound: "x" } }"#,
+            r#"{ primitive = "playSound", tag = "door", args = { sound = "x" } }"#,
+            "reaction `bad` sequence step 1: system step `playSound` cannot carry `tag`",
+        ),
+        (
+            r#"{ primitive: "playSound", onComplete: "next", args: { sound: "x" } }"#,
+            r#"{ primitive = "playSound", onComplete = "next", args = { sound = "x" } }"#,
+            "reaction `bad` sequence step 1: system step `playSound` cannot carry `onComplete`",
+        ),
+    ];
+    for (js_step, lua_step, expected) in cases {
+        let js = format!(
+            r#"({{ name: "bad", sequence: [{{ primitive: "playSound", args: {{ sound: "ok" }} }}, {js_step}] }})"#
+        );
+        let error = eval_js(&js, |ctx, value| {
+            named_reaction_from_js(ctx, value).unwrap_err()
+        });
+        assert!(error.to_string().contains(expected), "QuickJS: {error}");
+        let lua = format!(
+            r#"return {{ name = "bad", sequence = {{ {{ primitive = "playSound", args = {{ sound = "ok" }} }}, {lua_step} }} }}"#
+        );
+        let error = eval_lua(&lua, |value| named_reaction_from_lua(value).unwrap_err());
+        assert!(error.to_string().contains(expected), "Luau: {error}");
+    }
+}

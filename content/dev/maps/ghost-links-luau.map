@@ -57,7 +57,7 @@
 // seconds later the final closet door sinks and two knights and two
 // limitators wake. A second arrival
 // starts nothing again. No placed monster opts into ghosting.
-// The blue touch plate in either copy runs echo.reveal and echo.swell.
+// The blue touch plate in either copy runs echo.reveal, which also swells the echo.
 // Both players start in copy A main room, west of the room centre, clear of
 // every trigger volume and closet mouth: spawn 1 at -128 0 and spawn 2,
 // coop_only, 64 units north of it. Body centres are 40 units up.

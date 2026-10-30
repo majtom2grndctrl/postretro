@@ -902,6 +902,7 @@ fn synchronized_time_highwater_prevents_stale_snapshot_or_repair_resurrection_af
         sequence: 1,
         server_tick: 1,
         server_script_time: 4.0,
+        level_tick: 0,
         records: Vec::new(),
         state_schema_fingerprint: [0; 32],
         state_records: Vec::new(),

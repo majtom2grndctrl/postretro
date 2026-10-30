@@ -11,6 +11,8 @@ mod swim_slot_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 mod validate;
+#[cfg(test)]
+pub(crate) use validate::player_event_refuses;
 pub use validate::{
     reachable_machine_local_reactions, reachable_machine_local_reactions_from_residual,
 };

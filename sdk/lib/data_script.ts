@@ -92,7 +92,6 @@ export type ProgressReactionDescriptor = {
   progress: { tag: string; at: number; fire: string };
 };
 
-/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 declare const reactionBodyScopeBrand: unique symbol;
 
 /** A body retains the fire context its builders require, including direct-body registration. */
@@ -100,6 +99,7 @@ export type ReactionBodyScope<S> = {
   readonly [reactionBodyScopeBrand]?: (scope: S) => void;
 };
 
+/** Invokes a named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it (fog, emitter and animation primitives have no typed builder). True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload. */
 export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   primitive: string;
   kind?: "npc" | "player";
@@ -107,6 +107,19 @@ export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   target?: "@activators" | "@trigger" | "@teleporter" | "@player";
   args?: Record<string, unknown> | null;
   onComplete?: string;
+};
+
+/** A system reaction (`playSound`, `updateState`, the Ghost bus setter, …): a body
+ * on its own, and a sequence step unspread, doing what the same reaction does
+ * as a body. It names no target. */
+export type SystemReactionStep<S = {}> = ReactionBodyScope<S> & {
+  primitive: string;
+  args?: Record<string, unknown> | null;
+  id?: never;
+  kind?: never;
+  tag?: never;
+  target?: never;
+  onComplete?: never;
 };
 
 /**
@@ -187,18 +200,41 @@ export type SequenceStep =
   | StopTrapStep
   | GroupCommand
   | SubjectTokenCommand
+  | SystemReactionStep<any>
   | WaitStep
   | FireStep;
 
-/** Ordered member, group, subject-token and control steps. Steps begin in
- * array order; `fire` queues a named dispatch, while `wait` stops the current
- * drain and resumes the remaining tail after its delay. */
+/** A step as an array or `sequence` entry. A reaction handle, a `progress`
+ * body, a nested `{ sequence }` and an `onComplete` follow-up are bodies, not
+ * steps: fire a handle with `fire(r)`. */
+export type ReactionStepEntry = SequenceStep & {
+  name?: never;
+  progress?: never;
+  sequence?: never;
+  onComplete?: never;
+};
+
+/** Steps in authored order. Nested arrays flatten at any depth, so the arrays
+ * member methods, `wait()` and `fire()` return need no spread. */
+export type ReactionStepList = readonly (ReactionStepEntry | ReactionStepList)[];
+
+/** An authored `{ sequence }` body: ordered member, group, subject-token,
+ * system and control steps. The list may nest; `defineReaction` flattens it.
+ * Steps begin in array order; `fire` queues a named dispatch, while `wait`
+ * stops the current drain and resumes the remaining tail after its delay. */
 export type SequenceReactionDescriptor = {
-  sequence: SequenceStep[];
+  sequence: ReactionStepList;
+};
+
+/** A `{ sequence }` as the manifest and every `Reaction` carry it: one flat
+ * list of steps. Only `defineReaction` flattens, so a raw manifest literal
+ * spreads the arrays builders return. */
+export type ManifestSequenceDescriptor = {
+  sequence: readonly ReactionStepEntry[];
 };
 
 /** `name` is merged into the descriptor at the top level so the Rust deserializer reads event name and body from one flat object. */
-export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ReactionBody<S>;
+export type NamedReactionDescriptor<S = any> = { name: string; levels?: string[] } & ManifestReactionBody<S>;
 
 /**
  * Deserialized once at level load; the data-script VM is dropped immediately after.
@@ -279,11 +315,24 @@ type ModManifestInput = Omit<import("postretro").ModManifest, "stores"> & {
   readonly stores?: readonly (StoreDeclaration | StoreHandle)[];
 };
 
-export type ReactionBody<S = {}> = ReactionBodyScope<S> & (
+/** A body as the manifest carries it: one primitive, a flat `{ sequence }` or
+ * a `{ progress }`. */
+export type ManifestReactionBody<S = {}> = ReactionBodyScope<S> & (
   | ProgressReactionDescriptor
   | PrimitiveReactionDescriptor<S>
-  | SequenceReactionDescriptor
+  | ManifestSequenceDescriptor
 );
+
+/** A reaction body as authored: a `{ progress }`, a primitive, a `{ sequence }`
+ * whose list may nest, or an array of steps, which `defineReaction` lowers to
+ * a flat `{ sequence }`. An empty array is an inert reaction. */
+export type ReactionBody<S = {}> =
+  | (ReactionBodyScope<S> & (
+    | ProgressReactionDescriptor
+    | PrimitiveReactionDescriptor<S>
+    | SequenceReactionDescriptor
+  ))
+  | ReactionStepList;
 
 declare const reactionScopeBrand: unique symbol;
 

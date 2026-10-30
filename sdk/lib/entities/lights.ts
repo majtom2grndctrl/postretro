@@ -17,9 +17,9 @@ import type { SequenceStep } from "../data_script";
  * `setLightAnimation` step arrays. Authors call methods on the handle
  * rather than passing `light.id` into free functions.
  *
- * Each capability method returns a single-element `SequenceStep[]`
- * suitable for splicing into a `defineReaction({ sequence: [...] })`
- * body.
+ * Each capability method returns a single-element `SequenceStep[]`,
+ * usable directly in an array body or a `sequence` (nested arrays
+ * flatten).
  */
 export interface LightEntityHandle
   extends GeneratedLightEntity,

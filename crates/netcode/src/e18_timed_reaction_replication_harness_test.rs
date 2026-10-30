@@ -1,10 +1,9 @@
 // E18 Task 7 — the two-endpoint replication checks the plan requires: (1) a
 // delayed `fire` step dispatching a system-targeted `setState` reaction
-// reaches a connected client through state replication, with no client-side
-// scheduler evaluation (O24's positive replication half — O24's own
-// mechanism, "the client parks nothing", is unit-tested directly against
-// `ReactionScheduler::enroll` in `reaction_scheduler.rs` and
-// `reaction_scheduler_ordering_tests.rs`; this file adds the two-endpoint wire
+// reaches a connected client through state replication, never through a
+// client-side landing (a trigger fire is host-only, so a `Client`-role
+// scheduler parks nothing for it; the scheduler's own role and class rules are
+// unit-tested in `reaction_scheduler/`; this file adds the two-endpoint wire
 // proof), and (2) the consumer's alarm crossing fires client-side once the
 // write lands (O42).
 //
@@ -318,10 +317,9 @@ struct TimedAlarmHarness {
     client_sequence_registry: SequencedPrimitiveRegistry,
     client_reaction_registry: ReactionPrimitiveRegistry,
     client_system_registry: SystemReactionRegistry,
-    /// A connected client's own scheduler. Never enabled — a connected client
-    /// keeps no active scheduler even though the control handler is
-    /// registered on its long-lived sequence registry (O24's host-only guard,
-    /// driven the same way `auto_close.rs`'s own tests drive `set_enabled`).
+    /// A connected client's own scheduler, in the production `Client` role. A
+    /// trigger fire is host-only, so this scheduler parks nothing for the
+    /// fixture reaction; its alarm value arrives only by replication.
     client_scheduler: ReactionScheduler,
     client_applied_alarm: bool,
     client_level_installed: bool,
@@ -395,16 +393,18 @@ impl TimedAlarmHarness {
         host_owners.set(host_remote_pawn, CLIENT_ID);
 
         let host_scheduler = ReactionScheduler::default();
-        host_scheduler.set_enabled(true);
+        host_scheduler
+            .set_role(postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut host_sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut host_sequence_registry, host_scheduler.clone());
         let host_reaction_registry = ReactionPrimitiveRegistry::new();
         let mut host_system_registry = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut host_system_registry);
 
-        // A connected client's scheduler is constructed but never enabled —
-        // the O24 mechanism.
+        // A connected client runs the `Client` role, as the session sets it.
         let client_scheduler = ReactionScheduler::default();
+        client_scheduler
+            .set_role(postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client);
         let mut client_sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(
             &mut client_sequence_registry,
@@ -672,6 +672,7 @@ impl TimedAlarmHarness {
             faction_sentiment_record: None,
             ghost_audio: None,
             server_script_time: 0.0,
+            level_tick: 0,
         };
         assert!(
             self.server
@@ -912,28 +913,86 @@ fn delayed_fire_of_system_setstate_replicates_and_drives_client_local_presentati
     );
 }
 
-/// O24's negative half, made concrete in the two-endpoint context: even
-/// though the client possesses a fully wired scheduler (control handlers
-/// registered, `wait`/`fire` reachable), it is never enabled — attempting to
-/// enroll the SAME reaction's wait client-side is refused at the host-only
-/// guard, so "no client-side scheduler evaluation" is not merely "the client
-/// never tried" but "the client is structurally blocked if it did".
+/// The `Client` role parks nothing for a host-only origin, which supersedes
+/// O24's host-only guard. The client runs a fully wired `Client`-role scheduler
+/// (control handlers registered, `wait`/`fire` reachable), yet a trigger fire
+/// is host-only, so enrolling the SAME reaction's tail client-side parks
+/// nothing. Evaluating and draining that scheduler lands nothing, the
+/// replicated slot stays at its default until replication delivers the host's
+/// write, and the client queues no system command of its own.
+///
+/// The test enrolls through `ReactionScheduler::enroll`, whose origin is
+/// host-only: it pins the host-only-on-client refusal, not a production
+/// trigger path.
 #[test]
-fn client_scheduler_never_enrolls_the_same_reaction() {
-    let harness = TimedAlarmHarness::new();
+fn client_scheduler_parks_nothing_for_trigger_tail_and_alarm_arrives_by_replication() {
+    let mut harness = TimedAlarmHarness::new();
     assert_eq!(
-        harness.client_scheduler.pending_len(),
-        0,
-        "a freshly constructed, never-enabled client scheduler starts empty"
+        harness.client_scheduler.role(),
+        postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client,
+        "the harness client runs the production client role"
     );
-    // Attempt the exact enrollment a client-side re-run of TRIGGER_EVENT's
-    // wait would make.
+    harness.connect_client();
+    harness.fire_trigger_and_wait_for_alarm();
+    assert_number_slot_near(harness.host_alarm(), 1.0, "the host landed the alarm write");
+    assert_number_slot_near(
+        harness.client_alarm(),
+        0.0,
+        "before replication the client slot holds its default",
+    );
+
+    // The tail a client-side re-run of TRIGGER_EVENT's wait would enroll: the
+    // `fire(raiseAlarm)` step after the wait. `enroll` takes the host-only
+    // trigger origin, so the `Client` role refuses to park it.
+    let tail = vec![SequenceStep {
+        id: SequenceTarget::Fire,
+        primitive: "fire".to_string(),
+        args: serde_json::json!({ "event": RAISE_ALARM }),
+    }];
     harness
         .client_scheduler
-        .enroll(TRIGGER_EVENT, 0, None, vec![], 3, false);
+        .enroll(TRIGGER_EVENT, 0, None, tail, 3, false);
     assert_eq!(
         harness.client_scheduler.pending_len(),
         0,
-        "the host-only guard refuses enrollment; no tail ever parks or runs client-side"
+        "a host-only trigger tail does not park on a client"
+    );
+
+    // Run the client scheduler as a connected client's tick would; with
+    // nothing parked there is nothing to land.
+    for _ in 0..8 {
+        harness.client_scheduler.begin_frame();
+        harness.client_scheduler.evaluate(&[]);
+    }
+    {
+        let data = harness.client_ctx.data_registry.borrow();
+        harness.client_scheduler.drain_landings(
+            &data,
+            &harness.client_sequence_registry,
+            &harness.client_reaction_registry,
+            &harness.client_system_registry,
+            &harness.client_ctx,
+        );
+    }
+    assert!(
+        harness.client_ctx.system_commands.take().is_empty(),
+        "no client landing queued a system command for the alarm write"
+    );
+    assert_number_slot_near(
+        harness.client_alarm(),
+        0.0,
+        "the client scheduler landed nothing, so the slot is still unwritten",
+    );
+
+    harness.replicate_until_client_applies_alarm();
+    assert_number_slot_near(
+        harness.client_alarm(),
+        1.0,
+        "the alarm value reaches the client only through replication",
+    );
+    assert_eq!(
+        harness.client_scheduler.pending_len(),
+        0,
+        "the client scheduler still parks nothing after replication"
     );
 }

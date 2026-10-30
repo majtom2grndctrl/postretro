@@ -4786,6 +4786,13 @@ impl App {
         );
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
+        // The host timeline clients land `levelLoad` tails on: the fixed ticks
+        // this host's scheduler counted this level, clamped as its own are.
+        // Serialization runs after this frame's fixed ticks and landing drain,
+        // so the stamp is the level tick as this snapshot was assembled: every
+        // host tail due by it has already landed here.
+        let level_tick =
+            u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -4901,6 +4908,7 @@ impl App {
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 tick.wrapping_add(1),
                 server_script_time,
+                level_tick,
                 snapshot_due,
                 last_emitted_snapshot_tick,
                 &script_ctx.presentation_overrides.borrow(),
@@ -8605,7 +8613,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             event_names.iter().map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8666,7 +8676,9 @@ mod tests {
 
         drain_named_events_with_sequences(
             [("activate", Some(emitter.clone())), ("activate", None)],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8776,7 +8788,9 @@ mod tests {
                     origin: edge.point.unwrap_or_default(),
                 }),
             )],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8898,7 +8912,9 @@ mod tests {
         register_system_reaction_primitives(&mut system_registry);
         drain_named_events_with_sequences(
             [(emission.address, Some(emission.emitter.clone()))],
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &SequencedPrimitiveRegistry::new(),
             &ReactionPrimitiveRegistry::new(),
@@ -8936,7 +8952,7 @@ mod tests {
 
         let script_ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let reaction_registry = ReactionPrimitiveRegistry::new();
@@ -8981,7 +8997,9 @@ mod tests {
 
         let chained = drain_named_events_with_sequences(
             ["movementEvent", "aiEvent", "weaponEvent"].map(|name| (name, None)),
-            postretro_entities::FireOrigin::EveryMachine,
+            postretro_entities::FireOrigin::EveryMachine(
+                postretro_entities::MachineSource::HostMirrored,
+            ),
             &data_registry,
             &sequence_registry,
             &reaction_registry,
@@ -8998,15 +9016,21 @@ mod tests {
             vec![
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
                 (
                     "postTickTarget".to_string(),
-                    postretro_entities::FireOrigin::EveryMachine
+                    postretro_entities::FireOrigin::EveryMachine(
+                        postretro_entities::MachineSource::HostMirrored
+                    )
                 ),
             ],
             "each source contributes its fire target to the shared deferred batch"

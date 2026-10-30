@@ -3,8 +3,8 @@
 -- `getMapEntities("light")`. The handle composes the
 -- generated `LightEntity` snapshot with capability methods (`pulse`,
 -- `fade`, `flicker`, `colorShift`, `sweep`) that return
--- `{SetLightAnimationStep}` arrays suitable for splicing into a
--- `defineReaction("...", { sequence = ... })` body.
+-- `{SetLightAnimationStep}` arrays, usable directly in an array body or a
+-- `sequence` (nested tables flatten).
 --
 -- `wrapLightEntity` is included in the returned table; the Luau prelude
 -- evaluator (`luau.rs`) extracts it and installs it as a temporary

@@ -460,6 +460,7 @@ impl Fixture {
             None,
             self.tick,
             f64::from(self.tick) * f64::from(DT),
+            0,
             self.tick.is_multiple_of(2),
             &mut receive.last_snapshot_tick,
             &Default::default(),

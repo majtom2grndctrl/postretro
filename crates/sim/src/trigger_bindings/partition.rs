@@ -139,11 +139,15 @@ pub(crate) fn partition_direct_reaction(
                         commands.push(command);
                     }
                 } else {
-                    // A member or group presentation step drains app-side at
-                    // frame end, where a group resolves like any group step.
+                    // A member, group or system presentation step drains
+                    // app-side at frame end, where a group resolves like any
+                    // group step and a system step enqueues in the trigger's
+                    // fire context.
                     if !matches!(
                         step.id,
-                        SequenceTarget::Entity(_) | SequenceTarget::Group(_)
+                        SequenceTarget::Entity(_)
+                            | SequenceTarget::Group(_)
+                            | SequenceTarget::System
                     ) {
                         log::warn!(
                             "[Trigger] sentinel target on presentation sequence step `{}` cannot drain app-side; not binding",

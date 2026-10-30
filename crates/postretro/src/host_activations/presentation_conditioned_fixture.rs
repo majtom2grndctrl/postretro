@@ -197,8 +197,9 @@ impl Peer {
         id: u64,
         world: &postretro_level_loader::LevelWorld,
         active: bool,
+        reactions: Vec<NamedReaction>,
     ) -> Self {
-        let app = installed(world, true);
+        let app = installed_with_reactions(world, true, reactions);
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut client = NetClient::new(
             socket,
@@ -295,8 +296,33 @@ impl Peer {
         sample(&mut self.app, self.clock)
     }
 }
-fn installed(world: &postretro_level_loader::LevelWorld, client: bool) -> App {
-    installed_with_reactions(world, client, Vec::new())
+/// Install-time extension a test sets before building a harness: called once
+/// per installed machine, in install order (the host, then each peer), after
+/// the production registrations and before the level installs.
+type InstallHook = std::rc::Rc<dyn Fn(usize, &mut crate::session::ScriptingCore, &ScriptCtx)>;
+thread_local! {
+    static INSTALL_HOOK: std::cell::RefCell<Option<InstallHook>> =
+        const { std::cell::RefCell::new(None) };
+    static INSTALL_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Set the install hook for the harnesses built while the returned guard
+/// lives. Dropping it clears the hook and its install count, so a later test
+/// on the same thread installs without it.
+#[must_use = "the hook is cleared when the guard drops; bind it for the test's lifetime"]
+fn set_install_hook(
+    hook: impl Fn(usize, &mut crate::session::ScriptingCore, &ScriptCtx) + 'static,
+) -> InstallHookGuard {
+    INSTALL_COUNT.with(|count| count.set(0));
+    INSTALL_HOOK.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::new(hook)));
+    InstallHookGuard
+}
+/// Clears the install hook on drop; see [`set_install_hook`].
+struct InstallHookGuard;
+impl Drop for InstallHookGuard {
+    fn drop(&mut self) {
+        INSTALL_HOOK.with(|slot| *slot.borrow_mut() = None);
+        INSTALL_COUNT.with(|count| count.set(0));
+    }
 }
 fn installed_with_reactions(
     world: &postretro_level_loader::LevelWorld,
@@ -341,7 +367,22 @@ fn installed_with_reactions(
         &mut session.scripting.sequence_registry,
         session.scripting.scheduler.clone(),
     );
-    session.scripting.scheduler.set_enabled(!client);
+    session
+        .scripting
+        .scheduler
+        .set_role(if client {
+            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client
+        } else {
+            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host
+        });
+    let index = INSTALL_COUNT.with(|count| {
+        let index = count.get();
+        count.set(index + 1);
+        index
+    });
+    if let Some(hook) = INSTALL_HOOK.with(|slot| slot.borrow().clone()) {
+        hook(index, &mut session.scripting, &ctx);
+    }
     session
         .light_bridge
         .populate_from_level(&world.lights, &mut ctx.registry.borrow_mut(), 0);
@@ -406,6 +447,53 @@ fn installed_with_reactions(
     app.script_time = 0.0;
     app
 }
+/// One host frame of the `wait` scheduler: its `ticks` fixed ticks, then the
+/// landing drain.
+fn land_host_tails(app: &mut App, clock: f64, ticks: usize) {
+    let ctx = script_ctx(app);
+    ctx.presentation_script_time.set(clock);
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    scripting.scheduler.begin_frame();
+    for _ in 0..ticks {
+        scripting.scheduler.evaluate(&[]);
+    }
+    scripting.scheduler.drain_landings(
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
+/// One client frame of the `wait` scheduler, as the frame loop runs it: a
+/// tick of the own clock, the host level-tick reading beside the level clock
+/// `clock`, then the landing drain.
+fn land_client_tails(app: &mut App, clock: f64, host_level_tick: Option<f64>) {
+    let ctx = script_ctx(app);
+    ctx.presentation_script_time.set(clock);
+    let scripting = &app.session.as_ref().unwrap().scripting;
+    scripting.scheduler.begin_frame();
+    scripting.scheduler.evaluate(&[]);
+    scripting.scheduler.advance_host_clock(host_level_tick, clock);
+    scripting.scheduler.drain_landings(
+        &ctx.data_registry.borrow(),
+        &scripting.sequence_registry,
+        &scripting.reaction_registry,
+        &scripting.system_registry,
+        &ctx,
+    );
+}
+/// Apply the `setState` commands among `commands` through the app drain, as
+/// the frame-end drain applies them.
+fn apply_slot_writes(app: &mut App, commands: &[SystemReactionCommand]) {
+    let ctx = script_ctx(app);
+    for command in commands {
+        if matches!(command, SystemReactionCommand::SetState { .. }) {
+            ctx.system_commands.push(command.clone());
+        }
+    }
+    app.dispatch_system_commands();
+}
 fn sample(app: &mut App, clock: f64) -> Vec<f32> {
     sample_delta(app, clock, DT as f32)
 }
@@ -455,6 +543,10 @@ struct Harness {
     bindings: TriggerBindingTable,
     players: Vec<AuthoritativePlayer>,
     host_commands: Vec<SystemReactionCommand>,
+    /// Run every machine's `wait` scheduler in `step`, as the frame loop does.
+    drive_schedulers: bool,
+    /// Apply each machine's landed `setState` commands through its app drain.
+    apply_slot_writes: bool,
 }
 impl Harness {
     fn new() -> Self {
@@ -467,6 +559,22 @@ impl Harness {
         world: postretro_level_loader::LevelWorld,
         reactions: Vec<NamedReaction>,
     ) -> Self {
+        Self::build(world, reactions, Vec::new(), false)
+    }
+    /// Every machine installs `reactions`, as every machine runs the same
+    /// scripts, and `step` drives each machine's `wait` scheduler.
+    fn with_shared_reactions(
+        world: postretro_level_loader::LevelWorld,
+        reactions: Vec<NamedReaction>,
+    ) -> Self {
+        Self::build(world, reactions.clone(), reactions, true)
+    }
+    fn build(
+        world: postretro_level_loader::LevelWorld,
+        reactions: Vec<NamedReaction>,
+        peer_reactions: Vec<NamedReaction>,
+        drive_schedulers: bool,
+    ) -> Self {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = socket.local_addr().unwrap();
         let mut server =
@@ -475,9 +583,19 @@ impl Harness {
         server.set_mod_digest(Some([0x6a; 32]));
         server.set_level_parity(Some(("presentation".into(), [0x6a; 32])));
         let host = installed_with_reactions(&world, false, reactions);
+        let bindings = if drive_schedulers {
+            let ctx = script_ctx(&host);
+            TriggerBindingTable::build_with_script_ctx(
+                &ctx.registry.borrow(),
+                &ctx.data_registry.borrow(),
+                &ctx,
+            )
+        } else {
+            Default::default()
+        };
         let mut peers = vec![
-            Peer::new(address, CLIENT_A, &world, true),
-            Peer::new(address, CLIENT_B, &world, false),
+            Peer::new(address, CLIENT_A, &world, true, peer_reactions.clone()),
+            Peer::new(address, CLIENT_B, &world, false, peer_reactions),
         ];
         postretro_net::harness::reveal_both(&mut server, &mut peers[0].client, "presentation");
         server.add_relay_connection(CLIENT_A, None);
@@ -525,9 +643,11 @@ impl Harness {
             tick: 0,
             clock: 0.0,
             system: Default::default(),
-            bindings: Default::default(),
+            bindings,
             players,
             host_commands: Vec::new(),
+            drive_schedulers,
+            apply_slot_writes: false,
         }
     }
     fn connect_late(&mut self) {
@@ -585,6 +705,7 @@ impl Harness {
         let ctx = script_ctx(&self.host);
         let registry = ctx.registry.borrow();
         let session = self.host.session.as_ref().unwrap();
+        let level_tick = u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         netcode::host_register_descriptor_entities(
             &registry,
             &mut self.allocator,
@@ -622,25 +743,60 @@ impl Harness {
             None,
             self.tick,
             self.clock,
+            level_tick,
             true,
             &mut self.last,
             &ctx.presentation_overrides.borrow(),
         );
     }
     fn step(&mut self) {
-        self.tick += 1;
+        self.frame(Some(1));
+    }
+    /// One wall-clock frame on every machine. `host_ticks` is the fixed ticks
+    /// the host's frame runs; `None` while the host is busy — inside a stalled
+    /// frame, or loading and settling a level — so it neither ticks, lands nor
+    /// publishes, while every peer's level clock runs on.
+    fn frame(&mut self, host_ticks: Option<usize>) {
         // Script time keeps elapsed frame time even when a stall costs ticks.
         self.clock += DT;
-        self.publish();
+        if let Some(ticks) = host_ticks {
+            self.tick += u32::try_from(ticks).unwrap();
+            // The frame loop's order: the frame's ticks and landing drain,
+            // then serialization, which stamps the level tick they reached.
+            if self.drive_schedulers {
+                land_host_tails(&mut self.host, self.clock, ticks);
+                let seen = self.host_commands.len();
+                self.route();
+                if self.apply_slot_writes {
+                    apply_slot_writes(&mut self.host, &self.host_commands[seen..]);
+                }
+            }
+            self.publish();
+        }
         self.transport();
         for peer in &mut self.peers {
             if peer.active {
                 peer.clock = self.clock - peer.clock_origin;
                 peer.receive(&self.world);
+                if self.drive_schedulers {
+                    // The production reading, as the frame loop takes it:
+                    // the level ticks of the snapshots this peer received,
+                    // extrapolated on its own level clock and RTT.
+                    let reading = peer.replication.host_level_tick(peer.clock, peer.rtt);
+                    land_client_tails(&mut peer.app, peer.clock, reading);
+                    let seen = peer.commands.len();
+                    peer.commands
+                        .extend(script_ctx(&peer.app).system_commands.take());
+                    if self.apply_slot_writes {
+                        apply_slot_writes(&mut peer.app, &peer.commands[seen..]);
+                    }
+                }
                 peer.sample();
             }
         }
-        sample(&mut self.host, self.clock);
+        if host_ticks.is_some() {
+            sample(&mut self.host, self.clock);
+        }
     }
     fn advance(&mut self, ticks: usize) {
         for _ in 0..ticks {

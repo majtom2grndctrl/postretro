@@ -10,6 +10,7 @@ pub mod knockback;
 pub mod light;
 pub mod manifest;
 pub mod movement;
+pub mod system_reaction_names;
 pub mod view_pose;
 pub mod weapon_resource;
 
@@ -25,5 +26,6 @@ pub use knockback::*;
 pub use light::*;
 pub use manifest::*;
 pub use movement::*;
+pub use system_reaction_names::*;
 pub use view_pose::*;
 pub use weapon_resource::*;

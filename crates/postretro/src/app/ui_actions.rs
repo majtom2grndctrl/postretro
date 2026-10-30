@@ -360,7 +360,7 @@ impl App {
                             &session.scripting.reaction_registry,
                             &session.scripting.system_registry,
                             script_ctx,
-                            None,
+                            Some(ui_dispatch_context(&on_press)),
                         );
                         if !chained.is_empty() {
                             dispatch_deferred_named_events_with_sequences(
@@ -494,7 +494,7 @@ impl App {
                 &session.scripting.reaction_registry,
                 &session.scripting.system_registry,
                 script_ctx,
-                None,
+                Some(ui_dispatch_context(&on_commit)),
             );
             if !chained.is_empty() {
                 dispatch_deferred_named_events_with_sequences(
@@ -594,6 +594,20 @@ impl App {
         {
             ws.window.set_cursor_visible(visible);
         }
+    }
+}
+
+/// A UI press fires on the pressing machine for its own player.
+fn ui_dispatch_context(
+    address: &str,
+) -> postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext<'static> {
+    postretro_scripting_core::reaction_dispatch::NamedEventDispatchContext {
+        origin: postretro_entities::FireOrigin::EveryMachine(
+            postretro_entities::MachineSource::OwnState,
+        ),
+        source: format!("named:{address}"),
+        values: &[],
+        emitter: None,
     }
 }
 

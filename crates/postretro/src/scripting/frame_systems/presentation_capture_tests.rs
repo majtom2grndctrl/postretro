@@ -44,7 +44,7 @@ impl Fixture {
         ctx.presentation_override_validator
             .set(Some(crate::netcode::validate_presentation_override));
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut seq = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut seq, scheduler.clone());
         register_sequenced_fog_primitives(&mut seq, ctx.clone());
@@ -267,7 +267,10 @@ fn primitive_tag_and_npc_group_capture_only_networked_every_machine_writes() {
         group,
     ]);
     fixture.frame(2.0);
-    fixture.fire("tag", FireOrigin::EveryMachine);
+    fixture.fire(
+        "tag",
+        FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+    );
     assert!(
         !fixture
             .ctx
@@ -291,7 +294,10 @@ fn primitive_tag_and_npc_group_capture_only_networked_every_machine_writes() {
         panic!("emitter")
     };
     assert_eq!(c.rate, 4.0);
-    fixture.fire("group", FireOrigin::EveryMachine);
+    fixture.fire(
+        "group",
+        FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+    );
     let PresentationComponent::Emitter(c) = fixture
         .record(enemy, ComponentKind::BillboardEmitter)
         .component
@@ -329,7 +335,10 @@ fn first_unrecorded_write_then_host_restore_compares_against_frame_start() {
         sequence("restore", id, "setFogAnimation", Value::Null),
     ]);
     fixture.frame(3.0);
-    fixture.fire("change", FireOrigin::EveryMachine);
+    fixture.fire(
+        "change",
+        FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+    );
     assert!(
         fixture
             .ctx

@@ -339,6 +339,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
             None,
             step * 2,
             2.0 + f64::from(step) / 30.0,
+            0,
             true,
             &mut last_tick,
             &ctx.presentation_overrides.borrow(),

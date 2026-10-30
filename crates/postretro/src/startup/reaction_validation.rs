@@ -207,12 +207,11 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             continue;
         }
 
-        // V4a: any step AFTER a `wait` carrying an `@activators`/`@trigger`
-        // sentinel reads fire context that no `wait` survives. Drop the reaction.
-        // `args_read_emitter` here guards a sequenced step's raw args, not a
-        // live `playSound` step: `playSound` registers only as a system
-        // primitive, so `validate_sequence_primitives` (`setupLevel`) drops
-        // any sequence naming it before this pass ever runs.
+        // V4a: any step AFTER a `wait` carrying a subject-token sentinel, or a
+        // system step reading `at: on.emitter`, a dispatch input or an
+        // audience token, reads fire context that no `wait` survives. Drop
+        // the reaction. A literal `"everyone"` audience names no subject and
+        // survives.
         if let Some(wait_pos) = steps
             .iter()
             .position(|step| matches!(step.id, SequenceTarget::Wait))
@@ -226,11 +225,15 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
                 ) || args_read_emitter(&step.args)
                     || args_read_audience(&step.args)
                     || postretro_scripting_core::player_event_scope::reads_event_player(&step.args)
+                    || postretro_scripting_core::player_event_scope::reads_any_dispatch_input(
+                        &step.args,
+                    )
             })
         {
             let step_index = wait_pos + 1 + offset;
+            let primitive = &steps[step_index].primitive;
             log::error!(
-                "[Scripting] reaction `{name}` step {step_index}: a post-`wait` step reads fire context (`@activators`/`@trigger`/`@player`, `byPlayer(on.player)`, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
+                "[Scripting] reaction `{name}` step {step_index} (`{primitive}`): a post-`wait` step reads fire context (`@activators`/`@trigger`/`@player`, `byPlayer(on.player)`, a dispatch input, an audience token, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
             );
             data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
             continue;
@@ -379,11 +382,19 @@ fn scoped_fire_targets(
                         SequenceTarget::EventPlayer => Some(format!(
                             "sequence step {step_index} target sentinel `@player`"
                         )),
-                        // Guards a sequenced step's raw args, not a live
-                        // `playSound` step: `playSound` is a system-only
-                        // primitive, so no sequence naming it survives
-                        // `validate_sequence_primitives` (`setupLevel`) to
-                        // reach V4b.
+                        // A system step reads the fire's context as the same
+                        // body does: `fire` dispatches with none.
+                        SequenceTarget::System => (args_read_emitter(&step.args)
+                            || args_read_audience(&step.args)
+                            || postretro_scripting_core::player_event_scope::reads_event_player(
+                                &step.args,
+                            ))
+                        .then(|| {
+                            format!(
+                                "sequence step {step_index} `{}` reads a token audience, `on.emitter` or `byPlayer(on.player)`",
+                                step.primitive
+                            )
+                        }),
                         SequenceTarget::Entity(_)
                         | SequenceTarget::Group(_)
                         | SequenceTarget::Wait
@@ -581,6 +592,15 @@ pub(crate) fn warn_hosted_trigger_machine_local(
 
 #[cfg(test)]
 mod tests {
+    // System-step ordering pins (S1–S8, S27) share this module's helpers.
+    mod system_step_pins {
+        include!("system_step_pin_tests.rs");
+    }
+    // Array bodies through the SDK share this module's helpers.
+    mod array_bodies {
+        include!("array_body_tests.rs");
+    }
+
     use super::*;
     use postretro_entities::{
         NamedReaction, PrimitiveDescriptor, SlotOwnership, SlotRecord, SlotSchema, SlotType,
@@ -1361,7 +1381,7 @@ mod tests {
         // Runtime: the frame order of the session — trigger tick, Exit cancels
         // (`evaluate`), residual drain under the fire's origin, landings.
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let landings = std::rc::Rc::new(std::cell::Cell::new(0usize));
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
@@ -1597,7 +1617,7 @@ mod tests {
         steps: &[PrepartitionedReactionStep],
     ) -> (Vec<(String, postretro_entities::FireOrigin)>, usize) {
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         sequence_registry.register("note", |_id, _args| Ok(()));
@@ -1929,7 +1949,7 @@ mod tests {
         };
 
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut sequence_registry, scheduler.clone());
         let mut reaction_registry = ReactionPrimitiveRegistry::new();

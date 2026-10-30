@@ -1050,6 +1050,7 @@ impl Loopback {
             None,
             self.tick,
             f64::from(self.tick) * f64::from(TICK_SECONDS),
+            0,
             self.snapshot_due,
             &mut self.last_snapshot,
             &self.host.presentation_overrides.borrow(),

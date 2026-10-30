@@ -1,7 +1,7 @@
 # level-load-pipeline — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: db827b1df
 
 ## Corrections

@@ -24,10 +24,11 @@ const MIN_BRUSH_AABB_EXTENT: f64 = 1.0e-12;
 /// A portal fragment whose every corner lies this close to a brush plane
 /// parallel to the portal lies on that face. A portal on a flush door's face
 /// can lie on the wall's plane instead, and the map parser reads both planes
-/// in f32, so on an oblique face they lie up to tens of micrometres apart,
-/// either way, across a large map. Far below any authored offset: a door
-/// 0.5 mm proud of its wall stays off the wall's plane.
-const ON_FACE_EPSILON_M: f64 = 1.0e-4;
+/// in f32, which puts a flush wall face and door face on an oblique plane a
+/// few micrometres apart, either way: 1.6e-6 m measured on a 45° wall 36 m
+/// long, and this allows about six times that. Anything wider would seal
+/// slots that are really open.
+const ON_FACE_EPSILON_M: f64 = 1.0e-5;
 
 /// A brush plane whose normal is this close to the portal's, either way, is
 /// parallel to it.
@@ -541,9 +542,9 @@ mod tests {
         // 2 m tall, and a portal 1 m square on its face, every corner off
         // the face by the same amount, as a portal on the wall plane a flush
         // door shares lands. Off by rounding or parse noise on either side,
-        // the portal lies on the face. A millimetre in front of it, or past
-        // the door's edge by a micrometre, the zero-tolerance pass still
-        // finds it open.
+        // the portal lies on the face. Just past the tolerance or a
+        // millimetre in front of it, or past the door's edge by a
+        // micrometre, the zero-tolerance pass still finds it open.
         let u = DVec3::new(1.0, 0.0, 1.0).normalize();
         let v = DVec3::new(1.0, 0.0, -1.0).normalize();
         let (face, middle) = (8.0, 2.0);
@@ -580,17 +581,19 @@ mod tests {
             back_leaf: 1,
         };
 
-        for dust in [3e-13, -3e-13, 7e-10, -7e-10, 5e-5, -5e-5, 0.0] {
+        for dust in [3e-13, -3e-13, 7e-10, -7e-10, 2e-6, -2e-6, 0.0] {
             assert_eq!(
                 sealed_portal_ids_for_mover(&door, &[on_face(dust, middle + 0.5)]),
                 vec![0],
                 "a portal {dust:e} m off the door's face is sealed"
             );
         }
-        assert!(
-            sealed_portal_ids_for_mover(&door, &[on_face(1e-3, middle + 0.5)]).is_empty(),
-            "a portal 1 mm in front of the door's face is not"
-        );
+        for dust in [1.2 * ON_FACE_EPSILON_M, 1e-3] {
+            assert!(
+                sealed_portal_ids_for_mover(&door, &[on_face(dust, middle + 0.5)]).is_empty(),
+                "a portal {dust:e} m in front of the door's face is not"
+            );
+        }
         assert!(
             sealed_portal_ids_for_mover(&door, &[on_face(0.0, middle + 1.0 + 1e-6)]).is_empty(),
             "a portal running 1 µm past the door's edge is not"

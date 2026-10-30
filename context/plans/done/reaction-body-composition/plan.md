@@ -1,7 +1,7 @@
 # reaction-body-composition — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 4c5bc9a
 
 Source under `crates/`, `sdk/`, `content/` and `docs/` is unchanged since the brief's `71eb28bf3`. Every symbol cited by Decisions and Path was re-read at `4c5bc9a`. No Decision premise is false.

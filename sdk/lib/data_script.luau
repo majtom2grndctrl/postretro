@@ -82,9 +82,9 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
---- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a body
---- on its own, and a sequence step unspread, doing what the same reaction does
---- as a body. It names no target.
+--- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a
+--- body on its own, and a step in a list, doing what the same reaction does as
+--- a body. It names no target.
 export type SystemReactionStep = {
   primitive: string,
   args: { [string]: any }?,
@@ -342,8 +342,9 @@ export type NamedReactionDescriptor = {
   target: SubjectTokenTarget?,
   args: { [string]: any }?,
   onComplete: string?,
-  -- sequence shape, flat: member, group, subject-token, system and wait/fire
-  -- control steps
+  -- sequence shape, as the manifest carries it: one flat list of member,
+  -- group, subject-token, system and wait/fire control steps. Only
+  -- `defineReaction` flattens nested lists.
   sequence: {SequenceStep}?,
 }
 

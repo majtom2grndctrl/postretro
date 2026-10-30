@@ -1,22 +1,34 @@
 // The player-events level script — the per-player events surface example —
 // run through the production script runtime in both languages: the shipped
 // `content/dev/scripts/player-events.{ts,luau}` twins must emit identical wire
-// data and parse to identical player events.
+// data, parse to identical player events, and install and fire through the
+// level-load pipeline.
 // See: context/lib/scripting.md §12 (Player events)
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use postretro_entities::{ScriptCtx, ScriptError};
+use postretro_entities::{
+    Recipients, ScriptCtx, ScriptError, SlotValue, SystemReactionCommand, Transform,
+};
+use postretro_foundation::Seat;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_scripting_core::data_descriptors::{LevelManifest, PlayerEventEdge};
 use postretro_scripting_core::primitive_adapters::StoreSchemaJson;
 use postretro_scripting_core::primitives_registry::{ContextScope, PrimitiveRegistry};
 use postretro_scripting_core::runtime::{ScriptRuntime, ScriptRuntimeConfig};
+use postretro_sim::residual_drain::{ResidualRegistries, drain_frame_residuals};
+use postretro_test_log_capture::{CapturedRecord, LogCapture};
 use serde_json::{Value, json};
 
+use crate::coop_fixture_tests::{assert_merged_player_event_bodies, initialize_dev_mod};
 use crate::scripting::primitives::register_all;
+use crate::startup::lifecycle::tests::{install_capture_world, level_world, script_ctx, test_app};
+
+const XP: &str = "progression.xp";
+const LEVEL: &str = "leveling.level";
+const LAST_LEVEL_UP_XP: &str = "leveling.lastLevelUpXp";
 
 /// Wraps `setupLevel` so the raw value it returns — before Rust-side parsing —
 /// reaches `__playerEventsCapture`.
@@ -181,5 +193,202 @@ fn player_events_twins_emit_byte_identical_wire_data() {
             "b": { "op": "const", "value": false },
         })),
         "a plain per-player read in the condition carries no owner"
+    );
+}
+
+/// Install one twin the way `App::install_level_payload` does on a host: the
+/// production dev mod, whose stores declare `progression` and `leveling`; then
+/// `install_world_cpu`, which runs the sequence-primitive check, Pass A, a fresh
+/// `SystemReactionIrBindings` and Pass B; then the session's IR-binding and
+/// player-event rebuilds. Seats 1 and 2 each hold a pawn before the table
+/// binds. Returns the app and every record the install logged.
+fn install_level(script: &str) -> (crate::App, Vec<CapturedRecord>) {
+    let mut app = test_app();
+    let ctx = script_ctx(&app);
+    let mut primitives = PrimitiveRegistry::new();
+    register_all(&mut primitives, ctx.clone());
+    initialize_dev_mod(&mut app, &primitives);
+
+    let path = dev_script(script);
+    let source = if script.ends_with(".luau") {
+        std::fs::read_to_string(&path).expect("Luau twin reads")
+    } else {
+        postretro_script_compiler::bundle_entry(&path).expect("player-events.ts bundles")
+    };
+    let mut world = level_world("player-events", 1);
+    world.data_script = Some(DataScriptSection {
+        compiled_bytes: source.into_bytes(),
+        source_path: path.to_string_lossy().into_owned(),
+    });
+
+    let capture = LogCapture::start();
+    install_capture_world(&mut app, &world);
+    for seat in [Seat(1), Seat(2)] {
+        let mut registry = ctx.registry.borrow_mut();
+        let pawn = registry.spawn(Transform::default());
+        registry.bind_pawn_seat(pawn, seat);
+    }
+    app.rebuild_active_system_reaction_bindings();
+    app.rebuild_player_events(false);
+    let records = capture.records();
+    (app, records)
+}
+
+/// One host frame's player-event work, in `frame_loop` order: evaluation of
+/// the settled tick and the fires' in-tick commands, then the frame-end
+/// residual drain. Returns the presentation routed to a player's machine.
+fn player_event_frame(app: &mut crate::App) -> Vec<(Recipients, SystemReactionCommand)> {
+    let ctx = script_ctx(app);
+    let mut residuals = Vec::new();
+    app.player_events.run_tick(&ctx, &mut residuals);
+    let session = app.session.as_ref().expect("test app session installed");
+    drain_frame_residuals(
+        &[],
+        &app.trigger_bindings,
+        &session.trigger_system,
+        &residuals,
+        &app.player_events,
+        &session.scripting.scheduler,
+        ResidualRegistries {
+            sequence: &session.scripting.sequence_registry,
+            reaction: &session.scripting.reaction_registry,
+            system: &session.scripting.system_registry,
+        },
+        &ctx,
+        &mut Vec::new(),
+        |_, _| None,
+    );
+    ctx.system_commands.take_routed()
+}
+
+fn number(value: Option<&SlotValue>) -> Option<f32> {
+    match value {
+        Some(SlotValue::Number(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn per_seat(ctx: &ScriptCtx, name: &str, seat: Seat) -> Option<f32> {
+    let slots = ctx.slot_table.borrow();
+    let record = slots
+        .get(name)
+        .unwrap_or_else(|| panic!("the dev mod declares `{name}`"));
+    number(record.per_seat_value(seat))
+}
+
+fn global(ctx: &ScriptCtx, name: &str) -> Option<f32> {
+    let slots = ctx.slot_table.borrow();
+    let record = slots
+        .get(name)
+        .unwrap_or_else(|| panic!("the dev mod declares `{name}`"));
+    number(record.value.as_ref())
+}
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1e-5
+}
+
+// Regression: a sequence body carrying `on.player` passed the sim-side
+// `World::install` but was dropped by the production install passes it skips.
+// The shipped twins install through the level-load pipeline without a
+// warning, keep both merged bodies whole, and the level-up fires once, for
+// the crossing player only, with its fanfare on that player's machine.
+#[test]
+fn player_events_twins_install_through_level_load_and_level_up_only_the_crossing_player() {
+    let mut installed = Vec::new();
+    for script in ["player-events.ts", "player-events.luau"] {
+        let (mut app, records) = install_level(script);
+        // The dev mod's descriptors warn about hit-zone tags their models
+        // lack when the mod's descriptors install; those name no reaction.
+        let loud: Vec<_> = records
+            .iter()
+            .filter(|record| record.level <= log::Level::Warn)
+            .filter(|record| !record.message.starts_with("[HitZones]"))
+            .collect();
+        assert!(
+            loud.is_empty(),
+            "{script}: the level install logs nothing above info: {loud:#?}"
+        );
+        let ctx = script_ctx(&app);
+        let reactions = ctx.data_registry.borrow().reactions.clone();
+        assert_merged_player_event_bodies(&reactions, script);
+        installed.push(reactions);
+
+        {
+            let mut slots = ctx.slot_table.borrow_mut();
+            let xp = slots
+                .get_mut(XP)
+                .expect("the dev mod declares progression.xp");
+            xp.set_per_seat_value(Seat(1), SlotValue::Number(20.0));
+            xp.set_per_seat_value(Seat(2), SlotValue::Number(140.0));
+        }
+        // Whatever install queued (a `levelLoad` fire) is not this frame's.
+        ctx.system_commands.discard_all();
+
+        let routed = player_event_frame(&mut app);
+        let seat_two = Recipients::Seats(vec![Seat(2)]);
+        assert_eq!(
+            routed.iter().map(|(to, _)| to).collect::<Vec<_>>(),
+            [&seat_two, &seat_two, &seat_two],
+            "{script}: the fanfare, flash and shake route to the crossing player's seat: {routed:?}"
+        );
+        assert!(
+            matches!(&routed[0].1, SystemReactionCommand::PlaySound { sound, .. } if sound == "sfx/test_tone"),
+            "{script}: the fanfare plays first: {:?}",
+            routed[0].1
+        );
+        assert!(
+            matches!(
+                &routed[1].1,
+                SystemReactionCommand::FlashScreen { color, duration_ms, .. }
+                    if color.iter().zip([1.0, 0.9, 0.3, 0.4]).all(|(a, b)| close(*a, b))
+                        && close(*duration_ms, 300.0)
+            ),
+            "{script}: the gold flash is second: {:?}",
+            routed[1].1
+        );
+        assert!(
+            matches!(
+                &routed[2].1,
+                SystemReactionCommand::ScreenShake {
+                    amplitude,
+                    duration_ms,
+                    frequency: Some(frequency),
+                    ..
+                } if close(*amplitude, 6.0) && close(*duration_ms, 350.0) && close(*frequency, 18.0)
+            ),
+            "{script}: the screen shake is third: {:?}",
+            routed[2].1
+        );
+        assert_eq!(
+            per_seat(&ctx, LEVEL, Seat(2)),
+            Some(2.0),
+            "{script}: on.player levels the crossing player"
+        );
+        assert_eq!(
+            global(&ctx, LAST_LEVEL_UP_XP),
+            Some(140.0),
+            "{script}: the level-up records the crossing player's XP"
+        );
+        assert_eq!(
+            per_seat(&ctx, LEVEL, Seat(1)),
+            Some(1.0),
+            "{script}: the other player keeps the declared default level"
+        );
+
+        let routed = player_event_frame(&mut app);
+        assert!(
+            routed.is_empty(),
+            "{script}: the guard holds, so nothing re-fires: {routed:?}"
+        );
+        assert_eq!(
+            per_seat(&ctx, LEVEL, Seat(2)),
+            Some(2.0),
+            "{script}: the milestone does not level twice"
+        );
+    }
+    assert_eq!(
+        installed[0], installed[1],
+        "both twins install the same validated reaction set"
     );
 }

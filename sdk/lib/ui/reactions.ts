@@ -429,11 +429,11 @@ export function accessibilityAction(field: string, op: string): string {
 /**
  * Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
  * Pure — returns a `showDialog` system reaction (a body on its own or a step in
- * a sequence or array body). The keyboard is
- * a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
- * `ui.textEntry` to show the live entry. The optional `onCommit` names a reaction
- * fired when the player commits (the on-screen `done` key or the hardware Enter
- * key); `nav.cancel` (Escape / B) closes without firing it.
+ * a sequence or array body). The keyboard is a capturing modal that edits the
+ * `ui.textEntry` slot; bind a `text` widget to `ui.textEntry` to show the live
+ * entry. The optional `onCommit` names a reaction fired when the player commits
+ * (the on-screen `done` key or the hardware Enter key); `nav.cancel`
+ * (Escape / B) closes without firing it.
  *
  * This is the canonical opener for the gamepad-accessible text-entry pattern: the
  * same `ui.textEntry` slot also receives the hardware-keyboard path's edits, so a
@@ -493,9 +493,8 @@ export function restartLevel(): import("../data_script").SystemReactionStep {
 /**
  * Return to the frontend menu, including its optional declared backdrop level.
  * Pure — returns a system reaction (a body on its own or a step in a sequence or
- * array body), no FFI. Use from authored reactions;
- * use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
- * the same lifecycle path.
+ * array body), no FFI. Use from authored reactions; use `QUIT_TO_MENU_ACTION`
+ * for direct button `onPress` values that should take the same lifecycle path.
  */
 export function returnToFrontend(): import("../data_script").SystemReactionStep {
   return { primitive: "returnToFrontend", args: {} };
@@ -534,13 +533,13 @@ export function adjustSentiment(
 /**
  * Write `value` to the writable state reference at the game-logic stage.
  * Pure — returns the existing `setState` system reaction (a body on its own or
- * a step in a sequence or array body), no engine side effect. Literal values use the normal runtime readonly gate, coercion,
- * and range path. A fluent value (`read(…)` and its operators, including
- * `byPlayer(on.player)` reads in a player-event reaction) or a raw
- * `RuntimeValue` binds once at level install. Known Number and Boolean slots,
- * including readonly slots, project as inputs. The write target must be
- * writable; unknown or nonprojectable inputs and readonly targets reject the
- * IR before it can fire.
+ * a step in a sequence or array body), no engine side effect. Literal values
+ * use the normal runtime readonly gate, coercion, and range path. A fluent value
+ * (`read(…)` and its operators, including `byPlayer(on.player)` reads in a
+ * player-event reaction) or a raw `RuntimeValue` binds once at level install.
+ * Known Number and Boolean slots, including readonly slots, project as inputs.
+ * The write target must be writable; unknown or nonprojectable inputs and
+ * readonly targets reject the IR before it can fire.
  */
 export function updateState<T extends number | boolean | string | ReadonlyArray<number>>(
   ref: Ref<T>,

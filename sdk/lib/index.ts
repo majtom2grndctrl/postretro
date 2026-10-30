@@ -54,6 +54,7 @@ export type {
   SystemReactionStep,
   ReactionStepEntry,
   ReactionStepList,
+  ReactionBody,
   ManifestReactionBody,
   SetFogAnimationStep,
   SetFogDensityStep,

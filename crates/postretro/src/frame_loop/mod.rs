@@ -991,6 +991,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // This tick's paired-trigger Exit fires cancel matching
             // interruptible instances before the countdown advances,
             // so an Exit on the exact landing tick wins.
+            // Each call is one fixed tick of the scheduler's tick count, which
+            // chained `wait` segments anchor to: run exactly once per fixed tick.
             scripting
                 .scheduler
                 .evaluate(&tick_events.trigger_exit_fires);

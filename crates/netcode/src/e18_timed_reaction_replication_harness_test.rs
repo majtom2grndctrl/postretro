@@ -912,13 +912,17 @@ fn delayed_fire_of_system_setstate_replicates_and_drives_client_local_presentati
     );
 }
 
-/// O24's negative half, made concrete in the two-endpoint context: the client
-/// runs a fully wired `Client`-role scheduler (control handlers registered,
-/// `wait`/`fire` reachable), yet a trigger fire is host-only, so enrolling the
-/// SAME reaction's tail client-side parks nothing. Evaluating and draining that
-/// scheduler lands nothing, the replicated slot stays at its default until
-/// replication delivers the host's write, and the client queues no system
-/// command of its own.
+/// The `Client` role parks nothing for a host-only origin, which supersedes
+/// O24's host-only guard. The client runs a fully wired `Client`-role scheduler
+/// (control handlers registered, `wait`/`fire` reachable), yet a trigger fire
+/// is host-only, so enrolling the SAME reaction's tail client-side parks
+/// nothing. Evaluating and draining that scheduler lands nothing, the
+/// replicated slot stays at its default until replication delivers the host's
+/// write, and the client queues no system command of its own.
+///
+/// The test enrolls through `ReactionScheduler::enroll`, whose origin is
+/// host-only: it pins the host-only-on-client refusal, not a production
+/// trigger path.
 #[test]
 fn client_scheduler_parks_nothing_for_trigger_tail_and_alarm_arrives_by_replication() {
     let mut harness = TimedAlarmHarness::new();

@@ -62,10 +62,12 @@ local function stableStringify(value: any): string
   local t = type(value)
   if t == "table" then
     -- Distinguish array-like from map-like by checking a contiguous 1..n run.
-    local n = #value
+    -- Raw reads only, so a passed-through command target's strict metatable
+    -- never fires.
+    local n = rawlen(value)
     local isArray = n > 0
     if isArray then
-      for k in pairs(value) do
+      for k in next, value do
         if type(k) ~= "number" then
           isArray = false
           break
@@ -75,18 +77,18 @@ local function stableStringify(value: any): string
     if isArray then
       local parts = {}
       for i = 1, n do
-        parts[i] = stableStringify(value[i])
+        parts[i] = stableStringify(rawget(value, i))
       end
       return "[" .. table.concat(parts, ",") .. "]"
     end
     local keys = {}
-    for k in pairs(value) do
+    for k in next, value do
       table.insert(keys, tostring(k))
     end
     table.sort(keys)
     local parts = {}
     for _, k in ipairs(keys) do
-      table.insert(parts, string.format("%q", k) .. ":" .. stableStringify((value :: any)[k]))
+      table.insert(parts, string.format("%q", k) .. ":" .. stableStringify(rawget(value, k)))
     end
     return "{" .. table.concat(parts, ",") .. "}"
   elseif t == "string" then
@@ -112,30 +114,40 @@ local function autoReactionId(descriptor: any): string
   return string.format("reaction_%08x", hash)
 end
 
--- Raised for a body that is none of `progress`, `primitive`, `sequence` or a
--- list of steps, so a misspelled key never installs an empty reaction. Every
--- `defineReaction` message here matches the TS SDK's word for word.
-local BODY_SHAPE_ERROR = "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps"
+-- Every `defineReaction` message here is the same literal the TS SDK throws;
+-- only an interpolated runtime type name, reaction name or primitive varies. A
+-- body that is none of `progress`, `primitive`, `sequence` or a list passes
+-- through, so the manifest parser skips that one reaction with a warning. What
+-- a list holds, and a `sequence` that is not a list, raises here. Each raise
+-- carries `level`, the `error` level of the author's `defineReaction` call
+-- from the raising function, so the position names the author's line.
 local SEQUENCE_SHAPE_ERROR = "defineReaction: `sequence` must be a list of steps"
+local MISSING_ENTRY_ERROR = "defineReaction: a list of steps has a missing entry"
+local RUNTIME_VALUE_ERROR = "defineReaction: a runtime value is not a step"
 
--- Whether `t` reads as a list of steps: empty, or keyed exactly 1..n. Probes
--- raw keys only, so no `__index` fires. A table whose metatable serves fields
--- (a command target, a state ref) is never a list, though an empty one has no
--- raw keys; mlua's array marker hides its metatable and passes.
-local function isList(t: any): boolean
+-- How `t` reads as a list of steps: "list" when empty or keyed exactly 1..n,
+-- "holey" when keyed by positive integers with a gap (a `nil` entry in a table
+-- constructor), else nil. Probes raw keys only, so no `__index` fires. A table
+-- whose metatable serves fields (a command target, a state ref) is never a
+-- list, though an empty one has no raw keys; mlua's array marker hides its
+-- metatable and passes. A trailing `nil` leaves no key, so it reads as absent.
+local function listShape(t: any): string?
   local mt = getmetatable(t)
   if type(mt) == "table" and rawget(mt, "__index") ~= nil then
-    return false
+    return nil
   end
-  local n = rawlen(t)
   local count = 0
+  local highest = 0
   for key in next, t do
-    if type(key) ~= "number" or key < 1 or key > n or key % 1 ~= 0 then
-      return false
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      return nil
     end
     count += 1
+    if key > highest then
+      highest = key
+    end
   end
-  return count == n
+  return if count == highest then "list" else "holey"
 end
 
 -- The body key a table carries beside a list part, if any: the author meant
@@ -159,41 +171,51 @@ end
 -- Append `list`'s steps to `out` in authored order, flattening nested lists at
 -- any depth. A table holding `primitive` is a step and a list is recursed
 -- into; anything else raises, naming `defineReaction`. Every probe is raw, so
--- a handle with a strict metatable raises this message, not its own.
-local function flattenSteps(list: any, out: {any}): {any}
+-- a handle with a strict metatable raises this message, not its own. `list`
+-- is a "list" by `listShape`.
+local function flattenSteps(list: any, out: {any}, level: number): {any}
   for i = 1, rawlen(list) do
     local entry = rawget(list, i)
+    if entry == nil then
+      error(MISSING_ENTRY_ERROR, level)
+    end
     if type(entry) ~= "table" then
-      error(string.format("defineReaction: a step must be a table, got %s", type(entry)), 3)
+      error(string.format("defineReaction: a step must be an object (a table in Luau), got %s", type(entry)), level)
+    end
+    if rawget(entry, "op") ~= nil then
+      error(RUNTIME_VALUE_ERROR, level)
     end
     local name = rawget(entry, "name")
     if name ~= nil then
       error(string.format(
         "defineReaction: reaction `%s` is a reaction handle, not a step; fire it with `fire(r)`",
         tostring(name)
-      ), 3)
+      ), level)
     end
     if rawget(entry, "progress") ~= nil then
-      error("defineReaction: a `progress` body is not a step", 3)
+      error("defineReaction: a `progress` body is not a step", level)
     end
     if rawget(entry, "sequence") ~= nil then
-      error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead", 3)
+      error("defineReaction: a nested `{ sequence }` is not a step; list its steps instead", level)
     end
     local mixed = mixedKey(entry)
     if mixed ~= nil then
-      error(mixedError(mixed), 3)
+      error(mixedError(mixed), level)
     end
     local primitive = rawget(entry, "primitive")
     if primitive == nil then
-      if not isList(entry) then
-        error("defineReaction: an entry with no `primitive` is not a step", 3)
+      local shape = listShape(entry)
+      if shape == "holey" then
+        error(MISSING_ENTRY_ERROR, level)
+      elseif shape == nil then
+        error("defineReaction: an entry with no `primitive` is not a step", level)
       end
-      flattenSteps(entry, out)
+      flattenSteps(entry, out, level + 1)
     elseif rawget(entry, "onComplete") ~= nil then
       error(string.format(
         "defineReaction: step `%s` carries `onComplete`, which only a body may",
         tostring(primitive)
-      ), 3)
+      ), level)
     else
       table.insert(out, entry)
     end
@@ -203,87 +225,92 @@ end
 
 -- Lower an authored body to the manifest's shape: a list of steps, plain or
 -- returned from the tracer, is a `{ sequence }` (an empty table an inert one),
--- and every `sequence` list is flattened.
-local function lowerBody(body: any): any
+-- and every `sequence` list is flattened. The second result is false for a
+-- body of no known shape, returned as authored.
+local function lowerBody(body: any, level: number): (any, boolean)
   if type(body) ~= "table" then
-    error(BODY_SHAPE_ERROR, 3)
+    return body, false
   end
   local mixed = mixedKey(body)
   if mixed ~= nil then
-    error(mixedError(mixed), 3)
+    error(mixedError(mixed), level)
   end
   local sequence = rawget(body, "sequence")
   if sequence ~= nil then
     if type(sequence) ~= "table" then
-      error(SEQUENCE_SHAPE_ERROR, 3)
+      error(SEQUENCE_SHAPE_ERROR, level)
     end
     local mixedInSequence = mixedKey(sequence)
     if mixedInSequence ~= nil then
-      error(mixedError(mixedInSequence), 3)
+      error(mixedError(mixedInSequence), level)
     end
-    if not isList(sequence) then
-      error(SEQUENCE_SHAPE_ERROR, 3)
+    local shape = listShape(sequence)
+    if shape == "holey" then
+      error(MISSING_ENTRY_ERROR, level)
+    elseif shape == nil then
+      error(SEQUENCE_SHAPE_ERROR, level)
     end
     local lowered = table.clone(body)
-    lowered.sequence = flattenSteps(sequence, {})
-    return lowered
+    lowered.sequence = flattenSteps(sequence, {}, level + 1)
+    return lowered, true
   end
   if rawget(body, "progress") ~= nil or rawget(body, "primitive") ~= nil then
-    return body
+    return body, true
   end
-  if not isList(body) then
-    error(BODY_SHAPE_ERROR, 3)
+  local shape = listShape(body)
+  if shape == "holey" then
+    error(MISSING_ENTRY_ERROR, level)
+  elseif shape == nil then
+    return body, false
   end
-  return { sequence = flattenSteps(body, {}) }
+  return { sequence = flattenSteps(body, {}, level + 1) }, true
 end
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 --- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
---- or a table of steps, which lowers to a `sequence`; nested tables flatten.
---- Any other shape raises. `name` is optional; when omitted a deterministic,
---- run-stable id is derived from the lowered body. Use explicit names when TS
+--- or a table of steps, which lowers to a `sequence`; nested tables flatten,
+--- and an empty table `{}` is an inert reaction. A list entry that is not a
+--- step raises. Any other body, a misspelled key included, passes through, and
+--- the level load skips that one reaction with a warning. `name` is optional;
+--- when omitted a deterministic, run-stable id is derived from the lowered
+--- body. An explicit `name` wins over a body's own. Use explicit names when TS
 --- and Luau scripts must agree. The returned handle can be passed to button
 --- `onPress` or crossing `fire` entries.
 function ReactionsSdk.defineReaction(
   nameOrBody: string | (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList) | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)),
   descriptor: (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList | ((CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)))?
 ): NamedReactionDescriptor
+  -- Level 3 from `lowerBody` is this function's caller: the author's line.
   local name: string
   local body: any
+  local known: boolean
   if type(nameOrBody) == "string" then
     name = nameOrBody
-    body = lowerBody(if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor)
+    body, known = lowerBody(if type(descriptor) == "function" then (descriptor :: any)(DISPATCH_PARAMS) else descriptor, 3)
   else
-    body = lowerBody(if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody)
+    body, known = lowerBody(if type(nameOrBody) == "function" then (nameOrBody :: any)(DISPATCH_PARAMS) else nameOrBody, 3)
     name = autoReactionId(body)
   end
   local out: NamedReactionDescriptor = { name = name }
+  if not known then
+    -- The body's own raw keys, as TS spreads them, for the manifest parser to
+    -- skip by name; raw, so a command target's strict metatable never fires.
+    if type(body) == "table" then
+      for key, value in next, body do
+        if key ~= "name" then
+          out[key] = value
+        end
+      end
+    end
+    return out
+  end
   -- Copy fields from the body into the flat shape the deserializer reads. Only
   -- the fields present on each variant are set; unused fields are left absent.
-  local d = body :: any
-  if d.progress ~= nil then
-    out.progress = d.progress
-  end
-  if d.primitive ~= nil then
-    out.primitive = d.primitive
-  end
-  if d.kind ~= nil then
-    out.kind = d.kind
-  end
-  if d.tag ~= nil then
-    out.tag = d.tag
-  end
-  if d.target ~= nil then
-    out.target = d.target
-  end
-  if d.args ~= nil then
-    out.args = d.args
-  end
-  if d.onComplete ~= nil then
-    out.onComplete = d.onComplete
-  end
-  if d.sequence ~= nil then
-    out.sequence = d.sequence
+  for _, key in ipairs({ "progress", "primitive", "kind", "tag", "target", "args", "onComplete", "sequence" }) do
+    local value = rawget(body, key)
+    if value ~= nil then
+      out[key] = value
+    end
   end
   return out
 end

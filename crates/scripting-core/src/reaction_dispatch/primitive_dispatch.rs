@@ -78,8 +78,9 @@ pub(super) fn dispatch_primitive(
         return;
     }
 
-    // Debug, not info: this fires per landing and per step, and landings log
-    // nothing above debug (`scripting.md` §12).
+    // Debug, not info: this fires per step on every drain, each landing
+    // included; a client landing logs only its own-state drop warning above
+    // debug (`scripting.md` §12).
     log::debug!(
         "[Scripting] dispatch primitive '{}' on tag '{}' ({} targets)",
         descriptor.primitive,
@@ -217,8 +218,9 @@ pub(super) fn dispatch_system_reaction(
     system_registry: &SystemReactionRegistry,
     script_ctx: &ScriptCtx,
 ) {
-    // Debug, not info: this fires per landing and per step, and landings log
-    // nothing above debug (`scripting.md` §12).
+    // Debug, not info: this fires per step on every drain, each landing
+    // included; a client landing logs only its own-state drop warning above
+    // debug (`scripting.md` §12).
     log::debug!("[Scripting] dispatch system reaction '{primitive}'");
 
     match system_registry.dispatch(primitive, args, &script_ctx.system_commands) {

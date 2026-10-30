@@ -43,7 +43,8 @@ pub(super) fn fire_list_violation(
 }
 
 /// An interruptible `wait` parks until its paired trigger exit; a player event
-/// has none, so the scheduler would refuse the tail at runtime.
+/// has none, so the scheduler would demote the wait to non-interruptible, with
+/// a warning, at runtime.
 fn holds_interruptible_wait(descriptor: &ReactionDescriptor) -> bool {
     let ReactionDescriptor::Sequence(steps) = descriptor else {
         return false;

@@ -1973,9 +1973,9 @@ declare module "postretro" {
     progress: { tag: string; at: number; fire: string };
   };
 
-  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   const reactionBodyScopeBrand: unique symbol;
   export type ReactionBodyScope<S> = { readonly [reactionBodyScopeBrand]?: (scope: S) => void };
+  /** Primitive reaction body: invokes the named Rust primitive. A group command (`npcs(...)`, `players()`) carries `kind` and an optional `tag` filter; a subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`) carries `target: "@activators"`, `"@trigger"`, `"@teleporter"` or `"@player"`. A raw descriptor with only a non-empty `tag` resolves over every entity carrying it — the form for fog, emitter and animation primitives (`setFogGlow`, `setEmitterRate`, `setAnimationState`), which have no typed builder. True system reactions carry neither and enqueue typed engine commands such as `playSound`, `rumble`, `flashScreen`, and the UI-stack reactions. `args` carries the primitive's typed payload (e.g. `{ rate: 0 }` for `setEmitterRate`, `{ sound: "alarm" }` for `playSound`). */
   export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
     primitive: string;
     kind?: GroupKind;
@@ -2384,11 +2384,14 @@ declare module "postretro" {
 
   /** Build a named reaction descriptor. Pure: returns a plain object, no FFI.
    * `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`, or
-   * an array of steps, which lowers to a `sequence`; nested arrays flatten. Any
-   * other shape throws. `name` is optional; when omitted a deterministic,
-   * run-stable id is derived from the lowered body. Use explicit names when TS
-   * and Luau scripts must agree. The returned handle can be passed to
-   * `Button.onPress` or crossing `fire` entries.
+   * an array of steps, which lowers to a `sequence`; nested arrays flatten, and
+   * an empty array is an inert reaction. A list entry that is not a step
+   * throws. Any other body, a misspelled key or an empty object `{}` included,
+   * passes through, and the level load skips that one reaction with a warning.
+   * `name` is optional; when omitted a deterministic, run-stable id is derived
+   * from the lowered body. An explicit `name` wins over a body's own. Use
+   * explicit names when TS and Luau scripts must agree. The returned handle can
+   * be passed to `Button.onPress` or crossing `fire` entries.
    * @param name Stable event/reaction name consumed by dispatch. Optional.
    * @param descriptor Reaction body data consumed later by Rust. */
   export function defineReaction<S = {}>(descriptor: ReactionBody<S>): Reaction<S>;

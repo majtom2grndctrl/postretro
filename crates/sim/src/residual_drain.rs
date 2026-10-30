@@ -377,7 +377,7 @@ mod tests {
             )
         };
         let mut world = World::new();
-        world.spawn_player(Some(Seat(1)), 20.0);
+        let pawn = world.spawn_player(Some(Seat(1)), 20.0);
         let capture = postretro_test_log_capture::LogCapture::start();
         world.install(
             vec![
@@ -408,6 +408,13 @@ mod tests {
         );
         capture.assert_not_logged(log::Level::Error, "drops address `sting`");
         world.tick();
+        // Only `sting`'s entity step lands: the dropped `dialog` address takes
+        // its own damage step with it, so 20 − 5, not 20 − 10.
+        assert_eq!(
+            world.health(pawn),
+            15.0,
+            "the installed body's damage step lands on the event pawn in-tick"
+        );
         let mut system = SystemReactionRegistry::new();
         register_system_reaction_primitives(&mut system);
         drain_frame_residuals(

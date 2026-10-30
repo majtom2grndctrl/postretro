@@ -1,3 +1,9 @@
+// A host's `wait` scheduler: tick counting, the same-key re-fire rule, the
+// chain-depth bound and instance cap, interruptible cancel, and landing order
+// on the tick timeline. Most rows drive the scheduler by hand; the last drive
+// whole frames of several ticks through the real landing drain.
+// See: context/lib/scripting.md §12 (Steps after a `wait`)
+
 use super::*;
 use postretro_entities::{NamedReaction, SystemReactionCommand};
 use postretro_scripting_core::data_descriptors::ReactionDescriptor;
@@ -46,7 +52,20 @@ impl ReactionScheduler {
             .get(key)
             .and_then(|instance| match instance.countdown {
                 Countdown::Ticks(remaining) => Some(remaining),
-                Countdown::HostTick(_) => None,
+                Countdown::Due(_) => None,
+            })
+    }
+
+    /// Fixed due tick of a parked instance by key (test observability): set
+    /// for an enrollment reached during a landing's drain.
+    fn instance_due(&self, key: &InstanceKey) -> Option<DueTick> {
+        self.state
+            .borrow()
+            .instances
+            .get(key)
+            .and_then(|instance| match instance.countdown {
+                Countdown::Due(due) => Some(due),
+                Countdown::Ticks(_) => None,
             })
     }
 
@@ -69,14 +88,20 @@ impl ReactionScheduler {
             .map(|instance| instance.tail.len())
     }
 
-    /// Due ticks of the queued landings, in queue order (test observability).
-    fn queued_due_ticks(&self) -> Vec<Option<u64>> {
-        self.state
-            .borrow()
+    /// Due ticks of the queued landings, sorted (test observability). On the
+    /// host every due tick is local.
+    fn queued_due_ticks(&self) -> Vec<u64> {
+        let state = self.state.borrow();
+        let mut ticks: Vec<u64> = state
             .landings
             .iter()
-            .map(|queued| queued.landing.due_tick)
-            .collect()
+            .map(|queued| {
+                assert_eq!(queued.landing.due.clock, TickClock::Local);
+                queued.landing.due.tick
+            })
+            .collect();
+        ticks.sort_unstable();
+        ticks
     }
 }
 
@@ -1070,7 +1095,8 @@ impl HostRig {
     }
 
     /// Fire `name` at install, as a host-only source, follow-ups included.
-    fn fire(&self, name: &str) {
+    /// What it plays before any wait is recorded in `sounds`.
+    fn fire(&mut self, name: &str) {
         let data = self.ctx.data_registry.borrow();
         let chained = fire_named_event_with_sequences(
             name,
@@ -1094,11 +1120,15 @@ impl HostRig {
             &self.system,
             &self.ctx,
         );
+        drop(data);
+        self.collect();
     }
 
     /// One frame of `ticks` fixed ticks, then the frame-end drain. Returns
-    /// the due ticks of what the drain lands.
-    fn frame(&mut self, ticks: usize) -> Vec<Option<u64>> {
+    /// the due ticks the frame's ticks queued, sorted, and the sounds the
+    /// drain played, in order. A landing the drain itself finds overdue is
+    /// in the second list only.
+    fn frame(&mut self, ticks: usize) -> (Vec<u64>, Vec<String>) {
         self.scheduler.begin_frame();
         for _ in 0..ticks {
             self.scheduler.evaluate(&[]);
@@ -1111,6 +1141,12 @@ impl HostRig {
             &self.system,
             &self.ctx,
         );
+        let before = self.sounds.len();
+        self.collect();
+        (due, self.sounds[before..].to_vec())
+    }
+
+    fn collect(&mut self) {
         self.sounds.extend(
             self.ctx
                 .system_commands
@@ -1121,7 +1157,6 @@ impl HostRig {
                     _ => None,
                 }),
         );
-        due
     }
 }
 
@@ -1182,22 +1217,201 @@ fn host_chain_segment_counts_from_its_parents_due_tick_not_the_drain() {
     for (form, reactions) in [("re-park", chained()), ("fire child", fired())] {
         let mut rig = HostRig::new(reactions);
         rig.fire("beat");
-        assert_eq!(rig.frame(3), [Some(1)], "{form}: segment 1 at tick 1");
-        assert_eq!(rig.frame(3), [Some(5)], "{form}: segment 2 at tick 1 + 4");
+        assert_eq!(rig.frame(3).0, [1], "{form}: segment 1 at tick 1");
+        assert_eq!(rig.frame(3).0, [5], "{form}: segment 2 at tick 1 + 4");
         assert_eq!(rig.sounds.last().map(String::as_str), Some("b"), "{form}");
         assert_eq!(rig.scheduler.pending_len(), 0, "{form}");
     }
     for (form, reactions) in [("re-park", chained()), ("fire child", fired())] {
         let mut rig = HostRig::new(reactions);
         rig.fire("beat");
-        assert_eq!(rig.frame(1), [Some(1)], "{form}");
+        assert_eq!(rig.frame(1).0, [1], "{form}");
         for tick in 2..5 {
             assert!(
-                rig.frame(1).is_empty(),
+                rig.frame(1).0.is_empty(),
                 "{form}: nothing due at tick {tick}"
             );
         }
-        assert_eq!(rig.frame(1), [Some(5)], "{form}: one tick per frame");
+        assert_eq!(rig.frame(1).0, [5], "{form}: one tick per frame");
         assert_eq!(rig.sounds.last().map(String::as_str), Some("b"), "{form}");
     }
+}
+
+// A chain lands on the ideal tick timeline even where a segment is shorter
+// than a frame. `[wait(16), a, wait(16), b, wait(100), c]` falls due on ticks
+// 1, 2 and 8. At three ticks per frame `b` is already past due when `a`'s
+// landing parks it, so it lands in the same drain, and `c` counts from `b`'s
+// tick 2, not from the drain at tick 3. At one tick per frame each segment
+// lands in the frame of its own tick.
+#[test]
+fn host_chain_lands_each_segment_on_its_ideal_tick() {
+    assert_eq!((ticks_for(16.0), ticks_for(100.0)), (1, 6));
+    let level = || {
+        vec![host_body(
+            "levelLoad",
+            vec![
+                host_wait(16.0),
+                host_sound("a"),
+                host_wait(16.0),
+                host_sound("b"),
+                host_wait(100.0),
+                host_sound("c"),
+            ],
+        )]
+    };
+    let key = ("levelLoad".to_string(), 0, TailClass::HostOnly, None);
+
+    let mut rig = HostRig::new(level());
+    rig.fire("levelLoad");
+    assert_eq!(
+        rig.frame(3),
+        (vec![1], vec!["a".to_string(), "b".to_string()]),
+        "ticks 1-3: `a` at tick 1, `b` at tick 2 in the same drain"
+    );
+    assert_eq!(
+        rig.scheduler.instance_due(&key),
+        Some(DueTick {
+            clock: TickClock::Local,
+            tick: 8
+        }),
+        "`c` counts from `b`'s tick 2"
+    );
+    assert_eq!(rig.frame(3), (vec![], vec![]), "ticks 4-6");
+    assert_eq!(
+        rig.frame(3),
+        (vec![8], vec!["c".to_string()]),
+        "ticks 7-9: `c` at tick 8"
+    );
+    assert_eq!(rig.scheduler.pending_len(), 0);
+
+    let mut rig = HostRig::new(level());
+    rig.fire("levelLoad");
+    assert_eq!(rig.frame(1), (vec![1], vec!["a".to_string()]));
+    assert_eq!(rig.frame(1), (vec![2], vec!["b".to_string()]));
+    for tick in 3..8 {
+        assert_eq!(rig.frame(1), (vec![], vec![]), "nothing at tick {tick}");
+    }
+    assert_eq!(rig.frame(1), (vec![8], vec!["c".to_string()]));
+    assert_eq!(rig.scheduler.pending_len(), 0);
+}
+
+// A self-firing one-tick beat `r = [wait(16), link, fire(r)]` lands one link
+// per host tick at any ticks per frame, as a client's host-timeline mirror
+// does (`client_tests::client_mirror_of_a_self_fire_lands_one_link_per_host_tick`).
+#[test]
+fn host_self_fire_lands_one_link_per_tick_whatever_the_ticks_per_frame() {
+    for ticks_per_frame in [1, 3] {
+        let mut rig = HostRig::new(vec![host_body(
+            "r",
+            vec![host_wait(16.0), host_sound("link"), host_fire("r")],
+        )]);
+        rig.fire("r");
+        for _ in 0..(30 / ticks_per_frame) {
+            rig.frame(ticks_per_frame);
+        }
+        assert_eq!(
+            rig.sounds.len(),
+            30,
+            "{ticks_per_frame} tick(s) per frame: one link per tick over 30 ticks"
+        );
+        assert_eq!(rig.scheduler.pending_len(), 1, "the next link is parked");
+    }
+}
+
+// Within one frame of several ticks, landings resume in due order, and those
+// due on one tick in enrollment order (O8, O25): `late` enrolls first but
+// falls due on tick 3, after `early` and `early2` on tick 1.
+#[test]
+fn host_frame_of_several_ticks_lands_in_due_order_then_enrollment_order() {
+    assert_eq!(ticks_for(50.0), 3);
+    let mut rig = HostRig::new(vec![
+        host_body("late", vec![host_wait(50.0), host_sound("late")]),
+        host_body("early", vec![host_wait(16.0), host_sound("early")]),
+        host_body("early2", vec![host_wait(16.0), host_sound("early2")]),
+    ]);
+    for name in ["late", "early", "early2"] {
+        rig.fire(name);
+    }
+    assert_eq!(
+        rig.frame(3),
+        (
+            vec![1, 1, 3],
+            vec![
+                "early".to_string(),
+                "early2".to_string(),
+                "late".to_string()
+            ]
+        )
+    );
+}
+
+// The same-key rule holds against a landing still queued behind an earlier
+// one in the same drain (O6/O7). `r`'s instance falls due on tick 2; `x`,
+// due on tick 1 of the same frame, fires `r` before it lands. The re-fire is
+// ignored, so `r`'s tail lands once.
+#[test]
+fn host_refire_dedups_against_a_landing_due_later_in_the_same_frame() {
+    assert_eq!(ticks_for(32.0), 2);
+    let mut rig = HostRig::new(vec![
+        host_body("r", vec![host_wait(32.0), host_sound("r")]),
+        host_body("x", vec![host_wait(16.0), host_fire("r")]),
+    ]);
+    rig.fire("r");
+    rig.fire("x");
+    assert_eq!(rig.frame(3), (vec![1, 2], vec!["r".to_string()]));
+    for _ in 0..3 {
+        rig.frame(3);
+    }
+    assert_eq!(rig.sounds, ["r"], "`r`'s tail lands once");
+    assert_eq!(rig.scheduler.pending_len(), 0);
+}
+
+// A `fire` from a re-parked landing counts from that landing's due tick.
+// `main = [a, wait(16), b, wait(50), fire(r), c]`, `r = [wait(32), d]`: `b` at
+// tick 1, `c` at tick 4, `d` at tick 6. At three ticks per frame `d` is past
+// due when the tick-4 landing fires `r`, so it lands in that same drain.
+#[test]
+fn host_fire_from_a_re_parked_landing_lands_on_its_ideal_tick() {
+    let reactions = || {
+        vec![
+            host_body(
+                "main",
+                vec![
+                    host_sound("a"),
+                    host_wait(16.0),
+                    host_sound("b"),
+                    host_wait(50.0),
+                    host_fire("r"),
+                    host_sound("c"),
+                ],
+            ),
+            host_body("r", vec![host_wait(32.0), host_sound("d")]),
+        ]
+    };
+    let mut rig = HostRig::new(reactions());
+    rig.fire("main");
+    assert_eq!(rig.sounds, ["a"], "the pre-wait step runs at the fire");
+    assert_eq!(rig.frame(3), (vec![1], vec!["b".to_string()]));
+    assert_eq!(
+        rig.frame(3),
+        (vec![4], vec!["c".to_string(), "d".to_string()]),
+        "ticks 4-6: `c` at tick 4, then `r`'s `d` at tick 6 in the same drain"
+    );
+    assert_eq!(rig.scheduler.pending_len(), 0);
+
+    let mut rig = HostRig::new(reactions());
+    rig.fire("main");
+    let landed: Vec<(Vec<u64>, Vec<String>)> = (0..7).map(|_| rig.frame(1)).collect();
+    assert_eq!(
+        landed,
+        [
+            (vec![1], vec!["b".to_string()]),
+            (vec![], vec![]),
+            (vec![], vec![]),
+            (vec![4], vec!["c".to_string()]),
+            (vec![], vec![]),
+            (vec![6], vec!["d".to_string()]),
+            (vec![], vec![]),
+        ]
+    );
 }

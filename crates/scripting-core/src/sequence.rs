@@ -45,13 +45,14 @@ pub type SequencedPrimitiveFn =
 
 /// Boxed handler for a **control** sequenced primitive (`wait`). Control steps
 /// carry no entity target: they act on the reaction *tail* rather than on one
-/// resolved entity, so they receive the enrolling reaction's address and body
-/// ordinal (the first two components of a scheduler instance key), the remaining
-/// steps of the body, and the control step's `args`, beside the dispatching
-/// `ScriptCtx`, whose fire context names the source the tail parks under. Registered from the binary
-/// crate capturing a `ReactionScheduler` clone; the dispatcher's control arm
-/// consults this table and never reaches the inert `handlers` entry a control
-/// primitive also holds purely to satisfy sequence-validation admission.
+/// resolved entity. Parameters, in order: the dispatching `ScriptCtx`, whose
+/// fire context names the source the tail parks under; the enrolling reaction's
+/// address; its body ordinal (the address and ordinal are the first two
+/// components of a scheduler instance key); the remaining steps of the body;
+/// and the control step's `args`. Registered from the binary crate capturing a
+/// `ReactionScheduler` clone; the dispatcher's control arm consults this table
+/// and never reaches the inert `handlers` entry a control primitive also holds
+/// purely to satisfy sequence-validation admission.
 ///
 /// Main-thread only, matching [`SequencedPrimitiveFn`].
 pub type ControlSequencedPrimitiveFn =

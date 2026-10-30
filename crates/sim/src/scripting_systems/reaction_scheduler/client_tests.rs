@@ -1,7 +1,7 @@
 // A connected client's `wait` tails: which park, which steps land, on which
 // clock, and what a late joiner converges. The host clock and the client's
-// reveal are driven by hand, one frame per tick, so landings are pinned to
-// the tick.
+// reveal are driven by hand, one frame per tick unless a test runs several,
+// so landings are pinned to the tick.
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
 use std::cell::Cell;
@@ -210,8 +210,16 @@ impl Machine {
     /// reads `host_time` (seconds) beside the level clock counted from this
     /// client's reveal, and the landings drain.
     fn frame(&mut self, host_time: Option<f64>) {
+        self.frame_of(1, host_time);
+    }
+
+    /// One frame of `ticks` own-clock ticks, then the host-clock reading and
+    /// the landing drain, as the frame loop runs them.
+    fn frame_of(&mut self, ticks: usize, host_time: Option<f64>) {
         self.scheduler.begin_frame();
-        self.scheduler.evaluate(&[]);
+        for _ in 0..ticks {
+            self.scheduler.evaluate(&[]);
+        }
         let local_time = host_time.map_or(0.0, |time| (time - self.revealed_at).max(0.0));
         self.scheduler.advance_host_clock(host_time, local_time);
         self.scheduler.drain_landings(
@@ -546,7 +554,7 @@ fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
 // level's snapshot to apply: `participation_epoch_rejects_stale_
 // cross_boundary_traffic_and_accepts_current`.)
 #[test]
-fn s19_each_level_takes_its_own_first_host_reading() {
+fn s19_each_level_takes_its_own_join_tick() {
     let mut client = Machine::client(vec![body("levelLoad", vec![wait(5000.0), sound("x")])]);
     client.reveal_at(1800);
     client.host_ticks(1800, 1801);
@@ -836,4 +844,98 @@ fn own_state_drop_in_a_fire_target_names_the_target() {
         "{warned:?}"
     );
     assert_eq!(client.movers.get(), 0);
+}
+
+// An own-clock chain lands each segment on its ideal local tick at several
+// client ticks per frame, as the host does. `[wait(16), a, wait(16), b,
+// wait(100), c]` falls due on local ticks 1, 2 and 8: at three ticks per
+// frame `a` and `b` land in the first frame's drain and `c` in the third
+// frame's, counted from `b`'s tick 2.
+#[test]
+fn client_own_clock_chain_lands_each_segment_on_its_ideal_local_tick() {
+    let moved = || {
+        vec![body(
+            "moved",
+            vec![
+                wait(16.0),
+                sound("a"),
+                wait(16.0),
+                sound("b"),
+                wait(100.0),
+                sound("c"),
+            ],
+        )]
+    };
+    let mut client = Machine::client(moved());
+    client.fire("moved", own_state());
+    client.frame_of(3, None);
+    assert_eq!(client.kinds(), ["play a", "play b"], "local ticks 1-3");
+    client.frame_of(3, None);
+    assert_eq!(client.kinds(), ["play a", "play b"], "local ticks 4-6");
+    client.frame_of(3, None);
+    assert_eq!(
+        client.kinds(),
+        ["play a", "play b", "play c"],
+        "local ticks 7-9: `c` at tick 8"
+    );
+    assert_eq!(client.scheduler.pending_len(), 0);
+
+    let mut client = Machine::client(moved());
+    client.fire("moved", own_state());
+    client.own_ticks(2);
+    assert_eq!(client.kinds(), ["play a", "play b"]);
+    client.own_ticks(5);
+    assert_eq!(
+        client.kinds(),
+        ["play a", "play b"],
+        "nothing before tick 8"
+    );
+    client.own_ticks(1);
+    assert_eq!(client.kinds(), ["play a", "play b", "play c"]);
+}
+
+// One frame's landings on a client: host-timeline segments due before the
+// reading tick are the host's past and land first, in due order; the rest —
+// segments due on the reading tick and own-clock landings — land together in
+// enrollment order. A (host tick 99) and B (host tick 100) enroll before the
+// own-state C; the frame that expires C reads host tick 100, skipping 99.
+#[test]
+fn client_frame_lands_host_catch_up_then_its_present_in_enrollment_order() {
+    let mut client = Machine::client(vec![
+        body("levelLoad", vec![wait(1650.0), sound("A")]),
+        body("levelLoad", vec![wait(1666.0), sound("B")]),
+        body("c", vec![wait(16.0), sound("C")]),
+    ]);
+    client.level_load();
+    client.host_ticks(1, 99);
+    assert!(client.kinds().is_empty(), "nothing due before host tick 99");
+    client.fire("c", own_state());
+    client.frame(Some(100.0 * TICK + TICK / 2.0));
+    assert_eq!(client.kinds(), ["play A", "play B", "play C"]);
+    assert_eq!(client.scheduler.pending_len(), 0);
+}
+
+// A client's host-timeline mirror of the self-firing beat `r = [wait(16),
+// link, fire(r)]` lands one link per host tick, whether its readings advance
+// one host tick per frame or three: the past-due links of a reading land in
+// that frame's drain (host side:
+// `tests::host_self_fire_lands_one_link_per_tick_whatever_the_ticks_per_frame`).
+#[test]
+fn client_mirror_of_a_self_fire_lands_one_link_per_host_tick() {
+    for step in [1_u64, 3] {
+        let mut client = Machine::client(vec![
+            body("levelLoad", vec![fire("r")]),
+            body("r", vec![wait(16.0), sound("link"), fire("r")]),
+        ]);
+        client.level_load();
+        for reading in 1..=(30 / step) {
+            client.frame(Some((reading * step) as f64 * TICK + TICK / 2.0));
+        }
+        assert_eq!(
+            client.plays("link"),
+            30,
+            "readings {step} host tick(s) apart: one link per host tick"
+        );
+        assert_eq!(client.scheduler.pending_len(), 1, "the next link is parked");
+    }
 }

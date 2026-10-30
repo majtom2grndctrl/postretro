@@ -361,12 +361,12 @@ end
 
 --- Open the engine-shipped on-screen keyboard for text entry (M13 Text Entry).
 --- Pure: returns a `showDialog` system reaction (a body on its own or a step in
---- a sequence or array body). The keyboard is
---- a capturing modal that edits the `ui.textEntry` slot; bind a `text` widget to
---- `ui.textEntry` to show the live entry. The optional `onCommit` (omitted when
---- nil) names a reaction fired on commit (the on-screen `done` key or hardware
---- Enter); `nav.cancel` (Escape / B) closes without firing it. The same
---- `ui.textEntry` slot also receives the hardware-keyboard path's edits.
+--- a sequence or array body). The keyboard is a capturing modal that edits
+--- the `ui.textEntry` slot; bind a `text` widget to `ui.textEntry` to show the
+--- live entry. The optional `onCommit` (omitted when nil) names a reaction
+--- fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel`
+--- (Escape / B) closes without firing it. The same `ui.textEntry` slot also
+--- receives the hardware-keyboard path's edits.
 function UiReactionsSdk.openTextEntry(onCommit: string?): SystemReactionStep
   return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
 end
@@ -406,9 +406,8 @@ end
 
 --- Return to the frontend menu, including its optional declared backdrop level.
 --- Pure: returns a system reaction (a body on its own or a step in a sequence or
---- array body), no FFI. Use from authored reactions;
---- use `QUIT_TO_MENU_ACTION` for direct button `onPress` values that should take
---- the same lifecycle path.
+--- array body), no FFI. Use from authored reactions; use `QUIT_TO_MENU_ACTION`
+--- for direct button `onPress` values that should take the same lifecycle path.
 function UiReactionsSdk.returnToFrontend(): SystemReactionStep
   return { primitive = "returnToFrontend", args = {} }
 end
@@ -441,13 +440,13 @@ end
 
 --- Write `value` to the writable state reference at the game-logic stage.
 --- Pure: returns the existing `setState` system reaction (a body on its own or
---- a step in a sequence or array body), no engine side effect. Literal values use the normal runtime readonly gate, coercion,
---- and range path. A fluent value (`read(...)` and its operators, including
---- `byPlayer(on.player)` reads in a player-event reaction) or a raw
---- `RuntimeValue` binds once at level install. Known Number and Boolean slots,
---- including readonly slots, project as inputs. The write target must be
---- writable; unknown or nonprojectable inputs and readonly targets reject the
---- IR before it can fire.
+--- a step in a sequence or array body), no engine side effect. Literal values
+--- use the normal runtime readonly gate, coercion, and range path. A fluent
+--- value (`read(...)` and its operators, including `byPlayer(on.player)` reads
+--- in a player-event reaction) or a raw `RuntimeValue` binds once at level
+--- install. Known Number and Boolean slots, including readonly slots, project
+--- as inputs. The write target must be writable; unknown or nonprojectable
+--- inputs and readonly targets reject the IR before it can fire.
 function UiReactionsSdk.updateState(ref: any, value: any): SystemReactionStep
   if type(ref) == "table" and ref.owner ~= nil then
     error("updateState: a byPlayer ref cannot be written; write a per-owner slot with on.player.addSlot")

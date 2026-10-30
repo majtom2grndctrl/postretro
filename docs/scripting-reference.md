@@ -1920,10 +1920,17 @@ A map names its data script with the `data_script` key on `worldspawn`, a path r
 
 An empty array (in Luau, an empty table) is a reaction that does nothing.
 
-An entry that is not a step raises an error when the script runs, naming
-`defineReaction`, and is a type error in TypeScript: a `{ progress }` body, a
-nested `{ sequence }` (list its steps instead), a reaction handle (fire it with
-`fire(r)`), or a step carrying `onComplete`, which only a body may.
+An entry in a list that is not a step raises an error when the script runs,
+naming `defineReaction`, and is a type error in TypeScript: a `{ progress }`
+body, a nested `{ sequence }` (list its steps instead), a reaction handle (fire
+it with `fire(r)`), a step carrying `onComplete`, which only a body may, or a
+runtime value such as `on.rising`. A missing entry (`undefined`, `null`, or a
+`nil` between two Luau entries) raises too. The error stops `setupLevel`, so the
+level installs none of its reactions.
+
+A body of no shape above, such as a misspelled key (`{ sequnce: [...] }`) or an
+empty TypeScript object `{}`, does not raise. The level load skips that one
+reaction with a warning, and the script's other reactions install.
 
 ### System steps
 
@@ -1956,7 +1963,8 @@ needed; put the effect in the body.
 A `wait` changes when a step happens, never who sees or hears it.
 
 - A step after a `wait` presents to the audience the same step reaches before
-  the wait. A step routed to a player who has left presents nowhere.
+  the wait. A step routed to a player who has left presents nowhere. A
+  trigger's or teleport's default-audience sound still plays everywhere.
 - After a `wait`, steps that change shared state (member and group verbs,
   `setState` on a replicated slot, `loadLevel`, `restartLevel`, sentiment,
   `setGhostAudio`) apply on the host only and reach clients by replication.
@@ -1965,8 +1973,11 @@ A `wait` changes when a step happens, never who sees or hears it.
   that does not replicate) land on each machine the reaction fired on:
   - `levelLoad` runs on every machine. Its waits count on the host's
     timeline, so each connected machine lands them when the host does. A
-    player who joins after a step was due skips its sounds and screen effects
-    but still gets its dialogs, text and local state.
+    player who joins after a step was due skips its sounds, screen effects,
+    rumble and `returnToFrontend`, but still gets its dialogs and menus, text
+    and cell edits, and `setState` on a slot that does not replicate. "Joins"
+    means the moment that client's level was revealed: a client revealed
+    before a step was due lands it, a moment late if its connection is slow.
   - A crossing over shared slots fires on every machine, and each counts its
     waits on its own clock.
   - Weapon events, NPC shots and observer cues fire on every machine too. The
@@ -1974,7 +1985,8 @@ A `wait` changes when a step happens, never who sees or hears it.
   - A crossing over your own, owner-private or local slots, a movement event
     and a UI press fire on your machine for your player only, and land there.
     A step that would change shared state from such a tail is dropped on a
-    client, with one warning per reaction naming the first dropped step.
+    client, with one warning per reaction per level naming the first dropped
+    step. The warning re-arms after a level change, a suspend or a hot reload.
   - Triggers, teleports, per-player events, movers, NPC thinking (brains and
     AI), deaths and kill-progress thresholds fire on the host; their tails park
     there, and their landings route as above.
@@ -1983,8 +1995,14 @@ A `wait` changes when a step happens, never who sees or hears it.
     consequence, like `loadLevel`.
 - `fire(r)` after a `wait` runs `r` on the same terms, and `r`'s own waits
   count on the same clock.
-- A `wait(ms, { interruptible: true })` is cancelled by its trigger's Exit on
-  the host; elsewhere it lands as a plain wait.
+- A `wait(ms, { interruptible: true })` needs a trigger-Enter binding, and that
+  trigger's Exit cancels it on the host. A reaction with an interruptible
+  `wait` and no `t.on("enter", …)` binding is dropped when the level installs,
+  with an error saying the wait has no cancel source. The install also refuses
+  one on a teleport binding and in a player event's fire list. When an
+  Enter-bound reaction fires another way (`levelLoad`, a named fire, a
+  crossing, a UI press, a `fire` child), the host lands the wait as a plain wait
+  with one warning. A client lands it as a plain wait and says nothing.
 - Subject tokens, `on.emitter`, dispatch inputs and token audiences
   (`on.activators`, `on.trigger`, `on.player`) are gone after a `wait`. A
   reaction using one there is dropped when the level installs, with an error
@@ -2064,7 +2082,7 @@ players();                    // every player
 - A group has no members and no length. `npcs().length` and `npcs().map(…)` are type errors in TypeScript; `#g`, `g[1]` and `g.length` raise in Luau.
 - Each verb returns one descriptor. Use it as a reaction body, or put it — unspread — in a `sequence`, before or after a `wait`. It resolves when its step runs, so `[wait(800), npcs().damage(5)]` damages the NPCs alive when the wait ends. A group with no matches does nothing.
 - Groups resolve in the same order on every run with the same inputs.
-- **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing above debug, because every machine runs the same reactions and the host's results replicate. Member steps in the same reaction still run on the client.
+- **Host only.** Group commands apply on the host and in single player. On a connected client they do nothing and log nothing above debug, because every machine runs the same reactions and the host's results replicate. The exception is a group command after a `wait` in a tail that fires for your own player (see [Steps after a `wait`](#steps-after-a-wait)): the client drops it and warns once per reaction per level. Member steps before a `wait` still run on the client; after a `wait` they run on the host only.
 - **A `wait` tail runs once per activating player.** Each player's fire parks its own instance of the reaction, so on a volume that is not `once`, a group command after a `wait` runs once for every player who fired the trigger.
 
 ### Subject tokens
@@ -2092,7 +2110,10 @@ The spawner's own `_tags` address the spawner. To make its NPCs reachable by tag
 
 ```typescript
 const closets = getMapEntities("spawner", { tag: "closet_spawner" }); // spawned_tags "closet"
-const sequence = [...closets.flatMap((s) => s.fire()), npcs({ tag: "closet" }).update({ aggro: true })];
+const release = defineReaction("closet.release", [
+  closets.map((s) => s.fire()),
+  npcs({ tag: "closet" }).update({ aggro: true }),
+]);
 ```
 
 The NPC step reaches the NPCs those spawners just released.
@@ -2111,14 +2132,13 @@ Every trap step acts on the host only. A step that runs during a trigger's or te
 
 ```typescript
 const traps = getMapEntities("trap", { tag: "wave" }).sort((a, b) => a.position.x - b.position.x);
-const sweep = defineReaction("wave.sweep", {
-  sequence: traps.flatMap((t, i) => [...(i ? wait(250) : []), ...t.fire()]),
-});
+const sweep = defineReaction("wave.sweep", traps.map((t, i) => [i ? wait(250) : [], t.fire()]));
 // One period covers the whole wave plus a pause, so the wave rolls.
 const periodMs = traps.length * 250 + 1500;
-const loopOn = defineReaction("wave.loopOn", {
-  sequence: traps.flatMap((t, i) => t.start({ intervalMs: periodMs, phaseMs: i * 250 })),
-});
+const loopOn = defineReaction(
+  "wave.loopOn",
+  traps.map((t, i) => t.start({ intervalMs: periodMs, phaseMs: i * 250 })),
+);
 ```
 
 ```lua
@@ -2728,8 +2748,8 @@ The type definitions for this area carry committed `@ts-expect-error` cases, so 
 
 ```typescript
 const pads = getMapEntities("trigger", { tag: "security_pad" });
-const unlockPads = defineReaction("unlockPads", { sequence: pads.flatMap((t) => t.arm()) });
-const lockPads = defineReaction("lockPads", { sequence: pads.flatMap((t) => t.disarm()) });
+const unlockPads = defineReaction("unlockPads", pads.map((t) => t.arm()));
+const lockPads = defineReaction("lockPads", pads.map((t) => t.disarm()));
 const lockBehind = defineReaction((on: TriggerEventParams) => on.trigger.disarm());
 ```
 
@@ -2789,8 +2809,8 @@ The five presentation builders (`playSound`, `rumble`, `flashScreen`, `vignette`
 | Trigger enter or exit | Everyone | The players who activated that edge |
 | Teleport | Everyone | The player who teleported |
 | Per-player event | That player | That player |
-| Host-only AI cues, death, movers, kill progress and follow-ups | Everyone | Host only |
-| Each-machine level load, local crossing, movement, weapon or AI activate/observer presentation | This machine | This machine |
+| Host-only AI cues, death, movers, kill progress, and follow-ups of those host-only sources | Everyone | Host only |
+| Each-machine level load, crossing, UI press, movement, weapon or AI activate/observer presentation, and follow-ups of those sources | This machine | This machine |
 
 `audience: "everyone"` reaches every participating player. In a trigger callback,
 `audience: on.activators` selects that edge's activators;

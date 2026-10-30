@@ -5,7 +5,7 @@
 use postretro_entities::{MachineRole, SequenceTarget, SlotTable, primitive_is_machine_local};
 use postretro_scripting_core::data_descriptors::SequenceStep;
 
-use super::{Countdown, InstanceKey, ReactionScheduler, SchedulerRole};
+use super::{Countdown, DueTick, InstanceKey, ReactionScheduler, SchedulerRole, TickClock};
 
 /// Whether a client has anything to land in `tail`: a machine-local system
 /// step, or a `fire` whose target may hold one. Every other step reaches the
@@ -63,42 +63,22 @@ impl ReactionScheduler {
             .iter()
             .filter(|(_, instance)| {
                 instance.enrolled_frame != current
-                    && matches!(instance.countdown, Countdown::HostTick(due) if due <= now)
+                    && matches!(
+                        instance.countdown,
+                        Countdown::Due(DueTick { clock: TickClock::Host, tick }) if tick <= now
+                    )
             })
             .map(|(key, _)| key.clone())
             .collect();
         state.expire(due);
     }
 
-    /// Client only: a landing due before the host tick this client revealed
-    /// at belongs to a late joiner, which converges state instead of
-    /// replaying.
-    pub(super) fn is_late(&self, due_tick: Option<u64>) -> bool {
+    /// Client only: a host-timeline landing due before the host tick this
+    /// client revealed at belongs to a late joiner, which converges state
+    /// instead of replaying. Lateness compares host ticks only; an own-clock
+    /// landing is never late.
+    pub(super) fn is_late(&self, due: DueTick) -> bool {
         let state = self.state.borrow();
-        match (due_tick, state.join_host_tick) {
-            (Some(due), Some(join)) => due < join,
-            _ => false,
-        }
-    }
-
-    /// Client only, after a landing batch: expire the host-timeline instances
-    /// parked during this drain (`id >= parked_from`) that the latest reading
-    /// has already passed. They join the queue beside the segments still due,
-    /// so one reading lands a whole due chain in due order, as the host did.
-    pub(super) fn catch_up_host_timeline(&self, parked_from: u64) {
-        let mut state = self.state.borrow_mut();
-        let Some(now) = state.host_tick_now else {
-            return;
-        };
-        let due: Vec<InstanceKey> = state
-            .instances
-            .iter()
-            .filter(|(_, instance)| {
-                instance.id >= parked_from
-                    && matches!(instance.countdown, Countdown::HostTick(due) if due <= now)
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        state.expire(due);
+        due.clock == TickClock::Host && state.join_host_tick.is_some_and(|join| due.tick < join)
     }
 }

@@ -137,19 +137,43 @@ pub enum SchedulerRole {
     Client,
 }
 
+/// The tick count a due tick reads. Ticks on different clocks never compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickClock {
+    /// This machine's fixed ticks, counted by `evaluate`: every tail on the
+    /// host, whose own count is the host timeline, and a client's own-clock
+    /// tails.
+    Local,
+    /// The host timeline as a client reads it, counted from the current
+    /// level's host `script_time` 0: a client's host-timeline tails.
+    Host,
+}
+
+/// The tick a segment falls due on, and the clock that tick counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueTick {
+    pub clock: TickClock,
+    pub tick: u64,
+}
+
 /// When a parked instance lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Countdown {
-    /// Whole authoritative ticks of this machine still to elapse (>= 1).
+    /// Whole local ticks still to elapse (>= 1), for an enrollment outside a
+    /// landing's drain. It never advances in the frame that enrolled it
+    /// (O12), so its due tick is the first tick past that frame plus the
+    /// wait, known only as it counts down; expiry stamps it.
     Ticks(u32),
-    /// The host tick, counted from the current level's host `script_time` 0,
-    /// at which a client lands a host-timeline tail.
-    HostTick(u64),
+    /// A fixed due tick: an enrollment reached during a landing's drain,
+    /// counted from that landing's due tick, or a client's host-timeline
+    /// tail, counted from host `script_time` 0.
+    Due(DueTick),
 }
 
 #[derive(Debug, Clone)]
 struct PendingInstance {
-    /// Monotonic id assigned at enrollment; the sole landing-order sort key.
+    /// Monotonic id assigned at enrollment; the landing order among landings
+    /// due together (O8, O25).
     id: u64,
     /// The remainder of the reaction body after the wait step.
     tail: Vec<SequenceStep>,
@@ -160,9 +184,11 @@ struct PendingInstance {
     /// currently parked at, so in a multi-wait body the parked-at wait governs
     /// both Exit-cancel and re-fire (O17/O18).
     interruptible: bool,
-    /// The monotonic frame counter at enrollment. `evaluate` skips any instance
-    /// whose stamp equals the current frame, so an instance never advances in the
-    /// frame that enrolled it — identically for every dispatch phase.
+    /// The monotonic frame counter at enrollment. `evaluate` advances no
+    /// whole-tick countdown, and `advance_host_clock` expires no host-timeline
+    /// instance, whose stamp equals the current frame, so an instance never
+    /// advances in the frame that enrolled it — identically for every dispatch
+    /// phase.
     enrolled_frame: u64,
     /// Chain depth along the enrolled-by relation. A fresh trigger/named/levelLoad
     /// fire enrolls at 0; a `fire`-seeded child inherits its parent's depth + 1.
@@ -181,11 +207,9 @@ pub struct Landing {
     pub depth: u32,
     pub tail: Vec<SequenceStep>,
     pub origin: FireOrigin,
-    /// The tick this landing fell due on, on its countdown's clock: the
-    /// host's fixed-tick count for a host landing, the host timeline for a
-    /// client's host-timeline landing, and `None` for a client's own-clock
-    /// landing. A wait or `fire` child reached in the landing counts from it.
-    pub due_tick: Option<u64>,
+    /// The tick this landing fell due on, on its clock. A wait or `fire`
+    /// child reached in the landing counts from it, never from the drain.
+    pub due: DueTick,
 }
 
 /// An expired instance in the landing queue. A queued-but-unrun landing is
@@ -195,6 +219,10 @@ pub struct Landing {
 struct QueuedLanding {
     id: u64,
     interruptible: bool,
+    /// Enrolled during a landing's drain already past its due tick, so it
+    /// queued without parking. It holds an instance slot until it lands, as
+    /// it would have parked had the frame held fewer ticks.
+    overdue: bool,
     landing: Landing,
 }
 
@@ -204,14 +232,14 @@ struct SchedulerState {
     /// Monotonic frame counter — advanced by `begin_frame`, never reset. Distinct
     /// from `tick_index`, which resets every frame.
     frame_counter: u64,
-    /// Host only: fixed ticks evaluated so far — advanced by `evaluate`, never
-    /// reset. A host landing's due tick reads it.
+    /// Fixed ticks this machine has evaluated — advanced by `evaluate` on
+    /// either role, never reset. A [`TickClock::Local`] due tick reads it.
     tick_counter: u64,
     /// Monotonic instance-id source.
     next_instance_id: u64,
     instances: BTreeMap<InstanceKey, PendingInstance>,
-    /// Tails whose countdown reached zero, awaiting the frame-end landing drain,
-    /// resumed in due-tick, then instance-id, order.
+    /// Tails past their due tick, awaiting the frame-end landing drain, which
+    /// resumes them in [`SchedulerState::next_landing`] order.
     landings: Vec<QueuedLanding>,
     /// Client only: the host tick of the latest host-clock reading this level.
     host_tick_now: Option<u64>,
@@ -220,14 +248,17 @@ struct SchedulerState {
     /// belongs to a late joiner, which converges state instead of replaying
     /// presentation.
     join_host_tick: Option<u64>,
-    /// The due tick of the landing draining now, on its clock
-    /// ([`Landing::due_tick`]): a wait or `fire` child enrolled in it counts
-    /// from there, never from the drain.
-    current_anchor: Option<u64>,
-    /// Origin of the trigger residual currently being drained, set by the scoped
-    /// `OriginGuard` in `main.rs` for the residual loop ONLY (released before the
-    /// deferred batch — O54). A `wait` reached while it is live keys its instance
-    /// to this `(trigger, player)`; every batch-seeded fire is sourceless.
+    /// The due tick of the landing draining now ([`Landing::due`]). Every
+    /// enrollment reached synchronously in that landing's drain — a nested
+    /// re-park in its tail, a `fire` child in its follow-ups, any `wait` they
+    /// reach — counts from it on the same clock, never from the drain.
+    current_anchor: Option<DueTick>,
+    /// Origin of the trigger, teleport or player-event residual currently
+    /// being drained, set by the scoped `OriginGuard` that
+    /// `crate::residual_drain` and `crate::teleporter_system` hold for one
+    /// residual ONLY (released before the deferred batch — O54). A `wait`
+    /// reached while it is live keys its instance to this `(source, player)`;
+    /// every batch-seeded fire is sourceless.
     current_origin: Option<(EntityId, PlayerId)>,
     /// Whether `current_origin`'s paired enter is still standing at drain time. An
     /// interruptible instance may park only while it is — a player who entered and
@@ -272,30 +303,78 @@ struct SchedulerState {
 }
 
 impl SchedulerState {
-    /// Move expired instances into the landing queue.
+    /// Move expired instances into the landing queue, stamping each landing
+    /// with the tick it fell due on. A fixed due tick keeps its own clock; a
+    /// whole-tick countdown expires on the local tick that zeroed it, so it
+    /// is stamped with that tick on [`TickClock::Local`].
     fn expire(&mut self, keys: Vec<InstanceKey>) {
         for key in keys {
             if let Some(instance) = self.instances.remove(&key) {
-                let due_tick = match instance.countdown {
-                    Countdown::HostTick(due) => Some(due),
-                    Countdown::Ticks(_) if self.role == SchedulerRole::Host => {
-                        Some(self.tick_counter)
-                    }
-                    Countdown::Ticks(_) => None,
+                let due = match instance.countdown {
+                    Countdown::Due(due) => due,
+                    Countdown::Ticks(_) => DueTick {
+                        clock: TickClock::Local,
+                        tick: self.tick_counter,
+                    },
                 };
                 self.landings.push(QueuedLanding {
                     id: instance.id,
                     interruptible: instance.interruptible,
+                    overdue: false,
                     landing: Landing {
                         key,
                         depth: instance.depth,
                         tail: instance.tail,
                         origin: instance.origin,
-                        due_tick,
+                        due,
                     },
                 });
             }
         }
+    }
+
+    /// The latest tick `clock` has reached on this machine: the local tick
+    /// count, or a client's latest host-clock reading.
+    fn now(&self, clock: TickClock) -> Option<u64> {
+        match clock {
+            TickClock::Local => Some(self.tick_counter),
+            TickClock::Host => self.host_tick_now,
+        }
+    }
+
+    /// Index of the queued landing to resume next. The drain takes one at a
+    /// time, so a re-fire meanwhile dedups against every landing still
+    /// queued, and a landing's overdue re-parks and `fire` children, queued
+    /// as they enroll, take their place in this order.
+    ///
+    /// - On the host every due tick is local: earliest due tick first, then
+    ///   ascending id (O8, O25), so a frame of several ticks lands on the
+    ///   tick timeline.
+    /// - On a client, host-timeline landings due before the current reading
+    ///   tick are catch-up of the host's past and land first, in due order.
+    ///   The rest — host-timeline landings due on the reading tick and every
+    ///   own-clock landing — are this frame's present and land together in
+    ///   ascending id, the enrollment order: own ticks and host ticks never
+    ///   compare, and enrollment is the order both clocks share.
+    fn next_landing(&self) -> Option<usize> {
+        let host = self.role == SchedulerRole::Host;
+        let order = |queued: &QueuedLanding| {
+            let due = queued.landing.due;
+            let catch_up = due.clock == TickClock::Host
+                && self.host_tick_now.is_some_and(|now| due.tick < now);
+            if catch_up {
+                (0, due.tick, queued.id)
+            } else if host {
+                (1, due.tick, queued.id)
+            } else {
+                (1, 0, queued.id)
+            }
+        };
+        self.landings
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, queued)| order(queued))
+            .map(|(index, _)| index)
     }
 
     /// Forget the per-level host clock (level teardown, suspend, hot reload,
@@ -384,12 +463,13 @@ impl ReactionScheduler {
         self.state.borrow_mut().frame_counter += 1;
     }
 
-    /// Set the origin for the trigger or player-event residual currently being
-    /// drained, cleared on drop. Held across the residual loop ONLY (released
-    /// before the deferred batch — O54). `standing` is whether this origin's
-    /// paired enter is live at drain time, feeding the O52 enrollment check; a
-    /// player event has no paired enter and passes `false`, keyed by the event
-    /// player's pawn. Mirrors `begin_resume`.
+    /// Set the origin for the trigger, teleport or player-event residual
+    /// currently being drained, cleared on drop. Held across that residual
+    /// ONLY (released before the deferred batch — O54). `standing` is whether
+    /// this origin's paired enter is live at drain time, feeding the O52
+    /// enrollment check; a teleport or player event has no paired enter and
+    /// passes `false`, a player event keyed by the event player's pawn.
+    /// Mirrors `begin_resume`.
     pub fn begin_origin(&self, trigger: EntityId, player: PlayerId, standing: bool) -> OriginGuard {
         {
             let mut state = self.state.borrow_mut();
@@ -428,10 +508,11 @@ impl ReactionScheduler {
     }
 
     /// Enroll the tail a `wait` step reached, under the source class and landing
-    /// origin of the fire context it was reached in. On a client, a host-mirrored
-    /// tail that holds no machine-local step and no `fire` parks nothing: every
-    /// step in it reaches the client by replication. An own-state tail parks
-    /// whatever it holds, so its landing can report what it drops.
+    /// origin of the fire context it was reached in. On a client, a
+    /// host-timeline or host-mirrored tail that holds no machine-local step
+    /// and no `fire` parks nothing: every step in it reaches the client by
+    /// replication. An own-state tail parks whatever it holds, so its landing
+    /// can report what it drops.
     pub(crate) fn enroll_fired(
         &self,
         script_ctx: &ScriptCtx,
@@ -640,7 +721,13 @@ impl ReactionScheduler {
             );
             return;
         }
-        if !cap_exempt && state.instances.len() >= MAX_PENDING_REACTION_INSTANCES {
+        let occupied = state.instances.len()
+            + state
+                .landings
+                .iter()
+                .filter(|queued| queued.overdue)
+                .count();
+        if !cap_exempt && occupied >= MAX_PENDING_REACTION_INSTANCES {
             log::log!(
                 drop_level,
                 "[Scheduler] wait enrollment for `{address}` exceeds the per-level cap of {MAX_PENDING_REACTION_INSTANCES} concurrent instances; dropping it (its pre-wait steps already ran and the tail is abandoned)"
@@ -651,21 +738,48 @@ impl ReactionScheduler {
         state.next_instance_id += 1;
         let enrolled_frame = state.frame_counter;
         let ticks = ticks.max(1);
-        let countdown = match (state.role, class, state.current_anchor) {
-            (SchedulerRole::Client, TailClass::HostTimeline, anchor) => {
-                Countdown::HostTick(anchor.unwrap_or(0).saturating_add(u64::from(ticks)))
-            }
-            // A host landing drains at frame end, ticks after it fell due. A
-            // wait or `fire` child it parks counts from that due tick, as the
-            // client's host-timeline mirror does, so a chain lands on the tick
-            // timeline whatever the ticks per frame.
-            (SchedulerRole::Host, _, Some(due)) => {
-                let elapsed = state.tick_counter.saturating_sub(due);
-                let elapsed = u32::try_from(elapsed).unwrap_or(u32::MAX);
-                Countdown::Ticks(ticks.saturating_sub(elapsed).max(1))
-            }
-            _ => Countdown::Ticks(ticks),
+        let clock = if client && class == TailClass::HostTimeline {
+            TickClock::Host
+        } else {
+            TickClock::Local
         };
+        // A landing drains at frame end, ticks after it fell due. Everything
+        // its drain enrolls counts from that due tick on the same clock, so
+        // each segment of a chain falls due at its parent's due tick plus its
+        // wait — on the host as on a client's host-timeline mirror, whatever
+        // the ticks per frame. A child whose due tick has already passed
+        // queues at once and lands in this same drain, in order with the rest.
+        let anchored = state.current_anchor.filter(|anchor| anchor.clock == clock);
+        let countdown = match (anchored, clock) {
+            (Some(anchor), _) => Countdown::Due(DueTick {
+                clock,
+                tick: anchor.tick.saturating_add(u64::from(ticks)),
+            }),
+            // A host-timeline tail outside a landing is a `levelLoad` fire:
+            // it counts from the level's host `script_time` 0.
+            (None, TickClock::Host) => Countdown::Due(DueTick {
+                clock,
+                tick: u64::from(ticks),
+            }),
+            (None, TickClock::Local) => Countdown::Ticks(ticks),
+        };
+        if let (Some(_), Countdown::Due(due)) = (anchored, countdown)
+            && state.now(due.clock).is_some_and(|now| due.tick <= now)
+        {
+            state.landings.push(QueuedLanding {
+                id,
+                interruptible,
+                overdue: true,
+                landing: Landing {
+                    key,
+                    depth,
+                    tail,
+                    origin: fire_origin,
+                    due,
+                },
+            });
+            return;
+        }
         state.instances.insert(
             key,
             PendingInstance {
@@ -680,11 +794,12 @@ impl ReactionScheduler {
         );
     }
 
-    /// Advance every parked instance by one tick, skipping any enrolled this very
-    /// frame. Expired instances move to the landing queue, which the frame-end
-    /// drain resumes in due-tick, then ascending-id, order (O8/O25). Countdowns
-    /// are whole ticks, so this takes no `dt`. On the host each call is one
-    /// fixed tick of the count a landing's due tick reads.
+    /// Advance this machine's local clock by one fixed tick. A whole-tick
+    /// countdown advances, skipping any enrolled this very frame (O12); a
+    /// local due tick expires when the clock reaches it. Expired instances
+    /// move to the landing queue for the frame-end drain (O8/O25).
+    /// Countdowns are whole ticks, so this takes no `dt`. The host calls it
+    /// once per fixed tick, a connected client once per client tick.
     ///
     /// `exit_fires` is this tick's paired-trigger Exit set (`(trigger, player)`).
     /// Cancels apply **before** the countdown advance so an Exit on the exact
@@ -695,9 +810,8 @@ impl ReactionScheduler {
         if state.role == SchedulerRole::Disabled {
             return;
         }
-        if state.role == SchedulerRole::Host {
-            state.tick_counter += 1;
-        }
+        state.tick_counter += 1;
+        let now = state.tick_counter;
         // O4/O53: cancel matching interruptible instances (and queued landings)
         // BEFORE advancing countdowns. A non-interruptible instance ignores its
         // paired Exit (O5), so the flag gates the cancel.
@@ -718,21 +832,28 @@ impl ReactionScheduler {
         let current = state.frame_counter;
         let mut expired: Vec<InstanceKey> = Vec::new();
         for (key, instance) in state.instances.iter_mut() {
-            if instance.enrolled_frame == current {
-                continue;
-            }
-            // A host-timeline instance on a client waits for the host clock
-            // (`advance_host_clock`), not for this machine's ticks.
-            let Countdown::Ticks(remaining) = &mut instance.countdown else {
-                continue;
-            };
-            *remaining = remaining.saturating_sub(1);
-            if *remaining == 0 {
-                expired.push(key.clone());
+            match &mut instance.countdown {
+                Countdown::Ticks(remaining) => {
+                    if instance.enrolled_frame == current {
+                        continue;
+                    }
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        expired.push(key.clone());
+                    }
+                }
+                // Enrolled during a landing's drain, which ends the frame, so
+                // the frame skip is moot: the due tick is absolute.
+                Countdown::Due(due) if due.clock == TickClock::Local && due.tick <= now => {
+                    expired.push(key.clone());
+                }
+                // Not yet due, or a client's host-timeline instance, which
+                // waits for the host clock (`advance_host_clock`).
+                Countdown::Due(_) => {}
             }
         }
-        // No per-tick sort here: the drain sorts each batch it takes from
-        // `landings` (O8/O25), so sorting this batch first is dead work.
+        // No per-tick sort here: the drain picks each landing in order
+        // (`SchedulerState::next_landing`), so sorting first is dead work.
         state.expire(expired);
     }
 
@@ -778,47 +899,20 @@ impl ReactionScheduler {
         });
     }
 
-    /// Take the next landings to drain. On the host that is the whole queue,
-    /// in due-tick, then ascending-id, order (O8, O25), so in a frame of
-    /// several ticks the earliest-due landing goes first. On a client it is
-    /// the own-clock landings and the host-timeline landings due on the
-    /// earliest queued host tick, in ascending id: a reading that finds
-    /// several segments due lands them in the host's order, and the later-due
-    /// ones stay queued, so a re-fire meanwhile dedups against them as it
-    /// would against the host's still-parked instances.
-    fn take_landing_batch(&self) -> Vec<Landing> {
+    /// Take the next landing to drain, in [`SchedulerState::next_landing`]
+    /// order, leaving the rest queued.
+    fn take_next_landing(&self) -> Option<Landing> {
         let mut state = self.state.borrow_mut();
-        let client = state.role == SchedulerRole::Client;
-        let earliest = if client {
-            state
-                .landings
-                .iter()
-                .filter_map(|queued| queued.landing.due_tick)
-                .min()
-        } else {
-            None
-        };
-        let (mut batch, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut state.landings)
-            .into_iter()
-            .partition(|queued| {
-                earliest.is_none()
-                    || queued.landing.due_tick.is_none()
-                    || queued.landing.due_tick == earliest
-            });
-        state.landings = rest;
-        if client {
-            batch.sort_by_key(|queued| queued.id);
-        } else {
-            batch.sort_by_key(|queued| (queued.landing.due_tick, queued.id));
-        }
-        batch.into_iter().map(|queued| queued.landing).collect()
+        let index = state.next_landing()?;
+        Some(state.landings.remove(index).landing)
     }
 
-    /// The scheduler's own unit tests take a batch without resuming it;
-    /// production resumes through [`Self::drain_landings`].
+    /// The scheduler's own unit tests take the queue, in landing order,
+    /// without resuming it; production resumes through
+    /// [`Self::drain_landings`].
     #[cfg(test)]
     pub(crate) fn take_landings(&self) -> Vec<Landing> {
-        self.take_landing_batch()
+        std::iter::from_fn(|| self.take_next_landing()).collect()
     }
 
     /// Number of parked (not-yet-landed) instances (test observability).
@@ -828,12 +922,14 @@ impl ReactionScheduler {
     }
 }
 
-/// Clears the scheduler's `current_origin` when one trigger residual's drain
-/// finishes. Held across the residual loop iteration in `main.rs` so a `wait`
-/// reached synchronously through `fire_prepartitioned_reactions_with_sequences`
-/// keys to this origin, and released before the deferred batch runs so a
-/// batch-seeded `fire` is sourceless (O54). Owns a scheduler clone (an `Rc`
-/// clone), so it does not hold a borrow of the session while the residual runs.
+/// Clears the scheduler's `current_origin` when one residual's drain
+/// finishes. Held for one residual by `crate::residual_drain` (trigger and
+/// player-event residuals) and `crate::teleporter_system` (teleport
+/// residuals), so a `wait` reached synchronously through
+/// `fire_prepartitioned_reactions_with_sequences` keys to this origin, and
+/// released before the deferred batch runs so a batch-seeded `fire` is
+/// sourceless (O54). Owns a scheduler clone (an `Rc` clone), so it does not
+/// hold a borrow of the session while the residual runs.
 pub struct OriginGuard {
     scheduler: ReactionScheduler,
 }

@@ -1,6 +1,8 @@
 // Array bodies through the real SDK in both runtimes: an array is a
 // `{ sequence }`, nested arrays flatten at any depth, an empty one is inert,
-// and a body that is not a step raises at author time naming `defineReaction`.
+// and a list entry that is not a step raises at author time naming
+// `defineReaction`. A whole body of no known shape reaches the manifest
+// parser, which skips that one reaction with a warning.
 // See: context/lib/scripting.md §12 (Body shapes)
 
 use super::*;
@@ -174,9 +176,10 @@ fn tracer_arrays_and_empty_bodies_install_as_sequences_in_both_runtimes() {
     drop(table);
 }
 
-// AC 19: a body that is not a step raises at author time in both runtimes,
-// naming `defineReaction`; a reaction handle's error suggests `fire`. A
-// map-shaped entry, a command target and a misspelled body key raise the same
+// AC 19: a list entry that is not a step raises at author time in both
+// runtimes, naming `defineReaction`; a reaction handle's error suggests
+// `fire`. A map-shaped entry, a command target, a runtime value, a missing
+// entry, a non-list `sequence` and a list carrying a body key raise the same
 // text in both runtimes instead of installing an empty or missing reaction.
 #[test]
 fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
@@ -212,14 +215,24 @@ fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
             "defineReaction: an entry with no `primitive` is not a step",
         ),
         (
-            "npcs()",
-            "Postretro.npcs()",
-            "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps",
+            "[playSound(\"a\"), 5]",
+            "{ UI.playSound(\"a\"), 5 }",
+            "defineReaction: a step must be an object (a table in Luau), got number",
         ),
         (
-            "{ sequnce: [playSound(\"a\")] }",
-            "{ sequnce = { UI.playSound(\"a\") } }",
-            "defineReaction: a body must be `progress`, `primitive`, `sequence` or a list of steps",
+            "[playSound(\"a\"), undefined, playSound(\"b\")]",
+            "{ UI.playSound(\"a\"), nil, UI.playSound(\"b\") }",
+            "defineReaction: a list of steps has a missing entry",
+        ),
+        (
+            "[[playSound(\"a\"), null, playSound(\"b\")]]",
+            "{ { UI.playSound(\"a\"), nil, UI.playSound(\"b\") } }",
+            "defineReaction: a list of steps has a missing entry",
+        ),
+        (
+            "(on: TriggerEventParams) => [playSound(\"a\"), on.rising]",
+            "function(on) return { UI.playSound(\"a\"), on.rising } end",
+            "defineReaction: a runtime value is not a step",
         ),
         (
             "{ sequence: { foo: 1 } }",
@@ -236,7 +249,7 @@ fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
         let capture = LogCapture::start();
         let reactions = ts(&format!(
             r#"
-            import {{ defineReaction, npcs }} from "postretro";
+            import {{ defineReaction, npcs, type TriggerEventParams }} from "postretro";
             import {{ playSound }} from "postretro/ui";
             export function setupLevel() {{
               return {{ reactions: [defineReaction("bad", ({ts_body}) as any)] }};
@@ -268,4 +281,94 @@ fn non_step_entries_raise_naming_define_reaction_in_both_runtimes() {
             capture.records()
         );
     }
+}
+
+// K1: a whole body of no known shape, a misspelled key or a bare group
+// target, is not a list entry: it passes through to the manifest parser, which
+// skips that one reaction with its malformed warning, and a sibling in the
+// same script still installs. TS `{}` takes the same path; Luau `{}` is an
+// empty list, an inert reaction (`tracer_arrays_and_empty_bodies_…`).
+#[test]
+fn unrecognised_whole_bodies_skip_one_reaction_and_siblings_install_in_both_runtimes() {
+    let capture = LogCapture::start();
+    let from_ts = ts(r#"
+        import { defineReaction, npcs } from "postretro";
+        import { playSound } from "postretro/ui";
+        export function setupLevel() {
+          return { reactions: [
+            defineReaction("misspelled", { sequnce: [playSound("a")] } as any),
+            defineReaction("good", [playSound("a")]),
+            defineReaction("group", npcs({ tag: "m" }) as any),
+            defineReaction("empty", {} as any),
+          ] };
+        }
+    "#);
+    let ts_records = capture.records();
+    drop(capture);
+    let capture = LogCapture::start();
+    let from_luau = luau(r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+        function setupLevel()
+          return { reactions = {
+            Postretro.defineReaction("misspelled", { sequnce = { UI.playSound("a") } }),
+            Postretro.defineReaction("good", { UI.playSound("a") }),
+            Postretro.defineReaction("group", Postretro.npcs({ tag = "m" })),
+          } }
+        end
+    "#);
+    let luau_records = capture.records();
+    for (runtime, reactions, records, skipped) in [
+        ("QuickJS", &from_ts, &ts_records, &[0, 2, 3][..]),
+        ("Luau", &from_luau, &luau_records, &[0, 2][..]),
+    ] {
+        assert_eq!(
+            reactions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["good"],
+            "{runtime}: only the valid sibling installs"
+        );
+        for index in skipped {
+            let warning = format!("reactions[{index}] is malformed and was skipped");
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record.level == log::Level::Warn && record.message.contains(&warning)),
+                "{runtime} warned `{warning}`: {records:?}"
+            );
+        }
+        assert!(
+            records.iter().all(|record| !record.message.contains("defineReaction:")),
+            "{runtime}: no author-time raise: {records:?}"
+        );
+    }
+    assert_eq!(from_ts, from_luau, "the valid sibling lowers identically");
+}
+
+// K4: a reaction handle passed as a whole body registers under the explicit
+// name, not the handle's own, in both runtimes.
+#[test]
+fn an_explicit_name_wins_over_a_handle_body_in_both_runtimes() {
+    let from_ts = ts(r#"
+        import { defineReaction } from "postretro";
+        import { playSound } from "postretro/ui";
+        export function setupLevel() {
+          const closet = defineReaction("closet", playSound("a"));
+          return { reactions: [closet, defineReaction("b", closet)] };
+        }
+    "#);
+    let from_luau = luau(r#"
+        local Postretro = require("postretro")
+        local UI = require("postretro/ui")
+        function setupLevel()
+          local closet = Postretro.defineReaction("closet", UI.playSound("a"))
+          return { reactions = { closet, Postretro.defineReaction("b", closet) } }
+        end
+    "#);
+    assert_eq!(from_ts, from_luau);
+    let by_name = bodies(&from_ts);
+    assert_eq!(
+        by_name.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["closet", "b"]
+    );
+    assert_eq!(by_name[0].1, by_name[1].1, "the body is the handle's");
 }

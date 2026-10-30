@@ -173,7 +173,7 @@ methods:
 
 | Method | Returns |
 |--------|---------|
-| `arm()` | Steps that turn the teleporter on. Spread them into a reaction's `sequence`. |
+| `arm()` | Steps that turn the teleporter on. List them in a reaction body as they are; no spread is needed. |
 | `disarm()` | Steps that turn it off. |
 | `on("teleport", [reactions])` | A binding to return under `setupLevel`'s `teleportEvents`. The reactions run each time a player teleports through this teleporter. |
 
@@ -249,13 +249,14 @@ export function setupLevel() {
   const shift = getMapEntities("teleporter", { tag: "era_shift" });
   const doors = getMapEntities("mover", { tag: "closet_door" });
 
-  const open = defineReaction("gate.open", { sequence: gate.flatMap((t) => t.arm()) });
-  const shut = defineReaction("gate.shut", { sequence: gate.flatMap((t) => t.disarm()) });
-  const reveal = defineReaction("closet.reveal", {
-    sequence: [...doors.flatMap((d) => d.start()), npcs({ tag: "closet" }).update({ aggro: true })],
-  });
+  const open = defineReaction("gate.open", gate.map((t) => t.arm()));
+  const shut = defineReaction("gate.shut", gate.map((t) => t.disarm()));
+  const reveal = defineReaction("closet.reveal", [
+    doors.map((d) => d.start()),
+    npcs({ tag: "closet" }).update({ aggro: true }),
+  ]);
   const cleared = defineReaction("closet.cleared", { progress: { tag: "closet", at: 1.0, fire: "gate.open" } });
-  const timeShift = defineReaction("era.shift", { sequence: shift.flatMap((t) => t.arm()) });
+  const timeShift = defineReaction("era.shift", shift.map((t) => t.arm()));
   const oneWay = defineReaction("gate.used", (on: TeleportEventParams) => on.teleporter.disarm());
 
   return {

@@ -361,9 +361,9 @@ export type PrimitiveReactionDescriptor = {
   onComplete: string?,
 }
 
---- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a body
---- on its own, and a sequence step unspread, doing what the same reaction does
---- as a body. It names no target.
+--- A system reaction (`playSound`, `updateState`, the Ghost bus setter, ...): a
+--- body on its own, and a step in a list, doing what the same reaction does as
+--- a body. It names no target.
 export type SystemReactionStep = {
   primitive: string,
   args: { [string]: any }?,
@@ -586,6 +586,8 @@ export type SequenceReactionDescriptor = {
 --- both fields from one flat table.
 export type ProgressNamedReactionDescriptor = { name: string, levels: {string}?, progress: { tag: string, at: number, fire: string } }
 export type PrimitiveNamedReactionDescriptor = { name: string, levels: {string}?, primitive: string, kind: GroupKind?, tag: string?, target: SubjectTokenTarget?, args: { [string]: any }?, onComplete: string? }
+--- A `{ sequence }` as the manifest carries it: one flat list. Only
+--- `defineReaction` flattens nested lists.
 export type SequenceNamedReactionDescriptor = { name: string, levels: {string}?, sequence: {SequenceStep} }
 export type NamedReactionDescriptor = ProgressNamedReactionDescriptor | PrimitiveNamedReactionDescriptor | SequenceNamedReactionDescriptor
 export type CrossingParams = { rising: RuntimeRead }
@@ -877,9 +879,12 @@ export type LevelManifest = {
 
 --- Build a named reaction descriptor. Pure: returns a plain table, no FFI.
 --- `descriptor` accepts one body shape: `progress`, `primitive`, `sequence`,
---- or a table of steps, which lowers to a `sequence`; nested tables flatten.
---- Any other shape raises. `name` is optional; when omitted a deterministic,
---- run-stable id is derived from the lowered body. Use explicit names when TS
+--- or a table of steps, which lowers to a `sequence`; nested tables flatten,
+--- and an empty table `{}` is an inert reaction. A list entry that is not a
+--- step raises. Any other body, a misspelled key included, passes through, and
+--- the level load skips that one reaction with a warning. `name` is optional;
+--- when omitted a deterministic, run-stable id is derived from the lowered
+--- body. An explicit `name` wins over a body's own. Use explicit names when TS
 --- and Luau scripts must agree. The returned handle can be passed to button
 --- `onPress` or crossing `fire` entries.
 declare defineReaction: (

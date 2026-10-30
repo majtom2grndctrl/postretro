@@ -52,9 +52,9 @@ pub fn primitive_is_machine_local(
         .is_some_and(|kind| system_reaction_is_machine_local(kind, args, slot_table, role))
 }
 
-/// How a client lands a tail: every machine-local step, or, for a segment a
-/// late joiner's first host-clock reading finds already due, only the steps
-/// that converge state. Transient presentation and `returnToFrontend` are
+/// How a client lands a tail: every machine-local step, or, for a segment due
+/// before the host tick this client revealed at (a late joiner's), only the
+/// steps that converge state. Transient presentation and `returnToFrontend` are
 /// skipped there, since the moment they belonged to has passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientLanding {
@@ -81,12 +81,12 @@ impl ClientLanding {
     }
 }
 
-/// Set by the scheduler for the whole of one landing's drain: its tail and the
-/// follow-ups that tail queued, which dispatch after the tail's fire context
-/// is restored. Dispatch and presentation capture read it there.
 /// A step a client landing dropped: the reaction holding it and its primitive.
 pub type DroppedStep = (String, String);
 
+/// Set by the scheduler for the whole of one landing's drain: its tail and the
+/// follow-ups that tail queued, which dispatch after the tail's fire context
+/// is restored. Dispatch and presentation capture read it there.
 #[derive(Debug, Default)]
 pub struct LandingScope {
     /// A host-only or host-mirrored landing on the host: light, fog and

@@ -15,7 +15,7 @@ use postretro_scripting_core::reaction_registry::{
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 
-use super::{InstanceKey, Landing, ReactionScheduler, SchedulerRole, TailClass};
+use super::{DueTick, InstanceKey, Landing, ReactionScheduler, SchedulerRole, TailClass};
 use crate::trigger_system::PlayerId;
 
 impl ReactionScheduler {
@@ -37,6 +37,18 @@ impl ReactionScheduler {
     pub(super) fn begin_enrollment_depth(&self, depth: u32) -> DepthGuard<'_> {
         self.state.borrow_mut().current_enrollment_depth = Some(depth);
         DepthGuard { scheduler: self }
+    }
+
+    /// Set the due tick every enrollment reached during one landing's drain
+    /// counts from — its tail resume and its follow-ups alike — restoring the
+    /// previous anchor when the returned guard drops. Scoped like
+    /// `begin_enrollment_depth`.
+    pub(super) fn begin_anchor(&self, due: DueTick) -> AnchorGuard<'_> {
+        let previous = self.state.borrow_mut().current_anchor.replace(due);
+        AnchorGuard {
+            scheduler: self,
+            previous,
+        }
     }
 
     /// Resume every landing this frame through the shipped residual path — one
@@ -93,32 +105,22 @@ impl ReactionScheduler {
         resolve_seat: &dyn Fn(PlayerId, &EntityRegistry) -> Option<Seat>,
     ) {
         let client = self.role() == SchedulerRole::Client;
-        let parked_from = self.state.borrow().next_instance_id;
-        loop {
-            let batch = self.take_landing_batch();
-            if batch.is_empty() {
-                break;
-            }
-            for landing in batch {
-                self.drain_one(
-                    landing,
-                    client,
-                    resolve_seat,
-                    data_registry,
-                    sequence_registry,
-                    reaction_registry,
-                    system_registry,
-                    script_ctx,
-                );
-            }
-            // A reading past several due segments lands them one due tick at
-            // a time, each batch's re-parks and `fire` children joining the
-            // queue when the reading has passed them too. Each child falls due
-            // after its parent and no later than the reading, and the chain
-            // depth is capped, so the loop ends.
-            if client {
-                self.catch_up_host_timeline(parked_from);
-            }
+        // One landing at a time. A landing's re-parks and `fire` children
+        // already past their due tick queue as they enroll and land in this
+        // same drain, in order with the rest. Each falls due after its parent
+        // and no later than its clock's present, and the chain depth is
+        // capped, so the loop ends.
+        while let Some(landing) = self.take_next_landing() {
+            self.drain_one(
+                landing,
+                client,
+                resolve_seat,
+                data_registry,
+                sequence_registry,
+                reaction_registry,
+                system_registry,
+                script_ctx,
+            );
         }
     }
 
@@ -137,7 +139,7 @@ impl ReactionScheduler {
         let _depth = self.begin_enrollment_depth(landing.depth);
         let (address, body_ordinal, class, subject) = landing.key.clone();
         let (origin, host_capture, client_landing) = if client {
-            let mode = if self.is_late(landing.due_tick) {
+            let mode = if self.is_late(landing.due) {
                 ClientLanding::Converge
             } else {
                 ClientLanding::Land
@@ -155,7 +157,7 @@ impl ReactionScheduler {
             };
             (origin, class != TailClass::OwnState, None)
         };
-        let _anchor = self.begin_anchor(landing.due_tick);
+        let _anchor = self.begin_anchor(landing.due);
         let _scope = script_ctx.landing.enter(host_capture, client_landing);
         let previous = script_ctx.system_commands.replace_fire_context(
             postretro_entities::SystemCommandFireContext {
@@ -237,17 +239,6 @@ impl ReactionScheduler {
             log::debug!(
                 "[Scheduler] reaction `{address}`{via}: client landing did not apply `{step}`"
             );
-        }
-    }
-
-    /// Set the due tick a wait or `fire` child enrolled during one landing's
-    /// drain counts from; the previous anchor is restored when the returned
-    /// guard drops.
-    pub(super) fn begin_anchor(&self, due_tick: Option<u64>) -> AnchorGuard<'_> {
-        let previous = std::mem::replace(&mut self.state.borrow_mut().current_anchor, due_tick);
-        AnchorGuard {
-            scheduler: self,
-            previous,
         }
     }
 }
@@ -349,7 +340,7 @@ impl Drop for DepthGuard<'_> {
 /// like the guards above.
 pub(super) struct AnchorGuard<'a> {
     scheduler: &'a ReactionScheduler,
-    previous: Option<u64>,
+    previous: Option<DueTick>,
 }
 
 impl Drop for AnchorGuard<'_> {

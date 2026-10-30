@@ -72,7 +72,7 @@ Test names are working names; each row's final names go in the Result column.
 | 19 `progress`, nested `{ sequence }`, reaction handle (suggests `fire`), `onComplete` primitive in an array throw naming `defineReaction` in both runtimes and fail TS compilation | runtime throw tests both runtimes; `sdk/type-tests` negative cases (`@ts-expect-error`) under `tsc` | pass: `array_bodies::non_step_entries_raise_naming_define_reaction_in_both_runtimes` (10 cases incl. review additions: map-shaped entry, group handle, misspelled body key); `sdk/type-tests/reaction-bodies.ts` clean under `tsc -p sdk/type-tests` |
 | 20 Ghost-links rewrite ships; twins byte-identical wire; surface tests pass; klaxon once per machine in loopback, no refused-enrollment warning | `ghost_links_surface_tests.rs` updated; twin manifest compare; loopback klaxon test | pass: `ghost_links_surface_tests::*` (142 ghost-link tests); `wait_tail_loopback_tests::ghost_links_klaxon_plays_once_per_connected_machine_and_never_for_a_late_joiner` (no `enrollment refused`) |
 | **Manual** | | |
-| 21 Host plus client ghost-links playtest | owner, in-engine | outstanding: owner playtest |
+| 21 Host plus client ghost-links playtest | owner, in-engine | pass: owner playtest, host plus client on the wire-36 build |
 
 ## Tasks
 

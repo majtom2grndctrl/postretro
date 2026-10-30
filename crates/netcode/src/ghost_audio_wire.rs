@@ -108,6 +108,7 @@ mod tests {
             faction_sentiment_record: None,
             ghost_audio: Some(wire),
             server_script_time: 13.0,
+            level_tick: 0,
         };
         let bytes = postretro_net::wire::encode(&raw);
         let decoded: RawSnapshotMessage = postretro_net::wire::decode(&bytes).unwrap();

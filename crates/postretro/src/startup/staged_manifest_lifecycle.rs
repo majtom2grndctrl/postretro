@@ -147,10 +147,10 @@ impl App {
         // A parked tail is a snapshot of a body the author may have just
         // edited away, so a hot reload drops every pending instance (O40) —
         // with a `warn!` naming the count, matching the level-teardown
-        // clear. Its own session borrow, scoped tight like the recompose
-        // borrow below.
+        // clear. The level stays, so its clock keeps counting. Its own
+        // session borrow, scoped tight like the recompose borrow below.
         if let Some(session) = self.session.as_ref() {
-            session.scripting.scheduler.clear();
+            session.scripting.scheduler.clear_for_hot_reload();
         }
         if let Some(session) = self.session.as_ref() {
             session

@@ -45,7 +45,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// Projectile traps reserve component discriminant 25 but never replicate, so
 /// they need no bump of their own; the ghost-link record takes discriminant 26.
 /// A declaration kind separates a timed switch from an immediate active-slot resync.
-pub const WIRE_VERSION: u32 = 35;
+/// The snapshot envelope's host level tick advances it to 36 (`SNAPSHOT_VERSION` 23).
+pub const WIRE_VERSION: u32 = 36;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -637,8 +638,8 @@ mod switch_tick_epoch_tests {
         const PRE_GHOST_WIRE_VERSION: u32 = 33;
         const {
             assert!(WIRE_VERSION >= 34);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 22);
         }
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,
             "no vocabulary change: still PRLC"
@@ -670,11 +671,12 @@ mod switch_tick_epoch_tests {
     // A wire-34 declaration lacks the kind that distinguishes immediate resyncs
     // from switches with authored lower/raise timing.
     #[test]
-    fn switch_kind_refuses_wire_34_peers_and_admits_wire_35() {
+    fn switch_kind_refuses_wire_34_peers_and_admits_current_wire() {
         const PRE_KIND_WIRE_VERSION: u32 = 34;
-        assert_eq!(WIRE_VERSION, 35);
+        const {
+            assert!(WIRE_VERSION >= 35);
+        }
         assert_eq!(PROTOCOL_ID, 0x_5052_4C43);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 22);
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_KIND_WIRE_VERSION,
@@ -695,6 +697,41 @@ mod switch_tick_epoch_tests {
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_KIND_WIRE_VERSION),
             "gate 1 refuses the declaration layout before decode"
+        );
+    }
+
+    // A wire-35 snapshot envelope lacks the host level tick, so a client
+    // cannot land `levelLoad` tails on the host's fixed ticks: both gates
+    // refuse it across the bump, and the application protocol stays PRLC.
+    #[test]
+    fn level_tick_refuses_wire_35_peers_and_admits_wire_36() {
+        const PRE_LEVEL_TICK_WIRE_VERSION: u32 = 35;
+        assert_eq!(WIRE_VERSION, 36);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 23);
+        assert_eq!(
+            PROTOCOL_ID, 0x_5052_4C43,
+            "no vocabulary change: still PRLC"
+        );
+        let old_peer = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_LEVEL_TICK_WIRE_VERSION,
+        };
+        assert_eq!(
+            validate_handshake(protocol_version(), protocol_version()),
+            Ok(())
+        );
+        assert!(matches!(
+            validate_handshake(protocol_version(), old_peer),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert!(matches!(
+            validate_handshake(old_peer, protocol_version()),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_LEVEL_TICK_WIRE_VERSION),
+            "gate 1 refuses the pre-level-tick envelope before decode"
         );
     }
 

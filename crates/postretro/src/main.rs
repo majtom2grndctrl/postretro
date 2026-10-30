@@ -4764,6 +4764,10 @@ impl App {
         );
         let mesh_clip_tables = &session.mesh_clip_tables;
         let hit_zone_store = &session.hit_zone_store;
+        // The host timeline clients land `levelLoad` tails on: the fixed ticks
+        // this host's scheduler counted this level, clamped as its own are.
+        let level_tick =
+            u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         let Some(netcode::NetEndpoint::Host {
             server,
             allocator,
@@ -4879,6 +4883,7 @@ impl App {
                 (*host_pawn).map(|pawn| (pawn, host_aim_pitch)),
                 tick.wrapping_add(1),
                 server_script_time,
+                level_tick,
                 snapshot_due,
                 last_emitted_snapshot_tick,
                 &script_ctx.presentation_overrides.borrow(),

@@ -463,15 +463,14 @@ fn land_host_tails(app: &mut App, clock: f64) {
     );
 }
 /// One client frame of the `wait` scheduler, as the frame loop runs it: a
-/// tick of the own clock, the host-clock reading beside the level clock
-/// `clock`, then the landing drain.
-fn land_client_tails(app: &mut App, clock: f64, host_time: Option<f64>) {
+/// tick of the own clock, the host level-tick reading, then the landing drain.
+fn land_client_tails(app: &mut App, clock: f64, host_level_tick: Option<f64>) {
     let ctx = script_ctx(app);
     ctx.presentation_script_time.set(clock);
     let scripting = &app.session.as_ref().unwrap().scripting;
     scripting.scheduler.begin_frame();
     scripting.scheduler.evaluate(&[]);
-    scripting.scheduler.advance_host_clock(host_time, clock);
+    scripting.scheduler.advance_host_clock(host_level_tick);
     scripting.scheduler.drain_landings(
         &ctx.data_registry.borrow(),
         &scripting.sequence_registry,
@@ -702,6 +701,7 @@ impl Harness {
         let ctx = script_ctx(&self.host);
         let registry = ctx.registry.borrow();
         let session = self.host.session.as_ref().unwrap();
+        let level_tick = u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         netcode::host_register_descriptor_entities(
             &registry,
             &mut self.allocator,
@@ -739,6 +739,7 @@ impl Harness {
             None,
             self.tick,
             self.clock,
+            level_tick,
             true,
             &mut self.last,
             &ctx.presentation_overrides.borrow(),
@@ -763,10 +764,17 @@ impl Harness {
                 peer.clock = self.clock - peer.clock_origin;
                 peer.receive(&self.world);
                 if self.drive_schedulers {
-                    let host_time = peer
+                    // The fixture runs no time-sync probes. A converged
+                    // `ClockEstimator` reads the host's tick now: the echo's
+                    // server tick plus the half RTT it spent in flight plus
+                    // local time since it arrived, which on this link is the
+                    // shared `self.tick`, in the units snapshots are stamped
+                    // in. The production frame loop passes
+                    // `time_sync.estimated_server_tick()` the same way.
+                    let reading = peer
                         .replication
-                        .presentation_host_time(peer.clock, peer.rtt);
-                    land_client_tails(&mut peer.app, peer.clock, host_time);
+                        .host_level_tick(Some(f64::from(self.tick)));
+                    land_client_tails(&mut peer.app, peer.clock, reading);
                     let seen = peer.commands.len();
                     peer.commands
                         .extend(script_ctx(&peer.app).system_commands.take());

@@ -595,6 +595,7 @@ impl RelayHarness {
             None,
             production_snapshot_stamp(self.host_tick),
             0.0,
+            0,
             snapshot_due,
             &mut self.last_emitted_snapshot_tick,
             &Default::default(),

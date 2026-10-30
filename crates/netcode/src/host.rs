@@ -101,10 +101,13 @@ pub fn host_drive_demo_mover(
 /// the 30 Hz cadence) encodes + sends a per-client delta snapshot to every accepted
 /// client.
 ///
-/// `tick` is the monotonic fixed-simulation tick stamp. `snapshot_due` records that
-/// at least one completed tick reached the cadence during this redraw. A snapshot
-/// is still encoded at most once for `tick`, even if a caller reaches this path
-/// more than once before another fixed tick completes.
+/// `tick` is the monotonic fixed-simulation tick stamp. `level_tick` is the host
+/// scheduler's fixed ticks this level, the host timeline a client's `levelLoad`
+/// `wait` tails land on; it rides every snapshot beside `server_script_time`.
+/// `snapshot_due` records that at least one completed tick reached the cadence
+/// during this redraw. A snapshot is still encoded at most once for `tick`, even
+/// if a caller reaches this path more than once before another fixed tick
+/// completes.
 #[allow(clippy::too_many_arguments)]
 pub fn host_replicate(
     registry: &EntityRegistry,
@@ -123,6 +126,7 @@ pub fn host_replicate(
     host_aim: Option<(EntityId, f32)>,
     tick: u32,
     server_script_time: f64,
+    level_tick: u32,
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
     presentation_overrides: &postretro_entities::presentation_overrides::PresentationOverrides,
@@ -186,6 +190,7 @@ pub fn host_replicate(
         state_slots.register_client(client_id);
         if let Some(mut raw) = replication.encode_in_batch(client_id, tick, sequence) {
             raw.server_script_time = server_script_time;
+            raw.level_tick = level_tick;
             // Splice this client's replicated-state records into the SAME snapshot
             // envelope the entity tracker produced (no new channel, no sibling message).
             // The entity tracker leaves `state_records` empty + an all-zero fingerprint;

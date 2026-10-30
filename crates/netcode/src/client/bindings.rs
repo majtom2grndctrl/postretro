@@ -42,6 +42,10 @@ pub(super) struct ClientBindings {
     warned_presentation_bindings: HashSet<(u8, u32)>,
     /// Host and local script clocks at the highest-sequence accepted snapshot.
     clock_anchor: Option<(f64, f64)>,
+    /// The host's level tick and server tick at the same snapshot: the host
+    /// timeline a client's `levelLoad` tails land on, which counts fixed
+    /// ticks as the server tick does, so the two advance together.
+    level_tick_anchor: Option<(u32, u32)>,
     last_applied: HashMap<(NetworkId, u16), ComponentPayload>,
     deferred: HashMap<(NetworkId, u16), ComponentPayload>,
 }
@@ -145,6 +149,7 @@ impl ClientBindings {
         self.rejected_presentation_ids.clear();
         self.warned_presentation_bindings.clear();
         self.clock_anchor = None;
+        self.level_tick_anchor = None;
         self.last_applied.clear();
         self.deferred.clear();
     }
@@ -159,6 +164,20 @@ impl ClientBindings {
         if server_script_time.is_finite() && local_script_time.is_finite() {
             self.clock_anchor = Some((server_script_time, local_script_time));
         }
+    }
+
+    /// Call beside [`Self::accept_presentation_clock`], for the same snapshot.
+    pub(super) fn accept_level_tick(&mut self, level_tick: u32, server_tick: u32) {
+        self.level_tick_anchor = Some((level_tick, server_tick));
+    }
+
+    /// The host's level tick now: the anchored level tick plus the server
+    /// ticks elapsed since its snapshot, by the current server-tick estimate.
+    pub(super) fn host_level_tick(&self, estimated_server_tick: Option<f64>) -> Option<f64> {
+        estimated_server_tick
+            .zip(self.level_tick_anchor)
+            .map(|(estimate, (level, server))| f64::from(level) + (estimate - f64::from(server)))
+            .filter(|reading| reading.is_finite())
     }
 
     pub(super) fn presentation_host_time(
@@ -861,6 +880,7 @@ mod tests {
             &resolver,
         );
         bindings.accept_presentation_clock(100.0, 20.0);
+        bindings.accept_level_tick(300, 900);
         bindings.apply_presentation_batch(
             &mut registry,
             &map,
@@ -878,6 +898,8 @@ mod tests {
             &mut resolver,
         );
         bindings.clear_presentation();
+        assert_eq!(bindings.level_tick_anchor, None);
+        assert_eq!(bindings.host_level_tick(Some(905.0)), None);
         assert!(registry.exists(id));
         assert!(!bindings.is_presentation_bound(nid));
         assert!(bindings.last_applied.is_empty());
@@ -906,5 +928,29 @@ mod tests {
             1
         );
         assert_eq!(resolver.seeds.last().unwrap().1, Some(29.0));
+    }
+
+    // The host level tick reads as the anchored snapshot's level tick plus the
+    // server ticks the estimate says have elapsed since it, never host script
+    // time: both count the host's clamped fixed ticks.
+    #[test]
+    fn host_level_tick_advances_with_the_server_tick_estimate_from_the_snapshot_anchor() {
+        let mut bindings = ClientBindings::default();
+        assert_eq!(
+            bindings.host_level_tick(Some(905.0)),
+            None,
+            "no snapshot yet"
+        );
+        bindings.accept_level_tick(300, 900);
+        assert_eq!(
+            bindings.host_level_tick(None),
+            None,
+            "no time-sync sample yet"
+        );
+        assert_eq!(bindings.host_level_tick(Some(905.5)), Some(305.5));
+        assert_eq!(bindings.host_level_tick(Some(f64::NAN)), None);
+        assert_eq!(bindings.host_level_tick(Some(f64::INFINITY)), None);
+        bindings.accept_level_tick(310, 910);
+        assert_eq!(bindings.host_level_tick(Some(912.0)), Some(312.0));
     }
 }

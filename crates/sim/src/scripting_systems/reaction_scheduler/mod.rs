@@ -64,8 +64,9 @@ pub enum TickClock {
     /// host, whose own count is the host timeline, and a client's own-clock
     /// tails.
     Local,
-    /// The host timeline as a client reads it, counted from the current
-    /// level's host `script_time` 0: a client's host-timeline tails.
+    /// The host timeline as a client reads it: the host's fixed ticks this
+    /// level ([`ReactionScheduler::level_tick`] on the host), replicated on
+    /// every snapshot. A client's host-timeline tails.
     Host,
 }
 
@@ -86,7 +87,7 @@ enum Countdown {
     Ticks(u32),
     /// A fixed due tick: an enrollment reached during a landing's drain,
     /// counted from that landing's due tick, or a client's host-timeline
-    /// tail, counted from host `script_time` 0.
+    /// tail, counted from the host's level tick 0.
     Due(DueTick),
 }
 
@@ -155,6 +156,10 @@ struct SchedulerState {
     /// Fixed ticks this machine has evaluated — advanced by `evaluate` on
     /// either role, never reset. A [`TickClock::Local`] due tick reads it.
     tick_counter: u64,
+    /// `tick_counter` when this level's clock last reset, so the level tick
+    /// counts `evaluate` calls since level install: on the host the
+    /// host-timeline clock it replicates, on a client its ticks since reveal.
+    level_start_tick: u64,
     /// Monotonic instance-id source.
     next_instance_id: u64,
     instances: BTreeMap<InstanceKey, PendingInstance>,
@@ -163,10 +168,10 @@ struct SchedulerState {
     landings: Vec<QueuedLanding>,
     /// Client only: the host tick of the latest host-clock reading this level.
     host_tick_now: Option<u64>,
-    /// Client only: the host tick this client revealed at this level, fixed at
-    /// its first host-clock reading. A host-timeline segment due before it
-    /// belongs to a late joiner, which converges state instead of replaying
-    /// presentation.
+    /// Client only: the host level tick this client revealed at, fixed at its
+    /// first host-clock reading as that reading less the client's own ticks
+    /// since reveal. A host-timeline segment due before it belongs to a late
+    /// joiner, which converges state instead of replaying presentation.
     join_host_tick: Option<u64>,
     /// The due tick of the landing draining now ([`Landing::due`]). Every
     /// enrollment reached synchronously in that landing's drain — a nested
@@ -297,12 +302,41 @@ impl SchedulerState {
             .map(|(index, _)| index)
     }
 
-    /// Forget the per-level host clock (level teardown, suspend, hot reload,
-    /// role change): the next level's first reading fixes its join tick afresh.
+    /// Restart the level clock (level teardown, suspend, role change): the
+    /// level tick counts from here, and the next level's first reading fixes
+    /// its join tick afresh. A hot reload keeps the level, so it keeps this.
     fn reset_level_clock(&mut self) {
+        self.level_start_tick = self.tick_counter;
         self.host_tick_now = None;
         self.join_host_tick = None;
         self.current_anchor = None;
+    }
+
+    /// Fixed ticks evaluated since this level's clock reset.
+    fn level_tick(&self) -> u64 {
+        self.tick_counter - self.level_start_tick
+    }
+
+    /// Drop every parked and queued tail and the per-level warn latches,
+    /// logging the count at the role's level.
+    fn drop_tails(&mut self) {
+        let dropped = self.instances.len() + self.landings.len();
+        if dropped > 0 {
+            if self.role == SchedulerRole::Client {
+                log::debug!(
+                    "[Scheduler] dropping {dropped} client wait tail(s) on level teardown / suspend / hot reload"
+                );
+            } else {
+                log::warn!(
+                    "[Scheduler] dropping {dropped} pending timed-reaction instance(s) on level teardown / suspend / hot reload; a half-completed beat will not resume"
+                );
+            }
+        }
+        self.instances.clear();
+        self.landings.clear();
+        self.warned_disabled_reactions.clear();
+        self.warned_sourceless_interruptible_reactions.clear();
+        self.warned_own_state_drops.clear();
     }
 }
 
@@ -345,34 +379,36 @@ impl ReactionScheduler {
         self.state.borrow().role
     }
 
-    /// Drop all transient level state without changing the session role. Wired
-    /// into `clear_surface_lifetime_level_state` (level teardown and the suspend
-    /// path) and the staged-manifest hot-reload commit. A parked instance holds a
-    /// snapshot of a body that the next level, a suspend, or an author edit may
-    /// invalidate, so a half-completed beat is dropped rather than replayed — the
-    /// `warn!` naming the count keeps that distinguishable from a bug (O38-O40).
-    /// A client's dropped tails log at debug: the host warns for the beats it
+    /// Drop all transient level state without changing the session role, and
+    /// restart the level clock. Wired into `clear_surface_lifetime_level_state`
+    /// (level teardown and the suspend path). A parked instance holds a
+    /// snapshot of a body that the next level or a suspend may invalidate, so
+    /// a half-completed beat is dropped rather than replayed — the `warn!`
+    /// naming the count keeps that distinguishable from a bug (O38, O39). A
+    /// client's dropped tails log at debug: the host warns for the beats it
     /// owns, and a client's own-state beat ends with the level it belongs to.
     pub fn clear(&self) {
         let mut state = self.state.borrow_mut();
-        let dropped = state.instances.len() + state.landings.len();
-        if dropped > 0 {
-            if state.role == SchedulerRole::Client {
-                log::debug!(
-                    "[Scheduler] dropping {dropped} client wait tail(s) on level teardown / suspend / hot reload"
-                );
-            } else {
-                log::warn!(
-                    "[Scheduler] dropping {dropped} pending timed-reaction instance(s) on level teardown / suspend / hot reload; a half-completed beat will not resume"
-                );
-            }
-        }
-        state.instances.clear();
-        state.landings.clear();
+        state.drop_tails();
         state.reset_level_clock();
-        state.warned_disabled_reactions.clear();
-        state.warned_sourceless_interruptible_reactions.clear();
-        state.warned_own_state_drops.clear();
+    }
+
+    /// The staged-manifest hot-reload commit's [`Self::clear`]: an author edit
+    /// may invalidate a parked body, so every tail drops (O40), but the level
+    /// stays installed and `levelLoad` does not re-fire, so the level clock
+    /// keeps counting. The host keeps replicating the same timeline, and a
+    /// client keeps the host tick it revealed at.
+    pub fn clear_for_hot_reload(&self) {
+        self.state.borrow_mut().drop_tails();
+    }
+
+    /// Fixed ticks `evaluate` has counted since this level's clock reset at
+    /// teardown or role change. A `levelLoad` tail enrolled at install with
+    /// `wait(T)` lands on the host at level tick `T`, so the host replicates
+    /// this as the host timeline (`SnapshotMessage::level_tick`); on a client
+    /// it is the client's own ticks since reveal.
+    pub fn level_tick(&self) -> u64 {
+        self.state.borrow().level_tick()
     }
 
     /// Advance the monotonic frame counter once per frame. Three call sites: the

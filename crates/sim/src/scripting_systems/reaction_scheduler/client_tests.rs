@@ -6,6 +6,9 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
+
+use glam::Vec3;
 
 use postretro_entities::{
     EntityId, FireOrigin, FireSubject, MachineSource, NamedReaction, ReplicationScope, ScriptCtx,
@@ -25,9 +28,34 @@ use postretro_test_log_capture::LogCapture;
 use serde_json::json;
 
 use super::{ReactionScheduler, SchedulerRole, register_reaction_control_primitives};
+use crate::frame_timing::{FrameTiming, InterpolableState};
 use crate::scripting_systems::system_reactions::register_system_reaction_primitives;
 
-const TICK: f64 = 0.016_667;
+/// Host frame durations: steady 60 Hz frames, and a one-second stall.
+const STEADY_FRAME: Duration = crate::frame_timing::TICK_DURATION;
+const STALL_FRAME: Duration = Duration::from_secs(1);
+
+/// The host's frame clock: the real fixed-tick accumulator, clamp included,
+/// beside host `script_time`, which keeps every frame's unclamped time.
+struct HostFrames {
+    timing: FrameTiming,
+    script_time: f64,
+}
+
+impl HostFrames {
+    fn new() -> Self {
+        Self {
+            timing: FrameTiming::new(InterpolableState::new(Vec3::ZERO)),
+            script_time: 0.0,
+        }
+    }
+
+    /// One host frame of `elapsed`: the fixed ticks it runs.
+    fn frame(&mut self, elapsed: Duration) -> usize {
+        self.script_time += elapsed.as_secs_f64();
+        self.timing.accumulate(elapsed).ticks as usize
+    }
+}
 
 fn wait(duration_ms: f64) -> SequenceStep {
     SequenceStep {
@@ -109,9 +137,9 @@ struct Machine {
     movers: Rc<Cell<usize>>,
     /// Commands queued by every fire and landing so far, in order.
     commands: Vec<SystemReactionCommand>,
-    /// Host `script_time` (seconds) at which this client revealed: where its
-    /// level clock reads zero.
-    revealed_at: f64,
+    /// Host level tick at which this client revealed: where its own level
+    /// tick reads zero.
+    revealed_at: u64,
 }
 
 impl Machine {
@@ -154,15 +182,15 @@ impl Machine {
             system,
             movers,
             commands: Vec::new(),
-            revealed_at: 0.0,
+            revealed_at: 0,
         }
     }
 
-    /// Reveal this client a quarter into host tick `host_tick`, so its level
-    /// clock reads zero there. A client revealed at 0 was live from the host's
+    /// Reveal this client at host level tick `host_tick`, so its own level
+    /// tick reads zero there. A client revealed at 0 was live from the host's
     /// start.
     fn reveal_at(&mut self, host_tick: u64) {
-        self.revealed_at = host_tick as f64 * TICK + TICK / 4.0;
+        self.revealed_at = host_tick;
     }
 
     fn client(reactions: Vec<NamedReaction>) -> Self {
@@ -207,21 +235,19 @@ impl Machine {
     }
 
     /// One frame of exactly one tick: the own clock advances, the host clock
-    /// reads `host_time` (seconds) beside the level clock counted from this
-    /// client's reveal, and the landings drain.
-    fn frame(&mut self, host_time: Option<f64>) {
-        self.frame_of(1, host_time);
+    /// reads `host_level_tick`, and the landings drain.
+    fn frame(&mut self, host_level_tick: Option<f64>) {
+        self.frame_of(1, host_level_tick);
     }
 
-    /// One frame of `ticks` own-clock ticks, then the host-clock reading and
-    /// the landing drain, as the frame loop runs them.
-    fn frame_of(&mut self, ticks: usize, host_time: Option<f64>) {
+    /// One frame of `ticks` own-clock ticks, then the host level-tick reading
+    /// and the landing drain, as the frame loop runs them.
+    fn frame_of(&mut self, ticks: usize, host_level_tick: Option<f64>) {
         self.scheduler.begin_frame();
         for _ in 0..ticks {
             self.scheduler.evaluate(&[]);
         }
-        let local_time = host_time.map_or(0.0, |time| (time - self.revealed_at).max(0.0));
-        self.scheduler.advance_host_clock(host_time, local_time);
+        self.scheduler.advance_host_clock(host_level_tick);
         self.scheduler.drain_landings(
             &self.ctx.data_registry.borrow(),
             &self.sequence,
@@ -232,11 +258,16 @@ impl Machine {
         self.collect();
     }
 
-    /// Frames for host ticks `from..to`, reading the host clock at the start
-    /// of each tick, as a client a fixed latency behind would.
+    /// Frames for host ticks `from..to`, reading the host level tick half a
+    /// tick in. Each frame first runs this client's own ticks up to the host
+    /// tick since its reveal — one per frame once caught up, none while its
+    /// reveal is still ahead — so the scheduler's ticks since reveal and its
+    /// readings agree on the tick it revealed at, as a live client's do.
     fn host_ticks(&mut self, from: u64, to: u64) {
         for tick in from..to {
-            self.frame(Some(tick as f64 * TICK + TICK / 2.0));
+            let since_reveal = tick.saturating_sub(self.revealed_at);
+            let behind = since_reveal.saturating_sub(self.scheduler.level_tick());
+            self.frame_of(behind as usize, Some(tick as f64 + 0.5));
         }
     }
 
@@ -511,7 +542,8 @@ fn s35_re_park_lands_before_the_fire_child_on_one_frame() {
 #[test]
 fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
     let level = || vec![body("levelLoad", vec![wait(5000.0), sound("x")])];
-    // Slow loader: revealed, and first read the host clock, at host 2 s.
+    // Slow loader: revealed at host 2 s, first read the host clock 30 of its
+    // own ticks later.
     let mut client = Machine::client(level());
     client.reveal_at(120);
     client.level_load();
@@ -521,7 +553,7 @@ fn s18_host_timeline_tail_lands_on_the_hosts_tick_or_skips_for_a_late_joiner() {
         1,
         "no reading yet: nothing decided"
     );
-    client.host_ticks(120, 300);
+    client.host_ticks(150, 300);
     assert_eq!(client.plays("x"), 0);
     client.host_ticks(300, 301);
     assert_eq!(client.plays("x"), 1);
@@ -700,6 +732,132 @@ fn s39_pre_wait_fire_from_level_load_counts_on_the_host_timeline() {
     assert_eq!(client.scheduler.pending_len(), 0);
 }
 
+// The host's level tick counts its fixed ticks since the level's clock reset,
+// which a `levelLoad` tail enrolled at install with `wait(T)` lands on: tick
+// `T`. Level teardown and a role change restart it; a hot reload keeps the
+// level, so it keeps counting.
+#[test]
+fn host_level_tick_counts_fixed_ticks_and_lands_level_load_tails_on_it() {
+    let mut host = Machine::new(
+        SchedulerRole::Host,
+        vec![body("levelLoad", vec![wait(5000.0), sound("x")])],
+    );
+    host.level_load();
+    host.own_ticks(299);
+    assert_eq!(host.scheduler.level_tick(), 299);
+    assert_eq!(host.plays("x"), 0);
+    host.own_ticks(1);
+    assert_eq!(host.plays("x"), 1, "landed on level tick 300");
+
+    host.scheduler.clear_for_hot_reload();
+    host.own_ticks(1);
+    assert_eq!(
+        host.scheduler.level_tick(),
+        301,
+        "a hot reload keeps the level"
+    );
+    host.scheduler.clear();
+    assert_eq!(
+        host.scheduler.level_tick(),
+        0,
+        "teardown restarts the clock"
+    );
+    host.own_ticks(4);
+    host.scheduler.set_role(SchedulerRole::Client);
+    assert_eq!(host.scheduler.level_tick(), 0, "a role change restarts it");
+}
+
+// Regression: the client mirrored the host timeline from host `script_time`,
+// which keeps a stalled frame's unclamped time, while the host lands on its
+// clamped fixed ticks, so after a host stall the client landed early by the
+// clamped amount. A one-second host frame runs only the clamp's ticks; the
+// client still lands a beat due at tick 300 with the host, when the host's
+// level tick reads 300 — not when host script time reads 5 s.
+#[test]
+fn host_timeline_tail_lands_on_the_hosts_level_tick_after_a_host_stall() {
+    let level = || vec![body("levelLoad", vec![wait(5000.0), sound("x")])];
+    let mut host = Machine::new(SchedulerRole::Host, level());
+    let mut client = Machine::client(level());
+    host.level_load();
+    client.level_load();
+    let mut frames = HostFrames::new();
+    let mut silent_at_five_seconds = false;
+    for frame in 0..1000 {
+        let elapsed = if frame == 60 {
+            STALL_FRAME
+        } else {
+            STEADY_FRAME
+        };
+        let ticks = frames.frame(elapsed);
+        host.frame_of(ticks, None);
+        // A live client keeps pace with the host and reads its level tick.
+        client.frame_of(ticks, Some(host.scheduler.level_tick() as f64 + 0.5));
+        if frames.script_time >= 5.0 && !silent_at_five_seconds {
+            assert_eq!(client.plays("x"), 0, "host script time 5 s is not tick 300");
+            silent_at_five_seconds = true;
+        }
+        if host.plays("x") > 0 {
+            break;
+        }
+    }
+    assert!(silent_at_five_seconds);
+    assert_eq!(host.scheduler.level_tick(), 300);
+    assert!(
+        frames.script_time > 5.5,
+        "the stall cost the host more than half a second of ticks: {}",
+        frames.script_time
+    );
+    assert_eq!(client.plays("x"), 1, "the client lands with the host");
+    assert_eq!(client.scheduler.pending_len(), 0);
+}
+
+// Regression: the join judgement read host `script_time`, so a client that
+// revealed at host level tick 290 after an earlier host stall, with host
+// script time already past 5 s, judged a beat due at tick 300 already due and
+// converged, skipping its sound. Judged on the host's level tick, it lands.
+#[test]
+fn client_revealed_before_a_beat_after_a_host_stall_lands_it() {
+    let level = || vec![body("levelLoad", vec![wait(5000.0), sound("x")])];
+    let mut host = Machine::new(SchedulerRole::Host, level());
+    host.level_load();
+    let mut frames = HostFrames::new();
+    let ticks = frames.frame(STALL_FRAME);
+    host.frame_of(ticks, None);
+    while host.scheduler.level_tick() < 290 {
+        let ticks = frames.frame(STEADY_FRAME);
+        host.frame_of(ticks, None);
+    }
+    assert_eq!(host.scheduler.level_tick(), 290);
+    assert!(
+        frames.script_time > 5.0,
+        "host script time already past the beat: {}",
+        frames.script_time
+    );
+
+    // Revealed now; its first reading trails the reveal by three frames.
+    let mut client = Machine::client(level());
+    client.level_load();
+    let capture = LogCapture::start();
+    for frame in 0..20 {
+        let ticks = frames.frame(STEADY_FRAME);
+        host.frame_of(ticks, None);
+        let reading = (frame >= 3).then(|| host.scheduler.level_tick() as f64 + 0.5);
+        client.frame_of(ticks, reading);
+        assert_eq!(client.plays("x"), host.plays("x"), "lands with the host");
+    }
+    assert_eq!(host.plays("x"), 1);
+    assert_eq!(
+        client.plays("x"),
+        1,
+        "a client live before the beat lands it"
+    );
+    capture.assert_not_logged(
+        log::Level::Debug,
+        "client landing did not apply `playSound`",
+    );
+    tail_quiet(&capture);
+}
+
 // S20 (scheduler half): a shared-state crossing's tail counts the client's
 // own clock from its own crossing, the same-key rule applying to the edges
 // this machine sees; an interruptible wait lands as non-interruptible there,
@@ -737,6 +895,18 @@ fn client_tail_is_dropped_at_teardown_and_never_lands_later() {
     assert_eq!(client.scheduler.pending_len(), 1);
     let capture = LogCapture::start();
     client.scheduler.clear();
+    assert_eq!(client.scheduler.pending_len(), 0);
+    capture.assert_logged_once(log::Level::Debug, "dropping 1 client wait tail(s)");
+    tail_quiet(&capture);
+    client.host_ticks(1, 120);
+    assert_eq!(client.plays("x"), 0);
+    drop(capture);
+
+    // Hot reload: the staged-manifest commit's clear drops it the same way.
+    let mut client = Machine::client(vec![body("levelLoad", vec![wait(500.0), sound("x")])]);
+    client.level_load();
+    let capture = LogCapture::start();
+    client.scheduler.clear_for_hot_reload();
     assert_eq!(client.scheduler.pending_len(), 0);
     capture.assert_logged_once(log::Level::Debug, "dropping 1 client wait tail(s)");
     tail_quiet(&capture);
@@ -910,7 +1080,7 @@ fn client_frame_lands_host_catch_up_then_its_present_in_enrollment_order() {
     client.host_ticks(1, 99);
     assert!(client.kinds().is_empty(), "nothing due before host tick 99");
     client.fire("c", own_state());
-    client.frame(Some(100.0 * TICK + TICK / 2.0));
+    client.frame(Some(100.5));
     assert_eq!(client.kinds(), ["play A", "play B", "play C"]);
     assert_eq!(client.scheduler.pending_len(), 0);
 }
@@ -928,8 +1098,10 @@ fn client_mirror_of_a_self_fire_lands_one_link_per_host_tick() {
             body("r", vec![wait(16.0), sound("link"), fire("r")]),
         ]);
         client.level_load();
+        // The client runs as many own ticks per frame as its readings
+        // advance, so its ticks since reveal keep pace with the host's.
         for reading in 1..=(30 / step) {
-            client.frame(Some((reading * step) as f64 * TICK + TICK / 2.0));
+            client.frame_of(step as usize, Some((reading * step) as f64 + 0.5));
         }
         assert_eq!(
             client.plays("link"),

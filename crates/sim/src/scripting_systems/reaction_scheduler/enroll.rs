@@ -335,7 +335,9 @@ impl ReactionScheduler {
                 tick: anchor.tick.saturating_add(u64::from(ticks)),
             }),
             // A host-timeline tail outside a landing is a `levelLoad` fire:
-            // it counts from the level's host `script_time` 0.
+            // it counts from the host's level tick 0, where the host's own
+            // copy, a whole-tick countdown from install, lands on level tick
+            // `ticks`.
             (None, TickClock::Host) => Countdown::Due(DueTick {
                 clock,
                 tick: u64::from(ticks),

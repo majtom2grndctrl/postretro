@@ -759,6 +759,15 @@ impl ClientReplication {
             .presentation_host_time(local_script_time, rtt_micros)
     }
 
+    /// Estimate the host's level tick now, the clock a `levelLoad` `wait`
+    /// tail lands on: the accepted snapshot's level tick plus the server
+    /// ticks elapsed since it, by `estimated_server_tick` (the time-sync
+    /// estimate of the host's current tick). `None` until both exist.
+    #[must_use]
+    pub fn host_level_tick(&self, estimated_server_tick: Option<f64>) -> Option<f64> {
+        self.bindings.host_level_tick(estimated_server_tick)
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -1065,6 +1074,8 @@ impl ClientReplication {
             self.acked_server_tick = snapshot.server_tick;
             self.bindings
                 .accept_presentation_clock(snapshot.server_script_time, local_script_time);
+            self.bindings
+                .accept_level_tick(snapshot.level_tick, snapshot.server_tick);
             self.receive_ghost_audio(snapshot.ghost_audio);
         }
 
@@ -3529,6 +3540,7 @@ mod tests {
             faction_sentiment_record: None,
             ghost_audio: None,
             server_script_time: 0.0,
+            level_tick: 0,
         }
     }
 

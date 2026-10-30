@@ -1,5 +1,5 @@
-// Client role of the `wait` scheduler: which tails park, and the host clock a
-// `levelLoad`-class tail counts on.
+// Client role of the `wait` scheduler: which tails park, and the host level
+// tick a `levelLoad`-class tail counts on.
 // See: context/lib/scripting.md §12 (Steps after a `wait`)
 
 use postretro_entities::{MachineRole, SequenceTarget, SlotTable, primitive_is_machine_local};
@@ -20,43 +20,32 @@ pub(super) fn tail_has_landing_work(tail: &[SequenceStep], slot_table: &SlotTabl
     })
 }
 
-/// The host tick a host `script_time` falls in. Host ticks count from the
-/// level's host `script_time` 0, where `levelLoad` fires.
-fn host_tick_at(host_time_secs: f64) -> u64 {
-    let micros = crate::frame_timing::TICK_DURATION.as_micros() as f64;
-    (host_time_secs.max(0.0) * 1_000_000.0 / micros).floor() as u64
-}
-
 impl ReactionScheduler {
-    /// Client only, once per frame before the landing drain: read the host
-    /// clock (`None` until a snapshot and an RTT sample anchor it) and expire
-    /// every host-timeline instance due by it. `local_time_secs` is this
-    /// client's level clock, which counts from its own reveal. The level's
-    /// first reading fixes the host tick this client revealed at; a segment
-    /// due before that is a late joiner's, which converges instead of
-    /// replaying.
-    pub fn advance_host_clock(&self, host_time_secs: Option<f64>, local_time_secs: f64) {
+    /// Client only, once per frame before the landing drain: read the host's
+    /// level tick (`None` until a snapshot and a time-sync sample anchor it)
+    /// and expire every host-timeline instance due by it. The host counts the
+    /// same fixed ticks it lands its own tails on, so a host stall clamps both
+    /// alike. The level's first reading, less this client's own ticks since
+    /// reveal ([`Self::level_tick`]), fixes the host tick this client revealed
+    /// at; a segment due before that is a late joiner's, which converges
+    /// instead of replaying.
+    pub fn advance_host_clock(&self, host_level_tick: Option<f64>) {
         let mut state = self.state.borrow_mut();
         if state.role != SchedulerRole::Client {
             return;
         }
-        let Some(host_time) = host_time_secs.filter(|time| time.is_finite()) else {
+        let Some(reading) = host_level_tick.filter(|tick| tick.is_finite()) else {
             return;
         };
-        let now = host_tick_at(host_time);
+        let now = reading.max(0.0).floor() as u64;
         state.host_tick_now = Some(now);
         // Judge lateness by the reveal, never by the reading: the first
-        // reading waits for a snapshot and an RTT sample, so it trails the
-        // reveal by half an RTT and a snapshot interval, and a client live
-        // before a beat would otherwise skip it.
-        let local_time = if local_time_secs.is_finite() {
-            local_time_secs.max(0.0)
-        } else {
-            0.0
-        };
+        // reading waits for a snapshot and a time-sync sample, so it trails
+        // the reveal, and a client live before a beat would otherwise skip it.
+        let since_reveal = state.level_tick() as f64;
         state
             .join_host_tick
-            .get_or_insert(host_tick_at(host_time - local_time));
+            .get_or_insert((reading - since_reveal).max(0.0).floor() as u64);
         let current = state.frame_counter;
         let due: Vec<InstanceKey> = state
             .instances

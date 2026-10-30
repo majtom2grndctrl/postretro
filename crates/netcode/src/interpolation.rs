@@ -1782,6 +1782,7 @@ mod tests {
             faction_sentiment_record: None,
             ghost_audio: None,
             server_script_time: 0.0,
+            level_tick: 0,
         };
         let mut registry = EntityRegistry::new();
         let mut replication = ClientReplication::new();

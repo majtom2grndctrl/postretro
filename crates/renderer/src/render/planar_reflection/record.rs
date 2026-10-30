@@ -1,4 +1,4 @@
-// Planar pass recording: mask, mirror world, movers, skinned meshes, billboards, then the resolve.
+// Planar pass recording: mask, mirror world and mover depth, world, movers, skinned meshes, billboards, then the resolve.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -227,19 +227,31 @@ fn record_planar_passes(
             .record_planar_parts(&mut mask, light_term_mask, quality, camera.h, None);
     }
     let world = full.has_geometry && full.index_count > 0 && !pass.draws.draws().is_empty();
-    if world {
+    let movers = full.kinematic_brush.has_draws();
+    let mover_view = MoverView::Mirror {
+        cull_planes: camera.cull_planes(),
+        clip_plane: camera.clip_plane,
+    };
+    if world || movers {
+        // Movers join the mirror's prepass after its world, as in the main
+        // view, so the mirror's mover draws test `Equal` and shade once.
         let mut depth = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Planar World Prepass"),
             color_attachments: &[],
             depth_stencil_attachment: Some(depth_attachment(&targets.depth, wgpu::LoadOp::Load)),
             ..Default::default()
         });
-        depth.set_pipeline(&full.depth_prepass_pipeline);
         depth.set_bind_group(0, &pass.uniform_bind_group, &[]);
-        depth.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-        depth.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for run in pass.draws.depth_runs() {
-            depth.draw_indexed(run.clone(), 0, 0..1);
+        if world {
+            depth.set_pipeline(&full.depth_prepass_pipeline);
+            depth.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+            depth.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            for run in pass.draws.depth_runs() {
+                depth.draw_indexed(run.clone(), 0, 0..1);
+            }
+        }
+        if movers {
+            full.kinematic_brush.record_depth(&mut depth, mover_view);
         }
     }
     {
@@ -298,21 +310,22 @@ fn record_planar_passes(
             }
         }
     }
-    if full.kinematic_brush.has_draws() {
-        let mut movers = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    if movers {
+        let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Planar Movers"),
             color_attachments: &[Some(color_attachment(&targets.color, wgpu::LoadOp::Load))],
-            depth_stencil_attachment: Some(depth_attachment(&targets.depth, wgpu::LoadOp::Load)),
+            // Read-only: the prepass wrote the movers' depth.
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth,
+                depth_ops: None,
+                stencil_ops: None,
+            }),
             ..Default::default()
         });
-        movers.set_bind_group(0, &pass.uniform_bind_group, &[]);
-        movers.set_bind_group(4, sh_mesh, &[]);
-        full.kinematic_brush.record_mirror_draws(
-            &mut movers,
-            &full.gpu_textures,
-            &camera.cull_planes(),
-            camera.clip_plane,
-        );
+        mover_pass.set_bind_group(0, &pass.uniform_bind_group, &[]);
+        mover_pass.set_bind_group(4, sh_mesh, &[]);
+        full.kinematic_brush
+            .record_draws(&mut mover_pass, &full.gpu_textures, mover_view);
     }
     if let Some(plan) = meshes {
         let mut skinned = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

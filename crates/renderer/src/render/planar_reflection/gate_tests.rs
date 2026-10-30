@@ -153,8 +153,9 @@ fn reached_functions(source: &str, roots: &[&str]) -> Vec<String> {
 // threaded (Tencent CN116778049B): no thread, no rayon, no render bundle and
 // no second command encoder in the planar pass module's production files,
 // the per-draw plane routing, the mirror's light records or its sprites, nor
-// in the mirror recording that lives in shared files: the movers' and
-// skinned meshes' `record_mirror_draws` and the billboard pass functions the
+// in the mirror recording that lives in shared files: the movers'
+// `record_depth` and `record_draws`, the skinned meshes' `record_mirror_draws`
+// and the billboard pass functions the
 // mirror's sprites draw through, each with every same-file function it
 // reaches, found by name so their bodies may change.
 #[test]
@@ -200,7 +201,11 @@ fn planar_recording_uses_only_the_frame_encoder() {
     // The shared files' mirror recording, by function. Movers and skinned
     // meshes reach a draw call, so the extraction followed the recording.
     let shared: [(&str, &[&str], bool); 3] = [
-        ("kinematic_brush.rs", &["record_mirror_draws"], true),
+        (
+            "kinematic_brush.rs",
+            &["record_depth", "record_draws"],
+            true,
+        ),
         ("mesh_pass.rs", &["record_mirror_draws"], true),
         (
             "smoke.rs",

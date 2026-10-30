@@ -138,10 +138,12 @@ pub struct NetServer {
     transport: NetcodeServerTransport,
     slots: SlotTable,
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
-    /// The level identity each slot last declared revealed. Absent means not
-    /// revealed. Only the client's own declaration or `close_slot` changes it:
-    /// parity changes and host level changes leave it in place, so a demoted
-    /// slot re-promotes without a fresh reveal once the other terms hold.
+    /// The level install (identity and host level life) each slot last
+    /// declared revealed. Absent means not revealed. Only the client's own
+    /// declaration or `close_slot` changes it: parity changes and host level
+    /// changes leave it in place, so a demoted slot re-promotes without a
+    /// fresh reveal once the other terms hold, unless a catalog reinstall
+    /// moved the host's life past it.
     revealed_declarations: HashMap<ClientId, RevealedLevel>,
     connect_claims: HashMap<ClientId, ConnectClaim>,
     pending_lifecycle: Vec<SlotEvent>,
@@ -263,18 +265,21 @@ impl NetServer {
     /// crate cannot distinguish a catalog id from a raw-path fallback inside
     /// that opaque identity string. Each install allocates a new level life,
     /// a reinstall of the same id included, so a client reinstalls on a host
-    /// restart rather than mistaking it for a duplicate.
+    /// restart rather than mistaking it for a duplicate. The life is a
+    /// participation input, so either edge re-evaluates every slot.
     pub fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
-        let Some(catalog_id) = catalog_id else {
-            self.relevel = None;
-            return;
-        };
-        let level_life = self.next_level_life;
-        self.next_level_life += 1;
-        self.relevel = Some((catalog_id.clone(), level_life));
-        for client_id in self.relevel_recipients() {
-            self.send_relevel(client_id, &catalog_id, level_life);
+        match catalog_id {
+            None => self.relevel = None,
+            Some(catalog_id) => {
+                let level_life = self.next_level_life;
+                self.next_level_life += 1;
+                self.relevel = Some((catalog_id.clone(), level_life));
+                for client_id in self.relevel_recipients() {
+                    self.send_relevel(client_id, &catalog_id, level_life);
+                }
+            }
         }
+        let _ = self.reevaluate_parity(None);
     }
 
     /// Phase-2 compatibility shim. Its old close-on-change behavior is preserved;
@@ -3504,8 +3509,7 @@ mod tests {
 
     // Regression: a same-map restart keeps identity and digest, so the
     // client's reveal of the previous install promoted it into the new one
-    // before the client had reinstalled. The reveal now names the life, and a
-    // stale one holds the slot until the client reveals the restart.
+    // before the client had reinstalled.
     #[test]
     fn same_map_restart_holds_a_client_until_it_reveals_the_new_life() {
         let (mut server, mut client) = settling_relay_pair();
@@ -3553,6 +3557,29 @@ mod tests {
             vec![SlotEvent::Participating {
                 client_id: RELAY_CLIENT_ID
             }]
+        );
+    }
+
+    // A new level life is a participation input on its own: a participating
+    // slot whose reveal names the previous life leaves participation even if
+    // no other term moved (no unload between the two installs).
+    #[test]
+    fn a_new_level_life_demotes_a_slot_revealed_on_the_previous_one() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        server.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", Some(1))));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            1
+        );
+
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+        assert_eq!(
+            server.holding_diagnostics.get(&RELAY_CLIENT_ID),
+            Some(&client_not_revealed())
         );
     }
 

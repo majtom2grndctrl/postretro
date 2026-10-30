@@ -150,9 +150,9 @@ an engine promotion message.
 - The same life again is a duplicate and changes nothing.
 - A load of that id already in flight or queued is never restarted, whatever the life: it installs fresh.
 - The connection's first such relevel keeps a matching active map, as a joiner running the host's map keeps it, and adopts its life: an already-revealed client re-declares its reveal with it.
-- Any later life naming the active map is a host reinstall — a restart, a return from another map, a resumed host — and the client tears the level down and reloads it as it would a different map.
+- Any later life naming the active map is a host reinstall — a restart, or a return from another map — and the client tears the level down and reloads it as it would a different map.
 
-The client's reveal names the life of the relevel that selected its map. Identity and digest alone cannot see a restart: both match across it. Without the life a client's reveal of the previous install would promote it into the new one before its retraction arrived — often, since a same-map reload can settle within a round trip — spawning its pawn into a world it is not presenting, then demoting it. The life closes that: the slot holds `ClientNotRevealed` until the client reveals the new install, so no new-life entity state, epoch or spawn ever meets the old world. Teardown clears the previous life's level state, its parked `wait` tails and join tick included, and reinstall fires `levelLoad` again.
+The client's reveal names the life of the last relevel naming its installed map. Identity and digest alone cannot see a restart: both match across it. Without the life a client's reveal of the previous install would promote it into the new one before its retraction arrived — often, since a same-map reload can settle within a round trip — spawning its pawn into a world it is not presenting, then demoting it. The life closes that: the slot holds `ClientNotRevealed` until the client reveals the new install, so no new-life entity state, epoch or spawn ever meets the old world. Teardown clears the previous life's level state, its parked `wait` tails and join tick included, and reinstall fires `levelLoad` again.
 
 An uncatalogued host level sends no relevel, so its reinstall is not followed and its clients keep their own install (*The host names the next map*, above).
 

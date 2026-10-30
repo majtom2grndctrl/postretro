@@ -303,7 +303,7 @@ impl App {
         // Retract this peer's reveal with its parity: a host's own reveal is
         // cleared here at unload and at suspend (a resumed install runs no
         // unload), and a client sends `Revealed(None)`.
-        endpoint.set_revealed_level(None, None);
+        endpoint.set_revealed_level(None);
         endpoint.reset_level_scoped_host_state();
     }
 
@@ -345,6 +345,8 @@ impl App {
         else {
             return;
         };
-        endpoint.set_revealed_level(Some(identity), level_life);
+        endpoint.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+            identity, level_life,
+        )));
     }
 }

@@ -188,4 +188,13 @@ fn host_restart_during_settling_reloads_the_settling_life() {
         app.level_requests,
         VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
     );
+    app.drain_level_requests();
+    assert_eq!(
+        app.boot_state,
+        BootState::Loading,
+        "torn down, never revealed"
+    );
+    assert!(app.settle.is_none(), "the settling life fires no reveal");
+    assert_eq!(declared_reveal(&app), None);
+    drop_in_flight_worker(&mut app);
 }

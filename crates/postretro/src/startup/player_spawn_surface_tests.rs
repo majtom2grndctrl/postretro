@@ -126,12 +126,12 @@ impl Installed {
     }
 }
 
-// A map with two `player_spawn`s and one player gets one pawn, at the first.
+// A map with three `player_spawn`s and one player gets one pawn, at the first.
 #[test]
-fn two_spawns_and_one_player_yield_one_player_pawn() {
+fn three_spawns_and_one_player_yield_one_player_pawn() {
     let out = tempfile::tempdir().unwrap();
     let level = Installed::new(compile("coop-presentation-test", out.path()));
-    assert_eq!(level.spawn_count, 2, "the fixture map has two spawns");
+    assert_eq!(level.spawn_count, 3, "the fixture map has three spawns");
     let spawned = level.first_player.expect("the first player spawns");
     assert_eq!(spawned.placement, 0);
     assert_eq!(

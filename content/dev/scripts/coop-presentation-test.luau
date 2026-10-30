@@ -103,7 +103,13 @@ function setupLevel(_ctx)
     Postretro.defineReaction("coop.atmosphere.door", { sequence = doorStart }),
   }
   local mark = raw("coop.weapon.mark", "applyDamage", "coop_health_weapon", { amount = 12 })
-  local reactions = {}
+  local down = Postretro.defineReaction("coop.life.down", function(on)
+    return on.activators:damage(100000)
+  end)
+  local recover = Postretro.defineReaction("coop.life.recover", {
+    sequence = { Postretro.players():grantHealth(100000), Postretro.players():setLifeState("alive") },
+  })
+  local reactions = { down, recover }
   append(reactions, events.reactions)
   append(reactions, { alarm, flash, shake, click })
   append(reactions, atmosphere)
@@ -114,6 +120,12 @@ function setupLevel(_ctx)
     mark,
   })
   local triggerEvents = {}
+  for _, pad in ipairs(Postretro.getMapEntities("trigger", { tag = "coop_life_down" })) do
+    table.insert(triggerEvents, pad:on("enter", { down }))
+  end
+  for _, pad in ipairs(Postretro.getMapEntities("trigger", { tag = "coop_life_recover" })) do
+    table.insert(triggerEvents, pad:on("enter", { recover }))
+  end
   for _, plate in ipairs(Postretro.getMapEntities("trigger", { tag = "coop_plate" })) do
     table.insert(triggerEvents, plate:on("enter", { alarm, flash, shake, click }))
   end

@@ -336,6 +336,12 @@ impl ClientPrediction {
         &self.history
     }
 
+    /// Read-only ack/replay evidence for cross-crate conditioned-link tests.
+    #[cfg(feature = "test-support")]
+    pub fn pending_command_ticks_for_test(&self) -> Vec<u32> {
+        self.history.iter().map(|tick| tick.client_tick).collect()
+    }
+
     /// Advance the local pawn one predicted fixed tick: run the movement-only
     /// [`replay_with_armed`] from `prev` through `command`, log the command in the history
     /// ring, and return the resulting `(Transform, PlayerMovementComponent)` for the

@@ -12,6 +12,7 @@ import {
 } from "postretro";
 import { onStateCrossing } from "postretro/ui";
 import { playerEntity } from "./scripts/player";
+import { setupPlayerDeath } from "./scripts/player-death";
 import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceRifleEntity } from "./scripts/reference-rifle";
@@ -59,6 +60,7 @@ import {
 } from "./scripts/positional-sound";
 import {
   ammoReadout,
+  bleedOutMeterTree,
   hud,
   hudTheme,
   openSeatsReadout,
@@ -102,6 +104,7 @@ import {
 import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
 
 const player = getGameState().player;
+const playerDeath = setupPlayerDeath();
 
 export default defineMod({
   name: "dev",
@@ -151,6 +154,7 @@ export default defineMod({
     openSeatsReadout,
     spreadReticle,
     reloadMeterTree,
+    bleedOutMeterTree,
     pauseMenu,
     exitConfirm,
     quitConfirm,
@@ -171,16 +175,22 @@ export default defineMod({
   presentationOverlays: damagedEnemyOverlay,
   theme: hudTheme,
   reactions: [
+    ...playerDeath.reactions,
     ...frontendReactions,
     ...factionSentimentReactions,
     ...positionalSoundReactions,
     markSwimming,
     splashSound,
   ],
-  // Swimming: a host decision per player as they start swimming, and
-  // own-state feedback that stays local on each machine (scripts/swim-events.ts).
-  playerEvents: [players().on(becomes(read(player.swimming)), [markSwimming])],
-  crossings: [onStateCrossing(read(player.swimming), [splashSound])],
+  // Host decisions per player, with own-state feedback local to each machine.
+  playerEvents: [
+    ...playerDeath.playerEvents,
+    players().on(becomes(read(player.swimming)), [markSwimming]),
+  ],
+  crossings: [
+    ...playerDeath.crossings,
+    onStateCrossing(read(player.swimming), [splashSound]),
+  ],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and

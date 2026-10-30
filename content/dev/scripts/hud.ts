@@ -13,6 +13,7 @@ import {
   stateEquals,
 } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
+import { BLEED_OUT_MS } from "./player-death";
 
 export const hudTheme = defineTheme({
   color: {
@@ -286,4 +287,34 @@ export const reloadMeterTree = defineUiTree({
   name: "hud.reloadMeter",
   alwaysOn: true,
   tree: Tree({ anchor: "center", offset: [0.0, 36.0] }, reloadMeter),
+});
+export const bleedOutMeterTree = defineUiTree({
+  name: "hud.bleedOut",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "center", offset: [0, 76] },
+    VStack(
+      {
+        gap: 6,
+        align: "center",
+        visibleWhen: stateEquals(player.lifeState, "down"),
+      },
+      [
+        Text({
+          content: "BLEED OUT",
+          color: color.critical,
+          font: font.hud.status,
+          fontSize: 18,
+        }),
+        Bar({
+          bind: bindState(player.lifeStateMs),
+          max: BLEED_OUT_MS,
+          width: 220,
+          height: 12,
+          fill: color.critical,
+          background: color.hud.health.background,
+        }),
+      ],
+    ),
+  ),
 });

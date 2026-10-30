@@ -93,4 +93,4 @@ pub(crate) fn advance_unstepped_life_state_time(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -492,4 +492,7 @@ fn conditioned_zero_hp_fire_true_charge_survives_sweeps_and_fires_its_release() 
     life.assert_other_player_untouched();
 }
 
+mod late_baseline_tests;
+mod life_state_clock_trim_tests;
+mod look_receipt_tests;
 mod respawn;

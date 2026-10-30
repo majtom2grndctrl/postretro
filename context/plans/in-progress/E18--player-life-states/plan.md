@@ -182,33 +182,33 @@ does not widen the shared slot schema.
 
 ## AC-to-proof
 
-Test descriptions below identify intended scenarios, not tests already added
-or executed. All rows remain unproved. No manual result is inferred.
+Focused proof is recorded below and in `ordering-proof.md`, with executed
+counts in the task checkpoints. Review and the final preflight remain pending.
+No manual visual result is inferred.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 | Shared validator plus QuickJS/Luau descriptor and startup/staged-manifest parity cases for every rejection, valid defaults, rejoin, and the 255-name limit | automated, planned |
-| 2 | Undeclared zero-HP regressions across fire cancellation, vault/teleport, occupancy/damage eligibility, and ungated movement/look/switch/reload/use/touch/pickups | automated, planned |
-| 3 | Spawn/join/restart and level-change initial state plus elapsed-zero assertions before the first tick; O15 pins first condition reads | automated, planned |
-| 4 | Capability-by-capability refuse/permit pairs including zero HP; production host/local/client weapon paths; movement replay and owner look sampling; held/burst/charge and vault interruption | automated, planned |
-| 5 | Forced-crouch entry/hold/exit tests with abilities both enabled and disabled, including slide/dash/jump precedence and blocked stand clearance | automated, planned |
-| 6 | Trigger membership retained without spurious Exit, pickup and teleporter refusal/permit at zero HP, occupancy counts, O35/O40 | automated, planned |
-| 7 | In-tick command execution, same-state no-op, exact 900-tick threshold, and all O15/O39 first-read values | automated, planned |
-| 8 | Install and bind diagnostics naming reaction/state; both verbs; condition and crossing binding; runtime missing-state/no-state warnings | automated, planned |
-| 9 | Two-pawn player-event predicates and own-pawn local crossings in both runtimes | automated, planned |
-| 10 | Local String and owner-private Number publication/replication through the UI frozen map and visibleWhen resolver; undeclared empty name | automated, planned |
-| 11 | Production tick-start respawn drain: all velocity/ability resets, settled ground, yaw, health/latch, state elapsed, cancelled weapons/vault, retained inventory | automated, planned |
-| 12 | Owner teleport-class reconcile and observer cut with NO_TELEPORTER suppressing stale arrival sound, including O28 coalescing | automated, planned |
-| 13 | Seat/map-order overlap selection, sequential batches, no-free warning, malformed health clamp, non-player skip; AC13 governs later queued pawns | automated, planned |
-| 14 | Seat lifecycle scenarios for disconnect/hold expiry, suspend/demotion, reload removal and rejoin map, held seats and level-change clearing | automated, planned |
-| 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated, planned |
-| 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated, planned |
-| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual, planned |
-| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual, planned; owner wording resolved |
-| 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated, planned |
-| 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated, planned |
-| 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks, planned |
-
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 | Shared validator plus QuickJS/Luau descriptor and startup/staged-manifest parity cases for every rejection, valid defaults, rejoin, and the 255-name limit | automated | PASS (focused proof; final gate pending) |
+| 2 | Undeclared zero-HP regressions across fire cancellation, vault/teleport, occupancy/damage eligibility, and ungated movement/look/switch/reload/use/touch/pickups | automated | PASS (focused proof; final gate pending) |
+| 3 | Spawn/join/restart and level-change initial state plus elapsed-zero assertions before the first tick; O15 pins first condition reads | automated | PASS (focused proof; final gate pending) |
+| 4 | Capability-by-capability refuse/permit pairs including zero HP; production host/local/client weapon paths; movement replay and owner look sampling; held/burst/charge and vault interruption | automated | PASS (focused proof; final gate pending) |
+| 5 | Forced-crouch entry/hold/exit tests with abilities both enabled and disabled, including slide/dash/jump precedence and blocked stand clearance | automated | PASS (focused proof; final gate pending) |
+| 6 | Trigger membership retained without spurious Exit, pickup and teleporter refusal/permit at zero HP, occupancy counts, O35/O40 | automated | PASS (focused proof; final gate pending) |
+| 7 | In-tick command execution, same-state no-op, exact 900-tick threshold, and all O15/O39 first-read values | automated | PASS (focused proof; final gate pending) |
+| 8 | Install and bind diagnostics naming reaction/state; both verbs; condition and crossing binding; runtime missing-state/no-state warnings | automated | PASS (focused proof; final gate pending) |
+| 9 | Two-pawn player-event predicates and own-pawn local crossings in both runtimes | automated | PASS (focused proof; final gate pending) |
+| 10 | Local String and owner-private Number publication/replication through the UI frozen map and visibleWhen resolver; undeclared empty name | automated | PASS (focused proof; final gate pending) |
+| 11 | Production tick-start respawn drain: all velocity/ability resets, settled ground, yaw, health/latch, state elapsed, cancelled weapons/vault, retained inventory | automated | PASS (focused proof; final gate pending) |
+| 12 | Owner teleport-class reconcile and observer cut with NO_TELEPORTER suppressing stale arrival sound, including O28 coalescing | automated | PASS (focused proof; final gate pending) |
+| 13 | Seat/map-order overlap selection, sequential batches, no-free warning, malformed health clamp, non-player skip; AC13 governs later queued pawns | automated | PASS (focused proof; final gate pending) |
+| 14 | Seat lifecycle scenarios for disconnect/hold expiry, suspend/demotion, reload removal and rejoin map, held seats and level-change clearing | automated | PASS (focused proof; final gate pending) |
+| 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated | PASS (focused proof; final gate pending) |
+| 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated | PASS (focused proof; final gate pending) |
+| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual | automated PASS; manual visual proof outstanding |
+| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual; owner wording resolved | automated PASS; manual visual proof outstanding |
+| 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated | PASS (focused proof; final gate pending) |
+| 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated | PASS (focused proof; final gate pending) |
+| 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks | PASS (focused proof; final gate pending) |
 ## Tasks
 
 The integrating executor owns all shared contracts, `plan.md`, integration,
@@ -224,7 +224,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | done: catalog, publication, clock, remap, replication and SDK proofs pass |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | done: 20 library + 6 app respawn tests and regressions pass |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | done: harvest, spawn, real App lifecycle and regressions pass |
-| 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | not started |
+| 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | done: implementation/focused proof; manual AC17/18 outstanding |
 
 First proof is Task 1's real descriptor/verb/condition/wire/fire slice: it
 tests the shared substrate every subsequent task consumes. Tasks 2–4 run
@@ -383,6 +383,47 @@ listed boundaries; no allocation is a passing result.
   reload while a wait is parked. O1/O2, AC3/AC15/AC20 and docs remain Task 7.
   No full workspace suite or final preflight has run.
 
+## Task 7 verified checkpoint (2026-10-30)
+
+- Owner resumed after two pauses and reports this is the only active agent on
+  the laptop. The per-build rustc/prl-build guard remains in force. All worker
+  edits are integrated; workers ran no builds.
+- Dev player declares `alive` and the requested `down` profile with no rejoin
+  override. TS/Luau death-policy twins register named down/respawn decisions,
+  local vignette/clear crossings and the down-only elapsed HUD bar. A zero-
+  strength 1 ms vignette validly clears the effect.
+- The co-op room has red subject-only down and teammate-operated blue group
+  recovery pads, plus three placements for host and two clients. Its TS/Luau
+  setup twins and fixture counts include all five pad bindings. Author docs
+  cover the zero-HP rule, capabilities, reads, verbs, rejoin and three recipes.
+- Focused PASS: sim `life_policy_` 3; App `player_death_` 4; App `life_state`
+  27; netcode `life_state` 23; strengthened O16/O35 local/remote movement and
+  stage capture 1; actual co-op setup twin CPU installation 1; real compiled
+  map three-placement/one-pawn spawn 1. Every filter matched. Fixture-only
+  compile mistakes were repaired before these passes. O16 now proves T moves
+  under the old profile and T+1 follows speedScale 0, paired against scale 1.
+- New proof closes O1/O2/O5/O14/O24/O38/O39 and AC3/AC15/AC20. The actual dev
+  consumer runs simulate-tick -> PlayerEventTable for 900 ticks, then drains
+  respawn next tick, preserving the other seat. The elapsed UI test drives real
+  host trim, jumped ack pruning and replay into 240 Hz projection. A read-only
+  pending-command getter is gated by `test-support`.
+- `ordering-proof.md` names all O1–O44 outcomes and records executed results;
+  the AC table records focused passes and explicit manual gaps. O26 represents
+  lost/resend Control by deferred installation, with real replay/state gates.
+- Format/whitespace and the touched-crate all-target readiness check pass
+  after the last fixture updates. No review or full workspace suite/
+  preflight has run. `review-scopes.md` is metadata only, awaiting readiness.
+- Runnable dev-tools engine, `scripts-build`, `prl-build` and `postretro-tool`
+  are built. Dev start JS and `coop-presentation-test.prl` are freshly compiled.
+  `manual-playtest.md` gives the owner/observer runbook. No visual pass is
+  inferred; AC17/AC18 still block landing. No feature push/PR/landing occurred.
+- Logs: `/tmp/postretro-e18-task7-{fmt,check,policy,consumer,app-life,net-life,
+  o16,coop-twins,map-spawn}.log`; playtest tool/map logs use
+  `/tmp/postretro-e18-playtest-{tools,map}.log`. Latest checkpoint commit before
+  Task 7 is `1b7ebb6c1`; commit Task 7 with this plan after readiness passes.
+  Most recent free space about 15 GiB; check before the final gate and follow
+  the cache-only cleanup rule if it falls below 15 GB.
+
 ## Performance and resource constraints
 
 - Per-tick gates use component stamps through one helper; no VM, descriptor
@@ -398,7 +439,7 @@ listed boundaries; no allocation is a passing result.
   clears them. Pick against earlier relocations as AC13 requires.
 - Builds use this worktree's own `target/`, `CARGO_INCREMENTAL=0`, the default
   dev profile and dev-tools where relevant. Free space at this checkpoint is
-  about 44 GiB; check again before any build and after each numbered step/task.
+  about 15 GiB at Task 7; check again before any build and after each numbered step/task.
 
 ## Verification and landing
 

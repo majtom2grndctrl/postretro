@@ -651,3 +651,109 @@ fn life_state_o21_app_demotion_harvests_pre_respawn_state_and_missing_pawn_drain
     let restored = world.materialize();
     world.assert_restored(restored, "spectating");
 }
+
+#[test]
+fn life_state_o39_actual_staged_app_reload_discards_a_parked_life_state_wait_tail() {
+    use postretro_entities::{
+        GroupKind, GroupTarget, NamedReaction, ReactionDescriptor, SequenceStep, SequenceTarget,
+    };
+    use postretro_scripting_core::reaction_dispatch::fire_named_event_with_sequences;
+    use postretro_sim::scripting_systems::reaction_scheduler::register_reaction_control_primitives;
+
+    let mut world = World::new();
+    world.app.level = Some(super::tests::level_world("parked-life-state", 0));
+    assert!(world.app.has_installed_level());
+    let ctx = script_ctx(&world.app);
+    let scheduler = world
+        .app
+        .session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .scheduler
+        .clone();
+    scheduler.set_enabled(true);
+    {
+        let scripting = &mut world.app.session.as_mut().unwrap().scripting;
+        register_reaction_control_primitives(&mut scripting.sequence_registry, scheduler.clone());
+        postretro_sim::life_state_commands::register_sequenced_life_state_primitives(
+            &mut scripting.sequence_registry,
+            ctx.clone(),
+        );
+        postretro_sim::life_state_commands::register_life_state_reaction_primitives(
+            &mut scripting.reaction_registry,
+            ctx.clone(),
+        );
+    }
+    ctx.data_registry
+        .borrow_mut()
+        .set_level_reactions(vec![NamedReaction {
+            name: "park-life-state".into(),
+            descriptor: ReactionDescriptor::Sequence(vec![
+                SequenceStep {
+                    id: SequenceTarget::Wait,
+                    primitive: "wait".into(),
+                    args: json!({"durationMs": 1}),
+                },
+                SequenceStep {
+                    id: SequenceTarget::Group(GroupTarget {
+                        kind: GroupKind::Player,
+                        tag: None,
+                    }),
+                    primitive: "setLifeState".into(),
+                    args: json!({"state": "down"}),
+                },
+            ]),
+        }]);
+    ctx.data_registry.borrow_mut().recompose(&[]);
+    let fire = |app: &App| {
+        let scripting = &app.session.as_ref().unwrap().scripting;
+        let _ = fire_named_event_with_sequences(
+            "park-life-state",
+            &ctx.data_registry.borrow(),
+            &scripting.sequence_registry,
+            &scripting.reaction_registry,
+            &scripting.system_registry,
+            &ctx,
+            None,
+        );
+    };
+    let drain = |app: &App| {
+        let scripting = &app.session.as_ref().unwrap().scripting;
+        scheduler.begin_frame();
+        scheduler.evaluate(&[]);
+        scheduler.drain_landings(
+            &ctx.data_registry.borrow(),
+            &scripting.sequence_registry,
+            &scripting.reaction_registry,
+            &scripting.system_registry,
+            &ctx,
+        );
+    };
+    fire(&world.app);
+    assert_eq!(scheduler.pending_len(), 1);
+    drain(&world.app);
+    world.assert_state(world.remote, "down", 0);
+    world.assert_state(world.host, "down", 0);
+    world.enter(world.remote, "alive", 0, 100.0);
+    world.enter(world.host, "alive", 0, 100.0);
+    fire(&world.app);
+    assert_eq!(
+        scheduler.pending_len(),
+        1,
+        "a real wait is parked at the commit"
+    );
+
+    let capture = LogCapture::start();
+    commit_manifest(&mut world.app, world.root.path(), &capture);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "dropping 1 pending timed-reaction instance(s)",
+    );
+    assert_eq!(scheduler.pending_len(), 0);
+    for _ in 0..3 {
+        drain(&world.app);
+    }
+    world.assert_state(world.remote, "alive", 0);
+    world.assert_state(world.host, "alive", 0);
+}

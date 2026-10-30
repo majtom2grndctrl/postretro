@@ -9,7 +9,7 @@ use postretro_foundation::{
 use postretro_scripting_core::data_descriptors::PlayerEventEdge;
 use serde_json::json;
 
-fn install_states(world: &World, pawns: &[EntityId]) {
+pub(crate) fn install_states(world: &World, pawns: &[EntityId]) {
     let movement = crate::trigger_bindings::group_tick_tests::movement();
     let descriptor = EntityTypeDescriptor {
         canonical_name: Some("player".into()),

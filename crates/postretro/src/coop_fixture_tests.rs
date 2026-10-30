@@ -181,7 +181,7 @@ fn fixture_world() -> postretro_level_loader::LevelWorld {
     }
     assert_eq!(world.lights.len(), 3);
     assert_eq!(world.fog_volumes.len(), 1);
-    assert_eq!(world.trigger_volumes.len(), 3);
+    assert_eq!(world.trigger_volumes.len(), 5);
     assert_eq!(world.kinematic_geometry.movers.len(), 1);
     assert_eq!(world.kinematic_geometry.waypoints.len(), 2);
     assert_eq!(
@@ -343,7 +343,7 @@ fn install(luau: bool, capture_return: bool) -> (crate::App, Value) {
             .count();
         assert_eq!(
             count,
-            21,
+            23,
             "{script}: unwrapped shipping setup failed: {:#?}",
             logs.records()
         );
@@ -507,13 +507,13 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
     assert_eq!(a.crossings, b.crossings);
     assert_eq!(a.player_events, b.player_events);
     assert_eq!(a.volume_trigger_events(), b.volume_trigger_events());
-    assert_eq!(a.volume_trigger_events().len(), 3, "all authored pads bind");
+    assert_eq!(a.volume_trigger_events().len(), 5, "all authored pads bind");
     let fixture: Vec<_> = a
         .reactions
         .iter()
         .filter(|r| r.name.starts_with("coop."))
         .collect();
-    assert_eq!(fixture.len(), 21);
+    assert_eq!(fixture.len(), 23);
     for name in [
         "coop.atmosphere.lights",
         "coop.atmosphere.fogFade",
@@ -543,7 +543,7 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
     ts_bindings.install_manifest_events(&ts_ctx.registry.borrow(), &a, &ts_ctx);
     luau_bindings.install_manifest_events(&luau_ctx.registry.borrow(), &b, &luau_ctx);
     assert_eq!(ts_bindings.bound_edges(), luau_bindings.bound_edges());
-    assert_eq!(ts_bindings.bound_edges().len(), 3);
+    assert_eq!(ts_bindings.bound_edges().len(), 5);
     assert!(a.reactions.iter().any(|r| r.name == "leveling.shake"));
     let registry = ts_ctx.registry.borrow();
     for (tag, kind) in [

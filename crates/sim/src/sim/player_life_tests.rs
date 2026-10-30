@@ -418,6 +418,11 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                     (
                         "closed".into(),
                         LifeStateProfile {
+                            movement: postretro_foundation::LifeStateMovementProfile {
+                                speed_scale: 0.0,
+                                ..Default::default()
+                            },
+                            look: false,
                             fire: false,
                             use_enabled: false,
                             touch: false,
@@ -466,11 +471,14 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
         let hit_zones = HitZoneStore::new();
         let edges = HashMap::new();
         let remote_commands = if remote {
-            vec![remote_command(pawn, Some(weapon), 1, 1, true, false)]
+            let mut remote = remote_command(pawn, Some(weapon), 1, 1, true, false);
+            remote.command.movement.wish_dir = glam::Vec2::Y;
+            vec![remote]
         } else {
             Vec::new()
         };
-        let command = sim_command(!remote, false);
+        let mut command = sim_command(!remote, false);
+        command.movement.wish_dir = glam::Vec2::Y;
         let mut run = |touch: &mut TouchSystem, context: bool| {
             simulate_tick_with_presentation_aim(
                 ctx.registry.clone(),
@@ -532,8 +540,53 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                 .contains(&Some(first)),
             "O35: same-stage pickup reads the captured touch:true"
         );
+        let (after_transition, closed) = {
+            let registry = ctx.registry.borrow();
+            (
+                registry.get_component::<Transform>(pawn).unwrap().position,
+                registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        assert!(
+            after_transition.length() > 0.0,
+            "T's movement used the entry profile before Triggers"
+        );
+        assert_eq!(closed.life_speed_scale, 0.0);
+        let project = |scale| {
+            let mut movement = closed.clone();
+            movement.life_speed_scale = scale;
+            crate::movement::tick_with_immersion_and_armed(
+                &mut movement,
+                &command.movement,
+                &world,
+                postretro_collision::EnvironmentView::level_only(0.0),
+                1.0 / 60.0,
+                after_transition,
+                |_| false,
+            )
+            .0
+        };
+        let next_closed = project(0.0);
+        let next_old = project(1.0);
+        assert!(
+            next_closed.distance(next_old) > 1e-6,
+            "the two profiles have observably different next-step movement"
+        );
         let later = pickup(&mut ctx.registry.borrow_mut());
         run(&mut touch, false);
+        let actual = ctx
+            .registry
+            .borrow()
+            .get_component::<Transform>(pawn)
+            .unwrap()
+            .position;
+        assert!(
+            actual.distance(next_closed) < 1e-6,
+            "T+1 uses the trigger's new speed profile, including the remote path"
+        );
         assert!(
             !ctx.registry
                 .borrow()

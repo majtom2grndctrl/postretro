@@ -89,6 +89,23 @@
 ( 1168 464 0 ) ( 1136 464 2 ) ( 1136 464 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 ( 1168 432 0 ) ( 1168 464 2 ) ( 1168 464 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
 }
+// Life-state pads: red downs its entrant; blue Use pad restores everyone.
+{
+( 352 288 0 ) ( 352 160 2 ) ( 352 160 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
+( 352 160 0 ) ( 416 160 2 ) ( 416 160 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
+( 352 160 0 ) ( 416 288 0 ) ( 352 288 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
+( 352 288 2 ) ( 416 160 2 ) ( 352 160 2 ) DebugTextures/debug_floor_red 0 0 0 1 1
+( 416 288 0 ) ( 352 288 2 ) ( 352 288 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
+( 416 160 0 ) ( 416 288 2 ) ( 416 288 0 ) DebugTextures/debug_floor_red 0 0 0 1 1
+}
+{
+( 352 480 0 ) ( 352 416 2 ) ( 352 416 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 352 416 0 ) ( 416 416 2 ) ( 416 416 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 352 416 0 ) ( 416 480 0 ) ( 352 480 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 352 480 2 ) ( 416 416 2 ) ( 352 416 2 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 416 480 0 ) ( 352 480 2 ) ( 352 480 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+( 416 416 0 ) ( 416 480 2 ) ( 416 480 0 ) DebugTextures/debug_floor_blue 0 0 0 1 1
+}
 }
 {
 "classname" "player_spawn"
@@ -99,6 +116,13 @@
 {
 "classname" "player_spawn"
 "origin" "128 288 24"
+"angles" "0 0 0"
+"_tags" "player"
+}
+// A third placement supports a host and two observing/owning clients.
+{
+"classname" "player_spawn"
+"origin" "128 352 24"
 "angles" "0 0 0"
 "_tags" "player"
 }
@@ -347,4 +371,40 @@
 "classname" "kinematic_waypoint"
 "name" "coop_door_open"
 "origin" "968 368 184"
+}
+// Repeatable life-state visual proof station.
+{
+"classname" "trigger_volume"
+"name" "coop_life_down"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "coop_life_down"
+{
+( 352 288 0 ) ( 352 160 48 ) ( 352 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 160 0 ) ( 416 160 48 ) ( 416 160 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 160 0 ) ( 416 288 0 ) ( 352 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 288 48 ) ( 416 160 48 ) ( 352 160 48 ) concrete_pavement_036 0 0 0 1 1
+( 416 288 0 ) ( 352 288 48 ) ( 352 288 0 ) concrete_pavement_036 0 0 0 1 1
+( 416 160 0 ) ( 416 288 48 ) ( 416 288 0 ) concrete_pavement_036 0 0 0 1 1
+}
+}
+// Repeatable life-state visual proof station.
+{
+"classname" "trigger_volume"
+"name" "coop_life_recover"
+"activation" "use"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "coop_life_recover"
+{
+( 352 480 0 ) ( 352 416 48 ) ( 352 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 416 0 ) ( 416 416 48 ) ( 416 416 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 416 0 ) ( 416 480 0 ) ( 352 480 0 ) concrete_pavement_036 0 0 0 1 1
+( 352 480 48 ) ( 416 416 48 ) ( 352 416 48 ) concrete_pavement_036 0 0 0 1 1
+( 416 480 0 ) ( 352 480 48 ) ( 352 480 0 ) concrete_pavement_036 0 0 0 1 1
+( 416 416 0 ) ( 416 480 48 ) ( 416 480 0 ) concrete_pavement_036 0 0 0 1 1
+}
 }

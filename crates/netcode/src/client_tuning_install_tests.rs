@@ -12,6 +12,8 @@ use postretro_foundation::{ResolutionMode, WeaponDescriptor};
 use postretro_test_log_capture::LogCapture;
 use std::net::{Ipv4Addr, SocketAddr};
 
+mod life_state_backlog;
+
 const PAWN: NetworkId = NetworkId(7);
 /// The only weapon in the client's own player loadout; the host never names it.
 const CLIENT_OWN_WEAPON: &str = "local_pistol";

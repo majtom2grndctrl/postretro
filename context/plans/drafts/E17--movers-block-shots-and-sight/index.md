@@ -36,14 +36,16 @@ A closed door, a sliding wall or a rising room stops bullets, projectiles, blast
 - `collision::line_of_sight` documents that movers are deliberately excluded, and a test pins it. **Kept** as the static primitive; this plan adds a combined sibling and moves shot and sight callers to it. Static callers that remain are host validation and placement.
 - `development_guide.md` §Workspace: mover collision lives in `postretro-physics`. New queries land there.
 - `done/E17--doors-as-occluders` and `cell-visibility-relation` reserve a later door-aware mask on the cell-visibility relation for coarse coupling (AI perception broad phase, relevance), and roadmap E17-F forbids a parallel dynamic-visibility path. This plan is the narrow-phase test, not a second visibility system: the geometric cast is the authority for a given line. A future mask is a broad-phase pre-filter and must err toward visible, so it never rejects a line the cast would pass (a half-open door).
-- Mover poses: host stages read the tick's published `MoverTickStateTable`; clients predict movers in the present (`networking.md` mover prediction). This plan adds no new pose source.
+- Mover poses: host stages read the tick's published `MoverTickStateTable`; clients predict movers in the present (`networking.md` mover prediction). The only new pose source is a host-side ring of past published poses, used by the splash replay (Task 3).
 
 **Alternatives rejected.**
 
 - *Fold movers into `CollisionWorld`.* Every static consumer (bakes, nav, validation, placement) would change meaning, and the world would need a per-tick rebuild or refit. The combined-world wrapper already exists for exactly this split.
 - *Host-only mover occlusion.* HIT is a client-authoritative declaration (`networking.md` §Combat authority), so a client would still hit through doors. The shooter's cast must see movers.
 - *Decide blocking from mover state instead of geometry* — a docked-closed mover blocks a line crossing a portal it seals, reusing the doors-as-occluders association. It misses partly open, sliding, rising and rotating movers (E3, E11) and movers that seal no portal, and projectiles and splash need a geometric contact point anyway, so a state test cannot replace the cast.
-- *Test client shots against the presented (interpolated) mover pose.* The rendered mover can sit up to one tick from the predicted table. The extra error is under 0.1 m for a 6 m/s mover at 60 Hz, and using the table needs no new pose source. Revisit only if playtests show edge misses.
+- *Host replays splash against its current mover pose.* Cheapest, but against a moving door the host detonates somewhere the shooter never saw, and every observer sees the burst there. Owner rule (2026-10-30): give co-op players the smoothest presentation the network allows. The time-correct replay needs no extra traffic, only a host-side pose ring.
+- *Let the client choose the splash centre.* Smooth for the shooter, but it reverses `networking.md`'s rule that "the client never selects a splash center", which keeps one authoritative blast for every peer. The time-correct replay gets the same point without giving that up.
+- *Test client shots against the presented (interpolated) mover pose.* The rendered mover can sit up to one tick from the predicted table. The extra error is under 0.1 m for a 6 m/s mover at 60 Hz, and the table is already in hand on the client. Revisit only if playtests show edge misses.
 
 ## Mover pose per vantage
 
@@ -52,7 +54,7 @@ A closed door, a sliding wall or a rising room stops bullets, projectiles, blast
 | Hitscan, projectiles, splash, muzzle (host player, enemies, traps) | Host tick | The tick's published pose table. One pose for every stage of the tick: the blocking pass reads poses but does not write them |
 | Enemy perception, combat slots | Host tick, AI stage | Same table, same tick |
 | Own hitscan, muzzle, predicted projectile advance, predicted splash | Connected client | The client's current mover table (latest predicted tick) |
-| Splash replay of a client projectile; FIRE-frozen contact distance | Host, when the message is processed | The host's current published table |
+| Splash replay of a client projectile; FIRE-frozen contact distance | Host | Each mover at its pose on the host tick the replayed projectile reaches it, read from a short host mover-pose history (time-correct replay) |
 | Hit validation | Host | Static only (unchanged) |
 
 ## Orderings and edges
@@ -64,7 +66,8 @@ A closed door, a sliding wall or a rising room stops bullets, projectiles, blast
 | E3 | Mover partly open; line crosses the remaining brush | Blocked at the brush surface |
 | E4 | Mover moves into the line during the client's latency window | Client's own cast decides: client sees the hit or block it computed; host accepts a declared world contact on the mover because validation is static |
 | E5 | Client splash projectile strikes a mover at rest | Host replay detonates at the same point within the existing splash tolerance |
-| E6 | Client splash projectile strikes a mover in motion | Host replay uses its own current pose; detonation may differ by the mover's travel over the latency. Accepted; recorded in `networking.md` at promotion |
+| E6 | Client splash projectile strikes a mover in motion | Host replay tests the mover at its pose on the tick the projectile reaches it, so it detonates where the client saw it, within the client's mover-prediction error. The shooter's predicted burst and the observers' host cue land together |
+| E6a | Replay reaches back past the host pose history | Uses the oldest retained pose and warns once per level load; the history bound covers the longest splash projectile lifetime, so this is a content outlier |
 | E7 | Mover hit and entity hit at equal distance | World wins (existing tie rule); the mover counts as world |
 | E8 | Blast centred on a mover face | Occlusion origin nudged off the face along the normal (existing zero-radius rule); entities on the blast side take damage, entities behind the mover do not |
 | E9 | Shot origin (eye or muzzle) inside a mover hull | Same outcome a ray or sphere starting inside static geometry gets today; pinned by test, not redesigned |
@@ -79,7 +82,7 @@ A closed door, a sliding wall or a rising room stops bullets, projectiles, blast
 - [ ] A connected client's own hitscan shot stops at the mover in its prediction, declares the world contact, and the host accepts that contact. With the mover open, the client hits the target behind and the host accepts the hit (E4).
 - [ ] Player, enemy and trap projectiles impact a closed mover, including a mover that moves into a projectile already in flight. Client predicted projectiles do the same.
 - [ ] A composed muzzle on the far side of a mover from the eye launches from the eye origin instead, as it does today for static walls.
-- [ ] A mover between blast centre and target blocks splash damage; a target on the blast side still takes it (E8). The host's splash replay of a client projectile against a mover at rest detonates where the client's did (E5).
+- [ ] A mover between blast centre and target blocks splash damage; a target on the blast side still takes it (E8). The host's splash replay of a client projectile detonates where the client's did, against a mover at rest and against one in motion within the client's mover-prediction error (E5, E6).
 - [ ] An enemy cannot perceive or fire at a target behind a closed mover, and does not score a combat slot as having line of sight through one. Sight returns within the existing debounce after the mover opens (E10).
 - [ ] Static `line_of_sight` still ignores movers, and host hit validation still reads static geometry only.
 - [ ] On levels with no movers, existing weapon, projectile, splash, perception and determinism suites pass unchanged (E12). No new query allocates on the heap per call.
@@ -113,7 +116,8 @@ Plumbing:
 ### Task 3: Projectiles, muzzle and splash
 
 Thread the combined world through:
-- **Projectiles.** `projectile_stage::advance`, `advance_predicted` and `advance_matching` → `resolve_projectile_impact` → `nearest_projectile_hit`, which switches to the combined sphere cast. `projectile_static_contact_distance` and the host splash replay `resolve_authorized_splash_projectile_impact` (netcode, via `HostHitIngestContext`) use the host's current published table (vantage table). Rename `projectile_static_contact_distance` if its name now misleads.
+- **Projectiles.** `projectile_stage::advance`, `advance_predicted` and `advance_matching` → `resolve_projectile_impact` → `nearest_projectile_hit`, which switches to the combined sphere cast.
+- **Time-correct host splash replay.** The host keeps a ring of published mover poses by host tick, sized to the longest splash projectile lifetime among loaded descriptors and allocated at level install. The host splash replay `resolve_authorized_splash_projectile_impact` (netcode, via `HostHitIngestContext`) and the FIRE-frozen `projectile_static_contact_distance` step the frozen ray tick by tick from FIRE at the frozen speed, testing static geometry plus each mover at that tick's pose (E6, E6a). Static-only results are unchanged (E12). Rename `projectile_static_contact_distance` if its name now misleads. Record the rule in `networking.md` §Combat authority at promotion.
 - **Muzzle.** `resolve_muzzle_launch_origin` switches its eye ray and eye-to-muzzle sweep to the combined queries.
 - **Splash.** `splash::entities_in_sphere` takes `Option<&CombinedCollisionWorld>` for `occlude` and uses combined line of sight. `emit_splash_damage` and its callers (projectile stage, netcode host splash HIT) pass it through. The zero-radius world-impact nudge (`projectile_splash_occlusion_origin`) applies to mover impacts unchanged, because they are world impacts.
 
@@ -122,7 +126,7 @@ Host plumbing:
 - The host ingest context gains the mover colliders and the live table. Name the owner that supplies them on the host app side.
 - Client predicted advance builds the world as Task 2 does.
 
-Update the splash doc comment and `docs/scripting-reference.md`'s splash note ("movers … do not occlude") to say movers occlude. `projectile_stage.rs` (2188 lines) and `netcode/src/lib.rs` (8011 lines) take threading edits only. Covers AC 3–5 and E6, E8.
+Update the splash doc comment and `docs/scripting-reference.md`'s splash note ("movers … do not occlude") to say movers occlude. `projectile_stage.rs` (2188 lines) and `netcode/src/lib.rs` (8011 lines) take threading edits only. Covers AC 3–5 and E5, E6, E6a, E8.
 
 ### Task 4: Enemy sight and combat slots
 
@@ -162,7 +166,3 @@ Covers AC 6.
 | Every shot and sight query sees movers at its vantage's pose (vantage table); host validation and placement stay static | Tasks 1–4 | Any new shot or sight caller that takes `&CollisionWorld` | AC 1–7 |
 | A mover contact is a world contact: same tie rule, presentation, validation and splash nudge | Task 2 (hitscan), Task 3 (projectiles, splash) | Code that branches on hit source | AC 1, 2, 5; E7, E8 |
 | No movers → identical results | Task 1 query semantics | Combined query diverging from static semantics on the static part | AC 8; E12 |
-
-## Open questions
-
-- Owner: accept E6, splash detonation drift against a *moving* mover for client projectiles, as the cost of keeping the analytic host replay? The alternative is the host replaying against mover history at the client's FIRE tick, which needs a host-side mover history that does not exist today.

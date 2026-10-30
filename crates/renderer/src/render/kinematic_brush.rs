@@ -1,5 +1,5 @@
 // Renderer-owned draw path for PRL-loaded kinematic brush movers.
-// See: context/lib/rendering_pipeline.md
+// See: context/lib/rendering_pipeline.md §7.2, §7.3
 
 use std::collections::HashMap;
 
@@ -1027,6 +1027,12 @@ impl KinematicBrushPass {
                     })
             }
         })
+    }
+
+    /// Whether `view` has a mover to draw, so a view's mover passes open
+    /// only when they record something.
+    pub(crate) fn has_view_draws(&self, view: MoverView) -> bool {
+        self.has_draws() && self.view_draws(view).next().is_some()
     }
 
     /// Append `view`'s mover depth to its open depth pre-pass, after the

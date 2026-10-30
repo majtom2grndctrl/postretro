@@ -2,13 +2,14 @@
 
 Measurement and proof surface for **large** theatrical movers. Two movers that
 each fill a big share of the screen cycle unattended in a small, quick-to-bake
-two-room map. It serves three jobs:
+two-room map. Intended uses:
 
-1. **Now:** A/B the GPU cost of the mover pass on the Mac target.
-2. **Later:** prove that movers block shots, sight and enemies (the sliding
-   wall stands between the player start and a marked enemy spot).
-3. **Later:** prove mover rest-state lighting (baked lights reach across both
-   movers at both ends of their travel).
+1. A/B the GPU cost of the mover pass on the Mac target.
+2. Prove that movers block shots, sight and enemies (the sliding wall stands
+   between the player start and a marked enemy spot). Verifiable once
+   `E17--movers-block-shots-and-sight` and `E17--enemy-mover-interaction` land.
+3. Prove mover rest-state lighting (baked lights reach across both movers at
+   both ends of their travel). Verifiable once mover state lighting lands.
 
 Build a local artifact on demand:
 
@@ -92,12 +93,12 @@ while the wall is open.
   south). The north face of the wall fills the view, with the enemy spot in the
   foreground.
 
-**Future enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x
+**Enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x
 336–400, y 1200–1264 in the back room; its centre is 4.1 m behind the closed wall. It
-lies on the line from station 1 through the closed wall's centre. Place a
-future enemy on it, for example at (368, 1232, 32), to prove that the closed
+lies on the line from station 1 through the closed wall's centre. Place an
+enemy on it, for example at (368, 1232, 32), to prove that the closed
 wall blocks shots, sight and enemy perception, and that the open wall does not.
-No enemy is placed now.
+The map places no enemy.
 
 ## Measuring the mover pass
 

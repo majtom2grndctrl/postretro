@@ -1,4 +1,5 @@
-// Planar pass recording: mask, mirror world and mover depth, world, movers, skinned meshes, billboards, then the resolve.
+// Planar pass recording: mask, depth prepass (world, movers), world forward,
+// movers, skinned meshes, billboards, resolve.
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
@@ -227,16 +228,16 @@ fn record_planar_passes(
             .record_planar_parts(&mut mask, light_term_mask, quality, camera.h, None);
     }
     let world = full.has_geometry && full.index_count > 0 && !pass.draws.draws().is_empty();
-    let movers = full.kinematic_brush.has_draws();
     let mover_view = MoverView::Mirror {
         cull_planes: camera.cull_planes(),
         clip_plane: camera.clip_plane,
     };
+    let movers = full.kinematic_brush.has_view_draws(mover_view);
     if world || movers {
         // Movers join the mirror's prepass after its world, as in the main
         // view, so the mirror's mover draws test `Equal` and shade once.
         let mut depth = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Planar World Prepass"),
+            label: Some("Planar Depth Prepass"),
             color_attachments: &[],
             depth_stencil_attachment: Some(depth_attachment(&targets.depth, wgpu::LoadOp::Load)),
             ..Default::default()

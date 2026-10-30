@@ -23,8 +23,8 @@ fn wireframe_draws_leaf(
 impl Renderer {
     /// Depth pre-pass (writes the scene depth buffer, static world then movers,
     /// for the forward and mover `Equal` tests) followed by the half-res SDF
-    /// shadow dispatch. Both run before `scene_color`
-    /// is bound and before the forward pass that consumes them.
+    /// shadow dispatch. Both run before `scene_color` is bound and before the
+    /// forward pass that consumes them.
     pub(super) fn record_depth_and_sdf_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

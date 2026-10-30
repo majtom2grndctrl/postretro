@@ -174,3 +174,137 @@ Before values for the pool, left-behind and mandatory rows are 9l's recorded 9g 
 Also reported by this build's unpaired bake-gap print (no 9l value to compare): drawn blocks outside the baked id-51 set, summed over each walk. Hallway 79 / 148 / 130 (random / far / tour); arena 58 / 71 / 0.
 
 Reading: the gate row (M2) holds on both maps. The hallway's id-51 mandatory maximum rose again after the review fixes (104.2 M -> 109.2 M, 371 -> 490 cells over the pool cap), so the hallway is now further above before's 97.3 M than at 9l; deferral is still 0 because the pool grows to demand. The drawn-texel guardrail also moved up on the hallway. The prism count dropping 263 -> 135 walls (fewer end planes) is the likely cause of both, as in 9l's own account of the narrowing giving back part of the prisms' relief; I did not test that attribution.
+
+## After the second review panel
+
+Recorded 2026-10-29 on the final compiler, HEAD `35a587db8` (the second review panel's fixes at `fbf0134fd`, then the owner's sealing-tolerance change: on-face tolerance 1e-5 m, and oblique door edges flush with occluding jamb ends seal). Frozen binaries `prl-build` `441144d88369` and `scripts-build` `3452968651f5` in `target/occluder-10r2/bin/`. Same recipe, maps, flags, pose files and harness as the first section, with no platform control (the first one proved Windows reproduces 9l). Records: `round2/` (`round2/head/<map>/` plus `round2/c18/` and `round2/partition-counts.out`). The held re-bake is in `rebake.md`.
+
+Columns: 9l (Mac, `ad3d2315d`), round 1 (`e2d08bb29`, the first section), round 2 (`35a587db8`). Cross-check against the superseded `fbf0134fd` bakes (not kept): its partition counts, cells, portals, prisms, door recognition and per-mover seal lines were identical to `35a587db8`'s on all five maps, so the sealing change moved no structure and no seal line on these maps. Its walks and lightmap rows were not run.
+
+### Verdicts
+
+| Check | Rule | Result |
+|---|---|---|
+| C18 fixture (laned, two-layer, new lintel variant) | 0.00% | PASS: 0.00% over 75 poses x 12,032 samples on all three (76 cells / 49 portals, 81 / 54, 73 / 47) |
+| C18 occlusion-test map sweep | 0.00% | PASS: 0.00%, 0 of 11,538 at every pose, 510 cells, 270 portals |
+| M3 | every mover that sealed still seals | PASS: hallway m0-m8, campaign-test m0-m1, arena m0-m5; door recognition 9 of 11 / 2 of 3 / 6 of 8 |
+| M4 | no leak lines | PASS: none in any of the five bake logs |
+| New drawn misses | 0 | PASS: `misses` 0 at every pose on all seven sweeps; street culled poses 9, rooftop 0 (as 9l) |
+| Step-cap trips at 14,000 | 0 | PASS: 0 on street and rooftop, every pose on the portal path |
+| 2 x worst walk <= 14,000 | | PASS: worst 6,608, so 13,216 |
+| Poses over 5,000 | no new poses vs 9l's lists | PASS: street 29, rooftop 26, the same poses |
+| M2 deferred texels, hallway and arena | after <= before; 0 stays 0 | PASS: 0 on all three walks of both |
+| M2 trip frames | 0 | PASS: 0 on both |
+
+### Structure (in-process counts, confirmed from the PRLs by `world_poses_structure`)
+
+| Map | Metric | 9l | Round 1 | Round 2 | Delta vs 9l | Delta vs round 1 |
+|---|---|---|---|---|---|---|
+| occlusion-test | runtime portals | 270 | 270 | 270 | 0 | 0 |
+| | interior (all) cells | 119 (510) | 119 (510) | 119 (510) | 0 | 0 |
+| | slivers < 0.5 m | 55 | 55 | 55 | 0 | 0 |
+| | prisms walls, end planes | 8, 14 | 9, 13 | 8, 12 | 0, -2 | -1, -1 |
+| hallway | runtime portals | 2,926 | 2,586 | 2,924 | -2 | +338 |
+| | interior (all) cells | 1,859 (7,891) | 1,656 (7,645) | 1,857 (7,881) | -2 (-10) | +201 (+236) |
+| | slivers < 0.5 m | 11 | 11 | 11 | 0 | 0 |
+| | prisms walls, end planes | 263, 285 | 135, 154 | 260, 279 | -3, -6 | +125, +125 |
+| campaign-test | runtime portals | 306 | 306 | 306 | 0 | 0 |
+| | interior (all) cells | 136 (840) | 136 (840) | 136 (840) | 0 | 0 |
+| | slivers < 0.5 m | 66 | 66 | 66 | 0 | 0 |
+| | prisms walls, end planes | 4, 6 | 4, 6 | 4, 6 | 0 | 0 |
+| arena | runtime portals | 844 | 798 | 823 | -21 (-2.5%) | +25 |
+| | interior (all) cells | 537 (1,550) | 506 (1,504) | 522 (1,528) | -15 (-22) | +16 (+24) |
+| | slivers < 0.5 m | 0 | 0 | 0 | 0 | 0 |
+| | prisms walls, end planes | 136, 166 | 88, 88 | 101, 104 | -35, -62 | +13, +16 |
+| street | runtime portals | 3,885 | 3,880 | 3,885 | 0 | +5 |
+| | interior (all) cells | 1,648 (4,864) | 1,645 (4,861) | 1,648 (4,864) | 0 | +3 |
+| | slivers < 0.5 m | 1,196 | 1,196 | 1,196 | 0 | 0 |
+| | prisms walls, end planes | 17, 28 | 7, 11 | 8, 12 | -9, -16 | +1, +1 |
+
+- The `Occluder classification` line is identical to 9l's and round 1's on all five maps.
+- Exterior flood-fill leaves (exterior / interior empty): occlusion-test and campaign-test unchanged from 9l (136 / 428, 241 / 354). Hallway 416 / 3,602 -> 3,393 -> 3,600; arena 206 / 963 -> 931 -> 947; street 307 / 2,966 -> 2,963 -> 2,966. Exterior counts never moved.
+- **The hallway is back at 9l's structure** (portals 2,924 against 2,926, prisms 260 against 263). Round 1 had dropped it to 2,586 portals and 135 prism walls. The second panel's joint and layer gates (F2, F3) restored nearly all of those prisms; I did not isolate which fix did it. The lintel variant that exposed the F2 leak (8.91% mean before the fix) is 0.00% now.
+- The arena settled between: 823 portals, 21 below 9l and 25 above round 1, with 101 prism walls against 136 (9l) and 88 (round 1). F3 (panels on longer backing walls get no prism) is the likely reason the arena does not return to 9l's 136; I did not test that. Every arena delta against 9l is a decrease, and no arena walk figure got worse (below).
+- Street prisms stay at 8 walls against 17, yet its portals and cells are exactly 9l's.
+
+### M3: seal lines per mover
+
+| Map | 9l | Round 1 | Round 2 |
+|---|---|---|---|
+| hallway | m0 6, m1 6, m2 5, m3 4, m4 6, m5 4, m6 2, m7 1, m8 2 | same | same |
+| campaign-test | m0 5, m1 5 | same | same |
+| arena | m0 3, m1 3, m2 5, m3 5, m4 3, m5 5 | m2 4, m3 4, others same | m2 4, m3 4, others same |
+| occlusion-test, street | none | none | none |
+
+No door that recognised before stopped sealing, and none newly seals: door recognition is hallway 9 of 11 (movers 0-8), campaign-test 2 of 3 (0, 1), arena 6 of 8 (0-5), occlusion-test 0 of 1, street 0 of 0 in all three columns. Arena m2 and m3 stay at 4 seal lines against 9l's 5, as in round 1; the owner's tolerance change moved no seal line (`fbf0134fd` and `35a587db8` agree).
+
+### Street and rooftop walks (uncapped, `considered` per pose)
+
+| Set | Metric | 9l | Round 1 | Round 2 | Delta vs 9l |
+|---|---|---|---|---|---|
+| street (2,960) | poses over 5,000 | 29 | 29 | 29 (same poses) | 0 |
+| | step-cap trips at 14,000 | 0 (5,000 cap: 29) | 0 | 0 | 0 |
+| | mean | 1,292.5 | 1,292.6 | 1,292.5 | 0 |
+| | max (worst pose) | 6,467 (`g13.30.0@0`) | 6,467 | 6,467 (`g13.30.0@0`) | 0 |
+| | total tests | 3,825,818 | 3,826,024 | 3,825,818 | 0 |
+| | drawn misses / culled poses | 0 / 9 | 0 / 9 | 0 / 9 | 0 |
+| rooftop (608) | poses over 5,000 | 26 | 26 | 26 (same poses) | 0 |
+| | step-cap trips at 14,000 | 0 (5,000 cap: 26) | 0 | 0 | 0 |
+| | mean | 1,967.2 | 1,968.5 | 1,967.2 | 0 |
+| | max (worst pose) | 6,608 (`roof:B4.s2.c@180/-15`) | 6,608 | 6,608 | 0 |
+| | total tests | 1,196,083 | 1,196,856 | 1,196,083 | 0 |
+| | drawn misses / culled poses | 0 / 0 | 0 / 0 | 0 / 0 | 0 |
+| both | 2 x worst walk | 13,216 | 13,216 | 13,216 | 0 |
+
+Round 2's street and rooftop walks equal 9l's to the test: totals identical, and none of the top-40 `considered` values differ. Round 1's differences (556 street poses, +206 tests) are gone with the street's portals back at 3,885.
+
+### Walks on the other four maps (`considered` mean / max)
+
+| Map | 9l | Round 1 | Round 2 | Misses (drawn / faceless / culled) |
+|---|---|---|---|---|
+| occlusion-test | 197.8 / 679 | 197.8 / 679 | 197.8 / 679 | 0 / 0 / 0 |
+| hallway | 56.4 / 691 | 52.8 / 759 | 56.4 / 691 | 0 / 0 / 0 |
+| campaign-test | 79.6 / 378 | 79.6 / 378 | 79.6 / 378 | 0 / 0 / 0 |
+| arena | 38.9 / 407 | 37.0 / 359 | 38.6 / 416 | 0 / 0 / 0 |
+
+The hallway's worst pose is 691 again (round 1: 759). The arena's mean is 38.6 against 38.9 and its worst pose 416 against 407 (+2.2%); no pose is near any cap.
+
+### Hallway and arena lightmap rows
+
+Same method as the follow-up section: `world_poses_bake_gap` (unpaired, no before record under the current pool policy), the id-51 mandatory reader at L = 16 m, the SH reach test. The before column is 9l's recorded 9g re-measure. The walks run under walk epoch 4 and the 14,000 cap, so their frame sequences differ from 9l's and left-behind texels are not like-for-like with 9l.
+
+| Row | Map | Rule | Before | 9l | Round 1 | Round 2 | Verdict |
+|---|---|---|---|---|---|---|---|
+| M2 deferred texels (random / far / tour) | hallway | after <= before; 0 stays 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | PASS |
+| | arena | same | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | PASS |
+| M2 trip frames | both | 0 | 0 | 0 | 0 | 0 | PASS |
+| Left-behind texels | hallway | reported | 28.7 M / 38.4 M / 23,233 M | 4.8 M / 376.0 M / 23,523 M | 85.5 M / 280.5 M / 26,222 M | 8.7 M / 266.5 M / 23,335 M | reported; back near 9l |
+| | arena | reported | 0 / 0 / 9.3 M | 0 / 0 / 17.7 M | 0 / 0 / 16.0 M | 0 / 0 / 17.7 M | reported |
+| Pool peak layers (random / far / tour) | hallway | reported | 34 / 38 / 34 | 31 / 38 / 24 | 38 / 38 / 26 | 32 / 37 / 24 | reported; far peak 37, under before's 38 |
+| | arena | reported | 2 / 2 / 2 | 2 / 2 / 2 | 2 / 2 / 2 | 2 / 2 / 2 | reported |
+| Pool headroom cost | hallway | reported | 0 / 0 / 7 | 0 / 0 / 0 | 0 / 0 / 2 | 0 / 0 / 0 | reported |
+| | arena | reported | 0 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | reported |
+| Pool growths | hallway | reported | 12 / 6 / 3 | 5 / 9 / 2 | 3 / 6 / 2 | 4 / 7 / 2 | reported |
+| Largest id-51 mandatory set (cells over 62.9 M) | hallway | reported | 97.3 M (177) | 104.2 M (371) | 109.2 M (490) | **104.2 M (371)** | reported; exactly 9l's |
+| | arena | reported | <= 2.4 M (0) | 0.9 M (0) | 1.0 M (0) | 1.0 M (0) | reported |
+| SH mandatory max (floor 256 MiB) | hallway | under floor | – | 4.811 MiB | 4.811 MiB | 4.811 MiB | PASS |
+| | arena | under floor | – | 0.796 MiB | 0.796 MiB | 0.796 MiB | PASS |
+| Lightmap mandatory max / pool layers max | hallway | reported | – | 348.0 MiB / 34 | 364.7 MiB / 35 | 348.0 MiB / 33 | reported |
+| | arena | reported | – | 3.161 MiB / 2 | 3.272 MiB / 2 | 3.246 MiB / 2 | reported |
+| Drawn lightmap texels, mean per pose vs before | hallway | reported | 6.148 M | 6.085 M (-1.0%) | 6.463 M (+5.1%) | 6.087 M (-1.0%) | reported; round 1's +5.1% is gone |
+| | arena | reported | 0.1195 M | 0.0960 M (-19.6%) | 0.0970 M (-18.8%) | 0.0964 M (-19.3%) | reported |
+| Tris in frustum vs before | hallway | reported | 80.3 | 124.0 (+54.4%) | 124.4 (+54.9%) | 124.0 (+54.4%) | reported |
+| | arena | reported | 65.4 | 94.2 (+44.0%) | 94.5 (+44.5%) | 94.9 (+45.1%) | reported |
+| Mean portal tests vs before | hallway | reported | 65.3 | 56.4 (-13.6%) | 52.8 (-19.1%) | 56.4 (-13.6%) | reported |
+| | arena | reported | 58.8 | 38.9 (-33.8%) | 37.0 (-37.1%) | 38.6 (-34.4%) | reported |
+
+The 9l percentages here are recomputed from the recorded means to one decimal, so a few differ by a point from the rounded figures in 9l's own tables.
+
+Also reported by the unpaired print: drawn blocks outside the baked id-51 set, hallway 45 / 133 / 92 and arena 18 / 28 / 0 (round 1: 79 / 148 / 130 and 58 / 71 / 0).
+
+### Rows that moved by more than a few percent against round 1
+
+- **Hallway structure, mandatory set and drawn texels all returned to 9l.** The rows that got worse in round 1 (prisms 263 -> 135, mandatory max 104.2 M -> 109.2 M with 371 -> 490 cells over the pool cap, drawn texels -1.0% -> +5.1%, worst walk 691 -> 759) are back to 9l: the mandatory set, its cell count and the worst walk to the digit, the texels within 0.1 point. That fits round 1's drop being prisms the first-round gates refused and the panel restoring them. The mandatory set matching 9l exactly while portals differ by 2 and prisms by 3 walls says those few differing prism planes are not what moves it.
+- **Hallway pool far-point peak 38 -> 37, tour headroom 2 -> 0, growths 3 / 6 / 2 -> 4 / 7 / 2:** the same restoration; all reported, none gated.
+- **Arena:** portals +25 (+3.1%) and prism walls +13 against round 1, still below 9l; walk mean +4.3% (37.0 -> 38.6) and worst pose 359 -> 416, both toward 9l. All reported.
+- No door changed recognition or seals against round 1 or 9l.

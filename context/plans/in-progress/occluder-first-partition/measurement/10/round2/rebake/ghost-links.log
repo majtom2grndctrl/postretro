@@ -1,0 +1,735 @@
+[INFO prl_build] Input: content/dev/maps/ghost-links.map
+[INFO prl_build] Output: content/dev/maps/ghost-links.prl
+[INFO prl_build] Map format: IdTech2
+[INFO prl_build] [prl-build] cache directory: .build-caches\prl-cache
+  0.05s  Parsing map...
+[WARN prl_build::trigger_volumes] [LevelCompiler] switch `vault_button` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[INFO prl_build::format::quake_map] light entity missing 'style'; defaulting to 0 (no animation)
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `echo_plate` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `swap_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `echo_plate` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `swap_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `split_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `split_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `return_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `barrier_approach` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+[INFO prl_build::parse] Total brushes: 81
+[INFO prl_build::parse] World brushes: 59
+[INFO prl_build::parse] Entity brushes: 22
+[INFO prl_build::parse] Brush sides: 354
+[INFO prl_build::parse] Total vertices: 1416
+[INFO prl_build::parse] Entity classnames: worldspawn, player_spawn, kinematic_mover, kinematic_waypoint, switch, reference_enemy, limitator, light, trigger_volume, trigger_teleport, ghost_link, teleport_destination
+[INFO prl_build::parse] Lights: 6
+[INFO prl_build::parse] Map entities (classname dispatch): 19
+[INFO prl_build::parse] Environment volumes: 0
+[INFO prl_build::parse] Reflection volumes: 0
+  0.08s  BSP partitioning...
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 59 brushes, 18 occlude alone; exempt alone: 7 under floor, 0 no open face, 32 short span, 2 low top; 3 clusters, 2 sections, 2 occlude (6 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 6 of 7 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 0 occluding wall faces with a free end, 0 end planes, 0 ended by the length bound (2 × the face's longer broad extent); an end is free when it meets no solid and at least 8 of its 15 probes 0.1 m past it are open
+[INFO prl_build::partition] BSP leaves: 71 solid, 116 empty
+[INFO prl_build::partition] BSP nodes: 186
+[INFO prl_build::partition] BSP leaves: 187
+[INFO prl_build::partition] BSP max depth: 17
+[INFO prl_build::partition] Total faces (after brush-side extraction): 353
+[INFO prl_build::partition] Average faces per leaf: 1.9
+  0.09s  Data script compilation...
+[INFO prl_build] [prl-build] compiling data_script content/dev/maps\../scripts/ghost-links.ts -> C:\Users\danhi\AppData\Local\Temp\postretro-prl-build-33976-0\data-script.out with light-membership sidecar via C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\target\debug\scripts-build.exe
+[INFO prl_build] [prl-build] data_script embedded: 6323 bytes from \\?\C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\content\dev\scripts\ghost-links.ts
+[INFO prl_build::script_light_membership] [prl-build] light membership: explicit _animated reservation for static light 1 (tags: alcove_lamp)
+[INFO prl_build::script_light_membership] [prl-build] light membership: explicit _animated reservation for static light 3 (tags: alcove_lamp)
+[WARN prl_build::pipeline] [Compiler] Watertightness: 8 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 8):
+[WARN prl_build::pipeline] [Compiler]   open edge near (-1.626, 0.000, -11.354) — near brush 50
+[WARN prl_build::pipeline] [Compiler]   open edge near (-1.626, 3.251, -11.354) — near brush 50
+[WARN prl_build::pipeline] [Compiler]   open edge near (-0.000, 0.000, -11.379) — near brush 52
+[WARN prl_build::pipeline] [Compiler]   open edge near (0.000, 0.000, -11.328) — near brush 0
+[WARN prl_build::pipeline] [Compiler]   open edge near (-0.000, 3.251, -11.379) — near brush 53
+[WARN prl_build::pipeline] [Compiler]   open edge near (0.000, 3.251, -11.328) — near brush 1
+[WARN prl_build::pipeline] [Compiler]   open edge near (1.626, 0.000, -11.354) — near brush 51
+[WARN prl_build::pipeline] [Compiler]   open edge near (1.626, 3.251, -11.354) — near brush 51
+  0.23s  Visibility computation...
+[INFO prl_build::visibility] Exterior flood-fill: 61 exterior leaves, 55 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 88 occluder-tier leaves (2 holding several interior pockets); 156 cells (24 interior, 71 solid, 61 exterior); 23 runtime portals; full tree 187 leaves, 278 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::visibility] Visibility: 85 non-solid cells, 23 portals
+  0.23s  Geometry extraction...
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 15
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 18
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 0
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 2
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 20
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 1
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 3
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 4
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 19
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 21
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 16
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 17
+[INFO prl_build::geometry] Vertices: 908 (28 bytes each)
+[INFO prl_build::geometry] Indices: 1362
+[INFO prl_build::geometry] Triangles: 454
+[INFO prl_build::geometry] Faces: 227
+[INFO prl_build::geometry] Interior cells: 24
+[INFO prl_build::geometry] Unique textures: 9
+  0.23s  BVH build...
+[INFO prl_build::bvh_build] Bvh: 453 nodes (226 internal, 227 leaf), 227 leaf entries
+[INFO prl_build::bvh_build]   Material buckets: 7
+  0.23s  Cell visibility bake...
+[INFO prl_build::cell_visibility_bake] [cache] cell_visibility miss
+  0.24s  NavMesh bake...
+[INFO prl_build::pipeline] [cache] navmesh miss
+[INFO prl_build::navmesh_bake] [Compiler] NavMesh: eroded 1926 cells against non-walkable boundaries
+[INFO prl_build::navmesh_bake] [Compiler] NavMesh: 73 regions, 98 portals (62x480 grid @ 0.25 m)
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set gate: estimated peak 16588800 bytes, budget 17179869184 bytes, admitted
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DeltaShVolumes (id 27) light 0: 60 CSR entries, 829440 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DeltaShVolumes (id 27) light 1: 40 CSR entries, 552960 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DirectShDeltaVolumes (id 41) selection slot 0 (static_index 0), 60 CSR entries, 829440 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DirectShDeltaVolumes (id 41) selection slot 1 (static_index 1), 60 CSR entries, 829440 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DirectShDeltaVolumes (id 41) selection slot 2 (static_index 2), 50 CSR entries, 691200 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: DirectShDeltaVolumes (id 41) selection slot 3 (static_index 3), 30 CSR entries, 414720 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: AnimatedDirectShDeltaVolumes (id 45) light 0: 60 CSR entries, 829440 dense bytes
+[INFO prl_build::pipeline::delta_working_set] [Compiler] SH delta working-set histogram: AnimatedDirectShDeltaVolumes (id 45) light 1: 40 CSR entries, 552960 dense bytes
+  0.25s  Texture color-space validation...
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_036_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_036_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_037_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_037_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_038_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_038_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_039_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_039_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_040_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_040_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_041_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_041_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_042_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_042_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_043_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_043_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_044_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_044_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_045_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_pavement_045_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_021_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_021_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_022_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_023_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_023_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_024_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_024_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_025_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_025_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_026_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_026_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_027_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_027_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_028_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_028_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_029_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_029_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_030_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_031_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_031_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_032_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_032_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_033_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_033_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_034_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_034_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_035_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\concrete_stone_035_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_011_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_011_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_012_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_012_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_013_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_013_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_014_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_014_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_015_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_015_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_016_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_016_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_017_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_017_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_018_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_018_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_019_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_019_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_020_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_dirt_020_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_001_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_001_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_002_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_002_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_003_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_003_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_004_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_005_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_005_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006b_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006b_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_006_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_007_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_007_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_008_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_008_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_009_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_009_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_010_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\default_grass_010_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_046_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_046_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_047_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_047_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_048_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_048_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_049_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_049_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_050_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\50-free-textures\wood_bark_050_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\fluids\lava_64_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\Level Eleven Games Sci-Fi Texture Pack v1\CorrugatedMetalPanel-01V_64_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\Level Eleven Games Sci-Fi Texture Pack v1\Vent-001_Base-001_h.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_brushed_012_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_brushed_012_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_rough_046a_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\metal\metal_rough_046a_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\neon\neon_dim_panel_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\neon\neon_glow_panel_e.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\002_n.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\concrete_dark_speckled_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] surface-map sibling content/dev\textures\test\concrete_grimey_s.png color space: linear
+[INFO prl_build::texture_validation] [prl-build] color-space validation passed for 119 surface-map sibling(s) under content/dev\textures
+  0.27s  World material bake...
+  0.30s  SH volume bake...
+[WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::sh_group] [cache] sh_group miss
+[INFO prl_build::pipeline] [Compiler] OctahedralShVolume compact atlas: 1006/10285 valid probes, dense RGBA16F source 294912 bytes
+[INFO prl_build::sh_bake] OctahedralShVolume: grid 17x5x121 = 10285 probes (1006 valid, 9279 invalid), tile 6 (border 1), atlas 192x192x1 (32 tile(s)/row, 1024 tile(s)/layer), cell 1m, depth E[d] mean 2.88m / max 5.45m, 2 animated light(s)
+  0.76s  Delta SH volume bake...
+[INFO prl_build::delta_sh_bake] [Compiler]   delta light 0: 3840 emitted probes (60 cells) vs 10648 full-AABB probes
+[INFO prl_build::delta_sh_bake] [Compiler]   delta light 1: 2560 emitted probes (40 cells) vs 10648 full-AABB probes
+[INFO prl_build::delta_sh_bake] [Compiler] DeltaShVolumes: 2 animated light(s), 100 CSR entries, 6400 emitted probes, affinity_dims 5x2x31
+  1.06s  Direct SH volume bake...
+[INFO prl_build::direct_sh_bake] [cache] direct_sh_volume miss
+[INFO prl_build::direct_sh_bake] [Compiler]   direct light 0: reaches 60 of 310 cells (~3840 probes) vs 10285 grid probes
+[INFO prl_build::direct_sh_bake] [Compiler]   direct light 1: reaches 60 of 310 cells (~3840 probes) vs 10285 grid probes
+[INFO prl_build::direct_sh_bake] [Compiler]   direct light 2: reaches 50 of 310 cells (~3200 probes) vs 10285 grid probes
+[INFO prl_build::direct_sh_bake] [Compiler]   direct light 3: reaches 30 of 310 cells (~1920 probes) vs 10285 grid probes
+[INFO prl_build::direct_sh_bake] [Compiler] DirectShVolume cull: 4 of 4 static-direct light(s) had cells dropped by the reach test
+  1.08s  Animated direct SH delta bake...
+[INFO prl_build::animated_direct_sh_bake] [Compiler] AnimatedDirectShDeltaVolumes: 2 animated light(s), 100 CSR entries, 6400 emitted probes, affinity_dims 5x2x31
+  1.09s  Entity shadow light selection...
+[INFO prl_build::pipeline] EntityShadowLights: selected 4 static light candidate(s)
+  1.09s  Direct SH delta volume bake...
+[INFO prl_build::pipeline] DirectShDeltaVolumes: 2764800 delta bytes; top static_index 0 (selection slot 0, 60 CSR entries, 829440 bytes)
+[INFO prl_build::pipeline] DirectShDeltaVolumes histogram: selection slot 0, static_index 0, 60 CSR entries, 829440 bytes
+[INFO prl_build::pipeline] DirectShDeltaVolumes histogram: selection slot 1, static_index 1, 60 CSR entries, 829440 bytes
+[INFO prl_build::pipeline] DirectShDeltaVolumes histogram: selection slot 2, static_index 2, 50 CSR entries, 691200 bytes
+[INFO prl_build::pipeline] DirectShDeltaVolumes histogram: selection slot 3, static_index 3, 30 CSR entries, 414720 bytes
+[INFO prl_build::delta_sections] [Compiler] DeltaShVolumes delta drop: input 100 entry/entries (1382400 raw payload bytes); \
+         retained 100 and dropped 0; retained 1382400 raw payload bytes, \
+         1644 CSR bytes, largest accepted RGB bound [0.000000, 0.000000, 0.000000], present
+[INFO prl_build::delta_sections] [Compiler] DirectShDeltaVolumes delta drop: input 200 entry/entries (2764800 raw payload bytes); \
+         retained 54 and dropped 146; retained 746496 raw payload bytes, \
+         1460 CSR bytes, largest accepted RGB bound [0.000000, 0.000000, 0.000000], present
+[INFO prl_build::delta_sections] [Compiler] AnimatedDirectShDeltaVolumes delta drop: input 100 entry/entries (1382400 raw payload bytes); \
+         retained 100 and dropped 0; retained 1382400 raw payload bytes, \
+         1644 CSR bytes, largest accepted RGB bound [0.000000, 0.000000, 0.000000], present
+[INFO prl_build::pipeline] [sh-coarsen] id 41 classification applied; ids 27/45 remain uniform L0
+[INFO prl_build::sh_runtime_envelope] [sh-coarsen] id 41 runtime envelope: dense map p95 1.189850, floor 0.023797, failures 0 -> 0, selected L0 restores 0, smoothing refinements 0, incremental payload 0 bytes
+[INFO prl_build::sh_runtime_envelope] [sh-coarsen] mutable id 27 uniform-L0 policy diagnostic: 100 affected cell(s), 100 affected entry/entries, payload 217296 -> 217296 bytes, uniform 217296 bytes, retained ratio 1.000000; measurement only
+[INFO prl_build::sh_runtime_envelope] [sh-coarsen] mutable id 45 uniform-L0 policy diagnostic: 100 affected cell(s), 100 affected entry/entries, payload 217296 -> 217296 bytes, uniform 217296 bytes, retained ratio 1.000000; measurement only
+[INFO prl_build::delta_sections] [Compiler] DeltaShVolumes valid-probe compaction: 100 CSR entr(y/ies), 1006 valid affinity-local probe(s), 1382400 -> 217296 raw payload bytes
+[INFO prl_build::delta_sections] [Compiler] DirectShDeltaVolumes valid-probe compaction: 54 CSR entr(y/ies), 1006 valid affinity-local probe(s), 746496 -> 314496 raw payload bytes
+[INFO prl_build::delta_sections] [Compiler] AnimatedDirectShDeltaVolumes valid-probe compaction: 100 CSR entr(y/ies), 1006 valid affinity-local probe(s), 1382400 -> 217296 raw payload bytes
+[INFO prl_build::delta_sections] [Compiler] SH delta payload cap: id 27 217296 bytes, id 41 314496 bytes, \
+             id 45 217296 bytes, total 749088 bytes, cap 268435456 bytes, overage 0 bytes
+[INFO prl_build::sh_density] [Compiler] SH base-density summary: L0/L1/L2 bricks 310/0/0, stored tiles 1006, delta pins id27/id41/id45 0/0/0, protection pins 0, id34 119328 bytes, id35 36940 bytes, format tag 1
+[INFO prl_build::sh_density] [Compiler] SH base-density nodes scale 0: L0/L1/L2 34/0/0
+[INFO prl_build::sh_density] [Compiler] SH base-density nodes scale 1: L0/L1/L2 0/0/0
+[INFO prl_build::sh_density] [Compiler] SH base-density nodes scale 2: L0/L1/L2 0/0/0
+[INFO prl_build::sh_density] [Compiler] SH base-density nodes scale 3: L0/L1/L2 0/0/0
+[INFO prl_build::sh_density] [Compiler] SH base-density hierarchy pins: delta 10, protection 0, partial 20, shape 0, gate 0
+  1.16s  Billboard direct scatter bake...
+[INFO prl_build::billboard_direct_scatter_bake] [cache] billboard_direct_scatter miss
+[INFO prl_build::billboard_direct_scatter_bake] [cache] animated_billboard_direct_scatter miss
+[INFO prl_build::pipeline] BillboardDirectScatter: 10285 base probes, 100 animated CSR entries
+  1.18s  Chunk light list bake...
+[INFO prl_build::chunk_light_list_bake] [cache] chunk_light_list miss
+[INFO prl_build::chunk_light_list_bake] [ChunkLightList] grid 3x2x16 (96 chunks), 6 static lights, avg 0.46 / chunk, max 3, total indices 44, payload 944 bytes
+  1.18s  Atlas preparation...
+[INFO prl_build::pipeline::lightmap_stage::peak] [Compiler] lightmap stage predicted peak 5 MiB: shadowmask fill 0 + encode scratch 0 + face map 0 + layer plane 1 + 8 partitions 2 + sections 0 + metadata 1 + cache metadata 0 + ownership metadata 0 (24 blocks on 5 bake layers of 128²)
+  1.18s  Cell residency set bake...
+[INFO prl_build::cell_residency_bake] [cache] cell_residency_set miss
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 648 eye candidates (648 in cell, 0 inset, 0 rejected; missed into solid 0, exterior 0, other cell 0), 0 camera cells without an eye point, 3888 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 24 camera cells, 576 entries (max 24 per camera), 5252 bytes, max lead 32 m, 0.002 s
+[INFO prl_build::pipeline] [Compiler] Lightmap runtime all-resident pool: 1 pool layers
+  1.19s  Lightmap bake...
+  1.19s  Shadowmask atlas bake...
+[INFO prl_build::pipeline::lightmap_stage::peak] [Compiler] Lightmap working-set gate: predicted 4959142 bytes, budget 17179869184 bytes, 5 packed bake layers, admitted (--working-set-max-size)
+[INFO prl_build::shadowmask_bake] [cache] shadowmask_atlas miss
+[INFO prl_build::pipeline::lightmap_stage] [cache] lightmap_section miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::pipeline::lightmap_stage::partitions] [cache] lightmap_layer miss
+[INFO prl_build::shadowmask_bake::ownership] [ShadowmaskAtlas] peak per-face owner demand: 2 candidate light(s) on one face (capacity 4); 0 light(s) dropped above the floor
+[INFO prl_build::pipeline] [Compiler] fused lightmap/shadowmask stage returned
+[INFO prl_build::lightmap_bake] Lightmap: 24 cell blocks (47408 texels, largest 60x60), 0.25 m/texel, 6 static lights baked, irr=47408 B, dir=23704 B
+[INFO prl_build::pipeline] ShadowmaskAtlas: 24 cell blocks, 227 face owner entries, 97316 bytes
+  1.28s  Animated light chunks...
+[INFO prl_build::animated_light_chunks] [AnimatedLightChunks] 190 chunks, 2 animated lights, max 1 / chunk, mean 1.00 / chunk, 0 chunks bottomed out at min-extent floor
+  1.28s  Animated light weight maps...
+[INFO prl_build::pipeline::animated_atlas_stage] [cache] animated_lm_weight_maps miss
+[INFO prl_build::animated_light_weight_maps] [AnimatedLightWeightMaps] 5 bake layers, 190 animated blocks on 5 identity pages, 190 chunks, 321148 byte section, 12706 covered texels, mean 1.00 lights / covered texel, peak 527 texels / chunk
+[INFO prl_build::animated_light_weight_maps] [AnimatedLightWeightMaps] culled 47 of 190 chunks with no lit texel (3268 texels); animated blocks 190 -> 143, identity pages 5 -> 5
+[INFO prl_build::pipeline::animated_atlas_stage] [AnimatedLightWeightMaps] Packed layout: 143 blocks on 3 pages of 128² (589824 bytes; identity layout 5 pages of 128², 983040 bytes)
+  1.32s  Texture mip bake...
+[INFO prl_build::texture_mips] [prl-build] texture bytes: 786420 B (767.99 KiB) across 9 material bundle(s)
+[INFO prl_build::texture_mips] [prl-build]   by slot: diffuse 786420 B (767.99 KiB)
+[INFO prl_build::texture_mips] [prl-build]   by mip: L0 589824 B (576.00 KiB), L1 147456 B (144.00 KiB), L2 36864 B (36.00 KiB), L3 9216 B (9.00 KiB), L4 2304 B (2.25 KiB), L5 576 B, L6 144 B, L7 36 B
+[INFO prl_build::texture_mips] [prl-build]   largest: DebugTextures/debug_ceiling_grey 87380 B (85.33 KiB)
+[INFO prl_build::texture_mips] [prl-build]   largest: DebugTextures/debug_floor_blue 87380 B (85.33 KiB)
+[INFO prl_build::texture_mips] [prl-build]   largest: DebugTextures/debug_floor_grey 87380 B (85.33 KiB)
+[INFO prl_build::texture_mips] [prl-build]   largest: DebugTextures/debug_floor_purple 87380 B (85.33 KiB)
+[INFO prl_build::texture_mips] [prl-build]   largest: DebugTextures/debug_wall_green 87380 B (85.33 KiB)
+  1.32s  Reflection probe capture...
+  Reflection Probes: skipped
+  1.32s  SH cluster directory...
+  1.32s  Packing and writing...
+[INFO prl_build::pack] [Compiler] SH cluster directory: 138 clusters, 2027 ranges, 102 active affinity cells, 134 covering references, max 32 adaptive nodes visited/cluster, 56104 bytes, <= 54408 bytes construction metadata, 2.006 ms
+[INFO prl_build::pack::pack_output] Wrote content/dev/maps/ghost-links.prl (3165966 bytes)
+[INFO prl_build::pack::pack_output] Read-back validation passed.
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 17 (Geometry), 39964 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 16 (TextureNames), 313 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 32 (TextureCacheKeys), 292 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 38 (Cells), 7064 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 39 (CellLocator), 5968 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 15 (Portals), 1480 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 23 (ChunkLightList), 992 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 19 (Bvh), 29032 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 18 (AlphaLights), 446 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 21 (LightInfluence), 112 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 34 (OctahedralShVolume), 119328 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 22 (Lightmap), 71996 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 35 (DirectShVolume), 36940 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 40 (EntityShadowLights), 20 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 41 (DirectShDeltaVolumes), 318768 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 42 (ShadowmaskAtlas), 97316 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 24 (AnimatedLightChunks), 8596 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 25 (AnimatedLightWeightMaps), 292560 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 26 (LightTags), 50 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 27 (DeltaShVolumes), 221764 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 45 (AnimatedDirectShDeltaVolumes), 221764 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 47 (BillboardDirectScatterVolume), 82317 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 48 (AnimatedBillboardDirectScatterDeltaVolumes), 52870 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 28 (DataScript), 6460 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 29 (MapEntity), 2684 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 30 (FogVolumes), 10 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 36 (NavMesh), 4938 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 43 (KinematicGeometry), 9405 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 55 (Teleporters), 876 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 56 (GhostLinks), 379 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 44 (TriggerVolumes), 730 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 52 (EnvironmentVolumes), 10 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 37 (CellDrawIndex), 1268 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 46 (CellVisibility), 2764 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 49 (ClusterDirectory), 56104 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 5252 payload bytes
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 50 (ClusterShPayloads), 1464312 payload bytes
+[INFO prl_build::pack] [Compiler] Serialize footprint: 37 sections, 3165144 payload bytes, 1464312 byte largest payload; header and section-table bytes excluded; writes materialize one payload at a time
+[WARN prl_build::cache] [cache] spared set 2412789486 (2.25 GiB) across 16879 entries (every live map's use record plus this build's) exceeds cache budget 2147483648 (2.00 GiB); the cache keeps the spared set and evicts only entries outside it
+Build Summary:
+  Parsing           0.02s
+  Partitioning      0.01s
+  DataScript        0.14s
+  Visibility        0.00s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.00s
+  NavMesh           0.01s
+  TexValidation     0.02s
+  Materials         0.03s
+  SH Bake           0.45s
+  Delta SH Bake     0.30s
+  Direct SH Bake    0.02s
+  Animated Direct SH Bake   0.00s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.01s
+  Billboard Direct Scatter Bake   0.02s
+  ChunkLightList    0.00s
+  Atlas Preparation   0.00s
+  Cell Residency Set   0.01s
+  Lightmap Bake     0.08s
+    TexelSteps      0.00s
+  ShadowmaskAtlas   0.01s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.04s
+    TexelSteps      0.00s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.00s
+  Packing           0.07s
+  Total             1.42s
+Warnings: 20
+  [WARN prl_build::trigger_volumes] [LevelCompiler] switch `vault_button` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `echo_plate` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `swap_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `echo_plate` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `swap_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `split_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `split_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `return_pad` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::trigger_volumes] [LevelCompiler] trigger_volume `barrier_approach` has neither `target_tag`, `on_fire`, nor `on_exit`; it will be inert
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 8 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 8):
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-1.626, 0.000, -11.354) — near brush 50
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-1.626, 3.251, -11.354) — near brush 50
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-0.000, 0.000, -11.379) — near brush 52
+  [WARN prl_build::pipeline] [Compiler]   open edge near (0.000, 0.000, -11.328) — near brush 0
+  [WARN prl_build::pipeline] [Compiler]   open edge near (-0.000, 3.251, -11.379) — near brush 53
+  [WARN prl_build::pipeline] [Compiler]   open edge near (0.000, 3.251, -11.328) — near brush 1
+  [WARN prl_build::pipeline] [Compiler]   open edge near (1.626, 0.000, -11.354) — near brush 51
+  [WARN prl_build::pipeline] [Compiler]   open edge near (1.626, 3.251, -11.354) — near brush 51
+  [WARN prl_build::pipeline] [prl-build] warm SH bake: indirect lighting is APPROXIMATE (bounded light reach). This is a dev/iteration build — run a `--release` bake (or `--no-cache`) before shipping a final map.
+  [WARN prl_build::cache] [cache] spared set 2412789486 (2.25 GiB) across 16879 entries (every live map's use record plus this build's) exceeds cache budget 2147483648 (2.00 GiB); the cache keeps the spared set and evicts only entries outside it

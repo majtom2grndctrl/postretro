@@ -1,0 +1,7 @@
+target/occluder-10r2/head/stress-warren-showcase/stress-warren-showcase.prl: L 16 m, 1528 camera cells; mandatory texels p50 0.0 M p95 0.7 M max 1.0 M (pool cap 15 layers ~62.9 M)
+  cell 245: 1.0 M, 139 entries
+  cell 242: 0.9 M, 148 entries
+  cell 273: 0.9 M, 134 entries
+  cell 941: 0.8 M, 118 entries
+  cell 900: 0.8 M, 112 entries
+  cells over 62.9 M: 0

@@ -2937,6 +2937,10 @@ import { loadLevel } from "postretro/ui";
 defineReaction("startE1M1", loadLevel("e1m1"));
 ```
 
+In co-op, only the host changes level; connected players follow it. A host's
+`restartLevel()` reloads the level on every machine, so `levelLoad` reactions
+run again everywhere and no `wait` from the previous attempt carries over.
+
 `returnToFrontend()` and the reserved `QUIT_TO_MENU_ACTION` button action land on
 the same engine routine. Use the reserved button action for fallback or engine
 menus that should quit without depending on a registered reaction; use

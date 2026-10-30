@@ -161,7 +161,12 @@ pub struct NetServer {
     /// Cleared by the engine at unload and suspend, so a reinstall of the same
     /// level holds every slot until the host's new reveal.
     revealed_level: Option<String>,
-    relevel_catalog_id: Option<String>,
+    /// The installed catalog level clients should follow, with the level life
+    /// its install allocated. `None` off a catalog level.
+    relevel: Option<(String, u64)>,
+    /// Monotonic per host endpoint: every catalog install takes the next one,
+    /// so a same-map restart names a life its clients have not followed.
+    next_level_life: u64,
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
     /// Relay between the public socket and the transport's internal one, set
@@ -207,7 +212,8 @@ impl NetServer {
             mod_digest: None,
             level_parity: None,
             revealed_level: None,
-            relevel_catalog_id: None,
+            relevel: None,
+            next_level_life: 1,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
             #[cfg(feature = "dev-tools")]
             lag_proxy: None,
@@ -252,16 +258,22 @@ impl NetServer {
         self.revealed_level.as_deref()
     }
 
-    /// Install the catalog id clients should follow. This is intentionally
-    /// separate from level parity: the net crate cannot distinguish a catalog
-    /// id from a raw-path fallback inside that opaque identity string.
+    /// Install the catalog id clients should follow, or `None` at unload and
+    /// suspend. This is intentionally separate from level parity: the net
+    /// crate cannot distinguish a catalog id from a raw-path fallback inside
+    /// that opaque identity string. Each install allocates a new level life,
+    /// a reinstall of the same id included, so a client reinstalls on a host
+    /// restart rather than mistaking it for a duplicate.
     pub fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
-        self.relevel_catalog_id = catalog_id;
-        let Some(catalog_id) = self.relevel_catalog_id.clone() else {
+        let Some(catalog_id) = catalog_id else {
+            self.relevel = None;
             return;
         };
+        let level_life = self.next_level_life;
+        self.next_level_life += 1;
+        self.relevel = Some((catalog_id.clone(), level_life));
         for client_id in self.relevel_recipients() {
-            self.send_relevel(client_id, &catalog_id);
+            self.send_relevel(client_id, &catalog_id, level_life);
         }
     }
 
@@ -436,8 +448,8 @@ impl NetServer {
                         let _ = self.slots.admit(client_id);
                         outcomes.push(HandshakeOutcome::Admitted { client_id });
                         declaration_moved = self.parity_declarations.contains_key(&client_id);
-                        if let Some(catalog_id) = self.relevel_catalog_id.clone() {
-                            self.send_relevel(client_id, &catalog_id);
+                        if let Some((catalog_id, level_life)) = self.relevel.clone() {
+                            self.send_relevel(client_id, &catalog_id, level_life);
                         }
                         if self.mod_digest.is_none() {
                             break;
@@ -539,10 +551,13 @@ impl NetServer {
             .collect()
     }
 
-    fn send_relevel(&mut self, client_id: ClientId, catalog_id: &str) {
+    fn send_relevel(&mut self, client_id: ClientId, catalog_id: &str, level_life: u64) {
         self.send_control(
             client_id,
-            wire::encode(&ServerControlMessage::Relevel(catalog_id.to_owned())),
+            wire::encode(&ServerControlMessage::Relevel {
+                catalog_id: catalog_id.to_owned(),
+                level_life,
+            }),
         );
     }
 
@@ -2542,14 +2557,14 @@ mod tests {
 
     // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
     // peer predates the ghost-link record. A wire-34 peer lacks the switch
-    // declaration kind, and a wire-35 peer the snapshot's host level tick.
-    // The admission gate refuses each declaration with a typed cause and
-    // admits a PRLC / 36 one.
+    // declaration kind, a wire-35 peer the snapshot's host level tick, and a
+    // wire-36 peer `Relevel`'s host level life. The admission gate refuses
+    // each declaration with a typed cause and admits a PRLC / 37 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_to_35_and_admits_prlc_36() {
+    fn admission_refuses_prlb_or_wire_32_to_36_and_admits_prlc_37() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C43,
-            wire_version: 36,
+            wire_version: 37,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -2584,6 +2599,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 35,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 36,
                     ..current
                 },
                 false,
@@ -2984,7 +3006,10 @@ mod tests {
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(
             client.drain_control(),
-            vec![ServerControlMessage::Relevel("e1m1".to_string())],
+            vec![ServerControlMessage::Relevel {
+                catalog_id: "e1m1".to_string(),
+                level_life: 1,
+            }],
             "a client admitted after the host installed a catalog level must be told the current map"
         );
     }
@@ -3008,9 +3033,50 @@ mod tests {
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(
             client.drain_control(),
-            vec![ServerControlMessage::Relevel("e1m2".to_string())],
+            vec![ServerControlMessage::Relevel {
+                catalog_id: "e1m2".to_string(),
+                level_life: 1,
+            }],
             "a catalog install must announce the next map to admitted clients"
         );
+    }
+
+    // A host restart reinstalls the same catalog id. It must reach the client
+    // as a new level life, or the client cannot tell it from a duplicate and
+    // keeps the previous life's level state. Unload names no life, and a late
+    // joiner is told the life currently installed.
+    #[test]
+    fn same_map_reinstall_announces_a_new_level_life() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        relay_client_to_server(&mut client, &mut server);
+        assert!(matches!(
+            server.poll_handshakes().handshakes.as_slice(),
+            [HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        ));
+
+        server.set_relevel_catalog_id(Some("e1m1".to_string()));
+        server.set_relevel_catalog_id(None);
+        server.set_relevel_catalog_id(Some("e1m1".to_string()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_control(),
+            vec![
+                ServerControlMessage::Relevel {
+                    catalog_id: "e1m1".to_string(),
+                    level_life: 1,
+                },
+                ServerControlMessage::Relevel {
+                    catalog_id: "e1m1".to_string(),
+                    level_life: 2,
+                },
+            ],
+            "the restart names the same map under a new life; unload sends nothing"
+        );
+        assert_eq!(server.relevel, Some(("e1m1".to_string(), 2)));
     }
 
     #[test]

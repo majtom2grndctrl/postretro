@@ -128,7 +128,7 @@ Two rules derive every per-slot effect from the state pair rather than from whic
 
 **The revealed term.** After content parity the predicate checks one more term: both peers have revealed the host's installed level, meaning each finished Settling (`boot_sequence.md` §1). The client declares on Control the level identity it has revealed (`ClientControlMessage::Revealed(Option<String>)`, the parity identity string), re-sent on change and `None` at unload or suspend; the host keeps the last one per slot. The host records its own reveal locally and clears it at unload and at suspend, since a resumed install runs no unload. A parity-matched slot that has not revealed stays admitted, held with `HoldingCause::HostNotRevealed` or `ClientNotRevealed`, so the four stages and the entry rule above stand. Both revealed causes rank below every content cause, and parity stays content identity published at install, so a content-divergent client learns its real cause while it is still settling.
 
-A slot's revealed record survives parity changes and host level changes. Only the client's own declaration or the slot closing changes it. A mod-digest demotion therefore re-promotes without a fresh reveal, and a restarted host re-promotes a Running client at its own reveal. The host half is load-bearing: a host is unrevealed while it settles, so no promotion happens in a Settling world-less poll, whose promotion handler spawns no pawn. Neither peer runs a timer; the Settling timeout bounds a live peer and keepalive a silent one. Revealed holds log at info, not warn: they are the ordinary join path, not a divergence. The name is "revealed", never "ready", which mods own.
+A slot's revealed record survives parity changes and host level changes. Only the client's own declaration or the slot closing changes it. A mod-digest demotion therefore re-promotes without a fresh reveal, and a host reinstall the client does not follow (an uncatalogued level) re-promotes a Running client at the host's own reveal. A catalog restart reinstalls the client too, which retracts and re-declares its reveal (*A host restart is a relevel*, below). The host half is load-bearing: a host is unrevealed while it settles, so no promotion happens in a Settling world-less poll, whose promotion handler spawns no pawn. Neither peer runs a timer; the Settling timeout bounds a live peer and keepalive a silent one. Revealed holds log at info, not warn: they are the ordinary join path, not a divergence. The name is "revealed", never "ready", which mods own.
 
 The connection survives; its state does not. A client id is stable within one connection but not across a rejoin — a relaunching peer arrives on a freshly minted id — so player identity keys to a durable seat, never to the connection.
 
@@ -144,6 +144,15 @@ after re-promotion. A transport-only reliable marker arms the new epoch; it is n
 an engine promotion message.
 
 **The host names the next map; clients follow.** A level change demotes every participating slot rather than closing it, and the host sends the next map's catalog id over Control. A late joiner is told the current map on admission, so it does not wait for the next transition. Map authority is server-owned; a client never asks for a level change. A client's own `loadLevel` and `restartLevel` reactions are dropped with a warning, never forwarded (`scripting.md` §10.4). A host running an uncatalogued level sends nothing — a catalog is the only namespace in which one string resolves on both peers — and its clients stay admitted until they install a matching level themselves.
+
+**A host restart is a relevel.** `Relevel` carries a level life beside the catalog id: a host-endpoint counter that every catalog install advances, a same-map `restartLevel` included. Admission resends the installed life; unload sends nothing. The client keeps the last life it followed for the connection and decides by life, not by id:
+
+- The life it already followed is a duplicate and changes nothing.
+- A load of that id already in flight or queued is never restarted, whatever the life: it installs fresh.
+- The connection's first relevel keeps a matching active map, as a joiner running the host's map keeps it.
+- Any later life naming the active map is a restart: the client tears the level down and reloads it as it would a different map.
+
+Identity and digest alone cannot see a restart: both match across it, so without the life a client's stale parity and reveal declarations would re-promote it into the new life still presenting the old one — `levelLoad` not re-fired for its machine, the old life's parked `wait` tails and join tick landing against the new host clock. Teardown clears that level state, and reinstall fires `levelLoad` and re-declares parity. Its retraction (`Revealed(None)`) races the host's own reveal: if the host reveals first, the slot promotes on the stale declaration and demotes when the retraction lands. Participation epochs fence the traffic of that brief entry, and the predicate re-promotes at the client's new reveal.
 
 A held slot is bounded by the transport, not by the gate: a peer that never reaches parity holds an admitted slot for as long as its keepalive survives. Accepted, because the case it covers is a peer on the *right* mod whose content diverged, which is recoverable by construction. A genuinely wrong mod still closes, on the id, at admission.
 
@@ -1146,6 +1155,9 @@ before decoding the new layout. PRLC, `SNAPSHOT_VERSION` 22 and tuning epochs st
 The snapshot envelope's host level tick (*Presentation state*, below) advances
 `WIRE_VERSION` to 36 and `SNAPSHOT_VERSION` to 23. Peers at 35 are refused at handshake.
 PRLC and tuning epochs stay unchanged.
+
+`Relevel`'s level life (*Slot lifecycle*) advances `WIRE_VERSION` to 37. Peers at 36 are
+refused at handshake. PRLC, `SNAPSHOT_VERSION` 23 and tuning epochs stay unchanged.
 
 ## Current contract
 

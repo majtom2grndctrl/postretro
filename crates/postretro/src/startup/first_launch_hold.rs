@@ -185,7 +185,7 @@ mod tests {
         ] {
             let mut app = first_launch_app();
             app.enter_first_launch_hold(destination.clone());
-            app.follow_relevel_catalog("host_map".to_string());
+            app.follow_relevel_catalog("host_map".to_string(), 1);
             assert!(
                 app.level_load.is_none(),
                 "the hold drains no level requests"
@@ -237,7 +237,7 @@ mod tests {
             .player_options
             .accessibility_panel_shown = true;
         // Splash frames poll the transport while waiting for the OS reader.
-        app.follow_relevel_catalog("host_map".to_string());
+        app.follow_relevel_catalog("host_map".to_string(), 1);
         app.start_boot_destination(BootDestination::Frontend);
         assert_eq!(loading_catalog_id(&app).as_deref(), Some("host_map"));
         stop_worker(&mut app);

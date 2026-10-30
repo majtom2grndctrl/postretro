@@ -292,9 +292,16 @@ pub enum ServerControlMessage {
     /// Opaque engine-serialized tuning. Net is a registry-blind courier and must
     /// never decode, compare, or validate this descriptor payload.
     Tuning(Vec<u8>),
-    /// Host-selected map catalog id. The engine resolves it against the local
-    /// catalog and follows through its normal queued level-load path.
-    Relevel(String),
+    /// Host-selected map catalog id and the host install it names. The engine
+    /// resolves the id against the local catalog and follows through its
+    /// normal queued level-load path. `level_life` is the host's install
+    /// generation: it advances at every catalog install, a same-map restart
+    /// included, so a client can tell a restart of its active map from a
+    /// duplicate of the install it already follows.
+    Relevel {
+        catalog_id: String,
+        level_life: u64,
+    },
     /// Session-lifetime player roster. This stays deliberately registry-blind:
     /// seats are bare wire integers and carried seat contents remain host-local.
     ///
@@ -512,9 +519,10 @@ mod tests {
             }),
         )));
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
-        assert!(round_trips(&ServerControlMessage::Relevel(
-            "e1m1".to_string()
-        )));
+        assert!(round_trips(&ServerControlMessage::Relevel {
+            catalog_id: "e1m1".to_string(),
+            level_life: 7,
+        }));
         assert!(round_trips(&ServerControlMessage::SessionRoster(
             SessionRosterMessage {
                 session_id: SessionId([0x21; 16]),

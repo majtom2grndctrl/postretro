@@ -227,7 +227,10 @@ fn append_tick_weapon_script_events(
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
-            ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            ServerControlMessage::Relevel {
+                catalog_id,
+                level_life,
+            } => app.follow_relevel_catalog(catalog_id, level_life),
             // The client arm owns the next-step hint: `DivergenceReason`'s
             // `Display` also feeds the host's rejection log. `--mod` names a
             // folder under `content/`, which can differ from the declared id.
@@ -1146,6 +1149,12 @@ pub(crate) struct App {
     /// Source for the installed level, retained after `level_load` is consumed so
     /// `restartLevel()` can requeue the same catalog id or raw dev path.
     active_level_source: Option<LevelSource>,
+
+    /// A connected client's last followed host level life (`Relevel`), so a
+    /// host restart of the active map reinstalls it while a duplicate does
+    /// not. `None` until this connection's first `Relevel`; the session's one
+    /// endpoint never reconnects, so nothing resets it.
+    followed_level_life: Option<u64>,
 
     /// Receives the active level worker's `LoadOutcome`. `None` when no load is
     /// in flight; consumed via `try_recv` by the `Loading` state.

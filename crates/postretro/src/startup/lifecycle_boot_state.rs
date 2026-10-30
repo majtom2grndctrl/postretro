@@ -118,7 +118,14 @@ impl App {
     /// Follow a server-selected catalog level through the ordinary runtime
     /// request path. A catalog mismatch is recoverable content divergence, not
     /// a transport failure: leave the connection alive for a later relevel.
-    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String) {
+    ///
+    /// `level_life` names the host install. A repeat of the life already
+    /// followed changes nothing, and a load already in flight or queued for
+    /// the id serves any life. The active map is kept on this connection's
+    /// first relevel, but a new life of a map this client already followed is
+    /// a host restart: it reinstalls, so `levelLoad` fires again and the
+    /// teardown clears the previous life's level state.
+    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String, level_life: u64) {
         let catalog_has_id = self.session.as_ref().is_some_and(|session| {
             session
                 .scripting
@@ -134,23 +141,32 @@ impl App {
             return;
         }
 
-        if self.relevel_is_already_selected(&catalog_id) {
+        let followed = self.followed_level_life.replace(level_life);
+        if followed == Some(level_life) || self.relevel_load_is_selected(&catalog_id) {
             return;
+        }
+        let active = matches!(
+            &self.active_level_source,
+            Some(LevelSource::Catalog(id)) if *id == catalog_id
+        );
+        if active && followed.is_none() {
+            return;
+        }
+        if active {
+            log::info!("[Net] host restarted `{catalog_id}`; reinstalling it");
         }
 
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));
     }
 
-    fn relevel_is_already_selected(&self, catalog_id: &str) -> bool {
-        let source_is_catalog =
-            |source: &LevelSource| matches!(source, LevelSource::Catalog(id) if id == catalog_id);
-        self.active_level_source.as_ref().is_some_and(source_is_catalog)
-            || self
-                .level_load
-                .as_ref()
-                .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
+    /// Whether a load of `catalog_id` is in flight or queued. Either installs
+    /// a fresh life, so a relevel never restarts it.
+    fn relevel_load_is_selected(&self, catalog_id: &str) -> bool {
+        self.level_load
+            .as_ref()
+            .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
             || self.level_requests.iter().any(|request| {
-                matches!(request, LevelRequest::Load(source) if source_is_catalog(source))
+                matches!(request, LevelRequest::Load(LevelSource::Catalog(id)) if id == catalog_id)
             })
     }
 

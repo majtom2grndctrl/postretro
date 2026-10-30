@@ -102,6 +102,7 @@ M2 hallway trace (diagnostic, 2026-10-28; 0-based record frames 72 and 76 = READ
    The batch confirms the live walk factor (`summary.md`) and the street GPU rise; hallway, campaign-test and arena are not in it (no 9l PRLs kept).
 4. Step cap re-sized to 14,000 and cap value 26 m (owner, 2026-10-29); street CPU diagnosis (Task 9m) next.
 5. Task 10, then the AC result column, then wait for "land the plane".
+6. **Results recorded (2026-10-30, at the compiler `35a587db8`):** Task 10's fix passes, both review panels, the gate, the re-check (`measurement/10/README.md` §After the second review panel) and the held re-bake (`measurement/10/rebake.md`) are done; the AC-to-proof table carries a Result column (45 pass, 3 reported, H1 and H2 outstanding for the owner, H3 done per Task 9d, 0 fail). Waiting for "land the plane". Before landing, merge `origin/main` (10 commits at 2026-10-30, after PR #629 merges) and re-run the gate.
 
 Open owner questions:
 - **Sealing tolerance (round-2 F4), resolved (owner, 2026-10-29): tighter.** `ON_FACE_EPSILON_M` is 1e-5 m: the worst measured on-face offset is 1.57e-6 m (the noisy 45° flush door fixture); bit-identical oblique faces sit 2.7e-8 m apart, the 45° exempt-wall door 5.9e-9 m (both past `SNAP_EPSILON`); every door on occlusion-test, campaign-test and the arena is axis-aligned at 0. Parse noise grows with distance from the origin, so an oblique flush door near ±16,000 u may fail to seal again (over-includes, the safe direction).
@@ -117,59 +118,59 @@ Follow-ups to propose at landing: `face-fragment-remerge`, measured sibling coll
 
 Row ids: A = Automated classification, C = Correctness, F = Format/cache/content, M = Measured, H = Manual.
 
-| AC | Row | Proof | Status |
-|---|---|---|---|
-| A1 | Classification table (9 brushes) | `occluder_classify` unit tests, one per brush, at starting constants | achievable as stated |
-| A2 | occlusion-test.map through parse: wall occludes, pillars exempt (R24) | compiler test parsing the committed map | achievable as stated |
-| A3 | Two sealed rooms differ in cell; occlusion-test first room walls and ceiling occlude (R30) | classifier + cell-tree locate test | achievable as stated |
-| A4 | Room in a hall (R31) | classifier + locate test | achievable as stated |
-| A5 | Open-air maze; railing exempt | classifier + locate test | achievable as stated |
-| A6 | Each constant decides both ways | parameterised classifier tests, ±epsilon about each constant | achievable as stated |
-| A7 | Inclusive edges; coverage strict (R12) | classifier and cluster edge tests | achievable as stated |
-| A8 | 45° curb exempt, 45° wall fixture occludes (R5) | classifier test on rotated brushes | achievable as stated |
-| A9 | Reordering invariance (R6, R18) | test permuting brushes and cube sides over every classification fixture | achievable as stated |
-| A10 | Chain walls occlude in every order (R28) | test over all permutations of the chain | achievable as stated |
-| A11 | Strip facade bounds cells; spaced strips add no cell; both at 45° (R13, R23) | cluster + cell-count test | achievable as stated |
-| A12 | Corner facade arms and sign-joined facades (R26) | cluster section test | achievable as stated |
-| A13 | L lamp post and colonnade add no empty cell | cluster test vs fixture without them | achievable as stated |
-| A14 | Pillar on tiles, lamp on facade add no portal (R4) | cluster membership + portal-count test | achievable as stated |
-| A15 | Touching-step run adds no empty cell (R19) | cluster test | achievable as stated |
-| A16 | All-occluding fixture: each empty leaf its own cell; loads (R2) | compile + loader test | achievable as stated |
-| C1 | occlusion-modelled fixture: floor and pillar-top cells beyond the wall not visible; above-wall cell visible | compiler test running `postretro_visibility` walk on the loaded fixture; before-state failure recorded from the baseline build | achievable as stated |
-| C2 | Guard: orientation evidence for every portal; one teleport hull slot per cell | test over every fixture; teleport fixture test (see Corrections) | achievable as stated |
-| C3 | Teleporter across leaves couples its cell once (R9) | id-51 teleport route test | achievable as stated |
-| C4 | Multi-leaf cell: fog bit, faces, draw list, blocks, bounds, reachability (R20) | consumer test on one fixture | achievable as stated |
-| C5 | Guard: pillar interior solid cell, buried light excluded, buried faces culled, player cannot stand inside | compiler test + physics `SolidCells` test on the compiled fixture | achievable as stated |
-| C6 | Guard: no portal into solid or interior↔exterior; loads (R3, R22) | compile + loader tests on three fixtures | achievable as stated |
-| C7 | Guard: alcove sealed only by exempt brush (R15) | compile + walk + `SolidCells` test | achievable as stated |
-| C8 | Guard: leak ≥ 4× cull reported; sealed stays sealed; exterior points match pre-change reference (R14) | test against reference recorded from the baseline build | achievable as stated |
-| C9 | No-occluder sealed fixture: one cell, no portals, fallback (R1) | compile + loader + walk test | achievable as stated |
-| C10 | Guard: existing door fixtures block when closed, pass when open | extend `closet_reveal_compiler_loader_portal_ids_block_and_restore_interior` and door fixtures | achievable as stated |
-| C11 | Door in exempt wall seals its opening (R8); wall class same without door (R17) | door fixture tests | achievable as stated |
-| C12 | Rooms A, B, C: removing the door leaves C unchanged (R7) | compile pair test | achievable as stated |
-| C13 | Docked lift car leaves room unchanged (R25) | compile pair test | achievable as stated |
-| C14 | Hinted fixtures build, load, seams match (R27) | compile + loader test; regenerate committed `test-fixtures/sh-streaming-hinted-door.prl` | achievable as stated |
-| C15 | Guard: hinted fixtures' cells and portals match hint-free maps (R29) | compile pair test | achievable as stated |
-| C16 | Light 1 mm outside pillar kept, records far-side cell, floods reach it (R11) | compiler test | achievable as stated |
-| C17 | Light on occluder plane records front cell, floods reach back (R10) | compiler test | achievable as stated |
-| F1 | Guard: loader accepts multi-leaf cells, rejects mismatched face cell | loader test | achievable as stated |
-| F2 | Oversize face in multi-leaf cell stays in it, contiguous, loads (R21) | compiler test through the face cut | achievable as stated |
-| F3 | Guard, source gate: format layouts and versions, walk runtime, renderer unchanged | `git diff main --` over `crates/level-format`, `crates/visibility/src` (non-test), `crates/renderer`, reviewed at preflight | achievable as stated |
-| F4 | Guard, source gate: no `_occluder` or classifier map key; classifier outside the Quake adapter | grep at preflight | achievable as stated |
-| F5 | Guard, doc wording | grep + review at landing | achievable as stated |
-| F6 | Unchanged rebuild hits; regrouped cells or test-overridden classification miss cell/portal stages (R16) | cache test with a test-only constant override | achievable as stated |
-| F7 | Generator test pins street features; committed map matches | `tools/tests/test_gen_stress_map.py` | achievable as stated |
-| M1 | Guard: ray-cast hits ⊆ walk visible set at every pose; no step-cap trip | ray-grid sweep tool over five maps, world-space poses | measured pass/fail |
-| M2 | Guard: deferred texel area after ≤ before; zero stays zero | `walk_measurement` completed reads, before/after world-pose replay | measured pass/fail |
-| M3 | Guard: doors sealing before still seal | prl-build sealing log diff over swept maps | measured pass/fail |
-| M4 | Guard: leak status unchanged (small-opening flips reported) | prl-build log diff | measured pass/fail |
-| M5 | Reported: per-map structure counts and classifier output | report tool + prl-build log | reported |
-| M6 | Reported: per-pose walk and residency counts | sweep tool | reported |
-| M7 | Reported: arena cells, portals, riser/tread boundaries | sweep tool on `stress-warren-showcase` | reported |
-| C18 | Guard: behind-the-wall leak, fixture with lanes and a second occluder plus occlusion-test.map; no walk-visible cell holds a hidden sample point | compiler test (fixture) + 9h sweep (map) | achievable as stated with shadow prisms (Task 9i) |
-| H1 | Owner walks occlusion-test; no pillar behind the wall | owner, in-engine | manual |
-| H2 | Owner plays the street map | owner, in-engine | manual |
-| H3 | Live frame-cost runs at `measurement/frame-cost/poses.txt` | owner, named machine | manual |
+| AC | Row | Proof | Status | Result |
+|---|---|---|---|---|
+| A1 | Classification table (9 brushes) | `occluder_classify` unit tests, one per brush, at starting constants | achievable as stated | pass: nine `classification_tests`, one per brush (`retaining_wall_occludes` through `red_pillar_stays_exempt`), ok in the final gate log |
+| A2 | occlusion-test.map through parse: wall occludes, pillars exempt (R24) | compiler test parsing the committed map | achievable as stated | pass: `occlusion_test_wall_top_bounds_occluder_tier_leaves_beyond_the_wall` (parses the committed map; wall occludes, red pillars exempt) and `exempt_pillar_adds_no_tier_portal_beside_an_occluding_wall` |
+| A3 | Two sealed rooms differ in cell; occlusion-test first room walls and ceiling occlude (R30) | classifier + cell-tree locate test | achievable as stated | pass: `two_sealed_rooms_occlude_slab_by_slab_and_locate_to_different_cells`, `occlusion_test_first_room_walls_and_ceiling_occlude_alone`, `occlusion_test_east_wall_occludes_as_one_cluster_section` |
+| A4 | Room in a hall (R31) | classifier + locate test | achievable as stated | pass: `room_in_a_hall_occludes_from_its_inner_faces_and_parts_from_the_hall` |
+| A5 | Open-air maze; railing exempt | classifier + locate test | achievable as stated | pass: `open_air_maze_walls_occlude_and_part_neighbouring_corridors` (railing exempt in the fixture) |
+| A6 | Each constant decides both ways | parameterised classifier tests, ±epsilon about each constant | achievable as stated | pass: `floor_decides_a_broad_axis_filling_its_span_both_ways`, `absolute_length_decides_a_wall_under_half_its_span_both_ways`, `half_span_decides_a_wall_under_the_absolute_length_both_ways`, `see_over_height_decides_a_wall_top_both_ways`, `floor_decides_the_gap_in_front_of_a_wall_passing_from_one_face_both_ways` |
+| A7 | Inclusive edges; coverage strict (R12) | classifier and cluster edge tests | achievable as stated | pass: `every_occluder_test_passes_exactly_at_its_constant`, `cluster_coverage_decides_strictly_at_the_constant` |
+| A8 | 45° curb exempt, 45° wall fixture occludes (R5) | classifier test on rotated brushes | achievable as stated | pass: `curb_turned_45_degrees_stays_exempt_in_a_room_its_world_box_would_fill`, `retaining_wall_turned_45_degrees_hall_and_all_still_occludes` |
+| A9 | Reordering invariance (R6, R18) | test permuting brushes and cube sides over every classification fixture | achievable as stated | pass: `reordering_brushes_and_sides_changes_no_classification_or_cluster`, `cube_classifies_the_same_under_every_side_order`, `near_cube_seeds_the_same_frame_and_verdict_under_every_side_order` |
+| A10 | Chain walls occlude in every order (R28) | test over all permutations of the chain | achievable as stated | pass: `chain_walls_occlude_in_every_brush_order` (all permutations) |
+| A11 | Strip facade bounds cells; spaced strips add no cell; both at 45° (R13, R23) | cluster + cell-count test | achievable as stated | pass: `strip_facade_bounds_cells_as_one_section_square_and_turned_45_degrees`, `strips_touching_only_through_the_floor_add_no_empty_cell_square_and_turned_45_degrees` |
+| A12 | Corner facade arms and sign-joined facades (R26) | cluster section test | achievable as stated | pass: `corner_facade_bounds_cells_on_each_arm`, `facades_joined_by_a_touching_sign_each_bound_cells` |
+| A13 | L lamp post and colonnade add no empty cell | cluster test vs fixture without them | achievable as stated | pass: `l_lamp_post_in_an_alcove_adds_no_empty_cell`, `colonnade_under_a_touching_beam_adds_no_empty_cell` |
+| A14 | Pillar on tiles, lamp on facade add no portal (R4) | cluster membership + portal-count test | achievable as stated | pass: `pillar_on_touching_tiles_adds_no_portal_while_the_tiled_floor_bounds_cells`, `lamp_touching_a_strip_facade_adds_no_portal_while_the_facade_bounds_cells` |
+| A15 | Touching-step run adds no empty cell (R19) | cluster test | achievable as stated | pass: `touching_step_run_adds_no_empty_cell`, `step_runs_put_no_riser_or_tread_plane_in_the_occluder_tier` |
+| A16 | All-occluding fixture: each empty leaf its own cell; loads (R2) | compile + loader test | achievable as stated | pass: `all_occluding_fixture_keeps_each_empty_leaf_its_own_cell` (compiles and loads through the runtime loader) |
+| C1 | occlusion-modelled fixture: floor and pillar-top cells beyond the wall not visible; above-wall cell visible | compiler test running `postretro_visibility` walk on the loaded fixture; before-state failure recorded from the baseline build | achievable as stated | pass: `walk_behind_retaining_wall_hides_floor_and_pillar_tops_beyond_it`; the before-state failure is asserted in-test against the untiered builder, not a recorded baseline build |
+| C2 | Guard: orientation evidence for every portal; one teleport hull slot per cell | test over every fixture; teleport fixture test (see Corrections) | achievable as stated | pass: orientation evidence asserted on every loaded fixture (`compile` helper in `runtime_cells/test_fixtures.rs`); hull slot per cell in `seamless_teleporter_across_several_leaves_couples_each_cell_once` |
+| C3 | Teleporter across leaves couples its cell once (R9) | id-51 teleport route test | achievable as stated | pass: `seamless_teleporter_across_several_leaves_couples_each_cell_once` |
+| C4 | Multi-leaf cell: fog bit, faces, draw list, blocks, bounds, reachability (R20) | consumer test on one fixture | achievable as stated | pass: `multi_leaf_cell_holds_every_member_leaf_in_each_consumer` |
+| C5 | Guard: pillar interior solid cell, buried light excluded, buried faces culled, player cannot stand inside | compiler test + physics `SolidCells` test on the compiled fixture | achievable as stated | pass: `pillar_interior_stays_a_solid_cell_that_buries_lights_and_blocks_the_player` (physics `CollisionWorld` capsule check on the compiled fixture) |
+| C6 | Guard: no portal into solid or interior↔exterior; loads (R3, R22) | compile + loader tests on three fixtures | achievable as stated | pass: `no_runtime_portal_leads_into_solid_or_joins_interior_to_exterior` (three fixtures, loads) |
+| C7 | Guard: alcove sealed only by exempt brush (R15) | compile + walk + `SolidCells` test | achievable as stated | pass: `alcove_sealed_only_by_an_exempt_brush_stays_sealed_drawn_and_visible` (walk, physics capsule check behind the alcove) |
+| C8 | Guard: leak ≥ 4× cull reported; sealed stays sealed; exterior points match pre-change reference (R14) | test against reference recorded from the baseline build | achievable as stated | pass: `leaks_and_exterior_classes_match_the_pre_change_build`; the reference is the in-test untiered builder, not a recorded baseline; M4 covers the five maps' leak logs |
+| C9 | No-occluder sealed fixture: one cell, no portals, fallback (R1) | compile + loader + walk test | achievable as stated | pass: `sealed_map_without_occluders_is_one_cell_with_no_portals` |
+| C10 | Guard: existing door fixtures block when closed, pass when open | extend `closet_reveal_compiler_loader_portal_ids_block_and_restore_interior` and door fixtures | achievable as stated | pass: `pack::tests::closet_reveal_compiler_loader_portal_ids_block_and_restore_interior`, `closet_reveal_closed_loaded_door_hides_interior_until_it_moves`, `door_turned_45_degrees_in_plan_seals_its_opening_closed_and_passes_open`, `door_deeper_than_tall_is_recognised_by_the_faces_toward_its_rooms`, `closed_door_seals_every_portal_piece_a_cap_line_cuts_across_its_doorway`; M3 holds at the final compiler |
+| C11 | Door in exempt wall seals its opening (R8); wall class same without door (R17) | door fixture tests | achievable as stated | pass: `door_in_an_exempt_wall_bounds_its_opening_and_seals_every_portal_across_it` (R8 and R17 in one test) |
+| C12 | Rooms A, B, C: removing the door leaves C unchanged (R7) | compile pair test | achievable as stated | pass: `removing_a_door_between_rooms_a_and_b_leaves_room_c_unchanged` |
+| C13 | Docked lift car leaves room unchanged (R25) | compile pair test | achievable as stated | pass: `lift_car_docked_in_a_room_leaves_its_cells_and_portals_unchanged` |
+| C14 | Hinted fixtures build, load, seams match (R27) | compile + loader test; regenerate committed `test-fixtures/sh-streaming-hinted-door.prl` | achievable as stated | pass: `hinted_fixtures_build_load_and_every_seam_matches_a_runtime_portal`, `seam_across_an_exempt_wall_fails_the_build_by_name`, committed-PRL byte test `hinted_doorway_compiler_format_loader_round_trip_is_deterministic` |
+| C15 | Guard: hinted fixtures' cells and portals match hint-free maps (R29) | compile pair test | achievable as stated | pass: `hinted_fixtures_cells_and_portals_match_the_maps_without_hints` |
+| C16 | Light 1 mm outside pillar kept, records far-side cell, floods reach it (R11) | compiler test | achievable as stated | pass: `light_just_outside_a_pillar_records_and_floods_the_room_cell` |
+| C17 | Light on occluder plane records front cell, floods reach back (R10) | compiler test | achievable as stated | pass: `light_on_an_occluder_plane_records_the_front_cell_and_floods_behind` |
+| F1 | Guard: loader accepts multi-leaf cells, rejects mismatched face cell | loader test | achievable as stated | pass: `loader_accepts_multi_leaf_cells_and_rejects_a_face_naming_another_cell` |
+| F2 | Oversize face in multi-leaf cell stays in it, contiguous, loads (R21) | compiler test through the face cut | achievable as stated | pass: `oversize_face_in_a_multi_leaf_cell_keeps_every_piece_in_that_cell` |
+| F3 | Guard, source gate: format layouts and versions, walk runtime, renderer unchanged | `git diff main --` over `crates/level-format`, `crates/visibility/src` (non-test), `crates/renderer`, reviewed at preflight | achievable as stated | pass: `git diff origin/main...HEAD` at HEAD e13491477 over the three paths: `crates/renderer` empty; `crates/visibility/src` non-test only `MAX_PORTAL_WALK_STEPS` 14,000 and `PORTAL_WALK_EPOCH` 4 (owner-excepted; the pin is test-only, `mirror_forced_trips_take_the_camera_bounded_set_and_the_default_is_the_shared_cap` ok); `crates/level-format` four doc-comment edits, no layout or version change |
+| F4 | Guard, source gate: no `_occluder` or classifier map key; classifier outside the Quake adapter | grep at preflight | achievable as stated | pass: no `_occluder` or classifier-constant key in the FGD, `parse.rs`, `cli.rs` or `format/`; the classifier is reached only from `pipeline/runtime_cells.rs` (through `pipeline.rs`, `fixture_pipeline.rs` and `pack.rs`), outside the Quake adapter |
+| F5 | Guard, doc wording | grep + review at landing | achievable as stated | pass: grep at HEAD finds no cell-id-equals-leaf-id or every-brush-plane-splits wording; `build_pipeline.md` (two tiers, Cells id 38), `rendering_pipeline.md` §2 (step cap 14,000, bake-gap gate in deferred texel area), the FGD seam comment, `docs/level_design.md`, level-format, loader and `pack/spatial.rs` comments carry the restated wording |
+| F6 | Unchanged rebuild hits; regrouped cells or test-overridden classification miss cell/portal stages (R16) | cache test with a test-only constant override | achievable as stated | pass: `cell_and_portal_stage_keys_miss_on_regrouped_cells_or_classification_only`, `cell_and_portal_stage_keys_miss_when_pockets_regroup_the_same_leaves` |
+| F7 | Generator test pins street features; committed map matches | `tools/tests/test_gen_stress_map.py` | achievable as stated | pass: `tools/tests/test_gen_stress_map.py` `StreetMapTests` 12 pass at HEAD (run for this report, temp output only); the generator changed since Task 8 in comments only |
+| M1 | Guard: ray-cast hits ⊆ walk visible set at every pose; no step-cap trip | ray-grid sweep tool over five maps, world-space poses | measured pass/fail | pass: `measurement/10/README.md` §After the second review panel (35a587db8): 0 drawn misses on all seven sweeps, 0 step-cap trips at 14,000 on street and rooftop; the 29 and 26 poses over 5,000 are 9l's, tripped before; worst walk 6,608 so 2x is 13,216 |
+| M2 | Guard: deferred texel area after ≤ before; zero stays zero | `walk_measurement` completed reads, before/after world-pose replay | measured pass/fail | pass: round 2 on hallway and arena: 0 deferred texels on all three walks, 0 trip frames; occlusion-test, campaign-test and street not re-run at the final compiler (structure and walk totals identical to 9l, whose M2 passed, `measurement/9l/remeasure`) |
+| M3 | Guard: doors sealing before still seal | prl-build sealing log diff over swept maps | measured pass/fail | pass: round 2 seal lines: hallway m0-m8, campaign-test m0-m1, arena m0-m5 (m2, m3 4 against 5, still seal); door recognition 9 of 11, 2 of 3, 6 of 8 |
+| M4 | Guard: leak status unchanged (small-opening flips reported) | prl-build log diff | measured pass/fail | pass: no leak line in any of the five round-2 bake logs |
+| M5 | Reported: per-map structure counts and classifier output | report tool + prl-build log | reported | reported: round 2 (`measurement/10/README.md`, `round2/partition-counts.out`): runtime portals and interior cells occlusion-test 270 and 119, hallway 2,924 and 1,857, campaign-test 306 and 136, arena 823 and 522, street 3,885 and 1,648; classifier line identical to 9l on all five |
+| M6 | Reported: per-pose walk and residency counts | sweep tool | reported | reported: round 2 portal tests per pose, mean and max: occlusion-test 197.8 and 679, hallway 56.4 and 691, campaign-test 79.6 and 378, arena 38.6 and 416, street 1,292.5 and 6,467, rooftop 1,967.2 and 6,608; hallway and arena residency rows in the same README |
+| M7 | Reported: arena cells, portals, riser/tread boundaries | sweep tool on `stress-warren-showcase` | reported | reported: round 2 arena map 823 portals, 522 interior cells (1,528 total); the riser and tread box was not re-run at the final compiler, last measured at 9l (stairs box 6 cells, 7 portals, no riser plane); fixture-level `step_runs_put_no_riser_or_tread_plane_in_the_occluder_tier` ok |
+| C18 | Guard: behind-the-wall leak, fixture with lanes and a second occluder plus occlusion-test.map; no walk-visible cell holds a hidden sample point | compiler test (fixture) + 9h sweep (map) | achievable as stated with shadow prisms (Task 9i) | pass: fixtures `walk_from_in_front_of_a_laned_wall_draws_no_cell_holding_space_hidden_behind_it`, `walk_from_in_front_of_a_laned_two_layer_wall_draws_no_cell_holding_space_hidden_behind_it`, `walk_from_in_front_of_a_wall_beside_a_lintelled_doorway_draws_no_cell_holding_space_hidden_behind_it` ok in the gate log (0.00% each, `measurement/10/round2/c18/fixture.out`); map sweep (`#[ignore]`d `behind_wall_leak_sweep_reports_hidden_samples_in_walk_visible_cells`) run at the final compiler: 0.00%, 0 of 11,538 samples over 70 poses, `measurement/10/round2/c18/sweep.out` |
+| H1 | Owner walks occlusion-test; no pillar behind the wall | owner, in-engine | manual | outstanding: manual (owner) |
+| H2 | Owner plays the street map | owner, in-engine | manual | outstanding: manual (owner) |
+| H3 | Live frame-cost runs at `measurement/frame-cost/poses.txt` | owner, named machine | manual | done per Task 9d: live on MacBookPro16,1 (Radeon Pro 5300M), `measurement/h3/live/records/full-20261029-0737/summary.md` and `measurement/9m/release/README.md`; runs used the 9l bakes, not repeated on the final compiler |
 
 ## Tasks
 

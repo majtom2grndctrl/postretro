@@ -65,8 +65,9 @@ pub enum TickClock {
     /// tails.
     Local,
     /// The host timeline as a client reads it: the host's fixed ticks this
-    /// level ([`ReactionScheduler::level_tick`] on the host), replicated on
-    /// every snapshot. A client's host-timeline tails.
+    /// level ([`ReactionScheduler::level_tick`] on the host), carried by every
+    /// snapshot and extrapolated a bounded way past the newest. A client's
+    /// host-timeline tails.
     Host,
 }
 
@@ -158,7 +159,7 @@ struct SchedulerState {
     tick_counter: u64,
     /// `tick_counter` when this level's clock last reset, so the level tick
     /// counts `evaluate` calls since level install: on the host the
-    /// host-timeline clock it replicates, on a client its ticks since reveal.
+    /// host-timeline clock it replicates.
     level_start_tick: u64,
     /// Monotonic instance-id source.
     next_instance_id: u64,
@@ -169,9 +170,10 @@ struct SchedulerState {
     /// Client only: the host tick of the latest host-clock reading this level.
     host_tick_now: Option<u64>,
     /// Client only: the host level tick this client revealed at, fixed at its
-    /// first host-clock reading as that reading less the client's own ticks
-    /// since reveal. A host-timeline segment due before it belongs to a late
-    /// joiner, which converges state instead of replaying presentation.
+    /// first host-clock reading as that reading less the client's level clock
+    /// (unclamped time since reveal) in ticks. A host-timeline segment due
+    /// before it belongs to a late joiner, which converges state instead of
+    /// replaying presentation.
     join_host_tick: Option<u64>,
     /// The due tick of the landing draining now ([`Landing::due`]). Every
     /// enrollment reached synchronously in that landing's drain — a nested
@@ -405,8 +407,8 @@ impl ReactionScheduler {
     /// Fixed ticks `evaluate` has counted since this level's clock reset at
     /// teardown or role change. A `levelLoad` tail enrolled at install with
     /// `wait(T)` lands on the host at level tick `T`, so the host replicates
-    /// this as the host timeline (`SnapshotMessage::level_tick`); on a client
-    /// it is the client's own ticks since reveal.
+    /// this as the host timeline (`SnapshotMessage::level_tick`), read after
+    /// the frame's ticks and landings.
     pub fn level_tick(&self) -> u64 {
         self.state.borrow().level_tick()
     }

@@ -484,10 +484,16 @@ pub struct RawSnapshotMessage {
     /// envelope a harness or tracker built without one), never "no fields set".
     pub ghost_audio: Option<WireGhostAudioState>,
     pub server_script_time: f64,
-    /// Host fixed ticks since the current level's install, as of `server_tick`:
-    /// the host timeline a client's `levelLoad`-class `wait` tails land on. It
-    /// counts the same clamped ticks the host lands its own tails on, which
-    /// `server_script_time` (unclamped frame time) does not after a stall.
+    /// The host scheduler's level tick when this snapshot was assembled: the
+    /// fixed ticks it has evaluated since the current level's clock started
+    /// (restarted at level teardown, suspend or role change, kept across a hot
+    /// reload; the host's first tick after its reveal is 1), read after that
+    /// frame's ticks and landing drain,
+    /// so every host tail due by it has landed. This is the host timeline a
+    /// client's `levelLoad`-class `wait` tails land on. It counts the same
+    /// clamped ticks the host lands its own tails on, which
+    /// `server_script_time` (unclamped frame time) does not after a stall, and
+    /// it does not derive from `server_tick`.
     pub level_tick: u32,
 }
 

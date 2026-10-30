@@ -447,13 +447,16 @@ fn installed_with_reactions(
     app.script_time = 0.0;
     app
 }
-/// One host frame of the `wait` scheduler: a tick, then the landing drain.
-fn land_host_tails(app: &mut App, clock: f64) {
+/// One host frame of the `wait` scheduler: its `ticks` fixed ticks, then the
+/// landing drain.
+fn land_host_tails(app: &mut App, clock: f64, ticks: usize) {
     let ctx = script_ctx(app);
     ctx.presentation_script_time.set(clock);
     let scripting = &app.session.as_ref().unwrap().scripting;
     scripting.scheduler.begin_frame();
-    scripting.scheduler.evaluate(&[]);
+    for _ in 0..ticks {
+        scripting.scheduler.evaluate(&[]);
+    }
     scripting.scheduler.drain_landings(
         &ctx.data_registry.borrow(),
         &scripting.sequence_registry,
@@ -463,14 +466,15 @@ fn land_host_tails(app: &mut App, clock: f64) {
     );
 }
 /// One client frame of the `wait` scheduler, as the frame loop runs it: a
-/// tick of the own clock, the host level-tick reading, then the landing drain.
+/// tick of the own clock, the host level-tick reading beside the level clock
+/// `clock`, then the landing drain.
 fn land_client_tails(app: &mut App, clock: f64, host_level_tick: Option<f64>) {
     let ctx = script_ctx(app);
     ctx.presentation_script_time.set(clock);
     let scripting = &app.session.as_ref().unwrap().scripting;
     scripting.scheduler.begin_frame();
     scripting.scheduler.evaluate(&[]);
-    scripting.scheduler.advance_host_clock(host_level_tick);
+    scripting.scheduler.advance_host_clock(host_level_tick, clock);
     scripting.scheduler.drain_landings(
         &ctx.data_registry.borrow(),
         &scripting.sequence_registry,
@@ -746,34 +750,39 @@ impl Harness {
         );
     }
     fn step(&mut self) {
-        self.tick += 1;
+        self.frame(Some(1));
+    }
+    /// One wall-clock frame on every machine. `host_ticks` is the fixed ticks
+    /// the host's frame runs; `None` while the host is busy — inside a stalled
+    /// frame, or loading and settling a level — so it neither ticks, lands nor
+    /// publishes, while every peer's level clock runs on.
+    fn frame(&mut self, host_ticks: Option<usize>) {
         // Script time keeps elapsed frame time even when a stall costs ticks.
         self.clock += DT;
-        self.publish();
-        self.transport();
-        if self.drive_schedulers {
-            land_host_tails(&mut self.host, self.clock);
-            let seen = self.host_commands.len();
-            self.route();
-            if self.apply_slot_writes {
-                apply_slot_writes(&mut self.host, &self.host_commands[seen..]);
+        if let Some(ticks) = host_ticks {
+            self.tick += u32::try_from(ticks).unwrap();
+            // The frame loop's order: the frame's ticks and landing drain,
+            // then serialization, which stamps the level tick they reached.
+            if self.drive_schedulers {
+                land_host_tails(&mut self.host, self.clock, ticks);
+                let seen = self.host_commands.len();
+                self.route();
+                if self.apply_slot_writes {
+                    apply_slot_writes(&mut self.host, &self.host_commands[seen..]);
+                }
             }
+            self.publish();
         }
+        self.transport();
         for peer in &mut self.peers {
             if peer.active {
                 peer.clock = self.clock - peer.clock_origin;
                 peer.receive(&self.world);
                 if self.drive_schedulers {
-                    // The fixture runs no time-sync probes. A converged
-                    // `ClockEstimator` reads the host's tick now: the echo's
-                    // server tick plus the half RTT it spent in flight plus
-                    // local time since it arrived, which on this link is the
-                    // shared `self.tick`, in the units snapshots are stamped
-                    // in. The production frame loop passes
-                    // `time_sync.estimated_server_tick()` the same way.
-                    let reading = peer
-                        .replication
-                        .host_level_tick(Some(f64::from(self.tick)));
+                    // The production reading, as the frame loop takes it:
+                    // the level ticks of the snapshots this peer received,
+                    // extrapolated on its own level clock and RTT.
+                    let reading = peer.replication.host_level_tick(peer.clock, peer.rtt);
                     land_client_tails(&mut peer.app, peer.clock, reading);
                     let seen = peer.commands.len();
                     peer.commands
@@ -785,7 +794,9 @@ impl Harness {
                 peer.sample();
             }
         }
-        sample(&mut self.host, self.clock);
+        if host_ticks.is_some() {
+            sample(&mut self.host, self.clock);
+        }
     }
     fn advance(&mut self, ticks: usize) {
         for _ in 0..ticks {

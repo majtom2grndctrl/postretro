@@ -22,14 +22,15 @@ pub(super) fn tail_has_landing_work(tail: &[SequenceStep], slot_table: &SlotTabl
 
 impl ReactionScheduler {
     /// Client only, once per frame before the landing drain: read the host's
-    /// level tick (`None` until a snapshot and a time-sync sample anchor it)
-    /// and expire every host-timeline instance due by it. The host counts the
-    /// same fixed ticks it lands its own tails on, so a host stall clamps both
-    /// alike. The level's first reading, less this client's own ticks since
-    /// reveal ([`Self::level_tick`]), fixes the host tick this client revealed
-    /// at; a segment due before that is a late joiner's, which converges
-    /// instead of replaying.
-    pub fn advance_host_clock(&self, host_level_tick: Option<f64>) {
+    /// level tick (`None` until a snapshot and an RTT sample anchor it) and
+    /// expire every host-timeline instance due by it. The reading counts the
+    /// fixed ticks the host lands its own tails on, so a host stall holds both
+    /// alike. `local_time_secs` is this client's level clock, which counts
+    /// unclamped frame time from its own reveal, the clock the reading
+    /// extrapolates on. The level's first reading, less that time, fixes the
+    /// host tick this client revealed at; a segment due before that is a late
+    /// joiner's, which converges instead of replaying.
+    pub fn advance_host_clock(&self, host_level_tick: Option<f64>, local_time_secs: f64) {
         let mut state = self.state.borrow_mut();
         if state.role != SchedulerRole::Client {
             return;
@@ -40,9 +41,16 @@ impl ReactionScheduler {
         let now = reading.max(0.0).floor() as u64;
         state.host_tick_now = Some(now);
         // Judge lateness by the reveal, never by the reading: the first
-        // reading waits for a snapshot and a time-sync sample, so it trails
-        // the reveal, and a client live before a beat would otherwise skip it.
-        let since_reveal = state.level_tick() as f64;
+        // reading waits for a snapshot and an RTT sample, so it trails the
+        // reveal, and a client live before a beat would otherwise skip it.
+        // Subtract wall time, not this client's own fixed ticks: a hitch past
+        // the tick clamp costs it ticks while the host, and so the reading,
+        // keeps advancing, which would inflate the join past beats it saw.
+        let since_reveal = if local_time_secs.is_finite() {
+            local_time_secs.max(0.0) / crate::frame_timing::TICK_DURATION.as_secs_f64()
+        } else {
+            0.0
+        };
         state
             .join_host_tick
             .get_or_insert((reading - since_reveal).max(0.0).floor() as u64);

@@ -760,12 +760,13 @@ impl ClientReplication {
     }
 
     /// Estimate the host's level tick now, the clock a `levelLoad` `wait`
-    /// tail lands on: the accepted snapshot's level tick plus the server
-    /// ticks elapsed since it, by `estimated_server_tick` (the time-sync
-    /// estimate of the host's current tick). `None` until both exist.
+    /// tail lands on: the newest accepted snapshot's level tick plus the local
+    /// script time since it was accepted and half the RTT, in ticks, the local
+    /// term capped so the reading holds while snapshots stop. It reads no
+    /// time-sync offset. `None` until a snapshot and an RTT sample exist.
     #[must_use]
-    pub fn host_level_tick(&self, estimated_server_tick: Option<f64>) -> Option<f64> {
-        self.bindings.host_level_tick(estimated_server_tick)
+    pub fn host_level_tick(&self, local_script_time: f64, rtt_micros: Option<f64>) -> Option<f64> {
+        self.bindings.host_level_tick(local_script_time, rtt_micros)
     }
 
     pub(crate) fn new() -> Self {
@@ -1075,7 +1076,7 @@ impl ClientReplication {
             self.bindings
                 .accept_presentation_clock(snapshot.server_script_time, local_script_time);
             self.bindings
-                .accept_level_tick(snapshot.level_tick, snapshot.server_tick);
+                .accept_level_tick(snapshot.level_tick, local_script_time);
             self.receive_ghost_audio(snapshot.ghost_audio);
         }
 

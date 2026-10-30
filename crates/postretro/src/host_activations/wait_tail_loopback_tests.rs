@@ -865,3 +865,171 @@ fn ghost_links_klaxon_plays_once_per_connected_machine_and_never_for_a_late_join
     capture.assert_not_logged(log::Level::Warn, "enrollment refused");
     assert_tail_quiet(&capture);
 }
+
+/// The host's level tick, the timeline a client's `levelLoad` tails land on.
+fn host_level_tick(h: &Harness) -> f64 {
+    h.host
+        .session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .scheduler
+        .level_tick() as f64
+}
+/// How far client A's reading runs past the host's level tick right now.
+fn reading_lead(h: &Harness) -> Option<f64> {
+    let peer = &h.peers[0];
+    peer.replication
+        .host_level_tick(peer.clock, peer.rtt)
+        .map(|reading| reading - host_level_tick(h))
+}
+fn intro_beat(wait_ms: f64) -> Vec<NamedReaction> {
+    vec![body(
+        "levelLoad",
+        vec![
+            wait_step(wait_ms),
+            system_step("playSound", json!({ "sound": "x" })),
+        ],
+    )]
+}
+/// Step every machine until both have played `x`, asserting at every frame
+/// that the client never plays it before the host. Returns the frames each
+/// took to land it and the host's level tick when it did.
+fn frames_until_both_land(h: &mut Harness, limit: usize) -> (usize, usize, f64) {
+    let (mut host, mut client, mut landed_at) = (None, None, 0.0);
+    for frame in 0..limit {
+        h.step();
+        let (host_plays, client_plays) = (
+            plays(&h.host_commands, "x"),
+            plays(&h.peers[0].commands, "x"),
+        );
+        assert!(
+            client_plays <= host_plays,
+            "frame {frame}: the client landed before the host"
+        );
+        if host_plays > 0 && host.is_none() {
+            host = Some(frame);
+            landed_at = host_level_tick(h);
+        }
+        if client_plays > 0 {
+            client.get_or_insert(frame);
+        }
+        if host.is_some() && client.is_some() {
+            break;
+        }
+    }
+    (
+        host.expect("the host lands the beat"),
+        client.expect("the client lands the beat"),
+        landed_at,
+    )
+}
+
+// Regression: after a host level change a client read the host's level tick
+// through the time-sync estimate, whose offset ran ahead by the host's whole
+// load and settle (the host's tick and its echoes stop meanwhile) and decayed
+// over seconds, so a client that loaded alongside the host fixed its join
+// tick that much late and converged an intro beat instead of playing it. The
+// host here spends five seconds loading and settling, neither ticking nor
+// sending, while the client, revealed first, runs its level clock. Once the
+// host reveals and snapshots flow, the client lands `[wait(1000),
+// playSound]` once, with the host.
+#[test]
+fn client_revealed_before_a_slow_loading_host_lands_its_intro_beat() {
+    let mut h = Harness::with_shared_reactions(fixture_world(), intro_beat(1000.0));
+    let capture = LogCapture::start();
+    for _ in 0..300 {
+        h.frame(None);
+    }
+    assert_eq!(reading_lead(&h), None, "no snapshot while the host loads");
+    assert_eq!(pending(&h.peers[0].app), 1, "nothing decided yet");
+
+    let (host, client, landed_at) = frames_until_both_land(&mut h, 200);
+    assert_eq!(landed_at, 60.0, "1000 ms is 60 host ticks");
+    assert!(
+        client - host <= 2,
+        "the client lands within a snapshot interval of the host: host frame {host}, client frame {client}"
+    );
+    h.advance(30);
+    assert_eq!(plays(&h.host_commands, "x"), 1);
+    assert_eq!(plays(&h.peers[0].commands, "x"), 1, "landed, not converged");
+    assert_eq!(pending(&h.peers[0].app), 0);
+    capture.assert_not_logged(
+        log::Level::Debug,
+        "client landing did not apply `playSound`",
+    );
+    assert_tail_quiet(&capture);
+}
+
+// Regression: the client's host-timeline reading inherited the time-sync
+// estimate's offset after a host stall and ran ahead for seconds, landing
+// later beats early. A one-second host frame sends nothing while it runs and
+// then runs only the tick clamp's ticks. Through it the client's reading
+// holds at most the extrapolation cap past the host's stamped tick and its
+// transit, re-anchors on the next snapshot, and lands a beat due well after
+// the stall within one snapshot interval of the host, never before it.
+#[test]
+fn host_stall_holds_the_client_reading_and_it_lands_with_the_host() {
+    // The client extrapolates at most three 2-tick snapshot intervals past
+    // the newest snapshot, plus half the RTT it spent in flight.
+    const EXTRAPOLATION_CAP_TICKS: f64 = 6.0;
+    let tick = crate::frame_timing::TICK_DURATION.as_secs_f64();
+    let in_flight_ticks = RTT / 2_000_000.0 / tick;
+
+    let mut h = Harness::with_shared_reactions(fixture_world(), intro_beat(5000.0));
+    let mut timing = crate::frame_timing::FrameTiming::new(
+        crate::frame_timing::InterpolableState::new(Vec3::ZERO),
+    );
+    let stall = Duration::from_secs(1);
+    let stall_ticks = timing.accumulate(stall).ticks as usize;
+    assert!(
+        stall_ticks < 30,
+        "the clamp costs the stall ticks: {stall_ticks}"
+    );
+    let capture = LogCapture::start();
+    h.advance(60);
+    let mut max_lead = f64::MIN;
+    let mut track = |h: &Harness| {
+        if let Some(lead) = reading_lead(h) {
+            max_lead = max_lead.max(lead);
+        }
+    };
+    // Inside the stalled frame the host neither ticks nor sends; the client
+    // runs its frames on.
+    for _ in 1..(stall.as_secs_f64() / DT).round() as usize {
+        h.frame(None);
+        track(&h);
+        assert_eq!(plays(&h.peers[0].commands, "x"), 0);
+    }
+    h.frame(Some(stall_ticks));
+    track(&h);
+    for _ in 0..10 {
+        h.step();
+        track(&h);
+    }
+    assert!(
+        max_lead > EXTRAPOLATION_CAP_TICKS,
+        "the reading ran into the cap during the stall: {max_lead}"
+    );
+    assert!(
+        max_lead <= EXTRAPOLATION_CAP_TICKS + in_flight_ticks + 1e-6,
+        "the reading held at the cap: lead {max_lead}"
+    );
+
+    let (host, client, landed_at) = frames_until_both_land(&mut h, 400);
+    assert_eq!(landed_at, 300.0, "the host lands on its tick 300");
+    assert!(
+        client - host <= 2,
+        "the client lands within a snapshot interval of the host: host frame {host}, client frame {client}"
+    );
+    let lead = reading_lead(&h).expect("a reading");
+    assert!(
+        lead.abs() < 2.0,
+        "re-anchored: the reading tracks the host's tick again ({lead})"
+    );
+    h.advance(30);
+    assert_eq!(plays(&h.host_commands, "x"), 1);
+    assert_eq!(plays(&h.peers[0].commands, "x"), 1);
+    assert_eq!(pending(&h.peers[0].app), 0);
+    assert_tail_quiet(&capture);
+}

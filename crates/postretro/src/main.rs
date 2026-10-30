@@ -4766,6 +4766,9 @@ impl App {
         let hit_zone_store = &session.hit_zone_store;
         // The host timeline clients land `levelLoad` tails on: the fixed ticks
         // this host's scheduler counted this level, clamped as its own are.
+        // Serialization runs after this frame's fixed ticks and landing drain,
+        // so the stamp is the level tick as this snapshot was assembled: every
+        // host tail due by it has already landed here.
         let level_tick =
             u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         let Some(netcode::NetEndpoint::Host {

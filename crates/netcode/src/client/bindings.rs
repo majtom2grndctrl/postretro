@@ -29,6 +29,15 @@ pub(super) enum RegionBinding {
     GhostLink(u16),
 }
 
+/// How far past the newest snapshot's arrival a client extrapolates the host's
+/// level tick: three snapshot intervals (6 ticks, 100 ms). Snapshots arrive
+/// every interval while the host runs, so in steady play this bound is never
+/// reached even with a lost snapshot or two and a frame of jitter; when they
+/// stop, the reading holds at most this far past the host's last stamped tick
+/// plus its transit, which bounds how early a beat can land during a host
+/// stall.
+const MAX_LEVEL_TICK_EXTRAPOLATION_TICKS: f64 = 3.0 * crate::host::SNAPSHOT_TICK_INTERVAL as f64;
+
 #[derive(Debug, Default)]
 pub(super) struct ClientBindings {
     /// Network ids bound to installed local teleporter and ghost-link regions.
@@ -42,10 +51,10 @@ pub(super) struct ClientBindings {
     warned_presentation_bindings: HashSet<(u8, u32)>,
     /// Host and local script clocks at the highest-sequence accepted snapshot.
     clock_anchor: Option<(f64, f64)>,
-    /// The host's level tick and server tick at the same snapshot: the host
-    /// timeline a client's `levelLoad` tails land on, which counts fixed
-    /// ticks as the server tick does, so the two advance together.
-    level_tick_anchor: Option<(u32, u32)>,
+    /// The host's level tick and the local script clock at the same snapshot:
+    /// the host timeline a client's `levelLoad` tails land on, re-anchored on
+    /// every newest accepted snapshot.
+    level_tick_anchor: Option<(u32, f64)>,
     last_applied: HashMap<(NetworkId, u16), ComponentPayload>,
     deferred: HashMap<(NetworkId, u16), ComponentPayload>,
 }
@@ -167,17 +176,36 @@ impl ClientBindings {
     }
 
     /// Call beside [`Self::accept_presentation_clock`], for the same snapshot.
-    pub(super) fn accept_level_tick(&mut self, level_tick: u32, server_tick: u32) {
-        self.level_tick_anchor = Some((level_tick, server_tick));
+    pub(super) fn accept_level_tick(&mut self, level_tick: u32, local_script_time: f64) {
+        if local_script_time.is_finite() {
+            self.level_tick_anchor = Some((level_tick, local_script_time));
+        }
     }
 
-    /// The host's level tick now: the anchored level tick plus the server
-    /// ticks elapsed since its snapshot, by the current server-tick estimate.
-    pub(super) fn host_level_tick(&self, estimated_server_tick: Option<f64>) -> Option<f64> {
-        estimated_server_tick
-            .zip(self.level_tick_anchor)
-            .map(|(estimate, (level, server))| f64::from(level) + (estimate - f64::from(server)))
-            .filter(|reading| reading.is_finite())
+    /// The host's level tick now: the newest snapshot's level tick plus the
+    /// local time since it arrived and half the RTT it spent in flight, in
+    /// ticks. Each snapshot carries the host's true fixed-tick count, so the
+    /// reading re-anchors on every one and never inherits the time-sync
+    /// estimator's offset. The local term stops at
+    /// [`MAX_LEVEL_TICK_EXTRAPOLATION_TICKS`]: when snapshots stop — a host
+    /// stall, a host level load, a held link — the reading holds instead of
+    /// running ahead of a host that is not ticking. `None` until a snapshot and
+    /// an RTT sample exist.
+    pub(super) fn host_level_tick(
+        &self,
+        local_script_time: f64,
+        rtt_micros: Option<f64>,
+    ) -> Option<f64> {
+        let rtt = rtt_micros.filter(|rtt| rtt.is_finite() && *rtt >= 0.0)?;
+        let (level_tick, accepted_at) = self.level_tick_anchor?;
+        if !local_script_time.is_finite() {
+            return None;
+        }
+        let tick_secs = postretro_sim::frame_timing::TICK_DURATION.as_secs_f64();
+        let since_accept = ((local_script_time - accepted_at).max(0.0) / tick_secs)
+            .min(MAX_LEVEL_TICK_EXTRAPOLATION_TICKS);
+        let in_flight = rtt / 2_000_000.0 / tick_secs;
+        Some(f64::from(level_tick) + since_accept + in_flight).filter(|reading| reading.is_finite())
     }
 
     pub(super) fn presentation_host_time(
@@ -880,7 +908,7 @@ mod tests {
             &resolver,
         );
         bindings.accept_presentation_clock(100.0, 20.0);
-        bindings.accept_level_tick(300, 900);
+        bindings.accept_level_tick(300, 20.0);
         bindings.apply_presentation_batch(
             &mut registry,
             &map,
@@ -899,7 +927,7 @@ mod tests {
         );
         bindings.clear_presentation();
         assert_eq!(bindings.level_tick_anchor, None);
-        assert_eq!(bindings.host_level_tick(Some(905.0)), None);
+        assert_eq!(bindings.host_level_tick(20.0, Some(0.0)), None);
         assert!(registry.exists(id));
         assert!(!bindings.is_presentation_bound(nid));
         assert!(bindings.last_applied.is_empty());
@@ -930,27 +958,47 @@ mod tests {
         assert_eq!(resolver.seeds.last().unwrap().1, Some(29.0));
     }
 
-    // The host level tick reads as the anchored snapshot's level tick plus the
-    // server ticks the estimate says have elapsed since it, never host script
-    // time: both count the host's clamped fixed ticks.
+    fn assert_reading(reading: Option<f64>, expected: f64) {
+        let reading = reading.expect("a reading");
+        assert!(
+            (reading - expected).abs() < 1e-9,
+            "read {reading}, expected {expected}"
+        );
+    }
+
+    // Regression: the host level tick read the time-sync estimate, whose
+    // offset a host level change or stall biases for seconds, so a client
+    // judged beats early. It now reads as the newest snapshot's level tick plus
+    // local time since that snapshot arrived and half the RTT, in ticks, and
+    // when snapshots stop — a host stall or load — the local term holds at
+    // three snapshot intervals instead of running ahead of a host that is not
+    // ticking.
     #[test]
-    fn host_level_tick_advances_with_the_server_tick_estimate_from_the_snapshot_anchor() {
+    fn host_level_tick_extrapolates_from_the_newest_snapshot_and_holds_at_the_cap() {
+        let tick = postretro_sim::frame_timing::TICK_DURATION.as_secs_f64();
+        // Six ticks of RTT: three in flight.
+        let rtt = Some(6.0 * tick * 1_000_000.0);
         let mut bindings = ClientBindings::default();
-        assert_eq!(
-            bindings.host_level_tick(Some(905.0)),
-            None,
-            "no snapshot yet"
-        );
-        bindings.accept_level_tick(300, 900);
-        assert_eq!(
-            bindings.host_level_tick(None),
-            None,
-            "no time-sync sample yet"
-        );
-        assert_eq!(bindings.host_level_tick(Some(905.5)), Some(305.5));
-        assert_eq!(bindings.host_level_tick(Some(f64::NAN)), None);
-        assert_eq!(bindings.host_level_tick(Some(f64::INFINITY)), None);
-        bindings.accept_level_tick(310, 910);
-        assert_eq!(bindings.host_level_tick(Some(912.0)), Some(312.0));
+        assert_eq!(bindings.host_level_tick(5.0, rtt), None, "no snapshot yet");
+        bindings.accept_level_tick(300, 5.0);
+        assert_eq!(bindings.host_level_tick(5.0, None), None, "no RTT yet");
+        assert_eq!(bindings.host_level_tick(f64::NAN, rtt), None);
+        assert_eq!(bindings.host_level_tick(5.0, Some(f64::INFINITY)), None);
+
+        assert_reading(bindings.host_level_tick(5.0, rtt), 303.0);
+        assert_reading(bindings.host_level_tick(5.0 + 2.0 * tick, rtt), 305.0);
+        assert_eq!(MAX_LEVEL_TICK_EXTRAPOLATION_TICKS, 6.0);
+        for held in [5.0 + 6.0 * tick, 6.0, 15.0] {
+            assert_reading(bindings.host_level_tick(held, rtt), 309.0);
+        }
+        // A local clock behind the anchor counts no time since it.
+        assert_reading(bindings.host_level_tick(4.0, rtt), 303.0);
+
+        // Each snapshot carries the host's true count, so the next one
+        // re-anchors and no drift carries over. A non-finite local clock
+        // never anchors.
+        bindings.accept_level_tick(320, 15.0);
+        bindings.accept_level_tick(999, f64::NAN);
+        assert_reading(bindings.host_level_tick(15.0 + tick, rtt), 324.0);
     }
 }

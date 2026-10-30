@@ -1,5 +1,5 @@
 // GPU proofs for deferred upload order, submit lifetime, and pool bounds.
-// See: context/plans/in-progress/per-frame-upload-batching/index.md
+// See: context/plans/done/per-frame-upload-batching/index.md
 
 use super::*;
 use crate::render::gpu_test_harness::{GpuCtx, try_init_gpu};

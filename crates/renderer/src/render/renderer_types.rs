@@ -819,6 +819,9 @@ pub(super) struct FullRenderer {
     /// `install_level_geometry`; consumed by `install_textures` to populate
     /// per-material shininess uniforms.
     pub(super) stored_texture_materials: Vec<Material>,
+    /// Off-main GPU creation for level loads. Lives as long as this full
+    /// renderer, so a rebuilt one after suspend spawns its own.
+    pub(super) upload_thread: super::upload_thread::UploadThread,
     /// Retained so `install_level_geometry` can pass it to `ShComposeResources`
     /// and `AnimatedLightmapResources` without recreating the layout inline.
     pub(super) uniform_bind_group_layout: wgpu::BindGroupLayout,

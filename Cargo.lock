@@ -4686,6 +4686,7 @@ dependencies = [
  "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]

@@ -635,6 +635,10 @@ pub(crate) fn build_full_renderer(
     // Full initialization builds only no-level bindings. Keep its accounting
     // local; `install_level_geometry` publishes the report for a real level.
     let _bootstrap_sh_residency = sh_allocation_ledger.finish();
+    // Last, so a failed init above leaves no thread behind. A spawn failure
+    // fails full init like any other resource it cannot create.
+    let upload_thread = UploadThread::spawn(device.clone(), queue.clone())
+        .context("spawning the render-upload thread")?;
     Ok(FullRenderer {
         pipeline,
         depth_prepass_pipeline,
@@ -834,6 +838,7 @@ pub(crate) fn build_full_renderer(
         mip_count_character_model_samplers,
         loaded_textures,
         stored_texture_materials: Vec::new(),
+        upload_thread,
         uniform_bind_group_layout,
         #[cfg(feature = "dev-tools")]
         debug_ui_gpu: None,

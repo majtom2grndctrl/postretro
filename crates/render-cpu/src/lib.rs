@@ -25,6 +25,7 @@ pub mod sh_compose;
 pub mod sh_volume;
 pub mod shadow_reach;
 pub mod surface_depth;
+pub mod texture_prep;
 
 pub mod fx {
     pub mod fog_volume;

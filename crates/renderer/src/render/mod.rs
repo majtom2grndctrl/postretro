@@ -61,6 +61,7 @@ mod shadowmask;
 mod smoke;
 mod splash_pass;
 mod ui;
+mod upload_thread;
 pub(crate) mod uploads;
 
 #[cfg(test)]
@@ -132,6 +133,7 @@ mod renderer_resources;
 mod renderer_shadow_passes;
 mod renderer_splash;
 mod renderer_state;
+mod renderer_textures;
 mod renderer_types;
 mod renderer_ui_layer;
 mod renderer_world_less_capture;
@@ -183,6 +185,9 @@ use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
+pub use renderer_textures::UploadedWorldTextures;
+pub use upload_thread::{PendingUpload, UploadError};
+pub(crate) use upload_thread::{UploadContext, UploadThread};
 
 pub use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;

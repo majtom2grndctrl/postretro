@@ -4,14 +4,13 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot, cache_filename_for_key,
-};
+use postretro_level_format::prm::{PrmFormat, PrmReadError, PrmSlot};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_render_cpu::loaded_texture::{
-    TextureSlotPlan, TextureSlotPolicy, slot_levels, texture_slot_plan,
-};
+use postretro_render_cpu::loaded_texture::slot_levels;
 use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
+use postretro_render_cpu::texture_prep::{
+    PreparedTexture, PreparedWorldTextures, prepare_model_diffuse_texture, prepare_world_textures,
+};
 
 const PLACEHOLDER_SIZE: u32 = 64;
 const CHECKER_SQUARE: u32 = 8;
@@ -387,14 +386,6 @@ pub(super) fn placeholder_loaded_texture(
     }
 }
 
-fn d2_texture_slot_plan(
-    header: &PrmHeader,
-    slot_results: &[Result<PrmSlot, PrmReadError>; 4],
-    policy: TextureSlotPolicy,
-) -> Option<TextureSlotPlan> {
-    (header.layer_count == 1).then(|| texture_slot_plan(header.slot_mask, slot_results, policy))
-}
-
 /// Where [`load_textures`] spent its time, for the install's own log line.
 /// Log-only: nothing reads these to decide behavior.
 #[derive(Debug, Default, Clone, Copy)]
@@ -412,10 +403,9 @@ pub struct TextureLoadTiming {
     pub bytes_read: usize,
 }
 
-/// Load every world-material texture referenced by the PRL. `texture_names[i]`
-/// pairs with `texture_cache_keys.keys[i]`; an all-zero key produces a silent
-/// placeholder. Header errors and per-slot errors degrade to placeholders with
-/// a single warning each. Returns one `LoadedTexture` per entry, parallel to
+/// Load every world-material texture referenced by the PRL: the CPU pass
+/// ([`prepare_world_textures`]) then the GPU pass ([`upload_prepared_textures`])
+/// on this thread. Returns one `LoadedTexture` per entry, parallel to
 /// `texture_names`, with the time spent reading, parsing and uploading them.
 pub fn load_textures(
     device: &wgpu::Device,
@@ -424,128 +414,102 @@ pub fn load_textures(
     texture_cache_keys: &TextureCacheKeysSection,
     prm_cache_root: &Path,
 ) -> (Vec<LoadedTexture>, TextureLoadTiming) {
-    let mut out: Vec<LoadedTexture> = Vec::with_capacity(texture_names.len());
-    let mut timing = TextureLoadTiming::default();
+    let prepared = prepare_world_textures(texture_names, texture_cache_keys, prm_cache_root);
+    upload_prepared_textures(device, queue, &prepared)
+}
 
-    for (i, name) in texture_names.iter().enumerate() {
-        let key = match texture_cache_keys.keys.get(i) {
-            Some(k) => *k,
-            None => {
-                // PRL out of sync with TextureCacheKeys — log once per entry.
-                log::warn!(
-                    "[Loader] texture '{name}' index {i} has no cache key — using placeholders"
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
+/// The GPU pass over prepared world materials: creates every texture and stages
+/// every mip write on `queue`. Runs on whichever thread holds the device and
+/// queue; the writes reach the GPU at that queue's next submit.
+pub fn upload_prepared_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    prepared: &PreparedWorldTextures,
+) -> (Vec<LoadedTexture>, TextureLoadTiming) {
+    let mut timing = TextureLoadTiming {
+        read: prepared.timing.read,
+        parse: prepared.timing.parse,
+        create_write: Duration::ZERO,
+        files_read: prepared.timing.files_read,
+        bytes_read: prepared.timing.bytes_read,
+    };
+    let out = prepared
+        .entries
+        .iter()
+        .map(|entry| {
+            if matches!(entry, PreparedTexture::Placeholder) {
+                return placeholder_loaded_texture(device, queue);
             }
-        };
-
-        if key == [0u8; 32] {
-            // Zero key signals "no source PNG" (e.g., compiler couldn't resolve
-            // the name). Silent placeholder by design.
-            out.push(placeholder_loaded_texture(device, queue));
-            continue;
-        }
-
-        let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-        let read_started = Instant::now();
-        let read_result = std::fs::read(&prm_path);
-        timing.read += read_started.elapsed();
-        let bytes = match read_result {
-            Ok(b) => {
-                timing.files_read += 1;
-                timing.bytes_read += b.len();
-                b
-            }
-            Err(err) => {
-                log::warn!(
-                    "[Loader] texture '{name}': cannot read {} : {err} — using placeholders",
-                    prm_path.display(),
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
-            }
-        };
-
-        let parse_started = Instant::now();
-        let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
-        timing.parse += parse_started.elapsed();
-        let create_started = Instant::now();
-        let header = match header_result {
-            Ok(header) => header,
-            Err(e) => {
-                log::warn!(
-                    "[Loader] texture '{name}': .prm header error: {e:?} — using placeholders"
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
-            }
-        };
-
-        let Some(plan) =
-            d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::WorldBundle)
-        else {
-            log::warn!(
-                "[Loader] texture '{name}': .prm declares {} layers, but world textures require exactly 1 — using placeholders",
-                header.layer_count,
-            );
-            out.push(placeholder_loaded_texture(device, queue));
-            continue;
-        };
-
-        let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[0],
-            0,
-            name,
-            Slot::Diffuse,
-            plan.consume[0],
-        );
-        let (specular_texture, specular_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[1],
-            1,
-            name,
-            Slot::Specular,
-            plan.consume[1],
-        );
-        let (normal_texture, normal_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[2],
-            2,
-            name,
-            Slot::Normal,
-            plan.consume[2],
-        );
-        let (emissive_texture, emissive_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[3],
-            3,
-            name,
-            Slot::Emissive,
-            plan.consume[3],
-        );
-
-        out.push(LoadedTexture {
-            diffuse_texture,
-            diffuse_view,
-            specular_texture,
-            specular_view,
-            normal_texture,
-            normal_view,
-            emissive_texture,
-            emissive_view,
-            mip_count: plan.mip_count,
-            surface_relief: specular_surface_relief(&slot_results[1], plan.consume[1]),
-        });
-        timing.create_write += create_started.elapsed();
-    }
-
+            let create_started = Instant::now();
+            let texture = upload_prepared_texture(device, queue, entry);
+            timing.create_write += create_started.elapsed();
+            texture
+        })
+        .collect();
     (out, timing)
+}
+
+/// The GPU half of one prepared material, world or model: the plan's policy
+/// already decided which slots it consumes, and every other slot binds its
+/// placeholder.
+pub(super) fn upload_prepared_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    prepared: &PreparedTexture,
+) -> LoadedTexture {
+    let PreparedTexture::Bundle { name, slots, plan } = prepared else {
+        return placeholder_loaded_texture(device, queue);
+    };
+    let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[0],
+        0,
+        name,
+        Slot::Diffuse,
+        plan.consume[0],
+    );
+    let (specular_texture, specular_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[1],
+        1,
+        name,
+        Slot::Specular,
+        plan.consume[1],
+    );
+    let (normal_texture, normal_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[2],
+        2,
+        name,
+        Slot::Normal,
+        plan.consume[2],
+    );
+    let (emissive_texture, emissive_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[3],
+        3,
+        name,
+        Slot::Emissive,
+        plan.consume[3],
+    );
+
+    LoadedTexture {
+        diffuse_texture,
+        diffuse_view,
+        specular_texture,
+        specular_view,
+        normal_texture,
+        normal_view,
+        emissive_texture,
+        emissive_view,
+        mip_count: plan.mip_count,
+        // A model plan never consumes specular, so models stay flat.
+        surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
+    }
 }
 
 /// Load one model material from the shared diffuse-addressed `.prm` cache.
@@ -558,67 +522,8 @@ pub(super) fn load_model_diffuse_texture(
     key: [u8; 32],
     prm_cache_root: &Path,
 ) -> LoadedTexture {
-    if key == [0u8; 32] {
-        return placeholder_loaded_texture(device, queue);
-    }
-
-    let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-    let bytes = match std::fs::read(&prm_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            log::warn!(
-                "[Loader] model texture '{name}': cannot read {} : {err} — using placeholders",
-                prm_path.display(),
-            );
-            return placeholder_loaded_texture(device, queue);
-        }
-    };
-
-    let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
-    let header = match header_result {
-        Ok(header) => header,
-        Err(err) => {
-            log::warn!(
-                "[Loader] model texture '{name}': .prm header error: {err:?} — using placeholders"
-            );
-            return placeholder_loaded_texture(device, queue);
-        }
-    };
-    let Some(plan) =
-        d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::ModelDiffuseOnly)
-    else {
-        log::warn!(
-            "[Loader] model texture '{name}': .prm declares {} layers, but model textures require exactly 1 — using placeholders",
-            header.layer_count,
-        );
-        return placeholder_loaded_texture(device, queue);
-    };
-    let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
-        device,
-        queue,
-        &slot_results[0],
-        0,
-        name,
-        Slot::Diffuse,
-        plan.consume[0],
-    );
-    let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
-    let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
-    let (emissive_texture, emissive_view) = make_emissive_placeholder(device, queue);
-
-    LoadedTexture {
-        diffuse_texture,
-        diffuse_view,
-        specular_texture,
-        specular_view,
-        normal_texture,
-        normal_view,
-        emissive_texture,
-        emissive_view,
-        mip_count: plan.mip_count,
-        // Models take the neutral specular placeholder: no surface map.
-        surface_relief: SurfaceReliefLevels::FLAT,
-    }
+    let prepared = prepare_model_diffuse_texture(name, key, prm_cache_root);
+    upload_prepared_texture(device, queue, &prepared)
 }
 
 /// The raw relief band of every mip of the specular slot, from the exact bytes
@@ -701,7 +606,6 @@ fn upload_slot_or_placeholder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::prm::{PrmSlots, STAGE_VERSION};
 
     /// Surface Depth's central safety property: a material WITHOUT a height
     /// map must render exactly as it did before the feature existed.
@@ -912,85 +816,5 @@ mod tests {
                 "unexpected pixel: {pixel:?}"
             );
         }
-    }
-
-    // Regression: parsed multi-layer PRMs reached the legacy one-chain mip
-    // slicer, panicking in debug and uploading only layer 0 in release.
-    #[test]
-    fn d2_world_and_model_planning_rejects_multi_layer_prm() {
-        let slot = PrmSlot {
-            format: PrmFormat::Rgba8UnormSrgb,
-            width: 1,
-            height: 1,
-            level_count: 1,
-            payload: vec![0x11, 0x22, 0x33, 0xFF, 0x44, 0x55, 0x66, 0xFF],
-        };
-        let file = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: [0xA5; 32],
-                total_body_bytes: 0,
-                layer_count: 2,
-            },
-            slots: [Some(slot), None, None, None],
-        };
-        let bytes = file.to_bytes().expect("multi-layer fixture serializes");
-        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-        let header = header.expect("multi-layer header parses");
-
-        assert!(
-            slots[0].is_ok(),
-            "fixture must contain valid layer payloads"
-        );
-        assert!(
-            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle).is_none(),
-            "world D2 upload must fall back before mip planning"
-        );
-        assert!(
-            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::ModelDiffuseOnly).is_none(),
-            "model D2 upload must fall back before mip planning"
-        );
-    }
-
-    // Regression: a hand-authored 2x2 BC5 normal declared zero mips, then the
-    // D2 upload path indexed an empty level list as if mip 0 existed.
-    #[test]
-    fn d2_world_planning_degrades_zero_mip_bc5_normal_to_placeholder() {
-        const HEADER_SIZE: usize = 45;
-        const SLOT_HEADER_SIZE: usize = 12;
-        let mut bytes = vec![0u8; HEADER_SIZE + SLOT_HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x02");
-        bytes[4] = STAGE_VERSION;
-        bytes[5] = PrmSlots::NORMAL.bits();
-        bytes[39..43].copy_from_slice(&(SLOT_HEADER_SIZE as u32).to_le_bytes());
-        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
-        bytes[HEADER_SIZE] = PrmFormat::Bc5RgUnorm as u8;
-        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&2u16.to_le_bytes());
-        bytes[HEADER_SIZE + 4..HEADER_SIZE + 6].copy_from_slice(&2u16.to_le_bytes());
-        // level_count and payload_bytes remain zero.
-
-        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-        let header = header.expect("slot failure must not poison the header");
-        assert!(matches!(
-            &slots[2],
-            Err(PrmReadError::EmptyMipChain {
-                slot: 2,
-                format: PrmFormat::Bc5RgUnorm,
-                width: 2,
-                height: 2,
-            })
-        ));
-
-        let plan = d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle)
-            .expect("single-layer world bundle still produces a placeholder plan");
-        assert!(
-            plan.consume[2],
-            "the slot error routes through placeholder upload"
-        );
-        assert_eq!(
-            plan.mip_count, 1,
-            "no valid mip chain disables mip filtering"
-        );
     }
 }

@@ -79,14 +79,40 @@ fn gpu_with_features_or_skip(test: &str, required_features: wgpu::Features) -> O
     } else {
         format!("GPU adapter with {required_features:?}")
     };
-    let required =
-        std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0");
     assert!(
-        !required,
+        !gpu_required(),
         "{test}: POSTRETRO_REQUIRE_GPU is set but no {adapter} is available"
     );
     eprintln!("skipping {test}: no {adapter} available");
     None
+}
+
+fn gpu_required() -> bool {
+    std::env::var("POSTRETRO_REQUIRE_GPU").is_ok_and(|value| !value.is_empty() && value != "0")
+}
+
+/// A full offscreen renderer, or `None` after saying `test` skipped, under the
+/// same `POSTRETRO_REQUIRE_GPU` policy as [`gpu_or_skip`]. An adapter that is
+/// present but fails renderer init always fails the test.
+pub(crate) fn offscreen_renderer_or_skip(
+    test: &str,
+    width: u32,
+    height: u32,
+) -> Option<super::Renderer> {
+    match super::Renderer::new_offscreen(width, height) {
+        Ok(renderer) => Some(renderer),
+        Err(error) if error.to_string().contains("requires a GPU adapter") => {
+            assert!(
+                !gpu_required(),
+                "{test}: POSTRETRO_REQUIRE_GPU is set but no GPU adapter is available ({error:#})"
+            );
+            eprintln!("skipping {test}: no GPU adapter available");
+            None
+        }
+        Err(error) => {
+            panic!("{test}: adapter present but renderer initialization failed: {error:#}")
+        }
+    }
 }
 
 /// A read-back RGBA8 pixel grid, de-padded to a tight `width*4` stride. Carries

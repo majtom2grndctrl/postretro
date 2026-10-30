@@ -1,5 +1,5 @@
 // Source-derived upload ownership and staging-mechanism gates.
-// See: context/plans/in-progress/per-frame-upload-batching, AC 2/7/18
+// See: context/plans/done/per-frame-upload-batching, AC 2/7/18
 
 mod scanner;
 use scanner::*;
@@ -310,4 +310,26 @@ fn drift_scanner_restores_staged_receivers_between_match_arms_and_if_branches() 
         ]
     );
     assert_eq!(violations(&sites).len(), 4);
+}
+
+#[test]
+fn drift_scanner_admits_only_the_upload_thread_flush_and_its_job_queue() {
+    let sources = vec![Source {
+        path: "render/upload_thread.rs".into(),
+        syntax: syn::parse_file(
+            r#"
+            fn flush_staged_writes(queue: &wgpu::Queue) { queue.submit(std::iter::empty()); }
+            fn run_job(queue: &wgpu::Queue) { queue.submit(commands); }
+            fn begin(thread: &UploadThread) { thread.submit(job); }
+        "#,
+        )
+        .unwrap(),
+    }];
+    let (sites, _) = scan(&sources);
+    assert_eq!(sites.len(), 3);
+    assert_eq!(direct_class(&sites[0]), Some("off-main upload flush"));
+    assert_eq!(sites[2].receiver, Receiver::Named("UploadThread".into()));
+    let errors = violations(&sites);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("run_job"), "{errors:?}");
 }

@@ -1,5 +1,5 @@
 //! Actual renderer entry-point proofs for the deferred upload contract.
-//! See: context/plans/in-progress/per-frame-upload-batching/index.md
+//! See: context/plans/done/per-frame-upload-batching/index.md
 
 use super::UploadCounts;
 use crate::render::{ClearColor, FrameScene, Renderer, ShSampleRegionSets};

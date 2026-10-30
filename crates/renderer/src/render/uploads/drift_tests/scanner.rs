@@ -1,5 +1,5 @@
 // Source-derived upload ownership and staging-mechanism gates.
-// See: context/plans/in-progress/per-frame-upload-batching, AC 2/7/18
+// See: context/plans/done/per-frame-upload-batching, AC 2/7/18
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -677,6 +677,13 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("guarded chokepoint")
         }
+        // The upload thread's own queue timeline: it submits each job's staged
+        // writes before handing the job's result back.
+        ("render/upload_thread.rs", "", "flush_staged_writes")
+            if site.receiver == Receiver::RawQueue && site.method == "submit" =>
+        {
+            Some("off-main upload flush")
+        }
         ("render/loaded_texture.rs", "", "upload_texture_data" | "upload_texture_array_data") => {
             Some("load")
         }
@@ -721,10 +728,15 @@ pub(super) fn violations(sites: &[Site]) -> Vec<String> {
             continue;
         }
         if site.method == "submit" {
+            // Queues a job on the renderer's upload thread; not a GPU submission.
+            if site.receiver == Receiver::Named("UploadThread".into()) {
+                continue;
+            }
             if site.receiver == Receiver::RawQueue
                 && !(site.path == "render/uploads/mod.rs"
                     && site.owner == "UploadQueue"
                     && site.function == "submit")
+                && direct_class(site).is_none()
             {
                 errors.push(format!(
                     "raw submission bypasses upload boundary: {}",

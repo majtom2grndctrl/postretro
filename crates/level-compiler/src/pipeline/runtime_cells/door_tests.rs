@@ -357,25 +357,29 @@ const DIAGONAL_WALL: [([f64; 3], [f64; 3]); 3] = [
 /// into each jamb, as a door hung in its frame does, so the doorway's sides
 /// lie inside it.
 const DIAGONAL_DOOR: ([f64; 3], [f64; 3]) = ([666.0, 692.0, 0.0], [734.0, 708.0, 100.0]);
+/// The door exactly filling the doorway, unturned: its edges lie on the
+/// jambs' ends, which bound the doorway, up to parse noise.
+const DIAGONAL_DOOR_BETWEEN_JAMBS: ([f64; 3], [f64; 3]) =
+    ([670.0, 692.0, 0.0], [730.0, 708.0, 100.0]);
 /// Points 160 u (4 m) in front of and behind the door, unturned.
 const DIAGONAL_FRONT: [f64; 3] = [700.0, 540.0, 60.0];
 const DIAGONAL_BACK: [f64; 3] = [700.0, 860.0, 60.0];
 
-/// The diagonal hall with its wall and door turned by `TURN` about
+/// The diagonal hall with its wall and `door` turned by `TURN` about
 /// `DIAGONAL_CENTRE`. With `shared_faces`, every wall piece and the door
 /// author their two broad faces through the same points, so the door's faces
 /// are the wall's planes bit for bit; without, each brush authors them
 /// through its own corners, and the parser's f32 planes put the door's faces
 /// off the wall's by parse noise.
-fn turned_occluding_wall(shared_faces: bool) -> MapData {
-    let span = shared_faces.then_some([DIAGONAL_DOOR.0[0], DIAGONAL_DOOR.1[0]]);
+fn turned_occluding_wall(door: ([f64; 3], [f64; 3]), shared_faces: bool) -> MapData {
+    let span = shared_faces.then_some([door.0[0], door.1[0]]);
     let mut map = MapText::new();
     map.hall(DIAGONAL_HALL);
     let pieces: Vec<String> = DIAGONAL_WALL
         .iter()
         .map(|&(min, max)| turned_brush(DIAGONAL_CENTRE, min, max, span))
         .collect();
-    let door = turned_brush(DIAGONAL_CENTRE, DIAGONAL_DOOR.0, DIAGONAL_DOOR.1, span);
+    let door = turned_brush(DIAGONAL_CENTRE, door.0, door.1, span);
     parse_with_turned_door(&map, &pieces, &door, DIAGONAL_CENTRE, 96.0)
 }
 
@@ -386,9 +390,26 @@ fn door_flush_in_an_occluding_wall_turned_45_degrees_seals_closed_and_passes_ope
     // plane, and the door's face matches it only up to rounding or parse
     // noise. Sealing must read the portal as lying on the door's face
     // whichever side of it the corners fell.
+    assert_turned_occluding_wall_door_seals_closed_and_passes_open(DIAGONAL_DOOR);
+}
+
+#[test]
+fn door_between_occluding_jambs_turned_45_degrees_seals_closed_and_passes_open() {
+    // The jambs' ends split at occluder rank, so they bound the doorway and
+    // its portals, and the door's edges lie on them only up to parse noise:
+    // a door edge a few micrometres inside a jamb's end leaves a sliver of
+    // portal past it, which sealing must read as noise, not a slot.
+    assert_turned_occluding_wall_door_seals_closed_and_passes_open(DIAGONAL_DOOR_BETWEEN_JAMBS);
+}
+
+/// `door` in the turned occluding wall, with its broad faces shared with the
+/// wall's and authored through its own corners: recognised, its doorway a
+/// cell of its own, every portal onto that cell sealed, and the walk through
+/// it passing open and blocked closed.
+fn assert_turned_occluding_wall_door_seals_closed_and_passes_open(door: ([f64; 3], [f64; 3])) {
     let turn = |q: [f64; 3]| turned_about(DIAGONAL_CENTRE, q);
     for shared_faces in [true, false] {
-        let map_data = turned_occluding_wall(shared_faces);
+        let map_data = turned_occluding_wall(door, shared_faces);
         let classification = classify(&map_data.brush_volumes).expect("classifies");
         // The hall's six slabs come first, then the two jambs.
         for jamb in [6, 7] {

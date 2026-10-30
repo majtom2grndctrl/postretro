@@ -173,10 +173,10 @@ fn generate_recursive(
 
 /// Move `point` onto each plane of `planes` it lies within `SNAP_EPSILON`
 /// of. Clipping the base winding leaves corners about 1e-13 m off the
-/// planes that cut them, and sealing certifies a closed door's cover across
-/// its edges with no tolerance: a door whose edge bounds a portal covers it
-/// only if no corner lies past that edge by more than a sliver under the
-/// sealing area cull, so the dust must go.
+/// planes that cut them. Sealing certifies a closed door's cover across its
+/// edges within `ON_FACE_EPSILON_M`, which absorbs f32 parse noise between
+/// a door's planes and the wall's; snapping keeps the much smaller clipping
+/// dust from adding to that noise, so the tolerance stays tight.
 ///
 /// An axis-aligned plane takes the corner exactly, after every other plane,
 /// so no projection moves it off again. Any other plane takes it by

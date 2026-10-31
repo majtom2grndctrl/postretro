@@ -15,6 +15,7 @@ use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, bake_probe_direct_rgb,
     pack_octahedral_irradiance_tile, probe_grid_layout, vec3_from,
 };
+use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
@@ -38,7 +39,7 @@ pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_ID: &str = "animated_direct_delt
 /// Dormant epoch for [`ANIMATED_DIRECT_DELTA_SH_STAGE_ID`]: the stage bakes
 /// uncached. Kept so the key fold the tests pin stays distinct.
 #[cfg(test)]
-pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 3;
+pub(crate) const ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION: u32 = 4;
 
 /// Inputs for the animated direct-SH delta bake. The probe grid comes from the
 /// shared SH context, keeping section-45 sub-blocks coincident with base probes.
@@ -47,6 +48,40 @@ pub struct AnimatedDirectShBakeInputs<'a, 'b> {
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'b>,
     pub mutable_descriptors: &'a ScriptMutableDescriptorSlots,
+    /// Animated lights whose emitter sphere reaches into geometry, keyed by
+    /// position in `animated_lights`: [`embedded_emitters`]. Flagged lights
+    /// trace their full sample set at every probe.
+    pub(crate) embedded_emitters: &'a EmbeddedEmitters,
+}
+
+/// The animated lights' emitter tests, keyed by position in
+/// `animated_lights`, with the penumbra floor on; with it off nothing is
+/// flagged. Shared with the animated billboard scatter, whose key folds the
+/// flagged positions. Tested on the pre-cut geometry; the weight-map stage
+/// tests the same lights on the cut geometry, so the verdicts can differ only
+/// where a face cut passes through a light's sphere. This set does not warn:
+/// the weight-map stage takes it and warns once for each light either test
+/// flags, and the pipeline warns it alone when that stage has no chunk.
+pub(crate) fn embedded_emitters(
+    sh_ctx: &ShBakeCtx<'_>,
+    animated_lights: &AnimatedBakedLights<'_>,
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify(
+        animated_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.light)),
+        sh_ctx.bvh,
+        sh_ctx.primitives,
+        sh_ctx.geometry,
+        control,
+    )
 }
 
 pub(crate) fn animated_direct_reach_policies(
@@ -171,6 +206,11 @@ pub(crate) fn bake_animated_direct_sh_delta_volumes_controlled_with_tally(
                 &layout,
                 entry.light,
                 entry.source_index as u64,
+                ProbeEarlyOut::for_probe_point(
+                    inputs
+                        .embedded_emitters
+                        .is_embedded(animated_index as usize),
+                ),
                 cell,
                 affinity_dims,
             )
@@ -215,6 +255,7 @@ fn bake_direct_subblock(
     layout: &ProbeGridLayout,
     light: &MapLight,
     light_global_index: u64,
+    early_out: ProbeEarlyOut,
     affinity_cell: u32,
     affinity_dims: [u32; 3],
 ) -> Vec<u16> {
@@ -254,6 +295,7 @@ fn bake_direct_subblock(
                             vec3_from(layout.probe_positions[probe_index]),
                             &[&unit_light],
                             &[light_global_index],
+                            &[early_out],
                             probe_index as u64,
                         );
                         pack_octahedral_irradiance_tile(
@@ -431,6 +473,7 @@ mod tests {
             portals: &[],
             animated_lights: &animated_lights,
             mutable_descriptors: &mutable_descriptors,
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         bake_animated_direct_sh_delta_volumes(&inputs, &ShConfig { probe_spacing: 1.0 })
             .expect("animated light and geometry must emit section 45")
@@ -500,6 +543,7 @@ mod tests {
                 portals: &[],
                 animated_lights: &animated_lights,
                 mutable_descriptors: &immutable,
+                embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
             },
             &config,
         )
@@ -513,6 +557,7 @@ mod tests {
                 portals: &[],
                 animated_lights: &animated_lights,
                 mutable_descriptors: &mutable,
+                embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
             },
             &config,
         )

@@ -103,6 +103,7 @@ fn bake_with(
         &alpha_lights,
         None,
         &[],
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &primitives,
         config,
@@ -354,6 +355,7 @@ fn assert_layers_store_centre_point_visibility(cache: &StageCache, lights: &[Map
                                 light,
                                 sample.seed,
                                 || probes,
+                                crate::texel_footprint::ProbeEarlyOut::Agreed,
                                 |from, to| {
                                     segment_clear_remembering(
                                         &prepared.bvh,
@@ -575,6 +577,79 @@ fn an_embedded_emitter_bakes_alike_on_every_path_and_warns_once_per_compile() {
     let logs = LogCapture::start();
     bake_here(None, &lights, &floored(false, false), mixed_geometry());
     logs.assert_not_logged(Level::Warn, "emitter inside geometry");
+}
+
+// The stage warns each static light its own emitter test or the
+// probe-point bakes' test flags, once, naming the bakes each flag reaches.
+// The probe flags arrive keyed by static position and warn under source
+// index: an animated light ahead of both static lights shifts the two apart.
+// The hard light's probe flag stands in for a verdict a face cut split.
+#[test]
+fn the_stage_warns_its_own_and_the_probe_flags_once_per_light() {
+    let mut animated = point_light(DVec3::new(1.0, 2.0, 1.0), [1.0, 1.0, 1.0]);
+    animated.animation = Some(crate::map_data::LightAnimation {
+        period: 1.0,
+        phase: 0.0,
+        brightness: Some(vec![0.0, 1.0]),
+        color: None,
+        direction: None,
+        start_active: true,
+    });
+    let lights: Vec<MapLight> = std::iter::once(animated).chain(embedded_lights()).collect();
+    let mut geometry = mixed_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture BVH must build");
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let alpha_lights = AlphaLightsNs::from_lights(&lights);
+    let config = floored(false, true);
+    let prepared =
+        lightmap_bake::prepare_atlas(&mut geometry, &static_lights, config.lightmap_density, &[])
+            .expect("fixture atlas must prepare");
+    let probe_flags = EmbeddedEmitters::from_flags([(0, 0.5), (1, 0.25)]);
+
+    let logs = LogCapture::start();
+    bake_fused_windowed(
+        &test_args(),
+        None,
+        &BakeControl::unrestricted(),
+        &BakeControl::unrestricted(),
+        &mut geometry,
+        &static_lights,
+        &alpha_lights,
+        None,
+        &[],
+        &probe_flags,
+        &bvh,
+        &primitives,
+        &config,
+        prepared,
+        &PartitionWindow::default(),
+    )
+    .expect("fused fixture bake must succeed");
+    let warnings: Vec<String> = logs
+        .records()
+        .iter()
+        .filter(|record| {
+            record.level == Level::Warn && record.message.contains("emitter inside geometry")
+        })
+        .map(|record| record.message.clone())
+        .collect();
+
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("static light #1:")
+            && !warnings[0].contains("50.0%")
+            && warnings[0].contains(
+                "makes its lit lightmap texels and the SH and billboard probes it lights trace"
+            ),
+        "the embedded light warns once, with the stage's own fraction: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[1].contains("static light #2: 25.0%")
+            && warnings[1].contains("makes the SH and billboard probes it lights trace"),
+        "the probe-only flag warns under its source index: {}",
+        warnings[1]
+    );
 }
 
 // The CLI's defaults configure a floored bake.

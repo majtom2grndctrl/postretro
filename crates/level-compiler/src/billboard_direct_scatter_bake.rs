@@ -20,10 +20,10 @@ use rayon::prelude::*;
 use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::{
-    DirectBakeInputs, ReachIndex, build_reach_index, static_direct_lights,
+    DirectBakeInputs, ReachIndex, build_reach_index, direct_early_outs, static_direct_lights,
 };
 use crate::light_namespaces::AnimatedBakedLights;
-use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility};
+use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_early_out};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::ray_traversal::BoundedRay;
@@ -32,16 +32,17 @@ use crate::sh_bake::{
     probe_grid_layout, static_light_refs, vec3_from,
 };
 use crate::sh_group::geometry_content_hash;
+use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 
 /// Cache stage for dense, normal-free static billboard scatter.
 pub const BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "billboard_direct_scatter";
 /// Bump only when the static scatter calculation or its cached payload changes.
-pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
+pub const BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 4;
 
 /// Cache stage for dense, normal-free animated billboard scatter deltas.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard_direct_scatter";
 /// Bump only when the animated scatter calculation or its cached payload changes.
-pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 2;
+pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
 
 const RAY_EPSILON: f32 = 1.0e-3;
 // Matches `sh_bake`'s direct-light seed with its ray axis fixed at zero, so a
@@ -54,6 +55,13 @@ pub struct BillboardDirectScatterBakeInputs<'a, 'b> {
     pub sh_ctx: &'a ShBakeCtx<'b>,
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'b>,
+    /// Static lights whose emitter sphere reaches into geometry, keyed by
+    /// global static index ([`crate::direct_sh_bake::embedded_emitters`]).
+    pub(crate) static_embedded_emitters: &'a EmbeddedEmitters,
+    /// Animated lights whose emitter sphere reaches into geometry, keyed by
+    /// position in `animated_lights`
+    /// ([`crate::animated_direct_sh_bake::embedded_emitters`]).
+    pub(crate) animated_embedded_emitters: &'a EmbeddedEmitters,
 }
 
 /// Bake the normal-free direct-scatter base. A zero-RGB base is emitted only
@@ -81,6 +89,7 @@ pub fn bake_billboard_direct_scatter_volume_cached_controlled(
     let direct_inputs = DirectBakeInputs {
         sh_ctx: inputs.sh_ctx,
         portals: inputs.portals,
+        embedded_emitters: inputs.static_embedded_emitters,
     };
     let key = static_cache_key(
         inputs,
@@ -246,6 +255,11 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
                 &layout,
                 entry.light,
                 entry.source_index as u64,
+                ProbeEarlyOut::for_probe_point(
+                    inputs
+                        .animated_embedded_emitters
+                        .is_embedded(animated_index as usize),
+                ),
                 affinity_cell,
                 direct_deltas.affinity_dims,
             );
@@ -285,6 +299,7 @@ fn bake_static_scatter(
     let dims = layout.dims;
     let nx = dims[0] as usize;
     let ny = dims[1] as usize;
+    let early_outs = direct_early_outs(inputs.static_embedded_emitters, global_indices);
     control.publish_total(layout.total_probes());
     let scatter_rgba: Vec<u16> = (0..layout.total_probes())
         .into_par_iter()
@@ -295,6 +310,7 @@ fn bake_static_scatter(
                 layout,
                 direct_lights,
                 global_indices,
+                &early_outs,
                 reach,
                 probe_index,
                 nx,
@@ -322,6 +338,7 @@ fn static_probe_scatter(
     layout: &ProbeGridLayout,
     direct_lights: &[&MapLight],
     global_indices: &[u64],
+    early_outs: &[ProbeEarlyOut],
     reach: &ReachIndex,
     probe_index: usize,
     nx: usize,
@@ -347,7 +364,11 @@ fn static_probe_scatter(
         vec3_from(layout.probe_positions[probe_index]),
         reaching.iter().map(|&index| {
             let index = index as usize;
-            (direct_lights[index], global_indices[index])
+            (
+                direct_lights[index],
+                global_indices[index],
+                early_outs[index],
+            )
         }),
         probe_index as u64,
         |from, to| segment_clear(&ray_ctx, from, to),
@@ -359,6 +380,7 @@ fn bake_animated_scatter_block(
     layout: &ProbeGridLayout,
     light: &MapLight,
     source_index: u64,
+    early_out: ProbeEarlyOut,
     affinity_cell: u32,
     affinity_dims: [u32; 3],
 ) -> Vec<u16> {
@@ -397,6 +419,7 @@ fn bake_animated_scatter_block(
                             vec3_from(layout.probe_positions[probe_index]),
                             &unit_light,
                             source_index,
+                            early_out,
                             probe_index as u64,
                             |from, to| segment_clear(&ray_ctx, from, to),
                         )
@@ -413,7 +436,7 @@ fn bake_animated_scatter_block(
 
 fn encode_static_scatter<'a>(
     probe: Vec3,
-    lights: impl IntoIterator<Item = (&'a MapLight, u64)>,
+    lights: impl IntoIterator<Item = (&'a MapLight, u64, ProbeEarlyOut)>,
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> [u16; 4] {
@@ -430,10 +453,16 @@ fn encode_animated_scatter(
     probe: Vec3,
     light: &MapLight,
     source_index: u64,
+    early_out: ProbeEarlyOut,
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> [u16; 4] {
-    let radiance = visible_radiance_sum(probe, [(light, source_index)], probe_index, trace);
+    let radiance = visible_radiance_sum(
+        probe,
+        [(light, source_index, early_out)],
+        probe_index,
+        trace,
+    );
     [
         f32_to_f16_bits(radiance.x),
         f32_to_f16_bits(radiance.y),
@@ -444,24 +473,28 @@ fn encode_animated_scatter(
 
 /// Direct radiance without a surface cosine or SH projection. `light` remains
 /// the only authority for point falloff, spotlight cones, and directional
-/// intensity; `soft_visibility` remains the shadow authority.
+/// intensity; soft visibility (`soft_visibility_early_out`) remains the shadow
+/// authority. Each light's early-out is [`ProbeEarlyOut::for_probe_point`] of
+/// its embedded-emitter flag: a flagged light traces its full set, as in direct
+/// SH.
 fn visible_radiance_sum<'a>(
     probe: Vec3,
-    lights: impl IntoIterator<Item = (&'a MapLight, u64)>,
+    lights: impl IntoIterator<Item = (&'a MapLight, u64, ProbeEarlyOut)>,
     probe_index: u64,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> Vec3 {
     let mut sum = Vec3::ZERO;
-    for (light, global_index) in lights {
+    for (light, global_index, early_out) in lights {
         let Some((radiance, direction)) = incident_radiance_at_point(light, probe) else {
             continue;
         };
-        let visibility = soft_visibility(
+        let visibility = soft_visibility_early_out(
             probe,
             direction,
             light,
             scatter_visibility_seed(probe_index, global_index),
             DEFAULT_AREA_SAMPLE_COUNT,
+            early_out,
             &trace,
         );
         sum += radiance * visibility;
@@ -514,6 +547,9 @@ fn static_cache_key(
         hasher.update(&(encoded.len() as u32).to_le_bytes());
         hasher.update(&encoded);
     }
+    // Flagged lights trace their full set; the flags exist only with the
+    // penumbra floor on, so the flagged set is keyed (as for direct SH).
+    inputs.static_embedded_emitters.hash_keys(&mut hasher);
     CacheKey::new(
         BILLBOARD_DIRECT_SCATTER_STAGE_ID,
         BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
@@ -549,6 +585,7 @@ fn animated_cache_key(
     for light in &direct_deltas.affinity_lights {
         hasher.update(&light.to_le_bytes());
     }
+    inputs.animated_embedded_emitters.hash_keys(&mut hasher);
     CacheKey::new(
         ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID,
         ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
@@ -804,8 +841,16 @@ mod tests {
                 .expect("fixture must reach probe")
                 .0
         });
-        let actual =
-            visible_radiance_sum(probe, lights.iter().copied().zip([0, 1, 2]), 0, |_, _| true);
+        let actual = visible_radiance_sum(
+            probe,
+            lights
+                .iter()
+                .copied()
+                .zip([0, 1, 2])
+                .map(|(light, index)| (light, index, ProbeEarlyOut::Agreed)),
+            0,
+            |_, _| true,
+        );
 
         assert_vec3_close(actual, expected);
     }
@@ -813,7 +858,12 @@ mod tests {
     #[test]
     fn visible_scatter_is_zero_for_an_occluded_light() {
         let point = light(LightType::Point);
-        let actual = visible_radiance_sum(Vec3::ZERO, [(&point, 0)], 0, |_, _| false);
+        let actual = visible_radiance_sum(
+            Vec3::ZERO,
+            [(&point, 0, ProbeEarlyOut::Agreed)],
+            0,
+            |_, _| false,
+        );
 
         assert_vec3_close(actual, Vec3::ZERO);
     }
@@ -832,9 +882,12 @@ mod tests {
         point.origin = DVec3::new(0.5, -0.5, 0.0);
         let probe = Vec3::new(0.5, -0.5, -2.0);
 
-        let actual = visible_radiance_sum(probe, [(&point, 0)], 0, |from, to| {
-            segment_clear(&trace_ctx, from, to)
-        });
+        let actual = visible_radiance_sum(
+            probe,
+            [(&point, 0, ProbeEarlyOut::Agreed)],
+            0,
+            |from, to| segment_clear(&trace_ctx, from, to),
+        );
 
         assert_vec3_close(actual, Vec3::ZERO);
     }
@@ -851,7 +904,10 @@ mod tests {
 
         let actual = visible_radiance_sum(
             Vec3::ZERO,
-            [(&out_of_range, 0), (&outside_cone, 1)],
+            [
+                (&out_of_range, 0, ProbeEarlyOut::Agreed),
+                (&outside_cone, 1, ProbeEarlyOut::Agreed),
+            ],
             0,
             |_, _| true,
         );
@@ -963,6 +1019,8 @@ mod tests {
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            static_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let direct = AnimatedDirectShDeltaVolumesSection {
             affinity_factor: 4,

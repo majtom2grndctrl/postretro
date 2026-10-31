@@ -153,6 +153,7 @@ fn layer_budget_sections_match_pre_change_cold_and_warm() {
         &AlphaLightsNs::from_lights(&lights),
         None,
         &[],
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &prims,
         &config(false),

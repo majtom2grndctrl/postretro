@@ -945,6 +945,17 @@ fn run_after_parsing(
     let direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());
     let direct_sh_control = BakeControl::new(Arc::clone(&governor), &direct_sh_progress);
+    // Static lights whose emitter sphere reaches into geometry trace their full
+    // set at every probe: direct SH here, its deltas and the billboard scatter
+    // below. Tested once for all three, on the pre-cut geometry; the probe
+    // stages run before the atlas cut, so they cannot reuse the lightmap
+    // stage's set. That stage tests the same lights on the cut geometry and
+    // warns once for each light either test flags.
+    let static_embedded_emitters = direct_sh_bake::embedded_emitters(
+        &sh_ctx,
+        lightmap_config.penumbra_floor,
+        &direct_sh_control,
+    );
     // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
@@ -968,6 +979,7 @@ fn run_after_parsing(
         let inputs = direct_sh_bake::DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &runtime.portals,
+            embedded_emitters: &static_embedded_emitters,
         };
         // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
         // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
@@ -1001,6 +1013,15 @@ fn run_after_parsing(
     );
     let animated_direct_sh_control =
         BakeControl::new(Arc::clone(&governor), &animated_direct_sh_progress);
+    // As for static lights; shared with the animated billboard scatter, and
+    // warned with the weight-map stage's own flags, or alone when that stage
+    // has no chunk to bake.
+    let animated_embedded_emitters = animated_direct_sh_bake::embedded_emitters(
+        &sh_ctx,
+        &animated_baked_lights,
+        lightmap_config.penumbra_floor,
+        &animated_direct_sh_control,
+    );
     let animated_direct_sh_delta_volumes_section = if animated_baked_lights.is_empty() {
         None
     } else {
@@ -1009,6 +1030,7 @@ fn run_after_parsing(
             portals: &runtime.portals,
             animated_lights: &animated_baked_lights,
             mutable_descriptors: &script_mutable_descriptor_slots,
+            embedded_emitters: &animated_embedded_emitters,
         };
         animated_direct_sh_bake::bake_animated_direct_sh_delta_volumes_controlled(
             &inputs,
@@ -1070,6 +1092,7 @@ fn run_after_parsing(
                 let inputs = direct_sh_bake::DirectBakeInputs {
                     sh_ctx: &sh_ctx,
                     portals: &runtime.portals,
+                    embedded_emitters: &static_embedded_emitters,
                 };
                 direct_sh_bake::bake_direct_sh_delta_volumes_controlled(
                     &inputs,
@@ -1378,6 +1401,8 @@ fn run_after_parsing(
         sh_ctx: &sh_ctx,
         portals: &runtime.portals,
         animated_lights: &animated_baked_lights,
+        static_embedded_emitters: &static_embedded_emitters,
+        animated_embedded_emitters: &animated_embedded_emitters,
     };
     let animated_scatter_layout_fits_pack_cap =
         delta_sections
@@ -1611,6 +1636,7 @@ fn run_after_parsing(
         &alpha_lights_ns,
         delta_sections.entity_shadow_lights.as_ref(),
         &map_data.light_source_labels,
+        &static_embedded_emitters,
         &bvh,
         &bvh_primitives,
         &lightmap_config,
@@ -1723,6 +1749,13 @@ fn run_after_parsing(
     let animated_weight_control =
         BakeControl::new(Arc::clone(&governor), &animated_weight_progress);
     let animated_light_weight_maps_section = if animated_light_chunks_section.chunks.is_empty() {
+        // No weight map to bake, so only the probe-point bakes' flags warn.
+        animated_atlas_stage::warn_embedded_emitters(
+            &crate::texel_footprint::EmbeddedEmitters::default(),
+            &animated_embedded_emitters,
+            &animated_baked_lights,
+            &map_data.light_source_labels,
+        );
         None
     } else {
         let wm_inputs = animated_light_weight_maps::WeightMapInputs {
@@ -1750,6 +1783,7 @@ fn run_after_parsing(
             &animated_weight_control,
             &animated_baked_lights,
             &map_data.light_source_labels,
+            &animated_embedded_emitters,
         )?)
     };
     let weight_map_step_elapsed = animated_light_weight_maps_section

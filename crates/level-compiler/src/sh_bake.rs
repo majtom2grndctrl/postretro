@@ -33,12 +33,15 @@ use thiserror::Error;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
+#[cfg(test)]
+use crate::lightmap_bake::soft_visibility;
 use crate::lightmap_bake::{
-    DEFAULT_AREA_SAMPLE_COUNT, soft_visibility, soft_visibility_one_sample,
+    DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_early_out, soft_visibility_one_sample,
 };
 use crate::map_data::{FalloffModel, LightAnimation, LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::ray_traversal::BoundedRay;
+use crate::texel_footprint::ProbeEarlyOut;
 
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
@@ -1230,7 +1233,7 @@ pub(crate) fn bake_probe_indirect_rgb(
 /// Direct-at-probe SH L2 RGB for the direct SH baker (`direct_sh_bake.rs`). Bakes
 /// DIRECT light from STATIC lights along the probe→light incident direction using
 /// the validated D3 assembly (Task 0): for each light reaching the probe,
-/// `radiance = incident_radiance_at_point(light, probe) × soft_visibility(probe,
+/// `radiance = incident_radiance_at_point(light, probe) × soft visibility(probe,
 /// light)` (NORMAL-FREE — the surface cosine is left to the runtime fragment),
 /// `accumulate_sh_rgb` along the incident direction, then `apply_cosine_lobe_rgb`
 /// once after all lights. The packed coefficients reconstruct irradiance directly
@@ -1244,17 +1247,24 @@ pub(crate) fn bake_probe_indirect_rgb(
 /// light is provably zero-contribution at this probe, so the seed indexing keeps
 /// the output byte-identical to an unculled bake.
 ///
-/// The probe is a point in air with no surface normal, so `soft_visibility` uses
-/// the incident direction `l` as the offset normal (matching the Task 0 D3
-/// harness); the hard-shadow case routes through `segment_clear`, the same
-/// shadow-ray routine the indirect bake uses.
+/// The probe is a point in air with no surface normal, so soft visibility
+/// (`soft_visibility_early_out`) uses the incident direction `l` as the offset
+/// normal (matching the Task 0 D3 harness); the hard-shadow case routes through
+/// `segment_clear`, the same shadow-ray routine the indirect bake uses.
+///
+/// `early_outs[i]` is `lights[i]`'s probe early-out,
+/// [`ProbeEarlyOut::for_probe_point`] of its embedded-emitter flag: a light
+/// whose emitter sphere reaches into geometry traces its full sample set,
+/// and every other light keeps the 4-probe early-out, bit for bit.
 pub(crate) fn bake_probe_direct_rgb(
     ctx: &RaytracingCtx<'_>,
     probe_pos: Vec3,
     lights: &[&MapLight],
     light_global_indices: &[u64],
+    early_outs: &[ProbeEarlyOut],
     probe_index: u64,
 ) -> [f32; 27] {
+    debug_assert_eq!(lights.len(), early_outs.len());
     let mut acc = [0f32; 27];
     for (light_index, light) in lights.iter().enumerate() {
         let Some((radiance, l)) = incident_radiance_at_point(light, probe_pos) else {
@@ -1264,12 +1274,13 @@ pub(crate) fn bake_probe_direct_rgb(
         // No per-ray axis here (direct is a single shadow query per light, not a
         // sphere of rays), so the ray-index seed axis is fixed at 0.
         let seed = soft_visibility_seed(probe_index, 0, global_index);
-        let v = soft_visibility(
+        let v = soft_visibility_early_out(
             probe_pos,
             l,
             light,
             seed,
             crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
+            early_outs[light_index],
             |from, to| segment_clear(ctx, from, to),
         );
         if v <= 0.0 {

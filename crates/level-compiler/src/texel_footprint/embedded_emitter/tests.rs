@@ -320,7 +320,13 @@ fn the_warning_names_each_embedded_light_with_its_fraction() {
     ];
 
     let capture = LogCapture::start();
-    set.warn("static", |i| lights.get(i), |i| labels.get(i).copied());
+    EmbeddedEmitters::warn(
+        "static",
+        &set,
+        &EmbeddedEmitters::default(),
+        |i| lights.get(i),
+        |i| labels.get(i).copied(),
+    );
     let warnings: Vec<String> = capture
         .records()
         .iter()
@@ -347,6 +353,82 @@ fn the_warning_names_each_embedded_light_with_its_fraction() {
             warnings[0]
         );
     }
+}
+
+/// A light the texel test and the probe test both flag warns once, naming
+/// both bake families and the texel test's fraction; a light only one test
+/// flags (a face cut through its sphere splits the verdicts) warns once,
+/// naming only the bakes that trace its full set.
+#[test]
+fn a_light_either_test_flags_warns_once_naming_the_bakes_it_reaches() {
+    let texels = EmbeddedEmitters::from_flags([(4, 0.5), (1, 0.25)]);
+    let probes = EmbeddedEmitters::from_flags([(1, 0.125), (3, 0.375)]);
+
+    let capture = LogCapture::start();
+    EmbeddedEmitters::warn("static", &texels, &probes, |_| None, |_| None);
+    let warnings: Vec<String> = capture
+        .records()
+        .iter()
+        .filter(|record| record.level == log::Level::Warn)
+        .map(|record| record.message.clone())
+        .collect();
+
+    assert_eq!(
+        warnings.len(),
+        3,
+        "one warning per flagged light: {warnings:?}"
+    );
+    for (warning, (name, reach)) in warnings.iter().zip([
+        (
+            "static light #1: 25.0%",
+            "makes its lit lightmap texels and the SH and billboard probes it lights trace",
+        ),
+        (
+            "static light #3: 37.5%",
+            "makes the SH and billboard probes it lights trace",
+        ),
+        (
+            "static light #4: 50.0%",
+            "makes its lit lightmap texels trace",
+        ),
+    ]) {
+        assert!(
+            warning.contains(name) && warning.contains(reach),
+            "{warning}"
+        );
+    }
+}
+
+/// An animated light's texels are weight-map texels, not lightmap texels.
+#[test]
+fn an_animated_light_names_its_weight_map_texels() {
+    let texels = EmbeddedEmitters::from_flags([(0, 0.5), (1, 0.25)]);
+    let probes = EmbeddedEmitters::from_flags([(1, 0.25)]);
+
+    let capture = LogCapture::start();
+    EmbeddedEmitters::warn("animated", &texels, &probes, |_| None, |_| None);
+    let warnings: Vec<String> = capture
+        .records()
+        .iter()
+        .filter(|record| record.level == log::Level::Warn)
+        .map(|record| record.message.clone())
+        .collect();
+
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("animated light #0: 50.0%")
+            && warnings[0].contains("makes its lit weight-map texels trace")
+            && !warnings[0].contains("lightmap texels"),
+        "{}",
+        warnings[0]
+    );
+    assert!(
+        warnings[1].contains(
+            "makes its lit weight-map texels and the SH and billboard probes it lights trace"
+        ) && !warnings[1].contains("lightmap texels"),
+        "{}",
+        warnings[1]
+    );
 }
 
 /// The flag callers read without the fraction stops at the threshold's
@@ -457,7 +539,13 @@ fn the_embedded_flag_is_exactly_a_fraction_at_the_threshold() {
 
     // Only flagged lights warn.
     let capture = LogCapture::start();
-    set.warn("static", |key| lights.get(key), |_| None);
+    EmbeddedEmitters::warn(
+        "static",
+        &set,
+        &EmbeddedEmitters::default(),
+        |key| lights.get(key),
+        |_| None,
+    );
     let warnings = capture
         .records()
         .iter()

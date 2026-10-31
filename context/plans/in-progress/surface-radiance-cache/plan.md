@@ -96,7 +96,15 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 |---|---|---|---|---|
 | 1 | Split `sh_bake.rs` along its responsibility clusters, behaviour-preserving, in its own commit (no output change; `cargo test -p postretro-level-compiler --bin prl-build sh_bake` count unchanged) | worker (Opus), reviewed by integrating executor | — | done: 8 source modules (root 310 lines, max 257); 10 subject test files + `test_fixtures.rs`; `--bin prl-build` 2087 tests listed before and after (2064 pass, 23 ignored), `sh_bake` filter 125 passed + 1 ignored before and after; token-diff review shows only import changes; clippy clean |
 | 2 | Thin slice, testing the riskiest premise. Add the patch set on pre-cut static faces, the primitive → face table, single-bounce summed patch direct in memory (no layers or cache yet), and a gather that reads patches. Upgrade the parity reference (production albedo, per-light embedded rule) and run AC 1–2 on campaign-test and a fixture room. Settle patch size, lookup and back-face handling from the result. Production still bakes one-sample. | integrating executor | 1 | done: `surface_radiance/` (patches, layer, sum, gather), the `RadianceSource` seam, the bounce-family classifier (sdf-inclusive) and a parity reference with production albedo and the per-light rule. AC 1–2 pass on campaign-test and soft_shadow_test at 0.5 m bilinear (Delegated answers). `--bin prl-build` 2073 passed, 23 ignored. No map flags an embedded light; AC 3 exercises the rule in task 3. |
-| 3 | Cold id-34 path switches to the patch cache (single bounce; the warm grouped path stays until task 6, so tasks 3–5 prove against the live cold bake). SH base working-set gate (named error, prediction priced before any ray or texture read) placed before Materials. Move static embedded classification after it. Add the sdf-inclusive bounce-family classify and the bounce warning line. Scope the cache lifetime inside ShBake. (AC 3, 30, 32, 33) | integrating executor | 2 | |
+| 3 | Cold id-34 path switches to the patch cache (single bounce; the warm grouped path stays until task 6, so tasks 3–5 prove against the live cold bake). SH base working-set gate (named error, prediction priced before any ray or texture read) placed before Materials. Move static embedded classification after it. Add the sdf-inclusive bounce-family classify and the bounce warning line. Scope the cache lifetime inside ShBake. (AC 3, 30, 32, 33) | integrating executor | 2 | done:
+- Cold `--no-cache` id 34 bakes through `surface_radiance::stage::bake_sh_base`.
+- The SH base gate (`surface_radiance/working_set.rs`) is checked against the SH-delta gate cheapest first (`pipeline/sh_working_set_gates.rs`). Predictions: campaign-test 414.9 MB (106k patches), soft_shadow_test 2.8 MB.
+- Both embedded sets are classified after the gates and before TextureValidation, and the bounce-only line is new.
+- The cache drops before Delta SH Bake.
+- Tests: `--bin prl-build` 2083 passed, 23 ignored; `lightmap_working_set_contract` 4 passed.
+- PRL comparison against a base-commit binary on three fixtures: cold differs only in ids 34 and 50, warm is identical, and the base binary's id-35, scatter and chunk-list cache entries hit.
+- Parity through production cold matches the 0.5 m bilinear candidate.
+- Warm and cold ids 34, 50 and 54 differ until task 6: `fluid_seam_determinism` compares id 54 within each mode, and the `coloured_bounce_cache` warm ≤ cold check was relaxed. Task 6 restores both. |
 | 4 | Per-light sparse layers: content-keyed digest folding its own flag and the floor setting, seeds by patch id and light digest, digest-ordered sum, and a cache entry per layer written as it finishes, outside permits. Add cost counters. (AC 4, 5, 10–13, 16, 18, 25) | integrating executor | 3 | |
 | 5 | Multi-bounce patch-to-patch gather over every static face. Add `_bounce_fill`: parse with default + warn, FGD, `docs/level_design.md`, knob-gate amendment. Add the convergence fixtures; fix the bounce count. (AC 6–8, 19, 20) | integrating executor; FGD/docs/knob-gate slice to a Sonnet worker | 4 | |
 | 6 | One id-34 path: whole-volume gather cached as one entry over every gather input, stage-version bump. Production switches to it. Retire `sh_group.rs`, the grouped path, `build_shell` and the warm warning. Move the key helpers unchanged. Update the memo lists, persistence gate, help text and the `build_pipeline.md`/`testing_guide.md` text. (AC 9, 14, 15, 17, 21, 23, 26, 27, 28) | integrating executor | 5 | |
@@ -104,3 +112,13 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 | 8 | Measurements: light-count sweep, Build Summary before/after on hallway-mini, `stress-warren-mini` and `campaign-test`. The owner launches the full-hallway warm and cold runs (AC 34–37). Prepare the A/B builds at fill 0 / mid / 1 plus the white room. | worker (Sonnet) for scripted runs; owner for hallway and A/B | 7 | |
 
 Hot paths touched: bake only; no per-frame path. Bake constraints: patch shading bounded to each light's reach, gather and later bounces bounded to static world faces, working set gated before work, cache I/O outside permits.
+
+
+## Notes for preflight
+- The worker reports these ignored tests fail at c1b1daba4 too, before task 3, so they are not caused by this branch:
+  - `coloured_bounce_cache::cold_and_warm_builds_cache_entries_only_for_pre_change_stages`
+  - both `coloured_bounce_oracle` comparisons
+  - `animated_weight_maps_fixtures::editing_only_lightmap_density_keeps_the_sdf_atlas_and_residency_set_cached`
+  Confirm against `main` before the review loop.
+- `shade_light_layer` still visits every patch for each light, with only a per-patch range early-out. Task 4 bounds it with `PatchReachIndex` (AC 5).
+- `build_pipeline.md` step 9, the Embedded emitters bullet and the `--working-set-max-size` row are stale. Update them at land.

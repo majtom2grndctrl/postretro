@@ -1,7 +1,8 @@
 //! On-demand measurement: SH bounce estimators against the full set on real maps.
 //! See: context/lib/build_pipeline.md §PRL Compilation (Soft-shadow bake cost)
 //! Cost: every map, campaign-test included, is baked three times (one-sample,
-//! full set, reseeded full set), plus one patch shading and gather per patch size.
+//! full set, reseeded full set), plus one patch shading and gather per patch size
+//! and lookup, and the production cold SH base bake.
 
 use postretro_level_format::delta_sh_volumes::{
     DEFAULT_DELTA_PROBE_F16_STRIDE, DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection,
@@ -829,9 +830,12 @@ fn bounce_parity_on_real_maps() {
         };
         // The visibility modes hold a `'static` flag set; one small set per
         // map is leaked for the test's life.
-        let embedded: &'static EmbeddedEmitters = Box::leak(Box::new(
-            crate::direct_sh_bake::bounce_embedded_emitters(&inputs, true, &control),
-        ));
+        let embedded: &'static EmbeddedEmitters =
+            Box::leak(Box::new(crate::direct_sh_bake::bounce_embedded_emitters(
+                &crate::direct_sh_bake::EmitterScene::of(&inputs),
+                true,
+                &control,
+            )));
 
         let timed = |mode| {
             let started = std::time::Instant::now();
@@ -927,6 +931,37 @@ fn bounce_parity_on_real_maps() {
                     back_by_slot.clone(),
                 ));
             }
+        }
+
+        // The production cold entry point: the SH base gate's patch set,
+        // then `bake_sh_base` (0.5 m cells, bilinear lookup).
+        {
+            let started = std::time::Instant::now();
+            let (handoff, projection) = crate::surface_radiance::plan_sh_base(
+                &fx.geometry,
+                &light_refs,
+                config.probe_spacing,
+                u64::MAX,
+            )
+            .expect("the SH base projection fits u64");
+            let reads = back_face_reads(&inputs, &config, &handoff.patches);
+            let production = crate::surface_radiance::bake_sh_base(
+                &inputs, &config, handoff, embedded, &control,
+            );
+            eprintln!(
+                "{map}: production cold bake_sh_base {:.1?}; gate predicted {} bytes ({projection})",
+                started.elapsed(),
+                projection.estimated_peak_bytes,
+            );
+            assert_eq!(
+                production.probes, full.probes,
+                "the production gather's depth moments equal the reference's"
+            );
+            candidates.push((
+                Estimator::new("production cold (bake_sh_base)", true, false),
+                rgba16f_tiles(&production),
+                reads.iter().map(|&(_, b)| b > 0).collect(),
+            ));
         }
 
         let full_tiles = rgba16f_tiles(&full);

@@ -128,3 +128,56 @@ fn a_back_face_hit_reads_what_the_reference_reads_for_it() {
         }
     }
 }
+
+// The production cold SH base bake (gate patch set, patch shading, bilinear
+// gather) gives the same id-34 bytes at one worker and at many: chunks
+// split the patch list in a fixed way and layers sum in light order.
+#[test]
+fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
+    let geometry = floor_and_walls_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let tree = tree_all_empty();
+    let exterior = HashSet::new();
+    let lights = [
+        soft_point_light(DVec3::new(2.0, 2.5, 2.0), 0.3),
+        soft_point_light(DVec3::new(0.5, 1.0, 3.5), 0.1),
+    ];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    let inputs = ShBakeCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: lights.len(),
+    };
+    let config = ShConfig { probe_spacing: 0.5 };
+    let light_refs = static_light_refs(&inputs);
+    let bake = |threads| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let (handoff, _) =
+                crate::surface_radiance::plan_sh_base(&geometry, &light_refs, 0.5, u64::MAX)
+                    .unwrap();
+            crate::surface_radiance::bake_sh_base(
+                &inputs,
+                &config,
+                handoff,
+                &NO_EMBEDDED_EMITTERS,
+                &BakeControl::unrestricted(),
+            )
+        })
+    };
+    let one = bake(1);
+    assert!(one.compact_atlas.iter().any(|&byte| byte != 0));
+    let many = bake(8);
+    assert_eq!(one.compact_atlas, many.compact_atlas);
+    assert_eq!(one.probes, many.probes);
+}

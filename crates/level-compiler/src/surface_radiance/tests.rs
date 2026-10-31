@@ -359,3 +359,77 @@ fn a_layer_bakes_the_lights_colour_and_intensity_in() {
         Vec3::from(entry.radiance) + Vec3::from(red.entries[0].radiance)
     );
 }
+
+// The bucketed reach count equals the bounce's own range test at every
+// patch, for lights near, far, straddling bucket edges, off the patch set,
+// and of a range wider than the level.
+#[test]
+fn reach_count_equals_the_range_test_at_every_patch() {
+    let geometry = polygon_geometry(&[
+        floor([-20.0, -20.0], [20.0, 20.0], 0.0),
+        floor([-3.0, -3.0], [3.0, 3.0], 2.5),
+    ]);
+    let patches = PatchSet::build(&geometry);
+    let index = PatchReachIndex::new(patches.patches());
+    let mut lights = Vec::new();
+    for (origin, range) in [
+        ([0.0, 1.0, 0.0], 3.0),
+        ([4.0, 0.5, -4.0], 4.0),
+        ([-19.9, 0.1, 19.9], 7.5),
+        ([30.0, 1.0, 0.0], 5.0),
+        ([0.0, 2.0, 0.0], 500.0),
+    ] {
+        let mut light = soft_point(origin, 0.0);
+        light.falloff_range = range;
+        lights.push(light);
+    }
+    let refs: Vec<&MapLight> = lights.iter().collect();
+    let counts = index.counts_in_reach(&refs);
+    for (light, count) in lights.iter().zip(counts) {
+        let brute = patches
+            .patches()
+            .iter()
+            .filter(|patch| crate::sh_bake::light_reaches_point(light, patch.centroid))
+            .count() as u64;
+        assert_eq!(count, brute, "{:?}", light.origin);
+    }
+    let mut sun = soft_point([0.0, 5.0, 0.0], 0.0);
+    sun.light_type = LightType::Directional;
+    assert_eq!(index.count_in_reach(&sun), patches.len() as u64);
+}
+
+// AC 31, the gate's half: a light's layer holds at most one entry per side
+// of each patch the gate counted in its reach, and only those patches, so
+// the gate's layer term bounds what shading allocates. Progress advances
+// one unit per patch chunk.
+#[test]
+fn a_layer_holds_entries_only_on_patches_the_gate_counts_in_reach() {
+    let geometry = shadowed_floor();
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let ctx = ray_ctx(&geometry, &bvh, &primitives);
+    let patches = PatchSet::build_with_size(&geometry, 0.25);
+    let index = PatchReachIndex::new(patches.patches());
+    for (origin, range) in [([0.2, 2.0, 0.1], 20.0), ([2.5, 0.4, -2.5], 1.5)] {
+        let mut light = soft_point(origin, 0.4);
+        light.falloff_range = range;
+        let progress = crate::reporter::StageProgress::indeterminate();
+        let control = BakeControl::new(
+            std::sync::Arc::new(crate::governor::Governor::new(usize::MAX, false)),
+            &progress,
+        );
+        let layer = shade_light_layer(&ctx, &patches, &light, 0, false, &control);
+        let reach = index.count_in_reach(&light);
+        assert!(!layer.entries.is_empty());
+        assert!(layer.entries.len() as u64 <= 2 * reach, "{origin:?}");
+        assert!(layer.entries.iter().all(|entry| {
+            crate::sh_bake::light_reaches_point(
+                &light,
+                patches.patches()[entry.patch as usize].centroid,
+            )
+        }));
+        assert_eq!(
+            progress.completed(),
+            patches.len().div_ceil(PATCHES_PER_CHUNK)
+        );
+    }
+}

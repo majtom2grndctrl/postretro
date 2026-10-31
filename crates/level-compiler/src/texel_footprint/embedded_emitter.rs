@@ -201,7 +201,6 @@ impl EmbeddedEmitters {
     /// [`Self::classify`] for the bounce family (the surface radiance
     /// cache's patch direct and its parity reference): every point or spot
     /// light with an emitter sphere is tested, `sdf`-shadowed included.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn classify_bounce<'l>(
         lights: impl IntoIterator<Item = (usize, &'l MapLight)>,
         bvh: &Bvh<f32, 3>,
@@ -345,17 +344,59 @@ impl EmbeddedEmitters {
                 (true, false) => format!("its lit {texel_kind} texels"),
                 (false, _) => "the SH and billboard probes it lights".to_owned(),
             };
-            let name = label(key).map_or_else(|| format!("#{key}"), str::to_owned);
-            let size = light(key).map_or(0.0, |light| light.light_size);
-            log::warn!(
-                "[Lightmap] emitter inside geometry: {kind} light {name}: {:.1}% of its \
-                 {size:.3} m emitter sphere lies inside or behind a surface, which dims the \
-                 light by about that much and makes {reach} trace every shadow sample. Move the \
-                 light off the surface or shrink `_light_size`.",
-                fraction * 100.0,
+            warn_one(kind, key, fraction, &reach, &light, &label);
+        }
+    }
+
+    /// Warn once per light `bounce` flags and `probes` does not, in key
+    /// order, naming the SH bounce bake: the bounce family tests
+    /// `sdf`-shadowed lights, which no texel or probe-point stage tests, so
+    /// no other warning names them. A light both flag keeps the probe-point
+    /// line [`Self::warn`] gives it. Both sets are keyed alike; `light` and
+    /// `label` resolve those keys, as for [`Self::warn`]. Called on the
+    /// caller thread every compile, cold or warm.
+    pub(crate) fn warn_bounce_only<'a, 's>(
+        kind: &str,
+        bounce: &Self,
+        probes: &Self,
+        light: impl Fn(usize) -> Option<&'a MapLight>,
+        label: impl Fn(usize) -> Option<&'s str>,
+    ) {
+        for &(key, fraction) in &bounce.embedded {
+            if probes.is_embedded(key) {
+                continue;
+            }
+            warn_one(
+                kind,
+                key,
+                fraction,
+                "the SH bounce patches it lights",
+                &light,
+                &label,
             );
         }
     }
+}
+
+/// One emitter-inside-geometry warning, naming the bakes (`reach`) that
+/// trace the light's full set.
+fn warn_one<'a, 's>(
+    kind: &str,
+    key: usize,
+    fraction: f32,
+    reach: &str,
+    light: &impl Fn(usize) -> Option<&'a MapLight>,
+    label: &impl Fn(usize) -> Option<&'s str>,
+) {
+    let name = label(key).map_or_else(|| format!("#{key}"), str::to_owned);
+    let size = light(key).map_or(0.0, |light| light.light_size);
+    log::warn!(
+        "[Lightmap] emitter inside geometry: {kind} light {name}: {:.1}% of its \
+         {size:.3} m emitter sphere lies inside or behind a surface, which dims the \
+         light by about that much and makes {reach} trace every shadow sample. Move the \
+         light off the surface or shrink `_light_size`.",
+        fraction * 100.0,
+    );
 }
 
 #[cfg(test)]

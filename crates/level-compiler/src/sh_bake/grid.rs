@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use glam::{DVec3, Vec3};
 
 use super::{ShBakeCtx, ShConfig};
+use crate::geometry::GeometryResult;
 use crate::partition::{BspTree, find_leaf_for_point};
 
 /// Geometry-derived layout of the probe grid, independent of lighting. Shared by
@@ -53,7 +54,7 @@ pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> Pr
         };
     }
 
-    let (world_min, world_max) = world_aabb(inputs);
+    let (world_min, world_max) = world_aabb(inputs.geometry);
     let dims = grid_dimensions(world_min, world_max, probe_spacing_meters);
     let total = dims[0] as usize * dims[1] as usize * dims[2] as usize;
 
@@ -87,10 +88,22 @@ pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> Pr
     }
 }
 
-fn world_aabb(inputs: &ShBakeCtx<'_>) -> (DVec3, DVec3) {
+/// The probe grid's dimensions alone, as [`probe_grid_layout`] resolves
+/// them, without placing or classifying a probe: `[0, 0, 0]` for a map with
+/// no geometry. For the SH base working-set gate, which prices the volume
+/// before any SH work.
+pub(crate) fn probe_grid_dims(geometry: &GeometryResult, probe_spacing: f32) -> [u32; 3] {
+    if geometry.geometry.vertices.is_empty() {
+        return [0, 0, 0];
+    }
+    let (world_min, world_max) = world_aabb(geometry);
+    grid_dimensions(world_min, world_max, probe_spacing)
+}
+
+fn world_aabb(geometry: &GeometryResult) -> (DVec3, DVec3) {
     let mut min = DVec3::splat(f64::INFINITY);
     let mut max = DVec3::splat(f64::NEG_INFINITY);
-    for v in &inputs.geometry.geometry.vertices {
+    for v in &geometry.geometry.vertices {
         let p = DVec3::new(
             v.position[0] as f64,
             v.position[1] as f64,

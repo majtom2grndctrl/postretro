@@ -15,9 +15,11 @@ pub use animation::validate_light_animations;
 #[cfg(test)]
 pub(crate) use bounce::bounce_sample_index;
 pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
-pub(crate) use grid::{ProbeGridLayout, probe_grid_layout, probe_is_valid_pub, vec3_from};
+pub(crate) use grid::{
+    ProbeGridLayout, probe_grid_dims, probe_grid_layout, probe_is_valid_pub, vec3_from,
+};
 pub(crate) use light_eval::{
-    bounce_contribution, incident_radiance_at_point, spot_cone_parameters,
+    bounce_contribution, incident_radiance_at_point, light_reaches_point, spot_cone_parameters,
 };
 pub(crate) use probe::{bake_probe, bake_probe_direct_rgb, bake_probe_indirect_rgb};
 pub use section::log_stats;
@@ -40,8 +42,8 @@ use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
 use postretro_level_format::sh_volume::{
-    ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe,
-    OctahedralShVolumeSection,
+    ANIMATED_SLOT_NONE, AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralAtlasTexel,
+    OctahedralShProbe, OctahedralShVolumeSection,
 };
 use rayon::prelude::*;
 
@@ -108,9 +110,7 @@ pub(crate) enum RadianceSource<'a> {
     /// visibility mode: today's per-hit estimator.
     Lights(BounceVisibility),
     /// Read the surface radiance cache's patch at the hit; traces no shadow
-    /// ray. Bakes only under tests until the SH base stage reads the cache
-    /// (surface-radiance-cache plan, task 3).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// ray. The cold SH base bake (`surface_radiance::bake_sh_base`).
     Patches(&'a PatchGather<'a>),
 }
 
@@ -139,7 +139,7 @@ pub struct ShBakeCtx<'a> {
 }
 
 impl<'a> ShBakeCtx<'a> {
-    fn ray_ctx(&self) -> RaytracingCtx<'a> {
+    pub(crate) fn ray_ctx(&self) -> RaytracingCtx<'a> {
         RaytracingCtx {
             bounce_materials: self.bounce_materials,
             bvh: self.bvh,
@@ -214,6 +214,19 @@ pub(crate) fn bake_sh_volume_with_source(
     control: &BakeControl,
     source: RadianceSource<'_>,
 ) -> OctahedralShVolumeSection {
+    bake_sh_volume_after(inputs, config, control, source, 0)
+}
+
+/// [`bake_sh_volume_with_source`] as the last phase of a stage whose
+/// earlier phases published `prior_units` of progress: the total it
+/// publishes counts them, one unit per probe after.
+pub(crate) fn bake_sh_volume_after(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    control: &BakeControl,
+    source: RadianceSource<'_>,
+    prior_units: usize,
+) -> OctahedralShVolumeSection {
     let probe_spacing_meters = config.probe_spacing;
     let layout = probe_grid_layout(inputs, config);
     if layout.is_empty() {
@@ -239,7 +252,7 @@ pub(crate) fn bake_sh_volume_with_source(
     let world_min = layout.world_min;
     let dims = layout.dims;
     let total = layout.total_probes();
-    control.publish_total(total);
+    control.publish_total(prior_units + total);
     let cell_size = layout.cell_size;
     let far_sentinel = layout.far_sentinel;
 
@@ -311,6 +324,48 @@ pub(crate) fn bake_sh_volume_with_source(
         slot_for_map_light,
     };
     compact_section_from_dense_atlas(section, &atlas_texels)
+}
+
+/// Host bytes the whole-volume bake of a `dims` grid holds, by
+/// representation: what the SH base working-set gate prices before the bake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ShVolumeBytes {
+    /// Every probe's baked coefficients and metadata plus the dense atlas
+    /// they pack into: co-resident while the bake compacts the atlas.
+    pub(crate) dense: u64,
+    /// One encoded or decoded copy of the section the bake returns: probe
+    /// metadata plus an atlas no larger than the dense one.
+    pub(crate) section: u64,
+}
+
+/// [`ShVolumeBytes`] for a `dims` grid, or `None` when a product overflows.
+/// A grid too large for the atlas layout prices one tile per probe; the bake
+/// refuses that grid itself.
+pub(crate) fn sh_volume_bytes(dims: [u32; 3]) -> Option<ShVolumeBytes> {
+    let probes = u64::from(dims[0])
+        .checked_mul(u64::from(dims[1]))?
+        .checked_mul(u64::from(dims[2]))?;
+    if probes == 0 {
+        return Some(ShVolumeBytes {
+            dense: 0,
+            section: 0,
+        });
+    }
+    let tile_texels = u64::from(DEFAULT_IRRADIANCE_TILE_DIMENSION).pow(2);
+    let atlas_texels = match sh_atlas_array_layout(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION) {
+        Ok(layout) => u64::from(layout.layer_count)
+            .checked_mul(u64::from(layout.atlas_width))?
+            .checked_mul(u64::from(layout.atlas_height))?,
+        Err(_) => probes.checked_mul(tile_texels)?,
+    };
+    let atlas = atlas_texels.checked_mul(size_of::<OctahedralAtlasTexel>() as u64)?;
+    let dense = probes
+        .checked_mul(size_of::<BakedProbe>() as u64)?
+        .checked_add(atlas)?;
+    let section = probes
+        .checked_mul(size_of::<OctahedralShProbe>() as u64)?
+        .checked_add(atlas)?;
+    Some(ShVolumeBytes { dense, section })
 }
 
 #[cfg(test)]

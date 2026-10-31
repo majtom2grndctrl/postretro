@@ -39,6 +39,7 @@
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
 use crate::bake_control::BakeControl;
+use bvh::bvh::Bvh;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
@@ -60,9 +61,11 @@ use crate::affinity_grid::{
     decompose_affinity_for_lights,
 };
 use crate::bc6h;
+use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
-use crate::light_namespaces::AlphaLightsNs;
+use crate::geometry::GeometryResult;
+use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
@@ -112,7 +115,7 @@ pub struct DirectBakeInputs<'a, 'b> {
 }
 
 /// The static-direct lights' emitter tests, keyed by position in
-/// `sh_ctx.static_lights`, with the penumbra floor on; with it off nothing is
+/// `scene.static_lights`, with the penumbra floor on; with it off nothing is
 /// flagged, so `--no-penumbra-floor` probes keep their pre-floor bytes. The
 /// test reads only the lights and geometry, which every keyed probe-point
 /// stage folds; the cached stages also fold the flagged keys
@@ -123,7 +126,7 @@ pub struct DirectBakeInputs<'a, 'b> {
 /// the lightmap stage takes it and warns once for each light either test
 /// flags.
 pub(crate) fn embedded_emitters(
-    sh_ctx: &ShBakeCtx<'_>,
+    scene: &EmitterScene<'_>,
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> EmbeddedEmitters {
@@ -131,31 +134,28 @@ pub(crate) fn embedded_emitters(
         return EmbeddedEmitters::default();
     }
     EmbeddedEmitters::classify(
-        sh_ctx
+        scene
             .static_lights
             .entries()
             .iter()
             .enumerate()
             .filter(|(_, entry)| entry.light.shadow_type == ShadowType::StaticLightMap)
             .map(|(index, entry)| (index, entry.light)),
-        sh_ctx.bvh,
-        sh_ctx.primitives,
-        sh_ctx.geometry,
+        scene.bvh,
+        scene.primitives,
+        scene.geometry,
         control,
     )
 }
 
 /// The bounce family's emitter tests: every static point or spot light with
 /// an emitter sphere, `sdf`-shadowed included, keyed by position in
-/// `sh_ctx.static_lights`, with the penumbra floor on; empty with it off, as
+/// `static_lights`, with the penumbra floor on; empty with it off, as
 /// [`embedded_emitters`] is. The probe-point set above, its consumers and
 /// its bytes are untouched: the surface radiance cache's patch direct reads
 /// this one, since every static light bounces whatever direct path it takes.
-// Bakes only under tests until the SH base stage classifies before patch
-// direct (surface-radiance-cache plan, task 3).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn bounce_embedded_emitters(
-    sh_ctx: &ShBakeCtx<'_>,
+    scene: &EmitterScene<'_>,
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> EmbeddedEmitters {
@@ -163,17 +163,39 @@ pub(crate) fn bounce_embedded_emitters(
         return EmbeddedEmitters::default();
     }
     EmbeddedEmitters::classify_bounce(
-        sh_ctx
+        scene
             .static_lights
             .entries()
             .iter()
             .enumerate()
             .map(|(index, entry)| (index, entry.light)),
-        sh_ctx.bvh,
-        sh_ctx.primitives,
-        sh_ctx.geometry,
+        scene.bvh,
+        scene.primitives,
+        scene.geometry,
         control,
     )
+}
+
+/// What the static emitter tests read: the static lights and the pre-cut
+/// geometry they are tested against. No material or probe input, so the
+/// pipeline classifies before the material stage.
+pub(crate) struct EmitterScene<'a> {
+    pub(crate) static_lights: &'a StaticBakedLights<'a>,
+    pub(crate) bvh: &'a Bvh<f32, 3>,
+    pub(crate) primitives: &'a [BvhPrimitive],
+    pub(crate) geometry: &'a GeometryResult,
+}
+
+#[cfg(test)]
+impl<'a> EmitterScene<'a> {
+    pub(crate) fn of(ctx: &ShBakeCtx<'a>) -> Self {
+        Self {
+            static_lights: ctx.static_lights,
+            bvh: ctx.bvh,
+            primitives: ctx.primitives,
+            geometry: ctx.geometry,
+        }
+    }
 }
 
 /// Each of the static-direct lights' probe early-outs, from its global

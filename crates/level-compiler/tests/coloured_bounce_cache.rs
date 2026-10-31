@@ -236,7 +236,10 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     assert_ne!(unmasked.sections[&27], first.sections[&27]);
 }
 
-fn warm_is_no_brighter_than_cold(warm: &[u8], cold: &[u8]) {
+/// Warm and cold id 34 share a grid and atlas of finite, nonnegative
+/// irradiance. Their values differ: cold gathers from the surface radiance
+/// cache while warm keeps the grouped per-hit estimator.
+fn warm_matches_cold_layout(warm: &[u8], cold: &[u8]) {
     let warm = OctahedralShVolumeSection::from_bytes(warm).unwrap();
     let cold = OctahedralShVolumeSection::from_bytes(cold).unwrap();
     assert_eq!(warm.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
@@ -254,14 +257,10 @@ fn warm_is_no_brighter_than_cold(warm: &[u8], cold: &[u8]) {
         for channel in 0..3 {
             let warm = u16::from_le_bytes([warm[channel * 2], warm[channel * 2 + 1]]);
             let cold = u16::from_le_bytes([cold[channel * 2], cold[channel * 2 + 1]]);
-            // Positive finite IEEE binary16 values have the same order as their bits.
+            // Nonnegative finite IEEE binary16 values sit below the infinity bits.
             assert!(
                 warm < 0x7c00 && cold < 0x7c00,
                 "nonnegative finite irradiance"
-            );
-            assert!(
-                warm <= cold,
-                "warm channel {warm:#06x} exceeds cold {cold:#06x}"
             );
         }
     }
@@ -312,7 +311,7 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
                 rebuilt.sections[&27], cold.sections[&27],
                 "warm indirect deltas are exact"
             );
-            warm_is_no_brighter_than_cold(&rebuilt.sections[&34], &cold.sections[&34]);
+            warm_matches_cold_layout(&rebuilt.sections[&34], &cold.sections[&34]);
             // Warm sidecars must also work when the stage cache is empty.
             std::fs::remove_dir_all(cache_dir(&fixture)).unwrap();
             let empty_cache = bake(&fixture, true, 2);
@@ -444,8 +443,11 @@ fn budget_and_invalid_animation_fail_before_corrupt_world_texture_is_read() {
     let refused = run(&fixture, false, 1, &["--working-set-max-size", "0"]);
     let log = &refused.log;
     assert!(!refused.succeeded());
+    // A zero budget fails both SH gates; the cheaper prediction refuses by
+    // its own name (research P24).
     assert!(
-        log.contains("SH delta working-set gate refused before dense baking"),
+        log.contains("SH base working-set gate refused before patch shading")
+            || log.contains("SH delta working-set gate refused before dense baking"),
         "{log}"
     );
     assert!(

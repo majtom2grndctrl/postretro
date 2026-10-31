@@ -170,6 +170,8 @@ impl PatchSet {
             face_patches.push(patches.len() as u32);
         }
         debug_assert!(face_index_ends.windows(2).all(|pair| pair[0] <= pair[1]));
+        // Resident through the SH base stage and priced by capacity.
+        patches.shrink_to_fit();
         Self {
             size,
             patches,
@@ -185,6 +187,14 @@ impl PatchSet {
 
     pub(crate) fn len(&self) -> usize {
         self.patches.len()
+    }
+
+    /// Host bytes the set holds, by allocated capacity.
+    pub(crate) fn heap_bytes(&self) -> u64 {
+        (self.patches.capacity() * size_of::<Patch>()
+            + self.face_patches.capacity() * size_of::<u32>()
+            + self.frames.capacity() * size_of::<Option<FaceFrame>>()
+            + self.face_index_ends.capacity() * size_of::<u32>()) as u64
     }
 
     /// Face `face`'s patches, ascending by cell.
@@ -204,7 +214,8 @@ impl PatchSet {
     /// the triangle at index offset `triangle`, and the side it arrives
     /// from: the patch whose cell holds the point, or the face's nearest
     /// patch when that cell holds none (a sliver along an edge). `None` for
-    /// a face with no patch.
+    /// a face with no patch. [`super::PatchLookup::Nearest`] reads it.
+    #[cfg(test)]
     pub(crate) fn lookup(&self, triangle: u32, point: Vec3, ray_dir: Vec3) -> Option<(u32, Side)> {
         let face = self.face_of_triangle(triangle)?;
         let frame = self.frames[face as usize]?;

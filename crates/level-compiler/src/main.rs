@@ -69,9 +69,6 @@ pub mod shadowmask_bake;
 pub mod size_options;
 pub mod streaming_hints;
 pub(crate) mod surface_materials;
-// The patch cache bakes only under tests until the SH base stage reads it
-// (surface-radiance-cache plan, task 3).
-#[cfg_attr(not(test), allow(dead_code, unused_imports))]
 pub(crate) mod surface_radiance;
 pub mod texel_footprint;
 pub mod texel_step_detector;
@@ -780,7 +777,7 @@ pub struct Args {
     /// missing) and evicts the rest, oldest first, down to this. Defaults
     /// to `cache::DEFAULT_MAX_BYTES`; ignored when the cache is disabled.
     cache_max_bytes: u64,
-    /// Per-stage host-RAM ceiling, shared by the SH-delta and lightmap gates.
+    /// Per-stage host-RAM ceiling, shared by the SH base, SH-delta and lightmap gates.
     working_set_max_bytes: u64,
     /// Compiler-only payload cap for the three baked delta sections.
     delta_section_config: delta_sections::DeltaSectionConfig,
@@ -863,7 +860,7 @@ fn help_text() -> String {
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \
          --cache-max-size <SIZE>    Stage-cache budget: the build-start prune keeps every map's last-build entries and evicts the rest, oldest first, down to this; accepts e.g. 2GiB, 512MiB, or a byte count (default: {cache_max})\n    \
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
-         --working-set-max-size <SIZE> Per-stage host-RAM ceiling for SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
+         --working-set-max-size <SIZE> Per-stage host-RAM ceiling for the SH base, SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \

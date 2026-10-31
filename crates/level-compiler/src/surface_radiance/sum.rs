@@ -60,6 +60,11 @@ impl PatchRadiance {
         sum
     }
 
+    /// Patches the sum covers: the patch set it was shaded over.
+    pub(crate) fn patch_count(&self) -> usize {
+        self.sides.len()
+    }
+
     pub(crate) fn get(&self, patch: u32, side: Side) -> Vec3 {
         Vec3::from(self.sides[patch as usize][side as usize])
     }

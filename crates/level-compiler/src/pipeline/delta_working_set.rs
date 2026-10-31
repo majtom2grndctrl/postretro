@@ -125,12 +125,36 @@ pub(super) fn retains_sh_analyze_dense_deltas(
 }
 
 /// Project and gate the three delta bakes before any dense f16 payload exists.
+#[cfg(test)]
+pub(super) fn gate_delta_working_set(
+    bakes: [DeltaCsrProjectionInput<'_>; 3],
+    subblock_f16_len: usize,
+    budget_bytes: u64,
+    copy_chain_factor: u64,
+) -> Result<DeltaWorkingSetProjection, DeltaWorkingSetGateError> {
+    project_delta_working_set(bakes, subblock_f16_len, budget_bytes, copy_chain_factor)?.admit()
+}
+
+impl DeltaWorkingSetProjection {
+    /// Admit the projection, or refuse it by name when it exceeds the budget.
+    pub(super) fn admit(self) -> Result<Self, DeltaWorkingSetGateError> {
+        if self.estimated_peak_bytes > self.budget_bytes {
+            Err(DeltaWorkingSetGateError::BudgetExceeded(self))
+        } else {
+            Ok(self)
+        }
+    }
+}
+
+/// Project the three delta bakes' working set before any dense f16 payload
+/// exists, whatever the budget: [`DeltaWorkingSetProjection::admit`] decides,
+/// so the pipeline can order this gate against the SH base gate.
 ///
 /// The cumulative estimate deliberately treats all three dense payloads as
 /// co-resident through compaction. The copy-chain factor covers the dense and
 /// compaction buffers, reserves headroom for the co-resident base-volume
 /// originals and clones, and adds the `--sh-analyze` clone when retained.
-pub(super) fn gate_delta_working_set(
+pub(super) fn project_delta_working_set(
     bakes: [DeltaCsrProjectionInput<'_>; 3],
     subblock_f16_len: usize,
     budget_bytes: u64,
@@ -214,18 +238,13 @@ pub(super) fn gate_delta_working_set(
         .ok_or(DeltaWorkingSetGateError::ArithmeticOverflow {
             calculation: "delta working-set copy-chain projection",
         })?;
-    let projection = DeltaWorkingSetProjection {
+    Ok(DeltaWorkingSetProjection {
         bakes: projected_bakes,
         cumulative_dense_bytes,
         copy_chain_factor,
         estimated_peak_bytes,
         budget_bytes,
-    };
-    if estimated_peak_bytes > budget_bytes {
-        Err(DeltaWorkingSetGateError::BudgetExceeded(projection))
-    } else {
-        Ok(projection)
-    }
+    })
 }
 
 pub(super) fn log_delta_working_set_projection(

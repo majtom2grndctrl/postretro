@@ -17,6 +17,11 @@ use crate::texel_footprint::ProbeEarlyOut;
 /// fixed way, so the layer does not depend on which worker ran which chunk.
 pub(super) const PATCHES_PER_CHUNK: usize = 256;
 
+/// Progress units one light's layer advances: one per chunk.
+pub(super) fn layer_progress_units(patch_count: usize) -> usize {
+    patch_count.div_ceil(PATCHES_PER_CHUNK)
+}
+
 /// One lit side of one patch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayerEntry {
@@ -41,7 +46,8 @@ pub(crate) struct SparseLayer {
 /// estimator takes at a gather hit. An `embedded` light (its emitter sphere
 /// reaches into geometry) traces its full sample set with no early-out;
 /// every other light takes the probe-and-escalate set. The visibility seed
-/// mixes the patch's seed id, the side and `light_axis`.
+/// mixes the patch's seed id, the side and `light_axis`. Each chunk takes a
+/// governor permit and advances `control`'s progress by one.
 pub(crate) fn shade_light_layer(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -92,10 +98,14 @@ pub(crate) fn shade_light_layer(
                     });
                 }
             }
+            control.advance(1);
             entries
         })
         .collect();
-    SparseLayer {
-        entries: chunks.into_iter().flatten().collect(),
+    // Exact, so a layer holds no growth slack beside its priced entries.
+    let mut entries = Vec::with_capacity(chunks.iter().map(Vec::len).sum());
+    for chunk in chunks {
+        entries.extend(chunk);
     }
+    SparseLayer { entries }
 }

@@ -563,7 +563,11 @@ fn bake_stages(lights: &[MapLight], flagged: bool, cache: Option<&StageCache>) -
         total_light_count: lights.len(),
     };
     let control = BakeControl::unrestricted();
-    let static_flags = crate::direct_sh_bake::embedded_emitters(&sh_ctx, flagged, &control);
+    let static_flags = crate::direct_sh_bake::embedded_emitters(
+        &crate::direct_sh_bake::EmitterScene::of(&sh_ctx),
+        flagged,
+        &control,
+    );
     let animated_flags = crate::animated_direct_sh_bake::embedded_emitters(
         &sh_ctx,
         &animated_lights,
@@ -918,8 +922,11 @@ fn cells_only_the_clear_light_reaches_keep_their_bytes() {
         total_light_count: lights.len(),
     };
     let config = ShConfig { probe_spacing: 0.5 };
-    let flags =
-        crate::direct_sh_bake::embedded_emitters(&sh_ctx, true, &BakeControl::unrestricted());
+    let flags = crate::direct_sh_bake::embedded_emitters(
+        &crate::direct_sh_bake::EmitterScene::of(&sh_ctx),
+        true,
+        &BakeControl::unrestricted(),
+    );
     assert!(flags.is_embedded(0) && !flags.is_embedded(1), "{flags:?}");
 
     // The probes whose affinity cell the clear light reaches and the short
@@ -1040,30 +1047,45 @@ fn wall_light_map(light_keys: &str) -> String {
 /// with its stage cache under `root`, and every record it logged on this
 /// thread: the caller thread, where the emitter warnings must land.
 fn compile_in_process(root: &std::path::Path, map_text: &str) -> Vec<CapturedRecord> {
+    compile_in_process_with(root, map_text, true)
+}
+
+/// [`compile_in_process`], with the stage cache under `root` or, when
+/// `cached` is false, none (`--no-cache`: the cold SH base bake).
+fn compile_in_process_with(
+    root: &std::path::Path,
+    map_text: &str,
+    cached: bool,
+) -> Vec<CapturedRecord> {
     let maps = root.join("maps");
     std::fs::create_dir_all(&maps).expect("maps directory");
     std::fs::create_dir_all(root.join("baked").join("materials")).expect("baked root");
     let map = maps.join("embedded.map");
     std::fs::write(&map, map_text).expect("write the map");
     let path = |name: &str| root.join(name).to_string_lossy().into_owned();
+    let cache_args = if cached {
+        vec!["--cache-dir".to_owned(), path("cache")]
+    } else {
+        vec!["--no-cache".to_owned()]
+    };
     let args = crate::parse_args_from(
-        [
-            map.to_string_lossy().into_owned(),
-            "--cache-dir".to_owned(),
-            path("cache"),
-            "--baked-root".to_owned(),
-            path("baked"),
-            "-o".to_owned(),
-            path("embedded.prl"),
-            "--sh-probe-spacing".to_owned(),
-            "4".to_owned(),
-            "--lightmap-density".to_owned(),
-            "0.25".to_owned(),
-        ]
-        .into_iter(),
+        [map.to_string_lossy().into_owned()]
+            .into_iter()
+            .chain(cache_args)
+            .chain([
+                "--baked-root".to_owned(),
+                path("baked"),
+                "-o".to_owned(),
+                path("embedded.prl"),
+                "--sh-probe-spacing".to_owned(),
+                "4".to_owned(),
+                "--lightmap-density".to_owned(),
+                "0.25".to_owned(),
+            ]),
     )
     .expect("arguments parse");
-    let cache = crate::construct_stage_cache(&args).expect("the cache is enabled");
+    let cache = crate::construct_stage_cache(&args);
+    assert_eq!(cache.is_some(), cached);
     let capture = LogCapture::start();
     let started = Instant::now();
     let reporter: Arc<dyn crate::reporter::Reporter> = Arc::new(
@@ -1071,7 +1093,7 @@ fn compile_in_process(root: &std::path::Path, map_text: &str) -> Vec<CapturedRec
     );
     crate::pipeline::run(
         &args,
-        Some(cache),
+        cache,
         started,
         reporter,
         Arc::new(crate::governor::Governor::new(1, false)),
@@ -1141,6 +1163,158 @@ fn a_light_only_the_probe_stages_flag_warns_once_per_compile() {
                 warnings[0].contains(part),
                 "{build}: missing {part:?}: {}",
                 warnings[0]
+            );
+        }
+    }
+}
+
+// --- the SH bounce patches ----------------------------------------------------
+
+fn sdf(mut light: MapLight) -> MapLight {
+    light.shadow_type = ShadowType::Sdf;
+    light
+}
+
+// AC 3, research P10: a flagged point light and a flagged `sdf`-shadowed
+// light shade their bounce patches at the full lattice's visibility, the
+// no-early-out reference written out here; the probe-point set still flags
+// only the point light, so the `sdf` light reaches no probe-point key
+// (ids 35, 41, 47, 48 fold only that set).
+#[test]
+fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
+    use crate::direct_sh_bake::{EmitterScene, bounce_embedded_emitters, embedded_emitters};
+    use crate::sh_bake::{
+        RaytracingCtx, bounce_contribution, reflected_radiance, soft_visibility_seed,
+    };
+    use crate::surface_radiance::{PatchSet, Side, shade_light_layer};
+
+    let fixture = Fixture::new(false);
+    let point = beside_wall(0.2);
+    let shadowed = sdf(point_light([
+        f64::from(WALL_FACE_X) - 0.2,
+        LIGHT_HEIGHT,
+        -0.9,
+    ]));
+    let lights = vec![point.clone(), shadowed];
+    let control = BakeControl::unrestricted();
+    let classify = |lights: &[MapLight]| {
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let scene = EmitterScene {
+            static_lights: &static_lights,
+            bvh: &fixture.bvh,
+            primitives: &fixture.primitives,
+            geometry: &fixture.geometry,
+        };
+        (
+            embedded_emitters(&scene, true, &control),
+            bounce_embedded_emitters(&scene, true, &control),
+        )
+    };
+    let (probes, bounce) = classify(&lights);
+    assert!(
+        probes.is_embedded(0) && !probes.is_embedded(1),
+        "{probes:?}"
+    );
+    assert!(bounce.is_embedded(0) && bounce.is_embedded(1), "{bounce:?}");
+    let (point_only, _) = classify(std::slice::from_ref(&point));
+    assert_eq!(
+        probes, point_only,
+        "the sdf light leaves the probe-point flags, so their keys"
+    );
+
+    let ctx = RaytracingCtx {
+        bounce_materials: None,
+        bvh: &fixture.bvh,
+        primitives: &fixture.primitives,
+        geometry: &fixture.geometry,
+    };
+    let patches = PatchSet::build(&fixture.geometry);
+    let trace = |from, to| crate::sh_bake::segment_clear(&ctx, from, to);
+    let n = DEFAULT_AREA_SAMPLE_COUNT;
+    for (index, light) in lights.iter().enumerate() {
+        let layer = shade_light_layer(
+            &ctx,
+            &patches,
+            light,
+            index as u64,
+            bounce.is_embedded(index),
+            &control,
+        );
+        let mut expected = Vec::new();
+        let mut penumbra = 0;
+        for (at, patch) in patches.patches().iter().enumerate() {
+            for side in Side::BOTH {
+                let normal = side.normal(patch.normal);
+                let Some(contribution) = bounce_contribution(light, patch.centroid, normal) else {
+                    continue;
+                };
+                let seed = soft_visibility_seed(patch.seed_id(), side as u64, index as u64);
+                let origin = patch.centroid + normal * RAY_EPSILON;
+                let clear = (0..n)
+                    .filter(|&i| {
+                        trace(
+                            origin,
+                            area_sample_target(patch.centroid, light, seed, i, n),
+                        )
+                    })
+                    .count() as u32;
+                if clear == 0 {
+                    continue;
+                }
+                penumbra += usize::from(clear < n);
+                let visibility = clear as f32 / n as f32;
+                let radiance =
+                    reflected_radiance(None, patch.texture_index, contribution * visibility);
+                expected.push((at as u32, side, radiance.to_array()));
+            }
+        }
+        assert!(
+            penumbra > 0,
+            "light {index}: some patch sees part of the emitter"
+        );
+        let actual: Vec<_> = layer
+            .entries
+            .iter()
+            .map(|entry| (entry.patch, entry.side, entry.radiance))
+            .collect();
+        assert_eq!(actual, expected, "light {index}");
+    }
+}
+
+// AC 3: an `sdf`-shadowed light only the bounce family flags warns once per
+// compile, cold and warm, naming the SH bounce patches; the point light the
+// probe-point and lightmap stages flag keeps its own line, word for word,
+// and neither warns twice.
+#[test]
+fn an_sdf_light_only_the_bounce_flags_warns_once_naming_the_bounce_bake() {
+    const SDF_LIGHT: &str = "{\n\"classname\" \"light\"\n\"origin\" \"250 128 64\"\n\
+        \"light\" \"300\"\n\"_falloff_range\" \"256\"\n\"_shadow_type\" \"sdf\"\n}\n";
+    let root = tempfile::tempdir().expect("temp root");
+    let point_only = emitter_warnings(&compile_in_process_with(
+        &root.path().join("point"),
+        &wall_light_map(""),
+        false,
+    ));
+    assert_eq!(point_only.len(), 1, "{point_only:?}");
+    let map = wall_light_map("") + SDF_LIGHT;
+    let both = root.path().join("both");
+    for (build, cached) in [("cold", false), ("warm-first", true), ("warm", true)] {
+        let warnings = emitter_warnings(&compile_in_process_with(&both, &map, cached));
+        assert_eq!(warnings.len(), 2, "{build}: {warnings:?}");
+        assert!(warnings.contains(&point_only[0]), "{build}: {warnings:?}");
+        let bounce: Vec<&String> = warnings
+            .iter()
+            .filter(|line| line.contains("static light entity 3 'light'"))
+            .collect();
+        assert_eq!(bounce.len(), 1, "{build}: {warnings:?}");
+        for part in [
+            "0.250 m emitter sphere",
+            "makes the SH bounce patches it lights trace every shadow sample",
+        ] {
+            assert!(
+                bounce[0].contains(part),
+                "{build}: missing {part:?}: {}",
+                bounce[0]
             );
         }
     }

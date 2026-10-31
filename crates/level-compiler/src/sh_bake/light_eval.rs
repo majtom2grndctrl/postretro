@@ -107,7 +107,7 @@ pub(super) fn falloff(light: &MapLight, distance: f32) -> f32 {
 /// Whether a light can contribute bounced radiance at `point` before visibility
 /// is traced. Point and spot lights have zero falloff strictly beyond their
 /// clamped range; directional lights are position-independent.
-pub(super) fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
+pub(crate) fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
     match light.light_type {
         LightType::Directional => true,
         LightType::Point | LightType::Spot => {

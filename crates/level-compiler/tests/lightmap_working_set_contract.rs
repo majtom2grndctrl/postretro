@@ -9,6 +9,10 @@ use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 const SH_ADMITTED: &str = "SH delta working-set gate: estimated peak ";
+const SH_REFUSED: &str = "SH delta working-set gate refused before dense baking: estimated peak ";
+const SH_BASE_ADMITTED: &str = "SH base working-set gate: estimated peak ";
+const SH_BASE_REFUSED: &str =
+    "SH base working-set gate refused before patch shading: estimated peak ";
 const LIGHTMAP_ADMITTED: &str = "Lightmap working-set gate: predicted ";
 const LIGHTMAP_REFUSED: &str = "Lightmap working-set gate refused before baking: predicted ";
 
@@ -123,6 +127,114 @@ fn assert_before_lightmap_work(log: &str) {
     }
 }
 
+/// Markers of the work an SH gate refusal must precede: texture reads (the
+/// colour-space validation and the material stage), the static emitter
+/// tests, and the SH base bake's patch shading and rays.
+fn assert_before_sh_work(log: &str) {
+    for marker in [
+        "Texture color-space validation...",
+        "World material bake...",
+        "Embedded-emitter classification:",
+        "SH volume bake...",
+    ] {
+        assert!(
+            !log.contains(marker),
+            "refusal ran SH work `{marker}`: {log}"
+        );
+    }
+    assert_before_lightmap_work(log);
+}
+
+/// The one line `marker` opens, which must say the gate refused.
+fn refused_bytes(log: &str, marker: &str) -> u64 {
+    assert_eq!(
+        log.matches(marker).count(),
+        1,
+        "expected one refusal line: {log}"
+    );
+    let tail = log.split_once(marker).unwrap().1;
+    let line = tail.lines().next().unwrap();
+    assert!(line.contains(", refused"), "gate was not refused: {line}");
+    tail.split_once(" bytes")
+        .unwrap()
+        .0
+        .parse()
+        .expect("gate reports exact bytes")
+}
+
+// AC 30, research P7 and P24: the SH base gate admits at its own logged
+// prediction and refuses one byte under it by name, before any texture
+// read, emitter test, patch shading or SH ray, cold and warm. Both SH gates
+// predict first and check cheapest first: a budget between them refuses by
+// the one it fails, and a budget under both by the cheaper one.
+#[test]
+fn sh_base_working_set_gate_refuses_by_name_at_exact_boundary_cold_and_warm() {
+    let scratch = tempfile::tempdir().unwrap();
+    let cache = scratch.path().join("cache");
+    let input = fixture();
+    let (seed, _) = build(&input, scratch.path(), "seed", Some(&cache), None);
+    let log = assert_success(&seed);
+    let base = admitted_bytes(&log, SH_BASE_ADMITTED);
+    let delta = admitted_bytes(&log, SH_ADMITTED);
+    assert!(
+        0 < base && base < delta,
+        "the fixture prices the SH base gate below the delta gate: {log}"
+    );
+    assert!(
+        log.find(SH_BASE_ADMITTED).unwrap() < log.find(SH_ADMITTED).unwrap(),
+        "the cheaper gate is checked first: {log}"
+    );
+
+    for (label, stage_cache) in [("cold", None), ("warm", Some(cache.as_path()))] {
+        // Between the predictions: the base gate admits, the delta gate refuses.
+        for budget in [base, delta - 1] {
+            let (between, path) = build(
+                &input,
+                scratch.path(),
+                &format!("{label}-between-{budget}"),
+                stage_cache,
+                Some(budget),
+            );
+            let log = diagnostic(&between);
+            assert!(!between.status.success() && !path.exists(), "{log}");
+            assert_eq!(admitted_bytes(&log, SH_BASE_ADMITTED), base);
+            assert_eq!(refused_bytes(&log, SH_ADMITTED), delta);
+            assert!(
+                log.contains(&format!(
+                    "{SH_REFUSED}{delta} bytes exceeds budget {budget} bytes"
+                )),
+                "{label}: {log}"
+            );
+            assert!(!log.contains(SH_BASE_REFUSED), "{label}: {log}");
+            assert_before_sh_work(&log);
+        }
+
+        // Under both: the cheaper base gate refuses by its own name.
+        let (below, path) = build(
+            &input,
+            scratch.path(),
+            &format!("{label}-below-base"),
+            stage_cache,
+            Some(base - 1),
+        );
+        let log = diagnostic(&below);
+        assert!(!below.status.success() && !path.exists(), "{log}");
+        assert_eq!(refused_bytes(&log, SH_BASE_ADMITTED), base);
+        assert!(
+            log.contains(&format!(
+                "{SH_BASE_REFUSED}{base} bytes exceeds budget {} bytes",
+                base - 1
+            )),
+            "{label}: {log}"
+        );
+        assert!(
+            !log.contains(SH_ADMITTED) && !log.contains(SH_REFUSED),
+            "{label}: the delta gate is checked after the cheaper base gate: {log}"
+        );
+        assert_before_sh_work(&log);
+    }
+}
+
 #[test]
 fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary() {
     let scratch = tempfile::tempdir().unwrap();
@@ -203,6 +315,7 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
     let (at_sh, path) = build(&input, scratch.path(), "at-sh", None, Some(sh));
     let log = diagnostic(&at_sh);
     assert_eq!(admitted_bytes(&log, SH_ADMITTED), sh);
+    assert!(admitted_bytes(&log, SH_BASE_ADMITTED) < sh, "{log}");
     assert!(
         !at_sh.status.success() && !path.exists(),
         "later lightmap refusal expected: {log}"
@@ -221,8 +334,7 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
         !log.contains(LIGHTMAP_ADMITTED) && !log.contains(LIGHTMAP_REFUSED),
         "{log}"
     );
-    assert!(!log.contains("SH volume bake..."), "{log}");
-    assert_before_lightmap_work(&log);
+    assert_before_sh_work(&log);
 }
 
 #[test]

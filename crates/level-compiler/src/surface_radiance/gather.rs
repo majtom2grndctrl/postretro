@@ -10,7 +10,9 @@ use crate::sh_bake::{Hit, RaytracingCtx, SKY_COLOR, gather_hit};
 /// How a gather hit reads the patches of its face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PatchLookup {
-    /// The patch whose cell holds the hit.
+    /// The patch whose cell holds the hit: the parity measurement's
+    /// comparison against [`Self::Bilinear`], which production reads.
+    #[cfg(test)]
     Nearest,
     /// The bilinear blend of the patches whose centres surround the hit.
     Bilinear,
@@ -57,6 +59,7 @@ impl<'a> PatchGather<'a> {
     /// zero on a face with no patch.
     pub(crate) fn radiance_at(&self, hit: &Hit, dir: Vec3) -> Vec3 {
         match self.lookup {
+            #[cfg(test)]
             PatchLookup::Nearest => self
                 .patches
                 .lookup(hit.triangle, hit.point, dir)

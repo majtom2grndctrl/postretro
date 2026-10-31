@@ -43,7 +43,7 @@ impl DirectShResources {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         direct_section: Option<&DirectShVolumeSection>,
         direct_delta_section: Option<&DirectShDeltaVolumesSection>,
         animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
@@ -187,7 +187,10 @@ impl DirectShResources {
     /// direct atlas, but its backing texture belongs to the shared renderer
     /// slot pool. Keep this small state transition here so all later dynamic
     /// direct updates continue to write the existing binding-16 uniform.
-    pub(super) fn enable_streamed_atlas(&mut self, queue: &wgpu::Queue) {
+    pub(super) fn enable_streamed_atlas(
+        &mut self,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
+    ) {
         // Initial setup precedes frame writes. Pool growth revisits this method,
         // but must not directly overwrite pending dynamic-direct params.
         if self.has_direct {
@@ -240,7 +243,7 @@ pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayout
 /// Absent or unusable data binds a valid 4×4 BC6H dummy and clears `has_direct`.
 fn upload_direct_atlas_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     section: Option<&DirectShVolumeSection>,
     direct_section_present: bool,
     ledger: &mut ShAllocationLedger,
@@ -290,7 +293,7 @@ fn upload_direct_atlas_texture(
 
 fn upload_direct_atlas_dummy(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     allocation: super::sh_allocation::TextureAllocation,
 ) -> wgpu::Texture {
     let zero_block = [0u8; 16];

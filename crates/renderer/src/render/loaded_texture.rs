@@ -81,7 +81,7 @@ pub struct TextureLoadTiming {
 /// `texture_names`, with the time spent reading, parsing and uploading them.
 pub fn load_textures(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     texture_names: &[String],
     texture_cache_keys: &TextureCacheKeysSection,
     prm_cache_root: &Path,
@@ -95,7 +95,7 @@ pub fn load_textures(
 /// queue; the writes reach the GPU at that queue's next submit.
 pub fn upload_prepared_textures(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     prepared: &PreparedWorldTextures,
 ) -> (Vec<LoadedTexture>, TextureLoadTiming) {
     let mut timing = TextureLoadTiming {
@@ -126,7 +126,7 @@ pub fn upload_prepared_textures(
 /// placeholder.
 pub(super) fn upload_prepared_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     prepared: &PreparedTexture,
 ) -> LoadedTexture {
     let PreparedTexture::Bundle { name, slots, plan } = prepared else {
@@ -213,7 +213,7 @@ enum Slot {
 
 fn upload_slot_or_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     slot_result: &Result<PrmSlot, PrmReadError>,
     slot_idx: u8,
     name: &str,

@@ -40,6 +40,7 @@ mod mesh_ghost;
 mod mesh_pass;
 mod planar_reflection;
 mod promoted_depth_cache;
+pub(crate) mod queue_writes;
 pub(crate) mod residency;
 mod rigid_occluder_depth;
 mod screen_effects;
@@ -115,6 +116,7 @@ mod geometry_ranges;
 mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
+mod level_build;
 mod level_resource_set;
 #[cfg(test)]
 mod level_resource_set_tests;
@@ -196,6 +198,7 @@ use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
 pub use renderer_resources::{LevelInstallError, lightmap_family_inputs};
 pub use renderer_textures::UploadedWorldTextures;
+pub use upload_thread::UPLOAD_SUBMIT_CHUNK_BYTES;
 pub use upload_thread::{PendingUpload, UploadError, UploadRetirement};
 pub(crate) use upload_thread::{UploadContext, UploadThread};
 
@@ -211,6 +214,10 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+pub use level_build::{
+    LevelBuildError, LevelBuildSnapshotInputs, LevelGeometryParts, LevelSetBuilder,
+    PendingLevelSet, SmokeCollectionRequest,
+};
 use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures, SamplerMaps};
 pub use level_resource_set::{LevelSetId, PreviousLevelSet};
 pub use lightmap_residency::{

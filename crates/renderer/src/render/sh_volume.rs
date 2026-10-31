@@ -377,7 +377,7 @@ impl ShVolumeResources {
     /// sampling and falls back to `ambient_floor + direct_sum`.
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,

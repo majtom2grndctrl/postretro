@@ -320,7 +320,7 @@ pub(crate) fn block_copy_regions(
 /// drop after.
 pub(crate) fn upload_static_pool(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     plan: &StaticPoolPlan,
     payloads: &[LightmapBlockPayload],
 ) -> StaticPoolTextures {

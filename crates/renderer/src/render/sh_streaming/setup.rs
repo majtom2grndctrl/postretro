@@ -179,7 +179,7 @@ impl ShResidencyState {
     pub(in crate::render) fn initialize_gpu(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         manifest: &ShStreamManifest,
         probe_occlusion_enabled: bool,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
@@ -205,7 +205,7 @@ impl ShResidencyState {
     pub(super) fn initialize_gpu_with_limits(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base: &postretro_level_loader::ShStreamBaseMetadata,
         sources: &postretro_level_loader::ShStreamSourceMetadata,
         probe_occlusion_enabled: bool,

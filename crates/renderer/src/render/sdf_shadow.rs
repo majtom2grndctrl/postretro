@@ -265,31 +265,16 @@ impl SdfShadowPass {
         );
     }
 
-    /// Build one level's bindings over its SH depth-moment view and
-    /// static-light buffers, and the renderer's current depth view.
-    pub(crate) fn level_state(
-        &self,
-        device: &wgpu::Device,
-        depth_view: &wgpu::TextureView,
-        sh_depth_moments_view: wgpu::TextureView,
-        lights: SdfShadowLightBuffers,
-        sh_grid: SdfShadowShGrid,
-    ) -> SdfShadowLevelState {
-        let bind_group = build_bind_group(
-            device,
-            &self.bind_group_layout,
-            &self.params_buffer,
-            depth_view,
-            &sh_depth_moments_view,
-            &self.shadow_storage_view,
-        );
-        let light_bind_group =
-            build_light_bind_group(device, &self.light_bind_group_layout, lights);
-        SdfShadowLevelState {
-            bind_group,
-            light_bind_group,
-            sh_depth_moments_view,
-            sh_grid,
+    /// What a level's bindings ([`SdfShadowLevelLayout::level_state`]) build over, cloned so a level build on any
+    /// thread builds the same groups. The shadow target is the current
+    /// extent's: a set built over it records that extent, and its publish
+    /// rebinds group 1 if the scene targets were recreated since.
+    pub(crate) fn level_layout(&self) -> SdfShadowLevelLayout {
+        SdfShadowLevelLayout {
+            bind_group_layout: self.bind_group_layout.clone(),
+            light_bind_group_layout: self.light_bind_group_layout.clone(),
+            params_buffer: self.params_buffer.clone(),
+            shadow_storage_view: self.shadow_storage_view.clone(),
         }
     }
 
@@ -366,6 +351,46 @@ fn create_shadow_target(
         ..Default::default()
     });
     (texture, sampled_view, storage_view)
+}
+
+/// The SDF shadow pass's layouts, params buffer and current shadow target,
+/// cloned for a level build on any thread.
+#[derive(Clone)]
+pub(crate) struct SdfShadowLevelLayout {
+    bind_group_layout: wgpu::BindGroupLayout,
+    light_bind_group_layout: wgpu::BindGroupLayout,
+    params_buffer: wgpu::Buffer,
+    shadow_storage_view: wgpu::TextureView,
+}
+
+impl SdfShadowLevelLayout {
+    /// One level's group 1 (over `depth_view`, its SH depth moments and the
+    /// shadow target) and group 2 (its static-light buffers).
+    pub(crate) fn level_state(
+        &self,
+        device: &wgpu::Device,
+        depth_view: &wgpu::TextureView,
+        sh_depth_moments_view: wgpu::TextureView,
+        lights: SdfShadowLightBuffers,
+        sh_grid: SdfShadowShGrid,
+    ) -> SdfShadowLevelState {
+        let bind_group = build_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.params_buffer,
+            depth_view,
+            &sh_depth_moments_view,
+            &self.shadow_storage_view,
+        );
+        let light_bind_group =
+            build_light_bind_group(device, &self.light_bind_group_layout, lights);
+        SdfShadowLevelState {
+            bind_group,
+            light_bind_group,
+            sh_depth_moments_view,
+            sh_grid,
+        }
+    }
 }
 
 fn build_bind_group(

@@ -45,7 +45,7 @@ pub(super) fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Opti
 /// equals the mip level size even when not a multiple of the 4×4 block.
 pub fn upload_texture_data(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     format: wgpu::TextureFormat,
     levels: &[(u32, u32, &[u8])],
     label: &str,
@@ -118,7 +118,7 @@ pub fn upload_texture_data(
 /// Logical dimensions and BC5 copy layout follow `upload_texture_data`.
 pub fn upload_texture_array_data(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     format: wgpu::TextureFormat,
     layers: &[Vec<(u32, u32, &[u8])>],
     array_layer_count: u32,

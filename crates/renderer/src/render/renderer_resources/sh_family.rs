@@ -30,7 +30,7 @@ pub(super) struct LevelComposeFamily {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_sh_volume(
     device: &wgpu::Device,
-    queue: &UploadQueue,
+    writes: &dyn crate::render::queue_writes::QueueWrites,
     probe_occlusion_enabled: bool,
     pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
@@ -47,7 +47,7 @@ pub(super) fn install_sh_volume(
     let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
     let mut sh_volume_resources = ShVolumeResources::new(
         device,
-        queue.raw(),
+        writes,
         ShVolumeSections {
             sh: geometry.sh_volume,
             stream_base_present: matches!(
@@ -89,7 +89,7 @@ pub(super) fn install_sh_volume(
             );
             state.initialize_gpu(
                 device,
-                queue.raw(),
+                writes,
                 manifest,
                 probe_occlusion_enabled,
                 &mut sh_volume_resources,
@@ -116,7 +116,7 @@ pub(super) fn install_sh_volume(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_compose_family(
     device: &wgpu::Device,
-    queue: &UploadQueue,
+    writes: &dyn crate::render::queue_writes::QueueWrites,
     pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     sh_volume_resources: &ShVolumeResources,
@@ -124,7 +124,7 @@ pub(super) fn install_compose_family(
     promoted_static_weight_buffer: &wgpu::Buffer,
     mut sh_allocation_ledger: sh_residency::ShAllocationLedger,
 ) -> LevelComposeFamily {
-    let sdf_atlas_resources = SdfAtlasResources::new(device, queue.raw(), geometry.sdf_atlas);
+    let sdf_atlas_resources = SdfAtlasResources::new(device, writes, geometry.sdf_atlas);
     let compose_sh_volume = geometry.sh_volume.filter(|_| sh_volume_resources.present);
     let compose_delta_sh_volumes = geometry
         .delta_sh_volumes

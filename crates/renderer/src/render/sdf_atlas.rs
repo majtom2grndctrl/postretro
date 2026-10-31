@@ -86,7 +86,7 @@ impl SdfAtlasResources {
     /// 1-element top-level buffer + a zeroed meta uniform with `present = 0`.
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         section: Option<&SdfAtlasSection>,
     ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

@@ -79,6 +79,18 @@ impl LevelModels {
 
     /// Insert (or replace) the entry at `handle`. Re-loading the same handle
     /// replaces the cache entry (idempotent upload).
+    /// Every cached handle, sorted (tests).
+    #[cfg(test)]
+    pub(in crate::render) fn handles(&self) -> Vec<String> {
+        let mut handles: Vec<String> = self
+            .entries
+            .keys()
+            .map(|handle| handle.0.to_string())
+            .collect();
+        handles.sort();
+        handles
+    }
+
     pub(in crate::render) fn insert(&mut self, handle: ModelHandle, entry: Arc<ModelEntry>) {
         self.entries.insert(handle, entry);
     }

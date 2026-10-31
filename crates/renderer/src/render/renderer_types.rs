@@ -154,6 +154,10 @@ pub(crate) struct GpuTexture {
     pub(super) bind_group: wgpu::BindGroup,
     pub(super) uniform_buffer: wgpu::Buffer,
     pub(super) uniform_plan: postretro_render_cpu::material_plan::MaterialUniformPlan,
+    /// The Surface Depth tier the material was built at (tests); a live
+    /// rewrite does not update it.
+    #[cfg(test)]
+    pub(super) built_at: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
 }
 
 impl From<super::material_plan::MaterialBinding> for GpuTexture {
@@ -162,6 +166,8 @@ impl From<super::material_plan::MaterialBinding> for GpuTexture {
             bind_group: binding.bind_group,
             uniform_buffer: binding.uniform_buffer,
             uniform_plan: binding.uniform_plan,
+            #[cfg(test)]
+            built_at: binding.built_at,
         }
     }
 }

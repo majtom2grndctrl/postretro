@@ -546,6 +546,158 @@ impl<T> SpriteAssetCache<T> {
         self.assets.len()
     }
 }
+/// The smoke pass's group-1 layout, shared sampler and optional-slot
+/// placeholders, cloned for a level build on any thread.
+#[derive(Clone)]
+pub(crate) struct SmokeRegistrar {
+    sheet_bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    specular_placeholder_view: wgpu::TextureView,
+    normal_placeholder_view: wgpu::TextureView,
+}
+
+impl SmokeRegistrar {
+    /// [`SmokePass::register_collection`] into `level`, from the cloned
+    /// layouts.
+    pub(crate) fn register_collection(
+        &self,
+        level: &mut SmokeLevelCollections,
+        device: &wgpu::Device,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
+        collection_id: &str,
+        asset_source: SpriteCollectionAssetSource<'_>,
+        registration: SpriteCollectionRegistration,
+    ) {
+        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
+            log::warn!(
+                "[Smoke] collection id '{collection_id}' rejected: specular exponent must be finite and greater than zero (got {})",
+                registration.spec_exponent,
+            );
+            return;
+        }
+        if level.sheets.contains_key(collection_id) {
+            log::warn!(
+                "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
+            );
+            return;
+        }
+
+        if level
+            .sprite_assets
+            .get_or_try_upload(asset_source.asset, || {
+                SmokePass::upload_sprite_asset(
+                    device,
+                    queue,
+                    asset_source.asset,
+                    asset_source.texture_root,
+                    asset_source.prm_cache_root,
+                    registration.baked_sidecar_eligible,
+                )
+            })
+            .is_none()
+        {
+            return;
+        }
+
+        let sprite_asset = level
+            .sprite_assets
+            .resource(asset_source.asset)
+            .expect("successful sprite asset upload must populate the cache");
+        // `NORMAL` presence is the sole shimmer discriminator. The exact same
+        // predicate controls params2.x and whether optional slot views are
+        // exposed to the fragment shader, so a collection can never be flagged
+        // shimmer while sampling placeholder normal data (or vice versa). A
+        // shimmer collection may omit SPECULAR; that input then receives the
+        // white mask placeholder.
+        let is_shimmer = sprite_shimmer_flag(sprite_asset.slot_mask) != 0.0;
+        let bound_specular_view = if is_shimmer {
+            sprite_asset
+                .specular_view
+                .as_ref()
+                .unwrap_or(&self.specular_placeholder_view)
+        } else {
+            &self.specular_placeholder_view
+        };
+        let bound_normal_view = if is_shimmer {
+            sprite_asset
+                .normal_view
+                .as_ref()
+                .expect("a shimmer slot mask must have uploaded its normal array")
+        } else {
+            &self.normal_placeholder_view
+        };
+        // The sampler's LOD clamp is asset-intrinsic, but the group-1 bind
+        // group remains collection-owned. Decode fallback uses the shared
+        // single-mip sampler exactly as before.
+        let baked_sampler = sprite_asset.baked_lod_max_clamp.map(|lod_max_clamp| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(&format!("Baked Sprite Mip Sampler: {collection_id}")),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                lod_max_clamp,
+                ..Default::default()
+            })
+        });
+        let sampler = baked_sampler.as_ref().unwrap_or(&self.sampler);
+        let frame_count = sprite_asset.frame_count;
+        let slot_mask = sprite_asset.slot_mask;
+        let params_bytes = build_draw_params(
+            frame_count,
+            registration.spec_intensity,
+            registration.lifetime,
+            registration.emissive,
+            registration.spec_exponent,
+            slot_mask,
+        );
+        let params_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("Sprite Draw Params: {collection_id}")),
+            contents: &params_bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("Sprite Frame Array Bind Group: {collection_id}")),
+            layout: &self.sheet_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&sprite_asset.diffuse_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(bound_specular_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(bound_normal_view),
+                },
+            ],
+        });
+
+        level.sheets.insert(
+            collection_id.to_string(),
+            SpriteSheet {
+                bind_group,
+                frame_count,
+                slot_mask,
+            },
+        );
+        level
+            .sprite_assets
+            .record_collection(collection_id, asset_source.asset);
+    }
+}
 
 /// One level set's sprite collections: the collection-id draw bindings and
 /// the uploaded asset arrays beneath them. Dropped with the set, so releasing
@@ -571,6 +723,14 @@ impl Default for SmokeLevelCollections {
 impl SmokeLevelCollections {
     /// Whether any collection is registered. Used by the renderer to skip the
     /// pass entirely on levels with no emitters.
+    /// Every registered collection id, sorted (tests).
+    #[cfg(test)]
+    pub(crate) fn collection_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.sheets.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     pub fn has_any_sheet(&self) -> bool {
         !self.sheets.is_empty()
     }
@@ -658,7 +818,7 @@ const SPRITE_NORMAL_PLACEHOLDER_PIXEL: [u8; 4] = [128, 128, 255, 255];
 /// without a `NORMAL` slot select these neutral views instead of failing load.
 fn create_sprite_placeholder_array(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     label: &str,
     format: wgpu::TextureFormat,
     pixel: &[u8],
@@ -1044,7 +1204,7 @@ impl SmokePass {
     /// filesystem references.
     fn upload_sprite_asset(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         asset: &str,
         texture_root: &Path,
         prm_cache_root: &Path,
@@ -1242,139 +1402,30 @@ impl SmokePass {
         &self,
         level: &mut SmokeLevelCollections,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         collection_id: &str,
         asset_source: SpriteCollectionAssetSource<'_>,
         registration: SpriteCollectionRegistration,
     ) {
-        if !sprite_specular_exponent_is_valid(registration.spec_exponent) {
-            log::warn!(
-                "[Smoke] collection id '{collection_id}' rejected: specular exponent must be finite and greater than zero (got {})",
-                registration.spec_exponent,
-            );
-            return;
-        }
-        if level.sheets.contains_key(collection_id) {
-            log::warn!(
-                "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
-            );
-            return;
-        }
-
-        if level
-            .sprite_assets
-            .get_or_try_upload(asset_source.asset, || {
-                Self::upload_sprite_asset(
-                    device,
-                    queue,
-                    asset_source.asset,
-                    asset_source.texture_root,
-                    asset_source.prm_cache_root,
-                    registration.baked_sidecar_eligible,
-                )
-            })
-            .is_none()
-        {
-            return;
-        }
-
-        let sprite_asset = level
-            .sprite_assets
-            .resource(asset_source.asset)
-            .expect("successful sprite asset upload must populate the cache");
-        // `NORMAL` presence is the sole shimmer discriminator. The exact same
-        // predicate controls params2.x and whether optional slot views are
-        // exposed to the fragment shader, so a collection can never be flagged
-        // shimmer while sampling placeholder normal data (or vice versa). A
-        // shimmer collection may omit SPECULAR; that input then receives the
-        // white mask placeholder.
-        let is_shimmer = sprite_shimmer_flag(sprite_asset.slot_mask) != 0.0;
-        let bound_specular_view = if is_shimmer {
-            sprite_asset
-                .specular_view
-                .as_ref()
-                .unwrap_or(&self.specular_placeholder_view)
-        } else {
-            &self.specular_placeholder_view
-        };
-        let bound_normal_view = if is_shimmer {
-            sprite_asset
-                .normal_view
-                .as_ref()
-                .expect("a shimmer slot mask must have uploaded its normal array")
-        } else {
-            &self.normal_placeholder_view
-        };
-        // The sampler's LOD clamp is asset-intrinsic, but the group-1 bind
-        // group remains collection-owned. Decode fallback uses the shared
-        // single-mip sampler exactly as before.
-        let baked_sampler = sprite_asset.baked_lod_max_clamp.map(|lod_max_clamp| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some(&format!("Baked Sprite Mip Sampler: {collection_id}")),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                lod_max_clamp,
-                ..Default::default()
-            })
-        });
-        let sampler = baked_sampler.as_ref().unwrap_or(&self.sampler);
-        let frame_count = sprite_asset.frame_count;
-        let slot_mask = sprite_asset.slot_mask;
-        let params_bytes = build_draw_params(
-            frame_count,
-            registration.spec_intensity,
-            registration.lifetime,
-            registration.emissive,
-            registration.spec_exponent,
-            slot_mask,
+        self.registrar().register_collection(
+            level,
+            device,
+            queue,
+            collection_id,
+            asset_source,
+            registration,
         );
-        let params_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("Sprite Draw Params: {collection_id}")),
-            contents: &params_bytes,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("Sprite Frame Array Bind Group: {collection_id}")),
-            layout: &self.sheet_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&sprite_asset.diffuse_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(bound_specular_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(bound_normal_view),
-                },
-            ],
-        });
+    }
 
-        level.sheets.insert(
-            collection_id.to_string(),
-            SpriteSheet {
-                bind_group,
-                frame_count,
-                slot_mask,
-            },
-        );
-        level
-            .sprite_assets
-            .record_collection(collection_id, asset_source.asset);
+    /// What [`Self::register_collection`] binds from the pass, cloned so a
+    /// level build on any thread registers collections into its own set.
+    pub(crate) fn registrar(&self) -> SmokeRegistrar {
+        SmokeRegistrar {
+            sheet_bind_group_layout: self.sheet_bind_group_layout.clone(),
+            sampler: self.sampler.clone(),
+            specular_placeholder_view: self.specular_placeholder_view.clone(),
+            normal_placeholder_view: self.normal_placeholder_view.clone(),
+        }
     }
 
     /// The group-1 sprite-sheet layout, shared by the billboard ghost pipeline

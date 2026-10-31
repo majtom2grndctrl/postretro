@@ -88,6 +88,7 @@ pub(super) fn resolve_bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry
     ]
 }
 
+#[derive(Clone)]
 pub(super) struct PlanarPipelines {
     pub mask_layout: wgpu::BindGroupLayout,
     pub resolve_layout: wgpu::BindGroupLayout,

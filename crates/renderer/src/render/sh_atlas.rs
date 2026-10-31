@@ -13,7 +13,7 @@ use super::sh_allocation::{TextureAllocation, indirect_base_atlas_empty_payload}
 /// compose pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
 pub(super) fn upload_compact_base_atlas_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     section: &OctahedralShVolumeSection,
     allocation: TextureAllocation,
 ) -> wgpu::Texture {
@@ -39,7 +39,7 @@ pub(super) fn upload_compact_base_atlas_texture(
 /// compose indirection word is a sentinel, so the texture is never sampled.
 pub(super) fn upload_compact_base_atlas_dummy(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     allocation: TextureAllocation,
 ) -> wgpu::Texture {
     let zero_texel = [0u8; 8];
@@ -62,7 +62,7 @@ pub(super) fn base_atlas_format_label(format: wgpu::TextureFormat) -> &'static s
 
 pub(super) fn upload_depth_moment_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     data_u16: &[u16],
     allocation: TextureAllocation,
 ) -> wgpu::Texture {

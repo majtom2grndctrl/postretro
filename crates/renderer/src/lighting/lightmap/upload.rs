@@ -36,7 +36,7 @@ pub fn bc6h_irradiance_filterable(adapter: &wgpu::Adapter) -> bool {
 
 pub(super) fn upload_placeholder_irradiance(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> wgpu::Texture {
     // 1×1 white RGBA16Float texel (1.0, 1.0, 1.0, 1.0). f16(1.0) = 0x3c00.
     let white = 0x3c00u16;
@@ -67,7 +67,7 @@ pub(super) fn upload_placeholder_irradiance(
 
 pub(super) fn upload_placeholder_direction(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> wgpu::Texture {
     // Neutral direction: +Y encoded octahedral (0, 1) maps to (0.5, 1.0) →
     // 8-bit quantization (128, 255).
@@ -95,7 +95,7 @@ pub(super) fn upload_placeholder_direction(
 
 pub(crate) fn upload_placeholder_shadowmask(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> wgpu::Texture {
     // Two white texels: the shader splits the width into two mask groups, so
     // each group reads one real, fully visible texel.

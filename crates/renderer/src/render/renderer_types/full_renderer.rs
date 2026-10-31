@@ -45,6 +45,17 @@ pub(in crate::render) struct FullRenderer {
     /// Publishes that found their set built at another scene extent and
     /// rebuilt its extent-bound groups and fog target (the counted fallback).
     pub(in crate::render) extent_rebuilds: u64,
+    /// Publishes whose reflection targets the kept reflection tier re-keyed
+    /// (the tier moved after the set's build): the counted fallback beside
+    /// `extent_rebuilds`.
+    pub(in crate::render) reflection_tier_rebuilds: u64,
+    /// Bumped each time the scene-sized targets are recreated. A set records
+    /// the generation its extent-bound groups bind, so its publish rebuilds
+    /// them when the targets changed since, even at an equal extent.
+    pub(in crate::render) scene_targets_generation: u64,
+    /// This full renderer's identity: an off-main build carries it, and its
+    /// receipt refuses a set built against another (pre-suspend) renderer.
+    pub(in crate::render) build_token: std::sync::Arc<()>,
     /// World materials `install_textures` staged for the next build, which
     /// takes them into its set.
     pub(in crate::render) pending_textures: Option<LevelTextures>,

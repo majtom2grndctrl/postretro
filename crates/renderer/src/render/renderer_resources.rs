@@ -13,6 +13,7 @@ mod world_geometry;
 pub use lightmap_shadow::lightmap_family_inputs;
 pub(in crate::render) use publish::rebuild_level_extent_groups;
 
+use super::level_build::LevelBuildContext;
 use super::level_resource_set::{LevelSetId, PreviousLevelSet};
 use super::renderer_types::FullRenderer;
 use super::smoke::SpriteCollectionAssetSource;
@@ -166,16 +167,9 @@ impl Renderer {
             validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
             "level geometry must pass the indirect index-range check before installation"
         );
-        let surface_depth_quality = self.surface_depth_quality;
-        let scene = self.scene_extent();
-        let Self {
-            device,
-            queue,
-            has_multi_draw_indirect,
-            spot_shadow_map_resolution,
-            full,
-            ..
-        } = self;
+        let tiers = self.level_build_tiers();
+        let context = self.capture_level_build_context(tiers, true);
+        let Self { queue, full, .. } = self;
         let _installation = queue.installation();
         let full = full
             .as_mut()
@@ -183,244 +177,279 @@ impl Renderer {
         // This main-thread build is the oracle: it may wait for the
         // renderer's one pipeline build, and builds no pipeline itself.
         let pipelines = full.install_pipelines.wait_for_oracle();
-        let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
-
-        let streaming_manifest = match &geometry.sh_storage {
-            LevelGeometryShStorage::Legacy => None,
-            LevelGeometryShStorage::Streaming(manifest) => Some(*manifest),
-        };
-        let has_multi_draw_indirect = *has_multi_draw_indirect;
-        let requested_spot_resolution = *spot_shadow_map_resolution;
-
-        let world = world_geometry::install_world_buffers(device, geometry);
-        let (lights, selection) = lights::install_level_lights(device, geometry);
-        let level_light_count = selection.level_light_count;
-        let animated_baked_descriptor_indices = selection.animated_baked_descriptor_indices;
-        let shadow = shadow_pools::level_shadow_tier(
-            device,
-            full,
-            geometry,
-            &selection,
-            requested_spot_resolution,
-        );
-        let promoted = shadow_pools::level_promoted_state(device, geometry, &selection);
-        let (lighting, light_buffers) = lights::install_lighting_bind_group(
-            device,
-            &full.lighting_bind_group_layout,
-            &lights,
-            geometry,
-            selection,
-        );
-        let sh = sh_family::install_sh_volume(
-            device,
-            queue,
-            full.probe_occlusion_enabled,
+        let mut level = build_level_set_core(
+            &context,
             &pipelines,
-            geometry,
-            streaming_manifest,
-            level_light_count,
-            animated_baked_descriptor_indices,
-            &promoted.promoted_static_weight_buffer,
-            sh_plan,
-        )
-        .map_err(LevelInstallError::StreamedSh)?;
+            queue.raw(),
+            LevelSetCoreInputs {
+                geometry,
+                gpu_lighting_payloads,
+                sh_plan,
+                lightmap_plan: None,
+                fog_pixel_scale,
+            },
+        )?;
         // Past the last step that can fail, so a failed build leaves the
-        // staged materials for the next one.
+        // staged materials, models and sprite collections for the next one.
         let textures = match full.pending_textures.take() {
             Some(textures) => textures,
             None => super::renderer_textures::placeholder_level_textures(
-                device,
+                &context.device,
                 queue.raw(),
-                full,
-                surface_depth_quality,
+                &context.material_bind(),
             ),
         };
-        let (mesh_lights, kinematic_lights) = lights::rebind_mesh_light_groups(
-            device,
-            full,
-            &shadow,
-            &lights.lights_buffer,
-            lighting.mirror_lighting.lights_buffer(),
-            &lighting.influence_buffer,
-            &sh.sh_volume_resources,
-        );
-
-        install_marks.mark("buffers_and_sh_streaming");
-        let compose = sh_family::install_compose_family(
-            device,
-            queue,
-            &pipelines,
-            geometry,
-            &sh.sh_volume_resources,
-            sh.sh_streaming.as_ref(),
-            &promoted.promoted_static_weight_buffer,
-            sh.ledger,
-        );
-        let (lightmap_plan, bvh_leaves) = lightmap_shadow::plan_lightmap_family(
-            device,
-            &sh.sh_volume_resources,
-            &pipelines,
-            geometry,
-            &gpu_lighting_payloads,
-        );
-        install_marks.mark("sdf_atlas_and_compose");
-        let generation_floor = full.reserve_lightmap_generation_floor();
-        let lightmap = lightmap_shadow::install_lightmap(
-            device,
-            queue,
-            geometry,
-            gpu_lighting_payloads,
-            lightmap_plan,
-            generation_floor,
-        );
-        let sdf_shadow = lightmap_shadow::rebind_sdf_shadow(
-            device,
-            full,
-            geometry,
-            &light_buffers,
-            streaming_manifest,
-            &sh.sh_volume_resources,
-            sh.sh_streaming.as_ref(),
-        );
-
-        install_marks.mark("lightmap_and_sdf_shadow");
-        let cull = world_geometry::install_bvh_and_cull(
-            device,
-            &pipelines,
-            geometry,
-            bvh_leaves,
-            has_multi_draw_indirect,
-        );
-
-        install_marks.mark("bvh_and_cull");
-        // Shadow reach follows the installed BVH: the first fill after install
-        // walks this level's tree, and no range from the previous level survives.
-        let shadow_world = super::shadow_world_draws::ShadowWorldDraws::install(
-            Some(geometry.bvh),
-            world.index_count,
-        );
-        let kinematic = kinematic_brush::KinematicLevelState::install(
-            device,
-            geometry.kinematic_geometry,
-            geometry.texture_materials.len(),
-            kinematic_lights,
-        );
-        let extent =
-            publish::build_level_extent_groups(device, full, &shadow, scene, fog_pixel_scale);
-
-        let has_geometry = world.has_geometry;
-        let LevelTextures {
-            loaded_textures,
-            gpu_textures,
-            stored_texture_materials: _,
-            mut samplers,
-        } = textures;
-        samplers.absorb(&mut full.pending_samplers);
-        let id = LevelSetId::mint(&mut full.next_level_set_id);
-        let models = std::mem::take(&mut full.pending_models);
-        let smoke = std::mem::take(&mut full.pending_smoke);
-        full.resident_levels.push(LevelResourceSet {
-            id,
-            shadow,
-            extent,
-            samplers,
-            models,
-            smoke,
-            fluid_targets: Default::default(),
-            mirror_targets: Default::default(),
-            loaded_textures,
-            gpu_textures,
-            stored_texture_materials: geometry.texture_materials.to_vec(),
-            vertex_buffer: world.vertex_buffer,
-            spec_owner_buffer: world.spec_owner_buffer,
-            index_buffer: world.index_buffer,
-            index_count: world.index_count,
-            wireframe_index_buffer: world.wireframe_index_buffer,
-            wireframe_index_count: world.wireframe_index_count,
-            has_geometry,
-            bvh_leaves: cull.bvh_leaves,
-            cell_draw_index: cull.cell_draw_index,
-            compute_cull: cull.compute_cull,
-            candidate_cull: cull.candidate_cull,
-            candidate_cull_oor_logged: false,
-            shadow_world,
-            lights_buffer: lights.lights_buffer,
-            influence_buffer: lighting.influence_buffer,
-            lighting_bind_group: lighting.lighting_bind_group,
-            mirror_lighting: lighting.mirror_lighting,
-            dynamic_light_capacity: lights.dynamic_light_capacity,
-            light_count: lights.light_count,
-            animated_baked_light_count: lights.animated_baked_light_count,
-            total_light_count: lights.total_light_count,
-            level_lights: lights.level_lights,
-            level_light_source_indices: lights.level_light_source_indices,
-            level_light_influences: lighting.level_light_influences,
-            entity_shadow_lights: lights.entity_shadow_lights,
-            entity_shadow_light_influences: lights.entity_shadow_light_influences,
-            entity_shadow_light_source_indices: lights.entity_shadow_light_source_indices,
-            entity_shadow_spec_light_indices: lights.entity_shadow_spec_light_indices,
-            shadow_candidate_lights: lighting.shadow_candidate_lights,
-            shadow_candidate_source_indices: lighting.shadow_candidate_source_indices,
-            shadow_candidate_selection_indices: lighting.shadow_candidate_selection_indices,
-            shadow_candidate_animated_baked_indices: lighting
-                .shadow_candidate_animated_baked_indices,
-            shadow_candidate_influences: lighting.shadow_candidate_influences,
-            light_effective_brightness: Vec::new(),
-            animated_light_window_brightness: promoted.animated_light_window_brightness,
-            last_lights_upload: Vec::new(),
-            authored_animated_tail: Vec::new(),
-            last_influence_upload: Vec::new(),
-            lights_pack_scratch: Vec::new(),
-            influence_pack_scratch: Vec::new(),
-            shadowmask_present: lightmap.shadowmask_present,
-            forward_shadowmask_metadata_scratch: Vec::new(),
-            promoted_static_states: promoted.promoted_static_states,
-            promoted_animated_states: promoted.promoted_animated_states,
-            promoted_baked_records: Vec::new(),
-            promoted_baked_cache_layers: Vec::new(),
-            promoted_static_weights: promoted.promoted_static_weights,
-            promoted_static_weight_buffer: promoted.promoted_static_weight_buffer,
-            promoted_static_weight_scratch: Vec::new(),
-            promoted_baked_last_update_time: None,
-            promotions_start_whole: false,
-            sh_volume_resources: sh.sh_volume_resources,
-            sh_residency_report: compose.sh_residency_report,
-            lightmap_residency_report: lightmap.lightmap_residency_report,
-            sh_streaming: sh.sh_streaming,
-            sdf_atlas_resources: compose.sdf_atlas_resources,
-            lightmap_mode: compose.lightmap_mode,
-            #[cfg(feature = "dev-tools")]
-            sh_delta_volumes_meta: compose.sh_delta_volumes_meta,
-            #[cfg(feature = "dev-tools")]
-            sh_probe_readback: compose.sh_probe_readback,
-            sh_compose: compose.sh_compose,
-            direct_sh_compose: compose.direct_sh_compose,
-            billboard_direct_scatter_compose: compose.billboard_direct_scatter_compose,
-            lightmap_resources: lightmap.lightmap_resources,
-            animated_lightmap: lightmap.animated_lightmap,
-            sdf_shadow,
-            mesh_lights,
-            kinematic,
-            fluid_surfaces: None,
-            fog: Default::default(),
-            fog_cell_masks: None,
-            active_fog_aabbs: Vec::new(),
-        });
-
-        install_marks.log(has_geometry);
-        if has_geometry {
-            log::info!(
-                "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
-                world.index_count,
-                full.resident_levels
-                    .last()
-                    .expect("the set was just built")
-                    .bvh_leaves
-                    .len(),
-            );
-        }
+        level.install_textures(textures);
+        level.samplers.absorb(&mut full.pending_samplers);
+        level.models = std::mem::take(&mut full.pending_models);
+        level.smoke = std::mem::take(&mut full.pending_smoke);
+        let id = level.id;
+        full.resident_levels.push(level);
         Ok(id)
     }
+}
+
+/// One build's geometry inputs. `lightmap_plan` is the CPU plan prep built
+/// on the pool; `None` plans in the build (the oracle).
+pub(in crate::render) struct LevelSetCoreInputs<'a, 'g> {
+    pub(in crate::render) geometry: &'a LevelGeometry<'g>,
+    pub(in crate::render) gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
+    pub(in crate::render) sh_plan: Option<ShResidencyPlan>,
+    pub(in crate::render) lightmap_plan:
+        Option<postretro_render_cpu::lightmap_family::LightmapFamilyPlan>,
+    pub(in crate::render) fog_pixel_scale: u32,
+}
+
+/// Build one level's renderer set from `context`, on whichever thread runs
+/// it: the main-thread oracle and the upload thread's geometry part both
+/// call this. Today's intra-install order: world buffers, lights, the shadow
+/// tier and promoted state, the lighting group, SH volume and streamed
+/// residency (over the promoted weight buffer), the mesh and mover light
+/// groups, the compose family, the lightmap family (animated atlas first),
+/// the SDF shadow groups over the fresh SH depth moments, BVH and cull,
+/// kinematic geometry, and the extent-bound groups at the context's extent.
+/// The set's materials, models and sprite collections are left empty for the
+/// caller to install. Writes nothing renderer-wide. Its GPU-only lightmap and
+/// shadowmask payloads drop once their textures exist.
+pub(in crate::render) fn build_level_set_core(
+    context: &LevelBuildContext,
+    pipelines: &super::install_pipelines::InstallPipelines,
+    writes: &dyn super::queue_writes::QueueWrites,
+    inputs: LevelSetCoreInputs<'_, '_>,
+) -> Result<LevelResourceSet, LevelInstallError> {
+    let LevelSetCoreInputs {
+        geometry,
+        gpu_lighting_payloads,
+        sh_plan,
+        lightmap_plan,
+        fog_pixel_scale,
+    } = inputs;
+    let device = &context.device;
+    let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
+
+    let streaming_manifest = match &geometry.sh_storage {
+        LevelGeometryShStorage::Legacy => None,
+        LevelGeometryShStorage::Streaming(manifest) => Some(*manifest),
+    };
+
+    let world = world_geometry::install_world_buffers(device, geometry);
+    let (lights, selection) = lights::install_level_lights(device, geometry);
+    let level_light_count = selection.level_light_count;
+    let animated_baked_descriptor_indices = selection.animated_baked_descriptor_indices;
+    let shadow = shadow_pools::level_shadow_tier(
+        device,
+        context.shadow_tier_for_build(),
+        context.cube_array_supported,
+        geometry,
+        &selection,
+    );
+    let promoted = shadow_pools::level_promoted_state(device, geometry, &selection);
+    let (lighting, light_buffers) = lights::install_lighting_bind_group(
+        device,
+        &context.lighting_bgl,
+        &lights,
+        geometry,
+        selection,
+    );
+    let sh = sh_family::install_sh_volume(
+        device,
+        writes,
+        context.probe_occlusion_enabled,
+        pipelines,
+        geometry,
+        streaming_manifest,
+        level_light_count,
+        animated_baked_descriptor_indices,
+        &promoted.promoted_static_weight_buffer,
+        sh_plan,
+    )
+    .map_err(LevelInstallError::StreamedSh)?;
+    let (mesh_lights, kinematic_lights) = lights::rebind_mesh_light_groups(
+        device,
+        context,
+        &shadow,
+        &lights.lights_buffer,
+        lighting.mirror_lighting.lights_buffer(),
+        &lighting.influence_buffer,
+        &sh.sh_volume_resources,
+    );
+
+    install_marks.mark("buffers_and_sh_streaming");
+    let compose = sh_family::install_compose_family(
+        device,
+        writes,
+        pipelines,
+        geometry,
+        &sh.sh_volume_resources,
+        sh.sh_streaming.as_ref(),
+        &promoted.promoted_static_weight_buffer,
+        sh.ledger,
+    );
+    let (lightmap_family, bvh_leaves) = lightmap_shadow::plan_lightmap_family(
+        device,
+        &sh.sh_volume_resources,
+        pipelines,
+        geometry,
+        &gpu_lighting_payloads,
+        lightmap_plan,
+    );
+    install_marks.mark("sdf_atlas_and_compose");
+    let lightmap = lightmap_shadow::install_lightmap(
+        device,
+        writes,
+        geometry,
+        gpu_lighting_payloads,
+        lightmap_family,
+        context.generation_floor,
+    );
+    let sdf_shadow = lightmap_shadow::rebind_sdf_shadow(
+        device,
+        context,
+        geometry,
+        &light_buffers,
+        streaming_manifest,
+        &sh.sh_volume_resources,
+        sh.sh_streaming.as_ref(),
+    );
+
+    install_marks.mark("lightmap_and_sdf_shadow");
+    let cull = world_geometry::install_bvh_and_cull(
+        device,
+        pipelines,
+        geometry,
+        bvh_leaves,
+        context.has_multi_draw_indirect,
+    );
+
+    install_marks.mark("bvh_and_cull");
+    // Shadow reach follows the installed BVH: the first fill after install
+    // walks this level's tree, and no range from the previous level survives.
+    let shadow_world =
+        super::shadow_world_draws::ShadowWorldDraws::install(Some(geometry.bvh), world.index_count);
+    let kinematic = kinematic_brush::KinematicLevelState::install(
+        device,
+        geometry.kinematic_geometry,
+        geometry.texture_materials.len(),
+        kinematic_lights,
+    );
+    let extent = publish::build_level_extent_groups(device, context, &shadow, fog_pixel_scale);
+
+    let has_geometry = world.has_geometry;
+    install_marks.log(has_geometry);
+    if has_geometry {
+        log::info!(
+            "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
+            world.index_count,
+            cull.bvh_leaves.len(),
+        );
+    }
+    Ok(LevelResourceSet {
+        id: context.id,
+        shadow,
+        extent,
+        samplers: Default::default(),
+        models: Default::default(),
+        smoke: Default::default(),
+        fluid_targets: Default::default(),
+        mirror_targets: Default::default(),
+        planar_app_candidate: None,
+        loaded_textures: Vec::new(),
+        gpu_textures: Vec::new(),
+        stored_texture_materials: geometry.texture_materials.to_vec(),
+        vertex_buffer: world.vertex_buffer,
+        spec_owner_buffer: world.spec_owner_buffer,
+        index_buffer: world.index_buffer,
+        index_count: world.index_count,
+        wireframe_index_buffer: world.wireframe_index_buffer,
+        wireframe_index_count: world.wireframe_index_count,
+        has_geometry,
+        bvh_leaves: cull.bvh_leaves,
+        cell_draw_index: cull.cell_draw_index,
+        compute_cull: cull.compute_cull,
+        candidate_cull: cull.candidate_cull,
+        candidate_cull_oor_logged: false,
+        shadow_world,
+        lights_buffer: lights.lights_buffer,
+        influence_buffer: lighting.influence_buffer,
+        lighting_bind_group: lighting.lighting_bind_group,
+        mirror_lighting: lighting.mirror_lighting,
+        dynamic_light_capacity: lights.dynamic_light_capacity,
+        light_count: lights.light_count,
+        animated_baked_light_count: lights.animated_baked_light_count,
+        total_light_count: lights.total_light_count,
+        level_lights: lights.level_lights,
+        level_light_source_indices: lights.level_light_source_indices,
+        level_light_influences: lighting.level_light_influences,
+        entity_shadow_lights: lights.entity_shadow_lights,
+        entity_shadow_light_influences: lights.entity_shadow_light_influences,
+        entity_shadow_light_source_indices: lights.entity_shadow_light_source_indices,
+        entity_shadow_spec_light_indices: lights.entity_shadow_spec_light_indices,
+        shadow_candidate_lights: lighting.shadow_candidate_lights,
+        shadow_candidate_source_indices: lighting.shadow_candidate_source_indices,
+        shadow_candidate_selection_indices: lighting.shadow_candidate_selection_indices,
+        shadow_candidate_animated_baked_indices: lighting.shadow_candidate_animated_baked_indices,
+        shadow_candidate_influences: lighting.shadow_candidate_influences,
+        light_effective_brightness: Vec::new(),
+        animated_light_window_brightness: promoted.animated_light_window_brightness,
+        last_lights_upload: Vec::new(),
+        authored_animated_tail: Vec::new(),
+        last_influence_upload: Vec::new(),
+        lights_pack_scratch: Vec::new(),
+        influence_pack_scratch: Vec::new(),
+        shadowmask_present: lightmap.shadowmask_present,
+        forward_shadowmask_metadata_scratch: Vec::new(),
+        promoted_static_states: promoted.promoted_static_states,
+        promoted_animated_states: promoted.promoted_animated_states,
+        promoted_baked_records: Vec::new(),
+        promoted_baked_cache_layers: Vec::new(),
+        promoted_static_weights: promoted.promoted_static_weights,
+        promoted_static_weight_buffer: promoted.promoted_static_weight_buffer,
+        promoted_static_weight_scratch: Vec::new(),
+        promoted_baked_last_update_time: None,
+        promotions_start_whole: false,
+        sh_volume_resources: sh.sh_volume_resources,
+        sh_residency_report: compose.sh_residency_report,
+        lightmap_residency_report: lightmap.lightmap_residency_report,
+        sh_streaming: sh.sh_streaming,
+        sdf_atlas_resources: compose.sdf_atlas_resources,
+        lightmap_mode: compose.lightmap_mode,
+        #[cfg(feature = "dev-tools")]
+        sh_delta_volumes_meta: compose.sh_delta_volumes_meta,
+        #[cfg(feature = "dev-tools")]
+        sh_probe_readback: compose.sh_probe_readback,
+        sh_compose: compose.sh_compose,
+        direct_sh_compose: compose.direct_sh_compose,
+        billboard_direct_scatter_compose: compose.billboard_direct_scatter_compose,
+        lightmap_resources: lightmap.lightmap_resources,
+        animated_lightmap: lightmap.animated_lightmap,
+        sdf_shadow,
+        mesh_lights,
+        kinematic,
+        fluid_surfaces: None,
+        fog: Default::default(),
+        fog_cell_masks: None,
+        active_fog_aabbs: Vec::new(),
+    })
 }
 
 /// A new set's fog pixel scale until worldspawn's arrives
@@ -432,7 +461,7 @@ impl FullRenderer {
     /// renderer-wide add-only floor and every live set's high water, so its
     /// generations stay disjoint from every live set's accepted ones (the
     /// streaming controllers' generations are process-monotonic).
-    fn reserve_lightmap_generation_floor(&mut self) -> u64 {
+    pub(in crate::render) fn reserve_lightmap_generation_floor(&mut self) -> u64 {
         let live = self
             .level
             .iter()

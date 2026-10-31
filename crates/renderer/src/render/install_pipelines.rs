@@ -106,13 +106,6 @@ impl InstallPipelinesSlot {
 
     /// The set, or `None` while it builds (or after a failed build). Never
     /// blocks. Upload jobs queued behind the build job always find it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the staged upload jobs (level-load-pipeline task 9) read the slot here"
-        )
-    )]
     pub(crate) fn try_get(&self) -> Option<Arc<InstallPipelines>> {
         match self.published.get() {
             Some(Ok(published)) => Some(Arc::clone(&published.pipelines)),

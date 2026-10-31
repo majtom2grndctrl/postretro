@@ -125,6 +125,27 @@ pub(super) struct LentPlanarLayer {
     group: Option<FluidSceneInputs>,
 }
 
+/// A level set's own planar layer at `extent` and its group 5 over
+/// `scene_depth`, built on any thread: a publish lends both, applying the
+/// pass's fog weight and style to the group.
+pub(super) fn build_lent_planar_layer(
+    device: &wgpu::Device,
+    extent: (u32, u32),
+    scene_depth: &wgpu::TextureView,
+) -> LentPlanarLayer {
+    let layer = PlanarLayer::new(device, extent);
+    let mut group = FluidSceneInputs::new(device, scene_depth, &layer.view);
+    let scene = scene_depth.texture().size();
+    group.set_ssr_scale([
+        extent.0 as f32 / scene.width.max(1) as f32,
+        extent.1 as f32 / scene.height.max(1) as f32,
+    ]);
+    LentPlanarLayer {
+        layer: Some(layer),
+        group: Some(group),
+    }
+}
+
 impl PlanarRouting {
     pub(super) fn set_fog_weight(&mut self, weight: f32) {
         self.fog_weight = Some(weight);

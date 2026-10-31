@@ -108,6 +108,9 @@ pub(crate) struct MaterialBinding {
     pub(crate) bind_group: wgpu::BindGroup,
     pub(crate) uniform_buffer: wgpu::Buffer,
     pub(crate) uniform_plan: MaterialUniformPlan,
+    /// The Surface Depth tier the uniform was packed at (tests).
+    #[cfg(test)]
+    pub(crate) built_at: SurfaceDepthQuality,
 }
 
 pub(crate) fn build_material_bind_group(
@@ -200,6 +203,8 @@ pub(crate) fn build_material_bind_group(
         bind_group,
         uniform_buffer,
         uniform_plan,
+        #[cfg(test)]
+        built_at: surface_depth_quality,
     }
 }
 

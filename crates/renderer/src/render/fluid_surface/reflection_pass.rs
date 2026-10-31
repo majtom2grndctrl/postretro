@@ -506,30 +506,49 @@ impl FluidReflectionPass {
         }
     }
 
-    /// Group 3 over one level's parameter window and probe table, built at
-    /// install for a level with a probe-bound face.
-    fn probe_bind_group(
-        &self,
-        device: &wgpu::Device,
-        params_buffer: &wgpu::Buffer,
-        probe_table: wgpu::BindGroupEntry<'_>,
-    ) -> wgpu::BindGroup {
-        device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fluid Reflection Probe Table Bind Group (group 3)"),
-            layout: &self.probe_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: params_buffer,
-                        offset: 0,
-                        size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
-                    }),
-                },
-                probe_table,
-            ],
-        })
+    /// The group-3 layout a level's probe table binds under.
+    pub(super) fn probe_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.probe_layout
     }
+}
+
+/// Group 3 over one level's parameter window and probe table, built at
+/// install for a level with a probe-bound face.
+pub(super) fn probe_bind_group(
+    device: &wgpu::Device,
+    probe_layout: &wgpu::BindGroupLayout,
+    params_buffer: &wgpu::Buffer,
+    probe_table: wgpu::BindGroupEntry<'_>,
+) -> wgpu::BindGroup {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Fluid Reflection Probe Table Bind Group (group 3)"),
+        layout: probe_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: params_buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(FLUID_PARAMS_WINDOW_BYTES),
+                }),
+            },
+            probe_table,
+        ],
+    })
+}
+
+/// A level set's own reflection target at `extent` and the group 5 over it
+/// and `scene_depth`, built on any thread from the pass's cloned live-group
+/// layout: what a publish lends to the pass, building nothing.
+pub(super) fn build_lent_reflection_target(
+    device: &wgpu::Device,
+    extent: (u32, u32),
+    group: &crate::render::fluid_scene_inputs::FluidSceneGroupLayout,
+    scene_depth: &wgpu::TextureView,
+) -> LentReflectionTarget {
+    let target = FluidReflectionTarget::new(device, extent);
+    let group = group.build_live_group(device, scene_depth, &target.view);
+    LentReflectionTarget { target, group }
 }
 
 /// Depth tested and written against the pass's own depth, never scene depth:
@@ -742,15 +761,14 @@ impl FluidSurfacePass {
         drop(superseded);
     }
 
-    /// Group 3 of the reflection pass for a level being installed.
-    pub(super) fn reflection_probe_bind_group(
-        &self,
-        device: &wgpu::Device,
-        params_buffer: &wgpu::Buffer,
-        probe_table: wgpu::BindGroupEntry<'_>,
-    ) -> wgpu::BindGroup {
-        self.reflection
-            .probe_bind_group(device, params_buffer, probe_table)
+    /// What a level's fluid surfaces and own reflection targets bind from
+    /// this pass, cloned for a level build on any thread.
+    pub(crate) fn level_layout(&self) -> super::FluidLevelLayout {
+        super::FluidLevelLayout {
+            params_bind_group_layout: self.params_bind_group_layout.clone(),
+            reflection_probe_layout: self.reflection.probe_layout().clone(),
+            scene_group: self.scene_inputs.group_layout(),
+        }
     }
 
     /// Forward the mod's reflection style to the reflection pass's uniform.

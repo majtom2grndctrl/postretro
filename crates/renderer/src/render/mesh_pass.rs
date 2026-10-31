@@ -49,6 +49,7 @@
 
 mod frame_upload;
 mod lighting;
+pub(in crate::render) use lighting::{LightGroupInputs, LightGroupLayout};
 mod models;
 mod pipeline;
 mod pose;
@@ -59,7 +60,7 @@ mod tests;
 use postretro_model::BonePaletteEntry;
 use postretro_model::anim::LocalTrs;
 
-pub(super) use models::{LevelModels, ModelAnimationData, UploadedModel};
+pub(super) use models::{LevelModels, ModelAnimationData, ModelEntry, UploadedModel};
 use pose::{PaletteCache, SnapshotStore};
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
@@ -131,7 +132,7 @@ pub struct MeshPass {
     light_bind_group_layout: wgpu::BindGroupLayout,
 
     // The group-2 bind groups themselves (main view and planar mirror) are
-    // level resources: [`MeshPass::light_bind_groups`] builds them over one
+    // level resources: [`LightGroupLayout::light_bind_groups`] builds them over one
     // load's light buffers into that load's `LevelResourceSet`.
     /// Whether this frame's mirror draws read the mirror's light records:
     /// set by slot assignment each frame, true only while a mirror-only light

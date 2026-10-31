@@ -54,7 +54,7 @@ pub(super) fn generate_checkerboard_pixels() -> Vec<u8> {
 
 pub(super) fn make_diffuse_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let data = generate_checkerboard_pixels();
     upload_texture_data(
@@ -68,7 +68,7 @@ pub(super) fn make_diffuse_placeholder(
 
 pub(super) fn make_specular_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     upload_texture_data(
         device,
@@ -81,7 +81,7 @@ pub(super) fn make_specular_placeholder(
 
 pub(super) fn make_normal_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     upload_texture_data(
         device,
@@ -94,7 +94,7 @@ pub(super) fn make_normal_placeholder(
 
 pub(super) fn make_emissive_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     upload_texture_data(
         device,
@@ -110,7 +110,7 @@ pub(super) fn make_emissive_placeholder(
 /// and the renderer's no-level-loaded bootstrap slot.
 pub(in crate::render) fn placeholder_loaded_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
 ) -> LoadedTexture {
     let (diffuse_texture, diffuse_view) = make_diffuse_placeholder(device, queue);
     let (specular_texture, specular_view) = make_specular_placeholder(device, queue);

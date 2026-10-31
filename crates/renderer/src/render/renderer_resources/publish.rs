@@ -4,6 +4,7 @@
 // extent-bound group build and rebuild.
 // See: context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources, Settings and scene extent)
 
+use super::super::level_build::LevelBuildContext;
 use super::super::level_resource_set::{
     LevelExtentGroups, LevelSetId, LevelShadowTier, PreviousLevelSet,
 };
@@ -11,33 +12,34 @@ use super::super::renderer_types::FullRenderer;
 use super::*;
 use postretro_render_cpu::render_extent::Extent;
 
-/// Build one set's extent-bound groups at `extent`: the spot pool's group 5
-/// over its tier's textures, the SDF shadow factor target and scene depth,
-/// and the fog scatter target at `fog_pixel_scale` with its groups. Reads the
-/// renderer's scene targets; writes nothing renderer-wide.
+/// Build one set's extent-bound groups at the build's snapshot extent: the
+/// spot pool's group 5 over its tier's textures, the SDF shadow factor target
+/// and scene depth, and the fog scatter target at `fog_pixel_scale` with its
+/// groups. Reads the scene targets the context captured; writes nothing
+/// renderer-wide.
 pub(super) fn build_level_extent_groups(
     device: &wgpu::Device,
-    full: &FullRenderer,
+    ctx: &LevelBuildContext,
     shadow: &LevelShadowTier,
-    extent: Extent,
     fog_pixel_scale: u32,
 ) -> LevelExtentGroups {
-    let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+    let scene = &ctx.scene;
     LevelExtentGroups {
-        extent,
+        extent: scene.extent,
+        generation: scene.generation,
         spot_shadow: shadow.tier.spot.bind_group(
             device,
-            &full.spot_shadow_bgl,
-            &full.sdf_shadow_pass.shadow_view,
-            &full.depth_view,
-            cube_sampling_view,
+            &ctx.spot_shadow_bgl,
+            &scene.sdf_shadow_view,
+            &scene.depth_view,
+            scene.cube_sampling_view.as_ref(),
         ),
-        fog: full.fog.build_target(
+        fog: ctx.fog.build_target(
             device,
-            extent.width,
-            extent.height,
+            scene.extent.width,
+            scene.extent.height,
             fog_pixel_scale,
-            &full.depth_view,
+            &scene.depth_view,
         ),
     }
 }
@@ -71,13 +73,18 @@ pub(in crate::render) fn rebuild_level_extent_groups(
     full.sdf_shadow_pass
         .rebind_level_extent(device, &mut level.sdf_shadow, &full.depth_view);
     level.extent.extent = extent;
+    level.extent.generation = full.scene_targets_generation;
 }
 
 impl Renderer {
     /// Make the built set `id` the active set, the only one frames read, and
     /// run the level-boundary work there: when the set was built at another
-    /// scene extent, its extent-bound groups and fog target rebuild once
-    /// (counted by [`Renderer::extent_rebuilds`]); its sampler map merges
+    /// scene extent, or over scene targets recreated since, its extent-bound
+    /// groups and fog target rebuild once (counted by
+    /// [`Renderer::extent_rebuilds`]); its own reflection targets are lent to
+    /// the fluid and planar passes, and re-keyed only if the kept reflection
+    /// tier moved since its build (counted by
+    /// [`Renderer::reflection_tier_rebuilds`]); its sampler map merges
     /// into the renderer's add-only maps; the active spot pool and depth
     /// caches point at its shadow tier, every slot unoccupied and every
     /// cache layer cold; and per-frame draw inputs the previous level's ids
@@ -104,7 +111,8 @@ impl Renderer {
         // The replaced set's reflection targets go back to it, building nothing.
         let replaced_fluid = full.fluid_surface.take_level_targets();
         let replaced_mirror = full.planar_reflection.take_level_targets();
-        let extent_changed = level.extent.extent != scene;
+        let extent_changed = level.extent.extent != scene
+            || level.extent.generation != full.scene_targets_generation;
         if extent_changed {
             rebuild_level_extent_groups(device, full, &mut level, scene);
             full.extent_rebuilds += 1;
@@ -116,6 +124,12 @@ impl Renderer {
             .lend_level_targets(std::mem::take(&mut level.fluid_targets));
         full.planar_reflection
             .lend_level_targets(std::mem::take(&mut level.mirror_targets));
+        // The verdict an off-main build keyed its planar targets by is the
+        // app's for this level; the oracle's sets carry none and keep the
+        // verdict the app set before them.
+        if let Some(candidate) = level.planar_app_candidate {
+            full.fluid_surface.set_planar_app_candidate(candidate);
+        }
         let kept = match (full.level.replace(level), previous) {
             (Some(mut replaced), PreviousLevelSet::KeepResident) => {
                 replaced.fluid_targets = replaced_fluid;
@@ -131,7 +145,14 @@ impl Renderer {
             }
             (None, _) => None,
         };
+        let before = gpu_creation_counts();
         self.reconcile_published_fluid_targets(extent_changed);
+        // A set built at the kept tier and the current scene targets lends
+        // its own and builds nothing here; anything built means the tier
+        // moved since its build (an extent rebuild already counted above).
+        if !extent_changed && gpu_creation_counts().since(before).total() > 0 {
+            self.full_mut().reflection_tier_rebuilds += 1;
+        }
         kept
     }
 

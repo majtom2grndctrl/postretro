@@ -116,8 +116,16 @@ impl<T> TierRegistry<T> {
     }
 
     /// The live tier at `resolution`, if anything still holds one.
-    #[cfg(test)]
     pub(in crate::render) fn live(&self, resolution: u32) -> Option<Arc<T>> {
         self.live.get(&resolution).and_then(Weak::upgrade)
+    }
+
+    /// Record a tier an off-main build created, unless a live tier at its
+    /// resolution is already registered: that one stays, and `tier` stays
+    /// private to the set that built it.
+    pub(in crate::render) fn register_if_vacant(&mut self, resolution: u32, tier: &Arc<T>) {
+        if self.live(resolution).is_none() {
+            self.register(resolution, tier);
+        }
     }
 }

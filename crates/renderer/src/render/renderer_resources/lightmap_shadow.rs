@@ -3,7 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::super::install_pipelines::InstallPipelines;
-use super::super::renderer_types::FullRenderer;
+use super::super::level_build::LevelBuildContext;
 use super::lights::LevelLightBuffers;
 use super::*;
 
@@ -26,13 +26,16 @@ pub(super) struct LevelLightmapFamily {
 }
 
 /// Plan the static pool and build the animated atlas that keys on it. Also
-/// returns the BVH leaves the cull install takes.
+/// returns the BVH leaves the cull install takes. `prepared` is the CPU plan
+/// a load's prep built on the pool; `None` (the main-thread oracle) plans
+/// here, from the SH volume's installed animated count.
 pub(super) fn plan_lightmap_family(
     device: &wgpu::Device,
     sh_volume_resources: &ShVolumeResources,
     pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: &postretro_level_loader::GpuLightingPayloads,
+    prepared: Option<postretro_render_cpu::lightmap_family::LightmapFamilyPlan>,
 ) -> (
     LightmapFamilyPlan,
     Vec<postretro_render_data::geometry::BvhLeaf>,
@@ -41,15 +44,17 @@ pub(super) fn plan_lightmap_family(
     let block_table_bgl = crate::lighting::lightmap::block_table_bind_group_layout(device);
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
     let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
-    let cpu_plan = postretro_render_cpu::lightmap_family::plan_lightmap_family(
-        &lightmap_family_inputs(
-            geometry,
-            gpu_lighting_payloads,
-            &bvh_leaves,
-            sh_volume_resources.animation.animated_light_count(),
-        ),
-        &super::super::install_prep::device_limits(&device.limits()),
-    );
+    let cpu_plan = prepared.unwrap_or_else(|| {
+        postretro_render_cpu::lightmap_family::plan_lightmap_family(
+            &lightmap_family_inputs(
+                geometry,
+                gpu_lighting_payloads,
+                &bvh_leaves,
+                sh_volume_resources.animation.animated_light_count(),
+            ),
+            &super::super::install_prep::device_limits(&device.limits()),
+        )
+    });
     let static_pool = cpu_plan.static_pool;
     let (animated_lightmap, animated_block_table) = build_animated_lightmap(
         device,
@@ -139,7 +144,7 @@ fn build_animated_lightmap(
 
 pub(super) fn install_lightmap(
     device: &wgpu::Device,
-    queue: &UploadQueue,
+    writes: &dyn crate::render::queue_writes::QueueWrites,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     plan: LightmapFamilyPlan,
@@ -154,7 +159,7 @@ pub(super) fn install_lightmap(
     } = plan;
     let lightmap_resources = LightmapResources::new(
         device,
-        queue.raw(),
+        writes,
         geometry.lightmap,
         geometry.shadowmask_atlas,
         &static_pool,
@@ -183,7 +188,7 @@ pub(super) fn install_lightmap(
 
 pub(super) fn rebind_sdf_shadow(
     device: &wgpu::Device,
-    full: &FullRenderer,
+    ctx: &LevelBuildContext,
     geometry: &LevelGeometry<'_>,
     light_buffers: &LevelLightBuffers,
     streaming_manifest: Option<&postretro_level_loader::ShStreamManifest>,
@@ -210,9 +215,9 @@ pub(super) fn rebind_sdf_shadow(
     let sh_depth_moment_view = sh_streaming
         .and_then(sh_streaming::ShResidencyState::depth_moment_view)
         .unwrap_or_else(|| sh_volume_resources.make_depth_moment_view());
-    full.sdf_shadow_pass.level_state(
+    ctx.sdf_shadow.level_state(
         device,
-        &full.depth_view,
+        &ctx.scene.depth_view,
         sh_depth_moment_view,
         sdf_shadow::SdfShadowLightBuffers {
             spec_lights: &light_buffers.spec_lights,

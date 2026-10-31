@@ -12,7 +12,7 @@ impl StreamingGpuPools {
     pub(in crate::render::sh_streaming) fn new(
         device: &wgpu::Device,
         limits: &wgpu::Limits,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         sparse_compose: std::sync::Arc<SparseComposeLayouts>,
@@ -58,7 +58,7 @@ impl StreamingGpuPools {
     pub(in crate::render::sh_streaming::gpu) fn new_with_shape(
         device: &wgpu::Device,
         limits: &wgpu::Limits,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         sparse_compose: std::sync::Arc<SparseComposeLayouts>,

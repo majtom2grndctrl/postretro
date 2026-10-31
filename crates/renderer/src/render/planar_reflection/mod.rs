@@ -42,6 +42,34 @@ use targets::PlanarTargets;
 #[derive(Default)]
 pub(in crate::render) struct LentMirrorTargets(Option<PlanarTargets>);
 
+/// What the mirror targets bind from the planar pass (its pipelines'
+/// layouts and the inputs uniform), cloned so a level build on any thread
+/// builds a set's own mirror targets.
+#[derive(Clone)]
+pub(in crate::render) struct PlanarMirrorLayout {
+    pipelines: pipelines::PlanarPipelines,
+    inputs_buffer: wgpu::Buffer,
+}
+
+impl PlanarMirrorLayout {
+    /// A set's mirror targets at `extent` over `scene_depth`, for its publish
+    /// to lend.
+    pub(in crate::render) fn build(
+        &self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        extent: (u32, u32),
+    ) -> LentMirrorTargets {
+        LentMirrorTargets(Some(PlanarTargets::new(
+            device,
+            &self.pipelines,
+            &self.inputs_buffer,
+            scene_depth,
+            extent,
+        )))
+    }
+}
+
 /// The planar layer's texel format: premultiplied (c·X, c), filterable, as
 /// the screen-space reflection target.
 pub(in crate::render) const PLANAR_LAYER_FORMAT: wgpu::TextureFormat =
@@ -213,6 +241,14 @@ impl PlanarReflectionPass {
         }
         union_cells(main, &self.visible, &mut self.compose_union);
         &self.compose_union
+    }
+
+    /// The mirror targets' layouts and inputs uniform, for a level build.
+    pub(in crate::render) fn mirror_layout(&self) -> PlanarMirrorLayout {
+        PlanarMirrorLayout {
+            pipelines: self.pipelines.clone(),
+            inputs_buffer: self.inputs_buffer.clone(),
+        }
     }
 
     /// Take the active set's mirror targets back for its set, building

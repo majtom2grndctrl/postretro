@@ -32,7 +32,7 @@ pub(super) struct DenseTextures {
 impl DenseTextures {
     pub(super) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
         shape: AtlasShape,

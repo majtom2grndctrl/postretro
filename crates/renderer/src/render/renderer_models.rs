@@ -80,53 +80,25 @@ impl Renderer {
             }
         };
 
-        let (submesh_materials, samplers) =
-            self.resolve_skinned_model_material(model, prm_cache_root);
-
-        let postretro_model::gltf_loader::LoadedModel {
-            mesh,
-            skeleton,
-            clips,
-            tags,
-            pose_stack,
+        let prepared = prepare_model_materials(&model.submeshes, prm_cache_root);
+        let surface_depth_quality = self.surface_depth_quality;
+        let Self {
+            device,
+            queue,
+            full,
             ..
-        } = model;
-        let clip_count = clips.len();
-        // Name every parsed clip so a multi-clip asset surfaces its full set in
-        // the load log. Per-instance sample parameters select cached clips.
-        // Joined as "name (1.23s)" in glTF order.
-        if !clips.is_empty() {
-            let clip_summary = clips
-                .iter()
-                .map(|clip| format!("'{}' ({:.2}s)", clip.name, clip.duration))
-                .collect::<Vec<_>>()
-                .join(", ");
-            log::info!(
-                "[Model] skinned model animation: {} clip(s) [{}], {} joints",
-                clip_count,
-                clip_summary,
-                skeleton.joints.len(),
-            );
-        }
-
-        // `handle` is the verbatim cache key — see `load_skinned_model`'s doc. The
-        // full clip set is handed to the entry; per-instance sample parameters
-        // select clips during palette sampling.
-        // `resolve_skinned_model_material` (a `&mut self` helper) already ran
-        // above into `submesh_materials`, so destructuring `self` here is safe.
-        let Self { device, full, .. } = self;
+        } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let entry = MeshPass::upload_model(
+        let mut samplers = SamplerMaps::default();
+        let entry = build_model_entry(
             device,
-            mesh,
-            submesh_materials,
-            ModelAnimationData {
-                skeleton: skeleton.clone(),
-                clips: clips.clone(),
-                pose_stack: pose_stack.clone(),
-            },
+            queue.raw(),
+            &full.material_bind(surface_depth_quality),
+            &mut samplers,
+            model,
+            prepared,
         );
         match full.level.as_mut() {
             // The active set is already published: its new samplers join the
@@ -144,10 +116,10 @@ impl Renderer {
 
         log::info!(
             "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",
-            clip_count,
-            tags.len(),
+            model.clips.len(),
+            model.tags.len(),
         );
-        Some(tags.clone())
+        Some(model.tags.clone())
     }
 
     /// The clip metadata (name + duration) for a cached skinned model, in glTF
@@ -326,85 +298,6 @@ impl Renderer {
             .map_or(&full.pending_models, |level| &level.models)
     }
 
-    /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
-    /// material bind group, returning one `(bind group, index range)` per
-    /// submesh in submesh order for the mesh pass to draw, and the
-    /// character-model samplers it created that the renderer's add-only map
-    /// lacked (never written into it here).
-    ///
-    /// Dedup: one GPU material bind group is built per *distinct* key — a model
-    /// reusing a material across primitives builds it once and shares it. Each
-    /// submesh range is then paired with its (possibly shared) bind group. The
-    /// dedup + range bookkeeping and each key's sidecar read, parse and plan
-    /// are the GPU-free [`prepare_model_materials`], which a level load also
-    /// runs on its pool; this method is the thin GPU layer that uploads the
-    /// textures and builds the bind groups.
-    ///
-    /// Degrades to a placeholder per distinct key when its key is absent/garbled
-    /// or its `.prm` is missing. Model materials consume only diffuse; specular
-    /// and normal always use neutral placeholders in this slice.
-    fn resolve_skinned_model_material(
-        &mut self,
-        model: &postretro_model::gltf_loader::LoadedModel,
-        prm_cache_root: &Path,
-    ) -> (Vec<(wgpu::BindGroup, std::ops::Range<u32>)>, SamplerMaps) {
-        let PreparedModelMaterials { plan, diffuse } =
-            prepare_model_materials(&model.submeshes, prm_cache_root);
-        let mut samplers = SamplerMaps::default();
-
-        let surface_depth_quality = self.surface_depth_quality;
-        let Self {
-            device,
-            queue,
-            full,
-            ..
-        } = self;
-        let full = full
-            .as_mut()
-            .expect("renderer full-init must complete before full-ready paths run");
-
-        // Build one material bind group per distinct key (deduped). Indexed
-        // parallel to `plan.distinct_keys` so each submesh draw indexes into it.
-        let distinct_bind_groups: Vec<wgpu::BindGroup> = plan
-            .distinct_keys
-            .iter()
-            .zip(&diffuse)
-            .map(|(key_hex, prepared)| {
-                let tex = upload_prepared_texture(device, queue.raw(), prepared);
-
-                let character_model_sampler =
-                    samplers.character(&full.samplers, device, tex.mip_count);
-                // Skinned models are outside Surface Depth's scope: they never
-                // bind the world material bundle's surface map —
-                // the model diffuse plan binds the neutral single-channel
-                // specular placeholder — so their uniform is flat whatever the
-                // switch says. The uniform buffer handle is therefore
-                // deliberately not retained; the bind group keeps the buffer
-                // alive and nothing will ever rewrite it.
-                build_material_bind_group(
-                    device,
-                    &full.texture_bind_group_layout,
-                    &tex,
-                    &character_model_sampler,
-                    Material::Default,
-                    surface_depth_quality,
-                    &format!("Skinned Model Material {key_hex}"),
-                )
-                .bind_group
-            })
-            .collect();
-
-        // The resulting Vec is moved into the mesh pass (ownership transfer), so
-        // each slot must hold its own handle. Clone the shared handle (cheap Arc
-        // clone inside wgpu) for submeshes that reuse a distinct material.
-        let submeshes = plan
-            .draws
-            .into_iter()
-            .map(|draw| (distinct_bind_groups[draw.distinct].clone(), draw.indices))
-            .collect();
-        (submeshes, samplers)
-    }
-
     /// Normalize texel-space UVs on static world and kinematic mover vertices
     /// to `[0,1]` using the diffuse-texture dimensions just installed by
     /// `install_textures`. Runs on the main thread between `install_textures`
@@ -427,6 +320,102 @@ impl Renderer {
             &texture_dimensions,
         );
     }
+}
+
+/// One skinned model's GPU entry: its prepared materials uploaded and bound
+/// (one bind group per distinct key, shared by the submeshes that reuse it)
+/// and its mesh uploaded with the skeleton, clips and pose stack cloned in.
+/// The character-model samplers it needs that `bind`'s renderer maps lack are
+/// created into `samplers`. Shared by `upload_parsed_skinned_model` and the
+/// upload thread's model part.
+///
+/// Dedup: the dedup + range bookkeeping and each key's sidecar read, parse
+/// and plan are the GPU-free [`prepare_model_materials`], which a level load
+/// runs on its pool; this is the thin GPU layer. A key whose sidecar is
+/// absent or garbled already degraded to a placeholder there. Model materials
+/// consume only diffuse; specular and normal use neutral placeholders.
+pub(in crate::render) fn build_model_entry(
+    device: &wgpu::Device,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
+    bind: &super::renderer_textures::MaterialBindContext<'_>,
+    samplers: &mut SamplerMaps,
+    model: &postretro_model::gltf_loader::LoadedModel,
+    materials: PreparedModelMaterials,
+) -> super::mesh_pass::ModelEntry {
+    let PreparedModelMaterials { plan, diffuse } = materials;
+    // Build one material bind group per distinct key (deduped). Indexed
+    // parallel to `plan.distinct_keys` so each submesh draw indexes into it.
+    let distinct_bind_groups: Vec<wgpu::BindGroup> = plan
+        .distinct_keys
+        .iter()
+        .zip(&diffuse)
+        .map(|(key_hex, prepared)| {
+            let tex = upload_prepared_texture(device, queue, prepared);
+            let character_model_sampler =
+                samplers.character(bind.renderer_samplers, device, tex.mip_count);
+            // Skinned models are outside Surface Depth's scope: they never
+            // bind the world material bundle's surface map — the model
+            // diffuse plan binds the neutral single-channel specular
+            // placeholder — so their uniform is flat whatever the switch
+            // says. The uniform buffer handle is therefore deliberately not
+            // retained; the bind group keeps the buffer alive and nothing
+            // will ever rewrite it.
+            build_material_bind_group(
+                device,
+                bind.texture_bgl,
+                &tex,
+                &character_model_sampler,
+                Material::Default,
+                bind.surface_depth_quality,
+                &format!("Skinned Model Material {key_hex}"),
+            )
+            .bind_group
+        })
+        .collect();
+    // The resulting Vec is moved into the mesh pass (ownership transfer), so
+    // each slot must hold its own handle. Clone the shared handle (cheap Arc
+    // clone inside wgpu) for submeshes that reuse a distinct material.
+    let submesh_materials = plan
+        .draws
+        .into_iter()
+        .map(|draw| (distinct_bind_groups[draw.distinct].clone(), draw.indices))
+        .collect();
+
+    let postretro_model::gltf_loader::LoadedModel {
+        mesh,
+        skeleton,
+        clips,
+        pose_stack,
+        ..
+    } = model;
+    // Name every parsed clip so a multi-clip asset surfaces its full set in
+    // the load log. Per-instance sample parameters select cached clips.
+    // Joined as "name (1.23s)" in glTF order.
+    if !clips.is_empty() {
+        let clip_summary = clips
+            .iter()
+            .map(|clip| format!("'{}' ({:.2}s)", clip.name, clip.duration))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::info!(
+            "[Model] skinned model animation: {} clip(s) [{}], {} joints",
+            clips.len(),
+            clip_summary,
+            skeleton.joints.len(),
+        );
+    }
+    // The full clip set is handed to the entry; per-instance sample
+    // parameters select clips during palette sampling.
+    MeshPass::upload_model(
+        device,
+        mesh,
+        submesh_materials,
+        ModelAnimationData {
+            skeleton: skeleton.clone(),
+            clips: clips.clone(),
+            pose_stack: pose_stack.clone(),
+        },
+    )
 }
 
 pub(super) fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32; 2]> {

@@ -4,6 +4,8 @@
 use std::cell::Cell;
 use wgpu::util::DeviceExt;
 
+use super::queue_writes::QueueWrites;
+
 /// Running totals of GPU objects created through [`GpuCreate`] on one thread.
 /// Render and compute pipelines share `pipelines`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,9 +67,10 @@ pub(crate) trait GpuCreate {
     fn new_buffer(&self, desc: &wgpu::BufferDescriptor) -> wgpu::Buffer;
     fn new_buffer_init(&self, desc: &wgpu::util::BufferInitDescriptor) -> wgpu::Buffer;
     fn new_texture(&self, desc: &wgpu::TextureDescriptor) -> wgpu::Texture;
+    /// Its initial data is a queued write, metered through `queue`.
     fn new_texture_with_data(
         &self,
-        queue: &wgpu::Queue,
+        queue: &dyn QueueWrites,
         desc: &wgpu::TextureDescriptor,
         order: wgpu::util::TextureDataOrder,
         data: &[u8],
@@ -96,12 +99,13 @@ impl GpuCreate for wgpu::Device {
 
     fn new_texture_with_data(
         &self,
-        queue: &wgpu::Queue,
+        queue: &dyn QueueWrites,
         desc: &wgpu::TextureDescriptor,
         order: wgpu::util::TextureDataOrder,
         data: &[u8],
     ) -> wgpu::Texture {
         count(|counts| counts.textures += 1);
+        let queue = queue.queue_for_initial_data(data.len() as u64);
         self.create_texture_with_data(queue, desc, order, data)
     }
 

@@ -95,7 +95,7 @@ impl FluidProbeResources {
     /// value.
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         section: Option<&ReflectionProbesSection>,
     ) -> Self {
         let array = match section.and_then(|section| Some((section, probe_array_format(section)?)))

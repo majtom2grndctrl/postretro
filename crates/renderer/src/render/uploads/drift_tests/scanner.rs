@@ -95,9 +95,30 @@ fn type_receiver(ty: &Type) -> Receiver {
             }
             named(&last.ident.to_string())
         }
+        // `&dyn QueueWrites` / `impl QueueWrites`: the trait names the
+        // receiver, so its writes are classified like a raw queue's.
+        Type::TraitObject(ty) => trait_bound_receiver(&ty.bounds),
+        Type::ImplTrait(ty) => trait_bound_receiver(&ty.bounds),
         _ => Receiver::Unknown,
     }
 }
+
+fn trait_bound_receiver(
+    bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::Token![+]>,
+) -> Receiver {
+    bounds
+        .iter()
+        .find_map(|bound| match bound {
+            syn::TypeParamBound::Trait(bound) => bound.path.segments.last(),
+            _ => None,
+        })
+        .map(|last| named(&last.ident.to_string()))
+        .unwrap_or(Receiver::Unknown)
+}
+
+/// The install-write router (`render/queue_writes.rs`): every write through
+/// it needs the same lifecycle class a raw-queue write does.
+pub(super) const QUEUE_WRITES: &str = "QueueWrites";
 
 fn receiver_name(receiver: &Receiver) -> Option<&str> {
     match receiver {
@@ -684,6 +705,21 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("off-main upload flush")
         }
+        // Off-main level-build writes: the upload thread's metered writer
+        // stages each write on its raw queue and submits in bounded batches
+        // through `flush_staged_writes`. Its callers stay classified below.
+        ("render/upload_thread.rs", "ChunkedWrites", "write_buffer" | "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method != "submit" =>
+        {
+            Some("off-main build write (metered, chunked submits)")
+        }
+        // The main thread's install writes: the raw queue implementing the
+        // same router, writing at once (the frame's submit carries them).
+        ("render/queue_writes.rs", "Queue", "write_buffer" | "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method != "submit" =>
+        {
+            Some("install write routing (direct)")
+        }
         (
             "render/loaded_texture/upload.rs",
             "",
@@ -756,7 +792,10 @@ pub(super) fn violations(sites: &[Site]) -> Vec<String> {
                     site.location()
                 ));
             }
-        } else if site.receiver == Receiver::RawQueue || site.method == "direct_write_buffer" {
+        } else if site.receiver == Receiver::RawQueue
+            || site.receiver == Receiver::Named(QUEUE_WRITES.into())
+            || site.method == "direct_write_buffer"
+        {
             if direct_class(site).is_none() {
                 errors.push(format!(
                     "unclassified direct write (per-frame writers must stage): {}",

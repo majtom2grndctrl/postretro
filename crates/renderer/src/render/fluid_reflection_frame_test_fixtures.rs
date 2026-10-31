@@ -232,6 +232,19 @@ pub(super) fn back_wall() -> WorldQuad {
 /// one cell, with the ambient floor lit so the checkerboard reads in
 /// colour. Call before the fluid install, which takes the level's lattice.
 pub(super) fn install_world_quads(renderer: &mut Renderer, quads: &[WorldQuad]) {
+    with_world_quads(quads, |geometry| {
+        renderer
+            .install_level_geometry(geometry, Default::default())
+            .expect("level resources install");
+    });
+}
+
+/// [`install_world_quads`]'s level, lent to `use_geometry` to install or
+/// build.
+pub(super) fn with_world_quads<R>(
+    quads: &[WorldQuad],
+    use_geometry: impl FnOnce(&super::LevelGeometry<'_>) -> R,
+) -> R {
     use postretro_level_loader::CellData;
     use postretro_render_data::geometry::{
         BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree, WorldVertex,
@@ -297,40 +310,35 @@ pub(super) fn install_world_quads(renderer: &mut Renderer, quads: &[WorldQuad]) 
         is_exterior: false,
         is_drawable: true,
     }];
-    renderer
-        .install_level_geometry(
-            &super::LevelGeometry {
-                vertices: &vertices,
-                vertex_spec_owners: &[],
-                indices: &indices,
-                bvh: &bvh,
-                lights: &[],
-                light_influences: &[],
-                sh_volume: None,
-                sh_storage: super::LevelGeometryShStorage::Legacy,
-                lightmap: None,
-                lightmap_streaming: None,
-                chunk_light_list: None,
-                animated_light_chunks: None,
-                animated_light_weight_maps: None,
-                delta_sh_volumes: None,
-                direct_sh_volume: None,
-                direct_sh_delta_volumes: None,
-                animated_direct_sh_delta_volumes: None,
-                billboard_direct_scatter_volume: None,
-                animated_billboard_direct_scatter_delta_volumes: None,
-                entity_shadow_lights: &[],
-                shadowmask_atlas: None,
-                sdf_atlas: None,
-                lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-                cell_draw_index: None,
-                kinematic_geometry: None,
-                cells: &cells,
-                texture_materials: &[],
-            },
-            Default::default(),
-        )
-        .expect("level resources install");
+    use_geometry(&super::LevelGeometry {
+        vertices: &vertices,
+        vertex_spec_owners: &[],
+        indices: &indices,
+        bvh: &bvh,
+        lights: &[],
+        light_influences: &[],
+        sh_volume: None,
+        sh_storage: super::LevelGeometryShStorage::Legacy,
+        lightmap: None,
+        lightmap_streaming: None,
+        chunk_light_list: None,
+        animated_light_chunks: None,
+        animated_light_weight_maps: None,
+        delta_sh_volumes: None,
+        direct_sh_volume: None,
+        direct_sh_delta_volumes: None,
+        animated_direct_sh_delta_volumes: None,
+        billboard_direct_scatter_volume: None,
+        animated_billboard_direct_scatter_delta_volumes: None,
+        entity_shadow_lights: &[],
+        shadowmask_atlas: None,
+        sdf_atlas: None,
+        lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+        cell_draw_index: None,
+        kinematic_geometry: None,
+        cells: &cells,
+        texture_materials: &[],
+    })
 }
 
 /// The base level: the standing quad and the back wall, then the base

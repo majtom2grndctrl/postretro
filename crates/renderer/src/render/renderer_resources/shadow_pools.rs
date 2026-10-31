@@ -10,28 +10,23 @@ use super::lights::LevelLightSelection;
 use super::*;
 use crate::render::gpu_create::GpuCreate;
 
-/// One build's shadow textures. Shadow quality is a level-boundary setting:
-/// changing the option only updates renderer boot state, and the next build
-/// looks its resolution up in the tier registry, reusing a tier any live set
-/// (or the active pool) still holds and building a fresh one otherwise, so a
-/// resident level at another tier keeps sampling its own. The promoted cache
-/// textures join when the level has a promoted source (selected-static or
-/// section-45 animated candidates share the fixed-projection cache), and each
-/// dynamic cache when the level holds a dynamic light of its type. Touches
-/// nothing the active set or its frames read.
+/// One build's shadow textures over `tier`, the spot pool at the build's
+/// shadow resolution. Shadow quality is a level-boundary setting: the build
+/// takes the tier any live set (or the active pool) still holds at its
+/// resolution, else a fresh one, so a resident level at another tier keeps
+/// sampling its own. The promoted cache textures join when the level has a
+/// promoted source (selected-static or section-45 animated candidates share
+/// the fixed-projection cache), and each dynamic cache when the level holds a
+/// dynamic light of its type; a shared tier creates each cache texture once,
+/// on whichever thread first needs it. Touches nothing the active set or its
+/// frames read.
 pub(super) fn level_shadow_tier(
     device: &wgpu::Device,
-    full: &mut FullRenderer,
+    tier: std::sync::Arc<ShadowTier>,
+    cube_array_supported: bool,
     geometry: &LevelGeometry<'_>,
     selection: &LevelLightSelection<'_>,
-    requested_spot_resolution: u32,
 ) -> LevelShadowTier {
-    let tier = full
-        .shadow_tiers
-        .get_or_build(requested_spot_resolution, || {
-            ShadowTier::new(device, requested_spot_resolution)
-        });
-    let cube_array_supported = full.cube_shadow_pool.is_some();
     let has_promoted_cache_source = !geometry.entity_shadow_lights.is_empty()
         || !selection.animated_baked_candidates.is_empty();
     let promoted = has_promoted_cache_source.then(|| tier.promoted(device, cube_array_supported));

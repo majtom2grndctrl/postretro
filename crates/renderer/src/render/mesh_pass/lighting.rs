@@ -2,7 +2,6 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use super::MeshPass;
-use crate::render::gpu_create::GpuCreate;
 
 /// Mesh-side group-2 params uniform (binding 4): runtime-light count, the frame's
 /// render-clock time, and `light_term_mask`. `time` is the SAME render-clock
@@ -250,12 +249,53 @@ pub(super) fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) 
 }
 
 impl MeshPass {
+    /// The group-2 layout and params buffer a level's mesh light groups
+    /// build over ([`LightGroupLayout::light_bind_groups`]), cloned so a
+    /// level build on any thread builds them.
+    pub(in crate::render) fn light_group_layout(&self) -> LightGroupLayout {
+        LightGroupLayout {
+            pass: "Skinned Mesh",
+            layout: self.light_bind_group_layout.clone(),
+            light_params_buffer: self.light_params_buffer.clone(),
+            cube_array_supported: self.cube_array_supported,
+        }
+    }
+}
+
+/// One dynamic-object pass's group-2 layout and its params buffer (b4),
+/// cloned out of the pass so a level build on any thread builds that pass's
+/// light groups. `pass` names the groups.
+#[derive(Clone)]
+pub(in crate::render) struct LightGroupLayout {
+    pub(in crate::render) pass: &'static str,
+    pub(in crate::render) layout: wgpu::BindGroupLayout,
+    pub(in crate::render) light_params_buffer: wgpu::Buffer,
+    pub(in crate::render) cube_array_supported: bool,
+}
+
+/// One set's buffers and shadow-tier views a dynamic-object pass's group 2
+/// binds ([`LightGroupLayout::light_bind_groups`] documents each binding).
+pub(in crate::render) struct LightGroupInputs<'a> {
+    pub(in crate::render) lights: &'a wgpu::Buffer,
+    pub(in crate::render) mirror_lights: &'a wgpu::Buffer,
+    pub(in crate::render) influence: &'a wgpu::Buffer,
+    pub(in crate::render) scripted_descriptors: &'a wgpu::Buffer,
+    pub(in crate::render) anim_samples: &'a wgpu::Buffer,
+    pub(in crate::render) spot_shadow_depth: &'a wgpu::TextureView,
+    pub(in crate::render) spot_shadow_compare: &'a wgpu::Sampler,
+    pub(in crate::render) light_space_matrices: &'a wgpu::Buffer,
+    pub(in crate::render) point_shadow_cube: Option<&'a wgpu::TextureView>,
+    pub(in crate::render) promoted_spot_cache: &'a wgpu::TextureView,
+    pub(in crate::render) promoted_cube_cache: Option<&'a wgpu::TextureView>,
+}
+
+impl LightGroupLayout {
     /// (Re)build the group-2 runtime-direct light bind group over the renderer's
     /// runtime light buffers. Called once after geometry installs and again on any
     /// reallocation of these buffers (level load), mirroring how the renderer
     /// rebuilds its forward `lighting_bind_group`. The buffers are owned by the
     /// renderer and bound here by reference; b4 is this pass's own
-    /// `light_params_buffer`.
+    /// `light_params_buffer` (cloned into this layout).
     ///
     /// b0 uses three semantic intervals:
     /// - `[0, dynamic_light_count)`: dynamic prefix from `filter_dynamic_lights`;
@@ -284,49 +324,40 @@ impl MeshPass {
     /// GPU sees it. A level install may reallocate the spot pool for a pending
     /// shadow-quality change, so rebuild this group against the current pool resources
     /// after each level install/reallocation, alongside the b0–b4 rebind.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::render) fn light_bind_groups(
         &self,
         device: &wgpu::Device,
-        lights: &wgpu::Buffer,
-        mirror_lights: &wgpu::Buffer,
-        influence: &wgpu::Buffer,
-        scripted_descriptors: &wgpu::Buffer,
-        anim_samples: &wgpu::Buffer,
-        spot_shadow_depth: &wgpu::TextureView,
-        spot_shadow_compare: &wgpu::Sampler,
-        light_space_matrices: &wgpu::Buffer,
-        point_shadow_cube: Option<&wgpu::TextureView>,
-        promoted_spot_cache: &wgpu::TextureView,
-        promoted_cube_cache: Option<&wgpu::TextureView>,
+        inputs: &LightGroupInputs<'_>,
     ) -> crate::render::LevelLightGroups {
+        use crate::render::gpu_create::GpuCreate;
+        let pass = self.pass;
         assert_eq!(
-            point_shadow_cube.is_some(),
+            inputs.point_shadow_cube.is_some(),
             self.cube_array_supported,
-            "mesh group-2 cube view must be Some iff the BGL carries the b8 cube \
-             entry (cube_array_supported) — the Some-iff-layout invariant",
+            "{pass} group-2 cube view must be Some iff the BGL carries the b8 cube entry \
+             (cube_array_supported) — the Some-iff-layout invariant",
         );
         assert_eq!(
-            promoted_cube_cache.is_some(),
+            inputs.promoted_cube_cache.is_some(),
             self.cube_array_supported,
-            "mesh group-2 promoted cube cache must be Some iff the BGL carries the b10 cube entry",
+            "{pass} group-2 promoted cube cache must be Some iff the BGL carries the b10 cube entry",
         );
         let mut entries = vec![
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: lights.as_entire_binding(),
+                resource: inputs.lights.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: influence.as_entire_binding(),
+                resource: inputs.influence.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: scripted_descriptors.as_entire_binding(),
+                resource: inputs.scripted_descriptors.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
-                resource: anim_samples.as_entire_binding(),
+                resource: inputs.anim_samples.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 4,
@@ -335,21 +366,21 @@ impl MeshPass {
             // b5: spot shadow depth 2D-array (pool `array_view`).
             wgpu::BindGroupEntry {
                 binding: 5,
-                resource: wgpu::BindingResource::TextureView(spot_shadow_depth),
+                resource: wgpu::BindingResource::TextureView(inputs.spot_shadow_depth),
             },
             // b6: comparison sampler (pool `compare_sampler`).
             wgpu::BindGroupEntry {
                 binding: 6,
-                resource: wgpu::BindingResource::Sampler(spot_shadow_compare),
+                resource: wgpu::BindingResource::Sampler(inputs.spot_shadow_compare),
             },
             // b7: light-space matrices uniform (pool `matrices_buffer`).
             wgpu::BindGroupEntry {
                 binding: 7,
-                resource: light_space_matrices.as_entire_binding(),
+                resource: inputs.light_space_matrices.as_entire_binding(),
             },
         ];
         // b8: cube-array depth — present IFF the BGL carries it (cube support).
-        if let Some(cube_view) = point_shadow_cube {
+        if let Some(cube_view) = inputs.point_shadow_cube {
             entries.push(wgpu::BindGroupEntry {
                 binding: 8,
                 resource: wgpu::BindingResource::TextureView(cube_view),
@@ -357,29 +388,31 @@ impl MeshPass {
         }
         entries.push(wgpu::BindGroupEntry {
             binding: 9,
-            resource: wgpu::BindingResource::TextureView(promoted_spot_cache),
+            resource: wgpu::BindingResource::TextureView(inputs.promoted_spot_cache),
         });
-        if let Some(cube_view) = promoted_cube_cache {
+        if let Some(cube_view) = inputs.promoted_cube_cache {
             entries.push(wgpu::BindGroupEntry {
                 binding: 10,
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
         let light = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Skinned Mesh Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
+            label: Some(&format!("{pass} Light Bind Group (group 2)")),
+            layout: &self.layout,
             entries: &entries,
         });
         // The mirror's group differs only in b0.
-        entries[0].resource = mirror_lights.as_entire_binding();
+        entries[0].resource = inputs.mirror_lights.as_entire_binding();
         let mirror = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Skinned Mesh Mirror Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
+            label: Some(&format!("{pass} Mirror Light Bind Group (group 2)")),
+            layout: &self.layout,
             entries: &entries,
         });
         crate::render::LevelLightGroups { light, mirror }
     }
+}
 
+impl MeshPass {
     /// Whether this frame's mirror draws read the mirror's light records.
     pub(crate) fn set_mirror_light_records(&mut self, mirror: bool) {
         self.mirror_light_records = mirror;

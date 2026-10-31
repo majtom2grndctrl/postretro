@@ -109,7 +109,7 @@ impl LightmapResources {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         index: Option<&LightmapBlockIndex>,
         shadowmask: Option<&ShadowmaskBlockIndex>,
         pool: &StaticPool,

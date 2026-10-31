@@ -45,7 +45,7 @@ fn install_fixture(renderer: &mut Renderer, root: &Path) {
     install_one_triangle_with_sh(renderer, &materials, Some(&sh), Some(&direct));
 }
 
-fn capture(renderer: &mut Renderer, render_world: bool) -> Vec<u8> {
+pub(in crate::render) fn capture(renderer: &mut Renderer, render_world: bool) -> Vec<u8> {
     let cells = VisibleCells::Culled(vec![0]);
     renderer
         .capture_frame_indirect(
@@ -82,7 +82,7 @@ fn world_less(renderer: &mut Renderer, font: &mut postretro_ui::text::FontSystem
         .expect("world-less capture records")
 }
 
-fn hash(bytes: &[u8]) -> u64 {
+pub(in crate::render) fn hash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);
@@ -251,7 +251,7 @@ fn build_fixture(renderer: &mut Renderer, root: &Path, fill: u8) -> LevelSetId {
 
 /// A dynamic spot light above the triangle, aimed down at it: a dynamic
 /// depth-cache source, drawn through the spot shadow pool.
-fn spot_light() -> postretro_level_loader::MapLight {
+pub(in crate::render) fn spot_light() -> postretro_level_loader::MapLight {
     use postretro_level_loader::{FalloffModel, LightType, MapLight, ShadowType};
     MapLight {
         origin: [0.0, 0.0, 0.6],

@@ -12,6 +12,7 @@ const INSTALL: &str = "render/renderer_resources.rs";
 const PUBLISH: &str = "render/renderer_resources/publish.rs";
 const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
+const LEVEL_BUILD: &str = "render/level_build.rs";
 const INIT: &str = "render/renderer_init.rs";
 const PIPELINES: &str = "render/renderer_init_pipelines.rs";
 const WORLD_INDEX_UPLOAD: &str = "let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
@@ -477,7 +478,30 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
         !publish.contains("LevelResourceSet{"),
         "publish builds no set"
     );
-    let install = function(&functions, INSTALL, "build_level_set_at");
+    // The phases run in the one shared build both the oracle and the upload
+    // thread's geometry part call; the oracle's wrapper and the off-main
+    // receipt only file the set it returns as resident.
+    let oracle_build = function(&functions, INSTALL, "build_level_set_at");
+    let install = function(&functions, INSTALL, "build_level_set_core");
+    let off_main_build = function(&functions, LEVEL_BUILD, "build_geometry_set");
+    let receipt = function(&functions, LEVEL_BUILD, "receive_level_set");
+    for caller in [oracle_build, off_main_build] {
+        assert_eq!(caller.matches("build_level_set_core(").count(), 1);
+    }
+    assert_eq!(
+        oracle_build
+            .matches("full.resident_levels.push(level)")
+            .count(),
+        1
+    );
+    assert_eq!(receipt.matches("full.resident_levels.push(set)").count(), 1);
+    for body in [oracle_build, off_main_build, receipt] {
+        assert!(!body.contains("full.level="), "a build never publishes");
+        assert!(
+            !body.contains("LevelResourceSet{"),
+            "only the shared build makes a set"
+        );
+    }
     let buffers = function(&functions, WORLD_GEOMETRY, "install_world_buffers");
     require(
         buffers,
@@ -507,13 +531,11 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
             "candidate_cull: cull.candidate_cull,",
         ],
     );
-    assert_eq!(
-        install
-            .matches("full.resident_levels.push(LevelResourceSet{")
-            .count(),
-        1
+    assert_eq!(install.matches("Ok(LevelResourceSet{").count(), 1);
+    assert!(
+        !install.contains("full."),
+        "the shared build reads no live renderer"
     );
-    assert!(!install.contains("full.level="), "a build never publishes");
     require(
         function(
             &functions,

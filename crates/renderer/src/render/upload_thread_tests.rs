@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::render::gpu_test_harness::gpu_or_skip;
+use crate::render::queue_writes::QueueWrites;
 use std::time::{Duration, Instant};
 
 /// Poll `pending` until its job reports, failing the test after a bound.
@@ -37,7 +38,7 @@ fn upload_thread_captures_validation_error_instead_of_panicking() {
         });
         // 32 bytes into a 16-byte buffer: a validation error, which wgpu's
         // default handler would turn into a panic.
-        context.queue.write_buffer(&buffer, 0, &[0u8; 32]);
+        context.writes.write_buffer(&buffer, 0, &[0u8; 32]);
         Ok(())
     });
     match wait_for(overrun) {
@@ -52,7 +53,7 @@ fn upload_thread_captures_validation_error_instead_of_panicking() {
             usage: wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        context.queue.write_buffer(&buffer, 0, &[0u8; 16]);
+        context.writes.write_buffer(&buffer, 0, &[0u8; 16]);
         Ok(7u32)
     });
     assert_eq!(

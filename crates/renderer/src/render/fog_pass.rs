@@ -560,30 +560,19 @@ impl FogPass {
         }
     }
 
-    /// Build one level set's scatter target at `pixel_scale` (clamped) for a
-    /// `scene_width × scene_height` scene, with its group 6 over `depth_view`
-    /// and its composite group.
-    pub fn build_target(
-        &self,
-        device: &wgpu::Device,
-        scene_width: u32,
-        scene_height: u32,
-        pixel_scale: u32,
-        depth_view: &wgpu::TextureView,
-    ) -> FogLevelTarget {
-        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
-        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
-        let (scatter_texture, scatter_view) =
-            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
-        let composite_bind_group = self.composite_group(device, &scatter_view);
-        let bind_group = self.group6(device, depth_view, &scatter_view);
-        FogLevelTarget {
-            pixel_scale,
-            scatter_texture,
-            scatter_view,
-            scatter_dims,
-            bind_group,
-            composite_bind_group,
+    /// What a level set's scatter target binds from the pass, cloned so a
+    /// level build on any thread builds the same groups
+    /// ([`FogTargetLayout::build_target`]).
+    pub(crate) fn target_layout(&self) -> FogTargetLayout {
+        FogTargetLayout {
+            raymarch_bind_group_layout: self.raymarch_bind_group_layout.clone(),
+            composite_bgl: self.composite_bgl.clone(),
+            composite_sampler: self.composite_sampler.clone(),
+            volumes_buffer: self.volumes_buffer.clone(),
+            params_buffer: self.params_buffer.clone(),
+            spots_buffer: self.spots_buffer.clone(),
+            fog_points_buffer: self.fog_points_buffer.clone(),
+            fog_planes_buffer: self.fog_planes_buffer.clone(),
         }
     }
 
@@ -634,20 +623,7 @@ impl FogPass {
         device: &wgpu::Device,
         scatter_view: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
-        device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fog Composite Bind Group"),
-            layout: &self.composite_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(scatter_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                },
-            ],
-        })
+        self.target_layout().composite_group(device, scatter_view)
     }
 
     fn group6(
@@ -656,17 +632,8 @@ impl FogPass {
         depth_view: &wgpu::TextureView,
         scatter_view: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
-        build_group6(
-            device,
-            &self.raymarch_bind_group_layout,
-            depth_view,
-            &self.volumes_buffer,
-            scatter_view,
-            &self.params_buffer,
-            &self.spots_buffer,
-            &self.fog_points_buffer,
-            &self.fog_planes_buffer,
-        )
+        self.target_layout()
+            .group6(device, depth_view, scatter_view)
     }
 
     /// Compute the per-frame `active_mask` as `(cell_mask & live_mask) |
@@ -868,6 +835,90 @@ pub(super) fn scatter_dims_for(width: u32, height: u32, pixel_scale: u32) -> (u3
     let w = (width / scale).max(1);
     let h = (height / scale).max(1);
     (w, h)
+}
+
+/// The fog pass's raymarch and composite layouts, composite sampler and
+/// per-frame buffers a level set's scatter-target groups bind, cloned for a
+/// level build on any thread.
+#[derive(Clone)]
+pub(crate) struct FogTargetLayout {
+    raymarch_bind_group_layout: wgpu::BindGroupLayout,
+    composite_bgl: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    volumes_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
+    spots_buffer: wgpu::Buffer,
+    fog_points_buffer: wgpu::Buffer,
+    fog_planes_buffer: wgpu::Buffer,
+}
+
+impl FogTargetLayout {
+    /// Build one level set's scatter target at `pixel_scale` (clamped) for a
+    /// `scene_width × scene_height` scene, with its group 6 over `depth_view`
+    /// and its composite group.
+    pub(crate) fn build_target(
+        &self,
+        device: &wgpu::Device,
+        scene_width: u32,
+        scene_height: u32,
+        pixel_scale: u32,
+        depth_view: &wgpu::TextureView,
+    ) -> FogLevelTarget {
+        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
+        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
+        let (scatter_texture, scatter_view) =
+            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
+        let composite_bind_group = self.composite_group(device, &scatter_view);
+        let bind_group = self.group6(device, depth_view, &scatter_view);
+        FogLevelTarget {
+            pixel_scale,
+            scatter_texture,
+            scatter_view,
+            scatter_dims,
+            bind_group,
+            composite_bind_group,
+        }
+    }
+
+    fn composite_group(
+        &self,
+        device: &wgpu::Device,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fog Composite Bind Group"),
+            layout: &self.composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                },
+            ],
+        })
+    }
+
+    fn group6(
+        &self,
+        device: &wgpu::Device,
+        depth_view: &wgpu::TextureView,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        build_group6(
+            device,
+            &self.raymarch_bind_group_layout,
+            depth_view,
+            &self.volumes_buffer,
+            scatter_view,
+            &self.params_buffer,
+            &self.spots_buffer,
+            &self.fog_points_buffer,
+            &self.fog_planes_buffer,
+        )
+    }
 }
 
 fn create_scatter_target(

@@ -140,7 +140,42 @@ fn create_bind_group(
     })
 }
 
+/// Group 5's layout and uniform, cloned out of the fluid pass's live group
+/// so a level build on any thread builds a set's own group 5 over its
+/// reflection target: the group a publish lends to the pass as built.
+#[derive(Clone)]
+pub(crate) struct FluidSceneGroupLayout {
+    layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
+}
+
+impl FluidSceneGroupLayout {
+    /// A set's live group over `scene_depth` and its `reflection_target`.
+    pub(crate) fn build_live_group(
+        &self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            reflection_target,
+        )
+    }
+}
+
 impl FluidSceneInputs {
+    /// This group's layout and uniform, for a level build's own group 5.
+    pub(crate) fn group_layout(&self) -> FluidSceneGroupLayout {
+        FluidSceneGroupLayout {
+            layout: self.layout.clone(),
+            uniform_buffer: self.uniform_buffer.clone(),
+        }
+    }
+
     /// Build group 5 over the current scene depth and the reflection
     /// target's placeholder, at full init.
     pub fn new(

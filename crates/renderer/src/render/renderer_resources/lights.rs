@@ -2,9 +2,9 @@
 // forward lighting bind group, and the mesh and mover group-2 rebinds.
 // See: context/lib/rendering_pipeline.md §4
 
+use super::super::level_build::LevelBuildContext;
 use super::super::level_resource_set::LevelShadowTier;
 use super::super::promoted_depth_cache::PromotedDepthTextures;
-use super::super::renderer_types::FullRenderer;
 use super::*;
 use crate::render::gpu_create::GpuCreate;
 
@@ -288,7 +288,7 @@ pub(super) fn install_lighting_bind_group(
 /// influence and SH animation buffers and its shadow tier's pools.
 pub(super) fn rebind_mesh_light_groups(
     device: &wgpu::Device,
-    full: &FullRenderer,
+    ctx: &LevelBuildContext,
     shadow: &LevelShadowTier,
     lights_buffer: &wgpu::Buffer,
     mirror_lights_buffer: &wgpu::Buffer,
@@ -304,7 +304,7 @@ pub(super) fn rebind_mesh_light_groups(
     // b5–b8 reference the set's shadow tier: its pool, and its promoted
     // cache when the level has a promoted source. The cube view is `Some` iff
     // `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
-    let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
+    let cube_sampling_view = ctx.scene.cube_sampling_view.as_ref();
     let spot = &shadow.tier.spot;
     let promoted_spot_cache = shadow
         .promoted
@@ -316,33 +316,20 @@ pub(super) fn rebind_mesh_light_groups(
         .as_deref()
         .and_then(PromotedDepthTextures::cube_sampled_view)
         .or(cube_sampling_view);
-    let mesh = full.mesh_pass.light_bind_groups(
-        device,
-        lights_buffer,
-        mirror_lights_buffer,
-        influence_buffer,
-        &sh_volume_resources.scripted_light_descriptors,
-        &sh_volume_resources.animation.anim_samples,
-        &spot.array_view,
-        &spot.compare_sampler,
-        &spot.matrices_buffer,
-        cube_sampling_view,
+    let inputs = crate::render::mesh_pass::LightGroupInputs {
+        lights: lights_buffer,
+        mirror_lights: mirror_lights_buffer,
+        influence: influence_buffer,
+        scripted_descriptors: &sh_volume_resources.scripted_light_descriptors,
+        anim_samples: &sh_volume_resources.animation.anim_samples,
+        spot_shadow_depth: &spot.array_view,
+        spot_shadow_compare: &spot.compare_sampler,
+        light_space_matrices: &spot.matrices_buffer,
+        point_shadow_cube: cube_sampling_view,
         promoted_spot_cache,
         promoted_cube_cache,
-    );
-    let kinematic = full.kinematic_brush.light_bind_groups(
-        device,
-        lights_buffer,
-        mirror_lights_buffer,
-        influence_buffer,
-        &sh_volume_resources.scripted_light_descriptors,
-        &sh_volume_resources.animation.anim_samples,
-        &spot.array_view,
-        &spot.compare_sampler,
-        &spot.matrices_buffer,
-        cube_sampling_view,
-        promoted_spot_cache,
-        promoted_cube_cache,
-    );
+    };
+    let mesh = ctx.mesh_lights.light_bind_groups(device, &inputs);
+    let kinematic = ctx.kinematic_lights.light_bind_groups(device, &inputs);
     (mesh, kinematic)
 }

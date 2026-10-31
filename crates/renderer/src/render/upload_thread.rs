@@ -1,15 +1,122 @@
 // Renderer-owned upload thread: off-main GPU creation with per-job error scopes.
 // See: context/lib/boot_sequence.md §2 · context/lib/rendering_pipeline.md §1
 
+use std::cell::Cell;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-/// What a job sees on the upload thread: clones of the renderer's device and
-/// raw queue. Nothing a job creates is reachable from the frame path until the
-/// main thread installs its result.
+use super::queue_writes::QueueWrites;
+
+/// The most queue-write bytes one upload-thread submit carries. Writes are
+/// metered as they are staged; one that would push the pending batch past
+/// this submits the batch first, so every batch stays within it except a
+/// single write larger than the chunk, which is its own batch. Bounds the
+/// flush any one submit (and the frame after it) pays.
+pub const UPLOAD_SUBMIT_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
+
+/// What a job sees on the upload thread: a clone of the renderer's device,
+/// and the metered writer every write goes through (the raw queue stays
+/// inside it). Nothing a job creates is reachable from the frame path until
+/// the main thread installs its result.
 pub struct UploadContext {
     pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    /// The upload thread's queue writes, submitted in bounded batches.
+    pub(crate) writes: ChunkedWrites,
+}
+
+/// The upload thread's byte-counting writer: stages each write on the queue
+/// and submits the pending batch before a write would carry it past
+/// [`UPLOAD_SUBMIT_CHUNK_BYTES`]. Every job ends with [`Self::flush`], so a
+/// job's writes are submitted before its result is delivered (pin P13).
+pub(crate) struct ChunkedWrites {
+    queue: wgpu::Queue,
+    chunk_bytes: u64,
+    pending: Cell<u64>,
+    /// Each submitted batch's bytes, oldest first; tests read and clear it.
+    #[cfg(test)]
+    batches: std::cell::RefCell<Vec<u64>>,
+}
+
+impl ChunkedWrites {
+    fn new(queue: wgpu::Queue) -> Self {
+        Self {
+            queue,
+            chunk_bytes: UPLOAD_SUBMIT_CHUNK_BYTES,
+            pending: Cell::new(0),
+            #[cfg(test)]
+            batches: Default::default(),
+        }
+    }
+
+    /// Submit the pending batch first when `bytes` more would carry it past
+    /// the chunk; then count them in.
+    fn meter(&self, bytes: u64) {
+        let pending = self.pending.get();
+        if pending > 0 && pending.saturating_add(bytes) > self.chunk_bytes {
+            self.flush();
+        }
+        self.pending.set(self.pending.get().saturating_add(bytes));
+        #[cfg(test)]
+        UNSUBMITTED.with(|unsubmitted| unsubmitted.set(self.pending.get()));
+    }
+
+    /// Submit every staged write. A batch with no bytes still submits, so a
+    /// job's writes staged outside this writer flush too.
+    pub(crate) fn flush(&self) {
+        flush_staged_writes(&self.queue);
+        let bytes = self.pending.replace(0);
+        #[cfg(test)]
+        UNSUBMITTED.with(|unsubmitted| unsubmitted.set(0));
+        #[cfg(test)]
+        if bytes > 0 {
+            self.batches.borrow_mut().push(bytes);
+        }
+        #[cfg(not(test))]
+        let _ = bytes;
+    }
+
+    /// The batches submitted so far, emptied.
+    #[cfg(test)]
+    pub(crate) fn take_batches(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.batches.borrow_mut())
+    }
+}
+
+// The upload thread's writer's unsubmitted bytes, mirrored where a job's
+// delivery (on the same thread) can read them.
+#[cfg(test)]
+thread_local! {
+    static UNSUBMITTED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The calling thread's upload writer's unsubmitted bytes (zero off the
+/// upload thread).
+#[cfg(test)]
+pub(crate) fn unsubmitted_bytes_on_this_thread() -> u64 {
+    UNSUBMITTED.with(Cell::get)
+}
+
+impl QueueWrites for ChunkedWrites {
+    fn write_buffer(&self, buffer: &wgpu::Buffer, offset: wgpu::BufferAddress, data: &[u8]) {
+        self.meter(data.len() as u64);
+        self.queue.write_buffer(buffer, offset, data);
+    }
+
+    fn write_texture(
+        &self,
+        texture: wgpu::TexelCopyTextureInfo<'_>,
+        data: &[u8],
+        data_layout: wgpu::TexelCopyBufferLayout,
+        size: wgpu::Extent3d,
+    ) {
+        self.meter(data.len() as u64);
+        self.queue.write_texture(texture, data, data_layout, size);
+    }
+
+    fn queue_for_initial_data(&self, bytes: u64) -> &wgpu::Queue {
+        self.meter(bytes);
+        &self.queue
+    }
 }
 
 /// Why an upload job produced no result.
@@ -51,7 +158,10 @@ impl UploadThread {
         let handle = std::thread::Builder::new()
             .name("render-upload".into())
             .spawn(move || {
-                let context = UploadContext { device, queue };
+                let context = UploadContext {
+                    device,
+                    writes: ChunkedWrites::new(queue),
+                };
                 // A closed channel (the owner dropped) ends the thread.
                 while let Ok(job) = receiver.recv() {
                     job(&context);
@@ -89,10 +199,15 @@ impl UploadThread {
         job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
         deliver: impl FnOnce(Result<T, UploadError>) + Send + 'static,
     ) {
-        let wrapped: Job = Box::new(move |context| deliver(run_job(context, job)));
-        if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(wrapped);
+        if let Some(submitter) = self.submitter() {
+            submitter.submit_then(job, deliver);
         }
+    }
+
+    /// A handle that queues jobs on this thread from any thread; `None` once
+    /// the thread is retired.
+    pub(crate) fn submitter(&self) -> Option<UploadSubmitter> {
+        self.jobs.clone().map(UploadSubmitter)
     }
 
     /// Close the job queue and hand off the thread for a poll-and-join
@@ -102,6 +217,24 @@ impl UploadThread {
     pub(crate) fn take_retirement(&mut self) -> Option<UploadRetirement> {
         self.jobs.take();
         self.handle.take().map(UploadRetirement::from_thread)
+    }
+}
+
+/// Queues jobs on one upload thread from any thread. Cloned into a level
+/// build's builder, so pool tasks queue their parts directly.
+#[derive(Clone)]
+pub(crate) struct UploadSubmitter(mpsc::Sender<Job>);
+
+impl UploadSubmitter {
+    /// [`UploadThread::submit_then`] from any thread. Returns `false`, with
+    /// both closures dropped unrun, when the thread is gone.
+    pub(crate) fn submit_then<T: 'static>(
+        &self,
+        job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
+        deliver: impl FnOnce(Result<T, UploadError>) + Send + 'static,
+    ) -> bool {
+        let wrapped: Job = Box::new(move |context| deliver(run_job(context, job)));
+        self.0.send(wrapped).is_ok()
     }
 }
 
@@ -156,7 +289,7 @@ fn run_job<T>(
         .unwrap_or_else(|payload| Err(UploadError::Panicked(panic_message(payload.as_ref()))));
     // Submit every write the job staged before the result can be handed back,
     // so the hand-back never precedes the flush (pin P13).
-    flush_staged_writes(&context.queue);
+    context.writes.flush();
     // Scopes pop in reverse push order.
     let out_of_memory = pollster::block_on(out_of_memory.pop());
     let validation = pollster::block_on(validation.pop());

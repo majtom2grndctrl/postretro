@@ -805,95 +805,16 @@ impl KinematicBrushPass {
         self.active_draw_lookup.get(&mover_draw_index).copied()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn light_bind_groups(
-        &self,
-        device: &wgpu::Device,
-        lights: &wgpu::Buffer,
-        mirror_lights: &wgpu::Buffer,
-        influence: &wgpu::Buffer,
-        scripted_descriptors: &wgpu::Buffer,
-        anim_samples: &wgpu::Buffer,
-        spot_shadow_depth: &wgpu::TextureView,
-        spot_shadow_compare: &wgpu::Sampler,
-        light_space_matrices: &wgpu::Buffer,
-        point_shadow_cube: Option<&wgpu::TextureView>,
-        promoted_spot_cache: &wgpu::TextureView,
-        promoted_cube_cache: Option<&wgpu::TextureView>,
-    ) -> LevelLightGroups {
-        assert_eq!(
-            point_shadow_cube.is_some(),
-            self.cube_array_supported,
-            "kinematic brush group-2 cube view must be Some iff the BGL carries binding 8",
-        );
-        assert_eq!(
-            promoted_cube_cache.is_some(),
-            self.cube_array_supported,
-            "kinematic brush group-2 promoted cube cache must be Some iff the BGL carries binding 10",
-        );
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: lights.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: influence.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: scripted_descriptors.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: anim_samples.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: self.light_params_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(spot_shadow_depth),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Sampler(spot_shadow_compare),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: light_space_matrices.as_entire_binding(),
-            },
-        ];
-        if let Some(cube_view) = point_shadow_cube {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 8,
-                resource: wgpu::BindingResource::TextureView(cube_view),
-            });
+    /// The group-2 layout and params buffer a level's mover light groups
+    /// build over (`LightGroupLayout::light_bind_groups`), cloned so a level
+    /// build on any thread builds them.
+    pub(crate) fn light_group_layout(&self) -> crate::render::mesh_pass::LightGroupLayout {
+        crate::render::mesh_pass::LightGroupLayout {
+            pass: "Kinematic Brush",
+            layout: self.light_bind_group_layout.clone(),
+            light_params_buffer: self.light_params_buffer.clone(),
+            cube_array_supported: self.cube_array_supported,
         }
-        entries.push(wgpu::BindGroupEntry {
-            binding: 9,
-            resource: wgpu::BindingResource::TextureView(promoted_spot_cache),
-        });
-        if let Some(cube_view) = promoted_cube_cache {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 10,
-                resource: wgpu::BindingResource::TextureView(cube_view),
-            });
-        }
-        let light = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Kinematic Brush Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
-            entries: &entries,
-        });
-        // The mirror's group differs only in b0.
-        entries[0].resource = mirror_lights.as_entire_binding();
-        let mirror = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Kinematic Brush Mirror Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
-            entries: &entries,
-        });
-        LevelLightGroups { light, mirror }
     }
 
     /// Whether this frame's mirror draws read the mirror's light records.

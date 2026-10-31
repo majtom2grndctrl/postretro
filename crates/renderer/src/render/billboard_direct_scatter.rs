@@ -54,7 +54,7 @@ impl BillboardDirectScatterResources {
     )]
     pub(super) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base_sh_usable: bool,
         base: Option<&BillboardDirectScatterVolumeSection>,
         animated: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
@@ -217,7 +217,7 @@ pub(super) fn append_shared_bind_group_layout_entries(
 
 fn upload_base_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     section: Option<&BillboardDirectScatterVolumeSection>,
     base_section_present: bool,
     animated_section_present: bool,
@@ -265,7 +265,7 @@ fn upload_base_texture(
 
 fn upload_dummy_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     allocation: super::sh_allocation::TextureAllocation,
 ) -> wgpu::Texture {
     device.new_texture_with_data(

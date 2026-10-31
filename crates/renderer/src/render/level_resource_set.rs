@@ -47,13 +47,16 @@ pub(in crate::render) struct LevelShadowTier {
 /// rebuild with these.
 pub(in crate::render) struct LevelExtentGroups {
     pub(in crate::render) extent: Extent,
+    /// The scene-target generation the groups bind
+    /// (`FullRenderer::scene_targets_generation`).
+    pub(in crate::render) generation: u64,
     pub(in crate::render) spot_shadow: wgpu::BindGroup,
     pub(in crate::render) fog: fog_pass::FogLevelTarget,
 }
 
 /// The renderer's add-only sampler maps, or one set's missing entries: one
 /// sampler per distinct mip count, world (anisotropic) and character-model.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(in crate::render) struct SamplerMaps {
     pub(in crate::render) aniso: HashMap<u32, wgpu::Sampler>,
     pub(in crate::render) character: HashMap<u32, wgpu::Sampler>,
@@ -165,6 +168,10 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) fluid_targets: fluid_surface::FluidLevelTargets,
     /// The planar mirror targets, held as `fluid_targets` is.
     pub(in crate::render) mirror_targets: planar_reflection::LentMirrorTargets,
+    /// The app's planar-candidate verdict an off-main build keyed the planar
+    /// targets by; its publish hands it to the fluid pass. `None` leaves the
+    /// pass's verdict as the app last set it.
+    pub(in crate::render) planar_app_candidate: Option<bool>,
 
     // --- World materials ---
     pub(in crate::render) loaded_textures: Vec<LoadedTexture>,
@@ -318,6 +325,15 @@ impl LevelResourceSet {
                 self.sh_volume_resources.cell_size,
             )),
         )
+    }
+
+    /// Bind `textures` as this set's world materials, folding their new
+    /// samplers into the set's own map. The per-texture materials stay the
+    /// geometry's, as the build stored them.
+    pub(in crate::render) fn install_textures(&mut self, mut textures: LevelTextures) {
+        self.loaded_textures = textures.loaded_textures;
+        self.gpu_textures = textures.gpu_textures;
+        self.samplers.absorb(&mut textures.samplers);
     }
 
     /// The world materials this set holds, taken out for a geometry

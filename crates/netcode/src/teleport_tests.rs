@@ -336,7 +336,10 @@ impl RelaySession {
         client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
         client.set_mod_digest(Some(Self::FINGERPRINT));
         client.set_level_parity(Some(("test-level".to_string(), Self::FINGERPRINT)));
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+            "test-level",
+            None,
+        )));
         server.add_relay_connection(Self::CLIENT, None);
         client.set_connected();
         let mut session = Self { server, client };

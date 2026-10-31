@@ -16,6 +16,9 @@ mod lifecycle_progress_install_tests;
 #[cfg(test)]
 #[path = "lifecycle_reaction_install_tests.rs"]
 mod lifecycle_reaction_install_tests;
+#[cfg(test)]
+#[path = "lifecycle_relevel_tests.rs"]
+mod lifecycle_relevel_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_sprite_collections.rs"]
@@ -2032,6 +2035,7 @@ pub(crate) mod tests {
             level_timings: StartupTimings::new(),
             active_level_tags: Vec::new(),
             active_level_source: None,
+            last_relevel: None,
             level_load: None,
             level_rx: None,
             level_worker: None,
@@ -2235,7 +2239,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> ModMapEntry {
+    pub(super) fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> ModMapEntry {
         ModMapEntry {
             id: id.to_string(),
             path: path.to_string(),
@@ -2245,7 +2249,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn drop_in_flight_worker(app: &mut App) {
+    pub(super) fn drop_in_flight_worker(app: &mut App) {
         app.level_rx = None;
         if let Some(handle) = app.level_worker.take() {
             handle
@@ -4169,10 +4173,15 @@ pub(crate) mod tests {
             .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
 
         app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
-        app.follow_relevel_catalog("e1m1".to_string());
+        app.follow_relevel_catalog("e1m1".to_string(), 1);
         assert!(
             app.level_requests.is_empty(),
             "a relevel naming the active catalog map must not restart it"
+        );
+        app.follow_relevel_catalog("e1m1".to_string(), 1);
+        assert!(
+            app.level_requests.is_empty(),
+            "a duplicate of the followed life must not restart the active map"
         );
 
         app.active_level_source = None;
@@ -4187,15 +4196,17 @@ pub(crate) mod tests {
                 loading_tree: Vec::new(),
             },
         });
-        app.follow_relevel_catalog("e1m1".to_string());
+        // Even a new life: the in-flight load installs a fresh one.
+        app.follow_relevel_catalog("e1m1".to_string(), 2);
         assert!(
             app.level_requests.is_empty(),
             "a relevel naming the in-flight catalog map must not restart it"
         );
 
         app.level_load = None;
-        app.follow_relevel_catalog("e1m1".to_string());
-        app.follow_relevel_catalog("e1m1".to_string());
+        app.follow_relevel_catalog("e1m1".to_string(), 3);
+        app.follow_relevel_catalog("e1m1".to_string(), 3);
+        app.follow_relevel_catalog("e1m1".to_string(), 4);
         assert_eq!(
             app.level_requests,
             VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
@@ -4207,7 +4218,7 @@ pub(crate) mod tests {
     fn unknown_relevel_catalog_warns_and_does_not_queue_a_load() {
         let mut app = test_app();
         let logs = crate::scripting::reactions::log_capture::capture(|| {
-            app.follow_relevel_catalog("missing-map".to_string());
+            app.follow_relevel_catalog("missing-map".to_string(), 1);
         });
 
         assert!(

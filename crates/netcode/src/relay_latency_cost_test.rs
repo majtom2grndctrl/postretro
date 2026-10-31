@@ -530,7 +530,9 @@ fn slot_returns(h: &mut RelayHarness, retire: Retire) {
                 unreachable!("the relay endpoint is a client");
             };
             client.set_level_parity(Some((NEXT_LEVEL.to_string(), RELAY_FINGERPRINT)));
-            client.set_revealed_level(Some(NEXT_LEVEL.to_string()));
+            client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+                NEXT_LEVEL, None,
+            )));
         }
     }
 }

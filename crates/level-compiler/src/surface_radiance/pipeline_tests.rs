@@ -115,10 +115,10 @@ fn compile_recorded(
     (messages, stage_events::take())
 }
 
-// AC 32, research P26: the cold SH base bake frees its patch cache
+// The cold SH base bake frees its patch cache
 // (patches, the summed layers, the gather's view of them) inside the SH
 // base stage, before the delta SH stage begins.
-// AC 33, the production half: the gate's patch set is the one the fixture
+// The gate's patch set is the one the fixture
 // front end builds over the same map's static world geometry.
 #[test]
 fn the_cold_sh_base_bake_frees_its_patch_cache_before_the_delta_stage_begins() {
@@ -157,7 +157,7 @@ fn the_cold_sh_base_bake_frees_its_patch_cache_before_the_delta_stage_begins() {
     assert_eq!(logged, PatchSet::build(&fixture.geometry).len());
 }
 
-// AC 32 on the hit path, research P26: a warm build whose gathered volume
+// On the hit path, a warm build whose gathered volume
 // hits builds no patch cache, yet still holds the gate's patch set and its
 // layer plan. Both drop inside the SH base stage, before the delta SH
 // stage begins.
@@ -200,7 +200,7 @@ fn a_warm_volume_hit_frees_the_gates_patch_set_before_the_delta_stage_begins() {
     }
 }
 
-// AC 33: patches tile exactly the static world faces exterior culling
+// Patches tile exactly the static world faces exterior culling
 // keeps. The room's walls are slabs whose outer faces the flood culls, and
 // a mover stands in one corner: every patch lies on one of the six interior
 // planes, the six together cover the interior's area, and nothing lies on
@@ -352,7 +352,7 @@ fn compile_warm_volume(
     )
 }
 
-// AC 12, research P16, P19: each layer key folds only its own light's
+// Each layer key folds only its own light's
 // effective embedded flag. Moving the flagged light out of its wall, or
 // another light into one, re-shades only the moved light's layer; toggling
 // `--no-penumbra-floor` re-shades only the flagged light's; changing

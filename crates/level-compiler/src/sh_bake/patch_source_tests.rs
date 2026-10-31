@@ -12,7 +12,7 @@ use crate::bvh_build::build_bvh;
 use crate::surface_radiance::{PatchGather, PatchLookup, PatchRadiance, PatchSet};
 use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
-// AC 26, research P11: id 34's depth moments equal the one-sample bake's
+// Id 34's depth moments equal the one-sample bake's
 // whichever radiance source the gather reads, since distance comes from the hit
 // before any lookup: probe by probe under either patch
 // lookup, and over the whole volume through the production SH base bake,
@@ -109,7 +109,7 @@ fn the_sh_base_bake_leaves_depth_moments_byte_identical_to_the_one_sample_bake()
     }
 }
 
-// AC 28, research P9: a probe whose gather rays all miss reads black
+// A probe whose gather rays all miss reads black
 // through the patch cache, lit patches or not, and its moments are the
 // miss distance alone.
 #[test]
@@ -161,7 +161,7 @@ fn a_probe_whose_rays_all_miss_reads_black_through_the_patch_cache() {
     assert!(near(sum_d2, far_sentinel * far_sentinel * rays), "{sum_d2}");
 }
 
-// AC 2, back faces: a ray that hits a face from behind reads the back side's
+// A ray that hits a face from behind reads the back side's
 // patch, shaded as the reference shades the hit, with the normal facing the
 // ray.
 #[test]

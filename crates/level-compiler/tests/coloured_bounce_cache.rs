@@ -447,7 +447,7 @@ fn budget_and_invalid_animation_fail_before_corrupt_world_texture_is_read() {
     let log = &refused.log;
     assert!(!refused.succeeded());
     // A zero budget fails both SH gates; the cheaper prediction refuses by
-    // its own name (research P24).
+    // its own name.
     assert!(
         log.contains("SH base working-set gate refused before patch shading")
             || log.contains("SH delta working-set gate refused before dense baking"),

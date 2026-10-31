@@ -483,7 +483,7 @@ fn default_bounce_fill() -> String {
     format!("{value:?}")
 }
 
-// AC 19: `_bounce_fill` reaches authors in the FGD's worldspawn and in
+// `_bounce_fill` reaches authors in the FGD's worldspawn and in
 // `docs/level_design.md`, each naming its range and the compiler's default,
 // and the docs present it as a map key with no build command beside it.
 #[test]

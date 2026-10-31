@@ -1,6 +1,6 @@
 # Surface radiance cache measurements
 
-Task 8 of `context/plans/in-progress/surface-radiance-cache`: the scripted runs behind the Measurement rows (AC 34-37) and the prep for the owner A/B (AC 38). Report-only, no gates. Numbers: `results.md`, `results/results.json`, raw excerpts in `results/raw/`. Run outputs (PRLs, caches, full stderr logs) stay in a scratch directory and are not committed.
+Task 8 of `context/plans/done/surface-radiance-cache`: the scripted runs behind the Measurement rows (AC 34-37) and the prep for the owner A/B (AC 38). Report-only, no gates. Numbers: `results.md`, `results/results.json`, raw excerpts in `results/raw/`. Run outputs (PRLs, caches, full stderr logs) stay in a scratch directory and are not committed.
 
 ## Machine and binaries
 

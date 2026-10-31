@@ -116,7 +116,7 @@ fn a_rebuild_hits_the_volume_entry_and_reads_no_layer() {
     assert_eq!(second, cold);
 }
 
-// AC 14, research P4, P5: a geometry edit, a texture-mean edit or a
+// A geometry edit, a texture-mean edit or a
 // saturation edit re-keys every layer and the volume entry, so the warm
 // bake re-shades every layer and equals a cold bake of the edit; restoring
 // the original hits the volume entry.
@@ -162,7 +162,7 @@ fn geometry_mean_and_saturation_edits_rekey_every_layer_and_the_volume() {
     }
 }
 
-// AC 14: the fill is not in any layer key but is in the volume's, so a
+// The fill is not in any layer key but is in the volume's, so a
 // fill change misses the volume, re-shades no layer and moves id 34, warm
 // as cold; −0.0 and 0.0 are one fill.
 #[test]
@@ -183,7 +183,7 @@ fn a_fill_change_misses_the_volume_and_reshades_no_layer() {
     );
 }
 
-// AC 15, research P17, P21: an animated light added, re-timed or removed
+// An animated light added, re-timed or removed
 // re-shades no layer and hits the volume, whose probe tiles and depth
 // moments stay put; the descriptors and slot table rebuild from the build's
 // own lights and equal a cold bake's. (The retired grouped path pinned its
@@ -227,7 +227,7 @@ fn animated_only_edits_hit_the_volume_and_rebuild_its_animation_tables() {
     }
 }
 
-// Research P20: a brush edit that moves only leaf solidity leaves every
+// A brush edit that moves only leaf solidity leaves every
 // face and so every layer as it was, but flips probe validity, which the
 // layer geometry digest does not cover and the volume's cell-id fingerprint
 // does: the volume misses on validity alone and the warm bake equals a cold
@@ -253,7 +253,7 @@ fn a_validity_only_edit_hits_every_layer_and_misses_the_volume() {
     assert_eq!(after, edited.bake(&lights, None, 4).0);
 }
 
-// AC 17, research P6, P14: a warm build into an empty cache directory
+// A warm build into an empty cache directory
 // misses every layer and the volume and gives the cold bytes. A directory
 // holding a pre-change grouped `sh_group` entry is no different: the volume
 // has its own stage id and epoch, so no pre-change entry can answer it.
@@ -336,7 +336,7 @@ fn an_undecodable_or_foreign_volume_entry_is_a_miss() {
     }
 }
 
-// AC 28, research P9: with no static light (a map lit only by emissive
+// With no static light (a map lit only by emissive
 // textures has none, since emissive lights nothing) no layer is planned,
 // shaded or written, and id 34's irradiance is all zero, warm and cold. The
 // probe rays still trace, so the depth moments are the lit map's.

@@ -7285,7 +7285,7 @@ mod tests {
         }
     }
 
-    // AC 19: a valid `_bounce_fill` (finite, in [0, 1]) bakes as authored
+    // A valid `_bounce_fill` (finite, in [0, 1]) bakes as authored
     // and warns nothing; absence bakes the default silently.
     #[test]
     fn parse_map_file_reads_bounce_fill_from_worldspawn() {
@@ -7301,7 +7301,7 @@ mod tests {
         capture.assert_not_logged(Level::Warn, "_bounce_fill");
     }
 
-    // AC 19: a non-finite, negative, above-one or unparsable `_bounce_fill`
+    // A non-finite, negative, above-one or unparsable `_bounce_fill`
     // bakes the default and warns exactly once, at parse.
     #[test]
     fn parse_map_file_bounce_fill_invalid_warns_once_and_uses_default() {

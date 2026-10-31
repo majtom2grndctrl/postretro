@@ -402,7 +402,7 @@ fn reach_count_equals_the_range_test_at_every_patch() {
     assert_eq!(index.count_in_reach(&sun), patches.len() as u64);
 }
 
-// AC 31, the gate's half: a light's layer holds at most one entry per side
+// A light's layer holds at most one entry per side
 // of each patch the gate counted in its reach, and only those patches, so
 // the gate's layer term bounds what shading allocates. Progress advances
 // one unit per chunk of the reach.

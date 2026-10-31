@@ -38,7 +38,7 @@ fn open(dir: &Path) -> StageCache {
     StageCache::new(dir).expect("cache dir")
 }
 
-// AC 10, research P2: after one light's colour edit only its layer
+// After one light's colour edit only its layer
 // re-shades, and every shadow ray the warm build traces is that layer's:
 // the re-gather traces none. A reorder or no edit hits the gathered volume
 // and reads no layer; with that entry gone, it hits every layer and traces
@@ -111,7 +111,7 @@ fn assert_edit(
     }
 }
 
-// AC 11, research P2, P3, P22: removing a static light, inserting one ahead
+// Removing a static light, inserting one ahead
 // of the others, adding a duplicate, adding then removing a light whose
 // reach holds faces no other light reaches, or flipping one to animated
 // (as `_animated 1` translates it) serves every unchanged light's layer
@@ -166,7 +166,7 @@ fn unchanged_lights_layers_hit_across_light_set_edits() {
     assert_edit(&scene, "flip to animated", &lights, &flipped, (0, 3));
 }
 
-// AC 16, research P15: a removed, corrupt or undecodable layer entry
+// A removed, corrupt or undecodable layer entry
 // re-shades alone, to the bytes it lost; the rest hit. While the gathered
 // volume's entry survives it serves id 34 and no layer is read: the summed
 // digest did not move.
@@ -202,7 +202,7 @@ fn a_removed_or_corrupt_layer_reshades_alone_to_its_lost_bytes() {
     }
 }
 
-// AC 16, research P25: a warm build stopped mid patch shading (a governor
+// A warm build stopped mid patch shading (a governor
 // enter hook that refuses every work item once the first layer is written)
 // keeps the layers it finished, written as each finished and before the
 // sum; the rerun re-shades only the rest.
@@ -266,7 +266,7 @@ fn build(
     (section, counts, kept)
 }
 
-// AC 16, research P12: after A, then B, then a revert to A, the revert hits
+// After A, then B, then a revert to A, the revert hits
 // every A layer the eviction sweep kept and re-shades the rest; with or
 // without eviction its id 34 is a cold bake of A. Eviction moves hit
 // counts, never bytes. A's gathered volume is deleted before the revert so
@@ -304,7 +304,7 @@ fn a_revert_hits_every_layer_the_eviction_sweep_kept() {
     same_id_34(&reverts[0], &reverts[1], "with and without eviction");
 }
 
-// AC 14: no layer keys on `_bounce_fill`, so a fill change re-shades no
+// No layer keys on `_bounce_fill`, so a fill change re-shades no
 // layer; id 34 moves with the fill and equals a cold bake at the new one.
 #[test]
 fn changing_the_bounce_fill_reshades_no_layer() {
@@ -319,7 +319,7 @@ fn changing_the_bounce_fill_reshades_no_layer() {
     same_id_34(&half, &scene.bake_at(&lights, 0.5, None, 4).0, "fill 0.5");
 }
 
-// AC 25: every layer and gathered-volume cache read and write runs on a
+// Every layer and gathered-volume cache read and write runs on a
 // thread holding no governor permit: a cold fill, a volume hit, and a
 // volume miss whose layers all hit.
 #[test]

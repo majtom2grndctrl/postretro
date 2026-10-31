@@ -53,9 +53,9 @@ fn cold(
     }))
 }
 
-// AC 22: cold id-34 bytes are identical at one worker, two and eight, and
-// across repeat runs, on every in-memory fixture the AC 31 sweep measures
-// (AC 3's embedded-emitter fixture with its flags among them), at fill 0
+// Cold id-34 bytes are identical at one worker, two and eight, and
+// across repeat runs, on every in-memory fixture the working-set sweep measures
+// (the embedded-emitter fixture with its flags among them), at fill 0
 // and 1. With `cost_tests::layer_entries_and_id_34_are_byte_identical_at_
 // one_worker_and_many` (warm, every cache entry) and `tests::a_layer_is_
 // byte_identical_at_one_worker_and_many` (one layer, flagged and not).
@@ -143,7 +143,7 @@ fn paused_cold_bake(scene: &Scene, lights: &[MapLight], fill: f32) -> (Vec<u8>, 
     (bytes(&section), phases)
 }
 
-// AC 22: a governor pause during patch shading, during the later bounces
+// A governor pause during patch shading, during the later bounces
 // and during the probe gather, each resumed from another thread, leaves
 // cold id 34 byte-identical to an unpaused bake on one worker.
 #[test]
@@ -187,7 +187,7 @@ fn of(gather: Gather, traced: &[TracedDirection]) -> BTreeMap<(u64, u32, [u32; 3
     records
 }
 
-// AC 24: the probe gather and the later-bounce patch gather trace one
+// The probe gather and the later-bounce patch gather trace one
 // fixed direction set whatever the lights or the fill: two light sets at
 // two fills record the same directions for every probe and patch ray.
 // Every probe traces the same set; each patch re-traces its own set every
@@ -267,7 +267,7 @@ fn function(source: &str, name: &str) -> String {
     code(&source[start..end])
 }
 
-// AC 24, grep gate: no gather-direction source reads cache radiance. The
+// No gather-direction source reads cache radiance. The
 // probe gather's set comes from `probe_gather_directions` over
 // `sphere_directions`, made once per volume bake; a patch's from
 // `cosine_directions`, turned by `patch_frame` about its normal by an angle

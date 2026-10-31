@@ -11,8 +11,8 @@ use super::sum::PatchRadiance;
 use crate::bake_control::BakeControl;
 use crate::sh_bake::{RaytracingCtx, bounce_hit, reflected_radiance};
 
-/// Bounces gathered after bounce one. Provisional: the convergence tests
-/// report each bounce's energy, and the owner's A/B settles the count.
+/// Bounces gathered after bounce one: four. At grey albedo a fifth adds
+/// about 1.6% of bounce one.
 /// Folded into the id-34 volume key, so changing it re-keys the volume; a
 /// change to `cosine_directions` or `patch_frame` needs a
 /// `SH_BASE_VOLUME_STAGE_VERSION` bump.
@@ -21,8 +21,8 @@ pub(crate) const LATER_BOUNCE_COUNT: u32 = 4;
 /// Cosine-distributed rays a patch's front side gathers per later bounce.
 pub(crate) const BOUNCE_RAYS_PER_PATCH: u32 = 64;
 
-/// The fill a map without a valid `_bounce_fill` bakes at. Provisional: the
-/// owner's A/B picks the shipped default.
+/// The fill a map without a valid `_bounce_fill` bakes at: 1.0, full physical
+/// fill, so every later bounce ships at full strength.
 pub(crate) const DEFAULT_BOUNCE_FILL: f32 = 1.0;
 
 /// Patches one governed work item gathers. Chunks split the patch set in a

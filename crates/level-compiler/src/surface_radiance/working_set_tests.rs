@@ -86,7 +86,7 @@ impl Fixture {
     }
 }
 
-/// The in-memory scenes the surface radiance tests bake, and AC 3's
+/// The in-memory scenes the surface radiance tests bake, and the
 /// embedded-emitter fixture with its flags.
 pub(super) fn scene_fixtures() -> Vec<Fixture> {
     let (embedded_geometry, embedded_lights) =
@@ -307,8 +307,8 @@ pub(super) fn assert_predicted_covers_measured(rows: &[Row]) {
     );
 }
 
-// AC 31, research P27: on every in-memory fixture the surface radiance
-// tests bake, and on AC 3's embedded-emitter fixture, at fill 0 and 1, one
+// On every in-memory fixture the surface radiance
+// tests bake, and on the embedded-emitter fixture, at fill 0 and 1, one
 // worker and many, cold and warm (a fresh cache, a volume miss over cached
 // layers, and a volume hit), the gate's prediction covers the bake's
 // measured peak: every structure the stage allocates for itself, routed
@@ -320,7 +320,7 @@ fn the_sh_base_prediction_covers_the_measured_peak_on_every_fixture() {
     assert_predicted_covers_measured(&rows);
 }
 
-// AC 31, research P27: the same sweep over `soft_shadow_test`, a real map
+// The same sweep over `soft_shadow_test`, a real map
 // with its own tree and validity. Heavy: run on demand.
 #[test]
 #[ignore = "bakes soft_shadow_test 16 times; run on demand with -- --ignored"]
@@ -332,7 +332,7 @@ fn the_sh_base_prediction_covers_the_measured_peak_on_soft_shadow_test() {
     assert_predicted_covers_measured(&rows);
 }
 
-// AC 31, the handoff half: the bake shades exactly the patches the gate
+// The bake shades exactly the patches the gate
 // counted in each light's reach. A handoff whose reach disagrees with the
 // patch set it carries stops the bake before a layer is summed.
 #[test]

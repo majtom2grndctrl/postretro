@@ -294,9 +294,9 @@ fn warm_equals_cold(
     warm
 }
 
-// AC 9, research P2, P9, P12, P13, P18, P20, P21: over one cache directory,
-// warm id 34 equals a cold bake of the map after each edit in turn. AC 21:
-// no warm build logs the retired approximation warning. AC 15 at the CLI:
+// Over one cache directory,
+// warm id 34 equals a cold bake of the map after each edit in turn. No
+// warm build logs the retired approximation warning. At the CLI:
 // the animated-only edits hit the gathered volume.
 #[test]
 fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
@@ -347,7 +347,7 @@ fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
     corridor = lit;
     corridor.pillar = true;
     warm_equals_cold(&temp, &corridor, "geometry", cache, &[]);
-    // Research P20: the void brush changes no face a layer reads, and the
+    // The void brush changes no face a layer reads, and the
     // spacing edit no geometry, so every layer access hits. Both edits move
     // probe validity or the grid, so the volume misses and reads its two
     // static lights' layers: two hits, no misses. (A volume hit would read
@@ -411,7 +411,7 @@ fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
     );
 }
 
-// AC 17, research P14: `--release` reads and writes no cache, so a warm
+// `--release` reads and writes no cache, so a warm
 // build after only `--release` builds misses every layer and the gathered
 // volume, and its id 34 is the `--release` bytes.
 #[test]
@@ -441,7 +441,7 @@ fn a_warm_build_after_only_release_builds_misses_everything_and_ships_release_by
     assert_eq!(warm.count("[cache] sh_patch_layer miss"), 2);
 }
 
-// AC 23: two cold bakes that differ only in lightmap density, or only in a
+// Two cold bakes that differ only in lightmap density, or only in a
 // `_lightmap_scale` region, bake identical id-34 bytes; a warm build after
 // either edit hits the gathered volume, so it writes it again no more than
 // it re-shades a patch layer.
@@ -512,7 +512,7 @@ fn animated_slots(built: &Built) -> usize {
         .len()
 }
 
-// AC 22: a cold build (`--no-cache`, and `--release`) beside a populated
+// A cold build (`--no-cache`, and `--release`) beside a populated
 // cache directory reads none of it. The directory is poisoned: the
 // gathered-volume entry a fill-1 build keys holds a fill-0 build's valid
 // volume, which a warm build serves (the control). The cold builds bake the
@@ -600,7 +600,7 @@ export function setupLevel(_ctx: unknown) {
 }
 "#;
 
-// AC 11, research P2 and P22: a static light a map data script flips to
+// A static light a map data script flips to
 // animated (a `setLightAnimation` step, derived through the light-membership
 // manifest) leaves every other static light's layer served from cache, and
 // each served layer equals the layer a cold bake of the flipped map shades,
@@ -652,7 +652,7 @@ fn a_light_a_data_script_flips_to_animated_leaves_every_other_layer_cached() {
 /// The fill warning's text, as the parse logs it.
 const FILL_WARNING: &str = "worldspawn `_bounce_fill` value";
 
-// AC 19: an invalid `_bounce_fill` bakes the default and warns exactly once
+// An invalid `_bounce_fill` bakes the default and warns exactly once
 // per compile, cold, warm, and warm with the gathered volume a hit.
 #[test]
 fn an_invalid_bounce_fill_warns_once_even_when_the_volume_hits() {
@@ -711,7 +711,7 @@ const RETIRED_SH_PHRASES: [&str; 11] = [
     "approximate grouped",
 ];
 
-// AC 21: `prl-build --help`, `build_pipeline.md` §Build Cache and
+// `prl-build --help`, `build_pipeline.md` §Build Cache and
 // `testing_guide.md` no longer call warm indirect light approximate, name
 // per-group SH entries, or exempt them from determinism.
 #[test]

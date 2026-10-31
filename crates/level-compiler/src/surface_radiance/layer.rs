@@ -515,7 +515,7 @@ mod tests {
         (layers, scene.volume_key(lights).as_filename())
     }
 
-    // Research P20: a face's cell id and the texture-name table reach no
+    // A face's cell id and the texture-name table reach no
     // layer, so a brush edit that only renumbers cells, or a mover-only
     // texture the pipeline appends to the name table, leaves every layer
     // key. A cell renumber still misses the gathered volume, whose

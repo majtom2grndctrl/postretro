@@ -196,7 +196,7 @@ fn sh_gates_cheaper_first(log: &str) -> (ShGate, ShGate) {
     }
 }
 
-// AC 30, research P7 and P24: the SH base gate admits at its own logged
+// The SH base gate admits at its own logged
 // prediction and refuses one byte under it by name, before any texture
 // read, emitter test, patch shading or SH ray, cold and warm. Both SH gates
 // predict first and check cheapest first, whichever that is: a budget

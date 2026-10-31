@@ -1182,7 +1182,7 @@ fn sdf(mut light: MapLight) -> MapLight {
     light
 }
 
-/// AC 3's bounce fixture: the floor and wall, a point light and an
+/// The bounce fixture: the floor and wall, a point light and an
 /// `sdf`-shadowed light whose emitter spheres both reach into the wall.
 pub(crate) fn embedded_bounce_fixture() -> (GeometryResult, Vec<MapLight>) {
     let shadowed = sdf(point_light([
@@ -1264,7 +1264,7 @@ fn the_probe_point_set_filtered_from_the_bounce_set_matches_its_own_classificati
     );
 }
 
-// AC 3, research P10: a flagged point light and a flagged `sdf`-shadowed
+// A flagged point light and a flagged `sdf`-shadowed
 // light shade their bounce patches at the full lattice's visibility, the
 // no-early-out reference written out here; the probe-point set still flags
 // only the point light, so the `sdf` light reaches no probe-point key
@@ -1365,7 +1365,7 @@ fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
     }
 }
 
-// AC 3: an `sdf`-shadowed light only the bounce family flags warns once per
+// An `sdf`-shadowed light only the bounce family flags warns once per
 // compile, cold and warm, naming the SH bounce patches; the point light the
 // probe-point and lightmap stages flag keeps its own line, word for word,
 // and neither warns twice.

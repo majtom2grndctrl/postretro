@@ -193,7 +193,7 @@ fn ratios(energies: &[f64]) -> Vec<f64> {
     energies.windows(2).map(|pair| pair[1] / pair[0]).collect()
 }
 
-// AC 6: the corridor takes no direct light and sees room A only through
+// The corridor takes no direct light and sees room A only through
 // the gap, so its probe's single bounce comes from room A's faces alone.
 // Later bounces light the corridor's own faces too, and the probe reads
 // brighter.
@@ -224,7 +224,7 @@ fn a_room_lit_only_by_bounce_reads_brighter_with_later_bounces() {
     assert!(multi > 1.05 * single, "{multi} vs single bounce {single}");
 }
 
-// AC 6: room B's probe sees the corridor through the second gap and
+// Room B's probe sees the corridor through the second gap and
 // nothing of room A, so every face its rays hit lies beyond every light's
 // reach: it reads black at fill 0 and later bounces alone at fill 1.
 #[test]
@@ -258,7 +258,7 @@ pub(super) fn open_floor() -> GeometryResult {
     ])
 }
 
-// AC 6: in open space the floor sees only sky and a low kerb, so the
+// In open space the floor sees only sky and a low kerb, so the
 // later bounces barely move a probe there: less than the BC6H encode error
 // the parity rows bound each probe by (the bar the parity harness takes).
 #[test]
@@ -283,7 +283,7 @@ fn a_probe_in_direct_lit_open_space_moves_less_than_its_bc6h_bar() {
     assert!(moved < bar, "moved {moved} against the bar {bar}");
 }
 
-// AC 7, research P8: below albedo one (grey 0.45 everywhere) each bounce
+// Below albedo one (grey 0.45 everywhere) each bounce
 // carries less area-weighted energy than the one before.
 #[test]
 fn each_added_bounce_adds_less_area_weighted_energy_below_albedo_one() {
@@ -310,7 +310,7 @@ fn each_added_bounce_adds_less_area_weighted_energy_below_albedo_one() {
 /// lands near it, not on it (0.2% over at most on the white room below).
 const LOSSLESS_ENERGY_TOLERANCE: f64 = 0.01;
 
-// AC 7, research P8: a closed room of albedo-1 faces neither loses energy
+// A closed room of albedo-1 faces neither loses energy
 // through a gap nor gains it beyond the discretisation tolerance, and its
 // fill-1 id 34 stays finite.
 #[test]
@@ -341,7 +341,7 @@ fn a_closed_albedo_one_room_bakes_finite_and_never_gains_energy() {
     assert!(tiles.iter().any(|tile| tile_total(tile) > 0.0));
 }
 
-// AC 8: at fill 0 the stage traces no later bounce and bakes the bytes the
+// At fill 0 the stage traces no later bounce and bakes the bytes the
 // single-bounce gather bakes from bounce one alone.
 #[test]
 fn fill_zero_bakes_the_single_bounce_bytes_and_traces_no_later_bounce() {
@@ -363,7 +363,7 @@ fn fill_zero_bakes_the_single_bounce_bytes_and_traces_no_later_bounce() {
     assert_eq!(fill_zero.probes, single.probes);
 }
 
-// AC 8: at fill 1 each patch's front side ships bounce one plus every later
+// At fill 1 each patch's front side ships bounce one plus every later
 // bounce unscaled, its back side bounce one alone, and id 34 is the gather
 // over exactly that.
 #[test]
@@ -414,7 +414,7 @@ fn fill_one_bakes_bounce_one_plus_the_unscaled_later_bounces() {
     assert_eq!(fill_one.probes, summed.probes);
 }
 
-// AC 8: between fills, every probe's pre-encode (RGBA16F) irradiance reads
+// Between fills, every probe's pre-encode (RGBA16F) irradiance reads
 // between its fill-0 and fill-1 values, per texel and channel, within one
 // f16 step of the rounding each end took.
 #[test]
@@ -443,7 +443,7 @@ fn a_fill_between_reads_between_fill_zero_and_one_per_channel() {
     assert!(strictly_between > 0, "the fill moves some probe");
 }
 
-// AC 9's fixture premise (`tests/sh_base_warm_cold.rs`'s corridor, in
+// The fixture premise (`tests/sh_base_warm_cold.rs`'s corridor, in
 // metres): a probe 38 m down a 48.8 m corridor, farther from the west end's
 // one light than its 4 m range plus the retired grouped bake's 16 m reach
 // cutoff, reads that light's bounce: the later bounces carry it down the

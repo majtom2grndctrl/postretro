@@ -24,7 +24,7 @@ fn same_id_34(
     assert_eq!(a.probes, b.probes, "{context}: depth moments");
 }
 
-// AC 4: a cold bake traces every shadow ray in patch direct. Its total
+// A cold bake traces every shadow ray in patch direct. Its total
 // equals patch direct's alone and does not move when probe spacing halves,
 // while the gather's rays grow with the probe count. `RAYS_PER_PROBE` is a
 // code constant, so spacing is the probe-side knob a test can turn.
@@ -72,7 +72,7 @@ fn a_cold_bake_traces_no_shadow_ray_from_the_probe_gather() {
     assert!(coarse.patch_lookups > 0 && coarse.patch_lookups <= coarse.gather_rays);
 }
 
-// AC 4: later bounces gather patch to patch and read the cache as the
+// Later bounces gather patch to patch and read the cache as the
 // probe gather does, so fill 1 traces exactly fill 0's shadow rays, every
 // one in patch direct, and the probe gather's rays and lookups do not move.
 #[test]
@@ -110,7 +110,7 @@ fn function(source: &str, name: &str) -> String {
     source[start..end].to_owned()
 }
 
-// AC 4, grep gate: the probe gather's patch path and the later bounces
+// The probe gather's patch path and the later bounces
 // call no visibility routine. It covers the gather (`gather.rs`), the patch
 // lookups it reads (`patches.rs`), the gather's hit (`gather_hit`), the
 // probe bake's patch arm, and the later bounces (`bounce.rs`) with their
@@ -158,7 +158,7 @@ fn the_patch_gather_path_calls_no_visibility_routine() {
     }
 }
 
-// AC 5: doubling the static lights leaves the gather's rays and patch
+// Doubling the static lights leaves the gather's rays and patch
 // lookups alone, and patch direct evaluates exactly the patches in each
 // light's reach, not every patch per light.
 #[test]
@@ -188,7 +188,7 @@ fn doubling_static_lights_leaves_the_gather_and_bounds_patch_direct_by_reach() {
     assert!(two.patch_light_evaluations > one.patch_light_evaluations);
 }
 
-// AC 13: the layers sum in content order, so reversing the static lights'
+// The layers sum in content order, so reversing the static lights'
 // entity order leaves id 34's probe tiles and depth moments unchanged.
 #[test]
 fn reversing_static_light_order_leaves_cold_id_34_identical() {
@@ -202,7 +202,7 @@ fn reversing_static_light_order_leaves_cold_id_34_identical() {
     same_id_34(&forward, &backward, "reversed");
 }
 
-// AC 13: a duplicated static light adds its layer once per copy, doubling
+// A duplicated static light adds its layer once per copy, doubling
 // its share of the patch radiance in its reach.
 #[test]
 fn a_duplicated_static_light_doubles_patch_radiance_in_its_reach() {
@@ -244,7 +244,7 @@ fn a_duplicated_static_light_doubles_patch_radiance_in_its_reach() {
     assert!(lit > 0, "the light reaches some patch");
 }
 
-// AC 18, research P23: a static light whose reach holds no patch shades
+// A static light whose reach holds no patch shades
 // nothing, plans no layer, writes no entry, and leaves id 34 as the map
 // without it bakes it, cold and warm.
 #[test]

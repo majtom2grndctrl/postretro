@@ -1,7 +1,7 @@
 # surface-radiance-cache — plan of record
 
 mode: resumable
-status: approved — built; awaiting owner manual rows and "land the plane"
+status: landed — owner said "land the plane" 2026-10-31; PR open
 read at: d2bda6032
 
 Source re-verified at d2bda6032. The only level-compiler commit since the brief's `faaaf8680` is 097b9fa18 (probe-point embedded emitters, the "lands first" dependency). No Decision premise is false.
@@ -33,7 +33,7 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 - Warm path order → task 4 switches the warm id-34 bake from the grouped path to cached per-light layers plus the cold gather. Task 6 adds the whole id-34 entry and deletes `sh_group.rs`, the warm warning and the docs.
 
 ## Delegated answers
-- Bounce count: provisional 4 later bounces, a code constant. The convergence fixtures (AC 8) and the A/B pick the final count, and changing it bumps the stage version. Reason: with albedo ≤ ~0.6, a fifth bounce adds under ~1/40 of bounce one.
+- Bounce count: 4 later bounces, a code constant (`LATER_BOUNCE_COUNT`). The convergence fixtures (AC 8) report each bounce's energy; changing it bumps the stage version. Reason: with albedo ≤ ~0.6, a fifth bounce adds under ~1/40 of bounce one.
 - Patch size and lookup: **0.5 m cells on each face's absolute plane grid, bilinear lookup** (blending up to 4 cell centres within one face, renormalised over present cells). Task 2 evidence (error/bar at p50/p99/max, mean signed): campaign-test 3.2e-5 / 6.4e-4 / 1.30e-2 against a bar of 1.02e-3 / 2.16e-2 / 1.11e-1, mean +0.55%; soft_shadow_test 3.7e-4 / 3.9e-3 / 1.17e-2 against 7.9e-3 / 3.8e-2 / 4.44e-2, mean −0.058%. Bilinear beats nearest on every percentile on every map and costs about 20% more gather time. 0.25 m buys accuracy at 4× patches and is not needed on the required maps. On stress-warren-mini (not an AC map) every configuration fails max only, at best 1.10× the bar (0.5 m bilinear), while p50, p99 and bias pass. The cause: probes about 1 cm from a corner whose rays land inside one patch, where the reference reads centimetre-scale contact shading. **Owner ruling 2026-10-31: proceed and log it.** It is a known outlier from probes hugging walls; the roadmap's SH probe classification and relocation item is the fix. The Acceptance rows stay as written, and the parity test's default map list is the AC maps (warren-mini via `POSTRETRO_BOUNCE_PARITY_MAPS`).
 - Back-face hits: per-(patch, side) sparse records. A layer stores a back-side record only where its light reaches the back side. Task 2: zero back-face reads on the AC maps. On warren-mini, 765 of 78.5 M hits at 292 probes, all within the bar. A synthetic below-the-floor probe reads within 2% of the reference.
 
@@ -79,9 +79,9 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 | 24 | Fixed gather direction set across lights/fill; no direction reads cache radiance | test + grep gate on direction sources | achievable as stated | pass |
 | 25 | Layer + id-34 get/put outside governor permits | bin test (hook asserts no permit held during cache I/O) | achievable as stated | pass |
 | 26 | Depth moments byte-identical to one-sample bake | bin test | achievable as stated | pass |
-| 27 | id 27 bytes = base; first warm build hits pre-change 27/35/47/48/chunk-list entries | `cmp` of `--release` PRLs (stress-warren-mini + animated fixture) vs base build; warm-over-old-cache CLI run | achievable as stated | pass: base-binary tests (`#[ignore]`, run once): id 27 identical on stress-warren-mini + animated fixture; pre-change entries hit |
+| 27 | id 27 bytes = base; first warm build hits pre-change 27/35/47/48/chunk-list entries | `cmp` of `--release` PRLs (stress-warren-mini + animated fixture) vs base build; warm-over-old-cache CLI run | achievable as stated | pass: base-binary tests (`#[ignore]`, run once, retired at land): id 27 identical on stress-warren-mini + animated fixture; pre-change entries hit |
 | 28 | Zero static / emissive-only → zero irradiance, no layer; all-miss probe black | bin tests | achievable as stated | pass |
-| 29 | No diff under level-format, runtime crates or shaders; no new `SectionId` | diff + grep gate | achievable as stated | pass: `SectionId` pin + git diff gate (run once) |
+| 29 | No diff under level-format, runtime crates or shaders; no new `SectionId` | diff + grep gate | achievable as stated | pass: `SectionId` pin + git diff gate (run once; both branch-scoped tests retired at land) |
 | 30 | Forced-low budget refuses by SH base gate name before any shading/ray/embedded test/texture read; N admits, N−1 refuses; delta and lightmap boundaries hold | `tests/lightmap_working_set_contract.rs` pattern, cold + warm | achievable as stated | pass |
 | 31 | Gate patch set = baked patch set; predicted ≥ measured peak across fixtures/fill/workers/cache mode | bin handoff assertion + cfg(test) peak accounting | achievable as stated | pass: 192 configurations, predicted ≥ measured |
 | 32 | Cache freed before delta SH stage begins | bin test (drop marker observed before DeltaShBake entry) | achievable as stated | pass: cold and warm volume-hit |
@@ -90,7 +90,7 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 | 35 | Measure: light-count sweep N/2N/4N | synthetic map, cold, one bake at a time | measurement | measured: SH Bake flat 13.9–14.6 s from 16 to 256 lights; base 4.6 → 31.2 s |
 | 36 | Measure: cold `--release --no-cache` Build Summary before/after on 4 maps | before = base-commit binary | measurement | measured: campaign-test 1.6 → 4.4 s SH, warren-mini 25.1 → 23.2 s, hallway-mini 74.8 → 49.9 s; full hallway 267.5 → 119.0 s SH, 1235.8 → 1072.5 s total |
 | 37 | Measure: hallway cache peak, layer + id-34 entry bytes vs `--cache-max-size` | owner-launched run | measurement | blocked with AC 34. Gate prediction for the hallway: 4.98 GB peak, 1.75 M patches, 757 lights |
-| 38 | Owner A/B at campaign-test stations, fill 0 / mid / 1 + white room; owner picks default | owner, in-engine | manual | outstanding (owner): captures in `ab-captures/`. campaign-test moves +1–2/255, white room +17–19/255; default pick pending |
+| 38 | Owner A/B at campaign-test stations, fill 0 / mid / 1 + white room; owner picks default | owner, in-engine | manual | pass (owner, 2026-10-31): picked fill 1.0 as the shipped default after the white-room A/B — the pillar reads more natural at full fill. campaign-test moves +1–2/255, white room +17–19/255; captures in `ab-captures/` |
 | 39 | Entities and fog: no patch-scale blotches or new leaks | owner, in-engine | manual | outstanding (owner): captures show no patch blotches or new leaks; white-room seam pixels predate this branch (`ab-captures/seam-check/`) |
 
 ## Tasks

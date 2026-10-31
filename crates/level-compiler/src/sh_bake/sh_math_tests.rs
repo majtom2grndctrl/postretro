@@ -103,7 +103,7 @@ fn bake_direct_at_probe_d3(light: &MapLight, probe: Vec3) -> [f32; 27] {
 }
 
 /// Asserts the D3 pinned equality at light-aligned normals across the ±45° cone
-/// (AC 8): per-channel rel error `abs(diff)/orig.max(1e-3)` ≤ pinned threshold.
+/// per-channel rel error `abs(diff)/orig.max(1e-3)` ≤ pinned threshold.
 /// `name` identifies the LightType arm in failure output.
 fn assert_d3_light_aligned(light: &MapLight, probe: Vec3, name: &str) {
     let coeffs = bake_direct_at_probe_d3(light, probe);
@@ -130,7 +130,7 @@ fn assert_d3_light_aligned(light: &MapLight, probe: Vec3, name: &str) {
     }
     assert!(
         tested >= 3,
-        "AC 8 requires ≥3 light-aligned normals, tested {tested}"
+        "the pin requires at least 3 light-aligned normals, tested {tested}"
     );
 }
 

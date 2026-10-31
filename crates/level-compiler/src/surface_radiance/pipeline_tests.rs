@@ -11,6 +11,7 @@ use postretro_test_log_capture::LogCapture;
 use super::PatchSet;
 use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::stage::stage_events;
+use super::volume::SH_BASE_VOLUME_STAGE_ID;
 use crate::cache::CacheTestAccess;
 use crate::coloured_bounce_test_fixtures::{
     Appearance, mover_entity, room_map, without_fluid, write_texture, write_textures,
@@ -235,6 +236,17 @@ fn two_light_room(west: [i32; 3], centre: [i32; 3]) -> String {
 /// `root` and `extra` flags: the patch-layer cache accesses it made and
 /// the embedded-emitter warnings it logged on this thread.
 fn compile_warm(root: &Path, map_text: &str, extra: &[&str]) -> (CacheTestAccess, usize) {
+    let (layers, _, warnings) = compile_warm_volume(root, map_text, extra);
+    (layers, warnings)
+}
+
+/// [`compile_warm`], with the gathered volume's cache accesses beside the
+/// layers'.
+fn compile_warm_volume(
+    root: &Path,
+    map_text: &str,
+    extra: &[&str],
+) -> (CacheTestAccess, CacheTestAccess, usize) {
     let maps = root.join("maps");
     std::fs::create_dir_all(&maps).unwrap();
     std::fs::create_dir_all(root.join("baked/materials")).unwrap();
@@ -279,14 +291,20 @@ fn compile_warm(root: &Path, map_text: &str, extra: &[&str]) -> (CacheTestAccess
         .into_iter()
         .filter(|record| record.message.contains("emitter inside geometry"))
         .count();
-    (cache.test_access(SH_PATCH_LAYER_STAGE_ID), warnings)
+    (
+        cache.test_access(SH_PATCH_LAYER_STAGE_ID),
+        cache.test_access(SH_BASE_VOLUME_STAGE_ID),
+        warnings,
+    )
 }
 
 // AC 12, research P16, P19: each layer key folds only its own light's
 // effective embedded flag. Moving the flagged light out of its wall, or
 // another light into one, re-shades only the moved light's layer; toggling
 // `--no-penumbra-floor` re-shades only the flagged light's; changing
-// `--soft-shadow-samples` re-shades none.
+// `--soft-shadow-samples` re-shades none: the gathered volume does not key
+// on it and hits, and with the probe spacing moved too (a volume miss) both
+// layers hit.
 #[test]
 fn a_flagged_lights_edits_and_the_floor_toggle_reshade_only_flagged_layers() {
     let root = tempfile::tempdir().unwrap();
@@ -297,11 +315,22 @@ fn a_flagged_lights_edits_and_the_floor_toggle_reshade_only_flagged_layers() {
     assert_eq!(warnings, 1, "the west light is flagged");
     assert_eq!(reshaded(first), (2, 0), "{first:?}");
 
-    let (samples, _) = compile_warm(root.path(), &flagged, &["--soft-shadow-samples", "8"]);
+    let (samples, volume, _) =
+        compile_warm_volume(root.path(), &flagged, &["--soft-shadow-samples", "8"]);
     assert_eq!(
-        reshaded(samples),
-        (0, 2),
-        "--soft-shadow-samples: {samples:?}"
+        (reshaded(samples), reshaded(volume)),
+        ((0, 0), (0, 1)),
+        "--soft-shadow-samples: {samples:?} {volume:?}"
+    );
+    let (samples, volume, _) = compile_warm_volume(
+        root.path(),
+        &flagged,
+        &["--soft-shadow-samples", "8", "--sh-probe-spacing", "3"],
+    );
+    assert_eq!(
+        (reshaded(samples), reshaded(volume)),
+        ((0, 2), (1, 0)),
+        "--soft-shadow-samples, new spacing: {samples:?} {volume:?}"
     );
 
     let (floor_off, warnings) = compile_warm(root.path(), &flagged, &["--no-penumbra-floor"]);

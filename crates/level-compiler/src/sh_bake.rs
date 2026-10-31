@@ -10,7 +10,6 @@ mod section;
 mod sh_math;
 mod trace;
 
-pub(crate) use animation::animation_descriptor_for_light;
 pub use animation::validate_light_animations;
 #[cfg(test)]
 pub(crate) use bounce::bounce_sample_index;
@@ -21,7 +20,9 @@ pub(crate) use grid::{
 pub(crate) use light_eval::{
     bounce_contribution, incident_radiance_at_point, light_reaches_point, spot_cone_parameters,
 };
-pub(crate) use probe::{bake_probe, bake_probe_direct_rgb, bake_probe_indirect_rgb};
+#[cfg(test)]
+pub(crate) use probe::bake_probe;
+pub(crate) use probe::{bake_probe_direct_rgb, bake_probe_indirect_rgb};
 pub use section::log_stats;
 pub(crate) use section::{
     compact_section_from_dense_atlas, encode_sh_volume_section_bc6h, f16_bits_to_f32,
@@ -30,7 +31,7 @@ pub(crate) use section::{
 pub(crate) use sh_math::pack_octahedral_irradiance_tile;
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
-use animation::animation_descriptor_for;
+pub(crate) use animation::animation_descriptor_for_light;
 use probe::bake_probe_with_source;
 use sh_math::pack_octahedral_irradiance_atlas;
 
@@ -171,8 +172,7 @@ pub struct ShConfig {
 }
 
 /// Collect the static-baked light slice in `static_lights` (global) order — the
-/// order the per-hit radiance sum iterates. Shared so the warm group path can
-/// derive a bounded subset that preserves this ordering.
+/// order the per-hit radiance sum iterates and the SH base's layer plan reads.
 pub(crate) fn static_light_refs<'a>(inputs: &ShBakeCtx<'a>) -> Vec<&'a MapLight> {
     inputs
         .static_lights
@@ -227,12 +227,26 @@ pub(crate) fn bake_sh_volume_after(
     source: RadianceSource<'_>,
     prior_units: usize,
 ) -> OctahedralShVolumeSection {
-    let probe_spacing_meters = config.probe_spacing;
     let layout = probe_grid_layout(inputs, config);
+    if !layout.is_empty() {
+        control.publish_total(prior_units + layout.total_probes());
+    }
+    bake_sh_volume_over(inputs, &layout, control, source)
+}
+
+/// The whole-volume bake over a resolved probe `layout`, advancing
+/// `control` one unit per probe; the caller publishes the total. Returns an
+/// empty section (`grid_dimensions == [0,0,0]`) for an empty layout.
+pub(crate) fn bake_sh_volume_over(
+    inputs: &ShBakeCtx<'_>,
+    layout: &ProbeGridLayout,
+    control: &BakeControl,
+    source: RadianceSource<'_>,
+) -> OctahedralShVolumeSection {
     if layout.is_empty() {
         return OctahedralShVolumeSection {
             grid_origin: [0.0, 0.0, 0.0],
-            cell_size: [probe_spacing_meters; 3],
+            cell_size: layout.cell_size,
             grid_dimensions: [0, 0, 0],
             probe_stride: OCTAHEDRAL_PROBE_STRIDE,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -252,17 +266,11 @@ pub(crate) fn bake_sh_volume_after(
     let world_min = layout.world_min;
     let dims = layout.dims;
     let total = layout.total_probes();
-    control.publish_total(prior_units + total);
     let cell_size = layout.cell_size;
     let far_sentinel = layout.far_sentinel;
 
     let static_lights: Vec<&MapLight> = static_light_refs(inputs);
-    let animated_lights: Vec<&MapLight> = inputs
-        .animated_lights
-        .entries()
-        .iter()
-        .map(|e| e.light)
-        .collect();
+    let (animation_descriptors, slot_for_map_light) = animation_tables(inputs);
 
     let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
@@ -294,18 +302,6 @@ pub(crate) fn bake_sh_volume_after(
         atlas_layout,
     );
 
-    // Per-light monochrome SH layers removed; animated indirect is handled by the SH compose pass via delta SH volumes.
-    let animation_descriptors: Vec<AnimationDescriptor> = animated_lights
-        .iter()
-        .map(|l| animation_descriptor_for(l))
-        .collect();
-
-    // Emit the map-light-index to animated-slot table consumed by runtime
-    // animation lookup. Planning uses this same metadata before probe rays run.
-    let slot_for_map_light = inputs
-        .animated_lights
-        .slot_for_source_lights(inputs.total_light_count);
-
     let section = OctahedralShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
         cell_size,
@@ -324,6 +320,43 @@ pub(crate) fn bake_sh_volume_after(
         slot_for_map_light,
     };
     compact_section_from_dense_atlas(section, &atlas_texels)
+}
+
+/// The id-34 section's animation tables: one runtime descriptor per animated
+/// light, and the map-light-index to animated-slot table the runtime
+/// animation lookup reads. They follow the animated light set alone, never
+/// a probe ray, so every build derives them afresh; planning uses the same
+/// metadata before probe rays run. Per-light monochrome SH layers are gone:
+/// animated indirect is the SH compose pass's delta volumes.
+pub(crate) fn animation_tables(inputs: &ShBakeCtx<'_>) -> (Vec<AnimationDescriptor>, Vec<u32>) {
+    let descriptors = inputs
+        .animated_lights
+        .entries()
+        .iter()
+        .map(|entry| animation_descriptor_for_light(entry.light))
+        .collect();
+    let slots = inputs
+        .animated_lights
+        .slot_for_source_lights(inputs.total_light_count);
+    (descriptors, slots)
+}
+
+/// Fold every code constant the probe gather reads into `hasher`: its ray
+/// count and lattice rotation, the self-intersection offset, the sky colour,
+/// the grey bounce fallback, and the tile geometry and format of the
+/// gathered volume. A cache key over the gather's output folds these, so
+/// changing one misses it without relying on a stage-version bump.
+pub(crate) fn fold_gather_constants(hasher: &mut blake3::Hasher) {
+    hasher.update(&RAYS_PER_PROBE.to_le_bytes());
+    hasher.update(&SAMPLING_LATTICE_OFFSET.to_le_bytes());
+    hasher.update(&RAY_EPSILON.to_le_bytes());
+    for channel in SKY_COLOR {
+        hasher.update(&channel.to_le_bytes());
+    }
+    hasher.update(&BOUNCE_ALBEDO.to_le_bytes());
+    hasher.update(&DEFAULT_IRRADIANCE_TILE_DIMENSION.to_le_bytes());
+    hasher.update(&DEFAULT_IRRADIANCE_TILE_BORDER.to_le_bytes());
+    hasher.update(&IRRADIANCE_FORMAT_RGBA16F.to_le_bytes());
 }
 
 /// Host bytes the whole-volume bake of a `dims` grid holds, by

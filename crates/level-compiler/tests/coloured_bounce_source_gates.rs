@@ -200,7 +200,8 @@ fn no_compiler_write_or_cache_put_takes_a_material_stat() {
     // The material stage's own sidecar write and the SH caches are in scope.
     for (path, sink) in [
         ("texture_mips/world.rs", "atomic_write"),
-        ("sh_group.rs", ".put"),
+        ("surface_radiance/layer_set.rs", ".put_streamed"),
+        ("surface_radiance/volume.rs", ".put"),
         ("delta_sh_cache.rs", ".put"),
     ] {
         let source = sources.iter().find(|source| source.path == path).unwrap();

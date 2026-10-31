@@ -234,14 +234,14 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     // two direct-delta bakes it has no light-global seed axis to add.
     let light_seed_axes = vec![0; keyed_lights.len()];
     let bounce_hash = cache.and_then(|_| {
-        crate::sh_group::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
+        crate::bake_content_keys::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
     });
     let cached_subblocks = bake_or_load_delta_subblocks(
         &DeltaShCacheInputs {
             bounce_hash: bounce_hash.as_ref(),
             stage_id: INDIRECT_DELTA_SH_STAGE_ID,
             stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
-            geometry_hash: crate::sh_group::geometry_content_hash(inputs.geometry),
+            geometry_hash: crate::bake_content_keys::geometry_content_hash(inputs.geometry),
             affinity_dims,
             affinity_lights: &affinity_lights,
             csr_entry_cells: &csr_cells,

@@ -1193,7 +1193,7 @@ mod tests {
     fn prune_is_noop_when_under_budget() {
         let dir = fresh_temp_dir("prune_noop");
         let cache = StageCache::new(&dir).expect("create cache dir");
-        let key = CacheKey::new("sh_group", 1, b"keep-me");
+        let key = CacheKey::new("kept_stage", 1, b"keep-me");
         cache.put(&key, b"payload");
 
         cache.prune_to_budget(DEFAULT_MAX_BYTES);

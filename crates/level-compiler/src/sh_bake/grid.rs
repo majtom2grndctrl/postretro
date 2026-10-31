@@ -10,10 +10,9 @@ use crate::geometry::GeometryResult;
 use crate::partition::{BspTree, find_leaf_for_point};
 
 /// Geometry-derived layout of the probe grid, independent of lighting. Shared by
-/// the whole-volume bake and the per-group warm path (`sh_group.rs`) so both
-/// resolve the same grid origin/dims, per-probe positions, validity, and
-/// `far_sentinel` — the warm group bake therefore lands probes at byte-identical
-/// positions and seeds to the monolithic bake.
+/// the whole-volume bake, the direct and scatter bakes and the SH base's
+/// cached-volume key, so all resolve the same grid origin/dims, per-probe
+/// positions, validity, and `far_sentinel`.
 ///
 /// `probe_positions`/`validity` are indexed by the flat linear probe index
 /// (`x + y*nx + z*nx*ny`, x-fastest). `is_empty()` is true when the map has no
@@ -37,9 +36,8 @@ impl ProbeGridLayout {
     }
 }
 
-/// Build the probe-grid layout from geometry + probe spacing. Mirrors the grid
-/// setup `bake_sh_volume` performs; both call this so the warm group path stays
-/// aligned to the whole-volume grid.
+/// Build the probe-grid layout from geometry + probe spacing: the grid every
+/// whole-volume bake gathers over.
 pub(crate) fn probe_grid_layout(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> ProbeGridLayout {
     let probe_spacing_meters = config.probe_spacing;
     let cell_size = [probe_spacing_meters; 3];

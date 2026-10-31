@@ -18,6 +18,20 @@ pub(crate) enum PatchLookup {
     Bilinear,
 }
 
+impl PatchLookup {
+    /// The lookup production bakes id 34 with.
+    pub(crate) const PRODUCTION: Self = Self::Bilinear;
+
+    /// A byte naming the lookup, for a key over the gather's output.
+    pub(crate) fn key_tag(self) -> u8 {
+        match self {
+            #[cfg(test)]
+            Self::Nearest => 0,
+            Self::Bilinear => 1,
+        }
+    }
+}
+
 /// The SH probe gather's radiance source over a summed patch cache.
 pub(crate) struct PatchGather<'a> {
     patches: &'a PatchSet,

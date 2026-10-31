@@ -286,8 +286,8 @@ fn a_light_whose_reach_holds_no_patch_allocates_no_layer() {
     assert_eq!(access.read_attempts as u64, plain.layers_shaded);
 }
 
-// Determinism: layer entries and id 34 are byte-identical at one worker and
-// at many, and warm equals cold.
+// Determinism: layer entries, the gathered-volume entry and id 34 are
+// byte-identical at one worker and at many, and warm equals cold.
 #[test]
 fn layer_entries_and_id_34_are_byte_identical_at_one_worker_and_many() {
     let scene = Scene::new();
@@ -302,7 +302,7 @@ fn layer_entries_and_id_34_are_byte_identical_at_one_worker_and_many() {
     };
     let (one, one_entries) = bake(1);
     let (many, many_entries) = bake(8);
-    assert_eq!(one_entries.len(), 4);
+    assert_eq!(one_entries.len(), 5, "four layers and the gathered volume");
     assert_eq!(one_entries, many_entries);
     same_id_34(&one, &cold, "warm at one worker");
     same_id_34(&many, &cold, "warm at eight workers");

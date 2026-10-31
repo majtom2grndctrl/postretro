@@ -7,6 +7,7 @@ use glam::Vec3;
 use rayon::prelude::*;
 
 use super::patches::{MIN_PATCH_AREA_M2, PATCH_SIZE_M, PatchSet, Side};
+use crate::bake_content_keys::{bounce_material_hash, fold_bounce_hash, geometry_content_hash};
 use crate::bake_control::BakeControl;
 use crate::cache::CacheKey;
 use crate::geometry::GeometryResult;
@@ -15,7 +16,6 @@ use crate::map_data::{FalloffModel, LightType, MapLight};
 use crate::sh_bake::{
     RaytracingCtx, bounce_contribution, reflected_radiance, segment_clear, soft_visibility_seed,
 };
-use crate::sh_group::{bounce_material_hash, fold_bounce_hash, geometry_content_hash};
 use crate::surface_materials::stats::BounceMaterials;
 use crate::texel_footprint::ProbeEarlyOut;
 
@@ -98,6 +98,11 @@ impl LightDigest {
         Self(*hasher.finalize().as_bytes())
     }
 
+    /// The digest's bytes, for the gathered volume's key to fold.
+    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// The layer's soft-visibility seed axis: the digest's first eight
     /// bytes, so a light's lattice rotation moves only with its content.
     pub(crate) fn seed_axis(&self) -> u64 {
@@ -140,7 +145,15 @@ impl LayerKeys {
         // Patch direct samples the default lattice whatever
         // `--soft-shadow-samples` says, so that flag stays out.
         shared.update(&DEFAULT_AREA_SAMPLE_COUNT.to_le_bytes());
+        // An unresolved texture reflects this grey, so it shapes layer bytes.
+        shared.update(&crate::surface_materials::stats::GREY_BOUNCE_ALBEDO.to_le_bytes());
         Self { shared }
+    }
+
+    /// The digest of the inputs every layer key shares, for a key over the
+    /// layers' sum to fold.
+    pub(crate) fn shared_fingerprint(&self) -> [u8; 32] {
+        *self.shared.finalize().as_bytes()
     }
 
     /// The key of the layer of a light with content `digest`. `embedded` is

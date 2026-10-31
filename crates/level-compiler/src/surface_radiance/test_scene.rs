@@ -14,6 +14,7 @@ use super::layer_set::{LayerPlan, resolve_layers};
 use super::patches::PatchSet;
 use super::reach::PatchReachIndex;
 use super::tests::polygon_geometry;
+use super::volume::volume_key;
 use crate::bake_control::BakeControl;
 use crate::bake_counters::{BakeCounts, counted};
 use crate::bvh_build::{BvhPrimitive, build_bvh};
@@ -21,8 +22,8 @@ use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
-use crate::partition::{Aabb, BspLeaf, BspTree};
-use crate::sh_bake::{ShBakeCtx, ShConfig, static_light_refs};
+use crate::partition::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
+use crate::sh_bake::{ShBakeCtx, ShConfig, probe_grid_layout, static_light_refs};
 use crate::surface_materials::stats::BounceMaterials;
 use crate::texel_footprint::{EmbeddedEmitters, NO_EMBEDDED_EMITTERS};
 
@@ -149,6 +150,28 @@ impl Scene {
             exterior: HashSet::new(),
             materials: None,
         }
+    }
+
+    /// This scene with the half-space `x ≥ x_min` solid: its probes turn
+    /// invalid while every face, and so the geometry, stays as it was, as a
+    /// brush edit that moves only leaf solidity would leave it.
+    pub(super) fn with_solid_beyond(mut self, x_min: f64) -> Self {
+        let open = self.tree.leaves[0].clone();
+        let solid = BspLeaf {
+            is_solid: true,
+            ..open.clone()
+        };
+        self.tree = BspTree {
+            nodes: vec![BspNode {
+                plane_normal: DVec3::X,
+                plane_distance: x_min,
+                front: BspChild::Leaf(1),
+                back: BspChild::Leaf(0),
+                parent: None,
+            }],
+            leaves: vec![open, solid],
+        };
+        self
     }
 
     /// This scene with every face's bounce albedo read from `materials`.
@@ -287,6 +310,34 @@ impl Scene {
     /// The cache key of `light`'s layer, unflagged.
     pub(super) fn key(&self, light: &MapLight) -> CacheKey {
         self.keys().key(LightDigest::of(light), false)
+    }
+
+    /// The key of the gathered volume a bake of `lights` at `spacing` and
+    /// `fill`, with no flagged light, reads and writes.
+    pub(super) fn volume_key_at(&self, lights: &[MapLight], spacing: f32, fill: f32) -> CacheKey {
+        let reach = self.reach(lights);
+        self.with_ctx(lights, |ctx| {
+            let plan = LayerPlan::new(&static_light_refs(ctx), &reach, &NO_EMBEDDED_EMITTERS);
+            let layout = probe_grid_layout(
+                ctx,
+                &ShConfig {
+                    probe_spacing: spacing,
+                },
+            );
+            volume_key(&self.keys(), &plan, &layout, spacing, fill)
+        })
+    }
+
+    /// [`Self::volume_key_at`] for [`Self::bake`].
+    pub(super) fn volume_key(&self, lights: &[MapLight]) -> CacheKey {
+        self.volume_key_at(lights, 1.0, DEFAULT_BOUNCE_FILL)
+    }
+
+    /// Delete the gathered-volume entry a [`Self::bake`] of `lights` wrote
+    /// to `dir`, so the next warm bake of them reads its layers.
+    pub(super) fn forget_volume(&self, dir: &Path, lights: &[MapLight]) {
+        std::fs::remove_file(dir.join(self.volume_key(lights).as_filename()))
+            .expect("a warm bake wrote the volume entry");
     }
 }
 

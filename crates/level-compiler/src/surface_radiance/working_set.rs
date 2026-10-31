@@ -32,7 +32,10 @@ pub(crate) struct ShBaseWorkingSetProjection {
     pub(crate) bounce_buffer_bytes: u64,
     /// The id-34 bake's dense probes and atlas.
     pub(crate) volume_bytes: u64,
-    /// The id-34 section's encode and decode copies, one section each.
+    /// The id-34 section's encode and decode copies, one section each: on
+    /// a warm miss the gathered-volume cache entry's encoded bytes beside
+    /// the section, on a hit the entry's raw payload beside the decoded
+    /// section (`super::volume`).
     pub(crate) volume_copy_bytes: u64,
     pub(crate) estimated_peak_bytes: u64,
     pub(crate) budget_bytes: u64,

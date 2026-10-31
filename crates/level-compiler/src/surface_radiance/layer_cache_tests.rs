@@ -14,6 +14,7 @@ use super::patches::PatchSet;
 use super::reach::PatchReachIndex;
 use super::sum::PatchRadiance;
 use super::test_scene::{Scene, animated, annex_light, entries, point, room_lights};
+use super::volume::SH_BASE_VOLUME_STAGE_ID;
 use crate::bake_control::BakeControl;
 use crate::bake_counters::{BakeCounts, counted};
 use crate::cache::StageCache;
@@ -39,8 +40,9 @@ fn open(dir: &Path) -> StageCache {
 
 // AC 10, research P2: after one light's colour edit only its layer
 // re-shades, and every shadow ray the warm build traces is that layer's:
-// the re-gather traces none. A reorder or no edit hits every layer and
-// traces no shadow ray at all.
+// the re-gather traces none. A reorder or no edit hits the gathered volume
+// and reads no layer; with that entry gone, it hits every layer and traces
+// no shadow ray at all.
 #[test]
 fn one_light_edit_reshades_only_its_layer_and_the_regather_traces_no_shadow_ray() {
     let scene = Scene::new();
@@ -51,11 +53,20 @@ fn one_light_edit_reshades_only_its_layer_and_the_regather_traces_no_shadow_ray(
     let mut reversed = lights.clone();
     reversed.reverse();
     for (edit, set) in [("no edit", &lights), ("reorder", &reversed)] {
+        let cold = scene.bake(set, None, 4).0;
+        let cache = open(dir.path());
+        let (warm, counts) = scene.bake(set, Some(&cache), 4);
+        assert_eq!(shaded_and_cached(&counts), (0, 0), "{edit}: {counts:?}");
+        assert_eq!((counts.shadow_rays, counts.gather_rays), (0, 0), "{edit}");
+        assert_eq!(cache.test_access(SH_BASE_VOLUME_STAGE_ID).read_hits, 1);
+        same_id_34(&warm, &cold, edit);
+
+        scene.forget_volume(dir.path(), set);
         let (warm, counts) = scene.bake(set, Some(&open(dir.path())), 4);
         assert_eq!(shaded_and_cached(&counts), (0, 4), "{edit}: {counts:?}");
         assert_eq!(counts.shadow_rays, 0, "{edit}: {counts:?}");
         assert!(counts.gather_rays > 0, "the gather re-runs");
-        same_id_34(&warm, &scene.bake(set, None, 4).0, edit);
+        same_id_34(&warm, &cold, edit);
     }
 
     let mut edited = lights.clone();
@@ -156,7 +167,9 @@ fn unchanged_lights_layers_hit_across_light_set_edits() {
 }
 
 // AC 16, research P15: a removed, corrupt or undecodable layer entry
-// re-shades alone, to the bytes it lost; the rest hit.
+// re-shades alone, to the bytes it lost; the rest hit. While the gathered
+// volume's entry survives it serves id 34 and no layer is read: the summed
+// digest did not move.
 #[test]
 fn a_removed_or_corrupt_layer_reshades_alone_to_its_lost_bytes() {
     let scene = Scene::new();
@@ -172,14 +185,18 @@ fn a_removed_or_corrupt_layer_reshades_alone_to_its_lost_bytes() {
     *flipped.last_mut().unwrap() ^= 0x5a;
     std::fs::write(entry(&lights[2]), flipped).unwrap();
     open(dir.path()).put(&scene.key(&lights[0]), b"not a patch layer");
+    let (warm, counts) = scene.bake(&lights, Some(&open(dir.path())), 4);
+    assert_eq!(shaded_and_cached(&counts), (0, 0), "volume hit: {counts:?}");
+    same_id_34(&warm, &cold, "volume hit");
     for lost in ["removed, corrupt and undecodable", "none"] {
+        scene.forget_volume(dir.path(), &lights);
         let (warm, counts) = scene.bake(&lights, Some(&open(dir.path())), 4);
         let expected = if lost == "none" { (0, 4) } else { (3, 1) };
         assert_eq!(shaded_and_cached(&counts), expected, "{lost}: {counts:?}");
         assert_eq!(
             entries(dir.path()),
             snapshot,
-            "{lost}: re-shaded bytes repeat"
+            "{lost}: re-shaded and re-gathered bytes repeat"
         );
         same_id_34(&warm, &cold, lost);
     }
@@ -252,7 +269,8 @@ fn build(
 // AC 16, research P12: after A, then B, then a revert to A, the revert hits
 // every A layer the eviction sweep kept and re-shades the rest; with or
 // without eviction its id 34 is a cold bake of A. Eviction moves hit
-// counts, never bytes.
+// counts, never bytes. A's gathered volume is deleted before the revert so
+// the revert reads its layers.
 #[test]
 fn a_revert_hits_every_layer_the_eviction_sweep_kept() {
     let scene = Scene::new();
@@ -268,6 +286,7 @@ fn a_revert_hits_every_layer_the_eviction_sweep_kept() {
         let dir = root.path().join("cache");
         build(&scene, &dir, &input, &a, u64::MAX);
         build(&scene, &dir, &input, &b, u64::MAX);
+        scene.forget_volume(&dir, &a);
         let (revert, counts, kept) = build(&scene, &dir, &input, &a, budget);
         let expected_kept = if budget == 0 { 3 } else { 4 };
         assert_eq!(
@@ -300,8 +319,9 @@ fn changing_the_bounce_fill_reshades_no_layer() {
     same_id_34(&half, &scene.bake_at(&lights, 0.5, None, 4).0, "fill 0.5");
 }
 
-// AC 25: every layer cache read and write runs on a thread holding no
-// governor permit, cold fill and warm hit alike.
+// AC 25: every layer and gathered-volume cache read and write runs on a
+// thread holding no governor permit: a cold fill, a volume hit, and a
+// volume miss whose layers all hit.
 #[test]
 fn layer_cache_reads_and_writes_run_outside_governor_permits() {
     let governor = Arc::new(Governor::new(1, false));
@@ -332,12 +352,26 @@ fn layer_cache_reads_and_writes_run_outside_governor_permits() {
     };
     let fill = bake();
     let hit = bake();
+    scene.forget_volume(dir.path(), &lights);
+    let layers_hit = bake();
     assert_eq!(
-        fill.layer_cache_io, 8,
-        "four misses and four writes: {fill:?}"
+        (fill.layer_cache_io, fill.volume_cache_io),
+        (8, 2),
+        "four layer misses and writes, a volume miss and write: {fill:?}"
     );
-    assert_eq!(hit.layer_cache_io, 4, "four hits: {hit:?}");
-    assert_eq!(fill.layer_cache_io_under_permit, 0, "{fill:?}");
-    assert_eq!(hit.layer_cache_io_under_permit, 0, "{hit:?}");
+    assert_eq!(
+        (hit.layer_cache_io, hit.volume_cache_io),
+        (0, 1),
+        "one volume hit: {hit:?}"
+    );
+    assert_eq!(
+        (layers_hit.layer_cache_io, layers_hit.volume_cache_io),
+        (4, 2),
+        "four layer hits, a volume miss and write: {layers_hit:?}"
+    );
+    for counts in [fill, hit, layers_hit] {
+        assert_eq!(counts.layer_cache_io_under_permit, 0, "{counts:?}");
+        assert_eq!(counts.volume_cache_io_under_permit, 0, "{counts:?}");
+    }
     assert_eq!(governor.active(), 0);
 }

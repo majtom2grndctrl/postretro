@@ -41,8 +41,8 @@ use crate::{
     cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, environment_volumes, fog_cell_masks, geometry, kinematic_geometry,
     light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals,
-    reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group,
-    surface_radiance, texture_mips, texture_validation, trigger_volumes, visibility,
+    reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, surface_radiance,
+    texture_mips, texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
     FinalizedClusterMetadataInputs, FinalizedPrlPackInputs, build_finalized_cluster_metadata,
@@ -886,15 +886,13 @@ fn run_after_parsing(
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
     let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
-    if stage_cache.is_some() {
-        log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
-    }
     // Warm and cold bake id 34 through one path: the whole volume gathers
-    // from the surface radiance cache over the gate's patch set. Warm builds
-    // read and write each light's patch layer in the stage cache, so a light
-    // edit re-shades only its layer; the later bounces and the gather re-run
-    // every build, so a `_bounce_fill` edit re-shades no layer. The
-    // patch cache is freed inside the bake; only id 34 leaves the stage.
+    // from the surface radiance cache over the gate's patch set, so a warm
+    // build ships the cold bytes. Warm builds cache the gathered volume as
+    // one entry keyed on everything the gather reads; on a miss they read
+    // and write each light's patch layer, so a light edit re-shades only its
+    // layer and a `_bounce_fill` edit re-shades none. The patch cache is
+    // freed inside the bake; only id 34 leaves the stage.
     let mut sh_volume_section = surface_radiance::bake_sh_base(
         &sh_ctx,
         &sh_config,
@@ -1024,9 +1022,9 @@ fn run_after_parsing(
             embedded_emitters: &static_embedded_emitters,
         };
         // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
-        // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
-        // the direct bake uses a strict whole-section cache key with the provably-zero
-        // light-reach cull in both modes — output is byte-identical regardless of path.
+        // passes `None`. The direct bake uses a strict whole-section cache key with
+        // the provably-zero light-reach cull in both modes — output is
+        // byte-identical regardless of path.
         let raw = direct_sh_bake::bake_direct_sh_volume_cached_controlled(
             &inputs,
             &sh_config,

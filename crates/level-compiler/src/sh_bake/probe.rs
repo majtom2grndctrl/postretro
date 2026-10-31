@@ -72,7 +72,7 @@ pub(crate) fn bake_probe_indirect_rgb(
 /// `light_global_indices[i]` is `lights[i]`'s position in the full global
 /// `static_lights` slice, threaded into the soft-visibility seed so a kept light
 /// gets the same lattice rotation whether the bake sees the full set or a culled
-/// subset — the same determinism rule the warm-SH per-group path uses. A culled
+/// subset. A culled
 /// light is provably zero-contribution at this probe, so the seed indexing keeps
 /// the output byte-identical to an unculled bake.
 ///
@@ -169,19 +169,20 @@ pub(super) fn bake_probe_rgb_with_moments(
     (acc, sum_d, sum_d2)
 }
 
-/// Bake one probe's SH coefficients + depth-moment metadata. Shared between the
-/// whole-volume `bake_sh_volume` path and the per-group warm path
-/// (`sh_group.rs`). `probe_index` is the probe's flat linear index in the global
-/// grid (`x + y*nx + z*nx*ny`); it seeds only the deterministic soft-visibility
-/// lattice rotation, so passing the same global index in either path keeps the
-/// per-probe output byte-identical. Invalid probes bake nothing and return the
-/// default (zeroed) record, matching the volume path.
+/// Bake one probe's SH coefficients + depth-moment metadata with the per-hit
+/// estimator, as the whole-volume `bake_sh_volume` path does for each probe.
+/// `probe_index` is the probe's flat linear index in the global grid
+/// (`x + y*nx + z*nx*ny`); it seeds only the deterministic soft-visibility
+/// lattice rotation, so passing the same global index keeps the per-probe
+/// output byte-identical to the volume's. Invalid probes bake nothing and
+/// return the default (zeroed) record, matching the volume path.
 ///
 /// `light_global_indices` maps each `static_lights[i]` to its position in the
 /// full global light slice for the soft-visibility seed (see
 /// `sample_radiance_rgb`). The whole-volume path passes `None` (its slice IS the
-/// global set); the warm per-group path passes the bounded set's global indices so
-/// a kept light gets the same lattice rotation it would in the full-set bake.
+/// global set); a bounded subset passes its global indices so a kept light gets
+/// the same lattice rotation it would in the full-set bake.
+#[cfg(test)]
 pub(crate) fn bake_probe(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,

@@ -7,6 +7,7 @@ pub mod animated_block_ids;
 pub mod animated_direct_sh_bake;
 pub mod animated_light_chunks;
 pub mod animated_light_weight_maps;
+pub(crate) mod bake_content_keys;
 pub mod bake_control;
 pub mod bc5;
 pub mod bc6h;
@@ -62,7 +63,6 @@ pub mod sh_analyze;
 pub mod sh_bake;
 pub mod sh_coarsen;
 pub mod sh_density;
-pub mod sh_group;
 pub mod sh_hierarchy;
 pub mod sh_runtime_envelope;
 pub mod shadowmask_bake;
@@ -532,8 +532,8 @@ fn stage_cache_is_enabled(args: &Args) -> bool {
 
 /// Derive the cache handle from the final build arguments.
 ///
-/// The pipeline treats `Some` as the warm approximate path and `None` as the
-/// exact ship path. Keep this after the optional TUI configuration screen so
+/// The pipeline treats `Some` as the warm cached path and `None` as the
+/// ship path, which reads and writes no cache. Keep this after the optional TUI configuration screen so
 /// its build-mode choice has the same effect as equivalent CLI flags.
 fn construct_stage_cache(args: &Args) -> Option<cache::StageCache> {
     if !stage_cache_is_enabled(args) {
@@ -864,7 +864,7 @@ fn help_text() -> String {
          --sh-delta-max-size <SIZE> Aggregate raw payload cap for ids 27, 41, and 45 after the compiler delta policy; accepts e.g. 256MiB or a byte count (default: {delta_max})\n    \
          --working-set-max-size <SIZE> Per-stage host-RAM ceiling for the SH base, SH-delta and lightmap bakes; accepts e.g. 16GiB or a byte count (default: {delta_working_set_max})\n    \
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
-         --release                  Produce a shippable map: exact lighting, cache bypassed (implies --no-cache). The interactive default is a fast warm build with approximate indirect lighting; ship only --release artifacts (default: off)\n    \
+         --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache). The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
          --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \
          --sh-analyze               Run the output-preserving SH coarsenability analysis pass (measurement only; emits summary + JSON, changes no emitted bytes) (default: off)\n    \
@@ -3358,9 +3358,9 @@ mod tests {
         }
     }
 
-    // The per-light lightmap-layer and per-group SH cache wiring is exercised by
-    // the unit tests in `lightmap_layer.rs` and `sh_group.rs` (round-trip skip,
-    // light-edit locality, corruption recovery). These remaining tests cover the
+    // The per-light lightmap-layer and SH base cache wiring is exercised by
+    // the unit tests in `lightmap_layer.rs` and `surface_radiance` (round-trip
+    // skip, light-edit locality, corruption recovery). These remaining tests cover the
     // CLI surface and the content-driven SDF gating predicate.
 
     use crate::map_data::{FalloffModel, LightType, MapLight};

@@ -27,6 +27,11 @@ pub(crate) struct BakeCounts {
     /// Layer cache reads and writes attempted on a thread holding a governor
     /// permit: must stay zero.
     pub(crate) layer_cache_io_under_permit: u64,
+    /// Gathered-volume (id-34 entry) cache reads and writes attempted.
+    pub(crate) volume_cache_io: u64,
+    /// Gathered-volume cache reads and writes attempted on a thread holding a
+    /// governor permit: must stay zero.
+    pub(crate) volume_cache_io_under_permit: u64,
 }
 
 impl Add for BakeCounts {
@@ -44,6 +49,9 @@ impl Add for BakeCounts {
             layer_cache_io: self.layer_cache_io + other.layer_cache_io,
             layer_cache_io_under_permit: self.layer_cache_io_under_permit
                 + other.layer_cache_io_under_permit,
+            volume_cache_io: self.volume_cache_io + other.volume_cache_io,
+            volume_cache_io_under_permit: self.volume_cache_io_under_permit
+                + other.volume_cache_io_under_permit,
         }
     }
 }
@@ -60,6 +68,8 @@ thread_local! {
             layers_cached: 0,
             layer_cache_io: 0,
             layer_cache_io_under_permit: 0,
+            volume_cache_io: 0,
+            volume_cache_io_under_permit: 0,
         })
     };
 }

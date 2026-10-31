@@ -72,8 +72,8 @@ pub fn log_stats(section: &OctahedralShVolumeSection) {
 ///
 /// The intermediate deliberately remains `Rgba16Float` here. The pipeline's
 /// downstream density pack emits the v11 node-aware stored set after hierarchy
-/// classification and grouped and monolithic assembly converge, so the group cache
-/// never stores an output-format-specific value.
+/// classification, so the SH base's cached volume (`surface_radiance`) never
+/// stores an output-format-specific value.
 pub(crate) fn compact_section_from_dense_atlas(
     mut section: OctahedralShVolumeSection,
     dense_atlas: &[OctahedralAtlasTexel],
@@ -237,9 +237,8 @@ pub(crate) fn sh_atlas_array_layout(
 
 /// Decode IEEE 754 binary16 bits → f32. The inverse of
 /// `lightmap::f32_to_f16_bits` for the depth moments; covers finite non-negative
-/// magnitudes (the diagnostic stats aggregate and the `sh_group` warm-SH gate,
-/// which decode depth moments / octahedral-tile irradiance — both finite
-/// non-negative).
+/// magnitudes (the diagnostic stats aggregate and the bake tests, which decode
+/// depth moments / octahedral-tile irradiance — both finite non-negative).
 pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = (bits >> 15) & 0x1;
     let exp = (bits >> 10) & 0x1f;

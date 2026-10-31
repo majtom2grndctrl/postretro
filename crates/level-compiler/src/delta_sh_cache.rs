@@ -78,7 +78,7 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(inputs.geometry_hash);
-    crate::sh_group::fold_bounce_hash(&mut hasher, inputs.bounce_hash);
+    crate::bake_content_keys::fold_bounce_hash(&mut hasher, inputs.bounce_hash);
     for dimension in inputs.affinity_dims {
         hasher.update(&dimension.to_le_bytes());
     }

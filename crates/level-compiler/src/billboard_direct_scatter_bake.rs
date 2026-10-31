@@ -17,6 +17,7 @@ use postretro_level_format::billboard_direct_scatter_volume::{
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use rayon::prelude::*;
 
+use crate::bake_content_keys::geometry_content_hash;
 use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::{
@@ -31,7 +32,6 @@ use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, incident_radiance_at_point,
     probe_grid_layout, static_light_refs, vec3_from,
 };
-use crate::sh_group::geometry_content_hash;
 use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 
 /// Cache stage for dense, normal-free static billboard scatter.

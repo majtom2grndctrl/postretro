@@ -20,8 +20,7 @@ use crate::texel_footprint::ProbeEarlyOut;
 /// GLOBAL `static_lights` index — the three indices that uniquely identify a shadow
 /// query in this bake. Using the global (not bake-slice) light index keeps a kept
 /// light's lattice rotation identical whether the bake sees the full light set
-/// (cold) or a bounded subset (warm per-group), preserving the strict
-/// dimmer-or-equal warm-SH contract. SplitMix64-style integer avalanche of those indices plus
+/// or a culled subset. SplitMix64-style integer avalanche of those indices plus
 /// `SAMPLING_LATTICE_OFFSET`: a pure function of the indices, so it reproduces
 /// byte-for-byte across separate processes. NO `RandomState`, NO hash-map iteration
 /// order — the byte-identical-`.prl` determinism AC depends on this staying
@@ -61,8 +60,7 @@ pub(crate) fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index
 /// animated lights differ unless every keyed field matches. Over the offset
 /// each ray's sample is uniform on the lattice, so a hit's expected visibility
 /// is the whole lattice's clear fraction under that ray's rotation, with no
-/// fixed centre ray to bias a penumbra. The warm per-group bake passes the same
-/// global index, so a kept light traces the same sample warm and cold.
+/// fixed centre ray to bias a penumbra.
 pub(crate) fn bounce_sample_index(
     probe_index: u64,
     ray_index: u64,
@@ -92,12 +90,9 @@ pub(crate) fn bounce_sample_index(
 /// expectation at a hit is the full 32-sample lattice's clear fraction.
 ///
 /// `light_global_indices` carries each `lights[i]`'s seed axis. For the SH
-/// volume that is its position in the global `static_lights` slice. The warm
-/// per-group path passes a *bounded* `lights` subset, so seeding off the slice
-/// position would give a kept light a different lattice rotation than the cold
-/// (full-set) bake — warm could then read slightly brighter, breaking the
-/// strict dimmer-or-equal contract. Threading the global index keeps a kept
-/// light's rotation identical in either bake. `None` means identity (slice
+/// volume that is its position in the global `static_lights` slice, so a
+/// bounded `lights` subset still gives a kept light the rotation the full set
+/// gives it. `None` means identity (slice
 /// position == global index), as the monolithic SH path passes. The delta path
 /// passes its one light's content-derived axis (`bake_probe_indirect_rgb`).
 // Each argument is a distinct, irreducible input to the per-ray bounce sample

@@ -1256,7 +1256,7 @@ pub(super) fn stage_keys(
         )
         .as_filename(),
         lightmap_atlas_layout,
-        geometry: crate::sh_group::geometry_content_hash(&geometry),
+        geometry: crate::bake_content_keys::geometry_content_hash(&geometry),
         sdf: crate::sdf_bake::cache_key(
             &geometry,
             cells.full_tree(),

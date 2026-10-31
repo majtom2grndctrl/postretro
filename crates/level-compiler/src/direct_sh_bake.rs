@@ -60,6 +60,7 @@ use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
     decompose_affinity_for_lights,
 };
+use crate::bake_content_keys::geometry_content_hash;
 use crate::bc6h;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
@@ -73,7 +74,6 @@ use crate::sh_bake::{
     pack_octahedral_irradiance_tile, probe_grid_layout, sh_atlas_array_layout, static_light_refs,
     vec3_from,
 };
-use crate::sh_group::geometry_content_hash;
 use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 
 /// Cache stage id for the whole-section direct SH bake on the shared `StageCache`.

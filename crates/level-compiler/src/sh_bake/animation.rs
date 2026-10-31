@@ -26,18 +26,13 @@ pub fn validate_light_animations(lights: &[MapLight]) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the runtime animation descriptor for one animated light. `pub(crate)`
-/// so the warm per-group SH path (`sh_group.rs`) recovers the volume's
-/// animation-descriptor table without re-running the probe bake.
+/// The runtime animation descriptor of one animated light: what
+/// [`super::animation_tables`] lists for the id-34 section.
 pub(crate) fn animation_descriptor_for_light(light: &MapLight) -> AnimationDescriptor {
-    animation_descriptor_for(light)
-}
-
-pub(super) fn animation_descriptor_for(light: &MapLight) -> AnimationDescriptor {
     let anim: &LightAnimation = light
         .animation
         .as_ref()
-        .expect("animation_descriptor_for called on a non-animated light");
+        .expect("animation_descriptor_for_light called on a non-animated light");
     let base_color = if anim
         .color
         .as_ref()

@@ -12,10 +12,12 @@ use crate::bvh_build::build_bvh;
 use crate::surface_radiance::{PatchGather, PatchLookup, PatchRadiance, PatchSet};
 use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
-// AC 26: id 34's depth moments are the one-sample bake's whatever the
-// gather's radiance source.
+// AC 26, research P11: id 34's depth moments are the one-sample bake's
+// whatever the gather's radiance source: probe by probe under either patch
+// lookup, and over the whole volume through the production SH base bake,
+// cold and warm, at fill 1.
 #[test]
-fn patch_gather_leaves_depth_moments_byte_identical_to_the_one_sample_bake() {
+fn the_sh_base_bake_leaves_depth_moments_byte_identical_to_the_one_sample_bake() {
     let geometry = floor_and_walls_geometry();
     let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
     let tree = tree_all_empty();
@@ -67,6 +69,94 @@ fn patch_gather_leaves_depth_moments_byte_identical_to_the_one_sample_bake() {
         assert_eq!(cached_d2.to_bits(), one_d2.to_bits());
         assert!(one_sample[0] > 0.0 && cached[0] > 0.0, "both gather bounce");
     }
+
+    let config = ShConfig { probe_spacing: 0.5 };
+    let one_sample = bake_sh_volume(&inputs, &config);
+    let dir = tempfile::tempdir().unwrap();
+    let cache = crate::cache::StageCache::new(dir.path()).unwrap();
+    for (mode, cache) in [
+        ("cold", None),
+        ("warm miss", Some(&cache)),
+        ("warm hit", Some(&cache)),
+    ] {
+        let (handoff, _) = crate::surface_radiance::plan_sh_base(
+            &geometry,
+            &light_refs,
+            config.probe_spacing,
+            1.0,
+            u64::MAX,
+        )
+        .unwrap();
+        let production = crate::surface_radiance::bake_sh_base(
+            &inputs,
+            &config,
+            handoff,
+            &NO_EMBEDDED_EMITTERS,
+            cache,
+            &control,
+        );
+        assert!(production.probes.iter().any(|probe| probe.validity != 0));
+        assert_eq!(
+            production.probes, one_sample.probes,
+            "{mode}: depth moments"
+        );
+        assert_ne!(
+            production.compact_atlas, one_sample.compact_atlas,
+            "{mode}: the radiance source differs"
+        );
+    }
+}
+
+// AC 28, research P9: a probe whose gather rays all miss reads black
+// through the patch cache, lit patches or not, and its moments are the
+// miss distance alone.
+#[test]
+fn a_probe_whose_rays_all_miss_reads_black_through_the_patch_cache() {
+    let geometry = floor_and_walls_geometry();
+    let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+    let tree = tree_all_empty();
+    let exterior = HashSet::new();
+    let lights = [soft_point_light(DVec3::new(2.0, 2.5, 2.0), 0.3)];
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    let inputs = ShBakeCtx {
+        bounce_materials: None,
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+        tree: &tree,
+        exterior_leaves: &exterior,
+        static_lights: &static_lights,
+        animated_lights: &animated_lights,
+        total_light_count: lights.len(),
+    };
+    let light_refs = static_light_refs(&inputs);
+    let patches = PatchSet::build(&geometry);
+    let radiance = PatchRadiance::single_bounce(
+        &inputs.ray_ctx(),
+        &patches,
+        &light_refs,
+        &NO_EMBEDDED_EMITTERS,
+        &BakeControl::unrestricted(),
+    );
+    assert!(!radiance.is_zero(), "the room's patches are lit");
+    let gather = PatchGather::new(&patches, &radiance, PatchLookup::PRODUCTION);
+    let far_sentinel = 4.0 * Vec3::ONE.length();
+    // Far outside the room, every ray escapes to the sky.
+    let (coefficients, sum_d, sum_d2) = bake_probe_rgb_with_moments(
+        &inputs,
+        Vec3::new(500.0, 500.0, 500.0),
+        &light_refs,
+        None,
+        far_sentinel,
+        0,
+        RadianceSource::Patches(&gather),
+    );
+    assert_eq!(coefficients, [0.0; 27], "black");
+    let rays = RAYS_PER_PROBE as f32;
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0e-5 * b;
+    assert!(near(sum_d, far_sentinel * rays), "{sum_d}");
+    assert!(near(sum_d2, far_sentinel * far_sentinel * rays), "{sum_d2}");
 }
 
 // AC 2, back faces: a ray that hits a face from behind reads the back side's

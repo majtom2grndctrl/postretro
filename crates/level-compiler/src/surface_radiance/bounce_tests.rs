@@ -442,3 +442,35 @@ fn a_fill_between_reads_between_fill_zero_and_one_per_channel() {
     }
     assert!(strictly_between > 0, "the fill moves some probe");
 }
+
+// AC 9's fixture premise (`tests/sh_base_warm_cold.rs`'s corridor, in
+// metres): a probe 38 m down a 48.8 m corridor, farther from the west end's
+// one light than its 4 m range plus the retired grouped bake's 16 m reach
+// cutoff, reads that light's bounce: the later bounces carry it down the
+// corridor to the patches the probe gathers. (Bounce one alone reaches it
+// through almost no ray: the lit end subtends a sliver of its sphere.) A
+// warm rebuild serves that probe the cold bytes.
+#[test]
+fn a_probe_reads_patches_lit_beyond_the_retired_16_m_group_reach() {
+    let unit = 0.0254;
+    let scene = Scene::of(polygon_geometry(&inward_box(
+        [0.0, 0.0, 0.0],
+        [1920.0 * unit, 128.0 * unit, 128.0 * unit],
+    )));
+    let lights = [point([f64::from(64.0 * unit), 1.6, 1.6], 0.1, 160.0 * unit)];
+    let probe = [40.0, 1.0, 1.0];
+    // Past the light's range and the 16 m cutoff, with a whole 4-probe
+    // group (16 m at the CLI suite's 4 m spacing) of slack besides.
+    let reach = f64::from(lights[0].falloff_range);
+    assert!(DVec3::from(probe).distance(lights[0].origin) > reach + 16.0 + 16.0);
+    let slot = slot_at(&scene, &lights, probe);
+    let (cold, _) = scene.bake(&lights, None, 4);
+    assert!(
+        tile_total(&rgba16f_tiles(&cold)[slot]) > 0.0,
+        "the far probe gathers light from the west end"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let cache = crate::cache::StageCache::new(dir.path()).unwrap();
+    scene.bake(&lights, Some(&cache), 4);
+    assert_eq!(scene.bake(&lights, Some(&cache), 4).0, cold);
+}

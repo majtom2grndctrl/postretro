@@ -125,11 +125,7 @@ mod tests {
     }
 
     fn stop_worker(app: &mut App) {
-        app.level_rx = None;
-        if let Some(handle) = app.level_worker.take() {
-            let _ = handle.join();
-        }
-        app.level_load = None;
+        crate::startup::lifecycle::tests::drop_in_flight_load(app);
     }
 
     fn close_panel(app: &mut App) {

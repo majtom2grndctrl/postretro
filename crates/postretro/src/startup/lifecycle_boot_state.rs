@@ -52,11 +52,10 @@ impl App {
         frame_dt: f32,
     ) -> bool {
         // Settling counts as installed: a request drained here unloads the
-        // held level before its settle check can reveal it.
-        if matches!(
-            self.boot_state,
-            BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running
-        ) {
+        // held level before its settle check can reveal it. A Loading drain
+        // runs before the Loading step, so a request already queued cancels
+        // a load whose bundle this frame would find ready (pin P1).
+        if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
         }
 
@@ -89,6 +88,9 @@ impl App {
         }
     }
 
+    /// Queue a runtime level request for the next drain. A CLI boot load
+    /// refuses runtime requests in every stage, queued, parsing, preparing
+    /// or uploading, and is not cancelled (pin P8).
     pub(crate) fn enqueue_level_request(&mut self, request: LevelRequest) {
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             log::warn!(
@@ -180,8 +182,18 @@ impl App {
         log::info!("[Loader] queued dev level lifecycle cycle: {target_display}");
     }
 
+    /// Drain queued level requests at the redraw boundary.
+    ///
+    /// A runtime load in flight no longer holds requests back: a load
+    /// request supersedes it (its stages are cancelled and retire; the
+    /// loading screen keeps its tree and clock, pin P4), and an unload
+    /// request cancels it and enters Frontend (pin P3). A CLI boot load in
+    /// flight drains nothing: its refusal happened at enqueue (pin P8). In
+    /// the loading-screen order the installed level unloads before the new
+    /// load starts, and the load only queues; its stages dispatch once
+    /// nothing older still runs (pin P12).
     pub(in crate::startup) fn drain_level_requests(&mut self) {
-        if self.boot_state == BootState::Loading && self.level_load_in_flight() {
+        if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
         }
 
@@ -198,6 +210,7 @@ impl App {
                     return;
                 }
                 LevelRequest::Unload => {
+                    self.abandon_level_load_for_frontend();
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
@@ -211,7 +224,19 @@ impl App {
         matches!(self.boot_state, BootState::Settling | BootState::Running)
     }
 
+    /// A level load is active: queued or staged, not yet committed, failed
+    /// or cancelled.
     pub(in crate::startup) fn level_load_in_flight(&self) -> bool {
-        self.level_rx.is_some() || self.level_worker.is_some() || self.has_deferred_level_payload()
+        self.level_loads.active().is_some()
     }
+}
+
+/// The boot states whose redraw drains level requests. Splash (the OS
+/// preference wait included) and the first-launch hold drain none, so a
+/// request they queue starts no stage work until boot leaves them (pin P12).
+pub(crate) fn boot_state_drains_level_requests(state: &BootState) -> bool {
+    matches!(
+        state,
+        BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running
+    )
 }

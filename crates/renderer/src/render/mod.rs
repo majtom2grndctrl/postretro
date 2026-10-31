@@ -34,6 +34,7 @@ mod kinematic_ghost;
 mod kinematic_ghost_shape;
 mod lightmap_residency;
 mod lightmap_streaming;
+mod load_error_capture;
 mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
@@ -186,6 +187,8 @@ use crate::render::loaded_texture::{
     upload_prepared_texture,
 };
 pub use gpu_create::{GpuCreationCounts, gpu_creation_counts};
+#[cfg(feature = "test-seams")]
+pub use install_pipelines::PipelineBuildRelease;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_loader::MapLight;

@@ -343,6 +343,10 @@ impl PrepShared {
                         if shared.inputs.hooks.upload_textures_twice {
                             shared.upload.duplicate_textures();
                         }
+                        #[cfg(test)]
+                        if let Some(fault) = shared.inputs.hooks.upload_fault {
+                            shared.upload.fault(fault);
+                        }
                     }
                     Ok(Product::Textures(prep))
                 });

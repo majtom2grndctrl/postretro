@@ -191,6 +191,9 @@ pub const POST_RETRO_ANISO_CLAMP: u16 = 16;
 pub struct Renderer {
     pub(super) device: wgpu::Device,
     pub(super) queue: UploadQueue,
+    /// The device's uncaptured-error handler: wgpu's default panic, or a
+    /// level load's failure while armed for one.
+    pub(super) load_errors: std::sync::Arc<super::load_error_capture::LoadErrorCapture>,
     #[cfg(test)]
     pub(super) injected_acquire_failure: bool,
     /// Present surface for a windowed renderer. Offscreen capture deliberately

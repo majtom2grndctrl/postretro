@@ -8,6 +8,8 @@ use super::*;
 
 /// Why a delivered level payload was refused before any install mutation.
 /// Routed through `finish_level_failure` like any other failed level load.
+/// The main-thread oracle's; production loads fail through their stages.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LevelInstallRejection {
     #[error(transparent)]
@@ -66,6 +68,9 @@ impl App {
     /// Called after a level worker delivers a payload; assumes `self.renderer`
     /// is `Some` and `world` is populated. Rejects invalid indirect index ranges
     /// and a static collision mesh parry refuses before any install mutation.
+    // The main-thread oracle: production loads commit a bundle instead; the
+    // tests compare the two until landing.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn install_level_payload(
         &mut self,
         mut world: postretro_level_loader::LevelWorld,
@@ -279,6 +284,9 @@ impl App {
     /// surfaces. Returns what the light bridge needs, or `None` when no
     /// renderer exists and the caller takes the renderer-less return. A
     /// renderer refusal of the level's resources is a rejection.
+    // The main-thread oracle: production loads commit a bundle instead; the
+    // tests compare the two until landing.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn install_level_renderer_stage(
         &mut self,
         world: &mut postretro_level_loader::LevelWorld,

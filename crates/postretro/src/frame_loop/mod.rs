@@ -62,9 +62,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // player write later this frame wins over them.
     app.poll_os_preferences();
     app.poll_window_mode_readback();
-    // Every boot state, Booting and Splash included: retired upload threads
-    // join here once finished, never on suspend.
-    app.poll_upload_retirements();
+    // Every boot state, Booting and Splash included: retired stages (level
+    // loads, and the upload threads of suspended renderers) join here once
+    // finished, never on suspend or on any other frame path.
+    app.poll_stage_retirements();
 
     #[cfg(feature = "observe-live")]
     app.drain_observe_live_requests();

@@ -1,14 +1,18 @@
 //! Finishing a delivered level load: install, the level's streaming sessions,
-//! then Settling behind the loading tree.
+//! then Settling behind the loading tree. Production loads finish through
+//! their bundle's commit (`lifecycle_commit.rs`); `finish_level_payload`, the
+//! main-thread oracle's finish, stays for the tests that compare the two.
 //! See: context/lib/boot_sequence.md §1 (Settling) · §3
 
 use super::*;
 
 impl App {
+    /// The oracle: install a worker payload on the main thread, then Settling.
+    #[cfg(test)]
     pub(super) fn finish_level_payload(
         &mut self,
         payload: crate::startup::worker::LevelPayload,
-        event_loop: &ActiveEventLoop,
+        event_loop: &impl LoopExit,
     ) {
         match payload.level {
             Some(world) => {

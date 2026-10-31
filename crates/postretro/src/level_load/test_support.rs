@@ -48,6 +48,10 @@ pub(crate) struct PrepTestHooks {
     /// The textures task submits a second textures part, which the set
     /// build refuses: a real upload-thread failure.
     pub(crate) upload_textures_twice: bool,
+    /// The textures task also submits a faulting part: a real wgpu
+    /// validation error (a write past a buffer's end) or a panic, each on
+    /// the upload thread.
+    pub(crate) upload_fault: Option<UploadFault>,
     /// Runs in a task whose failure is injected, just before it fails:
     /// blocking here holds the failure until the probe shows what the test
     /// waits for.
@@ -59,6 +63,13 @@ pub(crate) struct PrepTestHooks {
     /// Runs on the upload thread as each set-build part reports done:
     /// blocking here holds the upload thread, with later parts queued.
     pub(crate) after_upload_part: Option<UploadPartHook>,
+}
+
+/// A fault a set build's part raises on the upload thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UploadFault {
+    WritePastBufferEnd,
+    Panic,
 }
 
 type BeforeModelParse = Arc<dyn Fn(usize) + Send + Sync>;

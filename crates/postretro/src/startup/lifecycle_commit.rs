@@ -29,10 +29,9 @@ struct LevelCommitChecks {
 }
 
 impl App {
-    /// Install `bundle` in one frame. The task-11b load state machine calls
-    /// this once the bundle is ready; until then only tests do, and
-    /// production keeps the level worker and `install_level_payload`, which
-    /// shares every stage function here.
+    /// Install `bundle` in one frame: the load state machine calls this on
+    /// the Loading frame its bundle is ready. The main-thread oracle,
+    /// `install_level_payload`, shares every stage function here.
     ///
     /// Stages, in the main-thread install's order, with what each takes from
     /// the bundle:
@@ -64,7 +63,6 @@ impl App {
     ///
     /// Past step 1 nothing returns an error: the streaming install fails on
     /// nothing, and no stage function after it returns a `Result`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn commit_level_bundle(
         &mut self,
         bundle: LevelBundle,

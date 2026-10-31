@@ -204,6 +204,16 @@ impl UploadSlot {
         );
         self.submit(|builder| builder.textures(empty, Vec::new()));
     }
+
+    /// A part that raises `fault` on the upload thread.
+    #[cfg(test)]
+    pub(super) fn fault(&self, fault: super::test_support::UploadFault) {
+        use super::test_support::UploadFault;
+        self.submit(|builder| match fault {
+            UploadFault::WritePastBufferEnd => builder.fault_write_past_buffer_end(),
+            UploadFault::Panic => builder.fault_panic_in_part(),
+        });
+    }
 }
 
 /// The upload phase's counter, fed from the build's events on the upload

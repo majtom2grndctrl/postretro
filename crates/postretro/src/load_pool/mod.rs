@@ -153,6 +153,14 @@ impl LoadPool {
         self.shared.tasks_started.load(Ordering::Relaxed)
     }
 
+    /// Tasks accepted onto the queue (a spawn into a cancelled group, or
+    /// after shutdown, is refused and not counted). A task queued before a
+    /// cancel may still be taken off the queue after it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn tasks_queued(&self) -> usize {
+        self.shared.tasks_queued.load(Ordering::Relaxed)
+    }
+
     /// A fresh group for one load's tasks.
     pub(crate) fn group(&self) -> TaskGroup {
         TaskGroup {
@@ -313,6 +321,7 @@ impl GroupSpawner {
                     Priority::Ui => queue.ui.push_back(job),
                     Priority::Load => queue.load.push_back(job),
                 }
+                self.pool.tasks_queued.fetch_add(1, Ordering::Relaxed);
                 None
             }
         };
@@ -363,6 +372,7 @@ struct PoolShared {
     shutdown_flag: Arc<AtomicBool>,
     threads_started: AtomicUsize,
     tasks_started: AtomicUsize,
+    tasks_queued: AtomicUsize,
 }
 
 impl PoolShared {

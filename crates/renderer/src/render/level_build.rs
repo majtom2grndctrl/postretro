@@ -736,6 +736,25 @@ impl LevelSetBuilder {
         });
     }
 
+    /// A part that writes 32 bytes into a 16-byte buffer: a real wgpu
+    /// validation error on the upload thread, which the part's error scope
+    /// turns into this build's one failure. For the app's failure tests.
+    #[cfg(feature = "test-seams")]
+    pub fn fault_write_past_buffer_end(&self) {
+        self.queue_part(None, |_, upload| {
+            write_past_buffer_end(&upload.device, &upload.writes);
+            Ok(PartDone::Stored)
+        });
+    }
+
+    /// A part that panics on the upload thread, which the part's
+    /// `catch_unwind` turns into this build's one failure. For the app's
+    /// failure tests.
+    #[cfg(feature = "test-seams")]
+    pub fn fault_panic_in_part(&self) {
+        self.queue_part(None, |_, _| panic!("injected level build panic"));
+    }
+
     /// Run `work` as one of this build's parts, under the same failure rules
     /// (tests inject holds, wgpu errors and panics through it).
     #[cfg(test)]
@@ -777,6 +796,19 @@ impl LevelSetBuilder {
                 .fail(LevelBuildError::Upload(UploadError::ThreadGone));
         }
     }
+}
+
+/// 32 bytes into a 16-byte buffer: a wgpu validation error.
+#[cfg(feature = "test-seams")]
+fn write_past_buffer_end(device: &wgpu::Device, writes: &dyn super::queue_writes::QueueWrites) {
+    use super::gpu_create::GpuCreate;
+    let buffer = device.new_buffer(&wgpu::BufferDescriptor {
+        label: Some("level build fault: overrun target"),
+        size: 16,
+        usage: wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    writes.write_buffer(&buffer, 0, &[0u8; 32]);
 }
 
 /// What one part left behind.

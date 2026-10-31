@@ -24,10 +24,17 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "level_load/tests.rs",
     "level_load/upload.rs",
     "session/level_streaming/level_data.rs",
+    "startup/level_loads.rs",
+    "startup/lifecycle.rs",
+    "startup/lifecycle_boot_state.rs",
+    "startup/lifecycle_commit.rs",
+    "startup/lifecycle_finish.rs",
+    "startup/lifecycle_load.rs",
     "startup/loading_screen.rs",
     "startup/loading_screen_images.rs",
     "startup/loading_screen_tests.rs",
     "startup/lifecycle_model_sweep.rs",
+    "startup/settling.rs",
 ];
 
 /// The one load-stage module allowed to start threads.

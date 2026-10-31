@@ -137,6 +137,7 @@ impl Renderer {
         Ok(Self {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, false),
+            load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
             #[cfg(test)]
             injected_acquire_failure: false,
             surface: Some(surface),
@@ -190,8 +191,8 @@ impl Renderer {
     /// `new_offscreen` whose install-pipeline build waits, on the upload
     /// thread, until the returned handle is released or dropped. Tests hold
     /// it to observe the renderer while the build is in flight.
-    #[cfg(test)]
-    pub(crate) fn new_offscreen_holding_pipeline_build(
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn new_offscreen_holding_pipeline_build(
         capture_width: u32,
         capture_height: u32,
     ) -> Result<(Self, super::install_pipelines::PipelineBuildRelease)> {
@@ -270,6 +271,7 @@ impl Renderer {
         Ok(Self {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, true),
+            load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
             #[cfg(test)]
             injected_acquire_failure: false,
             surface: None,

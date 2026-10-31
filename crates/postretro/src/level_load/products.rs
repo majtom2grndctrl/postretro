@@ -50,7 +50,10 @@ pub(crate) struct PreparedLevel {
     pub(crate) timings: PrepTimings,
 }
 
-/// The upload stage's inputs, all `Send`.
+/// The upload stage's inputs, all `Send`. A prep-only bundle keeps them;
+/// production never dispatches one (the load state machine holds a load
+/// queued until the renderer is full-ready), so only tests read them.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct PreparedGpuLevel {
     pub(crate) textures: PreparedWorldTextures,
@@ -110,19 +113,23 @@ impl PreparedModels {
         prepared
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.models.is_empty()
     }
 
     /// The predicted handles, in predicted order.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn handles(&self) -> impl Iterator<Item = &str> {
         self.models.iter().map(|model| model.handle.as_str())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PreparedModel> {
         self.models.iter()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn get(&self, handle: &str) -> Option<&PreparedModel> {
         self.by_handle.get(handle).map(|&index| &self.models[index])
     }
@@ -145,6 +152,7 @@ impl PreparedModels {
 
     /// The over-predictions: handles prep prepared that the real sweep does
     /// not hold, in predicted order. Each one cost a parse and nothing else.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn over_predictions(&self, real_sweep: &[String]) -> Vec<&str> {
         let real: std::collections::HashSet<&str> = real_sweep.iter().map(String::as_str).collect();
         self.handles()
@@ -187,7 +195,9 @@ pub(crate) struct ParsedModelProducts {
     pub(crate) upload: Option<ModelUpload>,
 }
 
-/// One parsed model's upload inputs.
+/// One parsed model's upload inputs, kept only by a prep-only load (see
+/// [`PreparedGpuLevel`]).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ModelUpload {
     /// The parse itself, which the upload reads (mesh, skeleton, clips).
     pub(crate) model: LoadedModel,

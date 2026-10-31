@@ -97,6 +97,8 @@ impl PrepKind {
 /// Where a load failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoadStage {
+    /// Starting the load's stages (the engine pool).
+    Dispatch,
     Parse,
     Prep(PrepKind),
     /// The renderer's off-main set build on the upload thread.
@@ -110,6 +112,7 @@ pub(crate) enum LoadStage {
 impl LoadStage {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            LoadStage::Dispatch => "level load dispatch",
             LoadStage::Parse => "level parse",
             LoadStage::Prep(kind) => kind.label(),
             LoadStage::Upload => "level upload",
@@ -156,6 +159,25 @@ impl LevelLoadFailure {
     }
 
     /// A commit check that refused the bundle before anything mutated.
+    /// The load's stages could not start.
+    pub(crate) fn dispatch(message: impl Into<String>) -> Self {
+        Self {
+            stage: LoadStage::Dispatch,
+            message: message.into(),
+            parse_error: None,
+        }
+    }
+
+    /// A wgpu error no error scope caught, raised while this load was
+    /// uncommitted and no level ran: the load's failure, not wgpu's panic.
+    pub(crate) fn uncaptured(message: impl Into<String>) -> Self {
+        Self {
+            stage: LoadStage::Upload,
+            message: format!("uncaptured wgpu error: {}", message.into()),
+            parse_error: None,
+        }
+    }
+
     pub(crate) fn commit(message: impl Into<String>) -> Self {
         Self {
             stage: LoadStage::Commit,

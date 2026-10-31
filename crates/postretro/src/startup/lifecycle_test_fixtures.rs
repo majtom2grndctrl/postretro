@@ -236,9 +236,8 @@ pub(crate) fn test_app() -> App {
         active_level_tags: Vec::new(),
         active_level_source: None,
         level_load: None,
-        level_rx: None,
-        level_worker: None,
-        upload_retirements: Vec::new(),
+        level_loads: Default::default(),
+        stage_retirements: Default::default(),
         // Tests run the pool at width 2 whatever the machine.
         load_pool: crate::load_pool::EngineLoadPool::with_width(2),
         level_requests: VecDeque::new(),
@@ -308,14 +307,19 @@ pub(super) fn catalog_map(id: &str, path: &str, name: &str, tags: &[&str]) -> Mo
     }
 }
 
-pub(super) fn drop_in_flight_worker(app: &mut App) {
-    app.level_rx = None;
-    if let Some(handle) = app.level_worker.take() {
-        handle
-            .join()
-            .expect("level worker should not panic during lifecycle test");
-    }
+/// Cancel the load in flight, if any, and poll its retirement to its end.
+pub(crate) fn drop_in_flight_load(app: &mut App) {
+    app.cancel_active_level_load();
     app.level_load = None;
+    let deadline = Instant::now() + crate::level_load::test_support::APP_LOAD_TIMEOUT;
+    while !app.stage_retirements.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the cancelled load never retired"
+        );
+        app.poll_stage_retirements();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 pub(super) fn map_light(tag: &str, origin: [f64; 3]) -> postretro_level_loader::MapLight {

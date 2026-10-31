@@ -219,11 +219,11 @@ pub(crate) fn submit_install_pipeline_build(
 }
 
 /// A test-held gate the build job waits on before building.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Default)]
 pub(crate) struct PipelineBuildGate(Arc<(Mutex<bool>, Condvar)>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-seams"))]
 impl PipelineBuildGate {
     fn wait_open(&self) {
         let (open, wake) = &*self.0;
@@ -246,10 +246,10 @@ impl PipelineBuildGate {
 }
 
 /// Production builds carry no gate: this type has no values.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-seams")))]
 pub(crate) enum PipelineBuildGate {}
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-seams")))]
 impl PipelineBuildGate {
     fn wait_open(&self) {
         match *self {}
@@ -258,15 +258,15 @@ impl PipelineBuildGate {
 
 /// Releases a held pipeline build; dropping it releases too, so a failed
 /// test never leaves the upload thread parked.
-#[cfg(test)]
-pub(crate) struct PipelineBuildRelease(PipelineBuildGate);
+#[cfg(any(test, feature = "test-seams"))]
+pub struct PipelineBuildRelease(PipelineBuildGate);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-seams"))]
 impl PipelineBuildRelease {
-    pub(crate) fn release(self) {}
+    pub fn release(self) {}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-seams"))]
 impl Drop for PipelineBuildRelease {
     fn drop(&mut self) {
         self.0.open();

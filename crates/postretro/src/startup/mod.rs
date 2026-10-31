@@ -16,6 +16,7 @@ pub(crate) mod first_launch_hold;
 mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
+pub(crate) mod level_loads;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]
@@ -44,11 +45,23 @@ pub(crate) mod worker;
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
 pub(crate) use session::{BootSession, PendingSessionInit, build_session};
 pub(crate) use splash_lifecycle::BootDestination;
-pub(crate) use worker::{LoadOutcome, spawn_level_worker};
+
+/// What a frame path calls to end the event loop: the live loop in the
+/// engine, a recorder in tests (which have no event loop to hand in).
+pub(crate) trait LoopExit {
+    fn exit(&self);
+}
+
+impl LoopExit for winit::event_loop::ActiveEventLoop {
+    fn exit(&self) {
+        winit::event_loop::ActiveEventLoop::exit(self);
+    }
+}
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).
 /// `Splash` = first paint, then deferred `mod_init` and boot load request.
-/// `Loading` = level worker in flight; main thread keeps painting while polling.
+/// `Loading` = a level load in flight (queued or staged); the main thread keeps
+/// painting the loading screen while it polls the load's stages.
 /// `Frontend` = renderer + UI loop with no level installed.
 /// `FirstLaunchHold` = world-less frames showing only the accessibility panel,
 /// before any level loads on a profile that has never closed it. Drains no

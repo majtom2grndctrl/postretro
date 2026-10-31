@@ -4,13 +4,10 @@
 //! consume (the level's decoded sounds and predicted, parsed models
 //! included), handing each GPU-bound product to the renderer's off-main set
 //! build as soon as it exists; and the load-stage handle that joins the two
-//! into one bundle for the commit. Production loads still install through
-//! the level worker and the main-thread oracle until the load state machine
-//! wires this in.
+//! into one bundle for the commit. The App's load state machine
+//! (`startup::level_loads`) dispatches and polls these stages; the level
+//! worker and the main-thread install remain only as the tests' oracle.
 //! See: context/lib/boot_sequence.md §9 · context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
-
-// The load state machine consumes this stage; until then only tests drive it.
-#![cfg_attr(not(test), allow(dead_code))]
 
 mod commit;
 mod coordinator;
@@ -47,27 +44,22 @@ use postretro_level_loader::{LevelLoadProgress, LoadCancel, LoadPhase};
 
 use crate::load_pool::{CancelToken, GroupRetirement, TaskGroup};
 
-// The load state machine (task 11b) commits bundles; until then only tests do.
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use commit::{LevelCommitReport, add_creation_counts};
 pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
-// The commit (task 11) consumes the fallback and the key's parameters; until
-// then only tests do.
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use model_cache::{ModelCacheUse, ModelMissFallback};
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use model_key::{MODEL_CONTENT_KEY_VERSION, ModelInstallParams};
+#[cfg(test)]
+pub(crate) use model_cache::ModelCacheUse;
+pub(crate) use model_cache::ModelMissFallback;
+#[cfg(test)]
+pub(crate) use model_key::MODEL_CONTENT_KEY_VERSION;
+pub(crate) use model_key::ModelInstallParams;
 pub(crate) use products::{
     PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedModel, PreparedModels,
     PreparedPresentation,
 };
-// The load state machine (task 11) consumes the handle; until then only
-// tests do.
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use stages::{
-    BundleSet, LevelBundle, LevelLoadStages, LoadRetirement, start_level_load_stages,
-};
+#[cfg(test)]
+pub(crate) use stages::start_level_load_stages;
+pub(crate) use stages::{BundleSet, LevelBundle, LevelLoadStages, LoadRetirement};
 pub(crate) use tasks::level_texture_materials;
 
 use coordinator::PrepShared;

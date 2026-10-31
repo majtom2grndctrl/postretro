@@ -170,6 +170,7 @@ pub(crate) struct WindowedModelSweep<'a> {
 pub(crate) enum LevelModels<'a> {
     /// The main-thread oracle: parse each model here, upload it into the
     /// renderer and build its clip-table entry from the same parse.
+    #[cfg_attr(not(test), allow(dead_code))]
     Parse,
     /// A level load's commit: the bundle's prepared models, whose set
     /// already holds their renderer entries.

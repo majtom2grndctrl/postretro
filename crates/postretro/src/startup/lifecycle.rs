@@ -23,6 +23,11 @@ mod lifecycle_install_presentation;
 mod lifecycle_install_tests;
 #[path = "lifecycle_install_world.rs"]
 mod lifecycle_install_world;
+#[path = "lifecycle_load.rs"]
+mod lifecycle_load;
+#[cfg(test)]
+#[path = "lifecycle_load_tests.rs"]
+mod lifecycle_load_tests;
 #[path = "lifecycle_model_sweep.rs"]
 mod lifecycle_model_sweep;
 #[path = "lifecycle_net.rs"]
@@ -77,7 +82,6 @@ pub(crate) use lifecycle_world_handles::{
 };
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc;
 
 use glam::Vec3;
 use winit::event_loop::ActiveEventLoop;
@@ -85,10 +89,8 @@ use winit::event_loop::ActiveEventLoop;
 use crate::App;
 use crate::render;
 use crate::scripting::builtins::descriptor_materializes_ai_enemy;
-use crate::startup::loading_screen::LoadingStep;
 use crate::startup::{
-    BootState, InFlightLevelLoad, LevelLoadEntry, LevelSource, LoadOutcome, StartupTimings,
-    spawn_level_worker,
+    BootState, InFlightLevelLoad, LevelLoadEntry, LevelSource, LoopExit, StartupTimings,
 };
 use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_pools::{
@@ -153,12 +155,6 @@ fn lexical_normalize(path: PathBuf) -> PathBuf {
     normalized
 }
 
-enum LoadingPoll {
-    Pending,
-    Disconnected,
-    Ready(Box<LoadOutcome>),
-}
-
 impl App {
     pub(crate) fn has_installed_level(&self) -> bool {
         self.level_is_installed_state() && self.level.is_some()
@@ -218,116 +214,13 @@ impl App {
         }
     }
 
-    pub(super) fn begin_level_load(&mut self, load: InFlightLevelLoad) {
-        self.level_timings = StartupTimings::new();
-        let progress = self.begin_loading_screen(&load.entry);
-        let (tx, rx) = mpsc::channel();
-        let handle = spawn_level_worker(
-            load.map_path.clone(),
-            load.content_root.clone(),
-            self.baked_root.clone(),
-            progress,
-            tx,
-        );
-        self.level_load = Some(load);
-        self.level_rx = Some(rx);
-        self.level_worker = Some(handle);
-        // Recorded after the spawn call so the delta covers channel creation
-        // and thread spawn overhead.
-        self.level_timings.record("worker_dispatch");
-        self.boot_state = BootState::Loading;
-    }
-
-    pub(super) fn run_loading_frame(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        frame_dt: f32,
-    ) -> bool {
-        // A worker may take longer than the netcode timeout. Poll the live
-        // endpoint before checking its channel, without touching level state.
-        let _ = self.poll_world_less_transport(frame_dt);
-        match self.next_loading_step() {
-            LoadingStep::Install(payload) => {
-                self.finish_level_payload(*payload, event_loop);
-                false
-            }
-            LoadingStep::Fail(reason) => {
-                self.finish_level_failure(reason, event_loop);
-                false
-            }
-            LoadingStep::Paint => {
-                // Loading redraws unconditionally; painting never advances state.
-                self.paint_loading_frame(event_loop, frame_dt);
-                self.request_redraw();
-                false
-            }
-        }
-    }
-
-    /// Decide one Loading frame. A delivered payload is held for one painted
-    /// frame (the bar at its parse share), then installs on the next. A
-    /// payload without a level has nothing to install, so it goes straight to
-    /// the failure path without a held frame.
-    pub(super) fn next_loading_step(&mut self) -> LoadingStep {
-        if let Some(payload) = self.take_deferred_level_payload() {
-            // The held frame is its own stage, neither worker nor install time.
-            self.level_timings.record("install_deferral");
-            return LoadingStep::Install(Box::new(payload));
-        }
-        match self.poll_loading_level_worker() {
-            LoadingPoll::Ready(outcome) => match *outcome {
-                Ok(mut payload) => {
-                    self.record_worker_delivery(&mut payload);
-                    if payload.level.is_none() {
-                        return LoadingStep::Install(Box::new(payload));
-                    }
-                    match self.defer_level_payload(payload) {
-                        Some(payload) => LoadingStep::Install(Box::new(payload)),
-                        None => LoadingStep::Paint,
-                    }
-                }
-                Err(err) => LoadingStep::Fail(format!("worker failed: {err:#}")),
-            },
-            LoadingPoll::Disconnected => {
-                LoadingStep::Fail("worker channel disconnected before delivery".to_string())
-            }
-            LoadingPoll::Pending => LoadingStep::Paint,
-        }
-    }
-
-    fn poll_loading_level_worker(&mut self) -> LoadingPoll {
-        use std::sync::mpsc::TryRecvError;
-
-        let Some(rx) = self.level_rx.as_ref() else {
-            return LoadingPoll::Pending;
-        };
-
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.level_rx = None;
-                self.level_worker = None;
-                LoadingPoll::Ready(Box::new(outcome))
-            }
-            Err(TryRecvError::Empty) => LoadingPoll::Pending,
-            Err(TryRecvError::Disconnected) => {
-                self.level_rx = None;
-                self.level_worker = None;
-                LoadingPoll::Disconnected
-            }
-        }
-    }
-
-    /// Mark the worker's delivery in the level timings, on the frame it lands.
-    fn record_worker_delivery(&mut self, payload: &mut crate::startup::worker::LevelPayload) {
-        // The worker's own stages (`prl_parse`) ran inside the interval
-        // `worker_delivered` measures, so they attach to it rather than join the
-        // entries: summing the line's stages must not count the parse twice.
-        let inside = std::mem::take(&mut payload.timings);
-        self.level_timings
-            .record_containing("worker_delivered", inside);
-    }
-
-    fn finish_level_failure(&mut self, reason: String, event_loop: &ActiveEventLoop) {
+    /// The one failure route every level load ends through, whatever failed
+    /// (a stage, the upload, an uncaptured wgpu error, the commit's checks,
+    /// or the main-thread oracle's install): the load's stages stop and
+    /// retire, so nothing reports twice, then a CLI boot load exits non-zero
+    /// and a runtime load enters Frontend.
+    fn finish_level_failure(&mut self, reason: String, event_loop: &impl LoopExit) {
+        self.retire_active_level_load();
         self.level_load = None;
         self.end_loading_screen();
         let was_boot_load = std::mem::take(&mut self.boot_load);
@@ -352,7 +245,7 @@ impl App {
 pub(crate) mod tests {
     pub(super) use super::lifecycle_test_fixtures::descriptor;
     pub(crate) use super::lifecycle_test_fixtures::{
-        install_capture_world, install_descriptor_world, level_world, runtime_audience_manifest,
-        script_ctx, test_app,
+        drop_in_flight_load, install_capture_world, install_descriptor_world, level_world,
+        runtime_audience_manifest, script_ctx, test_app,
     };
 }

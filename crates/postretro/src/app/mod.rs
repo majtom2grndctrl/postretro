@@ -15,6 +15,7 @@ mod input_surface_fixture_tests;
 pub(crate) mod keyboard_input;
 pub(crate) mod options_menu;
 pub(crate) mod render_extents;
+pub(crate) mod stage_retirements;
 pub(crate) mod text_shortcuts;
 #[cfg(test)]
 mod timed_slot_ui_tests;
@@ -23,7 +24,6 @@ pub(crate) mod ui_images;
 pub(crate) mod ui_input_frames;
 #[cfg(test)]
 mod ui_input_frames_tests;
-pub(crate) mod upload_retirement;
 pub(crate) mod world_less_frame;
 
 pub(crate) mod window_modes;

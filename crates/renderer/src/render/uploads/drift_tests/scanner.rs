@@ -720,6 +720,15 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("install write routing (direct)")
         }
+        // A `test-seams` fault for the app's failure tests: one deliberately
+        // invalid build write (past a buffer's end) through the upload
+        // thread's metered writer, compiled only with that feature.
+        ("render/level_build.rs", "", "write_past_buffer_end")
+            if site.receiver == Receiver::Named(QUEUE_WRITES.into())
+                && site.method == "write_buffer" =>
+        {
+            Some("test-seams fault (off-main build write)")
+        }
         (
             "render/loaded_texture/upload.rs",
             "",

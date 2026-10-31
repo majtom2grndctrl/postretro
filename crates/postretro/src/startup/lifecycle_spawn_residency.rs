@@ -27,6 +27,9 @@ impl App {
     /// The level-data checks run first, through the same
     /// `decode_streaming_level_data` load prep runs off the main thread; the
     /// sessions are then built from what it decoded.
+    // The main-thread oracle's; a load's commit installs the sessions it
+    // prepared at its checks instead.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn install_level_streaming_sessions(&mut self) -> Result<()> {
         let (Some(world), Some(renderer), Some(session)) = (
             self.level.as_ref(),

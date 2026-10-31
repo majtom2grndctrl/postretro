@@ -19,6 +19,7 @@ pub(super) enum LevelFogMasks {
 #[derive(Debug)]
 pub(super) enum LevelSounds {
     /// The main-thread install decodes the mod's `sounds/` here.
+    #[cfg_attr(not(test), allow(dead_code))]
     Load,
     /// A load decoded them on its pool: `None` when its dispatch had no
     /// audio, which decodes none.

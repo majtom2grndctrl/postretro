@@ -833,7 +833,7 @@ fn catalog_level_install_retains_active_tags_from_in_flight_load() {
         Some(LevelSource::Catalog("e1m1".to_string()))
     );
 
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -856,7 +856,7 @@ fn raw_path_level_install_retains_empty_active_tags() {
         )))
     );
 
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }
 
 // The install path keys host-authoritative placement suppression off

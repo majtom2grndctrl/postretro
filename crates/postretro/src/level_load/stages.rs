@@ -54,8 +54,9 @@ pub(crate) enum BundleSet {
     /// never commits releases it (`Renderer::release_level_set`).
     Resident(LevelSetId),
     /// No renderer at dispatch: prep ran alone and kept its GPU-bound
-    /// products, which nothing uploaded.
-    PrepOnly(Box<PreparedGpuLevel>),
+    /// products, which nothing uploaded. Tests only: the load state machine
+    /// never dispatches without a full-ready renderer.
+    PrepOnly(#[cfg_attr(not(test), allow(dead_code))] Box<PreparedGpuLevel>),
 }
 
 /// Start one load's stages: prep in `group` on the pool, and, with
@@ -82,6 +83,7 @@ pub(crate) fn start_level_load_stages(
             pending: Some(pending),
             received: None,
             model_creations: None,
+            creations: None,
         }
     });
     if upload.is_none() {
@@ -106,11 +108,12 @@ pub(crate) fn start_level_load_stages(
 }
 
 impl App {
-    /// Dispatch one load's stages: capture the prep inputs and, with a
-    /// fully initialized renderer, begin its set build at the dispatch tiers
-    /// (creating nothing on this thread). `None` before the renderer or the
-    /// session exists, as the capture is. A renderer still booting builds no
-    /// set: the load runs prep only.
+    /// Dispatch one load's stages: capture the prep inputs (the tiers among
+    /// them, pin P21) and begin its set build at the dispatch tiers on the
+    /// full-ready renderer, creating nothing on this thread. `None`, having
+    /// started nothing, before the session exists or while the renderer is
+    /// missing or not yet full-ready: the load state machine holds such a
+    /// load queued, so no production bundle is prep-only.
     pub(crate) fn begin_level_load_stages(
         &mut self,
         group: TaskGroup,
@@ -118,13 +121,33 @@ impl App {
         content_root: PathBuf,
         progress: Arc<LevelLoadProgress>,
     ) -> Option<LevelLoadStages> {
-        let inputs = self.capture_level_prep_inputs(map_path, content_root)?;
+        if !self
+            .renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.is_full_ready())
+        {
+            return None;
+        }
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut inputs = self.capture_level_prep_inputs(map_path, content_root)?;
+        #[cfg(test)]
+        if let Some(edit) = self.level_loads.test.edit_inputs.as_ref() {
+            edit(&mut inputs);
+        }
         let upload = self
             .renderer
             .as_mut()
-            .filter(|renderer| renderer.is_full_ready())
             .map(|renderer| renderer.begin_level_set_build(level_build_snapshot(inputs.tiers)));
         Some(start_level_load_stages(group, inputs, upload, progress))
+    }
+
+    /// The tiers the active load was dispatched at, once dispatched.
+    #[cfg(test)]
+    pub(crate) fn dispatched_level_tiers(&self) -> Option<LevelTiers> {
+        match &self.level_loads.active()?.phase {
+            crate::startup::level_loads::ActivePhase::Staged(stages) => Some(stages.tiers),
+            crate::startup::level_loads::ActivePhase::Queued => None,
+        }
     }
 }
 
@@ -139,6 +162,9 @@ struct UploadHandle {
     /// What the build's model parts created on the upload thread, once the
     /// set arrived: zero when every model was a cache hit.
     model_creations: Option<GpuCreationCounts>,
+    /// What every part of the build created on the upload thread, once the
+    /// set arrived.
+    creations: Option<GpuCreationCounts>,
 }
 
 /// One load's prep and set build, polled as one.
@@ -258,6 +284,7 @@ impl LevelLoadStages {
             None => {}
             Some(Ok(id)) => {
                 upload.model_creations = pending.model_upload_creations();
+                upload.creations = pending.upload_creations();
                 upload.pending = None;
                 upload.received = Some(id);
                 // The build is done: the last write was submitted before it
@@ -393,6 +420,13 @@ impl LevelLoadStages {
         self.upload
             .as_ref()
             .and_then(|upload| upload.model_creations)
+    }
+
+    /// What the whole set build created on the upload thread, once the set
+    /// arrived.
+    #[cfg(test)]
+    pub(crate) fn upload_creations(&self) -> Option<GpuCreationCounts> {
+        self.upload.as_ref().and_then(|upload| upload.creations)
     }
 
     /// The build's probe, for tests that check every builder dropped.

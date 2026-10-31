@@ -17,12 +17,31 @@ use postretro_scripting_core::staged_manifest::{
     StagedManifest, StagedManifestBuildResult, StagedManifestBuildStatus,
 };
 
+/// Start a runtime load of `path` from Frontend. With no renderer it stays
+/// queued: in flight, no stage work.
+fn start_queued_load(app: &mut App, path: &str) {
+    app.boot_state = BootState::Frontend;
+    app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(path))));
+    app.drain_level_requests();
+    assert!(app.level_load_in_flight());
+    assert_eq!(app.boot_state, BootState::Loading);
+}
+
+fn active_generation(app: &App) -> u64 {
+    app.level_loads
+        .active()
+        .expect("a load is in flight")
+        .generation
+}
+
+// Requests queued while a runtime load is in flight still coalesce, and the
+// drain no longer waits for the load to install: the last load request
+// supersedes it (pin P8), cancelling the in-flight load.
 #[test]
-fn loading_state_defers_and_coalesces_runtime_load_requests() {
+fn loading_state_coalesces_runtime_load_requests_and_supersedes_the_load() {
     let mut app = test_app();
-    let (_tx, rx) = std::sync::mpsc::channel();
-    app.boot_state = BootState::Loading;
-    app.level_rx = Some(rx);
+    start_queued_load(&mut app, "content/dev/maps/in-flight.prl");
+    let in_flight = active_generation(&app);
 
     app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
         "content/dev/maps/first.prl",
@@ -30,30 +49,38 @@ fn loading_state_defers_and_coalesces_runtime_load_requests() {
     app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
         "content/dev/maps/second.prl",
     ))));
-    app.drain_level_requests();
-
-    assert!(
-        app.level_rx.is_some(),
-        "the active worker receiver remains owned while Loading",
-    );
     assert_eq!(
         app.level_requests.len(),
         1,
-        "repeated load requests coalesce while a worker is in flight",
+        "repeated load requests coalesce while a load is in flight",
     );
-    let Some(LevelRequest::Load(LevelSource::Path(path))) = app.level_requests.front() else {
-        panic!("queued request should be the coalesced load");
-    };
-    assert_eq!(path, &PathBuf::from("content/dev/maps/second.prl"));
+    app.drain_level_requests();
+
+    assert!(app.level_requests.is_empty());
+    assert_eq!(app.boot_state, BootState::Loading);
+    assert!(
+        active_generation(&app) > in_flight,
+        "the in-flight load was superseded"
+    );
+    assert_eq!(
+        app.level_load.as_ref().unwrap().map_path,
+        PathBuf::from("content/dev/maps/second.prl"),
+        "only the last request loads"
+    );
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
 fn boot_load_rejects_runtime_requests_while_loading() {
     let mut app = test_app();
-    let (_tx, rx) = std::sync::mpsc::channel();
-    app.boot_state = BootState::Loading;
+    app.boot_state = BootState::Frontend;
     app.boot_load = true;
-    app.level_rx = Some(rx);
+    app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
+        "content/dev/maps/boot.prl",
+    ))));
+    app.drain_level_requests();
+    assert_eq!(app.boot_state, BootState::Loading);
+    let boot = active_generation(&app);
 
     app.enqueue_level_request(LevelRequest::Unload);
     app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
@@ -61,7 +88,12 @@ fn boot_load_rejects_runtime_requests_while_loading() {
     ))));
     app.drain_level_requests();
 
-    assert!(app.level_rx.is_some());
+    assert_eq!(
+        active_generation(&app),
+        boot,
+        "the boot load is neither cancelled nor replaced"
+    );
+    assert_eq!(app.boot_state, BootState::Loading);
     assert!(
         app.level_requests.is_empty(),
         "runtime requests cannot cancel or replace the active boot load",
@@ -70,6 +102,7 @@ fn boot_load_rejects_runtime_requests_while_loading() {
         app.boot_load,
         "boot fatality marker stays with the active load"
     );
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -103,7 +136,7 @@ fn catalog_level_load_resolves_path_and_stores_in_flight_entry() {
     assert!(matches!(app.boot_state, BootState::Loading));
     assert!(app.level_load_in_flight());
 
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -131,8 +164,7 @@ fn missing_catalog_level_load_is_rejected_without_unloading_running_level() {
         "missing id must not unload active level"
     );
     assert!(app.level_load.is_none());
-    assert!(app.level_rx.is_none());
-    assert!(app.level_worker.is_none());
+    assert!(!app.level_load_in_flight());
     assert!(app.level_requests.is_empty());
     assert!(matches!(app.boot_state, BootState::Running));
 }
@@ -159,7 +191,7 @@ fn raw_path_level_load_synthesizes_non_catalog_metadata() {
     assert!(load.entry.tags.is_empty());
     assert!(matches!(app.boot_state, BootState::Loading));
 
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -495,7 +527,7 @@ fn catalog_tags_are_available_on_in_flight_load_before_data_script_runs() {
         "data script has not run while load metadata is already available",
     );
 
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -949,10 +981,8 @@ fn dev_level_cycle_ignores_missing_target_without_unloading() {
 #[test]
 fn dev_level_cycle_ignores_runtime_load_in_flight_without_queueing_duplicate() {
     let mut app = test_app();
-    let (_tx, rx) = std::sync::mpsc::channel();
-    app.boot_state = BootState::Loading;
+    start_queued_load(&mut app, "content/dev/maps/runtime-in-flight.prl");
     app.boot_load = false;
-    app.level_rx = Some(rx);
 
     let target = std::env::temp_dir().join(format!(
         "postretro-existing-dev-level-cycle-target-{}.prl",
@@ -968,5 +998,6 @@ fn dev_level_cycle_ignores_runtime_load_in_flight_without_queueing_duplicate() {
         "duplicate dev lifecycle cycle must not queue behind an active runtime load",
     );
     assert!(matches!(app.boot_state, BootState::Loading));
-    assert!(app.level_rx.is_some());
+    assert!(app.level_load_in_flight());
+    drop_in_flight_load(&mut app);
 }

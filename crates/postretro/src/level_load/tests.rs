@@ -159,7 +159,10 @@ fn cancelled_prep_reports_nothing_and_spawns_no_more_tasks() {
     held_rx
         .recv_timeout(HOLD_TIMEOUT)
         .expect("the parse reached hand-out 2");
-    let started_at_cancel = pool.tasks_started();
+    // Queued, not started: a task the held hand-out already queued may
+    // still be taken off the queue after the cancel (the pool counts that
+    // as started), but nothing new is queued.
+    let queued_at_cancel = pool.tasks_queued();
     let mut retirement = prep.cancel();
     release_tx.send(()).unwrap();
 
@@ -173,9 +176,13 @@ fn cancelled_prep_reports_nothing_and_spawns_no_more_tasks() {
     }
     assert!(!release_timed_out.load(Ordering::Acquire));
     assert_eq!(
-        pool.tasks_started(),
-        started_at_cancel,
-        "no task started after the cancel"
+        pool.tasks_queued(),
+        queued_at_cancel,
+        "no task queued after the cancel"
+    );
+    assert!(
+        pool.tasks_started() <= queued_at_cancel,
+        "every started task was queued before the cancel"
     );
     let state = probe.state();
     assert_eq!(

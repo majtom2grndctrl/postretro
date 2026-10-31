@@ -19,6 +19,7 @@ use postretro_render_cpu::sh_residency::ShResidencyPlan;
 use postretro_render_cpu::texture_prep::PreparedWorldTextures;
 use postretro_render_data::material::Material;
 
+use super::model_cache::ModelCacheUse;
 use super::{LevelTiers, PrepKind};
 use crate::collision::CollisionWorld;
 use crate::scripting_systems::hit_zones::ModelHitZones;
@@ -153,9 +154,10 @@ impl PreparedModels {
 }
 
 /// One predicted model, prepared on the pool by the oracle sweep's own
-/// builders: the parse (`parse_sweep_model`), the clip-table entry
+/// builders: the parse (`load_model`'s two halves), the clip-table entry
 /// (`model_clip_entry`), the hit zones (`ModelHitZones::build`) and the CPU
-/// half of the upload (`prepare_model_materials`).
+/// half of the upload (`prepare_model_materials`), or taken from the shared
+/// model cache when its content key hits.
 pub(crate) struct PreparedModel {
     /// The verbatim handle: the renderer's cache key and `MeshComponent.model`.
     pub(crate) handle: String,
@@ -167,8 +169,12 @@ pub(crate) struct PreparedModel {
     pub(crate) clip_entry: ModelClipEntry,
     /// The parse and what it feeds, or the parse's error, which degrades
     /// exactly as the oracle sweep's: warned, nothing cached, never a load
-    /// failure.
+    /// failure. A cache hit carries the products of the parse that made the
+    /// cached entry, so the commit reads a hit as it reads a parse.
     pub(crate) parsed: Result<ParsedModelProducts, ModelLoadError>,
+    /// How the model met the shared cache (log line C and tests; the commit
+    /// never branches on it).
+    pub(crate) cache: ModelCacheUse,
 }
 
 /// A parsed model and the CPU products built from it.
@@ -195,6 +201,7 @@ impl std::fmt::Debug for PreparedModel {
         f.debug_struct("PreparedModel")
             .field("handle", &self.handle)
             .field("clips", &self.clip_entry.clips.len())
+            .field("cache", &self.cache)
             .field(
                 "parsed",
                 &self

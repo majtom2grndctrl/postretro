@@ -26,12 +26,12 @@ use crate::startup::lifecycle::tests::{
     install_descriptor_world, level_world, script_ctx, test_app,
 };
 
-fn dev_content_root() -> PathBuf {
+pub(super) fn dev_content_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev")
 }
 
 /// The dev mod's registered entity descriptors, from its real mod init.
-fn dev_descriptors() -> Vec<EntityTypeDescriptor> {
+pub(super) fn dev_descriptors() -> Vec<EntityTypeDescriptor> {
     let mut app = test_app();
     let ctx = script_ctx(&app);
     let mut primitives = postretro_scripting_core::primitives_registry::PrimitiveRegistry::new();
@@ -39,7 +39,11 @@ fn dev_descriptors() -> Vec<EntityTypeDescriptor> {
     crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives).entities
 }
 
-fn record(classname: &str, key_values: &[(&str, &str)], index: usize) -> MapEntityRecord {
+pub(super) fn record(
+    classname: &str,
+    key_values: &[(&str, &str)],
+    index: usize,
+) -> MapEntityRecord {
     MapEntityRecord {
         classname: classname.to_string(),
         origin: [index as f32 * 4.0, 0.0, 0.0],
@@ -92,7 +96,7 @@ fn rule_coverage_placements(descriptors: &[EntityTypeDescriptor]) -> Vec<MapEnti
 /// The real sweep's model list for `map_entities`: the production
 /// renderer-free install with `descriptors`, reading the list the upload
 /// hook receives.
-fn real_sweep(
+pub(super) fn real_sweep(
     map_entities: Vec<MapEntityRecord>,
     descriptors: &[EntityTypeDescriptor],
     connected_client: bool,
@@ -203,7 +207,7 @@ fn connected_client_prediction_covers_replicated_placements() {
 }
 
 /// A streamed-lightmap fixture whose map-entity section places `records`.
-fn write_level_with_entities(
+pub(super) fn write_level_with_entities(
     records: Vec<MapEntityRecord>,
 ) -> crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl {
     use postretro_level_format::{SectionBlob, SectionId};

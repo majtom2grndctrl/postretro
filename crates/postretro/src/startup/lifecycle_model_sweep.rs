@@ -31,8 +31,10 @@ pub(crate) fn parse_sweep_models(models: &[String], content_root: &Path) -> Vec<
         .collect()
 }
 
-/// Parse one sweep model: the oracle sweep's per-model step, and what a level
-/// load's prep runs on its pool for each predicted model. Pure.
+/// Parse one sweep model: the oracle sweep's per-model step. A level load's
+/// prep runs the same parse in two halves (`read_model_sources`, then
+/// `load_model_from_sources`), so it can key the bytes it read before
+/// parsing them. Pure.
 pub(crate) fn parse_sweep_model(handle: &str, content_root: &Path) -> ParsedSweepModel {
     let open_path = content_root.join(handle);
     let result = gltf_loader::load_model(&open_path);

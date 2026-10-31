@@ -1,7 +1,7 @@
 // CPU half of baked `.prm` texture loading: sidecar read, parse, slot plan.
 // See: context/lib/boot_sequence.md §2 · context/lib/rendering_pipeline.md §3
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use postretro_level_format::prm::{
@@ -174,12 +174,118 @@ pub fn prepare_model_diffuse_texture(
     key: [u8; 32],
     prm_cache_root: &Path,
 ) -> PreparedTexture {
-    if key == [0u8; 32] {
-        return PreparedTexture::Placeholder;
+    prepare_model_diffuse_texture_with(name, key, prm_cache_root, &mut |path| std::fs::read(path))
+}
+
+/// The sidecar a model material's diffuse reads: `<root>/<key>.prm`, or
+/// `None` for the zero key, whose texture is the placeholder and reads no
+/// file.
+pub fn model_diffuse_sidecar_path(key: [u8; 32], prm_cache_root: &Path) -> Option<PathBuf> {
+    (key != [0u8; 32]).then(|| prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key))))
+}
+
+/// Every sidecar a skinned model's materials read, given its submeshes'
+/// material keys in submesh order: one per distinct key that reads a file,
+/// in the order [`prepare_model_materials`] reads them, paired with its key.
+pub fn model_material_sidecar_paths(
+    material_keys: &[String],
+    prm_cache_root: &Path,
+) -> Vec<([u8; 32], PathBuf)> {
+    let mut distinct: Vec<&str> = Vec::new();
+    for key in material_keys {
+        if !distinct.contains(&key.as_str()) {
+            distinct.push(key);
+        }
+    }
+    distinct
+        .into_iter()
+        .filter_map(|key_hex| {
+            let key = parse_blake3_key(key_hex);
+            model_diffuse_sidecar_path(key, prm_cache_root).map(|path| (key, path))
+        })
+        .collect()
+}
+
+/// Every sidecar one skinned model's materials read, read once: what a
+/// content-keyed model cache hashes, and what a cache miss then prepares the
+/// materials from without reading a file again. An unreadable sidecar keeps
+/// its error, which degrades exactly as a direct read's would.
+#[derive(Debug)]
+pub struct ModelSidecars {
+    entries: Vec<ModelSidecar>,
+}
+
+#[derive(Debug)]
+struct ModelSidecar {
+    key: [u8; 32],
+    path: PathBuf,
+    bytes: Option<std::io::Result<Vec<u8>>>,
+}
+
+impl ModelSidecars {
+    /// Read the sidecars a model whose submeshes carry `material_keys` (in
+    /// submesh order) reads, in the order its preparation reads them.
+    pub fn read(material_keys: &[String], prm_cache_root: &Path) -> Self {
+        Self {
+            entries: model_material_sidecar_paths(material_keys, prm_cache_root)
+                .into_iter()
+                .map(|(key, path)| ModelSidecar {
+                    bytes: Some(std::fs::read(&path)),
+                    key,
+                    path,
+                })
+                .collect(),
+        }
     }
 
-    let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-    let bytes = match std::fs::read(&prm_path) {
+    /// Each sidecar's key and bytes, in read order; `None` bytes for one
+    /// that could not be read.
+    pub fn contents(&self) -> impl Iterator<Item = ([u8; 32], Option<&[u8]>)> {
+        self.entries.iter().map(|entry| {
+            let bytes = match &entry.bytes {
+                Some(Ok(bytes)) => Some(bytes.as_slice()),
+                _ => None,
+            };
+            (entry.key, bytes)
+        })
+    }
+
+    /// The model's materials, prepared from these bytes: what
+    /// [`prepare_model_materials`] builds from the file system.
+    pub fn prepare(
+        mut self,
+        submeshes: &[postretro_model::gltf_loader::Submesh],
+        prm_cache_root: &Path,
+    ) -> PreparedModelMaterials {
+        prepare_model_materials_with(submeshes, prm_cache_root, &mut |path| {
+            match self
+                .entries
+                .iter_mut()
+                .find(|entry| entry.path == path)
+                .and_then(|entry| entry.bytes.take())
+            {
+                Some(bytes) => bytes,
+                // Not read up front (submeshes from another source): read now.
+                None => std::fs::read(path),
+            }
+        })
+    }
+}
+
+/// [`prepare_model_diffuse_texture`] with the sidecar's bytes from
+/// `read_sidecar` instead of the file system: a caller that already read
+/// them (to hash them) hands them over, and the same failures degrade the
+/// same way.
+pub fn prepare_model_diffuse_texture_with(
+    name: &str,
+    key: [u8; 32],
+    prm_cache_root: &Path,
+    read_sidecar: &mut dyn FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> PreparedTexture {
+    let Some(prm_path) = model_diffuse_sidecar_path(key, prm_cache_root) else {
+        return PreparedTexture::Placeholder;
+    };
+    let bytes = match read_sidecar(&prm_path) {
         Ok(bytes) => bytes,
         Err(err) => {
             log::warn!(
@@ -224,12 +330,28 @@ pub fn prepare_model_materials(
     submeshes: &[postretro_model::gltf_loader::Submesh],
     prm_cache_root: &Path,
 ) -> PreparedModelMaterials {
+    prepare_model_materials_with(submeshes, prm_cache_root, &mut |path| std::fs::read(path))
+}
+
+/// [`prepare_model_materials`] with each sidecar's bytes from
+/// `read_sidecar`, called once per distinct key that reads a file, at the
+/// path [`model_material_sidecar_paths`] names.
+pub fn prepare_model_materials_with(
+    submeshes: &[postretro_model::gltf_loader::Submesh],
+    prm_cache_root: &Path,
+    read_sidecar: &mut dyn FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> PreparedModelMaterials {
     let plan = plan_submesh_materials(submeshes);
     let diffuse = plan
         .distinct_keys
         .iter()
         .map(|key_hex| {
-            prepare_model_diffuse_texture(key_hex, parse_blake3_key(key_hex), prm_cache_root)
+            prepare_model_diffuse_texture_with(
+                key_hex,
+                parse_blake3_key(key_hex),
+                prm_cache_root,
+                read_sidecar,
+            )
         })
         .collect();
     PreparedModelMaterials { plan, diffuse }
@@ -268,6 +390,55 @@ mod tests {
             bytes,
         )
         .unwrap();
+    }
+
+    fn hex(key: [u8; 32]) -> String {
+        key.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    // The sidecars a model cache reads up front are exactly the ones model
+    // prep reads (distinct, non-zero keys, in first-use order), and preparing
+    // from those bytes equals preparing from the file system, an unreadable
+    // and a garbled sidecar included.
+    #[test]
+    fn model_sidecars_read_once_prepare_what_the_file_system_prepares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (good, garbled, missing) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        write_prm(dir.path(), good, &diffuse_prm(1));
+        write_prm(dir.path(), garbled, b"not a prm file at all");
+        let keys = [
+            hex(good),
+            "0".repeat(64),
+            hex(garbled),
+            hex(good),
+            hex(missing),
+        ];
+        let submeshes: Vec<postretro_model::gltf_loader::Submesh> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| postretro_model::gltf_loader::Submesh {
+                material_key: key.clone(),
+                indices: (index as u32 * 3)..(index as u32 * 3 + 3),
+            })
+            .collect();
+        let paths = model_material_sidecar_paths(&keys, dir.path());
+        assert_eq!(
+            paths.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            [good, garbled, missing]
+        );
+        let sidecars = ModelSidecars::read(&keys, dir.path());
+        let present: Vec<bool> = sidecars
+            .contents()
+            .map(|(_, bytes)| bytes.is_some())
+            .collect();
+        assert_eq!(present, [true, true, false]);
+        let from_bytes = sidecars.prepare(&submeshes, dir.path());
+        let from_disk = prepare_model_materials(&submeshes, dir.path());
+        assert_eq!(from_bytes.plan, from_disk.plan);
+        assert_eq!(
+            format!("{:?}", from_bytes.diffuse),
+            format!("{:?}", from_disk.diffuse)
+        );
     }
 
     #[test]

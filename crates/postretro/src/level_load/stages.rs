@@ -20,6 +20,7 @@ use crate::render::{
     LevelBuildError, LevelSetBuilder, LevelSetBuilderProbe, LevelSetId, PendingLevelSet, Renderer,
 };
 use crate::session::level_streaming::StreamingLevelData;
+use postretro_renderer::GpuCreationCounts;
 
 /// Everything one load made, ready for the commit: prep's main-pinned
 /// products and the load's renderer set, resident and unpublished.
@@ -76,6 +77,7 @@ pub(crate) fn start_level_load_stages(
             builder: Some(builder),
             pending: Some(pending),
             received: None,
+            model_creations: None,
         }
     });
     if upload.is_none() {
@@ -129,6 +131,9 @@ struct UploadHandle {
     pending: Option<PendingLevelSet>,
     /// The set, received and resident, until the bundle takes it.
     received: Option<LevelSetId>,
+    /// What the build's model parts created on the upload thread, once the
+    /// set arrived: zero when every model was a cache hit.
+    model_creations: Option<GpuCreationCounts>,
 }
 
 /// One load's prep and set build, polled as one.
@@ -246,6 +251,7 @@ impl LevelLoadStages {
         match pending.try_take(renderer) {
             None => {}
             Some(Ok(id)) => {
+                upload.model_creations = pending.model_upload_creations();
                 upload.pending = None;
                 upload.received = Some(id);
                 // The build is done: the last write was submitted before it
@@ -372,6 +378,14 @@ impl LevelLoadStages {
     #[cfg(test)]
     pub(crate) fn received_set(&self) -> Option<LevelSetId> {
         self.upload.as_ref().and_then(|upload| upload.received)
+    }
+
+    /// What the set build's model parts created, once the set arrived.
+    #[cfg(test)]
+    pub(crate) fn model_upload_creations(&self) -> Option<GpuCreationCounts> {
+        self.upload
+            .as_ref()
+            .and_then(|upload| upload.model_creations)
     }
 
     /// The build's probe, for tests that check every builder dropped.

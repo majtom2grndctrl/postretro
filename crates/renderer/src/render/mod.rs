@@ -121,6 +121,7 @@ mod level_resource_set;
 #[cfg(test)]
 mod level_resource_set_tests;
 mod material_plan;
+mod model_cache;
 mod pipeline_layout;
 mod renderer_capture;
 mod renderer_debug_ui;
@@ -227,6 +228,10 @@ pub use lightmap_residency::{
 pub use lightmap_streaming::{
     DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
     MAX_LIGHTMAP_POOL_CAP_LAYERS, StreamingReachLever,
+};
+pub use model_cache::{
+    CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
+    ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};

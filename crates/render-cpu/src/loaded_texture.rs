@@ -114,6 +114,23 @@ pub enum TextureSlotPolicy {
     ModelDiffuseOnly,
 }
 
+/// Whether a skinned model's materials consume the specular slot, the slot
+/// Surface Depth's two-channel surface map rides. While they don't, a model
+/// material binds the single-channel specular placeholder and its uniform
+/// packs flat at every Surface Depth tier, so the tier shapes nothing a model
+/// upload builds. Read from the model slot policy itself, so a policy that
+/// starts consuming specular flips it.
+pub fn model_materials_consume_specular() -> bool {
+    let absent: [Result<PrmSlot, PrmReadError>; 4] =
+        std::array::from_fn(|_| Err(PrmReadError::NotPresent));
+    texture_slot_plan(
+        PrmSlots::all(),
+        &absent,
+        TextureSlotPolicy::ModelDiffuseOnly,
+    )
+    .consume[1]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureSlotPlan {
     pub consume: [bool; 4],
@@ -148,6 +165,13 @@ pub fn texture_slot_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Model materials never consume the specular slot Surface Depth's
+    // surface map rides, so the tier shapes no model upload.
+    #[test]
+    fn model_materials_never_consume_the_surface_map_slot() {
+        assert!(!model_materials_consume_specular());
+    }
     use postretro_level_format::prm::{PrmFile, PrmHeader, STAGE_VERSION};
 
     fn make_diffuse_only_prm(width: u16, height: u16) -> Vec<u8> {

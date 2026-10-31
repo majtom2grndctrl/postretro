@@ -15,6 +15,8 @@
 mod coordinator;
 mod failure;
 mod inputs;
+mod model_cache;
+mod model_key;
 mod model_prediction;
 mod products;
 mod stages;
@@ -23,6 +25,8 @@ mod upload;
 
 #[cfg(test)]
 mod failure_tests;
+#[cfg(test)]
+mod model_cache_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
@@ -44,6 +48,12 @@ use crate::load_pool::{CancelToken, GroupRetirement, TaskGroup};
 
 pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
+// The commit (task 11) consumes the fallback and the key's parameters; until
+// then only tests do.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use model_cache::{ModelCacheUse, ModelMissFallback};
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use model_key::{MODEL_CONTENT_KEY_VERSION, ModelInstallParams};
 pub(crate) use products::{
     PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedModel, PreparedModels,
     PreparedPresentation,

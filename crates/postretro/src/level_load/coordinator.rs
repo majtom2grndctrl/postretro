@@ -19,6 +19,9 @@ use postretro_render_cpu::fluid_surface::prepared::PreparedFluidSurfaces;
 use postretro_render_cpu::lightmap_family::LightmapFamilyPlan;
 use postretro_render_cpu::sh_residency::ShResidencyPlan;
 
+use super::model_cache::{self, ModelPart};
+use super::model_key::ModelInstallParams;
+use super::products::ModelUpload;
 use super::tasks::{self, TexturePrep};
 use super::upload::UploadSlot;
 use super::{
@@ -29,6 +32,7 @@ use crate::collision::CollisionWorld;
 use crate::load_pool::{CancelToken, GroupSpawner, Priority, TaskError, TaskHandle};
 use crate::render::LevelGeometryParts;
 use crate::session::level_streaming::StreamingLevelData;
+use crate::startup::render_profile::renderer_surface_depth_quality;
 
 /// What a finished prep task hands back.
 enum Product {
@@ -219,7 +223,12 @@ impl PrepShared {
         super::enter_prep_progress(progress, PrepKind::ALL.len());
         // The inputs' builder moves into the slot: tasks reach it only there.
         let builder = inputs.upload.take().map(|upload| upload.0);
-        let upload = UploadSlot::new(builder, Arc::clone(progress.phase(LoadPhase::Upload)));
+        let upload = UploadSlot::new(
+            builder,
+            Arc::clone(progress.phase(LoadPhase::Upload)),
+            #[cfg(test)]
+            inputs.hooks.after_upload_part.clone(),
+        );
         Arc::new(Self {
             inputs,
             spawner,
@@ -624,28 +633,48 @@ impl PrepShared {
             self.credit(state, PrepKind::ModelParse);
             return;
         }
+        // Every model of the load keys at the dispatch tier.
+        let params = ModelInstallParams::at_tier(renderer_surface_depth_quality(
+            self.inputs.tiers.surface_depth_quality,
+        ));
         for (index, handle) in handles.into_iter().enumerate() {
             self.spawn(state, PrepKind::ModelParse, move |shared| {
                 #[cfg(test)]
                 shared.inputs.hooks.before_model_parse(index);
-                let mut model = tasks::prep_model(
+                // Read, key, look up; parse only on a miss.
+                let (mut model, part) = model_cache::prep_model(
                     &handle,
                     &shared.inputs.content_root,
                     &shared.inputs.prm_cache_root,
+                    shared.upload.model_cache(),
+                    params,
                 );
                 // The model's part goes out from this thread; the clip entry
                 // and hit zones stay for the commit. A failed parse submits
                 // nothing and degrades at commit as the oracle sweep's does.
-                if shared.upload.is_active() {
-                    match model.parsed.as_mut() {
-                        Ok(parsed) => {
-                            if let Some(upload) = parsed.upload.take() {
-                                shared
-                                    .upload
-                                    .model(&model.handle, upload.model, upload.materials);
-                            }
+                match part {
+                    Some(part) if shared.upload.is_active() => {
+                        shared.upload.model(&model.handle, part);
+                    }
+                    // A load that builds no set keeps the upload inputs. It
+                    // has no cache, so its parts are never cache hits.
+                    Some(ModelPart::Upload {
+                        model: loaded,
+                        materials,
+                        ..
+                    }) => {
+                        if let Ok(parsed) = model.parsed.as_mut() {
+                            parsed.upload = Some(ModelUpload {
+                                model: *loaded,
+                                materials,
+                            });
                         }
-                        Err(_) => shared.upload.forgo_model(),
+                    }
+                    Some(ModelPart::Cached(_)) => {}
+                    None => {
+                        if shared.upload.is_active() {
+                            shared.upload.forgo_model();
+                        }
                     }
                 }
                 Ok(Product::Model(index, Box::new(model)))

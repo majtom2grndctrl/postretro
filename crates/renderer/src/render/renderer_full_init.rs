@@ -332,6 +332,7 @@ pub(crate) fn build_full_renderer(
         build_token: std::sync::Arc::new(()),
         pending_textures: None,
         pending_models: Default::default(),
+        model_cache: Default::default(),
         pending_samplers: Default::default(),
         pending_smoke: Default::default(),
         lightmap_generation_floor: 0,

@@ -6,15 +6,16 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use postretro_level_loader::LoadProgress;
-use postretro_model::gltf_loader::LoadedModel;
-use postretro_render_cpu::texture_prep::{PreparedModelMaterials, PreparedWorldTextures};
+use postretro_render_cpu::texture_prep::PreparedWorldTextures;
 use postretro_render_data::material::Material;
 
 use super::LevelTiers;
+use super::model_cache::ModelPart;
 #[cfg(test)]
 use crate::render::LevelBuildPart;
 use crate::render::{
     LevelBuildEvent, LevelBuildSnapshotInputs, LevelGeometryParts, LevelSetBuilder,
+    ModelCacheHandle,
 };
 use crate::startup::render_profile::{
     renderer_reflection_quality, renderer_spot_shadow_map_resolution,
@@ -59,6 +60,9 @@ pub(super) struct UploadSlot {
     /// renderer-less load runs prep only and keeps its GPU-bound products.
     active: bool,
     builder: Mutex<Option<LevelSetBuilder>>,
+    /// The build's renderer's model cache, captured with the builder. A
+    /// handle keeps nothing alive.
+    model_cache: Option<ModelCacheHandle>,
     tracker: Arc<UploadTracker>,
 }
 
@@ -67,10 +71,16 @@ impl UploadSlot {
     /// load's [`postretro_level_loader::LoadPhase::Upload`] counter). Without
     /// a builder the slot credits nothing: prep alone never touches the
     /// upload phase.
-    pub(super) fn new(builder: Option<LevelSetBuilder>, progress: Arc<LoadProgress>) -> Self {
+    pub(super) fn new(
+        builder: Option<LevelSetBuilder>,
+        progress: Arc<LoadProgress>,
+        #[cfg(test)] on_part_done: Option<super::test_support::UploadPartHook>,
+    ) -> Self {
         let tracker = Arc::new(UploadTracker {
             progress,
             state: Mutex::new(TrackerState::default()),
+            #[cfg(test)]
+            on_part_done,
         });
         if let Some(builder) = &builder {
             // The hook holds the tracker only, never a builder or the prep:
@@ -80,6 +90,7 @@ impl UploadSlot {
         }
         Self {
             active: builder.is_some(),
+            model_cache: builder.as_ref().map(LevelSetBuilder::model_cache),
             builder: Mutex::new(builder),
             tracker,
         }
@@ -112,14 +123,29 @@ impl UploadSlot {
         self.submit(|builder| builder.textures(textures, materials.to_vec()));
     }
 
-    /// One parsed model's part, from its parse task.
-    pub(super) fn model(
-        &self,
-        handle: &str,
-        model: LoadedModel,
-        materials: PreparedModelMaterials,
-    ) {
-        self.submit(|builder| builder.model(handle, model, materials));
+    /// One prepared model's part, from its prep task: a cache hit shares
+    /// the cached entry; a parse uploads, offering its entry to the cache
+    /// when it was keyed.
+    pub(super) fn model(&self, handle: &str, part: ModelPart) {
+        self.submit(|builder| match part {
+            ModelPart::Cached(cached) => builder.cached_model(handle, cached),
+            ModelPart::Upload {
+                model,
+                materials,
+                offer: Some(offer),
+            } => builder.offered_model(handle, *model, materials, offer),
+            ModelPart::Upload {
+                model,
+                materials,
+                offer: None,
+            } => builder.model(handle, *model, materials),
+        });
+    }
+
+    /// The model cache of the renderer the build belongs to; `None` for a
+    /// load that builds no set, which then keys and caches nothing.
+    pub(super) fn model_cache(&self) -> Option<&ModelCacheHandle> {
+        self.model_cache.as_ref()
     }
 
     /// The geometry part, once its inputs exist.
@@ -185,6 +211,10 @@ impl UploadSlot {
 pub(super) struct UploadTracker {
     progress: Arc<LoadProgress>,
     state: Mutex<TrackerState>,
+    /// Test seam: runs on the upload thread as each part reports, before
+    /// the tracker's lock is taken; blocking here holds the upload thread.
+    #[cfg(test)]
+    on_part_done: Option<super::test_support::UploadPartHook>,
 }
 
 #[derive(Default)]
@@ -230,6 +260,10 @@ impl UploadTracker {
     }
 
     fn event(&self, event: LevelBuildEvent) {
+        #[cfg(test)]
+        if let (LevelBuildEvent::PartDone(part), Some(hook)) = (event, &self.on_part_done) {
+            hook(part);
+        }
         let mut state = self.lock();
         match event {
             LevelBuildEvent::PartDone(part) => {

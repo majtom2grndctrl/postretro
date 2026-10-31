@@ -27,7 +27,7 @@ use postretro_renderer::{PreviousLevelSet, gpu_creation_counts};
 
 /// A set build waits for the install pipelines (the upload thread's first
 /// job) on a fresh renderer, so a whole load gets longer than a prep hold.
-const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A small skinned model in the dev mod, as a `prop_mesh` names it.
 const MODEL: &str = "models/pose-modifier-fixture/joint_zones.gltf";
@@ -38,7 +38,7 @@ fn dev_content_root() -> PathBuf {
 
 /// Start `inputs`' stages with a set build begun on `renderer` at the
 /// inputs' tiers, planning against the renderer's limits.
-fn start_with_renderer(
+pub(super) fn start_with_renderer(
     renderer: &mut Renderer,
     pool: &LoadPool,
     mut inputs: LevelPrepInputs,
@@ -51,7 +51,7 @@ fn start_with_renderer(
 }
 
 /// Poll `stages` to its one outcome, failing past [`LOAD_TIMEOUT`].
-fn poll_outcome(
+pub(super) fn poll_outcome(
     stages: &mut LevelLoadStages,
     mut renderer: Option<&mut Renderer>,
 ) -> Result<LevelBundle, LevelLoadFailure> {
@@ -80,7 +80,7 @@ fn assert_reports_nothing_more(stages: &mut LevelLoadStages, renderer: &mut Rend
 }
 
 /// Poll a retirement to its end, failing past [`LOAD_TIMEOUT`].
-fn retire(mut retirement: LoadRetirement) {
+pub(super) fn retire(mut retirement: LoadRetirement) {
     let deadline = Instant::now() + LOAD_TIMEOUT;
     while !retirement.try_finish() {
         assert!(Instant::now() < deadline, "the load never retired");
@@ -88,7 +88,7 @@ fn retire(mut retirement: LoadRetirement) {
     }
 }
 
-fn resident(bundle: &LevelBundle) -> crate::render::LevelSetId {
+pub(super) fn resident(bundle: &LevelBundle) -> crate::render::LevelSetId {
     match bundle.set {
         BundleSet::Resident(id) => id,
         BundleSet::PrepOnly(_) => panic!("a load with a renderer builds a set"),
@@ -306,11 +306,15 @@ fn load_stages_bundle_matches_the_oracle_install() {
             return;
         };
         let pool = test_pool();
-        let mut inputs = inputs_for(&case.map, &case.prm_root);
-        if let Some(content_root) = &case.content_root {
-            inputs.content_root = content_root.clone();
-        }
-        inputs.hooks.edit_hand_out = case.edit_hand_out;
+        let make_inputs = || {
+            let mut inputs = inputs_for(&case.map, &case.prm_root);
+            if let Some(content_root) = &case.content_root {
+                inputs.content_root = content_root.clone();
+            }
+            inputs.hooks.edit_hand_out = case.edit_hand_out;
+            inputs
+        };
+        let inputs = make_inputs();
         apply_tiers(&mut renderer, inputs.tiers);
 
         install_oracle(&mut renderer, &case.map, &case.prm_root, case.models);
@@ -322,6 +326,7 @@ fn load_stages_bundle_matches_the_oracle_install() {
         let (mut stages, _progress) = start_with_renderer(&mut renderer, &pool, inputs);
         let bundle = poll_outcome(&mut stages, Some(&mut renderer))
             .unwrap_or_else(|failure| panic!("{label}: the staged load failed: {failure}"));
+        let mut stages = Some(stages);
         assert_eq!(
             bundle.presentation.models.handles().collect::<Vec<_>>(),
             case.models,
@@ -342,8 +347,35 @@ fn load_stages_bundle_matches_the_oracle_install() {
         }
         if !case.models.is_empty() {
             assert!(oracle.contains(MODEL), "{label}: {oracle}");
+            // The model missed the empty cache; committed, it enters it, and
+            // a second load hits it and builds the same set.
+            renderer.commit_model_cache(resident(&bundle));
+            if let Some(stages) = stages.take() {
+                retire(stages.cancel(Some(&mut renderer)));
+            }
+            let (mut warm, _progress) = start_with_renderer(&mut renderer, &pool, make_inputs());
+            let bundle = poll_outcome(&mut warm, Some(&mut renderer))
+                .unwrap_or_else(|failure| panic!("{label}: the warm load failed: {failure}"));
+            assert!(
+                bundle
+                    .presentation
+                    .models
+                    .iter()
+                    .all(|model| model.cache == super::ModelCacheUse::Hit),
+                "{label}: the warm load hits: {:?}",
+                bundle.presentation.models
+            );
+            renderer.publish_level_set(resident(&bundle), PreviousLevelSet::Retire);
+            assert_eq!(
+                renderer.active_level_resource_summary().as_deref(),
+                Some(oracle.as_str()),
+                "{label}: a hit's resource summary"
+            );
+            stages = Some(warm);
         }
-        retire(stages.cancel(Some(&mut renderer)));
+        if let Some(stages) = stages {
+            retire(stages.cancel(Some(&mut renderer)));
+        }
     }
 }
 

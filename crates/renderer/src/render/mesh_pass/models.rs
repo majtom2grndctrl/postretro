@@ -12,6 +12,7 @@ use postretro_model::skeleton::{AnimationClip, Skeleton};
 use postretro_render_cpu::mesh_instances::JointCounts;
 
 use super::{ClipMetadata, MeshPass};
+use crate::render::model_cache::{CachedModel, ModelContentKey};
 
 /// One uploaded skinned model: GPU vertex + index buffers, its per-submesh
 /// material bind groups, and the skeleton the per-frame palette is sampled
@@ -61,9 +62,15 @@ pub(in crate::render) struct ModelEntry {
 /// `SmokePass::sheets`. The level-load model sweep populates the active
 /// set's through `Renderer::upload_parsed_skinned_model`; the mesh pass
 /// resolves every draw's handle through the active set's.
+///
+/// A set built off-main also carries its cache offers: the entries it
+/// uploaded on a cache miss, each with its content key and CPU companion,
+/// which join the shared model cache only when the set commits
+/// (`Renderer::commit_model_cache`).
 #[derive(Default)]
 pub(in crate::render) struct LevelModels {
     entries: HashMap<ModelHandle, Arc<ModelEntry>>,
+    offers: Vec<(ModelContentKey, CachedModel)>,
 }
 
 impl LevelModels {
@@ -77,8 +84,6 @@ impl LevelModels {
         self.entries.get(handle)
     }
 
-    /// Insert (or replace) the entry at `handle`. Re-loading the same handle
-    /// replaces the cache entry (idempotent upload).
     /// Every cached handle, sorted (tests and the set summary).
     pub(in crate::render) fn handles(&self) -> Vec<String> {
         let mut handles: Vec<String> = self
@@ -90,6 +95,8 @@ impl LevelModels {
         handles
     }
 
+    /// Insert (or replace) the entry at `handle`. Re-loading the same handle
+    /// replaces the cache entry (idempotent upload).
     pub(in crate::render) fn insert(&mut self, handle: ModelHandle, entry: Arc<ModelEntry>) {
         self.entries.insert(handle, entry);
     }
@@ -100,11 +107,23 @@ impl LevelModels {
         !self.entries.is_empty()
     }
 
-    /// Move every entry of `other` in, keeping an entry this set already holds.
+    /// Move every entry of `other` in, keeping an entry this set already
+    /// holds, and its cache offers.
     pub(in crate::render) fn absorb(&mut self, other: &mut LevelModels) {
         for (handle, entry) in std::mem::take(&mut other.entries) {
             self.entries.entry(handle).or_insert(entry);
         }
+        self.offers.append(&mut other.offers);
+    }
+
+    /// Offer the entry at `key` to the shared cache when this set commits.
+    pub(in crate::render) fn offer(&mut self, key: ModelContentKey, cached: CachedModel) {
+        self.offers.push((key, cached));
+    }
+
+    /// Take the set's cache offers, in the order they were made.
+    pub(in crate::render) fn take_offers(&mut self) -> Vec<(ModelContentKey, CachedModel)> {
+        std::mem::take(&mut self.offers)
     }
 
     /// Look up an animation clip by authored `name` for the model at `handle`.

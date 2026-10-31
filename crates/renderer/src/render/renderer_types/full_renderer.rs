@@ -61,6 +61,10 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) pending_textures: Option<LevelTextures>,
     /// Models uploaded with no active set, taken by the next build.
     pub(in crate::render) pending_models: mesh_pass::LevelModels,
+    /// The shared, content-keyed model cache: a named exception to per-load
+    /// ownership. Entries join at a commit and are freed at a commit; a
+    /// release frees none. Dies with this full renderer (a suspend).
+    pub(in crate::render) model_cache: super::model_cache::ModelCache,
     /// Samplers those staged models created, taken by the next build.
     pub(in crate::render) pending_samplers: SamplerMaps,
     /// Sprite collections registered with no active set, taken by the next

@@ -22,17 +22,13 @@ use postretro_render_data::material::Material;
 
 use postretro_audio::DecodedLevelSounds;
 use postretro_level_format::map_entity::MapEntityRecord;
-use postretro_render_cpu::texture_prep::prepare_model_materials;
 
 use super::model_prediction::{ModelPredictionInputs, predict_level_models};
-use super::products::{ModelUpload, ParsedModelProducts, PreparedModel};
 use crate::collision::CollisionWorld;
 use crate::render::{LevelInstallError, level_world_to_geometry, lightmap_family_inputs};
-use crate::scripting_systems::hit_zones::ModelHitZones;
 use crate::session::level_streaming::{
     StreamingLevelData, StreamingLevelParts, decode_streaming_level_data,
 };
-use crate::startup::lifecycle::{ParsedSweepModel, model_clip_entry, parse_sweep_model};
 
 /// Texture prep's product: the CPU pass, the material table, and the dims UV
 /// normalize and the fluid pack read.
@@ -237,33 +233,4 @@ pub(super) fn predict_models(
     inputs: &ModelPredictionInputs,
 ) -> Vec<String> {
     predict_level_models(map_entities, inputs)
-}
-
-/// One predicted model, through the oracle sweep's builders: the glTF parse,
-/// its clip-table entry, its hit zones and its materials' CPU half. A parse
-/// failure is carried, never raised: the commit degrades it as today.
-pub(super) fn prep_model(
-    handle: &str,
-    content_root: &Path,
-    prm_cache_root: &Path,
-) -> PreparedModel {
-    let ParsedSweepModel {
-        handle,
-        open_path,
-        result,
-    } = parse_sweep_model(handle, content_root);
-    let clip_entry = model_clip_entry(&result);
-    let parsed = result.map(|model| ParsedModelProducts {
-        hit_zones: ModelHitZones::build(&model),
-        upload: Some(ModelUpload {
-            materials: prepare_model_materials(&model.submeshes, prm_cache_root),
-            model,
-        }),
-    });
-    PreparedModel {
-        handle,
-        open_path,
-        clip_entry,
-        parsed,
-    }
 }

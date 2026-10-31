@@ -56,9 +56,13 @@ pub(crate) struct PrepTestHooks {
     /// queued: blocking here lets the parse and its tasks run ahead of the
     /// rest of dispatch.
     pub(crate) after_parse_queued: Option<ProbeHook>,
+    /// Runs on the upload thread as each set-build part reports done:
+    /// blocking here holds the upload thread, with later parts queued.
+    pub(crate) after_upload_part: Option<UploadPartHook>,
 }
 
 type BeforeModelParse = Arc<dyn Fn(usize) + Send + Sync>;
+pub(crate) type UploadPartHook = Arc<dyn Fn(crate::render::LevelBuildPart) + Send + Sync>;
 type ProbeHook = Arc<dyn Fn(&PrepProbe) + Send + Sync>;
 
 impl std::fmt::Debug for PrepTestHooks {

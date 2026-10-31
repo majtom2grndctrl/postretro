@@ -25,6 +25,7 @@ use super::install_pipelines::InstallPipelinesSlot;
 use super::level_resource_set::{LevelResourceSet, LevelSetId, SamplerMaps};
 use super::loaded_texture::upload_prepared_textures;
 use super::mesh_pass::{LevelModels, LightGroupLayout};
+use super::model_cache::{CachedModel, ModelCacheHandle, ModelCacheOffer};
 use super::planar_reflection::PlanarMirrorLayout;
 use super::renderer_resources::{LevelSetCoreInputs, build_level_set_core};
 use super::renderer_textures::{
@@ -110,6 +111,8 @@ pub(in crate::render) struct LevelBuildContext {
     pub(in crate::render) shadow_tier: Option<Arc<ShadowTier>>,
     pub(in crate::render) id: LevelSetId,
     pub(in crate::render) generation_floor: u64,
+    /// The renderer's model cache, for the load's pool tasks to look up.
+    model_cache: ModelCacheHandle,
     token: Arc<()>,
 }
 
@@ -194,6 +197,7 @@ impl Renderer {
             shadow_tier,
             id: LevelSetId::mint(&mut full.next_level_set_id),
             generation_floor: full.reserve_lightmap_generation_floor(),
+            model_cache: full.model_cache.handle(),
             token: Arc::clone(&full.build_token),
         }
     }
@@ -229,6 +233,7 @@ impl Renderer {
                 id,
                 done: false,
                 upload_creations: None,
+                model_upload_creations: None,
                 #[cfg(test)]
                 unsubmitted_at_delivery: None,
             },
@@ -431,7 +436,11 @@ impl std::error::Error for LevelBuildError {}
 pub enum LevelBuildPart {
     Textures,
     Geometry,
+    /// A model uploaded on a cache miss.
     Model,
+    /// A model the shared cache already held: the set takes its entry and
+    /// creates nothing.
+    CachedModel,
     Smoke,
     Finish,
 }
@@ -505,6 +514,13 @@ impl LevelSetBuilder {
     /// waits on the upload thread.
     pub fn cancel(&self) {
         self.shared.fail(LevelBuildError::Cancelled);
+    }
+
+    /// The model cache of the renderer this build belongs to: a load looks
+    /// its models up here and hands each hit to [`Self::cached_model`]. A
+    /// hit's entry is then always one of this renderer's.
+    pub fn model_cache(&self) -> ModelCacheHandle {
+        self.shared.context.model_cache.clone()
     }
 
     /// A probe that tells when this build's builders and queued parts are
@@ -614,20 +630,62 @@ impl LevelSetBuilder {
         model: LoadedModel,
         materials: PreparedModelMaterials,
     ) {
+        self.model_part(handle.into(), model, materials, None);
+    }
+
+    /// [`Self::model`] for a model the shared cache missed: the set also
+    /// carries `offer`, so the entry joins the cache when the set commits
+    /// (`Renderer::commit_model_cache`). A set that never commits drops the
+    /// offer with it, so no later lookup ever sees the entry (pin P29).
+    pub fn offered_model(
+        &self,
+        handle: impl Into<String>,
+        model: LoadedModel,
+        materials: PreparedModelMaterials,
+        offer: ModelCacheOffer,
+    ) {
+        self.model_part(handle.into(), model, materials, Some(offer));
+    }
+
+    /// A model the shared cache held, into the set's models under `handle`:
+    /// the set shares the entry and creates nothing. Still a part, run in
+    /// order on the upload thread, so it reports like any other.
+    pub fn cached_model(&self, handle: impl Into<String>, cached: CachedModel) {
         let handle = postretro_model::ModelHandle::from(handle.into());
+        self.queue_part(Some(LevelBuildPart::CachedModel), move |shared, _| {
+            shared.state().models.insert(handle, cached.entry);
+            Ok(PartDone::Stored)
+        });
+    }
+
+    fn model_part(
+        &self,
+        handle: String,
+        model: LoadedModel,
+        materials: PreparedModelMaterials,
+        offer: Option<ModelCacheOffer>,
+    ) {
+        let handle = postretro_model::ModelHandle::from(handle);
         self.queue_part(Some(LevelBuildPart::Model), move |shared, upload| {
             let mut samplers = std::mem::take(&mut shared.state().samplers);
-            let entry = super::renderer_models::build_model_entry(
+            let before = gpu_creation_counts();
+            let entry = Arc::new(super::renderer_models::build_model_entry(
                 &upload.device,
                 &upload.writes,
                 &shared.context.material_bind(),
                 &mut samplers,
                 &model,
                 materials,
-            );
+            ));
+            let created = gpu_creation_counts().since(before);
             let mut state = shared.state();
+            state.model_creations.add(created);
             state.samplers.merge(samplers);
-            state.models.insert(handle, Arc::new(entry));
+            if let Some(offer) = offer {
+                let (key, cached) = offer.into_cached(&entry);
+                state.models.offer(key, cached);
+            }
+            state.models.insert(handle, entry);
             Ok(PartDone::Stored)
         });
     }
@@ -738,6 +796,8 @@ struct BuiltLevelSet {
     built_tier: bool,
     /// Creations the build's parts made, counted on the upload thread.
     creations: GpuCreationCounts,
+    /// The share of those its model parts made.
+    model_creations: GpuCreationCounts,
     token: Arc<()>,
     /// Bytes the upload thread's writer held unsubmitted when the set was
     /// delivered: zero (pin P13).
@@ -766,6 +826,8 @@ struct BuildState {
     smoke: SmokeLevelCollections,
     samplers: SamplerMaps,
     creations: GpuCreationCountsSum,
+    /// The share of `creations` the model parts made (cache misses).
+    model_creations: GpuCreationCountsSum,
 }
 
 impl BuildState {
@@ -819,9 +881,11 @@ impl BuildShared {
                 return;
             }
             let creations = state.creations;
+            let model_creations = state.model_creations;
             *state = BuildState {
                 failed: true,
                 creations,
+                model_creations,
                 ..BuildState::default()
             };
         }
@@ -840,21 +904,24 @@ impl BuildShared {
     ) {
         match result {
             Ok(Ok(PartDone::Stored)) => {
+                // Read under the lock, reported outside it: the hook may take
+                // its time, and a cancel must never wait on it.
+                let ended = self.state().ended();
                 if let Some(part) = part
-                    && !self.state().ended()
+                    && !ended
                 {
                     self.report(LevelBuildEvent::PartDone(part));
                 }
             }
             Ok(Ok(PartDone::Skipped)) => {}
             Ok(Ok(PartDone::Finished(set))) => {
-                let creations = {
+                let (creations, model_creations) = {
                     let mut state = self.state();
                     if state.ended() {
                         return;
                     }
                     state.finished = true;
-                    state.creations.0
+                    (state.creations.0, state.model_creations.0)
                 };
                 if let Some(part) = part {
                     self.report(LevelBuildEvent::PartDone(part));
@@ -863,6 +930,7 @@ impl BuildShared {
                     set,
                     built_tier: self.context.shadow_tier.is_none(),
                     creations,
+                    model_creations,
                     token: Arc::clone(&self.context.token),
                     #[cfg(test)]
                     unsubmitted_at_delivery: super::upload_thread::unsubmitted_bytes_on_this_thread(
@@ -881,6 +949,7 @@ pub struct PendingLevelSet {
     id: LevelSetId,
     done: bool,
     upload_creations: Option<GpuCreationCounts>,
+    model_upload_creations: Option<GpuCreationCounts>,
     /// The upload writer's unsubmitted bytes when the set was delivered.
     #[cfg(test)]
     pub(crate) unsubmitted_at_delivery: Option<u64>,
@@ -910,6 +979,7 @@ impl PendingLevelSet {
         self.done = true;
         Some(outcome.and_then(|built| {
             self.upload_creations = Some(built.creations);
+            self.model_upload_creations = Some(built.model_creations);
             #[cfg(test)]
             {
                 self.unsubmitted_at_delivery = Some(built.unsubmitted_at_delivery);
@@ -922,6 +992,12 @@ impl PendingLevelSet {
     /// taken: nonzero for any set, beside a main-thread count of zero.
     pub fn upload_creations(&self) -> Option<GpuCreationCounts> {
         self.upload_creations
+    }
+
+    /// The share of [`Self::upload_creations`] the build's model parts made:
+    /// zero when every model came from the shared cache.
+    pub fn model_upload_creations(&self) -> Option<GpuCreationCounts> {
+        self.model_upload_creations
     }
 }
 

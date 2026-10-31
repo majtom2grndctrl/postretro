@@ -55,9 +55,7 @@ mod lifecycle_world_handles;
 
 #[cfg(test)]
 pub(crate) use lifecycle_model_sweep::parse_sweep_models;
-pub(crate) use lifecycle_model_sweep::{
-    ModelClipEntry, ParsedSweepModel, model_clip_entry, parse_sweep_model,
-};
+pub(crate) use lifecycle_model_sweep::{ModelClipEntry, ParsedSweepModel, model_clip_entry};
 use lifecycle_reaction_rebuild::{
     SubscriberRebuild, build_trigger_bindings, capture_progress_membership,
     rebuild_reaction_subscribers,

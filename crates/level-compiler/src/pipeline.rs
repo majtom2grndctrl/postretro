@@ -799,11 +799,13 @@ fn run_after_parsing(
 
     // Static lights whose emitter sphere reaches into geometry, tested once
     // on the pre-cut geometry after both SH gates admit and before any
-    // texture read. The probe-point set (direct SH, its deltas, billboard
-    // scatter) excludes `sdf` lights; the lightmap stage tests the same
-    // lights on the cut geometry and warns once for each light either test
-    // flags. The bounce family's set adds `sdf` lights for the SH base
-    // bake's patch direct and warns for those alone here.
+    // texture read. The bounce family's set, for the SH base bake's patch
+    // direct, tests every static light with a sphere, `sdf` included; the
+    // probe-point set (direct SH, its deltas, billboard scatter) is filtered
+    // from it, so no light is traced twice. The lightmap stage tests the
+    // probe-point lights on the cut geometry and warns once for each light
+    // either test flags; the `sdf` lights only the bounce set holds warn
+    // here.
     log::info!(
         "[Compiler] Embedded-emitter classification: {} static lights, penumbra floor {}",
         static_baked_lights.len(),
@@ -821,16 +823,13 @@ fn run_after_parsing(
         primitives: &bvh_primitives,
         geometry: &geo_result,
     };
-    let static_embedded_emitters = direct_sh_bake::embedded_emitters(
-        &emitter_scene,
-        lightmap_config.penumbra_floor,
-        &emitter_control,
-    );
     let bounce_embedded_emitters = direct_sh_bake::bounce_embedded_emitters(
         &emitter_scene,
         lightmap_config.penumbra_floor,
         &emitter_control,
     );
+    let static_embedded_emitters =
+        direct_sh_bake::probe_point_emitters(&bounce_embedded_emitters, &static_baked_lights);
     surface_radiance::warn_bounce_only_emitters(
         &bounce_embedded_emitters,
         &static_embedded_emitters,

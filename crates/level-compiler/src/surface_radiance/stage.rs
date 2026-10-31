@@ -166,8 +166,10 @@ pub(crate) fn bake_sh_base(
 
 /// Warn once for each static light only the bounce family's test flags:
 /// an `sdf`-shadowed light, whose direct shadow bakes no texel or probe, so
-/// the lightmap stage never names it. Lights the probe-point set flags keep
-/// that stage's line. Both sets are keyed by position in `static_lights`.
+/// the lightmap stage never names it. Lights the probe-point set flags, a
+/// subset of the bounce set
+/// ([`crate::direct_sh_bake::probe_point_emitters`]), keep that stage's
+/// line. Both sets are keyed by position in `static_lights`.
 /// Called on the caller thread every compile, cold or warm.
 pub(crate) fn warn_bounce_only_emitters(
     bounce: &EmbeddedEmitters,

@@ -45,7 +45,8 @@ fn admit_delta(projection: DeltaWorkingSetProjection, verbose: bool) -> anyhow::
 }
 
 fn admit_base(projection: &ShBaseWorkingSetProjection) -> anyhow::Result<()> {
-    let verdict = if projection.admit().is_ok() {
+    let admission = projection.admit();
+    let verdict = if admission.is_ok() {
         "admitted"
     } else {
         "refused"
@@ -55,5 +56,5 @@ fn admit_base(projection: &ShBaseWorkingSetProjection) -> anyhow::Result<()> {
         projection.estimated_peak_bytes,
         projection.budget_bytes,
     );
-    projection.admit().map_err(anyhow::Error::new)
+    admission.map_err(anyhow::Error::new)
 }

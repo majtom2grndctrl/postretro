@@ -210,19 +210,18 @@ fn bake_probe_rgb_along(
     (acc, sum_d, sum_d2)
 }
 
-/// Bake one probe's SH coefficients + depth-moment metadata with the per-hit
-/// estimator, as the whole-volume `bake_sh_volume` path does for each probe.
+/// Bake one probe's SH coefficients + depth-moment metadata from either
+/// `RadianceSource`: the surface radiance cache's patches (production id 34)
+/// or the per-hit estimator (the test-only parity reference).
 /// `probe_index` is the probe's flat linear index in the global grid
 /// (`x + y*nx + z*nx*ny`); it seeds only the deterministic soft-visibility
 /// lattice rotation, so passing the same global index keeps the per-probe
-/// output byte-identical to the volume's. Invalid probes bake nothing and
-/// return the default (zeroed) record, matching the volume path.
+/// output byte-identical across callers. Invalid probes bake nothing and
+/// return the default (zeroed) record.
 ///
 /// `light_global_indices` maps each `static_lights[i]` to its position in the
 /// full global light slice for the soft-visibility seed (see
-/// `sample_radiance_rgb`). The whole-volume path passes `None` (its slice IS the
-/// global set); a bounded subset passes its global indices so a kept light gets
-/// the same lattice rotation it would in the full-set bake.
+/// `sample_radiance_rgb`). `None` means the slice is the global set.
 #[cfg(test)]
 pub(crate) fn bake_probe(
     inputs: &ShBakeCtx<'_>,

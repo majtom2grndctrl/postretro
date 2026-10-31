@@ -116,10 +116,9 @@ mod tests {
         .unwrap()
     }
 
-    // AC 27: the helpers left `sh_group.rs` unchanged, so every pre-change
-    // id-27, id-35, id-47/48 and chunk-light-list key they feed keeps its
-    // bytes and a first warm build hits those entries. These are the values
-    // the helpers computed before the move.
+    // Pinned values are what these helpers computed before they moved out of
+    // the retired grouped SH module; they must not change, or every dependent
+    // key (ids 27, 35, 47/48, chunk light lists) misses once.
     #[test]
     fn moved_key_helpers_reproduce_their_pre_move_fingerprints() {
         let geometry = geometry();

@@ -12,8 +12,9 @@ use crate::bvh_build::build_bvh;
 use crate::surface_radiance::{PatchGather, PatchLookup, PatchRadiance, PatchSet};
 use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
-// AC 26, research P11: id 34's depth moments are the one-sample bake's
-// whatever the gather's radiance source: probe by probe under either patch
+// AC 26, research P11: id 34's depth moments equal the one-sample bake's
+// whichever radiance source the gather reads, since distance comes from the hit
+// before any lookup: probe by probe under either patch
 // lookup, and over the whole volume through the production SH base bake,
 // cold and warm, at fill 1.
 #[test]

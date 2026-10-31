@@ -8,7 +8,7 @@ use thiserror::Error;
 use super::bounce::later_bounce_buffer_bytes;
 use super::layer::{layer_bytes, layer_transient_bytes};
 use super::layer_set::PlannedLayer;
-use super::patches::{PatchSet, Side};
+use super::patches::{PatchCountExceeded, PatchSet, Side};
 use super::reach::{PatchReachIndex, REACH_INDEX_BYTES_PER_PATCH};
 use crate::geometry::GeometryResult;
 use crate::map_data::MapLight;
@@ -28,7 +28,8 @@ pub(crate) struct ShBaseWorkingSetProjection {
     /// The patch set itself, resident from the gate to the end of the stage.
     pub(crate) patch_set_bytes: u64,
     /// Every light's layer co-resident before the sum: Σ over lights of the
-    /// patches in its range × both sides × one entry.
+    /// patches in its range × both sides × one entry, counted per light
+    /// before identical lights share a layer, so a conservative bound.
     pub(crate) layer_bytes: u64,
     /// The summed radiance, both sides of every patch.
     pub(crate) sum_bytes: u64,
@@ -97,6 +98,8 @@ pub(crate) enum ShBaseWorkingSetGateError {
         budget = .0.budget_bytes
     )]
     BudgetExceeded(Box<ShBaseWorkingSetProjection>),
+    #[error("SH base working-set gate refused before patch shading: {0}")]
+    PatchCount(#[from] PatchCountExceeded),
 }
 
 /// The gate's patch set, the reach and the fill it priced, moved whole into
@@ -115,6 +118,7 @@ pub(crate) struct ShBaseHandoff {
 /// ([`crate::sh_bake::animation_table_bytes`]), which the section carries.
 /// The projection is returned whatever the budget; [`ShBaseWorkingSetProjection::admit`]
 /// decides, so the pipeline can order this gate against the others.
+/// A patch set past [`super::patches::MAX_PATCHES`] refuses here by name.
 pub(crate) fn plan_sh_base(
     geometry: &GeometryResult,
     static_lights: &[&MapLight],
@@ -127,7 +131,7 @@ pub(crate) fn plan_sh_base(
         super::bounce::is_valid_bounce_fill(bounce_fill),
         "bounce fill {bounce_fill} resolves at parse"
     );
-    let patches = PatchSet::build(geometry);
+    let patches = PatchSet::try_build(geometry)?;
     let light_reach = PatchReachIndex::new(patches.patches()).counts_in_reach(static_lights);
     let projection = project(
         ProjectionInputs {
@@ -386,6 +390,35 @@ mod tests {
         assert_eq!(
             at(1.0).bounce_phase_bytes - at(0.0).bounce_phase_bytes,
             expected
+        );
+    }
+
+    // A patch set past its cap refuses through the gate by name, before any
+    // projection: past `u32::MAX` a patch index would truncate. The quad
+    // holds 16 patches, so a cap of 15 stands in for the real one.
+    #[test]
+    fn a_patch_set_past_its_cap_refuses_through_the_gate_by_name() {
+        let geometry = super::super::tests::polygon_geometry(&[vec![
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 0.0),
+        ]]);
+        let size = super::super::patches::PATCH_SIZE_M;
+        assert_eq!(
+            PatchSet::build_capped(&geometry, size, 16)
+                .expect("16 patches fit a cap of 16")
+                .len(),
+            16
+        );
+        let refused: ShBaseWorkingSetGateError = PatchSet::build_capped(&geometry, size, 15)
+            .err()
+            .expect("16 patches exceed a cap of 15")
+            .into();
+        assert_eq!(
+            refused.to_string(),
+            "SH base working-set gate refused before patch shading: the surface radiance cache \
+             needs more than 15 patches; a patch index is a u32"
         );
     }
 

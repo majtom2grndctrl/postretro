@@ -542,6 +542,21 @@ struct ProbeStages {
     scatter_red: f64,
 }
 
+/// The static probe-point flags as the pipeline computes them: the bounce
+/// family's set, filtered.
+fn static_probe_flags(
+    sh_ctx: &ShBakeCtx<'_>,
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    let bounce = crate::direct_sh_bake::bounce_embedded_emitters(
+        &crate::direct_sh_bake::EmitterScene::of(sh_ctx),
+        penumbra_floor,
+        control,
+    );
+    crate::direct_sh_bake::probe_point_emitters(&bounce, sh_ctx.static_lights)
+}
+
 /// Bake every probe-point stage over the wall fixture for `lights`, with
 /// the emitter flags production computes (`flagged`) or none.
 fn bake_stages(lights: &[MapLight], flagged: bool, cache: Option<&StageCache>) -> ProbeStages {
@@ -563,11 +578,7 @@ fn bake_stages(lights: &[MapLight], flagged: bool, cache: Option<&StageCache>) -
         total_light_count: lights.len(),
     };
     let control = BakeControl::unrestricted();
-    let static_flags = crate::direct_sh_bake::embedded_emitters(
-        &crate::direct_sh_bake::EmitterScene::of(&sh_ctx),
-        flagged,
-        &control,
-    );
+    let static_flags = static_probe_flags(&sh_ctx, flagged, &control);
     let animated_flags = crate::animated_direct_sh_bake::embedded_emitters(
         &sh_ctx,
         &animated_lights,
@@ -922,11 +933,7 @@ fn cells_only_the_clear_light_reaches_keep_their_bytes() {
         total_light_count: lights.len(),
     };
     let config = ShConfig { probe_spacing: 0.5 };
-    let flags = crate::direct_sh_bake::embedded_emitters(
-        &crate::direct_sh_bake::EmitterScene::of(&sh_ctx),
-        true,
-        &BakeControl::unrestricted(),
-    );
+    let flags = static_probe_flags(&sh_ctx, true, &BakeControl::unrestricted());
     assert!(flags.is_embedded(0) && !flags.is_embedded(1), "{flags:?}");
 
     // The probes whose affinity cell the clear light reaches and the short
@@ -1189,6 +1196,74 @@ pub(crate) fn embedded_bounce_fixture() -> (GeometryResult, Vec<MapLight>) {
     )
 }
 
+// The pipeline classifies static lights once, under the bounce family's
+// rule, and filters the probe-point set from it. That set must be the one
+// testing the probe-point lights alone gives (`StaticLightMap` lights,
+// classified under the probe rule): the same keys, fractions and order, so
+// the same `hash_keys` bytes, or ids 35, 41, 47 and 48 and their cache keys
+// would move.
+#[test]
+fn the_probe_point_set_filtered_from_the_bounce_set_matches_its_own_classification() {
+    use crate::direct_sh_bake::{EmitterScene, bounce_embedded_emitters, probe_point_emitters};
+
+    let fixture = Fixture::new(false);
+    let (_, mut lights) = embedded_bounce_fixture();
+    // After the `sdf` light, so a kept key follows a dropped one: a
+    // flagged point light, a clear one and a hard one.
+    lights.push(point_light([
+        f64::from(WALL_FACE_X) - 0.2,
+        LIGHT_HEIGHT,
+        0.9,
+    ]));
+    lights.push(point_light([-1.5, LIGHT_HEIGHT, 0.3]));
+    let mut hard = beside_wall(0.1);
+    hard.light_size = 0.0;
+    lights.push(hard);
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let scene = EmitterScene {
+        static_lights: &static_lights,
+        bvh: &fixture.bvh,
+        primitives: &fixture.primitives,
+        geometry: &fixture.geometry,
+    };
+    let control = BakeControl::unrestricted();
+    let key_bytes = |set: &EmbeddedEmitters| {
+        let mut hasher = blake3::Hasher::new();
+        set.hash_keys(&mut hasher);
+        hasher.finalize()
+    };
+
+    let bounce = bounce_embedded_emitters(&scene, true, &control);
+    let derived = probe_point_emitters(&bounce, &static_lights);
+    let alone = EmbeddedEmitters::classify(
+        static_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.light.shadow_type == ShadowType::StaticLightMap)
+            .map(|(index, entry)| (index, entry.light)),
+        &fixture.bvh,
+        &fixture.primitives,
+        &fixture.geometry,
+        &control,
+    );
+    assert!(alone.is_embedded(0), "{alone:?}");
+    assert!(
+        bounce.is_embedded(1) && !derived.is_embedded(1),
+        "the filter must drop the flagged sdf light: {bounce:?} {derived:?}"
+    );
+    assert_eq!(derived, alone, "keys, fractions and order");
+    assert_eq!(key_bytes(&derived), key_bytes(&alone));
+
+    // `--no-penumbra-floor`: neither set tests a light.
+    let off = bounce_embedded_emitters(&scene, false, &control);
+    assert_eq!(off, EmbeddedEmitters::default());
+    assert_eq!(
+        probe_point_emitters(&off, &static_lights),
+        EmbeddedEmitters::default()
+    );
+}
+
 // AC 3, research P10: a flagged point light and a flagged `sdf`-shadowed
 // light shade their bounce patches at the full lattice's visibility, the
 // no-early-out reference written out here; the probe-point set still flags
@@ -1196,7 +1271,7 @@ pub(crate) fn embedded_bounce_fixture() -> (GeometryResult, Vec<MapLight>) {
 // (ids 35, 41, 47, 48 fold only that set).
 #[test]
 fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
-    use crate::direct_sh_bake::{EmitterScene, bounce_embedded_emitters, embedded_emitters};
+    use crate::direct_sh_bake::{EmitterScene, bounce_embedded_emitters, probe_point_emitters};
     use crate::sh_bake::{
         RaytracingCtx, bounce_contribution, reflected_radiance, soft_visibility_seed,
     };
@@ -1214,10 +1289,8 @@ fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
             primitives: &fixture.primitives,
             geometry: &fixture.geometry,
         };
-        (
-            embedded_emitters(&scene, true, &control),
-            bounce_embedded_emitters(&scene, true, &control),
-        )
+        let bounce = bounce_embedded_emitters(&scene, true, &control);
+        (probe_point_emitters(&bounce, &static_lights), bounce)
     };
     let (probes, bounce) = classify(&lights);
     assert!(

@@ -148,7 +148,7 @@ fn direction_embedded(
 
 /// Whether the emitter test has a sphere to trace: a point or spot light of
 /// finite, non-zero size that bakes texels.
-fn has_emitter_sphere(light: &MapLight) -> bool {
+pub(crate) fn has_emitter_sphere(light: &MapLight) -> bool {
     has_bounce_emitter_sphere(light) && light.shadow_type != ShadowType::Sdf
 }
 
@@ -253,6 +253,21 @@ impl EmbeddedEmitters {
 
     pub(crate) fn is_embedded(&self, key: usize) -> bool {
         flags(self.fraction(key))
+    }
+
+    /// The flags of the keys `keep` admits, each with its fraction, in key
+    /// order: a narrower family's set read from a wider family's, so a light
+    /// both families test is traced once
+    /// ([`crate::direct_sh_bake::probe_point_emitters`]).
+    pub(crate) fn filtered(&self, keep: impl Fn(usize) -> bool) -> Self {
+        Self {
+            embedded: self
+                .embedded
+                .iter()
+                .copied()
+                .filter(|&(key, _)| keep(key))
+                .collect(),
+        }
     }
 
     /// Fold the flagged keys, ascending, into a stage cache key: for a stage

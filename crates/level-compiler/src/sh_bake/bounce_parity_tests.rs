@@ -794,8 +794,8 @@ fn patch_sizes() -> Vec<f64> {
 /// same rule. The id-27 reference keeps the plain probe-and-escalate set
 /// (its seeds are light digests, not static indices).
 ///
-/// id 34 judges two estimators: the one-sample bounce production ships
-/// today, and the surface radiance cache's single bounce (every static
+/// id 34 judges two estimators: the one-sample bounce (the old estimator,
+/// kept as a comparison row), and the surface radiance cache's single bounce (every static
 /// light's patch layer summed, then gathered), once per patch size
 /// (`patch_sizes`) and lookup (`patch_lookups`). Per probe with a nonzero full-set bounce it measures
 /// the interior texels before any encode, as compose scales them: a base

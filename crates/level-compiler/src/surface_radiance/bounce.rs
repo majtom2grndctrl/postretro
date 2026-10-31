@@ -13,7 +13,9 @@ use crate::sh_bake::{RaytracingCtx, bounce_hit, reflected_radiance};
 
 /// Bounces gathered after bounce one. Provisional: the convergence tests
 /// report each bounce's energy, and the owner's A/B settles the count.
-/// Changing it changes id 34, so it moves with a stage-version bump.
+/// Folded into the id-34 volume key, so changing it re-keys the volume; a
+/// change to `cosine_directions` or `patch_frame` needs a
+/// `SH_BASE_VOLUME_STAGE_VERSION` bump.
 pub(crate) const LATER_BOUNCE_COUNT: u32 = 4;
 
 /// Cosine-distributed rays a patch's front side gathers per later bounce.
@@ -191,6 +193,7 @@ fn gather_patch(
 ) -> Vec3 {
     let [tangent, bitangent, normal] = patch_frame(patch.normal, patch.seed_id());
     let mut incoming = Vec3::ZERO;
+    // The ray index feeds only the test-only direction record below.
     for (_ray, local) in (0u32..).zip(directions) {
         let dir = tangent * local.x + bitangent * local.y + normal * local.z;
         #[cfg(test)]

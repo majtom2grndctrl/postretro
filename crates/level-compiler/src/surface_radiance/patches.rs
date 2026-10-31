@@ -115,7 +115,19 @@ impl FaceFrame {
     }
 }
 
-/// Every patch over a level's pre-cut static faces, grouped by face.
+/// The most patches a set holds: patches, layers, reach lists and the sum
+/// all name a patch by a `u32` index.
+pub(crate) const MAX_PATCHES: usize = u32::MAX as usize;
+
+/// A level whose static faces need more patches than a `u32` index names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the surface radiance cache needs more than {max} patches; a patch index is a u32")]
+pub(crate) struct PatchCountExceeded {
+    pub(crate) max: usize,
+}
+
+/// Every patch over a level's pre-cut static faces, grouped by face. Its
+/// build refuses past [`MAX_PATCHES`], so every patch index fits a `u32`.
 pub(crate) struct PatchSet {
     size: f64,
     patches: Vec<Patch>,
@@ -130,14 +142,44 @@ pub(crate) struct PatchSet {
     _held: crate::live_bytes::Held,
 }
 
+/// Marks a set's drop on this thread, so a test can see the gate's set
+/// freed inside the SH base stage, the volume-hit path included.
+#[cfg(test)]
+pub(crate) const PATCH_SET_DROPPED: &str = "surface radiance patch set dropped";
+
+#[cfg(test)]
+impl Drop for PatchSet {
+    fn drop(&mut self) {
+        super::stage::stage_events::record(PATCH_SET_DROPPED);
+    }
+}
+
 impl PatchSet {
+    /// The patch set over `geo`, or the named refusal past [`MAX_PATCHES`].
+    pub(crate) fn try_build(geo: &GeometryResult) -> Result<Self, PatchCountExceeded> {
+        Self::build_capped(geo, PATCH_SIZE_M, MAX_PATCHES)
+    }
+
+    #[cfg(test)]
     pub(crate) fn build(geo: &GeometryResult) -> Self {
         Self::build_with_size(geo, PATCH_SIZE_M)
     }
 
     /// [`Self::build`] at a cell edge of `size` metres.
+    #[cfg(test)]
     pub(crate) fn build_with_size(geo: &GeometryResult, size: f64) -> Self {
+        Self::build_capped(geo, size, MAX_PATCHES).expect("a test scene's patches fit a u32 index")
+    }
+
+    /// The patch set at a cell edge of `size` metres, refused once it holds
+    /// more than `max_patches` (at most [`MAX_PATCHES`]).
+    pub(crate) fn build_capped(
+        geo: &GeometryResult,
+        size: f64,
+        max_patches: usize,
+    ) -> Result<Self, PatchCountExceeded> {
         assert!(size > 0.0 && size.is_finite(), "patch size {size}");
+        assert!(max_patches <= MAX_PATCHES, "patch cap {max_patches}");
         let section = &geo.geometry;
         let mut patches = Vec::new();
         let mut face_patches = Vec::with_capacity(section.faces.len() + 1);
@@ -172,6 +214,10 @@ impl PatchSet {
                     size,
                 );
             }
+            if patches.len() > max_patches {
+                return Err(PatchCountExceeded { max: max_patches });
+            }
+            // Checked just above against a cap no larger than `u32::MAX`.
             face_patches.push(patches.len() as u32);
         }
         debug_assert!(face_index_ends.windows(2).all(|pair| pair[0] <= pair[1]));
@@ -188,13 +234,16 @@ impl PatchSet {
             #[cfg(test)]
             _held: Default::default(),
         };
+        // Field assignment, not struct update: the test-only drop marker
+        // forbids moving fields out of a set.
         #[cfg(test)]
         let set = {
-            let held = crate::live_bytes::hold("patch set", set.heap_bytes());
+            let mut set = set;
+            set._held = crate::live_bytes::hold("patch set", set.heap_bytes());
             drop(grown);
-            Self { _held: held, ..set }
+            set
         };
-        set
+        Ok(set)
     }
 
     pub(crate) fn patches(&self) -> &[Patch] {

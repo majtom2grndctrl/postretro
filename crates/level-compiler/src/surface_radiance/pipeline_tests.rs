@@ -10,6 +10,8 @@ use postretro_test_log_capture::LogCapture;
 
 use super::PatchSet;
 use super::layer::SH_PATCH_LAYER_STAGE_ID;
+use super::layer_set::LAYER_PLAN_DROPPED;
+use super::patches::PATCH_SET_DROPPED;
 use super::stage::stage_events;
 use super::volume::SH_BASE_VOLUME_STAGE_ID;
 use crate::cache::CacheTestAccess;
@@ -65,10 +67,18 @@ impl Reporter for StageEntryRecorder {
     }
 }
 
-/// Compile `map` cold (`--no-cache`) in process; the log lines this thread
-/// captured and the stage events it recorded.
-fn compile_cold(root: &Path, map: &Path) -> (Vec<String>, Vec<String>) {
+/// Compile `map` in process, cold (`--no-cache`) or warm over `cache_dir`;
+/// the log lines this thread captured and the stage events it recorded.
+fn compile_recorded(
+    root: &Path,
+    map: &Path,
+    cache_dir: Option<&Path>,
+) -> (Vec<String>, Vec<String>) {
     let path = |path: &Path| path.to_string_lossy().into_owned();
+    let cache_flags = match cache_dir {
+        Some(dir) => vec!["--cache-dir".to_owned(), path(dir)],
+        None => vec!["--no-cache".to_owned()],
+    };
     let args = crate::parse_args_from(
         [
             path(map),
@@ -76,15 +86,16 @@ fn compile_cold(root: &Path, map: &Path) -> (Vec<String>, Vec<String>) {
             path(&root.join("out.prl")),
             "--baked-root".to_owned(),
             path(&root.join("baked")),
-            "--no-cache".to_owned(),
             "--sh-probe-spacing".to_owned(),
             "2".to_owned(),
             "--lightmap-density".to_owned(),
             "0.25".to_owned(),
         ]
-        .into_iter(),
+        .into_iter()
+        .chain(cache_flags),
     )
     .unwrap();
+    let cache = cache_dir.map(|_| crate::construct_stage_cache(&args).expect("a warm build"));
     let logs = LogCapture::start();
     stage_events::take();
     let started = Instant::now();
@@ -94,7 +105,7 @@ fn compile_cold(root: &Path, map: &Path) -> (Vec<String>, Vec<String>) {
     )));
     crate::pipeline::run(
         &args,
-        None,
+        cache,
         started,
         reporter,
         Arc::new(crate::governor::Governor::new(2, false)),
@@ -113,7 +124,7 @@ fn compile_cold(root: &Path, map: &Path) -> (Vec<String>, Vec<String>) {
 fn the_cold_sh_base_bake_frees_its_patch_cache_before_the_delta_stage_begins() {
     let root = tempfile::tempdir().unwrap();
     let map = mover_room(root.path());
-    let (logs, events) = compile_cold(root.path(), &map);
+    let (logs, events) = compile_recorded(root.path(), &map, None);
 
     let at = |event: &str| {
         events
@@ -144,6 +155,49 @@ fn the_cold_sh_base_bake_frees_its_patch_cache_before_the_delta_stage_begins() {
         .unwrap_or_else(|| panic!("{gate}"));
     let fixture = crate::fixture_pipeline::load_map(&map);
     assert_eq!(logged, PatchSet::build(&fixture.geometry).len());
+}
+
+// AC 32 on the hit path, research P26: a warm build whose gathered volume
+// hits builds no patch cache, yet still holds the gate's patch set and its
+// layer plan. Both drop inside the SH base stage, before the delta SH
+// stage begins.
+#[test]
+fn a_warm_volume_hit_frees_the_gates_patch_set_before_the_delta_stage_begins() {
+    let root = tempfile::tempdir().unwrap();
+    let map = mover_room(root.path());
+    let cache = root.path().join("cache");
+    compile_recorded(root.path(), &map, Some(&cache));
+    let (logs, events) = compile_recorded(root.path(), &map, Some(&cache));
+
+    assert!(
+        logs.iter()
+            .any(|line| line.contains("[cache] sh_base_volume hit")),
+        "the second build hits the gathered volume: {logs:?}"
+    );
+    assert!(
+        !events.contains(&stage_events::PATCH_CACHE_DROPPED.to_owned()),
+        "a volume hit builds no patch cache: {events:?}"
+    );
+    let at = |event: &str| {
+        events
+            .iter()
+            .position(|e| e == event)
+            .unwrap_or_else(|| panic!("no `{event}` in {events:?}"))
+    };
+    let (sh_begins, delta_begins) = (at("begin SH Bake"), at("begin Delta SH Bake"));
+    for marker in [PATCH_SET_DROPPED, LAYER_PLAN_DROPPED] {
+        let drops: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| *e == marker)
+            .map(|(position, _)| position)
+            .collect();
+        assert_eq!(drops.len(), 1, "{marker}: {events:?}");
+        assert!(
+            sh_begins < drops[0] && drops[0] < delta_begins,
+            "{marker}: {events:?}"
+        );
+    }
 }
 
 // AC 33: patches tile exactly the static world faces exterior culling

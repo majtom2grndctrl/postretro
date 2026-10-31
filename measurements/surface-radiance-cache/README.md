@@ -6,13 +6,13 @@ Task 8 of `context/plans/in-progress/surface-radiance-cache`: the scripted runs 
 
 - Intel(R) Core(TM) i9-9980HK @ 2.40 GHz, 16 logical cores, macOS; `prl-build` default workers 14.
 - Before: a cargo `--release` `prl-build` built from base commit d2bda6032 (the one-sample estimator). After: `cargo build --release -p postretro-level-compiler` at HEAD 194113525 -> `target/release/prl-build`. Both get identical flags. Put a current `scripts-build` beside the base binary (data-script maps need it).
-- Perf discipline for this Mac (see `feedback` notes: slowdown regime, screen saver): `caffeinate -dims` on every timed run, one bake at a time, `pgrep -fl 'cargo|prl-build|rustc'` clean first (the scripts refuse to start otherwise), pilot one config before a batch, abort on first failure.
+- Perf discipline for this Mac: it can drop into an intermittent slow regime (thermals suspected), so watch for outlier wall times. Keep the machine awake with `caffeinate -dims` on every timed run and run nothing else heavy. Also: one bake at a time, `pgrep -fl 'cargo|prl-build|rustc'` clean first (the scripts refuse to start otherwise), pilot one config before a batch, abort on first failure.
 
 ## Scripts
 
 | Script | Purpose |
 |---|---|
-| `run-bake.sh <before\|after> <repo-relative .map> <label> [outdir]` | One cold `--release --no-tui` bake; writes `<label>.{out,err}.log`, `.summary.txt` (Build Summary), `.time.txt`; deletes the PRL unless `KEEP=1`. `SCRATCH` env overrides the scratch dir that holds the base binary (`$SCRATCH/bin/prl-build-base`) and the scratch `baked/`. |
+| `run-bake.sh <before\|after> <repo-relative .map> <label> [outdir]` | One cold `--release --no-tui` bake; writes `<label>.{out,err}.log`, `.summary.txt` (Build Summary), `.time.txt`; deletes the PRL unless `KEEP=1`. A run that fails before its Build Summary leaves an empty `.summary.txt`; the committed `results/raw/sweep-256-before.summary.txt` (0 bytes) is one, and `results.md` explains the 256-light before failure. `SCRATCH` env overrides the scratch dir that holds the base binary (`$SCRATCH/bin/prl-build-base`) and the scratch `baked/`. |
 | `run-bake-ts.sh` | Same, with each stderr line prefixed by seconds since start (`ts.py`), needed for stage and progress timing. |
 | `ac36-batch.sh` | AC 36: campaign-test, stress-warren-mini, hallway-mini, before then after, plus a second campaign-test pair. |
 | `gen_light_sweep.py` | Sealed hall + pillars + an a x b grid of static lights (`--fill` adds worldspawn `_bounce_fill`, `--tex` picks the texture). |

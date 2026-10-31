@@ -369,13 +369,13 @@ fn one_sample_sh_volume_is_byte_identical_across_worker_counts() {
     assert_eq!(single, bake(7), "1 vs 7 workers");
 }
 
-/// Warm SH bakes a bounded light subset under each kept light's GLOBAL
-/// index, so a kept light traces the same one sample it does cold, and a
-/// dropped light only removes a non-negative term. Per ray, and per probe
-/// in the L0 band (a positive basis, so the probe's mean irradiance per
-/// channel), warm is never brighter than cold.
+/// A light subset passed under each kept light's original seed axis traces
+/// the same one sample per kept light as the full set, and a dropped light
+/// only removes a non-negative term. Per ray, and per probe in the L0 band
+/// (a positive basis, so the probe's mean irradiance per channel), the subset
+/// is never brighter than the full set.
 #[test]
-fn warm_light_subset_never_brightens_a_one_sample_bounce() {
+fn a_light_subset_under_kept_seed_axes_never_brightens_a_one_sample_bounce() {
     let geo = penumbra_geometry();
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let tree = tree_all_empty();
@@ -401,9 +401,9 @@ fn warm_light_subset_never_brightens_a_one_sample_bounce() {
         total_light_count: lights.len(),
     };
     let ctx = inputs.ray_ctx();
-    let cold_refs = static_light_refs(&inputs);
-    let warm_refs = [cold_refs[0], cold_refs[2]];
-    let warm_globals = [0u64, 2];
+    let full_refs = static_light_refs(&inputs);
+    let subset_refs = [full_refs[0], full_refs[2]];
+    let subset_globals = [0u64, 2];
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
 
     let mut strictly_dimmer = 0;
@@ -432,29 +432,29 @@ fn warm_light_subset_never_brightens_a_one_sample_bounce() {
                 )
                 .0
             };
-            let cold = sample(&cold_refs, None);
-            let warm = sample(&warm_refs, Some(&warm_globals));
+            let full = sample(&full_refs, None);
+            let subset = sample(&subset_refs, Some(&subset_globals));
             assert!(
-                warm.cmple(cold).all(),
-                "probe {probe_index} ray {ray_index}: warm {warm} brighter than cold {cold}"
+                subset.cmple(full).all(),
+                "probe {probe_index} ray {ray_index}: subset {subset} brighter than full {full}"
             );
         }
-        let cold = bake_probe(&inputs, origin, &cold_refs, None, 100.0, true, probe_index);
-        let warm = bake_probe(
+        let full = bake_probe(&inputs, origin, &full_refs, None, 100.0, true, probe_index);
+        let subset = bake_probe(
             &inputs,
             origin,
-            &warm_refs,
-            Some(&warm_globals),
+            &subset_refs,
+            Some(&subset_globals),
             100.0,
             true,
             probe_index,
         );
         // Band 0 holds the first three coefficients, one per channel.
         for channel in 0..3 {
-            let (w, c) = (warm.coefficients[channel], cold.coefficients[channel]);
+            let (w, c) = (subset.coefficients[channel], full.coefficients[channel]);
             assert!(
                 w <= c,
-                "probe {probe_index} channel {channel}: warm L0 {w} > cold L0 {c}"
+                "probe {probe_index} channel {channel}: subset L0 {w} > full L0 {c}"
             );
             if w < c {
                 strictly_dimmer += 1;

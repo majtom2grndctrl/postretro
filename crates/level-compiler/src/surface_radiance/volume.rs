@@ -15,7 +15,7 @@ use crate::sh_bake::{ProbeGridLayout, fold_gather_constants};
 pub(crate) const SH_BASE_VOLUME_STAGE_ID: &str = "sh_base_volume";
 /// Epoch of the entry's payload and of everything the gather computes that
 /// its key does not fold; bump when either changes.
-pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 1;
+pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 2;
 
 /// The key of the gathered volume: every input the sum, the later bounces
 /// and the probe gather read.
@@ -23,11 +23,15 @@ pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 1;
 /// - The layer plan in content order, each layer's digest, effective
 ///   embedded flag and occurrence count, so the summed bounce one with its
 ///   multiplicity (a duplicate light misses), plus the layers' own epoch.
-/// - What every layer key shares: the geometry (so patches, occluders and
-///   gather hits), the bounce materials and the patch constants.
+/// - What every layer key shares: the geometry a layer reads (so patches,
+///   occluders and gather hits), the bounce materials, and the patch and
+///   shading constants.
+/// - Every face's cell id, which orders the BVH and so which of two
+///   equal-distance hits a later-bounce or gather ray keeps
+///   ([`LayerKeys::cell_id_fingerprint`]).
 /// - The probe grid: spacing, origin, cell size, dimensions, miss distance
-///   and every probe's validity, which the tree decides and the geometry
-///   hash does not cover.
+///   and every probe's validity, which the tree decides and no geometry
+///   digest covers.
 /// - The fill, with −0.0 read as 0.0 so one fill has one key.
 /// - The later bounces' count and rays per patch, the patch lookup, and the
 ///   gather's own constants ([`fold_gather_constants`]).
@@ -44,6 +48,7 @@ pub(crate) fn volume_key(
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sh base volume\0");
     hasher.update(&layer_keys.shared_fingerprint());
+    hasher.update(&layer_keys.cell_id_fingerprint());
     hasher.update(&SH_PATCH_LAYER_STAGE_VERSION.to_le_bytes());
     hasher.update(&(plan.layers.len() as u64).to_le_bytes());
     for planned in &plan.layers {

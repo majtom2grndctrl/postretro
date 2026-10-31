@@ -56,7 +56,7 @@ pub struct BillboardDirectScatterBakeInputs<'a, 'b> {
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'b>,
     /// Static lights whose emitter sphere reaches into geometry, keyed by
-    /// global static index ([`crate::direct_sh_bake::embedded_emitters`]).
+    /// global static index ([`crate::direct_sh_bake::probe_point_emitters`]).
     pub(crate) static_embedded_emitters: &'a EmbeddedEmitters,
     /// Animated lights whose emitter sphere reaches into geometry, keyed by
     /// position in `animated_lights`

@@ -7,11 +7,13 @@ use glam::Vec3;
 use rayon::prelude::*;
 
 use super::patches::{MIN_PATCH_AREA_M2, PATCH_SIZE_M, PatchSet, Side};
-use crate::bake_content_keys::{bounce_material_hash, fold_bounce_hash, geometry_content_hash};
+use crate::bake_content_keys::{bounce_material_hash, fold_bounce_hash};
 use crate::bake_control::BakeControl;
 use crate::cache::CacheKey;
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_early_out};
+use crate::lightmap_bake::{
+    DEFAULT_AREA_SAMPLE_COUNT, fold_soft_visibility_constants, soft_visibility_early_out,
+};
 use crate::map_data::{FalloffModel, LightType, MapLight};
 use crate::sh_bake::{
     RaytracingCtx, bounce_contribution, reflected_radiance, segment_clear, soft_visibility_seed,
@@ -22,7 +24,7 @@ use crate::texel_footprint::ProbeEarlyOut;
 /// Build-cache stage id of one light's layer.
 pub(crate) const SH_PATCH_LAYER_STAGE_ID: &str = "sh_patch_layer";
 /// Epoch of the layer's shading and payload; bump when either changes.
-pub(crate) const SH_PATCH_LAYER_STAGE_VERSION: u32 = 1;
+pub(crate) const SH_PATCH_LAYER_STAGE_VERSION: u32 = 2;
 
 /// Patches one governed work item shades. Chunks split a layer's reach in a
 /// fixed way, so the layer does not depend on which worker ran which chunk.
@@ -148,18 +150,21 @@ fn fold_optional<const N: usize>(hasher: &mut blake3::Hasher, value: Option<[u8;
     }
 }
 
-/// The inputs every layer key of one bake shares: the geometry (so the
-/// patch set and every occluder), the bounce materials, and the constants
-/// that shape patches and their shading.
+/// The inputs every layer key of one bake shares: the geometry a layer
+/// reads ([`layer_geometry_digest`]), the bounce materials, and the
+/// constants that shape patches and their shading.
 pub(crate) struct LayerKeys {
     shared: blake3::Hasher,
+    /// [`Self::cell_id_fingerprint`], which no layer key folds.
+    cell_ids: [u8; 32],
 }
 
 impl LayerKeys {
-    /// Hashes the whole geometry once; built only when a cache is read.
+    /// Digests the geometry once. Built whenever the bake has a cache, for
+    /// its reads and its writes alike.
     pub(crate) fn new(geometry: &GeometryResult, materials: Option<&BounceMaterials>) -> Self {
         let mut shared = blake3::Hasher::new();
-        shared.update(&geometry_content_hash(geometry));
+        shared.update(&layer_geometry_digest(geometry));
         fold_bounce_hash(
             &mut shared,
             bounce_material_hash(materials, geometry).as_ref(),
@@ -171,13 +176,32 @@ impl LayerKeys {
         shared.update(&DEFAULT_AREA_SAMPLE_COUNT.to_le_bytes());
         // An unresolved texture reflects this grey, so it shapes layer bytes.
         shared.update(&crate::surface_materials::stats::GREY_BOUNCE_ALBEDO.to_le_bytes());
-        Self { shared }
+        // The patch seed's avalanche offset and the occlusion segment's
+        // self-intersection step, both the SH bake's.
+        shared.update(&crate::sh_bake::SAMPLING_LATTICE_OFFSET.to_le_bytes());
+        shared.update(&crate::sh_bake::RAY_EPSILON.to_le_bytes());
+        // Soft visibility's own lift, lattice rotation, sun ray length,
+        // probe count and sampling epoch.
+        fold_soft_visibility_constants(&mut shared);
+        Self {
+            shared,
+            cell_ids: cell_id_digest(geometry),
+        }
     }
 
     /// The digest of the inputs every layer key shares, for a key over the
     /// layers' sum to fold.
     pub(crate) fn shared_fingerprint(&self) -> [u8; 32] {
         *self.shared.finalize().as_bytes()
+    }
+
+    /// Every face's cell id, in face order, for the gathered volume's key.
+    /// The BVH sorts its primitives by cell id, and a closest hit keeps the
+    /// first of equal-distance hits, so a renumber can move a later-bounce
+    /// or gather tie. A layer's occlusion is any-hit, whose answer no
+    /// traversal order changes, so no layer key folds this.
+    pub(crate) fn cell_id_fingerprint(&self) -> [u8; 32] {
+        self.cell_ids
     }
 
     /// The key of the layer of a light with content `digest`. `embedded` is
@@ -196,6 +220,78 @@ impl LayerKeys {
     }
 }
 
+/// blake3 over exactly the geometry a layer reads: every vertex position,
+/// the index buffer, and each face's index range and texture index. Patches
+/// build from those, their normals from the positions; occlusion traces
+/// those triangles; albedo follows the texture index. A face's cell id
+/// (`leaf_index`) stays out: it only orders BVH primitives, and occlusion
+/// is any-hit ([`LayerKeys::cell_id_fingerprint`]). The texture-name table
+/// stays out too: albedo enters through the bounce-material fold, by index,
+/// and the pipeline appends mover-only names before this stage.
+fn layer_geometry_digest(geometry: &GeometryResult) -> [u8; 32] {
+    let section = &geometry.geometry;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sh patch layer geometry\0");
+    hasher.update(&(section.vertices.len() as u64).to_le_bytes());
+    fold_words(
+        &mut hasher,
+        section
+            .vertices
+            .iter()
+            .flat_map(|vertex| vertex.position.map(f32::to_le_bytes)),
+    );
+    hasher.update(&(section.indices.len() as u64).to_le_bytes());
+    fold_words(
+        &mut hasher,
+        section.indices.iter().map(|index| index.to_le_bytes()),
+    );
+    hasher.update(&(section.faces.len() as u64).to_le_bytes());
+    fold_words(
+        &mut hasher,
+        section
+            .faces
+            .iter()
+            .zip(&geometry.face_index_ranges)
+            .flat_map(|(face, range)| {
+                [face.texture_index, range.index_offset, range.index_count].map(u32::to_le_bytes)
+            }),
+    );
+    *hasher.finalize().as_bytes()
+}
+
+/// blake3 over every face's cell id, in face order.
+fn cell_id_digest(geometry: &GeometryResult) -> [u8; 32] {
+    let faces = &geometry.geometry.faces;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"sh base face cell ids\0");
+    hasher.update(&(faces.len() as u64).to_le_bytes());
+    fold_words(
+        &mut hasher,
+        faces.iter().map(|face| face.leaf_index.to_le_bytes()),
+    );
+    *hasher.finalize().as_bytes()
+}
+
+/// Feed 4-byte words to `hasher` through a fixed buffer, so a large
+/// geometry hashes in a few large updates rather than one per word.
+fn fold_words(hasher: &mut blake3::Hasher, words: impl Iterator<Item = [u8; 4]>) {
+    let mut buffer = [0u8; 4096];
+    let mut len = 0;
+    for word in words {
+        buffer[len..len + 4].copy_from_slice(&word);
+        len += 4;
+        if len == buffer.len() {
+            hasher.update(&buffer);
+            len = 0;
+        }
+    }
+    hasher.update(&buffer[..len]);
+}
+
+// Payload layout, little-endian: a header of magic, the patch set's size
+// and the entry count (4 B each), then per entry 4 B patch, 1 B side and
+// 12 B RGB radiance. A layout change needs an
+// `SH_PATCH_LAYER_STAGE_VERSION` bump.
 const LAYER_MAGIC: [u8; 4] = *b"SRPL";
 const HEADER_BYTES: usize = 12;
 const ENTRY_BYTES: usize = 17;
@@ -210,9 +306,18 @@ impl SparseLayer {
     /// Write the serialized layer, entry by entry, so a cache write holds no
     /// second copy of the layer.
     pub(crate) fn write_to(&self, patch_count: usize, out: &mut dyn Write) -> io::Result<()> {
+        let patch_count = u32::try_from(patch_count).expect("patch count checked at plan time");
+        // Up to two entries per patch, so a count past `u32::MAX` is possible
+        // in principle: the entry is then not cached, and the bake goes on.
+        let entry_count = u32::try_from(self.entries.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "patch layer entry count exceeds u32",
+            )
+        })?;
         out.write_all(&LAYER_MAGIC)?;
-        out.write_all(&(patch_count as u32).to_le_bytes())?;
-        out.write_all(&(self.entries.len() as u32).to_le_bytes())?;
+        out.write_all(&patch_count.to_le_bytes())?;
+        out.write_all(&entry_count.to_le_bytes())?;
         for entry in &self.entries {
             let mut bytes = [0u8; ENTRY_BYTES];
             bytes[..4].copy_from_slice(&entry.patch.to_le_bytes());
@@ -243,7 +348,13 @@ impl SparseLayer {
     /// the entry count's, or entries out of range or out of order.
     pub(crate) fn from_bytes(bytes: &[u8], patch_count: usize) -> Option<Self> {
         let header = bytes.get(..HEADER_BYTES)?;
-        let word = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        let word = |at: usize| {
+            u32::from_le_bytes(
+                header[at..at + 4]
+                    .try_into()
+                    .expect("a header word is four bytes"),
+            )
+        };
         if header[..4] != LAYER_MAGIC || word(4) as usize != patch_count {
             return None;
         }
@@ -256,7 +367,11 @@ impl SparseLayer {
         #[cfg(test)]
         let held = crate::live_bytes::hold_vec("patch layers", &entries);
         for record in body.as_chunks::<ENTRY_BYTES>().0 {
-            let patch = u32::from_le_bytes(record[..4].try_into().unwrap());
+            let patch = u32::from_le_bytes(
+                record[..4]
+                    .try_into()
+                    .expect("an entry opens with its four-byte patch"),
+            );
             let side = match record[4] {
                 0 => Side::Front,
                 1 => Side::Back,
@@ -383,4 +498,63 @@ struct ChunkEntries {
     entries: Vec<LayerEntry>,
     #[cfg(test)]
     _held: crate::live_bytes::Held,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_scene::{Scene, room_lights};
+    use super::*;
+
+    /// Every layer key of `lights` over `scene`, and the gathered volume's.
+    fn keys(scene: &Scene, lights: &[MapLight]) -> (Vec<String>, String) {
+        let layers = lights
+            .iter()
+            .map(|light| scene.key(light).as_filename())
+            .collect();
+        (layers, scene.volume_key(lights).as_filename())
+    }
+
+    // Research P20: a face's cell id and the texture-name table reach no
+    // layer, so a brush edit that only renumbers cells, or a mover-only
+    // texture the pipeline appends to the name table, leaves every layer
+    // key. A cell renumber still misses the gathered volume, whose
+    // closest-hit ties follow BVH order; a name append does not. A moved
+    // vertex or a face's texture index re-keys every layer.
+    #[test]
+    fn a_cell_renumber_or_a_texture_name_append_leaves_every_layer_key() {
+        let base = Scene::new();
+        let lights = room_lights();
+        let (layers, volume) = keys(&base, &lights);
+
+        let mut renumbered = base.geometry.clone();
+        for face in &mut renumbered.geometry.faces {
+            face.leaf_index += 3;
+        }
+        let (renumbered_layers, renumbered_volume) = keys(&Scene::of(renumbered), &lights);
+        assert_eq!(
+            renumbered_layers, layers,
+            "a cell renumber re-keyed a layer"
+        );
+        assert_ne!(renumbered_volume, volume, "a cell renumber kept the volume");
+
+        let mut appended = base.geometry.clone();
+        appended
+            .texture_names
+            .names
+            .push("bounce/mover_only".to_owned());
+        let (appended_layers, appended_volume) = keys(&Scene::of(appended), &lights);
+        assert_eq!(appended_layers, layers, "a name append re-keyed a layer");
+        assert_eq!(appended_volume, volume, "a name append re-keyed the volume");
+
+        let mut moved = base.geometry.clone();
+        moved.geometry.vertices[0].position[1] += 0.01;
+        let mut retextured = base.geometry.clone();
+        retextured.geometry.faces[0].texture_index += 1;
+        for (edit, geometry) in [("moved vertex", moved), ("texture index", retextured)] {
+            let (edited, _) = keys(&Scene::of(geometry), &lights);
+            for (before, after) in layers.iter().zip(&edited) {
+                assert_ne!(before, after, "{edit} kept a layer key");
+            }
+        }
+    }
 }

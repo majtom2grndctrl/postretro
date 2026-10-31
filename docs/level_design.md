@@ -111,6 +111,8 @@ Radiates light in all directions from a single point.
 
 **Bounce colour.** Baked indirect light takes each static-world texture's average diffuse colour, so repainting a texture changes the colour it spills onto its surroundings. A texel "renders as glow" when its `_e` (emissive) map has non-zero colour there and the texture's name prefix gives it emissive strength, as `neon_` does (see Material System under Textures); glow texels are left out when non-glowing texels remain, and a fully glowing texture uses its full average. A face with no diffuse texture bounces neutral mid-grey. Only static world faces bounce colour: movers, fluids and models do not. Emissive textures still need a separate light entity to light a scene.
 
+**Bounce fill.** `_bounce_fill` on `worldspawn` sets how much light keeps bouncing after its first bounce off a surface, from `0` to `1` (default `1.0`). At `0` the baked indirect light is a single bounce: light still reaches a room through its openings, but a surface no light reaches directly stays dark. At `1` it is the full physical fill, so light reflected out of a lit room carries on into the rooms around it; values between blend the two. It is a map key, not a compiler flag, so the look travels with the map. A value outside `0`–`1`, or one that is not a number, warns and uses the default.
+
 **Keep static lights out of solid.** A static `light` or `light_spot` whose origin sits inside a brush is dropped at compile time, and the compiler warns, naming the entity. It lights nothing, has no runtime presence, and won't match `getMapEntities("light", …)`. A light flush against a brush face is kept, not dropped, but a default-size emitter then sits half inside the wall and the compiler warns about it (see `_light_size` above): keep it clear of surfaces or shrink `_light_size`. If you see the dropped-light warning, move the light into open space. Dynamic lights and `light_sun` are never dropped this way.
 
 ---
@@ -542,14 +544,6 @@ base-density classifier's error gates (default `1.0`): smaller positive values
 retain more L0 data, while larger values permit more L1/L2 storage. Invalid
 values fall back to the default. The `--sh-density-fidelity` compiler flag
 overrides the worldspawn value for a bake.
-
-`_bounce_fill` on `worldspawn` sets how much light keeps bouncing after its
-first bounce off a surface, from `0` to `1` (default `1.0`). At `0` the baked
-indirect light is a single bounce: a room no light reaches stays dark. At `1`
-it is the full physical fill, so light reflected out of a lit room carries on
-into the rooms around it; values between blend the two. It is a map key, not a
-compiler flag, so the look travels with the map. A value outside `0`–`1`, or
-one that is not a number, warns and uses the default.
 
 `sh_protect_volume` is an invisible brush entity that forces every intersecting
 4×4×4 probe brick to L0 (full valid-probe density) in both the stored base

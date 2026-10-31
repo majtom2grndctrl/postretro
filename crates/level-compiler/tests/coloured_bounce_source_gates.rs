@@ -507,16 +507,20 @@ fn bounce_fill_is_documented_in_the_fgd_and_level_design_docs() {
     }
 
     let docs = std::fs::read_to_string(workspace_root().join("docs/level_design.md")).unwrap();
+    // Whitespace-normalised, so reflowing the paragraph never fails the gate.
     let paragraph = docs
         .split("\n\n")
         .find(|paragraph| paragraph.contains("`_bounce_fill`"))
-        .expect("docs/level_design.md describes _bounce_fill");
+        .expect("docs/level_design.md describes _bounce_fill")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     for needle in [
         "`worldspawn`".to_owned(),
         "`0`".to_owned(),
         "`1`".to_owned(),
         format!("default `{default}`"),
-        "not a\ncompiler flag".to_owned(),
+        "not a compiler flag".to_owned(),
     ] {
         assert!(
             paragraph.contains(&needle),

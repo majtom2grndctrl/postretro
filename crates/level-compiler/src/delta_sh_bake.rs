@@ -25,7 +25,7 @@
 // Sub-blocks are COINCIDENT with base SH probes 1:1: the base-probe global coords
 // of in-cell probe `local` in cell `(cx,cy,cz)` are `(cx*4+lx, cy*4+ly, cz*4+lz)`
 // and its world position is `base_origin + global_coords * base_spacing` — the
-// same origin/spacing the base `bake_sh_volume` uses.
+// same origin/spacing the base SH grid uses (`probe_grid_layout`).
 //
 // Index-space contract: `affinity_lights[i]` and
 // `animation_descriptor_indices[affinity_lights[i]]` both index
@@ -168,13 +168,13 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     let probe_spacing = config.probe_spacing;
     let animated_light_count = inputs.animated_lights.len();
 
-    // Base SH grid origin/spacing — these MUST match `bake_sh_volume` so the
+    // Base SH grid origin/spacing — these MUST match `probe_grid_layout` so the
     // affinity cells (and thus the baked sub-blocks) land on real base probes.
     let base_origin = world_aabb_min(inputs);
 
     // Affinity decomposition: per-light affinity-cell lists + grid dims. Shares
     // the same world AABB / spacing as the base grid (the `geometry_vertices`
-    // and `probe_spacing` are identical to `bake_sh_volume`'s).
+    // and `probe_spacing` are identical to `probe_grid_layout`'s).
     let geometry_vertices = vertex_positions(inputs);
     let decomposition = decompose_affinity(&AffinityInputs {
         geometry_vertices: &geometry_vertices,

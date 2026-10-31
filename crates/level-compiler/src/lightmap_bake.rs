@@ -100,6 +100,25 @@ const DIRECTIONAL_LIGHT_RAY_LENGTH_METERS: f32 = 10_000.0;
 /// identically. No RNG: identical input yields byte-identical output.
 const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
+/// Epoch of soft-visibility sampling: the emitter lattices, the probe set
+/// and its snap, the probe early-out and the escalation. Bump it whenever
+/// that sampling changes; the constants it reads fold on their own
+/// ([`fold_soft_visibility_constants`]).
+pub(crate) const SOFT_VISIBILITY_EPOCH: u32 = 1;
+
+/// Fold everything soft visibility reads that its caller does not pass into
+/// `hasher`: the shadow-ray lift, the lattice rotation, a sun's shadow-ray
+/// length, the probe count and [`SOFT_VISIBILITY_EPOCH`]. A cache key over
+/// output that soft visibility shapes folds this, so editing one misses it.
+pub(crate) fn fold_soft_visibility_constants(hasher: &mut blake3::Hasher) {
+    hasher.update(b"soft visibility\0");
+    hasher.update(&SOFT_VISIBILITY_EPOCH.to_le_bytes());
+    hasher.update(&RAY_EPSILON.to_le_bytes());
+    hasher.update(&SAMPLING_LATTICE_OFFSET.to_le_bytes());
+    hasher.update(&DIRECTIONAL_LIGHT_RAY_LENGTH_METERS.to_le_bytes());
+    hasher.update(&SOFT_PROBE_SAMPLES.to_le_bytes());
+}
+
 /// Errors surfaced from the lightmap bake stage. Caller can retry at a coarser texel density.
 #[derive(Debug, Error)]
 pub enum LightmapBakeError {

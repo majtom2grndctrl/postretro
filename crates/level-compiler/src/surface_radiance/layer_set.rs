@@ -39,6 +39,18 @@ pub(crate) struct LayerPlan {
     _held: crate::live_bytes::Held,
 }
 
+/// Marks a plan's drop on this thread, so a test can see the SH base stage
+/// free its per-light metadata, the volume-hit path included.
+#[cfg(test)]
+pub(crate) const LAYER_PLAN_DROPPED: &str = "surface radiance layer plan dropped";
+
+#[cfg(test)]
+impl Drop for LayerPlan {
+    fn drop(&mut self) {
+        super::stage::stage_events::record(LAYER_PLAN_DROPPED);
+    }
+}
+
 impl LayerPlan {
     /// `light_reach[i]` and `embedded`'s key `i` both describe `lights[i]`,
     /// the static-light slice.
@@ -189,8 +201,10 @@ pub(crate) fn resolve_layers(
                 .in_reach(light);
             #[cfg(test)]
             let in_reach_held = crate::live_bytes::hold_vec("in-reach lists", &in_reach);
-            // AC 31: a layer shades exactly the patches the gate priced in
-            // its reach, so the gate's patch set is the set the bake shades.
+            // A consistency check, not an independent proof: the gate counted
+            // `planned.reach` by this same walk over this same patch set. The
+            // bake shades the set the gate priced because the gate's
+            // `PatchSet` and reach move whole into it.
             #[cfg(any(test, debug_assertions))]
             assert_eq!(
                 in_reach.len() as u64,

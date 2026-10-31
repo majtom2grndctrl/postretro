@@ -43,15 +43,16 @@ const DIRECTIONAL_FALLBACK_RANGE_METERS: f32 = 100.0;
 const CONE_BOUNDARY_TOLERANCE_RADIANS: f32 = 1.0e-4;
 
 /// Inputs for the affinity decomposition. The base SH volume's AABB and probe
-/// spacing must match the base `bake_sh_volume` call so affinity cells align
-/// with real base probes; pass the same world vertex bounds and `probe_spacing`.
+/// spacing must match the base SH grid (`probe_grid_layout`) so affinity
+/// cells align with real base probes; pass the same world vertex bounds and
+/// `probe_spacing`.
 pub struct AffinityInputs<'a> {
     pub geometry_vertices: &'a [[f32; 3]],
     pub tree: &'a BspTree,
     pub exterior_leaves: &'a HashSet<usize>,
     pub portals: &'a [Portal],
     pub animated_lights: &'a AnimatedBakedLights<'a>,
-    /// Base SH probe spacing, meters. Same value passed to `bake_sh_volume`.
+    /// Base SH probe spacing, meters. Same value the base SH grid uses.
     pub probe_spacing: f32,
 }
 

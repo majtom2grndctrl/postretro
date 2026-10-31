@@ -138,8 +138,9 @@ pub(crate) struct PartitionHooks {
 
 /// Warn each static light flagged by this stage's emitter test (`texels`,
 /// keyed by source index) or by the probe-point bakes' test (`probes`, keyed
-/// by position in `static_lights`, [`crate::direct_sh_bake::embedded_emitters`]),
-/// once, on the caller thread. The probe stages run first and do not warn, so
+/// by position in `static_lights`,
+/// [`crate::direct_sh_bake::probe_point_emitters`]), once, on the caller
+/// thread. The probe stages run first and do not warn, so
 /// a light only they flag still warns here.
 fn warn_embedded_emitters(
     texels: &EmbeddedEmitters,

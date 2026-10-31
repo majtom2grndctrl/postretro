@@ -32,8 +32,15 @@ pub(crate) struct PatchReachIndex<'a> {
 
 impl<'a> PatchReachIndex<'a> {
     /// Every allocation is exact, so the index and its build scratch hold
-    /// at most [`REACH_INDEX_BYTES_PER_PATCH`] per patch.
+    /// at most [`REACH_INDEX_BYTES_PER_PATCH`] per patch. `patches` is a
+    /// [`super::patches::PatchSet`]'s, whose build refuses past `u32::MAX`
+    /// patches, so the `as u32` casts on patch indices and positions here
+    /// never truncate.
     pub(crate) fn new(patches: &'a [Patch]) -> Self {
+        debug_assert!(
+            patches.len() <= super::patches::MAX_PATCHES,
+            "patch count checked at plan time"
+        );
         let mut keyed: Vec<([i32; 3], u32)> = patches
             .iter()
             .enumerate()

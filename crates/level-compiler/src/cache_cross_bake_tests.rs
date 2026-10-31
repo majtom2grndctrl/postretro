@@ -1416,8 +1416,8 @@ fn lighting_scale_cache_versions_pin_current_epochs() {
     assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 4);
     assert_eq!(ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
     assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 5);
-    assert_eq!(SH_PATCH_LAYER_STAGE_VERSION, 1);
-    assert_eq!(SH_BASE_VOLUME_STAGE_VERSION, 1);
+    assert_eq!(SH_PATCH_LAYER_STAGE_VERSION, 2);
+    assert_eq!(SH_BASE_VOLUME_STAGE_VERSION, 2);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

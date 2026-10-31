@@ -66,8 +66,9 @@ pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
 
 const RAYS_PER_PROBE: u32 = 256;
 
-// The one-sample bounce strides a probe's rays across the emitter lattice; a
-// whole number of passes is what makes every lattice sample equally likely.
+// The delta bake's one-sample bounce strides a probe's rays across the
+// emitter lattice; a whole number of passes is what makes every lattice
+// sample equally likely.
 const _: () = assert!(RAYS_PER_PROBE.is_multiple_of(DEFAULT_AREA_SAMPLE_COUNT));
 
 /// Fallback albedo when a hit has no resolved diffuse mean. SH stays
@@ -78,18 +79,19 @@ const BOUNCE_ALBEDO: f32 = crate::surface_materials::stats::GREY_BOUNCE_ALBEDO;
 pub(crate) const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// Offset to avoid self-intersections at the probe origin and shadow-ray hit points.
-const RAY_EPSILON: f32 = 1.0e-3;
+pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Rotates the Fibonacci lattice off the (0,0,1) axis so axis-aligned light directions
 /// don't land on a degenerate sample. No RNG — identical input yields byte-identical output.
-const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
+pub(crate) const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
 /// How the bounce resolves a soft light's shadow at a gather-ray hit. A hard
 /// light traces its one hard ray either way, bit for bit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum BounceVisibility {
     /// One emitter sample per (hit, light), stratified across the probe's
-    /// gather rays (`bounce_sample_index`). Every bake ships this.
+    /// gather rays (`bounce_sample_index`). The animated delta bake (id 27)
+    /// ships this; the SH base (id 34) gathers from patches instead.
     OneSample,
     /// `soft_visibility`'s probe-and-escalate set at every hit: the bake
     /// before stratification, kept as the parity reference. A light the set
@@ -110,7 +112,13 @@ pub(crate) enum BounceVisibility {
 #[derive(Clone, Copy)]
 pub(crate) enum RadianceSource<'a> {
     /// Shade every static light at the hit, resolving soft shadows by the
-    /// visibility mode: today's per-hit estimator.
+    /// visibility mode: the per-hit estimator (the delta bake reaches it
+    /// through `bake_probe_indirect_rgb`), here as the SH base's test-only
+    /// reference.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the test-only reference bakes construct it")
+    )]
     Lights(BounceVisibility),
     /// Read the surface radiance cache's patch at the hit; traces no shadow
     /// ray. The SH base bake, warm and cold (`surface_radiance::bake_sh_base`).
@@ -184,13 +192,22 @@ pub(crate) fn static_light_refs<'a>(inputs: &ShBakeCtx<'a>) -> Vec<&'a MapLight>
         .collect()
 }
 
-/// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty geometry,
-/// matching the "no SH section" degradation path at runtime.
-pub fn bake_sh_volume(inputs: &ShBakeCtx<'_>, config: &ShConfig) -> OctahedralShVolumeSection {
+/// The SH base's per-hit reference: the whole volume baked by shading every
+/// static light at each gather hit with the one-sample bounce, where
+/// production gathers from patches (`surface_radiance::bake_sh_base`).
+/// Returns an empty section (`grid_dimensions == [0,0,0]`) for empty
+/// geometry, matching the "no SH section" degradation path at runtime.
+#[cfg(test)]
+pub(crate) fn bake_sh_volume(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+) -> OctahedralShVolumeSection {
     bake_sh_volume_controlled(inputs, config, &BakeControl::unrestricted())
 }
 
-pub fn bake_sh_volume_controlled(
+/// [`bake_sh_volume`] under `control`.
+#[cfg(test)]
+pub(crate) fn bake_sh_volume_controlled(
     inputs: &ShBakeCtx<'_>,
     config: &ShConfig,
     control: &BakeControl,
@@ -198,8 +215,10 @@ pub fn bake_sh_volume_controlled(
     bake_sh_volume_with_visibility(inputs, config, control, BounceVisibility::OneSample)
 }
 
-/// The whole-volume bake with the bounce's soft-light visibility chosen; the
-/// production entry points pass [`BounceVisibility::OneSample`].
+/// The per-hit reference with the bounce's soft-light visibility chosen:
+/// [`BounceVisibility::OneSample`] is [`bake_sh_volume`]; the full-set modes
+/// are the parity reference.
+#[cfg(test)]
 pub(crate) fn bake_sh_volume_with_visibility(
     inputs: &ShBakeCtx<'_>,
     config: &ShConfig,
@@ -209,29 +228,19 @@ pub(crate) fn bake_sh_volume_with_visibility(
     bake_sh_volume_with_source(inputs, config, control, RadianceSource::Lights(visibility))
 }
 
-/// The whole-volume bake with the gather hits' radiance source chosen.
+/// The whole-volume bake with the gather hits' radiance source chosen,
+/// publishing one unit per probe. Production resolves its own layout and
+/// calls [`bake_sh_volume_over`].
+#[cfg(test)]
 pub(crate) fn bake_sh_volume_with_source(
     inputs: &ShBakeCtx<'_>,
     config: &ShConfig,
     control: &BakeControl,
     source: RadianceSource<'_>,
 ) -> OctahedralShVolumeSection {
-    bake_sh_volume_after(inputs, config, control, source, 0)
-}
-
-/// [`bake_sh_volume_with_source`] as the last phase of a stage whose
-/// earlier phases published `prior_units` of progress: the total it
-/// publishes counts them, one unit per probe after.
-pub(crate) fn bake_sh_volume_after(
-    inputs: &ShBakeCtx<'_>,
-    config: &ShConfig,
-    control: &BakeControl,
-    source: RadianceSource<'_>,
-    prior_units: usize,
-) -> OctahedralShVolumeSection {
     let layout = probe_grid_layout(inputs, config);
     if !layout.is_empty() {
-        control.publish_total(prior_units + layout.total_probes());
+        control.publish_total(layout.total_probes());
     }
     bake_sh_volume_over(inputs, &layout, control, source)
 }

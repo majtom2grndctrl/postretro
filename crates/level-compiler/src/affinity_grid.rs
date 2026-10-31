@@ -512,7 +512,7 @@ fn world_aabb_for_directional(vertices: &[[f32; 3]]) -> (DVec3, DVec3) {
     (min, max)
 }
 
-/// Base SH grid dims — identical to `sh_bake::grid_dimensions` so the affinity
+/// Base SH grid dims — identical to `sh_bake::grid::grid_dimensions` so the affinity
 /// grid is derived from the same probe count the base volume bakes.
 fn grid_dimensions(min: DVec3, max: DVec3, spacing: f32) -> [u32; 3] {
     let extents = (max - min).max(DVec3::splat(0.0));

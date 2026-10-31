@@ -536,7 +536,7 @@ fn vertex_positions(inputs: &DeltaBakeInputs<'_>) -> Vec<[f32; 3]> {
 }
 
 /// Base SH grid origin = geometry vertex AABB min. Identical to
-/// `sh_bake::world_aabb`'s min so sub-blocks are coincident with base probes.
+/// `sh_bake::grid::world_aabb`'s min so sub-blocks are coincident with base probes.
 /// Returns the origin alone; an empty-geometry origin is unused (the empty-light
 /// guard already returned `None` only when there ARE animated lights, but a map
 /// with animated lights and no geometry yields a degenerate but valid section).

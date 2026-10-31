@@ -1,7 +1,17 @@
 // Shared SH base/delta per-hit bounce estimator.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
-use super::*;
+use glam::Vec3;
+
+use super::light_eval::bounce_contribution;
+use super::trace::{closest_hit, segment_clear};
+use super::{
+    BOUNCE_ALBEDO, BounceVisibility, RAY_EPSILON, RaytracingCtx, SAMPLING_LATTICE_OFFSET, SKY_COLOR,
+};
+#[cfg(test)]
+use crate::lightmap_bake::soft_visibility;
+use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_one_sample};
+use crate::map_data::MapLight;
 
 /// Deterministic per-(probe, ray, light) seed for the soft-visibility area-sample
 /// rotation. `sh_bake` has no texel coordinate to hash (unlike the lightmap/animated

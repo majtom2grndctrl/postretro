@@ -7,6 +7,8 @@ use postretro_level_format::delta_sh_volumes::{
     DEFAULT_DELTA_PROBE_F16_STRIDE, DELTA_TILE_TEXEL_F16_COUNT, DeltaShVolumesSection,
     PROBES_PER_CELL,
 };
+use postretro_level_format::lightmap::f32_to_f16_bits;
+use postretro_level_format::octahedral::irradiance_array_tile_location;
 use postretro_render_cpu::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
 
 use super::*;

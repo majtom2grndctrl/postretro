@@ -1,9 +1,16 @@
 //! One-sample SH bounce: stratification, parity with the full set, determinism.
 //! See: context/lib/build_pipeline.md §PRL Compilation (Soft-shadow bake cost)
 
-use super::tests::{multi_triangle_geometry, soft_point_light, tree_all_empty};
+use glam::{DVec3, Vec3};
+
+use super::bounce::*;
+use super::light_eval::*;
+use super::test_fixtures::{multi_triangle_geometry, soft_point_light, tree_all_empty};
+use super::trace::*;
 use super::*;
 use crate::bvh_build::build_bvh;
+use crate::lightmap_bake::{soft_visibility, soft_visibility_one_sample};
+use crate::map_data::LightType;
 
 /// Floor at y = 0 with a half-plane occluder at y = 2.5 over +X: a soft
 /// light overhead throws a wide penumbra across the floor near x = 0.

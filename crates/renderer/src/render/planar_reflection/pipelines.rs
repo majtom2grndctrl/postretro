@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::fluid_surface::FLUID_SURFACE_VERTEX_STRIDE;
 
 pub(super) const MASK_SHADER_SOURCE: &str = include_str!("../../shaders/planar_mask.wgsl");
@@ -139,7 +140,7 @@ fn mask_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu:
         bind_group_layouts: &[Some(layout)],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Planar Mask Pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -190,7 +191,7 @@ fn resolve_pipeline(
         bind_group_layouts: &[Some(camera_layout), Some(material_layout), Some(layout)],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Planar Resolve Pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {

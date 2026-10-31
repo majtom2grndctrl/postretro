@@ -24,6 +24,7 @@ mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
+pub(crate) mod gpu_create;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod kinematic_ghost_shape;
@@ -154,7 +155,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 /// Linear HDR target shared by every gameplay scene pass.
@@ -174,6 +174,7 @@ use crate::render::loaded_texture::{
     LoadedTexture, TextureLoadTiming, load_model_diffuse_texture, load_textures,
     placeholder_loaded_texture,
 };
+pub use gpu_create::{GpuCreationCounts, gpu_creation_counts};
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_loader::MapLight;

@@ -1,6 +1,7 @@
 // Skinned-mesh shadow-depth pipeline and draw recording.
 // See: context/lib/rendering_pipeline.md §7.1, §9
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_model::ModelHandle;
 use postretro_render_cpu::mesh_instances::{JointCounts, MeshFramePlan, instance_casts_into_cone};
 
@@ -63,7 +64,7 @@ pub(super) fn create_skinned_depth_pipeline(
         ],
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Skinned Depth Pipeline"),
         layout: Some(&depth_pipeline_layout),
         vertex: wgpu::VertexState {

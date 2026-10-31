@@ -9,6 +9,7 @@
 // maps) from the forward pass — the bind-group *objects* are shared, not
 // re-uploaded. Group 6 layout is owned here.
 
+use crate::render::gpu_create::GpuCreate;
 use glam::{Mat4, Vec3};
 
 use super::SCENE_COLOR_FORMAT;
@@ -257,14 +258,14 @@ impl FogPass {
         // Initial fog-volumes buffer: zero-count dummy record. wgpu rejects
         // zero-sized storage buffers, so we always size for MAX_FOG_VOLUMES
         // and track the real count in `fog.active_count`.
-        let volumes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let volumes_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Volume AABB Buffer"),
             size: (MAX_FOG_VOLUMES * FOG_VOLUME_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Params Uniform"),
             size: FOG_PARAMS_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -272,7 +273,7 @@ impl FogPass {
         });
 
         // Spots buffer: fixed at SHADOW_POOL_SIZE capacity; never reallocated.
-        let spots_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let spots_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Spot Lights Buffer"),
             size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -282,7 +283,7 @@ impl FogPass {
         // Point-light storage buffer. Sized for MAX_FOG_POINT_LIGHTS so the
         // buffer is never reallocated; per-frame uploads go through
         // `upload_points`.
-        let fog_points_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let fog_points_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Point Lights Buffer"),
             size: (MAX_FOG_POINT_LIGHTS * FOG_POINT_LIGHT_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -291,7 +292,7 @@ impl FogPass {
 
         // Plane payload buffer: every canonical fog volume's bounding planes
         // packed contiguously, indexed via per-volume `plane_offset / plane_count`.
-        let fog_planes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let fog_planes_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fog Planes Buffer"),
             size: (FOG_PLANES_BUFFER_CAPACITY * FOG_PLANE_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -342,7 +343,7 @@ impl FogPass {
             ],
             immediate_size: 0,
         });
-        let raymarch_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let raymarch_pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Fog Raymarch Pipeline"),
             layout: Some(&raymarch_layout),
             module: &shader,
@@ -383,7 +384,7 @@ impl FogPass {
                 },
             ],
         });
-        let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let composite_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fog Composite Bind Group"),
             layout: &composite_bgl,
             entries: &[
@@ -406,7 +407,7 @@ impl FogPass {
             bind_group_layouts: &[Some(&composite_bgl)],
             immediate_size: 0,
         });
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let composite_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Fog Composite Pipeline"),
             layout: Some(&composite_layout),
             vertex: wgpu::VertexState {
@@ -489,7 +490,7 @@ impl FogPass {
             self.scatter_texture = tex;
             self.scatter_view = view;
             self.scatter_dims = dims;
-            self.composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.composite_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Fog Composite Bind Group"),
                 layout: &self.composite_bgl,
                 entries: &[
@@ -842,7 +843,7 @@ fn create_scatter_target(
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Fog Scatter Target"),
         size: wgpu::Extent3d {
             width,
@@ -872,7 +873,7 @@ fn build_group6(
     points_buffer: &wgpu::Buffer,
     planes_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fog Group 6"),
         layout,
         entries: &[

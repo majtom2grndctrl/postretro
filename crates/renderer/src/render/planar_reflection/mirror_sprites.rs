@@ -1,6 +1,7 @@
 // Mirror billboards: the planar mirror's own sprite instance store, drawn through the billboard pipeline.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.4
 
+use crate::render::gpu_create::GpuCreate;
 use crate::render::smoke::{SmokePass, align_up_to_dynamic_offset, build_instance_bind_group};
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
 
@@ -35,7 +36,7 @@ pub(super) struct MirrorSprites {
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Planar Mirror Sprite Instance Buffer"),
         size: capacity as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

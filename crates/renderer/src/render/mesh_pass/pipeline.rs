@@ -1,6 +1,7 @@
 // Skinned-mesh shader composition and pipeline, layout and buffer construction.
 // See: context/lib/rendering_pipeline.md §9
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
 
 use postretro_render_cpu::mesh_instances::{MAX_INSTANCES, MAX_PALETTE_ENTRIES};
@@ -187,7 +188,7 @@ impl MeshPass {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Skinned Mesh Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -301,7 +302,7 @@ impl MeshPass {
         // Shared bone-palette storage buffer, sized for the full per-frame
         // budget. Default-filled to identity (bind pose) below so an
         // un-sampled run still renders.
-        let palette_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let palette_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Bone Palette Buffer"),
             size: (MAX_PALETTE_ENTRIES * BONE_PALETTE_ENTRY_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -309,7 +310,7 @@ impl MeshPass {
         });
 
         // Per-instance SSBO, sized for the worst-case instance count.
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Skinned Instance Buffer"),
             size: (MAX_INSTANCES * INSTANCE_ENTRY_SIZE) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -318,7 +319,7 @@ impl MeshPass {
 
         // Group 3 bind group: both buffers are fixed-size and reused every
         // frame, so this is built once (mirrors `SmokePass::instance_bind_group`).
-        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let instance_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Instance Bind Group"),
             layout: &instance_bind_group_layout,
             entries: &[
@@ -337,13 +338,13 @@ impl MeshPass {
         // payload for the mesh shader (it reads only `view_proj`), but retain the
         // existing 128-byte allocation so the bind group stays exactly compatible
         // with the renderer-wide camera contract.
-        let viewmodel_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let viewmodel_uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Viewmodel View-Projection Uniform"),
             size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let viewmodel_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let viewmodel_uniform_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Viewmodel View-Projection Bind Group"),
             layout: camera_bgl,
             entries: &[wgpu::BindGroupEntry {
@@ -358,7 +359,7 @@ impl MeshPass {
         // renderer calls `rebuild_light_bind_group` with the runtime light buffers
         // (after geometry installs) — the draw path skips the mesh pass when no
         // model is uploaded, so no frame draws meshes before that wiring lands.
-        let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let light_params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Skinned Mesh Light Params Uniform"),
             size: MESH_LIGHT_PARAMS_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

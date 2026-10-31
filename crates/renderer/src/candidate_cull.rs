@@ -2,6 +2,7 @@
 // Both camera passes draw one visible range list independent of cull routing.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashSet;
 #[cfg(feature = "dev-tools")]
 use std::sync::Arc;
@@ -169,7 +170,7 @@ impl SubmittedCounterReadback {
     fn new(device: &wgpu::Device) -> Self {
         let slots = (0..Self::RING_DEPTH)
             .map(|i| {
-                device.create_buffer(&wgpu::BufferDescriptor {
+                device.new_buffer(&wgpu::BufferDescriptor {
                     label: Some(&format!("Candidate Submitted Counter Readback {i}")),
                     size: 4,
                     usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -293,7 +294,7 @@ pub struct CandidateCullPipeline {
 
 impl CandidateCullPipeline {
     pub fn new(device: &wgpu::Device, total_leaves: u32) -> Self {
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Candidate Cull Uniforms"),
             size: crate::compute_cull::CULL_UNIFORMS_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -302,14 +303,14 @@ impl CandidateCullPipeline {
 
         // Worst case: every leaf is a candidate. `.max(1)` keeps a valid
         // (non-zero) storage buffer for empty-geometry edge cases.
-        let candidate_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let candidate_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Candidate Leaves"),
             size: (total_leaves.max(1) as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Candidate Cull Params"),
             size: CANDIDATE_PARAMS_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -319,7 +320,7 @@ impl CandidateCullPipeline {
         // GPU submitted-leaf counter (binding 6). STORAGE for the kernel's
         // atomicAdd, COPY_DST so the CPU can clear it to 0 each frame, COPY_SRC
         // so the dev-tools readback can copy it into the MAP_READ ring.
-        let submitted_counter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let submitted_counter_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Candidate Submitted Counter"),
             size: 4,
             usage: wgpu::BufferUsages::STORAGE
@@ -373,7 +374,7 @@ impl CandidateCullPipeline {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Candidate Cull Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -503,7 +504,7 @@ impl CandidateCullPipeline {
         }
         queue.write_buffer(&self.candidate_buffer, 0, &self.candidate_scratch);
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Candidate Cull Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[

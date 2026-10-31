@@ -439,10 +439,10 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
     ];
     for text in bodies {
         for compile in [
-            "create_render_pipeline(",
+            "new_render_pipeline(",
             "create_shader_module(",
             "create_pipeline_layout(",
-            "create_compute_pipeline(",
+            "new_compute_pipeline(",
         ] {
             assert!(!text.contains(compile), "{compile} in:\n{text}");
         }

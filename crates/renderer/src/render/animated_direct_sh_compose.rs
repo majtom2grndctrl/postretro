@@ -1,6 +1,7 @@
 // Animated-direct SH addition pass. See `context/lib/rendering_pipeline.md` §4,
 // “Animated direct SH for dynamic receivers”; separate from promotion composition so section-45 resources and bindings stay isolated from legacy Case 1.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 #[cfg(feature = "dev-tools")]
 use postretro_render_cpu::sh_compose::ComposeStorageFootprint;
@@ -162,29 +163,27 @@ pub(super) fn build_animated_direct_pass(
     }
     .log(ANIMATED_DIRECT_FOOTPRINT_LABEL);
 
-    use wgpu::util::DeviceExt;
-    let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let delta_subblocks_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Delta Subblocks (f16)"),
         contents: &storage.delta_subblocks.contents,
         usage: storage.delta_subblocks.allocation.usage,
     });
-    let delta_compaction_meta_buffer =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Animated Direct SH Compose Delta Compaction Meta"),
-            contents: &storage.compaction_metadata.contents,
-            usage: storage.compaction_metadata.allocation.usage,
-        });
-    let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let delta_compaction_meta_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Animated Direct SH Compose Delta Compaction Meta"),
+        contents: &storage.compaction_metadata.contents,
+        usage: storage.compaction_metadata.allocation.usage,
+    });
+    let affinity_offsets_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Affinity Offsets"),
         contents: &storage.affinity_offsets.contents,
         usage: storage.affinity_offsets.allocation.usage,
     });
-    let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let affinity_lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Affinity Lights"),
         contents: &storage.affinity_lights.contents,
         usage: storage.affinity_lights.allocation.usage,
     });
-    let descriptor_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let descriptor_indices_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Descriptor Indices"),
         contents: &storage
             .descriptor_indices
@@ -243,7 +242,7 @@ pub(super) fn build_animated_direct_pass(
         true,
         ResidencyAllocationState::Data,
     );
-    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let probe_indirection_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Probe Indirection"),
         contents: &probe_indirection.contents,
         usage: probe_indirection.allocation.usage,
@@ -280,7 +279,7 @@ pub(super) fn build_animated_direct_pass(
         false,
         ResidencyAllocationState::Data,
     );
-    let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let grid_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Animated Direct SH Compose Grid Dims"),
         contents: &grid_upload.bytes,
         usage: grid_allocation.usage,
@@ -297,12 +296,11 @@ pub(super) fn build_animated_direct_pass(
         true,
         ResidencyAllocationState::Data,
     );
-    let animated_light_scale_buffer =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Animated Direct SH Compose Light Scale"),
-            contents: &animated_light_scale_bytes,
-            usage: animated_light_scale_allocation.usage,
-        });
+    let animated_light_scale_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Animated Direct SH Compose Light Scale"),
+        contents: &animated_light_scale_bytes,
+        usage: animated_light_scale_allocation.usage,
+    });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Animated Direct SH Compose BGL"),
@@ -325,7 +323,7 @@ pub(super) fn build_animated_direct_pass(
         label: Some("Animated Direct SH Compose Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Animated Direct SH Compose Pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
@@ -336,7 +334,7 @@ pub(super) fn build_animated_direct_pass(
 
     let intermediate_sampler =
         nearest_sampler(device, "Animated Direct SH Compose Intermediate Sampler");
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Animated Direct SH Compose Bind Group"),
         layout: &bind_group_layout,
         entries: &[

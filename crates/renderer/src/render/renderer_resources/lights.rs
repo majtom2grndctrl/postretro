@@ -4,6 +4,7 @@
 
 use super::super::renderer_types::FullRenderer;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// The level's filtered light sets, handed from the light upload to the shadow
 /// cache reset and the lighting bind group.
@@ -81,7 +82,7 @@ pub(super) fn install_level_lights<'g>(
         lights_data.extend_from_slice(&pack_lights(&level_lights));
     }
     lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
-    let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct Lights Storage Buffer"),
         contents: &lights_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -149,7 +150,7 @@ pub(super) fn install_lighting_bind_group(
         influence::pack_influence_into(&mut influence_data, &dynamic_influences);
     }
     influence_data.resize(influence_record_capacity * 16, 0);
-    let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let influence_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Influence Storage Buffer"),
         contents: &influence_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -165,7 +166,7 @@ pub(super) fn install_lighting_bind_group(
             packed
         }
     };
-    let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let spec_lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Spec-Only Lights Storage Buffer"),
         contents: &spec_lights_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -175,23 +176,23 @@ pub(super) fn install_lighting_bind_group(
         Some(sec) => ChunkGrid::from_section(sec),
         None => ChunkGrid::fallback(),
     };
-    let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_info_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Info Uniform"),
         contents: &chunk_grid.grid_info,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let chunk_grid_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_offsets_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Offset Table"),
         contents: &chunk_grid.offset_table,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
-    let chunk_grid_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_indices_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Index List"),
         contents: &chunk_grid.index_list,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    full.lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    full.lighting_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Lighting Bind Group"),
         layout: &full.lighting_bind_group_layout,
         entries: &[

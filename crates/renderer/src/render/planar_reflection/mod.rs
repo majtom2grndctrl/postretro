@@ -31,6 +31,7 @@ mod tests;
 mod tuning;
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::planar_reflection::{MirrorCamera, PlanarPreset, planar_preset};
@@ -107,13 +108,13 @@ impl PlanarReflectionPass {
         material_layout: &wgpu::BindGroupLayout,
         sprite_instance_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Camera Uniform"),
             size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniform_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Mirror Camera Bind Group"),
             layout: camera_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -121,7 +122,7 @@ impl PlanarReflectionPass {
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
-        let inputs_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let inputs_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mask and Resolve Uniform"),
             size: PLANAR_INPUT_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

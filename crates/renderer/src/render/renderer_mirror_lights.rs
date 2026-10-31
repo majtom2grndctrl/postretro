@@ -4,6 +4,7 @@
 use super::renderer_light_slots::PromotionCandidateLookup;
 use super::renderer_types::FullRenderer;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::mesh_instances::MeshCapOccupancy;
 
 /// One shadow pool's occupancy this frame, split by admission rank: slots
@@ -130,13 +131,13 @@ impl MirrorLighting {
         main_lights: &wgpu::Buffer,
         shared: &SharedLightingBuffers<'_>,
     ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let lights_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let lights_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Lights Storage Buffer"),
             size: main_lights.size(),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let lighting_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Mirror Lighting Bind Group"),
             layout,
             entries: &[

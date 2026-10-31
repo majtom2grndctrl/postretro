@@ -4,6 +4,7 @@
 
 use super::renderer_types::{FullRenderer, PromotedBakedLightState};
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from
 /// boot state alone (no level loaded — `geometry = None` throughout). Factored out
@@ -601,7 +602,7 @@ pub(crate) fn build_full_renderer(
     let debug_lines =
         debug_lines::DebugLineRenderer::new(device, DEPTH_FORMAT, 1, &uniform_bind_group_layout);
 
-    let promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let promoted_static_weight_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Promoted Static Light Weights"),
         size: (entity_shadow_indices.len().max(1) * 4) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use super::MeshPass;
+use crate::render::gpu_create::GpuCreate;
 
 /// Mesh-side group-2 params uniform (binding 4): runtime-light count, the frame's
 /// render-clock time, and `light_term_mask`. `time` is the SAME render-clock
@@ -364,14 +365,14 @@ impl MeshPass {
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
-        self.light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Mesh Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,
         }));
         // The mirror's group differs only in b0.
         entries[0].resource = mirror_lights.as_entire_binding();
-        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.mirror_light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Mesh Mirror Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,

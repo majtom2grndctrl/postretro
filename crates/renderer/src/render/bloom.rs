@@ -1,6 +1,7 @@
 // HDR bloom post-process resources and passes.
 // See: context/lib/rendering_pipeline.md §7.8
 
+use crate::render::gpu_create::GpuCreate;
 use std::num::NonZeroU64;
 
 use super::{BloomRenderProfile, SCENE_COLOR_FORMAT};
@@ -8,7 +9,6 @@ use super::{BloomRenderProfile, SCENE_COLOR_FORMAT};
 // the runtime paths reach it through `BloomRenderProfile`.
 #[cfg(test)]
 use super::BloomResolution;
-use wgpu::util::DeviceExt;
 
 /// Luminance at which HDR pixels begin contributing to bloom. Task 4's Neon
 /// reference strength must keep its authored emissive value above this value.
@@ -697,7 +697,7 @@ fn create_params_buffer(
             * slot;
         bytes[offset..offset + params_size].copy_from_slice(bytemuck::bytes_of(params));
     }
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Bloom Parameters"),
         contents: &bytes,
         usage: wgpu::BufferUsages::UNIFORM,
@@ -726,7 +726,7 @@ fn create_bloom_target(
     dimensions: (u32, u32),
     label_prefix: &str,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some(&format!("{label_prefix} Texture")),
         size: wgpu::Extent3d {
             width: dimensions.0,
@@ -752,7 +752,7 @@ fn create_bind_group(
     params_buffer: &wgpu::Buffer,
     label: &'static str,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
         entries: &[
@@ -784,7 +784,7 @@ fn create_pipeline(
     blend: Option<wgpu::BlendState>,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {

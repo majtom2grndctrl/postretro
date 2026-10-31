@@ -4,6 +4,7 @@
 
 use super::super::renderer_types::FullRenderer;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// Upload the level's vertex, spec-owner, index and wireframe buffers.
 /// Returns whether the level has any geometry.
@@ -29,7 +30,7 @@ pub(super) fn install_world_buffers(
             0u32,
         )
     };
-    full.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    full.vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Vertex Buffer"),
         contents: &vertex_data,
         usage: wgpu::BufferUsages::VERTEX,
@@ -37,7 +38,7 @@ pub(super) fn install_world_buffers(
     // The forward pass's owner stream, written once here and never per frame.
     let spec_owner_data =
         cast_spec_owners_to_bytes(geometry.vertex_spec_owners, geometry.vertices.len());
-    full.spec_owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    full.spec_owner_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Spec Owner Buffer"),
         contents: &spec_owner_data,
         usage: wgpu::BufferUsages::VERTEX,
@@ -45,7 +46,7 @@ pub(super) fn install_world_buffers(
     // Indirect slots copy only these checked leaves' baked ranges, and all
     // world indirect passes bind this complete array. Recreate every cull
     // owner below before drawing; no slot may survive an index-buffer swap.
-    full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    full.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Index Buffer"),
         contents: &index_data,
         usage: wgpu::BufferUsages::INDEX,
@@ -60,7 +61,7 @@ pub(super) fn install_world_buffers(
     } else {
         (vec![0u8; 4], 0u32)
     };
-    full.wireframe_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    full.wireframe_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Wireframe Line Index Buffer"),
         contents: &wireframe_index_data,
         usage: wgpu::BufferUsages::INDEX,

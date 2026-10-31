@@ -1,6 +1,7 @@
 // Direct-SH atlas resources shared by the dynamic-receiver compose passes.
 // See: context/lib/rendering_pipeline.md §4, §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
@@ -9,7 +10,6 @@ use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_render_cpu::sh_volume::{
     BIND_DYNAMIC_DIRECT_PARAMS, BIND_SH_DIRECT_ATLAS, build_dynamic_direct_params_bytes,
 };
-use wgpu::util::DeviceExt;
 
 use super::residency::{ResidencyAllocationState, source_ids};
 pub(super) use super::sh_allocation::{DirectAtlasLayout, atlas_fits};
@@ -148,7 +148,7 @@ impl DirectShResources {
             ResidencyAllocationState::Data,
         );
         let dynamic_direct_params_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Dynamic Direct Params Uniform"),
                 contents: &dynamic_direct_params_bytes,
                 usage: dynamic_direct_params_allocation.usage,
@@ -279,7 +279,7 @@ fn upload_direct_atlas_texture(
     let allocation = direct_base_atlas_allocation(section);
     ledger.record_texture(allocation, &[35], false, ResidencyAllocationState::Data);
 
-    let texture = device.create_texture_with_data(
+    let texture = device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("SH Direct Octahedral Atlas")),
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -294,7 +294,7 @@ fn upload_direct_atlas_dummy(
     allocation: super::sh_allocation::TextureAllocation,
 ) -> wgpu::Texture {
     let zero_block = [0u8; 16];
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("SH Direct Octahedral Atlas Dummy")),
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -337,7 +337,7 @@ fn create_direct_composed_atlas_texture(
 ) -> wgpu::Texture {
     let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
     ledger.record_texture(allocation, sources, false, ResidencyAllocationState::Data);
-    device.create_texture(&allocation.descriptor(Some(label)))
+    device.new_texture(&allocation.descriptor(Some(label)))
 }
 
 #[cfg(test)]

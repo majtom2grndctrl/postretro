@@ -1,6 +1,7 @@
 // Direct SH compose passes: promotion subtraction plus optional animated-direct addition.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
@@ -383,24 +384,22 @@ fn build_promotion_pass(
     storage.log_footprint();
     let DirectPromotionStorage { buffers, payloads } = storage;
 
-    use wgpu::util::DeviceExt;
-    let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let delta_subblocks_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Delta Subblocks (f16)"),
         contents: &payloads.delta_subblocks.contents,
         usage: payloads.delta_subblocks.allocation.usage,
     });
-    let delta_compaction_meta_buffer =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Direct SH Compose Delta Compaction Meta"),
-            contents: &payloads.compaction_metadata.contents,
-            usage: payloads.compaction_metadata.allocation.usage,
-        });
-    let affinity_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let delta_compaction_meta_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Direct SH Compose Delta Compaction Meta"),
+        contents: &payloads.compaction_metadata.contents,
+        usage: payloads.compaction_metadata.allocation.usage,
+    });
+    let affinity_offsets_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Affinity Offsets"),
         contents: &payloads.affinity_offsets.contents,
         usage: payloads.affinity_offsets.allocation.usage,
     });
-    let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let affinity_lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Affinity Lights"),
         contents: &payloads.affinity_lights.contents,
         usage: payloads.affinity_lights.allocation.usage,
@@ -466,7 +465,7 @@ fn build_promotion_pass(
             ResidencyAllocationState::Dummy
         },
     );
-    let probe_indirection_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let probe_indirection_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Probe Indirection"),
         contents: &probe_indirection.contents,
         usage: probe_indirection.allocation.usage,
@@ -505,7 +504,7 @@ fn build_promotion_pass(
         grid_sources.is_empty(),
         ResidencyAllocationState::Data,
     );
-    let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let grid_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Grid Dims"),
         contents: &grid_upload.bytes,
         usage: grid_allocation.usage,
@@ -522,7 +521,7 @@ fn build_promotion_pass(
         true,
         ResidencyAllocationState::Data,
     );
-    let debug_override_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let debug_override_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Debug Override"),
         contents: &debug_override_bytes,
         usage: debug_override_allocation.usage,
@@ -539,7 +538,7 @@ fn build_promotion_pass(
         true,
         ResidencyAllocationState::Data,
     );
-    let light_term_mask_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let light_term_mask_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct SH Compose Frame Light-Term Mask"),
         contents: &initial_light_term_mask_bytes,
         usage: light_term_mask_allocation.usage,
@@ -564,7 +563,7 @@ fn build_promotion_pass(
         label: Some("Direct SH Compose Shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source.into()),
     });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Direct SH Compose Pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
@@ -575,7 +574,7 @@ fn build_promotion_pass(
 
     // Non-filtering (nearest) sampler for the BC6H base atlas point-fetch.
     let base_sampler = nearest_sampler(device, "Direct SH Compose Base Atlas Sampler");
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Direct SH Compose Bind Group"),
         layout: &bind_group_layout,
         entries: &[

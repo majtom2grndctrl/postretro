@@ -13,7 +13,7 @@ const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
 const INIT: &str = "render/renderer_init.rs";
 const PIPELINES: &str = "render/renderer_init_pipelines.rs";
-const WORLD_INDEX_UPLOAD: &str = "full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
+const WORLD_INDEX_UPLOAD: &str = "full.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -509,7 +509,7 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
             "let count = geom.indices.len() as u32;",
             "bytemuck_cast_slice_u32(geom.indices)",
             "vec![0u8; 4], 0u32,",
-            "let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });",
+            "let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });",
         ],
     );
     assert_eq!(

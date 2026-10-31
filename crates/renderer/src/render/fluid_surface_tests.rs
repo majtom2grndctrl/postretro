@@ -3147,6 +3147,7 @@ fn fluid_pass_opens_depth_read_only() {
 fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets() {
     let block = fluid_pass_block();
     assert!(!block.contains("create_bind_group"), "{block}");
+    assert!(!block.contains("new_bind_group"), "{block}");
     assert!(!block.contains("rebuild_scene_inputs"), "{block}");
     let frame_block = code_only(block);
     let upload = frame_block
@@ -3164,11 +3165,13 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
     let record = code_only(wgsl_fn(source, "record_draws"));
     assert!(!record.contains("create_bind_group"));
+    assert!(!record.contains("new_bind_group"));
     assert!(record.contains(
         "pass.set_bind_group(FLUID_SCENE_INPUTS_GROUP,self.scene_inputs.bind_group(),&[],);"
     ));
     let record_reflection = code_only(wgsl_fn(reflection_source, "record_reflection_draws"));
     assert!(!record_reflection.contains("create_bind_group"));
+    assert!(!record_reflection.contains("new_bind_group"));
     assert!(!record_reflection.contains("FLUID_SCENE_INPUTS_GROUP"));
     // Both uniforms upload together, each only on change.
     let upload = code_only(wgsl_fn(source, "upload_scene_inputs"));
@@ -3180,9 +3183,7 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     // Group 5's own module builds its bind group in `new` and `rebuild` only.
     let inputs = include_str!("fluid_scene_inputs.rs");
     assert_eq!(
-        code_only(inputs)
-            .matches("device.create_bind_group(")
-            .count(),
+        code_only(inputs).matches("device.new_bind_group(").count(),
         1
     );
     assert_eq!(code_only(inputs).matches("=create_bind_group(").count(), 2);
@@ -3196,7 +3197,8 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         "set_ssr_scale",
         "bind_group",
     ] {
-        assert!(!code_only(wgsl_fn(inputs, per_frame)).contains("create_bind_group"));
+        let body = code_only(wgsl_fn(inputs, per_frame));
+        assert!(!body.contains("create_bind_group") && !body.contains("new_bind_group"));
     }
 
     // Exactly two callers rebuild group 5: the scene-target follow-up and a
@@ -3323,7 +3325,17 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     );
     assert!(!wanted.contains("reflectivity"), "{wanted}");
     let set_draws = code_only(wgsl_fn(source, "set_draws"));
-    for rebuild in ["set_reflection_target", "rebind", "scene_inputs", "create_"] {
+    for rebuild in [
+        "set_reflection_target",
+        "rebind",
+        "scene_inputs",
+        "create_",
+        "new_buffer",
+        "new_texture",
+        "new_bind_group",
+        "new_render_pipeline",
+        "new_compute_pipeline",
+    ] {
         assert!(
             !set_draws.contains(rebuild),
             "set_draws reaches `{rebuild}`"
@@ -4166,7 +4178,7 @@ fn the_reflection_target_sizes_by_the_render_cpu_tier_rule_alone() {
 #[test]
 fn raising_the_reflection_tier_compiles_nothing() {
     const COMPILES: [&str; 3] = [
-        "create_render_pipeline(",
+        "new_render_pipeline(",
         "create_shader_module(",
         "create_pipeline_layout(",
     ];
@@ -4256,6 +4268,7 @@ fn raising_the_reflection_tier_compiles_nothing() {
     for (name, body) in &tuning {
         for forbidden in COMPILES.into_iter().chain([
             "create_bind_group(",
+            "new_bind_group(",
             "create_target(",
             "set_reflection_target(",
             "rebuild(",
@@ -4300,7 +4313,7 @@ fn raising_the_reflection_tier_compiles_nothing() {
     let fluid_new = code_only(wgsl_fn(source, "new"));
     let fluid_pipeline = code_only(wgsl_fn(source, "create_fluid_pipeline"));
     for (compile, count) in [
-        ("create_render_pipeline(", 1),
+        ("new_render_pipeline(", 1),
         ("create_shader_module(", 1),
         ("create_pipeline_layout(", 1),
     ] {

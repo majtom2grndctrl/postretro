@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::lightmap::RUNTIME_MAX_TEXTURE_ARRAY_LAYERS as REQUIRED_MAX_TEXTURE_ARRAY_LAYERS;
 
 /// Whether an adapter's granted `max_texture_array_layers` clears the engine's
@@ -352,7 +353,7 @@ pub(crate) fn build_lighting_bind_group(
         lights_data.extend_from_slice(&pack_lights(level_lights));
     }
     lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
-    let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Direct Lights Storage Buffer"),
         contents: &lights_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -369,7 +370,7 @@ pub(crate) fn build_lighting_bind_group(
         influence::pack_influence_into(&mut influence_data, dynamic_influences);
     }
     influence_data.resize(influence_record_capacity * 16, 0);
-    let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let influence_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Light Influence Storage Buffer"),
         contents: &influence_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -386,7 +387,7 @@ pub(crate) fn build_lighting_bind_group(
             packed
         }
     };
-    let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let spec_lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Spec-Only Lights Storage Buffer"),
         contents: &spec_lights_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -408,23 +409,23 @@ pub(crate) fn build_lighting_bind_group(
             "[Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off"
         );
     }
-    let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_info_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Info Uniform"),
         contents: &chunk_grid.grid_info,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let chunk_grid_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_offsets_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Offset Table"),
         contents: &chunk_grid.offset_table,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
-    let chunk_grid_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let chunk_grid_indices_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Chunk Grid Index List"),
         contents: &chunk_grid.index_list,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let lighting_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Lighting Bind Group"),
         layout: lighting_bind_group_layout,
         entries: &[
@@ -481,13 +482,13 @@ pub(crate) fn build_shadow_vs_resources(
     // min_uniform_buffer_offset_alignment required for dynamic-offset bindings.
     let min_ubo_align = device.limits().min_uniform_buffer_offset_alignment.max(64);
     let shadow_vs_stride = min_ubo_align;
-    let shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let shadow_vs_uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Spot Shadow VS Uniforms"),
         size: (shadow_vs_stride as u64) * (crate::lighting::spot_shadow::SHADOW_POOL_SIZE as u64),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let shadow_vs_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow VS Bind Group"),
         layout: shadow_vs_bgl,
         entries: &[wgpu::BindGroupEntry {
@@ -514,13 +515,13 @@ pub(crate) fn build_shadow_vs_resources(
     // `slot * CUBE_FACES + face` (matching `CubeShadowPool::face_layer`).
     let cube_face_count =
         crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
-    let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let cube_shadow_vs_uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Cube Shadow VS Uniforms"),
         size: (shadow_vs_stride as u64) * (cube_face_count as u64),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let cube_shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let cube_shadow_vs_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Cube Shadow VS Bind Group"),
         layout: shadow_vs_bgl,
         entries: &[wgpu::BindGroupEntry {
@@ -554,7 +555,7 @@ pub(crate) fn build_uniform_bind_groups(
     device: &wgpu::Device,
     uniform_data: &[u8],
 ) -> UniformBindGroups {
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Uniform Buffer"),
         contents: uniform_data,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -566,7 +567,7 @@ pub(crate) fn build_uniform_bind_groups(
             entries: &uniform_bind_group_layout_entries(),
         });
 
-    let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let uniform_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Uniform Bind Group"),
         layout: &uniform_bind_group_layout,
         entries: &[wgpu::BindGroupEntry {

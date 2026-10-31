@@ -2,6 +2,7 @@
 // per-collection instance upload and draw recording over the sprite sheets.
 // See: context/lib/rendering_pipeline.md §7.9, §7.4
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::ghost_instance::GHOST_SPRITE_INSTANCE_SIZE;
 
 use super::SCENE_COLOR_FORMAT;
@@ -94,7 +95,7 @@ impl BillboardGhostPass {
             ],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Billboard Ghost Pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -243,7 +244,7 @@ impl BillboardGhostPass {
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Billboard Ghost Instance Buffer"),
         size: capacity as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

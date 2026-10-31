@@ -1,6 +1,7 @@
 // Planar routing: the planar layer, its group 5, and each fluid draw's split by plane identity.
 // See: context/lib/rendering_pipeline.md §7.3a
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::fluid_surface::reflection::{
     FLUID_REFLECTION_NO_PROBE, fill_probe_indices,
 };
@@ -120,7 +121,7 @@ impl PlanarLayer {
         } else {
             wgpu::TextureUsages::empty()
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Planar Reflection Layer"),
             size,
             mip_level_count: 1,
@@ -132,7 +133,7 @@ impl PlanarLayer {
                 | copy,
             view_formats: &[],
         });
-        let depth = device.create_texture(&wgpu::TextureDescriptor {
+        let depth = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Planar Reflection Layer Depth"),
             size,
             mip_level_count: 1,

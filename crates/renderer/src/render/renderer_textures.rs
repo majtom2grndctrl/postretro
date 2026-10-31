@@ -224,4 +224,4 @@ fn log_texture_install_timing(
 
 #[cfg(test)]
 #[path = "renderer_textures_tests.rs"]
-mod tests;
+pub(super) mod tests;

@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 pub(crate) struct RendererPipelines {
     pub pipeline: wgpu::RenderPipeline,
@@ -59,7 +60,7 @@ pub(crate) fn build_renderer_pipelines(
         source: wgpu::ShaderSource::Wgsl(forward_source),
     });
 
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Textured Pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -187,7 +188,7 @@ pub(crate) fn build_renderer_pipelines(
     });
 
     let wireframe_cull_status_pipeline =
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Wireframe Cull Status Pipeline"),
             layout: Some(&wireframe_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -252,72 +253,71 @@ pub(crate) fn build_renderer_pipelines(
             cache: None,
         });
 
-    let wireframe_visible_pipeline =
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Wireframe Visible Pipeline"),
-            layout: Some(&wireframe_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &wireframe_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 20,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                    ],
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            // Depth-tested visible wireframe uses the shared scene depth without
-            // writing to it. LessEqual keeps coplanar submitted triangles visible
-            // while geometry hidden behind nearer surfaces is rejected.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &wireframe_shader,
-                entry_point: Some("fs_visible"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+    let wireframe_visible_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Wireframe Visible Pipeline"),
+        layout: Some(&wireframe_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &wireframe_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
+                    as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        offset: 0,
+                        shader_location: 0,
+                        format: wgpu::VertexFormat::Float32x3,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 12,
+                        shader_location: 1,
+                        format: wgpu::VertexFormat::Float32x2,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 20,
+                        shader_location: 2,
+                        format: wgpu::VertexFormat::Uint16x2,
+                    },
+                    wgpu::VertexAttribute {
+                        offset: 24,
+                        shader_location: 3,
+                        format: wgpu::VertexFormat::Uint16x2,
+                    },
+                ],
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        // Depth-tested visible wireframe uses the shared scene depth without
+        // writing to it. LessEqual keeps coplanar submitted triangles visible
+        // while geometry hidden behind nearer surfaces is rejected.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &wireframe_shader,
+            entry_point: Some("fs_visible"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SCENE_COLOR_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
 
     let depth_prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Depth Pre-Pass Pipeline Layout"),
@@ -330,7 +330,7 @@ pub(crate) fn build_renderer_pipelines(
         source: wgpu::ShaderSource::Wgsl(DEPTH_PREPASS_SHADER_SOURCE.into()),
     });
 
-    let depth_prepass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let depth_prepass_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Depth Pre-Pass Pipeline"),
         layout: Some(&depth_prepass_layout),
         vertex: wgpu::VertexState {
@@ -422,7 +422,7 @@ pub(crate) fn build_renderer_pipelines(
         label: Some("Spot Shadow Shader"),
         source: wgpu::ShaderSource::Wgsl(SPOT_SHADOW_SHADER_SOURCE.into()),
     });
-    let shadow_depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let shadow_depth_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Spot Shadow Depth Pipeline"),
         layout: Some(&shadow_pipeline_layout),
         vertex: wgpu::VertexState {
@@ -503,7 +503,7 @@ pub(crate) fn build_world_vertex_buffers(
             )
         };
 
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Vertex Buffer"),
         contents: &vertex_data,
         usage: wgpu::BufferUsages::VERTEX,
@@ -512,13 +512,13 @@ pub(crate) fn build_world_vertex_buffers(
         Some(geom) => cast_spec_owners_to_bytes(geom.vertex_spec_owners, geom.vertices.len()),
         None => cast_spec_owners_to_bytes(&[], 0),
     };
-    let spec_owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let spec_owner_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Spec Owner Buffer"),
         contents: &spec_owner_data,
         usage: wgpu::BufferUsages::VERTEX,
     });
 
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Index Buffer"),
         contents: &index_data,
         usage: wgpu::BufferUsages::INDEX,
@@ -536,7 +536,7 @@ pub(crate) fn build_world_vertex_buffers(
             (vec![0u8; 4], 0u32)
         };
 
-    let wireframe_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let wireframe_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Wireframe Line Index Buffer"),
         contents: &wireframe_index_data,
         usage: wgpu::BufferUsages::INDEX,

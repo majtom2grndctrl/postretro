@@ -3,11 +3,11 @@
 // init and rebuilt only with the scene targets and the reflection target.
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
+use crate::render::gpu_create::GpuCreate;
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
-use wgpu::util::DeviceExt;
 
 /// Pipeline group of the fluid scene inputs.
 pub(crate) const FLUID_SCENE_INPUTS_GROUP: u32 = 5;
@@ -116,7 +116,7 @@ fn create_bind_group(
     uniform_buffer: &wgpu::Buffer,
     reflection_target: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fluid Surface Scene Inputs Bind Group (group 5)"),
         layout,
         entries: &[
@@ -155,7 +155,7 @@ impl FluidSceneInputs {
             FluidReflectionStyle::default(),
             [0.0; 2],
         );
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Scene Uniform"),
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

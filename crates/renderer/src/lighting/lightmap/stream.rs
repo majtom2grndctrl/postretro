@@ -10,6 +10,7 @@ mod install_timing_measurement;
 mod tests;
 mod textures;
 
+use crate::render::gpu_create::GpuCreate;
 use std::fmt;
 
 use postretro_level_format::lightmap::{
@@ -18,7 +19,6 @@ use postretro_level_format::lightmap::{
 use postretro_level_format::shadowmask_atlas::group_plane_len;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 use postretro_render_cpu::lightmap_pool::{BLOCK_TABLE_ENTRY_BYTES, LightmapPoolModel};
-use wgpu::util::DeviceExt;
 
 pub use counters::LightmapStreamCounters;
 pub(crate) use textures::PoolTextures;
@@ -148,7 +148,7 @@ impl LightmapStreamState {
         );
         let table_bytes = model.table_bytes();
         // `COPY_SRC` lets a readback check the table the GPU holds.
-        let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let table = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Lightmap Block Table (streamed)"),
             contents: &table_bytes,
             usage: wgpu::BufferUsages::STORAGE

@@ -3,6 +3,7 @@
 use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{ParsedSparseRow, SparseInstallPlan};
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// Indirect id-34/id-27 streamed compose. Its buffers are renderer-owned
 /// sparse pools; the loader only lends a decoded chunk until the queue writes
@@ -191,14 +192,14 @@ impl StreamingIndirectCompose {
                 reason: "streamed dirty compose records exceed adapter buffer limit",
             });
         }
-        let grid_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let grid_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Streamed SH Compose Grid Records"),
             size: grid_capacity.max(record_size),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let origin = compose_origin_bytes(base.grid_origin, base.cell_size);
-        let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let origin_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Compose Grid Origin"),
             contents: &origin,
             usage: wgpu::BufferUsages::UNIFORM,
@@ -224,13 +225,12 @@ impl StreamingIndirectCompose {
                 .checked_mul(4)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?,
         );
-        let descriptor_index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Streamed SH Indirect Descriptor Indices"),
-                contents: &u32_bytes(&descriptor_words),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-        let compaction_metadata = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let descriptor_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Streamed SH Indirect Descriptor Indices"),
+            contents: &u32_bytes(&descriptor_words),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let compaction_metadata = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Indirect Compaction Metadata"),
             contents: &u32_bytes(&compaction_words),
             usage: wgpu::BufferUsages::STORAGE
@@ -268,7 +268,7 @@ impl StreamingIndirectCompose {
             label: Some("Streamed SH Compose Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Streamed SH Compose Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -336,7 +336,7 @@ impl StreamingIndirectCompose {
         compose_indirection: &wgpu::Buffer,
         compaction_metadata: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed SH Compose Bind Group"),
             layout,
             entries: &[

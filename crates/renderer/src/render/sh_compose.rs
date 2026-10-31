@@ -2,6 +2,7 @@
 // with animated per-light delta tiles into the total atlas consumed by samplers.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 #[cfg(feature = "dev-tools")]
@@ -190,25 +191,23 @@ impl ShComposeResources {
             sh_state,
         );
 
-        use wgpu::util::DeviceExt;
-        let delta_subblocks_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let delta_subblocks_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Delta Subblocks (f16)"),
             contents: &storage.delta_subblocks.contents,
             usage: storage.delta_subblocks.allocation.usage,
         });
-        let affinity_offsets_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("SH Compose Affinity Offsets"),
-                contents: &storage.affinity_offsets.contents,
-                usage: storage.affinity_offsets.allocation.usage,
-            });
-        let affinity_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let affinity_offsets_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("SH Compose Affinity Offsets"),
+            contents: &storage.affinity_offsets.contents,
+            usage: storage.affinity_offsets.allocation.usage,
+        });
+        let affinity_lights_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Affinity Lights"),
             contents: &storage.affinity_lights.contents,
             usage: storage.affinity_lights.allocation.usage,
         });
         let animation_descriptor_indices_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Animation Descriptor Indices"),
                 contents: &storage
                     .descriptor_indices
@@ -222,14 +221,13 @@ impl ShComposeResources {
                     .allocation
                     .usage,
             });
-        let probe_indirection_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("SH Compose Probe Indirection"),
-                contents: &probe_indirection.contents,
-                usage: probe_indirection.allocation.usage,
-            });
+        let probe_indirection_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("SH Compose Probe Indirection"),
+            contents: &probe_indirection.contents,
+            usage: probe_indirection.allocation.usage,
+        });
         let delta_compaction_meta_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("SH Compose Delta Compaction Meta"),
                 contents: &storage.compaction_metadata.contents,
                 usage: storage.compaction_metadata.allocation.usage,
@@ -289,7 +287,7 @@ impl ShComposeResources {
             compose_sources.is_empty(),
             compose_state,
         );
-        let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let grid_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Dims"),
             contents: &grid_upload.bytes,
             usage: grid_allocation.usage,
@@ -315,7 +313,7 @@ impl ShComposeResources {
             compose_sources.is_empty(),
             compose_state,
         );
-        let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let origin_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SH Compose Grid Origin"),
             contents: &origin_bytes,
             usage: origin_allocation.usage,
@@ -347,7 +345,7 @@ impl ShComposeResources {
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("SH Compose Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -429,7 +427,7 @@ impl ShComposeResources {
             },
         ];
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Compose Bind Group"),
             layout: &bind_group_layout,
             entries: &entries,

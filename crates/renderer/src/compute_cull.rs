@@ -1,8 +1,8 @@
 // GPU-driven BVH traversal compute pipeline and indirect draw dispatch.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use glam::Mat4;
-use wgpu::util::DeviceExt;
 
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
@@ -106,7 +106,7 @@ impl ComputeCullPipeline {
         let bucket_ranges = bvh.derive_bucket_ranges();
 
         let node_bytes = serialize_bvh_nodes(&bvh.nodes);
-        let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let node_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Node Storage"),
             contents: if node_bytes.is_empty() {
                 &[0u8; 40]
@@ -117,7 +117,7 @@ impl ComputeCullPipeline {
         });
 
         let leaf_bytes = serialize_bvh_leaves(&bvh.leaves);
-        let leaf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let leaf_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Leaf Storage"),
             contents: if leaf_bytes.is_empty() {
                 &[0u8; 48]
@@ -127,14 +127,14 @@ impl ComputeCullPipeline {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let visible_cells_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let visible_cells_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Visible Cells Bitmask"),
             size: VISIBLE_CELLS_BYTES,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Uniforms"),
             size: CULL_UNIFORMS_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -142,7 +142,7 @@ impl ComputeCullPipeline {
         });
 
         let indirect_buffer_size = (total_leaves.max(1) as u64) * DRAW_INDIRECT_SIZE;
-        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let indirect_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Indirect Draw Buffer"),
             size: indirect_buffer_size,
             usage: wgpu::BufferUsages::STORAGE
@@ -151,7 +151,7 @@ impl ComputeCullPipeline {
             mapped_at_creation: false,
         });
 
-        let cull_status_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let cull_status_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Cull Status Buffer"),
             size: (total_leaves.max(1) as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -235,7 +235,7 @@ impl ComputeCullPipeline {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("BVH Cull Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -330,7 +330,7 @@ impl ComputeCullPipeline {
             return;
         }
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("BVH Cull Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[

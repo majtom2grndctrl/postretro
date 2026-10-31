@@ -1,5 +1,6 @@
 // Dynamic-tier world-depth cache state and GPU resources.
 // See: context/lib/rendering_pipeline.md §4.
+use crate::render::gpu_create::GpuCreate;
 use glam::Mat4;
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
@@ -234,7 +235,7 @@ fn cache_texture(
     resolution: u32,
     layers: usize,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: resolution,

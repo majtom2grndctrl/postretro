@@ -14,7 +14,7 @@ fn upload_method(name: &str) -> bool {
     )
 }
 
-fn expression_attrs(expr: &Expr) -> &[Attribute] {
+pub(super) fn expression_attrs(expr: &Expr) -> &[Attribute] {
     match expr {
         Expr::Array(e) => &e.attrs,
         Expr::Assign(e) => &e.attrs,
@@ -145,7 +145,7 @@ fn test_predicate(meta: &Meta) -> Option<bool> {
     }
 }
 
-fn test_only(attrs: &[Attribute]) -> bool {
+pub(super) fn test_only(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
@@ -157,7 +157,7 @@ fn test_only(attrs: &[Attribute]) -> bool {
     })
 }
 
-fn item_attrs(item: &Item) -> &[Attribute] {
+pub(super) fn item_attrs(item: &Item) -> &[Attribute] {
     match item {
         Item::Const(item) => &item.attrs,
         Item::Enum(item) => &item.attrs,

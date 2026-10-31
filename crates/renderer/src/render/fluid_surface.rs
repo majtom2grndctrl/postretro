@@ -4,9 +4,8 @@
 // planar routing (`fluid_surface/planar_routing.rs`: per-draw plane split, planar group 5).
 // See: context/lib/rendering_pipeline.md §7.3a
 
+use crate::render::gpu_create::GpuCreate;
 use std::num::NonZeroU64;
-
-use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
@@ -445,31 +444,31 @@ impl FluidSurfacePass {
         // An install-time upload takes the raw queue, as the SH atlases do.
         let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Vertex Buffer"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let drift_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let drift_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fluid Surface Drift Buffer"),
             size: (mesh.vertices.len() * FLUID_DRIFT_RATE_STRIDE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Index Buffer"),
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
         // Zeroed at creation; each slot uploads its row on first draw.
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Fluid Surface Params"),
             size: u64::from(slots.window_count()) * FLUID_PARAMS_WINDOW_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let [probe_array, probe_table, probe_distance] = probes.bind_group_entries();
-        let params_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let params_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Surface Params Bind Group (group 4)"),
             layout: &self.params_bind_group_layout,
             entries: &[
@@ -738,7 +737,7 @@ fn create_fluid_pipeline(
     depth_format: wgpu::TextureFormat,
     variant: FluidShaderVariant,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(match variant {
             FluidShaderVariant::ReflectionFree => "Fluid Surface Pipeline (reflection-free)",
             FluidShaderVariant::Reflecting => "Fluid Surface Pipeline (reflecting)",

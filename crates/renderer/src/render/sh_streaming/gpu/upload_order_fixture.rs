@@ -9,6 +9,7 @@ use crate::render::sh_streaming::install_tests::SyntheticMap;
 use crate::render::sh_streaming::{ShDrainBatch, ShResidencyState};
 use crate::render::sh_volume::ShVolumeSections;
 use crate::render::uploads::UploadQueue;
+use wgpu::util::DeviceExt;
 
 pub(crate) struct UploadOrderSh {
     map: SyntheticMap,

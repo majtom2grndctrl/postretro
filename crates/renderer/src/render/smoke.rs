@@ -7,11 +7,10 @@
 //
 // See: context/lib/rendering_pipeline.md §7.4
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::{HashMap, hash_map::Entry};
 use std::num::NonZeroU64;
 use std::path::Path;
-
-use wgpu::util::DeviceExt;
 
 use postretro_level_format::prm::{
     PORTABLE_MAX_TEXTURE_ARRAY_LAYERS, PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot,
@@ -96,7 +95,7 @@ pub(super) fn build_instance_bind_group(
     buffer: &wgpu::Buffer,
     window: u64,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Sprite Instance Bind Group"),
         layout,
         entries: &[wgpu::BindGroupEntry {
@@ -622,7 +621,7 @@ fn create_sprite_placeholder_array(
         _ => unreachable!("sprite shimmer placeholders use uncompressed unorm formats"),
     };
     assert_eq!(pixel.len(), bytes_per_texel);
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: 1,
@@ -876,7 +875,7 @@ impl SmokePass {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Billboard Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -933,7 +932,7 @@ impl SmokePass {
         // a modest initial frame footprint and grown on demand by `record_draws`
         // when a frame's padded total exceeds it — no per-collection cap.
         let instance_buffer_capacity = align_up_to_dynamic_offset(1024 * SPRITE_INSTANCE_SIZE);
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Sprite Instance Buffer"),
             size: instance_buffer_capacity as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -1128,7 +1127,7 @@ impl SmokePass {
         let width = plan.width;
         let height = plan.height;
         let frame_count = plan.frame_count();
-        let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let diffuse_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some(&format!("Sprite Frame Array: {asset}")),
             size: wgpu::Extent3d {
                 width,
@@ -1291,12 +1290,12 @@ impl SmokePass {
             registration.spec_exponent,
             slot_mask,
         );
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let params_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("Sprite Draw Params: {collection_id}")),
             contents: &params_bytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(&format!("Sprite Frame Array Bind Group: {collection_id}")),
             layout: &self.sheet_bind_group_layout,
             entries: &[
@@ -1433,7 +1432,7 @@ impl SmokePass {
 
         if need_buffer_grow {
             let new_capacity = align_up_to_dynamic_offset(required_capacity);
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            self.instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
                 label: Some("Sprite Instance Buffer"),
                 size: new_capacity as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

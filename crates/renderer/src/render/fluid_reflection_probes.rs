@@ -2,9 +2,8 @@
 // array that join the fluid pass's level-scoped group 4, created at level install.
 // See: context/lib/rendering_pipeline.md §7.3a, §10 · context/lib/resource_management.md §5
 
+use crate::render::gpu_create::GpuCreate;
 use std::num::NonZeroU64;
-
-use wgpu::util::DeviceExt;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
@@ -87,7 +86,7 @@ pub(crate) fn create_probe_index_buffer(
     let has_probe_bound_face = indices
         .iter()
         .any(|&index| index != FLUID_REFLECTION_NO_PROBE);
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Fluid Surface Probe Index Buffer"),
         contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::VERTEX,
@@ -134,7 +133,7 @@ impl FluidProbeResources {
         let array = match section.and_then(|section| Some((section, probe_array_format(section)?)))
         {
             Some((section, format)) => {
-                let array = device.create_texture_with_data(
+                let array = device.new_texture_with_data(
                     queue,
                     &array_descriptor(
                         "Fluid Reflection Probe Array",
@@ -158,7 +157,7 @@ impl FluidProbeResources {
                 );
                 array
             }
-            None => device.create_texture_with_data(
+            None => device.new_texture_with_data(
                 queue,
                 &array_descriptor(
                     "Fluid Reflection Probe Array Dummy",
@@ -175,7 +174,7 @@ impl FluidProbeResources {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let table = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let table = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Reflection Probe Table"),
             contents: &pack_probe_table(section),
             usage: wgpu::BufferUsages::UNIFORM,
@@ -183,7 +182,7 @@ impl FluidProbeResources {
         // One distance tile per probe in the colour tiles' layers, uploaded
         // as stored (little-endian f16); 0 is no surface.
         let distance = match section.filter(|section| probe_array_format(section).is_some()) {
-            Some(section) => device.create_texture_with_data(
+            Some(section) => device.new_texture_with_data(
                 queue,
                 &array_descriptor(
                     "Fluid Reflection Probe Distance Array",
@@ -194,7 +193,7 @@ impl FluidProbeResources {
                 wgpu::util::TextureDataOrder::LayerMajor,
                 &section.distances,
             ),
-            None => device.create_texture_with_data(
+            None => device.new_texture_with_data(
                 queue,
                 &array_descriptor(
                     "Fluid Reflection Probe Distance Array Dummy",

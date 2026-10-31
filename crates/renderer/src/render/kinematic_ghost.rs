@@ -3,6 +3,7 @@
 // recording over the mover pass's geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::ghost_instance::{
     KINEMATIC_GHOST_INSTANCE_SIZE, KinematicGhostInstance, pack_kinematic_ghost_instance,
 };
@@ -120,7 +121,7 @@ impl KinematicGhostPass {
                 GhostDrawStep::Depth => &depth_layout,
                 GhostDrawStep::Colour => &layout,
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -270,7 +271,7 @@ impl KinematicGhostPass {
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Kinematic Ghost Instance Buffer"),
         size: (capacity * KINEMATIC_GHOST_INSTANCE_SIZE) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -283,7 +284,7 @@ fn create_instance_bind_group(
     layout: &wgpu::BindGroupLayout,
     buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Kinematic Ghost Instance Bind Group"),
         layout,
         entries: &[wgpu::BindGroupEntry {

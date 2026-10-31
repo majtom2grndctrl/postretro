@@ -3,6 +3,7 @@
 // block's texels land in each (region writes, block copies).
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
@@ -164,9 +165,9 @@ pub(crate) fn create_pool_textures(
     with_shadowmask: bool,
 ) -> StaticPoolTextures {
     StaticPoolTextures {
-        irradiance: device.create_texture(&irradiance_descriptor(format, layers)),
-        direction: device.create_texture(&direction_descriptor(format, layers)),
-        shadowmask: with_shadowmask.then(|| device.create_texture(&shadowmask_descriptor(layers))),
+        irradiance: device.new_texture(&irradiance_descriptor(format, layers)),
+        direction: device.new_texture(&direction_descriptor(format, layers)),
+        shadowmask: with_shadowmask.then(|| device.new_texture(&shadowmask_descriptor(layers))),
     }
 }
 

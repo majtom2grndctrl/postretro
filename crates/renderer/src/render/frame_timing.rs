@@ -1,6 +1,7 @@
 // GPU timestamp query helper for per-pass frame timing.
 // Gated on `POSTRETRO_GPU_TIMING=1` and the timestamp features used below.
 
+use crate::render::gpu_create::GpuCreate;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -301,14 +302,14 @@ impl FrameTiming {
 
         let buffer_size = num_queries as wgpu::BufferAddress * QUERY_SIZE;
 
-        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let resolve_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Frame Timing Resolve Buffer"),
             size: buffer_size,
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::QUERY_RESOLVE,
             mapped_at_creation: false,
         });
 
-        let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let readback_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Frame Timing Readback Buffer"),
             size: buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

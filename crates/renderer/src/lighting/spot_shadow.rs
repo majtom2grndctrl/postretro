@@ -2,6 +2,7 @@
 //
 // See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
+use crate::render::gpu_create::GpuCreate;
 use glam::Mat4;
 
 #[cfg(test)]
@@ -225,7 +226,7 @@ impl SpotShadowPool {
         point_cube_view: Option<&wgpu::TextureView>,
         resolution: u32,
     ) -> Self {
-        let array_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let array_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
             size: wgpu::Extent3d {
                 width: resolution,
@@ -282,7 +283,7 @@ impl SpotShadowPool {
             ..Default::default()
         });
 
-        let matrices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let matrices_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Spot Shadow Light-Space Matrices"),
             size: LIGHT_SPACE_MATRICES_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -383,7 +384,7 @@ fn build_bind_group(
             resource: wgpu::BindingResource::TextureView(cube_view),
         });
     }
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow Bind Group"),
         layout,
         entries: &entries,

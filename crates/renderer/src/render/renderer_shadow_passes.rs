@@ -4,6 +4,7 @@
 #[cfg(test)]
 use super::renderer_dynamic_shadow_passes::tally_entity_occluder_submissions;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 fn wireframe_draws_leaf(
     mode: WorldWireframeMode,
@@ -169,7 +170,7 @@ impl Renderer {
             && !full.bvh_leaves.is_empty()
             && let Some(cull) = &full.compute_cull
         {
-            let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let cull_status_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Wireframe Cull Status BG"),
                 layout: &full.wireframe_cull_status_bgl,
                 entries: &[wgpu::BindGroupEntry {

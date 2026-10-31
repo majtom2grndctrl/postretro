@@ -3,6 +3,7 @@
 // and the group-6 vertex block-table layout.
 // See: context/lib/rendering_pipeline.md §4
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::animated_lightmap_atlas::{
     ANIMATED_BLOCK_CAP, ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
@@ -257,7 +258,7 @@ impl Group4Bindings {
         let irr_view = array_view(irradiance);
         let dir_view = array_view(direction);
         let shadowmask_view = array_view(shadowmask);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Bind Group"),
             layout: &self.layout,
             entries: &[

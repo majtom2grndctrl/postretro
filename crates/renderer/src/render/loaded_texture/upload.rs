@@ -2,6 +2,7 @@
 // uploads, and the `.prm`-to-wgpu format map.
 // See: context/lib/resource_management.md
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::prm::PrmFormat;
 
 /// Row-layout classification for a `.prm`-backed upload format.
@@ -59,7 +60,7 @@ pub fn upload_texture_data(
         .expect("upload_texture_data: levels must contain at least mip 0");
     let mip_level_count = levels.len() as u32;
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: mip0_w,
@@ -144,7 +145,7 @@ pub fn upload_texture_array_data(
         .copied()
         .expect("upload_texture_array_data: each layer must contain mip 0");
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: mip0_w,

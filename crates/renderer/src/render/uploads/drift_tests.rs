@@ -1,6 +1,7 @@
 // Source-derived upload ownership and staging-mechanism gates.
 // See: context/plans/done/per-frame-upload-batching, AC 2/7/18
 
+mod gpu_create_gate;
 mod scanner;
 use scanner::*;
 use std::path::Path;

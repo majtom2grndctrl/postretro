@@ -13,6 +13,7 @@
 // (`compose_grid`) so tile counts past `max_compute_workgroups_per_dimension`
 // still dispatch. The last row is padded with `PADDING_TILE` records.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::animated_lightmap_atlas::{
@@ -452,7 +453,7 @@ impl AnimatedLightmapResources {
 
         // No `COPY_DST` needed — wgpu zero-initializes and the compose pass
         // overwrites every texel the forward pass will sample.
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let atlas_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Atlas"),
             // One array layer per compact page; pages are square.
             size: wgpu::Extent3d {
@@ -485,7 +486,7 @@ impl AnimatedLightmapResources {
         // atlas. `direction_forward_view` is bound at group-4 binding 5 (forward
         // pass); the compose-side storage binding 8 writes this same atlas —
         // independent numbering spaces.
-        let direction_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let direction_atlas_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Animated LM Direction Atlas"),
             size: wgpu::Extent3d {
                 width: atlas_extent.width,
@@ -539,8 +540,7 @@ impl AnimatedLightmapResources {
         // Seeded with the full master list padded to capacity; every frame
         // overwrites the prefix its grid reads, so no separate clear is needed.
         let dispatch_tiles_buffer = {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Animated LM Dispatch Tiles"),
                 contents: &dispatch_tiles_bytes,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -550,8 +550,7 @@ impl AnimatedLightmapResources {
         let chunk_cell_ids = build_chunk_cell_ids(bvh_leaves, section.chunk_rects.len());
 
         let debug_buffer = {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Animated LM Debug Config"),
                 contents: &debug_config.to_uniform_bytes(),
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -580,7 +579,7 @@ impl AnimatedLightmapResources {
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
 
-        let compose_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let compose_pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Animated LM Compose Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -589,7 +588,7 @@ impl AnimatedLightmapResources {
             cache: None,
         });
 
-        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let compute_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Animated LM Compute Bind Group"),
             layout: &compute_bgl,
             entries: &[
@@ -917,7 +916,7 @@ fn create_zero_texture(
     label: &str,
     format: wgpu::TextureFormat,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: 1,
@@ -937,7 +936,6 @@ fn create_zero_texture(
 }
 
 fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
-    use wgpu::util::DeviceExt;
     // wgpu rejects zero-sized storage buffers. All callers are gated behind the
     // early-out in `new` that bails when `chunk_rects` OR `texel_lights` is
     // empty, so by here every packed buffer is non-empty. (An all-SDF map emits
@@ -945,7 +943,7 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
     // Use `assert!` (not `debug_assert!`) so a future regression surfaces in
     // release builds.
     assert!(!bytes.is_empty(), "{label} storage buffer would be empty");
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(label),
         contents: bytes,
         usage: wgpu::BufferUsages::STORAGE,

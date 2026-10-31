@@ -2,6 +2,7 @@
 // See: context/lib/resource_management.md
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::material_plan::{MaterialUniformPlan, mip_lod_max_clamp};
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
 
@@ -157,12 +158,12 @@ pub(crate) fn build_material_bind_group(
         }
     }
     let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
         contents: &uniform_bytes,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(&format!("{label_prefix} Bind Group")),
         layout: texture_bind_group_layout,
         entries: &[

@@ -1,6 +1,7 @@
 // Bounded asynchronous irradiance readback for streamed probe markers.
 // See: context/lib/rendering_pipeline.md §Cluster SH residency
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::BTreeMap;
 use std::sync::{
     Arc,
@@ -105,7 +106,7 @@ impl GpuReadback {
             label: Some("Streamed SH marker reduction shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Streamed SH marker reduction"),
             layout: Some(&pipeline_layout),
             module: &module,
@@ -114,7 +115,7 @@ impl GpuReadback {
             cache: None,
         });
         let buffer = |label, size, usage| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            device.new_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size,
                 usage,
@@ -342,7 +343,7 @@ impl ShResidencyState {
         ];
         queue.write_buffer(&gpu.requests, 0, bytemuck::cast_slice(&readback.requests));
         queue.write_buffer(&gpu.params, 0, bytemuck::cast_slice(&params));
-        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bindings = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed SH marker reduction bindings"),
             layout: &gpu.layout,
             entries: &[

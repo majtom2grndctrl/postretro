@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// First-person weapon projection. Kept renderer-owned because this is a GPU
 /// pass contract; game assembly supplies a world-space model transform plus the
@@ -44,7 +45,7 @@ impl Renderer {
             .checked_mul(u64::from(height))
             .context("capture readback buffer size overflows u64")?;
 
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = self.device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Frame Capture Readback"),
             size: buffer_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,

@@ -5,6 +5,7 @@
 use super::super::renderer_types::{FullRenderer, PromotedBakedLightState};
 use super::lights::LevelLightSelection;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 fn spot_shadow_pool_needs_rebuild(current: u32, requested: u32) -> bool {
     current != requested
@@ -94,7 +95,7 @@ pub(super) fn reset_level_shadow_caches(
     full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
     full.dynamic_depth_cache_diagnostics = Default::default();
     full.promoted_entity_occluders_submitted = 0;
-    full.promoted_static_weight_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    full.promoted_static_weight_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Promoted Static Light Weights"),
         size: (geometry.entity_shadow_lights.len().max(1) * 4) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

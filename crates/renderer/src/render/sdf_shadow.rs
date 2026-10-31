@@ -18,6 +18,7 @@
 // shadow factor output), group 2 = static-light buffers the shared K-selection
 // helper reads.
 
+use crate::render::gpu_create::GpuCreate;
 #[allow(unused_imports)]
 pub use postretro_render_cpu::sdf_shadow::{
     DEFAULT_MAX_MARCH_STEPS, DEFAULT_OPEN_SPACE_SKIP_THRESHOLD, DEFAULT_PENUMBRA_K,
@@ -148,7 +149,7 @@ impl SdfShadowPass {
             source: wgpu::ShaderSource::Wgsl(SDF_SHADOW_SHADER_SOURCE.into()),
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("SDF Shadow Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -161,7 +162,7 @@ impl SdfShadowPass {
         let (shadow_texture, shadow_view, shadow_storage_view) =
             create_shadow_target(device, half_res.0, half_res.1);
 
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("SDF Shadow Params"),
             size: SHADOW_PASS_PARAMS_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -345,7 +346,7 @@ fn create_shadow_target(
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("SDF Shadow Factor Target"),
         size: wgpu::Extent3d {
             width,
@@ -380,7 +381,7 @@ fn build_bind_group(
     sh_depth_moments_view: &wgpu::TextureView,
     shadow_storage_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("SDF Shadow Bind Group"),
         layout,
         entries: &[
@@ -463,7 +464,7 @@ fn build_light_bind_group(
     layout: &wgpu::BindGroupLayout,
     lights: SdfShadowLightBuffers,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("SDF Shadow Light Bind Group"),
         layout,
         entries: &[

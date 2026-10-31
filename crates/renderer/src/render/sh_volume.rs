@@ -1,6 +1,7 @@
 // SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
@@ -23,7 +24,6 @@ pub use postretro_render_cpu::sh_volume::{
     build_animation_buffers_from_descriptors, build_grid_info_bytes, f32_to_f16_bits,
     probe_occlusion_seed_from_fast_env,
 };
-use wgpu::util::DeviceExt;
 
 use super::billboard_direct_scatter::{
     BillboardDirectScatterResources,
@@ -837,7 +837,7 @@ impl ShVolumeResources {
             },
         ];
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Bind Group"),
             layout: &bind_group_layout,
             entries: &entries,
@@ -857,7 +857,7 @@ impl ShVolumeResources {
             binding: postretro_render_cpu::sh_volume::BIND_DYNAMIC_DIRECT_PARAMS,
             resource: direct.dynamic_direct_params_binding(),
         });
-        let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Mesh Superset Bind Group"),
             layout: &mesh_bind_group_layout,
             entries: &mesh_entries,
@@ -1122,7 +1122,7 @@ impl DeviceBufferInit for wgpu::Device {
         contents: &[u8],
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
-        self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents,
             usage,
@@ -1140,6 +1140,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use wgpu::util::DeviceExt;
 
     const SH_DEPTH_MIN_VARIANCE_M2_REF: f32 = 1.0e-4;
     const SH_DEPTH_BIAS_CELL_FRACTION_REF: f32 = 0.05;

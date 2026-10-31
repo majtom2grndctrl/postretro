@@ -1,11 +1,11 @@
 // Renderer-owned draw path for PRL-loaded kinematic brush movers.
 // See: context/lib/rendering_pipeline.md
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
 
 use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
-use wgpu::util::DeviceExt;
 
 use super::*;
 
@@ -407,7 +407,7 @@ impl KinematicBrushPass {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Kinematic Brush Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -470,23 +470,23 @@ impl KinematicBrushPass {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Vertex Buffer"),
             contents: &[0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Index Buffer"),
             contents: &[0u8; 4],
             usage: wgpu::BufferUsages::INDEX,
         });
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Instance Buffer"),
             size: INSTANCE_ENTRY_SIZE as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let instance_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Kinematic Brush Instance Bind Group"),
             layout: &instance_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -494,7 +494,7 @@ impl KinematicBrushPass {
                 resource: instance_buffer.as_entire_binding(),
             }],
         });
-        let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let light_params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Light Params"),
             size: KINEMATIC_LIGHT_PARAMS_SIZE as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -622,12 +622,12 @@ impl KinematicBrushPass {
 
         let vertex_bytes = cast_world_vertices_to_bytes(&vertices);
         let index_bytes = bytemuck_cast_slice_u32(&indices);
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Vertex Buffer"),
             contents: &vertex_bytes,
             usage: wgpu::BufferUsages::VERTEX,
         });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Index Buffer"),
             contents: &index_bytes,
             usage: wgpu::BufferUsages::INDEX,
@@ -636,12 +636,12 @@ impl KinematicBrushPass {
     }
 
     fn install_empty_geometry(&mut self, device: &wgpu::Device) {
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Vertex Buffer"),
             contents: &[0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
             usage: wgpu::BufferUsages::VERTEX,
         });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Kinematic Brush Index Buffer"),
             contents: &[0u8; 4],
             usage: wgpu::BufferUsages::INDEX,
@@ -794,14 +794,14 @@ impl KinematicBrushPass {
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
-        self.light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Kinematic Brush Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,
         }));
         // The mirror's group differs only in b0.
         entries[0].resource = mirror_lights.as_entire_binding();
-        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.mirror_light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Kinematic Brush Mirror Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,
@@ -861,13 +861,13 @@ impl KinematicBrushPass {
         let instance_count = self.instance_bytes.len() / INSTANCE_ENTRY_SIZE;
         if instance_count > self.instance_capacity {
             self.instance_capacity = instance_count.next_power_of_two();
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            self.instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
                 label: Some("Kinematic Brush Instance Buffer"),
                 size: (self.instance_capacity * INSTANCE_ENTRY_SIZE) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.instance_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Kinematic Brush Instance Bind Group"),
                 layout: &self.instance_bind_group_layout,
                 entries: &[wgpu::BindGroupEntry {

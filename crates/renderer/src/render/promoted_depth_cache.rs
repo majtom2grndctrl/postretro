@@ -4,6 +4,7 @@ use super::renderer_types::{
     MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedBakedLightRecord, PromotedBakedLightSource,
     PromotedShadowPoolKind,
 };
+use crate::render::gpu_create::GpuCreate;
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
 use crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT;
@@ -89,7 +90,7 @@ impl PromotedDepthCache {
         cube_array_supported: bool,
         spot_shadow_map_resolution: u32,
     ) -> Self {
-        let spot_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let spot_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Promoted Spot World Depth Cache"),
             size: wgpu::Extent3d {
                 width: spot_shadow_map_resolution,
@@ -123,7 +124,7 @@ impl PromotedDepthCache {
         });
 
         let cube_layer_count = (MAX_PROMOTED_CUBE * CUBE_FACES) as u32;
-        let cube_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let cube_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Promoted Cube World Depth Cache"),
             size: wgpu::Extent3d {
                 width: CUBE_FACE_RESOLUTION,

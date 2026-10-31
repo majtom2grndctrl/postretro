@@ -1,9 +1,9 @@
 // Animated direct-scatter composition for billboard receivers.
 // See: context/lib/rendering_pipeline.md §7.4
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
-use wgpu::util::DeviceExt;
 
 use super::billboard_direct_scatter::BillboardDirectScatterResources;
 use super::residency::{ResidencyAllocationState, source_ids};
@@ -112,32 +112,31 @@ impl BillboardDirectScatterComposeResources {
             false,
             ResidencyAllocationState::Data,
         );
-        let grid_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let grid_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Grid"),
             contents: &grid_bytes,
             usage: grid_allocation.usage,
         });
-        let delta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let delta_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose Deltas (f16)"),
             contents: &delta_payload.contents,
             usage: delta_payload.allocation.usage,
         });
-        let offset_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let offset_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose CSR Offsets"),
             contents: &offset_payload.contents,
             usage: offset_payload.allocation.usage,
         });
-        let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let light_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Billboard Direct Scatter Compose CSR Lights"),
             contents: &light_payload.contents,
             usage: light_payload.allocation.usage,
         });
-        let descriptor_index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Billboard Direct Scatter Compose Descriptor Indices"),
-                contents: &descriptor_index_payload.contents,
-                usage: descriptor_index_payload.allocation.usage,
-            });
+        let descriptor_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Billboard Direct Scatter Compose Descriptor Indices"),
+            contents: &descriptor_index_payload.contents,
+            usage: descriptor_index_payload.allocation.usage,
+        });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Billboard Direct Scatter Compose BGL"),
@@ -157,7 +156,7 @@ impl BillboardDirectScatterComposeResources {
             label: Some("Billboard Direct Scatter Compose Shader"),
             source: wgpu::ShaderSource::Wgsl(shader_source.into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Billboard Direct Scatter Compose Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -165,7 +164,7 @@ impl BillboardDirectScatterComposeResources {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Billboard Direct Scatter Compose Bind Group"),
             layout: &bind_group_layout,
             entries: &[

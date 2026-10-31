@@ -2,6 +2,7 @@
 // ghost draw recording.
 // See: context/lib/rendering_pipeline.md §7.9
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
@@ -89,7 +90,7 @@ pub(super) fn skinned_ghost_pipelines(
             GhostDrawStep::Depth => &depth_layout,
             GhostDrawStep::Colour => &layout,
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {

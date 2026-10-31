@@ -18,7 +18,7 @@ use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhT
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 /// A full mip chain of `format` with distinct bytes per level and texel.
-fn chain(format: PrmFormat, width: u16, height: u16, seed: u8) -> PrmSlot {
+pub(in crate::render) fn chain(format: PrmFormat, width: u16, height: u16, seed: u8) -> PrmSlot {
     let level_count = expected_level_count(width, height);
     let bpp = match format {
         PrmFormat::R8Unorm => 1,
@@ -39,7 +39,7 @@ fn chain(format: PrmFormat, width: u16, height: u16, seed: u8) -> PrmSlot {
     }
 }
 
-fn write_prm(root: &Path, key: [u8; 32], slots: [Option<PrmSlot>; 4]) {
+pub(in crate::render) fn write_prm(root: &Path, key: [u8; 32], slots: [Option<PrmSlot>; 4]) {
     let mut slot_mask = PrmSlots::empty();
     for (present, bit) in slots.iter().zip([
         PrmSlots::DIFFUSE,
@@ -200,7 +200,7 @@ fn read_srgb_mip0(
 }
 
 /// One triangle in one cell whose leaf draws material bucket 0.
-fn install_one_triangle(renderer: &mut Renderer, materials: &[Material]) {
+pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials: &[Material]) {
     let vertices: Vec<WorldVertex> = [[-0.4, -0.4, 0.0], [0.4, -0.4, 0.0], [0.0, 0.4, 0.0]]
         .map(|position| WorldVertex {
             position,

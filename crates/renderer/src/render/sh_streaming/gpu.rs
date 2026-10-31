@@ -4,6 +4,7 @@
 //! path. The loader passes decoded bytes only; it never observes a slot,
 //! texture, buffer, or bind group.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
@@ -19,7 +20,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use wgpu::util::DeviceExt;
 
 use super::dense::DenseTextures;
 use super::direct_compose::{
@@ -314,7 +314,7 @@ pub(super) fn buffer_with_zeroes(
     label: &'static str,
     byte_len: usize,
 ) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: byte_len.max(4).next_multiple_of(4) as u64,
         usage: wgpu::BufferUsages::STORAGE

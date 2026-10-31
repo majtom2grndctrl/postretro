@@ -1,9 +1,8 @@
 // Skinned-model tables keyed by `ModelHandle`: insert, lookup and level release.
 // See: context/lib/rendering_pipeline.md §9
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
-
-use wgpu::util::DeviceExt;
 
 use postretro_model::ModelHandle;
 use postretro_model::mesh::SkinnedMesh;
@@ -74,12 +73,12 @@ impl MeshPass {
             clips,
             pose_stack,
         } = animation;
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Vertex Buffer"),
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Skinned Mesh Index Buffer"),
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,

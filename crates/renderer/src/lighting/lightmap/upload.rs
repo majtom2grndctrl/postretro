@@ -2,8 +2,8 @@
 // direction and all-visible shadowmask) and the adapter format checks.
 // See: context/lib/rendering_pipeline.md §4
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
-use wgpu::util::DeviceExt;
 
 /// Whether `Rgba16Float` (the uncompressed irradiance pool and animated atlas
 /// format) advertises hardware bilinear filtering on this adapter. Checked
@@ -44,7 +44,7 @@ pub(super) fn upload_placeholder_irradiance(
     for _ in 0..4 {
         bytes.extend_from_slice(&white.to_le_bytes());
     }
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Irradiance Placeholder"),
@@ -72,7 +72,7 @@ pub(super) fn upload_placeholder_direction(
     // Neutral direction: +Y encoded octahedral (0, 1) maps to (0.5, 1.0) →
     // 8-bit quantization (128, 255).
     let bytes = [128u8, 255];
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Lightmap Direction Placeholder"),
@@ -100,7 +100,7 @@ pub(crate) fn upload_placeholder_shadowmask(
     // Two white texels: the shader splits the width into two mask groups, so
     // each group reads one real, fully visible texel.
     let bytes = [255u8; 8];
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &wgpu::TextureDescriptor {
             label: Some("Shadowmask Atlas Placeholder"),

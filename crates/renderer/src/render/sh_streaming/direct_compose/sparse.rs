@@ -1,8 +1,8 @@
 //! Existing-binding sparse pools for streamed direct composition.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_loader::ShStreamBaseMetadata;
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
-use wgpu::util::DeviceExt;
 
 use super::super::gpu::{
     BufferWrite, StagedUploads, coalesce_buffer_writes, stage_buffer_writes,
@@ -406,7 +406,7 @@ pub(super) fn build_grid_and_sparse(
             .and_then(|count| count.checked_mul(4))
             .ok_or(ShResidencyDrainError::SlotOverflow)?,
     );
-    let compaction_metadata = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let compaction_metadata = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Streamed Direct SH Compaction Metadata"),
         contents: &u32_bytes(&compaction),
         usage: wgpu::BufferUsages::STORAGE
@@ -470,7 +470,7 @@ pub(super) fn build_grid_and_sparse(
             reason: "streamed direct dirty compose records exceed adapter buffer limit",
         });
     }
-    let grid_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let grid_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: grid_capacity.max(record_size),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

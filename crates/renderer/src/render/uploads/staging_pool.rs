@@ -1,6 +1,7 @@
 // Recycled mapped staging buffers shared by frame and residency uploads.
 // See: context/lib/rendering_pipeline.md §1, §4
 
+use crate::render::gpu_create::GpuCreate;
 use std::sync::{
     Arc, Mutex, PoisonError,
     atomic::{AtomicU64, Ordering},
@@ -157,7 +158,7 @@ impl StagingPool {
             usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,
         };
-        gpu_call(|| device.create_buffer(&descriptor))
+        gpu_call(|| device.new_buffer(&descriptor))
     }
 
     /// wgpu fires this callback after the submission reading the buffer completes.

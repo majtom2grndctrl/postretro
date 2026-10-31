@@ -5,6 +5,7 @@
 //! and independently growable compose carriers.
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 impl StreamingGpuPools {
     #[allow(clippy::too_many_arguments)]
@@ -69,7 +70,7 @@ impl StreamingGpuPools {
     ) -> Result<Self, ShResidencyDrainError> {
         let base_format = texture_format(base.irradiance_format)?;
         let extent = shape.extent();
-        let base_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let base_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Streamed SH Base Atlas Pool"),
             size: extent,
             mip_level_count: 1,
@@ -81,7 +82,7 @@ impl StreamingGpuPools {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let total_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let total_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Streamed SH Total Atlas Pool"),
             size: extent,
             mip_level_count: 1,
@@ -100,7 +101,7 @@ impl StreamingGpuPools {
 
         let (direct_base, direct_base_view, direct_format) = if let Some(direct) = &sources.direct {
             let format = texture_format(direct.irradiance_format)?;
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
+            let texture = device.new_texture(&wgpu::TextureDescriptor {
                 label: Some("Streamed Direct SH Base Atlas Pool"),
                 size: extent,
                 mip_level_count: 1,
@@ -133,7 +134,7 @@ impl StreamingGpuPools {
                     reason: "streamed direct compose has no id-35 base atlas",
                 });
             }
-            let total = device.create_texture(&wgpu::TextureDescriptor {
+            let total = device.new_texture(&wgpu::TextureDescriptor {
                 label: Some("Streamed Direct SH Total Atlas Pool"),
                 size: extent,
                 mip_level_count: 1,
@@ -149,7 +150,7 @@ impl StreamingGpuPools {
             let total_storage = array_view(&total, "Streamed Direct SH Total Storage View");
             let total_sampled = array_view(&total, "Streamed Direct SH Total Sampled View");
             if sources.animated_direct_delta.is_some() {
-                let intermediate = device.create_texture(&wgpu::TextureDescriptor {
+                let intermediate = device.new_texture(&wgpu::TextureDescriptor {
                     label: Some("Streamed Direct SH Intermediate Atlas Pool"),
                     size: extent,
                     mip_level_count: 1,
@@ -205,7 +206,7 @@ impl StreamingGpuPools {
                 reason: "streamed SH depth-moment grid exceeds adapter 3D texture limits",
             });
         }
-        let depth_moments = device.create_texture(&wgpu::TextureDescriptor {
+        let depth_moments = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Streamed SH Depth Moments"),
             size: depth_extent,
             mip_level_count: 1,
@@ -228,7 +229,7 @@ impl StreamingGpuPools {
             .and_then(|count| count.checked_mul(u64::from(std::mem::size_of::<u32>() as u32)))
             .ok_or(ShResidencyDrainError::SlotOverflow)?
             .max(4);
-        let compose_indirection = device.create_buffer(&wgpu::BufferDescriptor {
+        let compose_indirection = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Streamed SH Compose Indirection"),
             size: indirection_len,
             usage: wgpu::BufferUsages::STORAGE
@@ -236,7 +237,7 @@ impl StreamingGpuPools {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let sampled_indirection = device.create_buffer(&wgpu::BufferDescriptor {
+        let sampled_indirection = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Streamed SH Sampled Indirection Mirror"),
             size: indirection_len,
             usage: wgpu::BufferUsages::STORAGE
@@ -259,7 +260,7 @@ impl StreamingGpuPools {
             present: true,
             probe_occlusion_enabled,
         });
-        let grid_info = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let grid_info = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Grid Info"),
             contents: &grid_bytes,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -361,7 +362,7 @@ impl StreamingGpuPools {
                 ),
             },
         ];
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed SH Volume Bind Group"),
             layout: &sh.bind_group_layout,
             entries: &entries,
@@ -371,7 +372,7 @@ impl StreamingGpuPools {
             binding: BIND_DYNAMIC_DIRECT_PARAMS,
             resource: sh.direct.dynamic_direct_params_binding(),
         });
-        let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed SH Mesh Bind Group"),
             layout: &sh.mesh_bind_group_layout,
             entries: &mesh_entries,

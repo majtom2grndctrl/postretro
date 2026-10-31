@@ -1,10 +1,10 @@
 //! Pipeline carriers for the streamed direct-SH promotion and animated passes.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSparseMetadata};
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::ComposeGridParams;
 use postretro_render_cpu::sh_volume::STREAMED_SH_PHYSICAL_TILE_STRIDE;
-use wgpu::util::DeviceExt;
 
 use super::super::ShResidencyDrainError;
 use super::super::gpu::StagedUploads;
@@ -86,12 +86,12 @@ impl StreamingPromotionPass {
         )?;
         let sampler = nearest_sampler(device, "Streamed Direct SH Base Sampler");
         let initial_debug_override = debug_override_bytes(DirectShDebugOverride::default());
-        let debug_override = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let debug_override = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed Direct SH Debug Override"),
             contents: &initial_debug_override,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let light_term_mask = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let light_term_mask = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed Direct SH Light-Term Mask"),
             contents: &light_term_mask_bytes(LightTermMask::ALL),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -117,7 +117,7 @@ impl StreamingPromotionPass {
                 .into(),
             ),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Streamed Direct SH Promotion Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -181,7 +181,7 @@ impl StreamingPromotionPass {
         light_term_mask: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed Direct SH Promotion Bind Group"),
             layout,
             entries: &[
@@ -385,7 +385,7 @@ impl StreamingAnimatedPass {
         } else {
             source.animation_descriptor_indices.clone()
         };
-        let descriptor_indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let descriptor_indices = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed Animated Direct SH Descriptor Indices"),
             contents: &u32_bytes(&descriptor_indices),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -393,7 +393,7 @@ impl StreamingAnimatedPass {
         // Default scale bytes are all compose weights == 1.0. This prevents a
         // first-frame id-45 compose from silently erasing every animation.
         let initial_light_scale = AnimatedDirectShDebugOverride::default().bytes(&[]);
-        let light_scale = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let light_scale = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed Animated Direct SH Light Scale"),
             contents: &initial_light_scale,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -422,7 +422,7 @@ impl StreamingAnimatedPass {
                 .into(),
             ),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Streamed Animated Direct SH Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -487,7 +487,7 @@ impl StreamingAnimatedPass {
         light_scale: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed Animated Direct SH Bind Group"),
             layout,
             entries: &[

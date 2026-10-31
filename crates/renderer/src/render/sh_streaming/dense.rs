@@ -4,6 +4,7 @@
 //! one family. Sparse compose buffers deliberately live elsewhere: expanding
 //! this family must not duplicate ids 27, 41, or 45.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSourceMetadata};
 
 use super::ShResidencyDrainError;
@@ -39,7 +40,7 @@ impl DenseTextures {
     ) -> Result<Self, ShResidencyDrainError> {
         let base_format = texture_format(base.irradiance_format)?;
         let extent = shape.extent();
-        let base_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let base_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Streamed SH Base Atlas Pool"),
             size: extent,
             mip_level_count: 1,
@@ -51,7 +52,7 @@ impl DenseTextures {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let total_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let total_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Streamed SH Total Atlas Pool"),
             size: extent,
             mip_level_count: 1,
@@ -70,7 +71,7 @@ impl DenseTextures {
 
         let (direct_base, direct_base_view, direct_format) = if let Some(direct) = &sources.direct {
             let format = texture_format(direct.irradiance_format)?;
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
+            let texture = device.new_texture(&wgpu::TextureDescriptor {
                 label: Some("Streamed Direct SH Base Atlas Pool"),
                 size: extent,
                 mip_level_count: 1,
@@ -103,7 +104,7 @@ impl DenseTextures {
                     reason: "streamed direct compose has no id-35 base atlas",
                 });
             }
-            let total = device.create_texture(&wgpu::TextureDescriptor {
+            let total = device.new_texture(&wgpu::TextureDescriptor {
                 label: Some("Streamed Direct SH Total Atlas Pool"),
                 size: extent,
                 mip_level_count: 1,
@@ -119,7 +120,7 @@ impl DenseTextures {
             let total_storage = array_view(&total, "Streamed Direct SH Total Storage View");
             let total_sampled = array_view(&total, "Streamed Direct SH Total Sampled View");
             if sources.animated_direct_delta.is_some() {
-                let intermediate = device.create_texture(&wgpu::TextureDescriptor {
+                let intermediate = device.new_texture(&wgpu::TextureDescriptor {
                     label: Some("Streamed Direct SH Intermediate Atlas Pool"),
                     size: extent,
                     mip_level_count: 1,

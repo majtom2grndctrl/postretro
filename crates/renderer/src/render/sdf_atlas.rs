@@ -12,9 +12,9 @@
 // See: context/plans/done/sdf-static-occluder-shadows/index.md (foundation)
 //      context/plans/in-progress/sdf-filterable-atlas/index.md (current change)
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_render_cpu::sdf_atlas::{build_meta_bytes, scatter_bricks_to_atlas};
-use wgpu::util::DeviceExt;
 
 /// On-GPU representation of the bake's `i16` quantization scale. Stored in
 /// the meta uniform's `voxel_size_m` field — the bake quantizes distances at
@@ -218,7 +218,7 @@ impl SdfAtlasResources {
         // trilinear-filters the field. It carries the same quant-step
         // magnitudes the bake produced (decoded by `voxel_size_m / 256`);
         // f16 has ample precision for the small local distances stored here.
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let atlas_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("SDF Atlas Distances"),
             size: atlas_size,
             mip_level_count: 1,
@@ -246,7 +246,7 @@ impl SdfAtlasResources {
 
         // Coarse per-brick distances: R32Float in meters; one texel per
         // brick cell of the world grid.
-        let coarse_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let coarse_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("SDF Atlas Coarse Distances"),
             size: coarse_size,
             mip_level_count: 1,
@@ -274,7 +274,7 @@ impl SdfAtlasResources {
 
         // Top-level brick slot index buffer. `EMPTY`/`INTERIOR` sentinels
         // round-trip through unchanged; the shadow pass interprets them.
-        let top_level_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let top_level_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SDF Atlas Top Level"),
             contents: &top_level_payload,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -290,7 +290,7 @@ impl SdfAtlasResources {
             surface_brick_count,
             present,
         );
-        let meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let meta_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("SDF Atlas Meta Uniform"),
             contents: &meta_bytes,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -320,7 +320,7 @@ impl SdfAtlasResources {
             ..Default::default()
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SDF Atlas Bind Group"),
             layout: &bind_group_layout,
             entries: &[

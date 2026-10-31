@@ -3,6 +3,7 @@
 // composites it over the probe term; the target's lifetime and group 5 binding.
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
+use crate::render::gpu_create::GpuCreate;
 use bytemuck::{Pod, Zeroable};
 pub(crate) use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionMarch as FluidReflectionMarchTuning;
 use postretro_render_cpu::fluid_surface::reflection_quality::{
@@ -153,7 +154,7 @@ impl FluidReflectionTarget {
             height: extent.1,
             depth_or_array_layers: 1,
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Fluid Reflection Target"),
             size,
             mip_level_count: 1,
@@ -165,7 +166,7 @@ impl FluidReflectionTarget {
                 | TARGET_TEST_COPY_USAGE,
             view_formats: &[],
         });
-        let depth = device.create_texture(&wgpu::TextureDescriptor {
+        let depth = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Fluid Reflection Depth"),
             size,
             mip_level_count: 1,
@@ -239,7 +240,7 @@ fn create_inputs_bind_group(
     scene_color: &wgpu::TextureView,
     uniform_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fluid Reflection Inputs Bind Group (group 2)"),
         layout,
         entries: &[
@@ -298,7 +299,7 @@ impl FluidReflectionPass {
             ],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Fluid Reflection Pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -323,7 +324,7 @@ impl FluidReflectionPass {
             multiview_mask: None,
             cache: None,
         });
-        let placeholder = device.create_texture(&wgpu::TextureDescriptor {
+        let placeholder = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Fluid Reflection Target Placeholder"),
             size: wgpu::Extent3d {
                 width: 1,
@@ -351,7 +352,7 @@ impl FluidReflectionPass {
             target_scale: [0.0; 2],
             spare: [0.0; 2],
         };
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Reflection Uniform"),
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -506,7 +507,7 @@ impl FluidReflectionPass {
         params_buffer: &wgpu::Buffer,
         probe_table: wgpu::BindGroupEntry<'_>,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Fluid Reflection Probe Table Bind Group (group 3)"),
             layout: &self.probe_layout,
             entries: &[

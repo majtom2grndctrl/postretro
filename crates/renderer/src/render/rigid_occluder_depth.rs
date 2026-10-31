@@ -1,6 +1,7 @@
 // Position-only rigid-instance shadow occluder pipeline and mover recorder.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use glam::Vec4;
 use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 
@@ -45,7 +46,7 @@ impl RigidOccluderDepthPass {
             ],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Rigid Occluder Depth Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {

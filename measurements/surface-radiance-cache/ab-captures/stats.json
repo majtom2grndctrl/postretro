@@ -222,5 +222,133 @@
   "share_gt2": 0.9999,
   "mean_signed_luma": 36.719,
   "fill0_mean_luma": 43.11
+ },
+ "movement-feel/m1-rel/full": {
+  "mean": 1.733,
+  "p99": 5.0,
+  "max": 11,
+  "share_gt2": 0.2998,
+  "mean_signed_luma": 0.817,
+  "fill0_mean_luma": 37.79
+ },
+ "movement-feel/m2-rel/full": {
+  "mean": 0.68,
+  "p99": 2.0,
+  "max": 6,
+  "share_gt2": 0.0012,
+  "mean_signed_luma": 0.319,
+  "fill0_mean_luma": 40.59
+ },
+ "movement-feel/m3-abs/full": {
+  "mean": 1.418,
+  "p99": 5.0,
+  "max": 7,
+  "share_gt2": 0.1367,
+  "mean_signed_luma": 0.68,
+  "fill0_mean_luma": 30.05
+ },
+ "movement-feel/m4-abs/full": {
+  "mean": 0.877,
+  "p99": 3.0,
+  "max": 6,
+  "share_gt2": 0.0233,
+  "mean_signed_luma": 0.404,
+  "fill0_mean_luma": 27.72
+ },
+ "movement-feel/m5-cor/full": {
+  "mean": 0.666,
+  "p99": 2.0,
+  "max": 4,
+  "share_gt2": 0.0006,
+  "mean_signed_luma": 0.312,
+  "fill0_mean_luma": 5.35
+ },
+ "movement-feel/m1-rel/indirect": {
+  "mean": 3.172,
+  "p99": 6.0,
+  "max": 12,
+  "share_gt2": 0.7101,
+  "mean_signed_luma": 1.525,
+  "fill0_mean_luma": 7.74
+ },
+ "movement-feel/m2-rel/indirect": {
+  "mean": 1.503,
+  "p99": 4.0,
+  "max": 7,
+  "share_gt2": 0.0773,
+  "mean_signed_luma": 0.721,
+  "fill0_mean_luma": 5.11
+ },
+ "movement-feel/m3-abs/indirect": {
+  "mean": 2.826,
+  "p99": 6.0,
+  "max": 7,
+  "share_gt2": 0.5645,
+  "mean_signed_luma": 1.362,
+  "fill0_mean_luma": 4.45
+ },
+ "movement-feel/m4-abs/indirect": {
+  "mean": 1.814,
+  "p99": 4.0,
+  "max": 7,
+  "share_gt2": 0.1936,
+  "mean_signed_luma": 0.873,
+  "fill0_mean_luma": 3.25
+ },
+ "movement-feel/m5-cor/indirect": {
+  "mean": 0.806,
+  "p99": 3.0,
+  "max": 6,
+  "share_gt2": 0.0228,
+  "mean_signed_luma": 0.383,
+  "fill0_mean_luma": 0.84
+ },
+ "mover-setpiece/v1-station1-wall/full": {
+  "mean": 1.751,
+  "p99": 5.0,
+  "max": 13,
+  "share_gt2": 0.0896,
+  "mean_signed_luma": 1.354,
+  "fill0_mean_luma": 122.03
+ },
+ "mover-setpiece/v2-south-face/full": {
+  "mean": 1.921,
+  "p99": 7.0,
+  "max": 14,
+  "share_gt2": 0.1688,
+  "mean_signed_luma": 1.513,
+  "fill0_mean_luma": 105.57
+ },
+ "mover-setpiece/v3-north-face/full": {
+  "mean": 2.392,
+  "p99": 8.0,
+  "max": 14,
+  "share_gt2": 0.4097,
+  "mean_signed_luma": 1.892,
+  "fill0_mean_luma": 101.26
+ },
+ "mover-setpiece/v1-station1-wall/indirect": {
+  "mean": 8.487,
+  "p99": 14.0,
+  "max": 18,
+  "share_gt2": 0.9836,
+  "mean_signed_luma": 6.876,
+  "fill0_mean_luma": 24.1
+ },
+ "mover-setpiece/v2-south-face/indirect": {
+  "mean": 7.907,
+  "p99": 15.0,
+  "max": 18,
+  "share_gt2": 0.9518,
+  "mean_signed_luma": 6.509,
+  "fill0_mean_luma": 22.81
+ },
+ "mover-setpiece/v3-north-face/indirect": {
+  "mean": 8.313,
+  "p99": 13.0,
+  "max": 16,
+  "share_gt2": 0.9891,
+  "mean_signed_luma": 6.913,
+  "fill0_mean_luma": 26.5
  }
 }

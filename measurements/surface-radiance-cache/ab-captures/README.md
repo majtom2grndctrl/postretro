@@ -3,8 +3,11 @@
 These are headless captures of the owner A/B in `../ab/AB.md`, taken at the poses where the SH base (id 34) changes most between `_bounce_fill` 0 and 1. The goal is to tell whether the difference is invisible or just hard to find in-engine.
 
 **Contact sheets:**
-- `contact-full.png`: full lighting.
-- `contact-indirect.png`: indirect only.
+- campaign-test and white room: `contact-full.png` (full lighting) and `contact-indirect.png` (indirect only).
+- movement-feel: `contact-movement-feel-full.png` and `contact-movement-feel-indirect.png`.
+- kinematic movers (mover-setpiece): `contact-movers-full.png` and `contact-movers-indirect.png`.
+
+**Phone-sized pairs** (fill 0 | fill 1, full lighting, 1608 px wide): `pair-mover-setpiece-v3-north-face.png`, `pair-movement-feel-m1-rel.png`, `pair-whiteroom-w1-pillar-shadow-face.png`.
 
 Each row is one pose. The columns are fill 0, fill 0.5 (campaign only), fill 1, and |fill1 − fill0| ×4 as a heat ramp (black, red, yellow, white). Each row's label carries the diff numbers. `stats.json` holds every figure, including fill 0.5 vs 0 under `half_vs_0`.
 
@@ -81,13 +84,70 @@ Fill 0.5 vs fill 0 on campaign-test is about half of that: mean 0.6–1.3, p99 2
   - In full lighting, 46 pixels stay black along the pillar base in `w1`.
 - **No patch-scale blotches or new light leaks** are visible in either map's indirect-only frames. The blockiness on the campaign walls follows the texture.
 
+## movement-feel and kinematic movers (second batch)
+
+### Inputs
+
+- **PRLs:** `ab-movement-feel-fill-{0,1}.prl` and `ab-mover-setpiece-fill-{0,1}.prl`. Each is `content/dev/maps/<map>.map` copied byte for byte with only `"_bounce_fill" "<f>"` added to worldspawn. They were built with `target/release/prl-build ... --release --no-tui` at `8319b126a` (release compiler rebuilt at that HEAD), from a scratch folder holding `maps/` plus `textures`, `scripts` and `models` symlinks, as `../ab/build.sh` does. They were deleted after capture, so rebuild them to re-run.
+- **Engine:** `target/release/postretro`, built with `capture`. No engine-side commits land between its build and `8319b126a`.
+- **Settings:** the same as the first batch (960×540, fov 100, sync-proof SH, default indirect scale, modes `full` and `indirect` = mask 0x2).
+
+### Pose selection
+
+**movement-feel:** `select_poses.py movement-feel`.
+- Same probe method as campaign-test: two spots by relative change (`m1-rel`, `m2-rel`) and two by absolute change (`m3-abs`, `m4-abs`).
+- Relative change picks the spots where fill 0 is dim, i.e. multi-bounce light arriving where direct light misses. Absolute change picks the brightest-walled areas.
+- `m5-cor` is the typical in-play read. The camera sits at player height (about 1.5 m above a floor), with two open cells on each side and one above it, and looks down the longest open axis run (75 m, the east-west lane), pitched down 3°.
+
+**mover-setpiece:** `select_poses.py mover-setpiece`.
+- I chose mover-setpiece over kinematic-platform. All six of its baked lights are static, and every baked falloff crosses the sliding wall. kinematic-platform's movers sit under dynamic lights, promoted spots and `style`-animated spots.
+- The poses frame the sliding wall (8 m × 5.7 m) at its authored closed pose:
+  - `v1`: the README's station 1, 8.1 m south of the wall, as the typical read.
+  - `v2` and `v3`: on the south and north faces, the near-floor probe within 1.5 m of the face with the largest relative change, seen square-on from 4.5 m away.
+- No part of the wall is in a region direct light misses: every baked light reaches it. The rising room's interior is unlit by baked light, but at its rest pose it sits underground.
+- **Mover position is fixed.** The capture scene format has no mover time or position field. Movers draw at their authored rest pose (§7.8), so each pose was captured at one mover position only.
+
+### Probe-space result (id 34)
+
+| | fill-0 luminance p50 / p90 | Δ p50 / p90 / p99 / max | relative Δ p50 / p90 |
+|---|---|---|---|
+| movement-feel | 0.0056 / 0.0099 | 0.0018 / 0.0023 / 0.0047 / 0.0125 | +33% / +51% |
+| mover-setpiece | 0.118 / 0.182 | 0.050 / 0.061 / 0.071 / 0.093 | +41% / +53% |
+
+### Frame diffs (fill 1 vs fill 0; same units as above)
+
+| pose | mode | mean | p99 | max | > 2/255 | signed | fill0 luma |
+|---|---|---|---|---|---|---|---|
+| movement-feel m1-rel | full | 1.73 | 5 | 11 | 30.0% | +0.82 | 37.8 |
+| movement-feel m2-rel | full | 0.68 | 2 | 6 | 0.1% | +0.32 | 40.6 |
+| movement-feel m3-abs | full | 1.42 | 5 | 7 | 13.7% | +0.68 | 30.1 |
+| movement-feel m4-abs | full | 0.88 | 3 | 6 | 2.3% | +0.40 | 27.7 |
+| movement-feel m5-cor | full | 0.67 | 2 | 4 | 0.1% | +0.31 | 5.3 |
+| mover v1-station1-wall | full | 1.75 | 5 | 13 | 9.0% | +1.35 | 122.0 |
+| mover v2-south-face | full | 1.92 | 7 | 14 | 16.9% | +1.51 | 105.6 |
+| mover v3-north-face | full | 2.39 | 8 | 14 | 41.0% | +1.89 | 101.3 |
+| movement-feel m1-rel | indirect | 3.17 | 6 | 12 | 71.0% | +1.52 | 7.7 |
+| movement-feel m2-rel | indirect | 1.50 | 4 | 7 | 7.7% | +0.72 | 5.1 |
+| movement-feel m3-abs | indirect | 2.83 | 6 | 7 | 56.5% | +1.36 | 4.5 |
+| movement-feel m4-abs | indirect | 1.81 | 4 | 7 | 19.4% | +0.87 | 3.2 |
+| movement-feel m5-cor | indirect | 0.81 | 3 | 6 | 2.3% | +0.38 | 0.8 |
+| mover v1-station1-wall | indirect | 8.49 | 14 | 18 | 98.4% | +6.88 | 24.1 |
+| mover v2-south-face | indirect | 7.91 | 15 | 18 | 95.2% | +6.51 | 22.8 |
+| mover v3-north-face | indirect | 8.31 | 13 | 16 | 98.9% | +6.91 | 26.5 |
+
+**Reading:**
+- **movement-feel:** behaves like campaign-test. The indirect term is near black (3–8/255 in indirect-only frames), so fill 1 adds under 1 luma level in full lighting. Invisible.
+- **mover-setpiece:** the indirect term is substantial (about 24/255), and fill 1 lifts it +7 levels on the mover and walls alike. Direct light dominates the full frame (about 100–120/255), though, so full lighting moves only +1.4 to +1.9 levels (p99 5–8). It is barely perceptible even flipping back and forth. The mover receives the same lift as the static walls around it.
+- **Anomalies:** none. There are no patch-scale blotches on the mover in the indirect-only frames: the diff is flat per checker square and follows albedo. No leaks were seen in either map.
+- **Pose note:** a first corridor pose sat on the grid's outer probe column. Half the frame showed the clear colour, so the camera was in or on the outer wall even though the probe there reads valid. That pose was replaced. The extra lateral-clearance rule above prevents it.
+
 ## Re-run
 
 ```bash
 python3 -m venv /tmp/abvenv && /tmp/abvenv/bin/pip install numpy pillow
-cargo build -p postretro --features capture,dev-tools
-/tmp/abvenv/bin/python measurements/surface-radiance-cache/ab-captures/select_poses.py   # optional: rewrites poses.json
-/tmp/abvenv/bin/python measurements/surface-radiance-cache/ab-captures/run.py            # captures + diffs + sheets (~1.5 min)
+cargo build --release -p postretro --features capture,dev-tools   # run.py defaults to target/release/postretro
+/tmp/abvenv/bin/python measurements/surface-radiance-cache/ab-captures/select_poses.py [section ...]   # optional: rewrites poses.json sections
+/tmp/abvenv/bin/python measurements/surface-radiance-cache/ab-captures/run.py [main|movement-feel|movers ...] [--pair <map>/<pose>]
 ```
 
-`run.py --skip-capture` rebuilds the diffs and contact sheets from `raw/`. `POSTRETRO_BIN` overrides the engine binary. Per-capture logs go to `$CAPTURE_LOG_DIR/ab-capture-logs` (default `/tmp`). Each `scenes/*.json` is also a standalone scene: run `target/debug/postretro --capture <scene>` from the workspace root with `POSTRETRO_SH_STREAMING=sync-proof`.
+The first batch was captured with a dev-profile `--features capture,dev-tools` build, and the second with `target/release/postretro`. `run.py --skip-capture` rebuilds the diffs and contact sheets from `raw/`. `POSTRETRO_BIN` overrides the engine binary. Per-capture logs go to `$CAPTURE_LOG_DIR/ab-capture-logs` (default `/tmp`). Each `scenes/*.json` is also a standalone scene: run `<capture binary> --capture <scene>` from the workspace root with `POSTRETRO_SH_STREAMING=sync-proof`.

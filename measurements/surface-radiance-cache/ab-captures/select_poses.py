@@ -94,9 +94,9 @@ def solve_camera(valid, v, spot):
             "pitch_deg": PITCH, "camera_to_spot_m": dist, "surface_beyond_spot_m": float(behind)}
 
 
-def campaign():
-    va, la = luminance(MAPS / "ab-campaign-fill-0.prl")
-    vb, lb = luminance(MAPS / "ab-campaign-fill-1.prl")
+def probe_fields(mapkey):
+    va, la = luminance(MAPS / f"ab-{mapkey}-fill-0.prl")
+    vb, lb = luminance(MAPS / f"ab-{mapkey}-fill-1.prl")
     assert va["dims"] == vb["dims"]
     valid = va["validity"].reshape(la.shape) != 0
     ok = np.isfinite(la) & np.isfinite(lb)
@@ -107,16 +107,38 @@ def campaign():
         prev = h[:, y - 1, :] if y else np.full(h[:, 0, :].shape, -1)
         h[:, y, :] = np.where(ok[:, y, :], np.where(prev >= 0, prev + 1, 0), -1)
     near = ok & (h >= 1) & (h <= 2)
-    p75 = np.percentile(d[near], 75)
     stats = {"valid_probes": int(ok.sum()), "near_floor_probes": int(near.sum()),
              "fill0_lum_pct_50_90_99": np.percentile(la[ok], [50, 90, 99]).round(5).tolist(),
+             "fill1_lum_pct_50_90_99": np.percentile(lb[ok], [50, 90, 99]).round(5).tolist(),
              "delta_lum_pct_50_90_99_max": [*np.percentile(d[ok], [50, 90, 99]).round(5).tolist(),
                                             round(float(np.nanmax(d)), 5)],
              "relative_delta_pct_50_90_99": np.percentile((d / np.maximum(la, 1e-4))[ok], [50, 90, 99]).round(3).tolist()}
+    return dict(v=va, la=la, lb=lb, d=d, ok=ok, valid=valid, h=h, near=near, stats=stats)
+
+
+def spot_record(f, rule, idx, cam):
+    x, y, z = idx
+    la, lb, d = f["la"], f["lb"], f["d"]
+    sl = (slice(max(z - 2, 0), z + 3), slice(max(y - 2, 0), y + 3), slice(max(x - 2, 0), x + 3))
+    return {"rule": rule, "probe": [int(x), int(y), int(z)], "spot": grid_pos(f["v"], idx).round(3).tolist(),
+            "fill0_lum": round(float(la[z, y, x]), 5), "fill1_lum": round(float(lb[z, y, x]), 5),
+            "delta_lum": round(float(d[z, y, x]), 5),
+            "nbhd5_mean_fill0": round(float(np.nanmean(la[sl])), 5),
+            "nbhd5_mean_delta": round(float(np.nanmean(d[sl])), 5), "camera": cam}
+
+
+def ranked(mapkey, plan, prefix):
+    """plan: [(rule, count)]; rules 'relative', 'absolute' (see module doc) and 'corridor'."""
+    f = probe_fields(mapkey)
+    va, la, d, near, valid = f["v"], f["la"], f["d"], f["near"], f["valid"]
+    p75 = np.percentile(d[near], 75)
     rankings = {"relative": np.where(near & (d > p75), d / (la + 0.005), -np.inf),
                 "absolute": np.where(near, d, -np.inf)}
     spots = []
-    for rule, want in (("relative", 4), ("absolute", 2)):
+    for rule, want in plan:
+        if rule == "corridor":
+            spots.append(corridor(f))
+            continue
         score = rankings[rule]
         got = 0
         for flat in np.argsort(score, axis=None)[::-1]:
@@ -129,18 +151,102 @@ def campaign():
             cam = solve_camera(valid, va, pos)
             if cam is None:
                 continue
-            sl = (slice(max(z - 2, 0), z + 3), slice(max(y - 2, 0), y + 3), slice(max(x - 2, 0), x + 3))
-            spots.append({"rule": rule, "probe": [int(x), int(y), int(z)], "spot": pos.round(3).tolist(),
-                          "fill0_lum": round(float(la[z, y, x]), 5), "fill1_lum": round(float(lb[z, y, x]), 5),
-                          "delta_lum": round(float(d[z, y, x]), 5),
-                          "nbhd5_mean_fill0": round(float(np.nanmean(la[sl])), 5),
-                          "nbhd5_mean_delta": round(float(np.nanmean(d[sl])), 5), "camera": cam})
+            spots.append(spot_record(f, rule, (x, y, z), cam))
             got += 1
             if got == want:
                 break
     for i, s in enumerate(spots):
-        s["name"] = f"c{i + 1}-{s['rule'][:3]}"
-    return stats, spots
+        s["name"] = f"{prefix}{i + 1}-{s['rule'][:3]}"
+    return f["stats"], spots
+
+
+def corridor(f):
+    """Player-height view down the longest open axis run: the camera sits at a probe one cell
+    above the lowest valid probe over a floor (about 1.5 m), with two open probe cells on both
+    sides and above it, and looks along the axis with the most such open cells ahead, pitch -3."""
+    v, ok, h, valid = f["v"], f["ok"], f["h"], f["valid"]
+    dz, dy, dx = ok.shape
+
+    def clear(x, y, z, ddx, ddz):
+        # open probes 1-2 cells to each side (perpendicular to the run) and one above
+        px, pz = ddz, ddx
+        for k in (1, 2):
+            for sgn in (1, -1):
+                cx, cz = x + sgn * k * px, z + sgn * k * pz
+                if not (0 <= cx < dx and 0 <= cz < dz and ok[cz, y, cx]):
+                    return False
+        return y + 1 < dy and ok[z, y + 1, x]
+
+    best = None
+    zz, yy, xx = np.nonzero(ok & (h == 1))
+    for z, y, x in zip(zz, yy, xx):
+        for ddx, ddz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if not clear(x, y, z, ddx, ddz) or not open_at(valid, v, grid_pos(v, (x, y, z))):
+                continue
+            n = 0
+            cx, cz = x + ddx, z + ddz
+            while 0 <= cx < dx and 0 <= cz < dz and ok[cz, y, cx] and h[cz, y, cx] >= 1:
+                n += 1; cx += ddx; cz += ddz
+            if best is None or n > best[0]:
+                best = (n, (x, y, z), (ddx, ddz))
+    n, idx, (ddx, ddz) = best
+    pos = grid_pos(v, idx)
+    target = pos + np.array([ddx, 0.0, ddz]) * v["cell"]
+    cam = {"position": [round(float(c), 3) for c in pos], "yaw_deg": round(yaw_to(pos, target), 1),
+           "pitch_deg": -3.0, "open_run_m": float(n * v["cell"][0])}
+    return spot_record(f, "corridor", idx, cam)
+
+
+def campaign():
+    return ranked("campaign", [("relative", 4), ("absolute", 2)], "c")
+
+
+def movement_feel():
+    return ranked("movement-feel", [("relative", 2), ("absolute", 2), ("corridor", 1)], "m")
+
+
+INCH = 0.0254
+
+
+def engine(x, y, z):
+    """TrenchBroom map units (z up) -> engine metres (y up)."""
+    return np.array([-y * INCH, z * INCH, -x * INCH])
+
+
+def movers():
+    """mover-setpiece: frame the sliding wall (authored closed in the dividing-wall opening, map
+    x 96-640, y 1040-1072, z 0-224). One pose is the README's station 1 (8.1 m south, the typical
+    read). The other two take, on each side of the wall, the near-floor probe within 1.5 m of the
+    wall face with the largest relative change, and look at it square-on from 4.5 m away."""
+    f = probe_fields("mover-setpiece")
+    v, la, d, near = f["v"], f["la"], f["d"], f["near"]
+    poses = []
+    s1 = engine(368, 720, 64)
+    poses.append({"name": "v1-station1-wall", "rule": "README station 1",
+                  "camera": {"position": s1.round(3).tolist(), "yaw_deg": 90.0, "pitch_deg": 0.0}})
+    dz, dy, dx = la.shape
+    zz, yy, xx = np.nonzero(near)
+    for side, face_y, sign in (("south", 1040, -1), ("north", 1072, +1)):
+        best = None
+        for z, y, x in zip(zz, yy, xx):
+            p = grid_pos(v, (x, y, z))
+            my, mx = -p[0] / INCH, -p[2] / INCH  # back to map units
+            off = (my - face_y) * sign  # metres-ish in front of the face
+            if not (0 < off * INCH <= 1.5 and 120 <= mx <= 616):
+                continue
+            score = d[z, y, x] / (la[z, y, x] + 0.005)
+            if best is None or score > best[0]:
+                best = (score, (x, y, z))
+        _, idx = best
+        p = grid_pos(v, idx)
+        cam = p.copy()
+        cam[0] = p[0] - sign * 4.5  # engine x = -map y; step away from the face
+        cam[1] = 1.6
+        poses.append(spot_record(f, f"{side} face, max relative change", idx,
+                                 {"position": cam.round(3).tolist(), "yaw_deg": round(yaw_to(cam, [p[0], 1.6, p[2]]), 1),
+                                  "pitch_deg": -8.0}))
+        poses[-1]["name"] = f"v{len(poses)}-{side}-face"
+    return f["stats"], poses
 
 
 def whiteroom():
@@ -170,9 +276,15 @@ def whiteroom():
     return stats, poses
 
 
+SECTIONS = {"campaign": campaign, "whiteroom": whiteroom, "movement-feel": movement_feel,
+            "mover-setpiece": movers}
+
 if __name__ == "__main__":
-    cs, cp = campaign()
-    ws, wp = whiteroom()
-    out = {"campaign": {"stats": cs, "poses": cp}, "whiteroom": {"stats": ws, "poses": wp}}
-    (HERE / "poses.json").write_text(json.dumps(out, indent=1) + "\n")
-    print(json.dumps(out, indent=1))
+    want = sys.argv[1:] or list(SECTIONS)
+    path = HERE / "poses.json"
+    out = json.loads(path.read_text()) if path.exists() else {}
+    for key in want:
+        st, poses = SECTIONS[key]()
+        out[key] = {"stats": st, "poses": poses}
+        print(json.dumps(out[key], indent=1))
+    path.write_text(json.dumps(out, indent=1) + "\n")

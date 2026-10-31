@@ -1,6 +1,6 @@
 # mover-light-flow--foundation — research notes
 
-Read at e3b0772, 2026-10-30/31.
+Read at e3b0772, a6a40a1 and 56ec2e6, 2026-10-30/31.
 
 ## Where this sits
 
@@ -9,6 +9,7 @@ Read at e3b0772, 2026-10-30/31.
 
 ## Grounding
 
+- Parse rejects waypoint cycles and non-spinning movers resolving to fewer than two waypoints (`resolve_kinematic_path`). A spin axis may be set with zero spin speed and spun later by `set_spin_rate`, which requires a non-zero axis.
 - Door recognition and sealing read the waypoint-0 brushes only (`recognize_doors`, `sealed_portal_ids_for_mover`); no compiler code poses a mover elsewhere. Sealing runs for every mover, so a non-door (the rising room's lowered roof) can still seal portals.
 - Per-(light, texel) visibility: `LightmapLayer { target_layer, texels: Vec<LayerTexel { idx, raw_visibility }> }`, zero-visibility records kept. SDF-shadow lights are filtered out of the layers in the lightmap stage. `build_pipeline.md` says no per-(light, texel) visibility is retained after the walk.
 - Animated: id 25 ships per-texel `TexelLight { light_index, weight }` keyed to id-22 blocks.
@@ -27,12 +28,14 @@ Read at e3b0772, 2026-10-30/31.
 
 | id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Sliding wall's open terminus fills a pocket whose faces the bake lit through the opening | The bake lights pocket texels with the wall absent; posed open, the wall covers their lifted centres; posed closed, their segments cross the wall | Covered texels count at the open terminus and are gated closed too, so they are shared |
-| P2 | Movers present, no static lightmap lights, or only SDF-shadow ones | The fused walk returns before any partition consumer runs | The summary still prints, movers count as analysed, zero gated rows |
-| P3 | Warm build after a mover-only edit | The lightmap-section and ShadowmaskAtlas memos hit inside the lightmap stage and skip reading partitions; the gating memo key changed | Static gating misses its memo and reads each needed partition from the per-light layer cache once, tracing no visibility; the report equals the cold report |
+| P1 | Sliding wall's open terminus fills a pocket whose faces the bake lit through the opening | The bake lights pocket texels with the wall absent, some only by off-centre footprint and emitter samples past the mouth's static corner; posed open, the wall covers their lifted centres; posed closed, most centre segments cross the wall | Covered texels count open. Those whose segment crosses the closed pose are shared; penumbra texels whose centre segment is blocked by the static corner may be open-only (differing), within one texel column of the mouth |
+| P2 | Movers present with no static lightmap lights, only SDF-shadow ones, or only animated ones | With no static lights the walk returns before any consumer; with only SDF-shadow static lights it runs with no layer lights | The summary still prints and movers count as analysed; animated and probe gating still run |
+| P3 | Warm build after a mover-only edit | The lightmap-section and ShadowmaskAtlas memos hit inside the lightmap stage and skip reading partitions; the gating memo key changed | Gating misses its memo and reads each needed partition from the per-light layer cache once, tracing no visibility while those entries are present; a missing entry re-bakes as the ShadowmaskAtlas re-read does; the report equals the cold report |
 | P4 | Static and animated lights in one report | Static gating finishes inside the walk; animated gating after `AnimatedWeightMaps` | Lines sort by one light order across both tiers, never by arrival or worker |
 | P5 | Last waypoint coincides with waypoint 0 (three or more waypoints; parse rejects only consecutive duplicates) | Both termini pose identically | Gated sets equal: all shared, differing-only estimate 0 B |
 | P6 | Light inside a posed brush at one terminus only | Termini evaluated independently, inside-test per terminus | Flagged on that terminus's row only; texels lit and ungated at the other terminus are differing |
+| P7 | Edit touches only an animated light | Static gating results are unchanged; animated gating reruns after `AnimatedWeightMaps` | Lines merge in the one light order; report equals cold |
+| P8 | Mover edit plus an owner-eligibility edit: section hit, ShadowmaskAtlas miss, gating miss | Both consumers need partitions after the section hit | Each partition is read once and feeds both; report equals cold |
 
 ## Report totals
 

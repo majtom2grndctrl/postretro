@@ -502,3 +502,60 @@ pub(crate) fn offscreen_renderer_or_skip(test: &str) -> Option<crate::render::Re
         }
     }
 }
+
+/// A whole load's patience: a set build waits for the install pipelines
+/// (the upload thread's first job) on a fresh renderer.
+pub(crate) const APP_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Run one load's stages for `app` to its bundle, as dispatch does: prep
+/// inputs captured from the App (`edit` adjusts them, hooks included) and,
+/// with a full renderer, the set build begun on it at the dispatch tiers.
+/// Polls on this thread, calling `each_poll` with the App before each poll,
+/// and fails the test past [`APP_LOAD_TIMEOUT`] or on a load failure. Retire
+/// the returned stages with [`retire_app_load`].
+pub(crate) fn load_app_bundle(
+    app: &mut crate::App,
+    pool: &LoadPool,
+    map: &Path,
+    content_root: &Path,
+    edit: impl FnOnce(&mut LevelPrepInputs),
+    mut each_poll: impl FnMut(&crate::App),
+) -> (super::LevelLoadStages, super::LevelBundle) {
+    let mut inputs = app
+        .capture_level_prep_inputs(map.to_path_buf(), content_root.to_path_buf())
+        .expect("a renderer and a session capture prep inputs");
+    edit(&mut inputs);
+    let upload = app
+        .renderer
+        .as_mut()
+        .filter(|renderer| renderer.is_full_ready())
+        .map(|renderer| {
+            renderer.begin_level_set_build(super::upload::level_build_snapshot(inputs.tiers))
+        });
+    let progress = Arc::new(LevelLoadProgress::new());
+    let mut stages = super::start_level_load_stages(pool.group(), inputs, upload, progress);
+    let deadline = Instant::now() + APP_LOAD_TIMEOUT;
+    loop {
+        each_poll(app);
+        if let Some(outcome) = stages.try_take(app.renderer.as_mut()) {
+            let bundle = outcome.unwrap_or_else(|failure| panic!("the load failed: {failure}"));
+            return (stages, bundle);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the load never yielded: {stages:?}, prep {:?}",
+            stages.probe().state()
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Cancel (or hand back) `stages` and poll its retirement to its end.
+pub(crate) fn retire_app_load(stages: super::LevelLoadStages, app: &mut crate::App) {
+    let mut retirement = stages.cancel(app.renderer.as_mut());
+    let deadline = Instant::now() + APP_LOAD_TIMEOUT;
+    while !retirement.try_finish() {
+        assert!(Instant::now() < deadline, "the load never retired");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}

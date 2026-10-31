@@ -406,6 +406,19 @@ mod tests {
             1,
             "once per install"
         );
+        // A level load's commit applies no tier: its set was built at the
+        // dispatch snapshot's, and a change on the commit frame applies
+        // after the commit (pin P17).
+        let commit =
+            crate::startup::lifecycle::lifecycle_test_fixtures::commit_level_bundle_source();
+        assert!(commit.contains("renderer.publish_level_set("));
+        for tier in [
+            "apply_player_reflection_quality",
+            "apply_player_surface_depth_quality",
+            "configure_player_shadow_quality",
+        ] {
+            assert!(!commit.contains(tier), "the commit applies no {tier}");
+        }
 
         assert!(
             include_str!("../app/options_menu.rs")

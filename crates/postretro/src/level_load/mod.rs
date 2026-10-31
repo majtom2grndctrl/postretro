@@ -12,6 +12,7 @@
 // The load state machine consumes this stage; until then only tests drive it.
 #![cfg_attr(not(test), allow(dead_code))]
 
+mod commit;
 mod coordinator;
 mod failure;
 mod inputs;
@@ -28,7 +29,7 @@ mod failure_tests;
 #[cfg(test)]
 mod model_cache_tests;
 #[cfg(test)]
-mod model_tests;
+pub(crate) mod model_tests;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
@@ -36,7 +37,7 @@ mod sound_tests;
 #[cfg(test)]
 mod stages_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 
@@ -46,6 +47,9 @@ use postretro_level_loader::{LevelLoadProgress, LoadCancel, LoadPhase};
 
 use crate::load_pool::{CancelToken, GroupRetirement, TaskGroup};
 
+// The load state machine (task 11b) commits bundles; until then only tests do.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use commit::{LevelCommitReport, add_creation_counts};
 pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
 // The commit (task 11) consumes the fallback and the key's parameters; until

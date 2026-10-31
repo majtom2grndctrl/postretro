@@ -43,4 +43,23 @@ impl App {
         self.level_timings.record("streaming_sessions");
         Ok(())
     }
+
+    /// A level load's commit's streaming step: install the sessions its
+    /// checks built against the level's set before the commit mutated
+    /// anything (`prepare_level_streaming`). Fails on nothing. `None` for a
+    /// renderer-less commit, which, like the main-thread install without a
+    /// renderer, creates no session.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn install_prepared_level_streaming_sessions(
+        &mut self,
+        prepared: Option<crate::session::level_streaming::PreparedLevelStreaming>,
+    ) {
+        let (Some(prepared), Some(world), Some(session)) =
+            (prepared, self.level.as_ref(), self.session.as_mut())
+        else {
+            return;
+        };
+        session.install_prepared_level_streaming(world, prepared);
+        self.level_timings.record("streaming_sessions");
+    }
 }

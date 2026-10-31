@@ -4,6 +4,27 @@
 
 use super::*;
 
+/// Where a level's fog pixel scale and per-cell masks reach the renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LevelFogMasks {
+    /// The main-thread install sets them on the active set here.
+    Upload,
+    /// A load's set was built with both from the same level (its fog target
+    /// at the level's pixel scale, its masks, cold fog state), so nothing
+    /// reaches the renderer here.
+    InSet,
+}
+
+/// Where a level's sounds come from.
+#[derive(Debug)]
+pub(super) enum LevelSounds {
+    /// The main-thread install decodes the mod's `sounds/` here.
+    Load,
+    /// A load decoded them on its pool: `None` when its dispatch had no
+    /// audio, which decodes none.
+    Decoded(Option<postretro_audio::DecodedLevelSounds>),
+}
+
 impl App {
     /// Camera at the first spawn, the `--start-pose` probe, then the presented
     /// pose.
@@ -58,11 +79,13 @@ impl App {
         self.level_timings.record("camera_pose");
     }
 
-    /// The renderer half of the fog bridge: pixel scale and per-cell masks.
-    pub(super) fn install_level_fog_masks(&mut self) {
+    /// The renderer half of the fog bridge: pixel scale and per-cell masks,
+    /// unless the level's set was built with them (`LevelFogMasks::InSet`).
+    pub(super) fn install_level_fog_masks(&mut self, fog_masks: LevelFogMasks) {
         // Renderer-side fog: pixel scale + per-cell masks. The fog-volume entities
         // were created in segment B; this is the windowed GPU half.
-        if let Some(world) = self.level.as_ref()
+        if fog_masks == LevelFogMasks::Upload
+            && let Some(world) = self.level.as_ref()
             && let Some(renderer) = self.renderer.as_mut()
         {
             renderer.set_fog_pixel_scale(world.fog_pixel_scale);
@@ -71,13 +94,16 @@ impl App {
         self.level_timings.record("fog_masks");
     }
 
-    /// Sprite collections for every distinct emitter `sprite`, after `levelLoad`.
+    /// Sprite collections for every distinct emitter `sprite`, after
+    /// `levelLoad`. Returns the GPU objects registration created on this
+    /// thread: a named, counted exception at a load's commit.
     pub(super) fn install_level_sprite_collections(
         &mut self,
         script_ctx: &postretro_entities::ScriptCtx,
         prm_cache_root: &Path,
         suppress: bool,
-    ) {
+    ) -> postretro_renderer::GpuCreationCounts {
+        let before = postretro_renderer::gpu_creation_counts();
         // Register sprite collections for every distinct emitter `sprite` in the
         // registry — map-spawned and descriptor-spawned alike — plus descriptor
         // projectile bodies/trails, suppressed descriptor emitters, resolved
@@ -129,10 +155,12 @@ impl App {
             );
         }
         self.level_timings.record("sprite_collections");
+        postretro_renderer::gpu_creation_counts().since(before)
     }
 
-    /// The level's sounds, last in install.
-    pub(super) fn install_level_sounds(&mut self) {
+    /// The level's sounds, last in install: decoded here, or registered
+    /// from a load's decode.
+    pub(super) fn install_level_sounds(&mut self, sounds: LevelSounds) {
         // Sound registry follows level lifetime, parallel to textures: load the
         // level's sounds from `sounds/`, released at unload. Fault-tolerant — a
         // missing directory or undecodable file warns and is skipped; silent if
@@ -144,7 +172,16 @@ impl App {
         let content_root = self.content_root.clone();
         if let Some(session) = self.session.as_mut() {
             if let Some(audio) = session.audio.as_mut() {
-                audio.load_level_sounds(&content_root);
+                match sounds {
+                    LevelSounds::Load => audio.load_level_sounds(&content_root),
+                    // Registered in sorted path order, whatever order the
+                    // pool decoded them in.
+                    LevelSounds::Decoded(Some(decoded)) => audio.register_level_sounds(decoded),
+                    // A dispatch without audio decoded none, as a level with
+                    // no `sounds/` registers none; audio never starts
+                    // mid-session, so this replaces the registry with nothing.
+                    LevelSounds::Decoded(None) => audio.release_level_sounds(),
+                }
             }
             session.refresh_descriptor_sounds();
         }

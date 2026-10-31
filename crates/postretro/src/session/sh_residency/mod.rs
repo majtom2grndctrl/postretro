@@ -101,16 +101,17 @@ impl ShStreamingSession {
 
     /// As [`Self::from_renderer_with_mode`], over the planner topology the
     /// level's load already derived and checked for `manifest`
-    /// (`level_streaming::decode_streaming_level_data`). What can still fail
-    /// is not level data: the renderer's residency snapshot, the budget it
-    /// yields, and the generation clock.
-    pub(in crate::session) fn from_renderer_with_topology(
+    /// (`level_streaming::decode_streaming_level_data`) and the residency
+    /// snapshot of the renderer set that holds the level, which need not be
+    /// published yet. What can still fail is not level data: the snapshot's
+    /// absence, the budget it yields, and the generation clock.
+    pub(in crate::session) fn from_snapshot_with_topology(
         manifest: Arc<ShStreamManifest>,
-        renderer: &Renderer,
+        snapshot: Option<ShResidencySnapshot>,
         mode: ShStreamingMode,
         topology: ShLevelTopology,
     ) -> Result<Self> {
-        let snapshot = renderer.sh_residency_snapshot().with_context(
+        let snapshot = snapshot.with_context(
             || "[SH streaming] renderer has no residency snapshot for a streamed level",
         )?;
         let controller = ShResidencyController::with_topology(

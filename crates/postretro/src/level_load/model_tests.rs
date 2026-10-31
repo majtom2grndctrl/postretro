@@ -26,7 +26,7 @@ use crate::startup::lifecycle::tests::{
     install_descriptor_world, level_world, script_ctx, test_app,
 };
 
-pub(super) fn dev_content_root() -> PathBuf {
+pub(crate) fn dev_content_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev")
 }
 
@@ -39,7 +39,7 @@ pub(super) fn dev_descriptors() -> Vec<EntityTypeDescriptor> {
     crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives).entities
 }
 
-pub(super) fn record(
+pub(crate) fn record(
     classname: &str,
     key_values: &[(&str, &str)],
     index: usize,
@@ -207,7 +207,7 @@ fn connected_client_prediction_covers_replicated_placements() {
 }
 
 /// A streamed-lightmap fixture whose map-entity section places `records`.
-pub(super) fn write_level_with_entities(
+pub(crate) fn write_level_with_entities(
     records: Vec<MapEntityRecord>,
 ) -> crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl {
     use postretro_level_format::{SectionBlob, SectionId};

@@ -4,6 +4,11 @@
 
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
+#[path = "lifecycle_commit.rs"]
+mod lifecycle_commit;
+#[cfg(test)]
+#[path = "lifecycle_commit_tests.rs"]
+mod lifecycle_commit_tests;
 #[cfg(test)]
 #[path = "lifecycle_environment_install_tests.rs"]
 pub(crate) mod lifecycle_environment_install_tests;
@@ -55,14 +60,16 @@ mod lifecycle_world_handles;
 
 #[cfg(test)]
 pub(crate) use lifecycle_model_sweep::parse_sweep_models;
-pub(crate) use lifecycle_model_sweep::{ModelClipEntry, ParsedSweepModel, model_clip_entry};
+pub(crate) use lifecycle_model_sweep::{ModelClipEntry, model_clip_entry};
 use lifecycle_reaction_rebuild::{
     SubscriberRebuild, build_trigger_bindings, capture_progress_membership,
     rebuild_reaction_subscribers,
 };
 pub(crate) use lifecycle_spawners::{resolve_spawners_for_level, resolved_spawner_mesh_models};
+#[cfg(any(test, feature = "observability"))]
+pub(crate) use lifecycle_world_cpu::install_world_cpu;
 pub(crate) use lifecycle_world_cpu::{
-    install_world_cpu, is_region_companion, start_installed_presentation_animations,
+    install_world_cpu_with_models, is_region_companion, start_installed_presentation_animations,
 };
 pub(crate) use lifecycle_world_handles::{
     WorldInstallHandles, WorldInstallProducts, bind_installed_first_player,

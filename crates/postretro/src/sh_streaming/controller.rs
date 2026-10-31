@@ -306,6 +306,14 @@ impl ShLevelTopology {
     pub(crate) fn summary(&self) -> String {
         format!("{:?}", self.topology)
     }
+
+    /// Drop the last cluster's owner list, so the controller refuses the
+    /// topology (its tables' lengths disagree): a stand-in for a rejection
+    /// no checked level provokes.
+    #[cfg(test)]
+    pub(crate) fn break_for_tests(&mut self) {
+        self.topology.owners.pop();
+    }
 }
 
 /// Session-local SH policy. It has no renderer or wgpu types: a renderer sees

@@ -83,21 +83,24 @@ pub(super) fn resolve_carried_light_bindings_after_mover_spawn(
 impl App {
     /// Segment B, then the bindings that read its products while the session
     /// borrow is still live: teleporters, ghost links, carried lights.
+    /// `models` says where the model sweep's models come from: parsed and
+    /// uploaded here (the main-thread path), or a load's prepared products.
     pub(super) fn install_level_segment_b(
         &mut self,
         script_ctx: &postretro_entities::ScriptCtx,
         prm_cache_root: &Path,
         static_collision: crate::collision::CollisionWorld,
         suppress: bool,
+        models: super::lifecycle_model_sweep::LevelModels<'_>,
     ) -> WorldInstallProducts {
         // Segment B of the CPU world install: fog-volume entities, trigger-volume
         // entities, kinematic movers, classname dispatch, the data
         // script, the data-archetype sweep (incl. player spawn), the mesh sweep's
         // CPU half, and the `levelLoad` fire — all renderer-free. The one
-        // renderer-coupled step (skinned-model upload + clip-table build) is
-        // injected as the `upload_mesh_models` hook so it stays windowed; a
-        // headless caller passes a no-op and its clip tables stay empty (the
-        // documented headless shape).
+        // renderer-coupled step (each model's renderer entry + clip-table build)
+        // is injected as the model sweep so it stays windowed; a headless caller
+        // passes a no-op and its clip tables stay empty (the documented headless
+        // shape).
         // Cloned so the segment-B handles do not alias a `self.content_root`
         // borrow held across the call.
         let install_content_root = self.content_root.clone();
@@ -105,34 +108,11 @@ impl App {
             .renderer
             .as_mut()
             .expect("renderer installed before level install");
-        let upload_mesh_models =
-            |models: &[ParsedSweepModel],
-             clip_tables: &mut crate::scripting_systems::mesh_anim::MeshClipTables| {
-                // Clear per-level transient mesh-pass state at the model-cache
-                // install seam, then upload each distinct model and build its
-                // game-side clip table from the same parse (glTF index order),
-                // the values the renderer caches. The sweep parsed every model
-                // already; a failed parse warns here, caches nothing, and gets
-                // the empty entry with zero bounds, so the table maps no clips.
-                renderer.clear_mesh_pass_for_level_load();
-                for model in models {
-                    renderer.upload_parsed_skinned_model(
-                        &model.handle,
-                        &model.open_path,
-                        &model.result,
-                        prm_cache_root,
-                    );
-                    super::lifecycle_model_sweep::model_clip_entry(&model.result)
-                        .insert_into(clip_tables, &model.handle);
-                }
-                if !models.is_empty() {
-                    log::info!(
-                        "[Model] uploaded {} distinct mesh model(s) for this level",
-                        models.len(),
-                    );
-                }
-                crate::scripting_systems::hit_zones::ModelLoadWarningOwner::Renderer
-            };
+        let model_sweep = super::lifecycle_model_sweep::WindowedModelSweep {
+            renderer,
+            prm_cache_root,
+            source: models,
+        };
 
         // Collision is ready before the first game tick; segment B's mover
         // build and spawn sweep follow it.
@@ -176,10 +156,10 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
         };
-        let products = install_world_cpu(
+        let products = install_world_cpu_with_models(
             handles,
             &mut self.level_timings,
-            upload_mesh_models,
+            model_sweep,
             |first_player| {
                 if let Some(seats) = session.seat_table.as_mut() {
                     bind_installed_first_player(

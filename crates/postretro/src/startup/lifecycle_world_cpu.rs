@@ -1,6 +1,6 @@
 //! Renderer-free CPU portion of level installation.
 
-use super::lifecycle_model_sweep::{ParsedSweepModel, install_hit_zones, parse_sweep_models};
+use super::lifecycle_model_sweep::{ModelSweep, ParsedModelSweep, ParsedSweepModel};
 use super::*;
 
 use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
@@ -56,14 +56,16 @@ pub(crate) fn start_installed_presentation_animations(
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
 /// (one glTF parse per model, hit-zone store build + clip-index resolve), the
-/// kill-progress membership capture, and the `levelLoad` fire. The sole renderer-coupled step — skinned-model upload +
-/// clip-table build — is injected as `upload_mesh_models`, called between the
-/// archetype sweep and the clip-index resolve with the models already parsed
-/// (the hit-zone store consumes the same parses afterwards): the windowed
-/// caller uploads models and fills the clip tables and returns renderer
-/// ownership of model-load diagnostics; a headless caller passes a no-op that
-/// returns game-side ownership, leaving clips unresolved while preserving load
-/// warnings. Stage durations record into
+/// kill-progress membership capture, and the `levelLoad` fire. The sole renderer-coupled step — the model sweep's
+/// install of each model — is injected as `model_sweep`, called between the
+/// archetype sweep and the clip-index resolve with the real sweep's handles. A
+/// closure over parsed models is a sweep ([`ModelSweep`]): the models are
+/// parsed here and the hit-zone store consumes the same parses after it; the
+/// windowed caller uploads models and fills the clip tables and returns
+/// renderer ownership of model-load diagnostics; a headless caller passes a
+/// no-op that returns game-side ownership, leaving clips unresolved while
+/// preserving load warnings. A level load's commit passes its bundle's
+/// prepared models instead, which parses nothing here. Stage durations record into
 /// `timings`, matching the windowed log-line-C labels. The caller-owned
 /// `before_level_load` hook runs after player-pawn materialization and before
 /// the event fire, with the first player's pawn and the `player_spawn` it took,
@@ -71,14 +73,33 @@ pub(crate) fn start_installed_presentation_animations(
 /// this installer depend on the seat table. Static collision is not built here: each
 /// caller builds it with `CollisionWorld::from_level` (fallible, before any
 /// install mutation) and commits it before this call.
+// The headless driver and tests install through closures; the windowed
+// install and the commit pass their own sweep.
+#[cfg_attr(not(any(test, feature = "observability")), allow(dead_code))]
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,
-    mut upload_mesh_models: impl FnMut(
+    upload_mesh_models: impl FnMut(
         &[ParsedSweepModel],
         &mut crate::scripting_systems::mesh_anim::MeshClipTables,
+    ) -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
+    before_level_load: impl FnMut(Option<crate::scripting::builtins::PlayerSpawned>),
+) -> WorldInstallProducts {
+    install_world_cpu_with_models(
+        handles,
+        timings,
+        ParsedModelSweep(upload_mesh_models),
+        before_level_load,
     )
-        -> crate::scripting_systems::hit_zones::ModelLoadWarningOwner,
+}
+
+/// [`install_world_cpu`] over any [`ModelSweep`]: the windowed install's,
+/// whose models are parsed and uploaded here or come prepared from a load's
+/// bundle.
+pub(crate) fn install_world_cpu_with_models(
+    handles: WorldInstallHandles<'_>,
+    timings: &mut StartupTimings,
+    mut model_sweep: impl ModelSweep,
     mut before_level_load: impl FnMut(Option<crate::scripting::builtins::PlayerSpawned>),
 ) -> WorldInstallProducts {
     let WorldInstallHandles {
@@ -468,12 +489,12 @@ pub(crate) fn install_world_cpu(
 
     // Mesh model sweep, CPU half. Runs AFTER both dispatch sweeps so it sees every
     // mesh entity. Reset the game-side tables, compute the distinct model list
-    // (unioning models missing due to connected-client suppression), parse each
-    // glTF once, then the renderer-coupled upload + clip-table build runs via the
-    // injected hook on those parses, followed by the CPU hit-zone build from the
-    // same parses, clip-index resolve, and zone-multiplier cross-check. The parse
-    // stays here, on the main thread before `levelLoad`, where each consumer's
-    // own parse used to run.
+    // (unioning models missing due to connected-client suppression), then the
+    // injected sweep installs each one: the main-thread path parses each glTF
+    // once and runs the renderer-coupled upload + clip-table build and the CPU
+    // hit-zone build on those parses; a commit installs its bundle's prepared
+    // products. Then the clip-index resolve and zone-multiplier cross-check,
+    // still before `levelLoad`.
     mesh_clip_tables.clear();
     hit_zone_store.clear();
     let models = {
@@ -512,12 +533,13 @@ pub(crate) fn install_world_cpu(
         }
         models
     };
-    let parsed_models = parse_sweep_models(&models, content_root);
-    timings.record("model_parse");
-    let model_load_warning_owner = upload_mesh_models(&parsed_models, mesh_clip_tables);
-    timings.record("model_upload");
-    install_hit_zones(hit_zone_store, parsed_models, model_load_warning_owner);
-    timings.record("hit_zone_build");
+    model_sweep.install_models(
+        &models,
+        content_root,
+        mesh_clip_tables,
+        hit_zone_store,
+        timings,
+    );
     crate::resolve_mesh_entity_bindings(
         &mut script_ctx.registry.borrow_mut(),
         mesh_clip_tables,

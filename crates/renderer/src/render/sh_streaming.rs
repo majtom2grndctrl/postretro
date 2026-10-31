@@ -19,6 +19,7 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 use super::Renderer;
 use super::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use super::direct_sh_compose::DirectShDebugOverride;
+use super::level_resource_set::LevelSetId;
 use super::renderer_types::{
     MAX_ANIMATED_BAKED_LIGHTS, PromotedBakedLightState, animated_baked_promotion_weight,
 };
@@ -417,6 +418,21 @@ impl Renderer {
         self.full()
             .level
             .as_ref()?
+            .sh_streaming
+            .as_ref()
+            .map(ShResidencyState::snapshot)
+    }
+
+    /// [`Self::sh_residency_snapshot`] for the built set `id`, active or
+    /// resident and unpublished: what a level's commit checks its streaming
+    /// sessions against before it publishes the set. `None` for an unknown
+    /// set or one that streams no SH.
+    pub fn level_set_sh_residency_snapshot(&self, id: LevelSetId) -> Option<ShResidencySnapshot> {
+        let full = self.full.as_ref()?;
+        full.level
+            .iter()
+            .chain(&full.resident_levels)
+            .find(|level| level.id == id)?
             .sh_streaming
             .as_ref()
             .map(ShResidencyState::snapshot)

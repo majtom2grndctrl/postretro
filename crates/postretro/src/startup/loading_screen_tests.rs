@@ -255,16 +255,33 @@ fn loading_screen_ends_at_reveal_and_on_failure() {
     let success =
         method_source(include_str!("lifecycle_finish.rs"), "finish_level_payload").unwrap();
     let installed = success.find("self.install_level_payload(").unwrap();
-    let settling = success.find("self.enter_settling(").unwrap();
+    let settling = success
+        .find("self.enter_installed_level_settling();")
+        .unwrap();
     assert!(installed < settling);
-    assert!(
-        !success.contains("self.end_loading_screen();"),
-        "the loading tree stays active through Settling"
-    );
-    assert!(
-        !success.contains("BootState::Running"),
-        "install never enters Running directly"
-    );
+    // A level load's commit ends the same way, after its install stages.
+    let commit = method_source(include_str!("lifecycle_commit.rs"), "commit_level_bundle").unwrap();
+    let committed = commit.find("self.install_level_world_stages(").unwrap();
+    let commit_settling = commit
+        .find("self.enter_installed_level_settling();")
+        .unwrap();
+    assert!(committed < commit_settling);
+    let tail = method_source(
+        include_str!("lifecycle_finish.rs"),
+        "enter_installed_level_settling",
+    )
+    .unwrap();
+    assert!(tail.contains("self.enter_settling("));
+    for source in [success, commit, tail] {
+        assert!(
+            !source.contains("self.end_loading_screen();"),
+            "the loading tree stays active through Settling"
+        );
+        assert!(
+            !source.contains("BootState::Running"),
+            "install never enters Running directly"
+        );
+    }
 
     let settling_source = include_str!("settling.rs")
         .split("#[cfg(test)]")

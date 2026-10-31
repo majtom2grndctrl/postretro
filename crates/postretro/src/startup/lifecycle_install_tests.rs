@@ -610,6 +610,67 @@ fn install_range_rejection_precedes_all_level_state_mutations() {
         .collect();
     assert_eq!(after_slots, before_slots);
     assert!(app.renderer.is_none());
+
+    // The commit path: the range and collision checks ran in prep, so what
+    // can still reject a bundle is a commit check (here, its set no longer
+    // resident), which also runs before any mutation.
+    let case = super::lifecycle_commit_tests::CommitCase::textured();
+    let Some(mut app) = super::lifecycle_commit_tests::gpu_app(
+        "install_range_rejection_precedes_all_level_state_mutations",
+        &case.content_root,
+    ) else {
+        return;
+    };
+    app.level = Some(level_world("old", 1));
+    app.active_level_tags = vec!["old-level".to_string()];
+    app.script_time = 17.0;
+    app.nav_graph = Some(crate::nav::NavGraph::from_section(
+        &postretro_level_format::navmesh::NavMeshSection {
+            version: postretro_level_format::navmesh::NAVMESH_VERSION,
+            origin: [0.0; 3],
+            cell_size: 1.0,
+            dim_x: 8,
+            dim_z: 8,
+            agent_radius: 0.3,
+            agent_height: 1.8,
+            step_height: 0.4,
+            max_slope_deg: 45.0,
+            regions: vec![],
+            portals: vec![],
+        },
+    ));
+    let before_slots: BTreeMap<_, _> = slot_snapshot(&app)
+        .into_iter()
+        .map(|(key, record)| (key, record.value))
+        .collect();
+    let collision = app.collision_world.triangle_count();
+    let pool = crate::level_load::test_support::test_pool();
+    let (stages, bundle) = super::lifecycle_commit_tests::load_case(&mut app, &pool, &case, |_| {});
+    let crate::level_load::BundleSet::Resident(set) = bundle.set else {
+        panic!("a load with a renderer builds a set");
+    };
+    assert!(app.renderer.as_mut().unwrap().release_level_set(set));
+    let failure = app
+        .commit_level_bundle(bundle)
+        .expect_err("a bundle whose set is gone is refused");
+    assert_eq!(
+        failure.stage,
+        crate::level_load::LoadStage::Commit,
+        "{failure}"
+    );
+    assert_eq!(app.level.as_ref().unwrap().indices.len(), 3);
+    assert_eq!(app.active_level_tags, ["old-level"]);
+    assert!((app.script_time - 17.0).abs() < f64::EPSILON);
+    assert_eq!(app.nav_graph.as_ref().unwrap().grid().dim_x, 8);
+    assert_eq!(app.collision_world.triangle_count(), collision);
+    assert!(app.environment_volumes.is_empty());
+    assert!(app.renderer.as_ref().unwrap().active_level_set().is_none());
+    let after_slots: BTreeMap<_, _> = slot_snapshot(&app)
+        .into_iter()
+        .map(|(key, record)| (key, record.value))
+        .collect();
+    assert_eq!(after_slots, before_slots);
+    crate::level_load::test_support::retire_app_load(stages, &mut app);
 }
 
 #[test]
@@ -658,6 +719,23 @@ fn install_range_errors_use_the_existing_boot_and_runtime_failure_routes() {
             collision < at,
             "static collision build must precede {mutation}"
         );
+    }
+    // The commit, spliced the same way: its checks (the range and collision
+    // checks ran in prep) precede every mutation, and a failed check returns
+    // before any.
+    let commit = commit_level_bundle_source();
+    let check = commit.find("self.check_level_commit(").unwrap();
+    let failed = commit.find("return Err(failure);").unwrap();
+    assert!(check < failed);
+    for mutation in [
+        "self.view_feel_state =",
+        "endpoint.set_level_parity(",
+        "self.nav_graph =",
+        "renderer.publish_level_set(",
+        "self.collision_world =",
+    ] {
+        let at = commit.find(mutation).unwrap();
+        assert!(failed < at, "the commit's checks must precede {mutation}");
     }
     let capture = include_str!("../capture/prepared.rs");
     let check = capture
@@ -907,6 +985,44 @@ fn windowed_install_assigns_light_entity_ids_before_fog_entity_ids() {
         max_light_id < min_fog_id,
         "light entity ids (max {max_light_id}) must precede fog entity ids (min {min_fog_id})",
     );
+    drop(registry);
+
+    // The real callers' call order, in source: on both the main-thread
+    // install and the commit, the light bridge populates before segment B
+    // (whose installer creates the fog entities first thing).
+    for (path, source) in [
+        ("install_level_payload", install_level_payload_source()),
+        ("commit_level_bundle", commit_level_bundle_source()),
+    ] {
+        let lights = source
+            .find("self.install_level_light_bridge(")
+            .unwrap_or_else(|| panic!("{path} populates the light bridge"));
+        let fog = source
+            .find("install_world_cpu_with_models(")
+            .unwrap_or_else(|| panic!("{path} runs segment B"));
+        assert!(lights < fog, "{path}: light ids before fog ids");
+    }
+
+    // And driven for real, a level with map lights and fog volumes through
+    // the main-thread install and through the commit.
+    let mut case = super::lifecycle_commit_tests::CommitCase::textured();
+    case.edit_world = Some(super::lifecycle_commit_tests::add_entities);
+    let test = "windowed_install_assigns_light_entity_ids_before_fog_entity_ids";
+    let Some(mut oracle) = super::lifecycle_commit_tests::gpu_app(test, &case.content_root) else {
+        return;
+    };
+    super::lifecycle_commit_tests::oracle_case(&mut oracle, &case);
+    let pool = crate::level_load::test_support::test_pool();
+    let mut committed = super::lifecycle_commit_tests::gpu_app(test, &case.content_root)
+        .expect("an adapter was found once");
+    super::lifecycle_commit_tests::commit_case(&mut committed, &pool, &case);
+    for (path, app) in [("oracle", &oracle), ("commit", &committed)] {
+        let (max_light_id, min_fog_id) = super::lifecycle_commit_tests::light_and_fog_ids(app);
+        assert!(
+            max_light_id < min_fog_id,
+            "{path}: light entity ids (max {max_light_id}) must precede fog entity ids (min {min_fog_id})",
+        );
+    }
 }
 
 #[test]
@@ -960,6 +1076,104 @@ fn pinned_trigger_pool_install_selects_exact_counts_and_restarts_identically() {
         first.report.pools[0].selected, different_seed.report.pools[0].selected,
         "the fixed distinct seeds deliberately select different closet members",
     );
+
+    // The same pinned pools through a level load's commit, which installs
+    // the triggers and rolls the pools with the windowed install's own
+    // stages: the same counts, the same armed identities on restart and as
+    // the main-thread install of the same level, a different roll for a
+    // different seed.
+    let Some(committed_first) = commit_trap_pools(17, pools_for_commit()) else {
+        return;
+    };
+    let committed_restart = commit_trap_pools(17, pools_for_commit()).unwrap();
+    let committed_other = commit_trap_pools(18, pools_for_commit()).unwrap();
+    let oracle = oracle_trap_pools(17, pools_for_commit()).unwrap();
+    assert_eq!(committed_first.seed, Some(17));
+    assert_eq!(
+        committed_first
+            .pools
+            .iter()
+            .map(|pool| (pool.tag.as_str(), pool.members.len(), pool.selected.len()))
+            .collect::<Vec<_>>(),
+        [("closet_trap", 4, 2), ("ambush_trap", 4, 2)],
+    );
+    assert_eq!(
+        committed_first, committed_restart,
+        "the commit restarts identically"
+    );
+    assert_eq!(
+        committed_first, oracle,
+        "the commit rolls as the oracle install does"
+    );
+    assert_ne!(
+        committed_first.pools[0].selected,
+        committed_other.pools[0].selected
+    );
+}
+
+fn pools_for_commit() -> Vec<TriggerPoolDescriptor> {
+    vec![
+        pool_descriptor("closet_trap", TriggerPoolArm::Count(2), &[]),
+        pool_descriptor(
+            "ambush_trap",
+            TriggerPoolArm::Percentage(50.0),
+            &["trap-pools"],
+        ),
+    ]
+}
+
+fn add_trap_triggers(world: &mut postretro_level_loader::LevelWorld) {
+    world.trigger_volumes = trap_pool_fixture_world().trigger_volumes;
+}
+
+/// A GPU App about to install the trap-pool level as the catalog map tagged
+/// `trap-pools`, with `pools` global and the windowed pool seed pinned.
+fn trap_pool_app(
+    seed: u64,
+    pools: Vec<TriggerPoolDescriptor>,
+) -> Option<(App, super::lifecycle_commit_tests::CommitCase)> {
+    let mut case = super::lifecycle_commit_tests::CommitCase::textured();
+    case.edit_world = Some(add_trap_triggers);
+    let mut app = super::lifecycle_commit_tests::gpu_app(
+        "pinned_trigger_pool_install_selects_exact_counts_and_restarts_identically",
+        &case.content_root,
+    )?;
+    app.session_boot_config = crate::startup::session::SessionBootConfig::with_pool_seed(seed);
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .replace_global_trigger_pools(pools);
+    app.level_load = Some(crate::startup::InFlightLevelLoad {
+        map_path: case.map.clone(),
+        content_root: case.content_root.clone(),
+        entry: crate::startup::LevelLoadEntry {
+            catalog_id: Some("traps".to_string()),
+            path: "maps/traps.prl".to_string(),
+            name: "Traps".to_string(),
+            tags: vec!["trap-pools".to_string()],
+            loading_tree: Vec::new(),
+        },
+    });
+    Some((app, case))
+}
+
+fn commit_trap_pools(
+    seed: u64,
+    pools: Vec<TriggerPoolDescriptor>,
+) -> Option<TriggerPoolInstallReport> {
+    let (mut app, case) = trap_pool_app(seed, pools)?;
+    let pool = crate::level_load::test_support::test_pool();
+    super::lifecycle_commit_tests::commit_case(&mut app, &pool, &case);
+    Some(app.trigger_pool_report.clone())
+}
+
+fn oracle_trap_pools(
+    seed: u64,
+    pools: Vec<TriggerPoolDescriptor>,
+) -> Option<TriggerPoolInstallReport> {
+    let (mut app, case) = trap_pool_app(seed, pools)?;
+    super::lifecycle_commit_tests::oracle_case(&mut app, &case);
+    Some(app.trigger_pool_report.clone())
 }
 
 #[test]

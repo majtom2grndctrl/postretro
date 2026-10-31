@@ -26,20 +26,7 @@ impl App {
                     event_loop.exit();
                     return;
                 }
-                // The install frame never counts, and no CPU timing surface may
-                // show a window from the previous level.
-                self.cpu_timer.level_changed();
-                // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
-                // outbound replication now that the install has spawned + marked it the
-                // local player. Reload-safe and a no-op off the host / on a map without a
-                // player_spawn. The host pawn stays driven locally by `simulate_tick`.
-                self.host_register_own_pawn_after_install();
-                self.level_load = None;
-                self.boot_load = false;
-                // The level is held behind the loading tree, which stays
-                // active, until its first frame's streamed set is resident.
-                self.enter_settling(std::time::Instant::now());
-                self.request_redraw();
+                self.enter_installed_level_settling();
             }
             None => {
                 self.finish_level_failure(
@@ -48,5 +35,25 @@ impl App {
                 );
             }
         }
+    }
+
+    /// The tail every installed level ends with, on the main-thread install
+    /// and a level load's commit alike, once its streaming sessions exist:
+    /// the CPU timer, the host's own pawn, the load's end, and Settling.
+    pub(super) fn enter_installed_level_settling(&mut self) {
+        // The install frame never counts, and no CPU timing surface may
+        // show a window from the previous level.
+        self.cpu_timer.level_changed();
+        // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
+        // outbound replication now that the install has spawned + marked it the
+        // local player. Reload-safe and a no-op off the host / on a map without a
+        // player_spawn. The host pawn stays driven locally by `simulate_tick`.
+        self.host_register_own_pawn_after_install();
+        self.level_load = None;
+        self.boot_load = false;
+        // The level is held behind the loading tree, which stays
+        // active, until its first frame's streamed set is resident.
+        self.enter_settling(std::time::Instant::now());
+        self.request_redraw();
     }
 }

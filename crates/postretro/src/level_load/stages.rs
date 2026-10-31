@@ -40,6 +40,9 @@ pub(crate) struct LevelBundle {
     pub(crate) timings: PrepTimings,
     /// The tiers the load was dispatched at, which every stage built at.
     pub(crate) tiers: LevelTiers,
+    /// Where the level's `.prm` sidecars live, as resolved at dispatch: the
+    /// commit's sprite registration and model-miss fallback read it.
+    pub(crate) prm_cache_root: PathBuf,
     pub(crate) set: BundleSet,
 }
 
@@ -70,6 +73,7 @@ pub(crate) fn start_level_load_stages(
     progress: Arc<LevelLoadProgress>,
 ) -> LevelLoadStages {
     let tiers = inputs.tiers;
+    let prm_cache_root = inputs.prm_cache_root.clone();
     let upload = upload.map(|(builder, pending)| {
         inputs.upload = Some(UploadBuilder(builder.clone()));
         UploadHandle {
@@ -94,6 +98,7 @@ pub(crate) fn start_level_load_stages(
         build_cancelled: false,
         progress,
         tiers,
+        prm_cache_root,
         ended: false,
         #[cfg(test)]
         withhold_prep: false,
@@ -159,6 +164,7 @@ pub(crate) struct LevelLoadStages {
     build_cancelled: bool,
     progress: Arc<LevelLoadProgress>,
     tiers: LevelTiers,
+    prm_cache_root: PathBuf,
     ended: bool,
     /// Test seam: leave prep's outcome unpolled, so a set can arrive before
     /// the bundle is ready.
@@ -337,6 +343,7 @@ impl LevelLoadStages {
             presentation,
             timings,
             tiers: self.tiers,
+            prm_cache_root: self.prm_cache_root.clone(),
             set,
         })
     }

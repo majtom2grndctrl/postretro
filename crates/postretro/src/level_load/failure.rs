@@ -101,6 +101,10 @@ pub(crate) enum LoadStage {
     Prep(PrepKind),
     /// The renderer's off-main set build on the upload thread.
     Upload,
+    /// The commit's checks on what is not level data (the bundle's set
+    /// still resident, its streaming sessions against that set), which run
+    /// before the commit mutates anything.
+    Commit,
 }
 
 impl LoadStage {
@@ -109,6 +113,7 @@ impl LoadStage {
             LoadStage::Parse => "level parse",
             LoadStage::Prep(kind) => kind.label(),
             LoadStage::Upload => "level upload",
+            LoadStage::Commit => "level commit checks",
         }
     }
 }
@@ -146,6 +151,15 @@ impl LevelLoadFailure {
         Self {
             stage: LoadStage::Upload,
             message: error.to_string(),
+            parse_error: None,
+        }
+    }
+
+    /// A commit check that refused the bundle before anything mutated.
+    pub(crate) fn commit(message: impl Into<String>) -> Self {
+        Self {
+            stage: LoadStage::Commit,
+            message: message.into(),
             parse_error: None,
         }
     }

@@ -67,6 +67,15 @@ impl SessionBootConfig {
         }
     }
 
+    /// A config as `--pool-seed <seed>` would parse it.
+    #[cfg(test)]
+    pub(crate) fn with_pool_seed(seed: u64) -> Self {
+        Self {
+            pool_seed_override: Some(seed),
+            start_pose: None,
+        }
+    }
+
     /// `--start-pose` override, handed out once: only the session's first
     /// gameplay install starts there; later installs use their map spawn.
     pub(crate) fn take_start_pose(&mut self) -> Option<super::start_pose::StartPose> {

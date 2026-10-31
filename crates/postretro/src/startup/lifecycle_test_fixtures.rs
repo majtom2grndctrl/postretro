@@ -685,6 +685,7 @@ pub(in crate::startup) fn lifecycle_production_source() -> String {
     [
         lifecycle,
         include_str!("lifecycle_finish.rs"),
+        include_str!("lifecycle_commit.rs"),
         include_str!("lifecycle_install.rs"),
         include_str!("lifecycle_install_world.rs"),
         include_str!("lifecycle_install_presentation.rs"),
@@ -718,18 +719,81 @@ fn self_calls(line: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The commit's own file: `commit_level_bundle` and the stages only it
+/// calls. It holds no tests, so all of it is production code.
+const COMMIT_SOURCES: [&str; 1] = [include_str!("lifecycle_commit.rs")];
+
+/// The main-thread install's stages a commit never runs: the sequencer
+/// itself, and the renderer stage whose work the bundle's set already holds.
+const ORACLE_ONLY_INSTALL_METHODS: [&str; 2] =
+    ["install_level_payload", "install_level_renderer_stage"];
+
 /// Every method defined at four-space indent in the install files.
 fn install_methods() -> Vec<&'static str> {
-    INSTALL_SOURCES
+    methods_in(&INSTALL_SOURCES)
+}
+
+/// Every method defined at four-space indent in `sources`, whatever its
+/// visibility.
+fn methods_in(sources: &[&'static str]) -> Vec<&'static str> {
+    sources
         .iter()
         .flat_map(|source| source.lines())
         .filter_map(|line| {
             let item = line.strip_prefix("    ")?;
-            let item = item.strip_prefix("pub(super) ").unwrap_or(item);
+            let item = item
+                .strip_prefix("pub(super) ")
+                .or_else(|| item.strip_prefix("pub(crate) "))
+                .unwrap_or(item);
             let name = item.strip_prefix("fn ")?;
             Some(&name[..name.find('(')?])
         })
         .collect()
+}
+
+/// `root` as one text: its body (from `sources`) with each method it calls
+/// as `self.name(` that `sources` defines spliced in, in call order, just
+/// before the line that calls it, recursively. Returns the text and every
+/// method reached, `root` included.
+fn splice_sequencer(root: &'static str, sources: &[&'static str]) -> (String, Vec<&'static str>) {
+    fn expand(
+        text: &str,
+        depth: usize,
+        sources: &[&'static str],
+        reached: &mut Vec<&'static str>,
+    ) -> String {
+        assert!(
+            depth < 4,
+            "install stages nest deeper than the guards expect"
+        );
+        let mut out = String::new();
+        for line in text.split_inclusive('\n') {
+            for name in self_calls(line) {
+                let Some(stage) = sources
+                    .iter()
+                    .find_map(|source| method_source(source, name))
+                else {
+                    continue;
+                };
+                let name = methods_in(sources)
+                    .into_iter()
+                    .find(|method| *method == name)
+                    .expect("a spliced stage is a method of the spliced files");
+                reached.push(name);
+                out.push_str(&expand(stage, depth + 1, sources, reached));
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+        out
+    }
+    let sequencer = sources
+        .iter()
+        .find_map(|source| method_source(source, root))
+        .unwrap_or_else(|| panic!("{root} exists"));
+    let mut reached = vec![root];
+    let flattened = expand(sequencer, 0, sources, &mut reached);
+    (flattened, reached)
 }
 
 /// `install_level_payload` as one text, for the install-order source guards:
@@ -738,43 +802,48 @@ fn install_methods() -> Vec<&'static str> {
 /// reads every stage where it runs. Every install-file method must be
 /// reached from the sequencer, so no stage escapes the guards.
 pub(in crate::startup) fn install_level_payload_source() -> String {
-    fn expand(text: &str, depth: usize, reached: &mut Vec<&'static str>) -> String {
-        assert!(
-            depth < 4,
-            "install stages nest deeper than the guards expect"
-        );
-        let mut out = String::new();
-        for line in text.split_inclusive('\n') {
-            for name in self_calls(line) {
-                let Some(stage) = INSTALL_SOURCES
-                    .iter()
-                    .find_map(|source| method_source(source, name))
-                else {
-                    continue;
-                };
-                let name = install_methods()
-                    .into_iter()
-                    .find(|method| *method == name)
-                    .expect("a spliced stage is an install-file method");
-                reached.push(name);
-                out.push_str(&expand(stage, depth + 1, reached));
-                out.push('\n');
-            }
-            out.push_str(line);
-        }
-        out
-    }
-    let sequencer = INSTALL_SOURCES
-        .iter()
-        .find_map(|source| method_source(source, "install_level_payload"))
-        .expect("install_level_payload exists");
-    let mut reached = vec!["install_level_payload"];
-    let flattened = expand(sequencer, 0, &mut reached);
+    let (flattened, reached) = splice_sequencer("install_level_payload", &INSTALL_SOURCES);
     for method in install_methods() {
         assert!(
             reached.contains(&method),
             "install-file method `{method}` is not reached from install_level_payload"
         );
+    }
+    flattened
+}
+
+/// `commit_level_bundle` as one text, the commit's sibling of
+/// [`install_level_payload_source`]: the commit with each stage it calls,
+/// its own and the install files' shared ones, spliced in where it runs.
+/// Every commit-file method must be reached from the commit, and so must
+/// every install-file stage but the oracle's own sequencer and renderer
+/// stage: both paths run the same stage functions, so a guard reading
+/// either text reads every stage.
+pub(in crate::startup) fn commit_level_bundle_source() -> String {
+    let sources: Vec<&'static str> = COMMIT_SOURCES
+        .iter()
+        .chain(INSTALL_SOURCES.iter())
+        .copied()
+        .collect();
+    let (flattened, reached) = splice_sequencer("commit_level_bundle", &sources);
+    for method in methods_in(&COMMIT_SOURCES) {
+        assert!(
+            reached.contains(&method),
+            "commit-file method `{method}` is not reached from commit_level_bundle"
+        );
+    }
+    for method in install_methods() {
+        if ORACLE_ONLY_INSTALL_METHODS.contains(&method) {
+            assert!(
+                !reached.contains(&method),
+                "the commit runs the oracle-only stage `{method}`"
+            );
+        } else {
+            assert!(
+                reached.contains(&method),
+                "install stage `{method}` is not reached from commit_level_bundle"
+            );
+        }
     }
     flattened
 }

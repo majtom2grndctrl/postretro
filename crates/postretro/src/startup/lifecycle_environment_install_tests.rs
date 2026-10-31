@@ -131,6 +131,33 @@ fn level_install_builds_environment_volumes_before_parity_digest_and_any_tick() 
             "the volumes must be installed before {what}"
         );
     }
+    // The commit, spliced the same way: its checks (the collision mesh was
+    // built in prep) precede the volumes, which precede the digest, parity
+    // and the renderer-less route.
+    let commit = super::lifecycle_test_fixtures::commit_level_bundle_source();
+    let checks = commit
+        .find("self.check_level_commit(")
+        .expect("the commit checks first");
+    let volumes = commit
+        .find("self.install_environment_volumes(")
+        .expect("the commit builds the environment volumes");
+    assert!(checks < volumes);
+    for (marker, what) in [
+        ("level_content_digest(", "the parity digest"),
+        ("endpoint.set_level_parity(", "publishing level parity"),
+        (
+            "self.install_level_without_renderer(",
+            "the renderer-less route",
+        ),
+    ] {
+        let later = commit
+            .find(marker)
+            .unwrap_or_else(|| panic!("the commit reaches {what}"));
+        assert!(
+            volumes < later,
+            "the commit installs the volumes before {what}"
+        );
+    }
 
     // Install itself never ticks: once it returns, the first tick's view
     // already resolves this level's volume.
@@ -945,7 +972,7 @@ fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descrip
     // The sequencer with every stage it calls spliced in at its call.
     let install = super::lifecycle_test_fixtures::install_level_payload_source();
     let spawn = install
-        .find("install_world_cpu(")
+        .find("install_world_cpu_with_models(")
         .expect("install spawns the boot pawn");
     let warn = install
         .find("self.warn_if_local_player_cannot_swim();")
@@ -955,6 +982,19 @@ fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descrip
         install.matches("warn_if_local_player_cannot_swim").count(),
         1,
         "once per install"
+    );
+    let commit = super::lifecycle_test_fixtures::commit_level_bundle_source();
+    let spawn = commit
+        .find("install_world_cpu_with_models(")
+        .expect("the commit spawns the boot pawn");
+    let warn = commit
+        .find("self.warn_if_local_player_cannot_swim();")
+        .expect("the commit warns about a wade-only player");
+    assert!(spawn < warn, "the commit's warning reads the spawned pawn");
+    assert_eq!(
+        commit.matches("warn_if_local_player_cannot_swim").count(),
+        1,
+        "once per commit"
     );
 
     let mut app = test_app();

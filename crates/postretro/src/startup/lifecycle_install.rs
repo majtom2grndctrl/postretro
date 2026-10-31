@@ -2,6 +2,8 @@
 //! (identity and parity, segment A, renderer upload, light bridge).
 //! See: context/lib/boot_sequence.md §3
 
+use super::lifecycle_install_presentation::{LevelFogMasks, LevelSounds};
+use super::lifecycle_model_sweep::LevelModels;
 use super::*;
 
 /// Why a delivered level payload was refused before any install mutation.
@@ -19,10 +21,19 @@ pub(crate) enum LevelInstallRejection {
     RendererInstall(#[from] render::LevelInstallError),
 }
 
+/// Where the stages after the renderer stage take the level's models, fog
+/// masks and sounds from: computed on this thread (the main-thread install),
+/// or a level load's bundle products (the commit).
+pub(super) struct LevelPresentation<'a> {
+    pub(super) models: LevelModels<'a>,
+    pub(super) fog_masks: LevelFogMasks,
+    pub(super) sounds: LevelSounds,
+}
+
 /// What the renderer stage hands the light bridge: map lights, their
 /// influences, the baked animation descriptors, the animated baked roster, and
 /// the scripted-sample float count.
-type LevelLightSeed = (
+pub(super) type LevelLightSeed = (
     Vec<postretro_level_loader::MapLight>,
     Vec<postretro_render_data::influence::LightInfluence>,
     Vec<postretro_level_format::sh_volume::AnimationDescriptor>,
@@ -73,42 +84,93 @@ impl App {
         let script_ctx = self.install_level_segment_a(&world);
         let Some(light_seed) = self.install_level_renderer_stage(&mut world, &prm_cache_root)?
         else {
-            // The level stays installed, so its collision does too.
-            self.collision_world = static_collision;
-            self.level = Some(world);
-            // Keeps the App's drift current for tests and later
-            // refreshes; there is no renderer to hand it to.
-            self.resolve_fluid_surface_drift();
+            self.install_level_without_renderer(world, static_collision);
             return Ok(());
         };
+        self.install_level_world_stages(
+            world,
+            &script_ctx,
+            light_seed,
+            static_collision,
+            &prm_cache_root,
+            LevelPresentation {
+                models: LevelModels::Parse,
+                fog_masks: LevelFogMasks::Upload,
+                sounds: LevelSounds::Load,
+            },
+        );
+        Ok(())
+    }
 
+    /// The renderer-less route: no renderer, so no renderer stage and none
+    /// of the stages after it. The level stays installed, so its collision
+    /// does too.
+    pub(super) fn install_level_without_renderer(
+        &mut self,
+        world: postretro_level_loader::LevelWorld,
+        static_collision: crate::collision::CollisionWorld,
+    ) {
+        self.collision_world = static_collision;
+        self.level = Some(world);
+        // Keeps the App's drift current for tests and later
+        // refreshes; there is no renderer to hand it to.
+        self.resolve_fluid_surface_drift();
+    }
+
+    /// Every stage after the renderer stage, shared by the main-thread
+    /// install and a level load's commit: the level becomes `App::level`,
+    /// then the light bridge, segment B with the level's models, the
+    /// post-load passes, the camera pose, fog masks, sprite collections,
+    /// sounds, and the level clocks. `presentation` says where the models,
+    /// fog masks and sounds come from. Returns what sprite registration
+    /// created, a counted exception at commit.
+    pub(super) fn install_level_world_stages(
+        &mut self,
+        world: postretro_level_loader::LevelWorld,
+        script_ctx: &postretro_entities::ScriptCtx,
+        light_seed: LevelLightSeed,
+        static_collision: crate::collision::CollisionWorld,
+        prm_cache_root: &Path,
+        presentation: LevelPresentation<'_>,
+    ) -> postretro_renderer::GpuCreationCounts {
+        let LevelPresentation {
+            models,
+            fog_masks,
+            sounds,
+        } = presentation;
         // Stash the world after the renderer mutations so downstream reads of
         // `self.level` (and segment B) see the normalized vertices.
         self.level = Some(world);
-        self.install_level_light_bridge(&script_ctx, light_seed);
+        self.install_level_light_bridge(script_ctx, light_seed);
 
         // `suppress` gates connected-client suppression of host-replicated world
         // placements and the boot pawn (`false` for single-player, listen host,
         // and headless installs).
         let suppress = self.is_connected_client();
-        let products =
-            self.install_level_segment_b(&script_ctx, &prm_cache_root, static_collision, suppress);
-        let first_spawn = self.install_level_post_load_passes(&script_ctx, products);
+        let products = self.install_level_segment_b(
+            script_ctx,
+            prm_cache_root,
+            static_collision,
+            suppress,
+            models,
+        );
+        let first_spawn = self.install_level_post_load_passes(script_ctx, products);
         self.install_level_camera_pose(first_spawn);
-        self.install_level_fog_masks();
-        self.install_level_sprite_collections(&script_ctx, &prm_cache_root, suppress);
-        self.install_level_sounds();
+        self.install_level_fog_masks(fog_masks);
+        let sprite_created =
+            self.install_level_sprite_collections(script_ctx, prm_cache_root, suppress);
+        self.install_level_sounds(sounds);
 
         self.script_time = 0.0;
         // Animation clock is level-relative like `script_time`. The scale field
         // is engine config, not level state, so it is not reset here.
         self.anim_time = 0.0;
-        Ok(())
+        sprite_created
     }
 
     /// Environment volumes, per-level view-feel resets and the retained level
     /// tags, then the join seed and level parity a peer is admitted on.
-    fn install_level_identity(&mut self, world: &postretro_level_loader::LevelWorld) {
+    pub(super) fn install_level_identity(&mut self, world: &postretro_level_loader::LevelWorld) {
         // Before the parity digest is published and before any tick: a peer
         // admitted on this level's digest, and the first tick, resolve against
         // this level's volumes, never an empty or stale set. Assigned whole, so
@@ -156,7 +218,7 @@ impl App {
     /// The script handle the later stages share, deferred presentation
     /// descriptors, segment A (gravity and navigation), and the per-level resets
     /// of session presentation state.
-    fn install_level_segment_a(
+    pub(super) fn install_level_segment_a(
         &mut self,
         world: &postretro_level_loader::LevelWorld,
     ) -> postretro_entities::ScriptCtx {
@@ -291,6 +353,21 @@ impl App {
             world.reflection_probes.as_ref(),
         );
 
+        Ok(Some(self.install_level_renderer_tail(world)))
+    }
+
+    /// The renderer stage's tail on both paths, once the level's set is the
+    /// active one: reseed the SH diagnostics and hand the light bridge its
+    /// seed, whose scripted-sample count the active set decides.
+    pub(super) fn install_level_renderer_tail(
+        &mut self,
+        world: &postretro_level_loader::LevelWorld,
+    ) -> LevelLightSeed {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .expect("the renderer stage runs only with a renderer");
+        let fgd_sample_float_count = (renderer.scripted_sample_byte_offset() / 4) as u32;
         // Reseed the SH diagnostic per-light visibility bitmap to match the
         // freshly-installed level's animated-light count. Reset `seeded` so the
         // panel re-pulls defaults on the next open. `debug_ui` is session-owned;
@@ -312,13 +389,13 @@ impl App {
             }
         }
 
-        Ok(Some((
+        (
             world.lights.clone(),
             world.light_influences.clone(),
             world.animation_descriptors().to_vec(),
             world.animated_direct_descriptor_indices().to_vec(),
-            (renderer.scripted_sample_byte_offset() / 4) as u32,
-        )))
+            fgd_sample_float_count,
+        )
     }
 
     /// One light entity per map-authored light, before segment B creates the

@@ -8,6 +8,7 @@ use bvh::bvh::Bvh;
 use glam::{DVec3, Vec3};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::bounce::DEFAULT_BOUNCE_FILL;
 use super::layer::{LayerKeys, LightDigest};
 use super::layer_set::{LayerPlan, resolve_layers};
 use super::patches::PatchSet;
@@ -22,6 +23,7 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 use crate::partition::{Aabb, BspLeaf, BspTree};
 use crate::sh_bake::{ShBakeCtx, ShConfig, static_light_refs};
+use crate::surface_materials::stats::BounceMaterials;
 use crate::texel_footprint::{EmbeddedEmitters, NO_EMBEDDED_EMITTERS};
 
 /// A quad wound `a, b, c, d`, its front along `(b - a) × (c - a)`.
@@ -112,6 +114,8 @@ pub(super) struct Scene {
     pub(super) primitives: Vec<BvhPrimitive>,
     tree: BspTree,
     exterior: HashSet<usize>,
+    /// `None` bounces every face grey, as a map without textures does.
+    materials: Option<BounceMaterials>,
 }
 
 /// Cache entry files by name.
@@ -119,7 +123,11 @@ pub(super) type EntryBytes = BTreeMap<String, Vec<u8>>;
 
 impl Scene {
     pub(super) fn new() -> Self {
-        let geometry = room_geometry();
+        Self::of(room_geometry())
+    }
+
+    /// A scene over `geometry`, one open leaf holding every probe.
+    pub(super) fn of(geometry: GeometryResult) -> Self {
         let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
         let tree = BspTree {
             nodes: Vec::new(),
@@ -139,7 +147,14 @@ impl Scene {
             primitives,
             tree,
             exterior: HashSet::new(),
+            materials: None,
         }
+    }
+
+    /// This scene with every face's bounce albedo read from `materials`.
+    pub(super) fn with_materials(mut self, materials: BounceMaterials) -> Self {
+        self.materials = Some(materials);
+        self
     }
 
     /// Run `f` over the SH bake context of `lights`.
@@ -151,7 +166,7 @@ impl Scene {
         let static_lights = StaticBakedLights::from_lights(lights);
         let animated_lights = AnimatedBakedLights::from_lights(lights);
         let ctx = ShBakeCtx {
-            bounce_materials: None,
+            bounce_materials: self.materials.as_ref(),
             bvh: &self.bvh,
             primitives: &self.primitives,
             geometry: &self.geometry,
@@ -165,19 +180,20 @@ impl Scene {
     }
 
     /// The production SH base bake (the gate's patch set, then
-    /// [`super::bake_sh_base`]) at `spacing`, under `control`.
+    /// [`super::bake_sh_base`]) at `spacing` and `fill`, under `control`.
     pub(super) fn bake_with(
         &self,
         lights: &[MapLight],
         spacing: f32,
+        fill: f32,
         embedded: &EmbeddedEmitters,
         cache: Option<&StageCache>,
         control: &BakeControl,
     ) -> OctahedralShVolumeSection {
         self.with_ctx(lights, |ctx| {
             let refs = static_light_refs(ctx);
-            let (handoff, _) =
-                super::plan_sh_base(&self.geometry, &refs, spacing, u64::MAX).expect("priced");
+            let (handoff, _) = super::plan_sh_base(&self.geometry, &refs, spacing, fill, u64::MAX)
+                .expect("priced");
             super::bake_sh_base(
                 ctx,
                 &ShConfig {
@@ -191,11 +207,22 @@ impl Scene {
         })
     }
 
-    /// [`Self::bake_with`] at 1 m spacing with no flagged light, on a pool of
-    /// `threads` workers, and what it spent.
+    /// [`Self::bake_with`] at 1 m spacing and the default fill with no
+    /// flagged light, on a pool of `threads` workers, and what it spent.
     pub(super) fn bake(
         &self,
         lights: &[MapLight],
+        cache: Option<&StageCache>,
+        threads: usize,
+    ) -> (OctahedralShVolumeSection, BakeCounts) {
+        self.bake_at(lights, DEFAULT_BOUNCE_FILL, cache, threads)
+    }
+
+    /// [`Self::bake`] at `fill`.
+    pub(super) fn bake_at(
+        &self,
+        lights: &[MapLight],
+        fill: f32,
         cache: Option<&StageCache>,
         threads: usize,
     ) -> (OctahedralShVolumeSection, BakeCounts) {
@@ -203,6 +230,7 @@ impl Scene {
             self.bake_with(
                 lights,
                 1.0,
+                fill,
                 &NO_EMBEDDED_EMITTERS,
                 cache,
                 &BakeControl::unrestricted(),
@@ -253,7 +281,7 @@ impl Scene {
     }
 
     pub(super) fn keys(&self) -> LayerKeys {
-        LayerKeys::new(&self.geometry, None)
+        LayerKeys::new(&self.geometry, self.materials.as_ref())
     }
 
     /// The cache key of `light`'s layer, unflagged.

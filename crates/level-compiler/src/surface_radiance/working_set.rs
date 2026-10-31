@@ -5,6 +5,7 @@ use std::fmt;
 
 use thiserror::Error;
 
+use super::bounce::later_bounce_buffer_bytes;
 use super::layer::LayerEntry;
 use super::patches::{PatchSet, Side};
 use super::reach::PatchReachIndex;
@@ -26,7 +27,8 @@ pub(crate) struct ShBaseWorkingSetProjection {
     pub(crate) layer_bytes: u64,
     /// The summed radiance, both sides of every patch.
     pub(crate) sum_bytes: u64,
-    /// Buffers later bounces hold beside the sum. Single bounce holds none.
+    /// Buffers later bounces hold beside the sum: zero at fill 0, which
+    /// allocates none.
     pub(crate) bounce_buffer_bytes: u64,
     /// The id-34 bake's dense probes and atlas.
     pub(crate) volume_bytes: u64,
@@ -80,36 +82,46 @@ pub(crate) enum ShBaseWorkingSetGateError {
     BudgetExceeded(Box<ShBaseWorkingSetProjection>),
 }
 
-/// The gate's patch set and the reach it priced, moved whole into the bake
-/// so the bake shades exactly the set the gate admitted.
+/// The gate's patch set, the reach and the fill it priced, moved whole into
+/// the bake so the bake shades exactly the set the gate admitted.
 pub(crate) struct ShBaseHandoff {
     pub(crate) patches: PatchSet,
     /// Patches in each static light's range, in static-light order.
     pub(crate) light_reach: Vec<u64>,
+    /// The map's resolved `_bounce_fill`, in [0, 1].
+    pub(crate) bounce_fill: f32,
 }
 
 /// Build the patch set over `geometry` (pre-cut static world faces after
-/// exterior culling) and price the SH base stage against `budget_bytes`.
+/// exterior culling) and price the SH base stage at `bounce_fill` against
+/// `budget_bytes`.
 /// The projection is returned whatever the budget; [`ShBaseWorkingSetProjection::admit`]
 /// decides, so the pipeline can order this gate against the others.
 pub(crate) fn plan_sh_base(
     geometry: &GeometryResult,
     static_lights: &[&MapLight],
     probe_spacing: f32,
+    bounce_fill: f32,
     budget_bytes: u64,
 ) -> Result<(ShBaseHandoff, ShBaseWorkingSetProjection), ShBaseWorkingSetGateError> {
+    debug_assert!(
+        super::bounce::is_valid_bounce_fill(bounce_fill),
+        "bounce fill {bounce_fill} resolves at parse"
+    );
     let patches = PatchSet::build(geometry);
     let light_reach = PatchReachIndex::new(patches.patches()).counts_in_reach(static_lights);
     let projection = project(
         &patches,
         &light_reach,
         probe_grid_dims(geometry, probe_spacing),
+        bounce_fill,
         budget_bytes,
     )?;
     Ok((
         ShBaseHandoff {
             patches,
             light_reach,
+            bounce_fill,
         },
         projection,
     ))
@@ -119,6 +131,7 @@ fn project(
     patches: &PatchSet,
     light_reach: &[u64],
     probe_dims: [u32; 3],
+    bounce_fill: f32,
     budget_bytes: u64,
 ) -> Result<ShBaseWorkingSetProjection, ShBaseWorkingSetGateError> {
     let overflow = |calculation| ShBaseWorkingSetGateError::ArithmeticOverflow { calculation };
@@ -134,9 +147,8 @@ fn project(
     let sum_bytes = patch_count
         .checked_mul((Side::BOTH.len() * size_of::<[f32; 3]>()) as u64)
         .ok_or_else(|| overflow("summed patch radiance projection"))?;
-    // Later bounces (surface-radiance-cache plan, task 5) price their
-    // buffers here; single bounce gathers from the sum alone.
-    let bounce_buffer_bytes = 0u64;
+    let bounce_buffer_bytes = later_bounce_buffer_bytes(patch_count, bounce_fill)
+        .ok_or_else(|| overflow("later-bounce buffer projection"))?;
     let volume = sh_volume_bytes(probe_dims).ok_or_else(|| overflow("SH volume projection"))?;
     let volume_copy_bytes = volume
         .section
@@ -187,7 +199,7 @@ mod tests {
     #[test]
     fn no_static_lights_price_no_layer() {
         let patches = no_patches();
-        let projection = project(&patches, &[], [4, 3, 2], u64::MAX).unwrap();
+        let projection = project(&patches, &[], [4, 3, 2], 0.0, u64::MAX).unwrap();
         let volume = sh_volume_bytes([4, 3, 2]).unwrap();
         assert_eq!(projection.layer_bytes, 0);
         assert_eq!(projection.bounce_buffer_bytes, 0);
@@ -202,7 +214,7 @@ mod tests {
     #[test]
     fn layers_price_both_sides_of_every_patch_in_each_lights_range() {
         let patches = no_patches();
-        let projection = project(&patches, &[10, 0, 7], [0, 0, 0], u64::MAX).unwrap();
+        let projection = project(&patches, &[10, 0, 7], [0, 0, 0], 0.0, u64::MAX).unwrap();
         assert_eq!(
             projection.layer_bytes,
             17 * 2 * size_of::<LayerEntry>() as u64
@@ -210,14 +222,38 @@ mod tests {
         assert_eq!(projection.volume_bytes, 0);
     }
 
+    // Fill 0 allocates no later-bounce buffer, so it prices none; any other
+    // fill prices the previous, next and running front sides of every patch
+    // and the shared direction set, whatever the fill.
+    #[test]
+    fn later_bounce_buffers_price_three_front_sides_per_patch_above_fill_zero() {
+        let geometry = super::super::tests::polygon_geometry(&[vec![
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 2.0),
+            glam::Vec3::new(2.0, 0.0, 0.0),
+        ]]);
+        let patches = PatchSet::build(&geometry);
+        assert_eq!(patches.len(), 16);
+        let at = |fill| project(&patches, &[], [0, 0, 0], fill, u64::MAX).unwrap();
+        assert_eq!(at(0.0).bounce_buffer_bytes, 0);
+        let expected = 3 * 16 * 12 + u64::from(super::super::bounce::BOUNCE_RAYS_PER_PATCH) * 12;
+        assert_eq!(at(0.25).bounce_buffer_bytes, expected);
+        assert_eq!(at(1.0).bounce_buffer_bytes, expected);
+        assert_eq!(
+            at(1.0).estimated_peak_bytes - at(0.0).estimated_peak_bytes,
+            expected
+        );
+    }
+
     #[test]
     fn a_budget_one_byte_under_the_prediction_refuses_by_name() {
         let patches = no_patches();
-        let at = project(&patches, &[3], [2, 2, 2], 0).unwrap();
+        let at = project(&patches, &[3], [2, 2, 2], 1.0, 0).unwrap();
         let peak = at.estimated_peak_bytes;
-        let admitted = project(&patches, &[3], [2, 2, 2], peak).unwrap();
+        let admitted = project(&patches, &[3], [2, 2, 2], 1.0, peak).unwrap();
         assert!(admitted.admit().is_ok());
-        let refused = project(&patches, &[3], [2, 2, 2], peak - 1).unwrap();
+        let refused = project(&patches, &[3], [2, 2, 2], 1.0, peak - 1).unwrap();
         let message = refused.admit().unwrap_err().to_string();
         assert!(
             message.starts_with(&format!(

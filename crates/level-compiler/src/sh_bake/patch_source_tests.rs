@@ -131,7 +131,8 @@ fn a_back_face_hit_reads_what_the_reference_reads_for_it() {
 
 // The production cold SH base bake (gate patch set, patch shading, bilinear
 // gather) gives the same id-34 bytes at one worker and at many: chunks
-// split the patch list in a fixed way and layers sum in light order.
+// split the patch list in a fixed way, layers sum in light order, and at
+// fill 1 every later bounce gathers its patches in fixed chunks too.
 #[test]
 fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
     let geometry = floor_and_walls_geometry();
@@ -164,7 +165,7 @@ fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
             .unwrap();
         pool.install(|| {
             let (handoff, _) =
-                crate::surface_radiance::plan_sh_base(&geometry, &light_refs, 0.5, u64::MAX)
+                crate::surface_radiance::plan_sh_base(&geometry, &light_refs, 0.5, 1.0, u64::MAX)
                     .unwrap();
             crate::surface_radiance::bake_sh_base(
                 &inputs,

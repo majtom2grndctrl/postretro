@@ -28,7 +28,7 @@ pub(crate) use section::{
     sh_atlas_array_layout,
 };
 pub(crate) use sh_math::pack_octahedral_irradiance_tile;
-pub(crate) use trace::{Hit, gather_hit, segment_clear};
+pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 use animation::animation_descriptor_for;
 use probe::bake_probe_with_source;
@@ -369,7 +369,7 @@ pub(crate) fn sh_volume_bytes(dims: [u32; 3]) -> Option<ShVolumeBytes> {
 }
 
 #[cfg(test)]
-mod bounce_parity_tests;
+pub(crate) mod bounce_parity_tests;
 
 #[cfg(test)]
 mod animation_tests;

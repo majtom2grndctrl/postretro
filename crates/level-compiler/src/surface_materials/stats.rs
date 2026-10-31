@@ -198,6 +198,19 @@ impl BounceMaterials {
 }
 
 #[cfg(test)]
+impl MaterialStats {
+    /// A record whose diffuse mean snapped to `mean`: a chosen albedo for a
+    /// bake test with no texture on disk.
+    // The lib target compiles this module without the bin's bake tests.
+    #[allow(dead_code)]
+    pub(crate) fn with_snapped_mean(mean: [u8; 3]) -> Self {
+        Self {
+            snapped_mean: Some(mean),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use postretro_level_format::geometry::{FaceMeta, GeometrySection, NO_TEXTURE};

@@ -543,6 +543,14 @@ retain more L0 data, while larger values permit more L1/L2 storage. Invalid
 values fall back to the default. The `--sh-density-fidelity` compiler flag
 overrides the worldspawn value for a bake.
 
+`_bounce_fill` on `worldspawn` sets how much light keeps bouncing after its
+first bounce off a surface, from `0` to `1` (default `1.0`). At `0` the baked
+indirect light is a single bounce: a room no light reaches stays dark. At `1`
+it is the full physical fill, so light reflected out of a lit room carries on
+into the rooms around it; values between blend the two. It is a map key, not a
+compiler flag, so the look travels with the map. A value outside `0`–`1`, or
+one that is not a number, warns and uses the default.
+
 `sh_protect_volume` is an invisible brush entity that forces every intersecting
 4×4×4 probe brick to L0 (full valid-probe density) in both the stored base
 irradiance and coarsened direct-delta data. Use it where coarsened lighting

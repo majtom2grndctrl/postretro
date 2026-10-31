@@ -20,6 +20,7 @@ use crate::map_data::{
     MapStreamingPriorityRegion, MapTriggerVolume, NavParams, TextureProjection,
 };
 use crate::map_format::MapFormat;
+use crate::surface_radiance;
 use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
@@ -954,6 +955,32 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         },
     };
 
+    // Worldspawn `_bounce_fill` weights the SH base's later bounces: the one
+    // author-facing bounce control, a map key and never a compiler flag. An
+    // invalid value warns here, once per compile, and bakes the default.
+    let bounce_fill = match get_property(&geo_map, &worldspawn_id, "_bounce_fill") {
+        None => surface_radiance::DEFAULT_BOUNCE_FILL,
+        Some(raw) => match raw.trim().parse::<f32>() {
+            Ok(parsed) if surface_radiance::is_valid_bounce_fill(parsed) => parsed,
+            Ok(parsed) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_bounce_fill` value `{parsed}` is non-finite or \
+                     outside [0, 1]; falling back to default {}",
+                    surface_radiance::DEFAULT_BOUNCE_FILL
+                );
+                surface_radiance::DEFAULT_BOUNCE_FILL
+            }
+            Err(error) => {
+                log::warn!(
+                    "[Compiler] worldspawn `_bounce_fill` value `{raw}` is not a valid float \
+                     ({error}); falling back to default {}",
+                    surface_radiance::DEFAULT_BOUNCE_FILL
+                );
+                surface_radiance::DEFAULT_BOUNCE_FILL
+            }
+        },
+    };
+
     // Production coarsening is default-on for direct SH deltas. Only the
     // canonical literal `"0"` opts a map into the byte-identical uniform-L0
     // path; absent and all other values leave the default enabled.
@@ -1703,6 +1730,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         initial_gravity,
         lightmap_density,
         sh_density_fidelity,
+        bounce_fill,
         nav_params,
         entity_shadow_params,
     })
@@ -7254,6 +7282,45 @@ mod tests {
                 map_data.sh_density_fidelity, None,
                 "{value} must be discarded"
             );
+        }
+    }
+
+    // AC 19: a valid `_bounce_fill` (finite, in [0, 1]) bakes as authored
+    // and warns nothing; absence bakes the default silently.
+    #[test]
+    fn parse_map_file_reads_bounce_fill_from_worldspawn() {
+        let capture = LogCapture::start();
+        assert_eq!(
+            parse_worldspawn_with_kvp("").bounce_fill,
+            surface_radiance::DEFAULT_BOUNCE_FILL
+        );
+        for (raw, fill) in [("0", 0.0), ("0.35", 0.35), (" 1 ", 1.0)] {
+            let map_data = parse_worldspawn_with_kvp(&format!("\"_bounce_fill\" \"{raw}\""));
+            assert_eq!(map_data.bounce_fill, fill, "{raw}");
+        }
+        capture.assert_not_logged(Level::Warn, "_bounce_fill");
+    }
+
+    // AC 19: a non-finite, negative, above-one or unparsable `_bounce_fill`
+    // bakes the default and warns exactly once, at parse.
+    #[test]
+    fn parse_map_file_bounce_fill_invalid_warns_once_and_uses_default() {
+        let capture = LogCapture::start();
+        for (case, raw) in [
+            ("non-finite", "nan"),
+            ("non-finite", "inf"),
+            ("below zero", "-0.1"),
+            ("above one", "1.5"),
+            ("unparsable", "full"),
+        ] {
+            capture.clear();
+            let map_data = parse_worldspawn_with_kvp(&format!("\"_bounce_fill\" \"{raw}\""));
+            assert_eq!(
+                map_data.bounce_fill,
+                surface_radiance::DEFAULT_BOUNCE_FILL,
+                "{case} `{raw}`"
+            );
+            capture.assert_logged_once(Level::Warn, "[Compiler] worldspawn `_bounce_fill` value");
         }
     }
 

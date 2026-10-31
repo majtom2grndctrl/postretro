@@ -1,5 +1,6 @@
 //! Source gates for coloured bounce: means are never persisted, one material
-//! module computes them, and authors get no bounce, albedo or saturation knob.
+//! module computes them, and authors get no albedo or saturation knob and one
+//! bounce knob, the map key `_bounce_fill`.
 //! See: context/lib/build_pipeline.md §Compiler pipeline, §Baked texture mips
 
 use std::path::{Path, PathBuf};
@@ -369,10 +370,15 @@ fn fgd_classes(fgd: &str) -> Vec<FgdClass> {
     classes
 }
 
+/// The one author-facing bounce control: a worldspawn key, never a flag.
+const BOUNCE_FILL: &str = "_bounce_fill";
+
 #[test]
 fn no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation() {
-    // FGD: fog's scatter `saturation` predates and is unrelated to bounce.
-    const FOG_SCATTER: &[(&str, &str)] = &[
+    // FGD: `_bounce_fill` is the one bounce field; fog's scatter
+    // `saturation` predates and is unrelated to bounce.
+    const ADMITTED: &[(&str, &str)] = &[
+        ("worldspawn", BOUNCE_FILL),
         ("fog_volume", "saturation"),
         ("fog_lamp", "saturation"),
         ("fog_tube", "saturation"),
@@ -392,14 +398,14 @@ fn no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation() 
                 continue;
             };
             assert!(
-                FOG_SCATTER.contains(&(class.name.as_str(), field.as_str())),
+                ADMITTED.contains(&(class.name.as_str(), field.as_str())),
                 "FGD {}.{field} mentions {word}: {text}",
                 class.name
             );
             allowed.push((class.name.as_str(), field.as_str()));
         }
     }
-    assert_eq!(allowed, FOG_SCATTER, "the allowlist names live fields only");
+    assert_eq!(allowed, ADMITTED, "the allowlist names live fields only");
 
     // Worldspawn keys: every literal the map parser reads against worldspawn.
     let parse = std::fs::read_to_string(crate_root().join("src/parse.rs")).unwrap();
@@ -418,15 +424,19 @@ fn no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation() 
         "_lightmap_density",
         "_sh_coarsen",
         "nav_agent_radius",
+        BOUNCE_FILL,
     ] {
         assert!(
             keys.iter().any(|read| read == key),
             "missed worldspawn key {key}"
         );
     }
-    for key in &keys {
-        assert!(knob_word(key).is_none(), "worldspawn key {key}");
-    }
+    let knob_keys: Vec<&str> = keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| knob_word(key).is_some())
+        .collect();
+    assert_eq!(knob_keys, [BOUNCE_FILL], "worldspawn keys naming a knob");
 
     // CLI: every literal the argument parser matches, and the help it prints.
     let main = std::fs::read_to_string(crate_root().join("src/main.rs")).unwrap();
@@ -455,4 +465,67 @@ fn no_worldspawn_key_fgd_field_or_cli_flag_steers_bounce_albedo_or_saturation() 
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("--no-cache"), "help lists flags");
     assert_eq!(knob_word(&help), None, "prl-build --help:\n{help}");
+}
+
+/// The compiler's `DEFAULT_BOUNCE_FILL`, read from its source as `{:?}`
+/// prints it, so the docs gate follows the constant.
+fn default_bounce_fill() -> String {
+    let source =
+        std::fs::read_to_string(crate_root().join("src/surface_radiance/bounce.rs")).unwrap();
+    let declaration = "const DEFAULT_BOUNCE_FILL: f32 = ";
+    let start = source
+        .find(declaration)
+        .expect("DEFAULT_BOUNCE_FILL declared")
+        + declaration.len();
+    let end = start + source[start..].find(';').unwrap();
+    let value: f32 = source[start..end].trim().parse().expect("a float literal");
+    format!("{value:?}")
+}
+
+// AC 19: `_bounce_fill` reaches authors in the FGD's worldspawn and in
+// `docs/level_design.md`, each naming its range and the compiler's default,
+// and the docs present it as a map key with no build command beside it.
+#[test]
+fn bounce_fill_is_documented_in_the_fgd_and_level_design_docs() {
+    let default = default_bounce_fill();
+    let fgd = std::fs::read_to_string(workspace_root().join("sdk/TrenchBroom/postretro.fgd"))
+        .expect("the shipped FGD");
+    let classes = fgd_classes(&fgd);
+    let worldspawn = classes
+        .iter()
+        .find(|class| class.name == "worldspawn")
+        .expect("FGD declares worldspawn");
+    let (_, field) = worldspawn
+        .fields
+        .iter()
+        .find(|(name, _)| name == BOUNCE_FILL)
+        .expect("worldspawn declares _bounce_fill");
+    assert!(field.starts_with("_bounce_fill(float)"), "{field}");
+    for needle in [format!("default {default}"), "0..1".to_owned()] {
+        assert!(field.contains(&needle), "FGD field lacks {needle}: {field}");
+    }
+
+    let docs = std::fs::read_to_string(workspace_root().join("docs/level_design.md")).unwrap();
+    let paragraph = docs
+        .split("\n\n")
+        .find(|paragraph| paragraph.contains("`_bounce_fill`"))
+        .expect("docs/level_design.md describes _bounce_fill");
+    for needle in [
+        "`worldspawn`".to_owned(),
+        "`0`".to_owned(),
+        "`1`".to_owned(),
+        format!("default `{default}`"),
+        "not a\ncompiler flag".to_owned(),
+    ] {
+        assert!(
+            paragraph.contains(&needle),
+            "docs paragraph lacks {needle:?}:\n{paragraph}"
+        );
+    }
+    for command in ["cargo", "xtask", "prl-build"] {
+        assert!(
+            !paragraph.contains(command),
+            "docs paragraph names {command}"
+        );
+    }
 }

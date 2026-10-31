@@ -36,7 +36,7 @@ const MAX_MEAN_SIGNED_RELATIVE_ERROR: f64 = 0.01;
 const CONTROL_SEED_SALT: u64 = 1;
 
 /// RGB tiles (`TILE * TILE` texels each) for every probe of one bake.
-type Tiles = Vec<Vec<[f32; 3]>>;
+pub(crate) type Tiles = Vec<Vec<[f32; 3]>>;
 
 fn interior_values<'a>(tile: &'a [[f32; 3]]) -> impl Iterator<Item = f32> + 'a {
     (BORDER..TILE - BORDER)
@@ -45,7 +45,7 @@ fn interior_values<'a>(tile: &'a [[f32; 3]]) -> impl Iterator<Item = f32> + 'a {
 }
 
 /// Per-probe RMS over the interior texels and RGB channels of `a - b`.
-fn interior_rms(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
+pub(crate) fn interior_rms(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
     let (sum, count) = interior_values(a).zip(interior_values(b)).fold(
         (0.0f64, 0usize),
         |(sum, count), (p, q)| {
@@ -161,7 +161,7 @@ fn section_tiles(section: &OctahedralShVolumeSection, texel: impl Fn(usize) -> [
         .collect()
 }
 
-fn rgba16f_tiles(section: &OctahedralShVolumeSection) -> Tiles {
+pub(crate) fn rgba16f_tiles(section: &OctahedralShVolumeSection) -> Tiles {
     assert_eq!(section.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
     section_tiles(section, |i| {
         let bytes = &section.compact_atlas[i * 8..i * 8 + 6];
@@ -290,7 +290,7 @@ fn composed_at_peak(
 }
 
 /// Per compact slot, the RMS error BC6H leaves on `section`'s interior.
-fn bc6h_error(section: &OctahedralShVolumeSection) -> Vec<f32> {
+pub(crate) fn bc6h_error(section: &OctahedralShVolumeSection) -> Vec<f32> {
     bc6h_round_trip_tiles(section)
         .iter()
         .zip(&rgba16f_tiles(section))
@@ -695,6 +695,59 @@ fn diagnose_worst(
     }
 }
 
+/// Info, not gating: what the later bounces cost on `map` and how far fill 1
+/// moves its probes from `fill_zero` (the production bake's tiles at fill 0).
+/// A probe's change is its interior's summed fill-1 minus fill-0 irradiance
+/// over its fill-0 sum, over the probes fill 0 lights.
+fn report_fill_one(
+    map: &str,
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    embedded: &EmbeddedEmitters,
+    fill_zero: &Tiles,
+) {
+    let control = BakeControl::unrestricted();
+    let ray_ctx = inputs.ray_ctx();
+    let patches = PatchSet::build(inputs.geometry);
+    let mut radiance = PatchRadiance::single_bounce(
+        &ray_ctx,
+        &patches,
+        &static_light_refs(inputs),
+        embedded,
+        &control,
+    );
+    let started = std::time::Instant::now();
+    crate::surface_radiance::add_later_bounces(&ray_ctx, &patches, &mut radiance, 1.0, &control);
+    let bounce_time = started.elapsed();
+    let rays = patches.len() as u64
+        * u64::from(
+            crate::surface_radiance::BOUNCE_RAYS_PER_PATCH
+                * crate::surface_radiance::LATER_BOUNCE_COUNT,
+        );
+    let gather = PatchGather::new(&patches, &radiance, PatchLookup::Bilinear);
+    let started = std::time::Instant::now();
+    let fill_one =
+        bake_sh_volume_with_source(inputs, config, &control, RadianceSource::Patches(&gather));
+    let gather_time = started.elapsed();
+    let mut changes: Vec<f32> = rgba16f_tiles(&fill_one)
+        .iter()
+        .zip(fill_zero)
+        .filter(|(_, zero)| interior_is_nonzero(zero))
+        .map(|(one, zero)| interior_signed_relative(one, zero) as f32)
+        .collect();
+    changes.sort_by(f32::total_cmp);
+    eprintln!(
+        "{map}: later bounces (info): {} patches x {} rays x {} bounces = {rays} rays in {bounce_time:.1?}; fill-1 gather {gather_time:.1?}; fill 1 vs fill 0 per-probe relative change over {} lit probes: median {:+.3}, p99 {:+.3}, max {:+.3}",
+        patches.len(),
+        crate::surface_radiance::BOUNCE_RAYS_PER_PATCH,
+        crate::surface_radiance::LATER_BOUNCE_COUNT,
+        changes.len(),
+        percentile(&changes, 0.5),
+        percentile(&changes, 0.99),
+        changes.last().copied().unwrap_or(0.0),
+    );
+}
+
 /// The patch lookups to measure: `POSTRETRO_PATCH_LOOKUPS=<lookup>,...`
 /// (`nearest`, `bilinear`) or both.
 fn patch_lookups() -> Vec<PatchLookup> {
@@ -934,13 +987,15 @@ fn bounce_parity_on_real_maps() {
         }
 
         // The production cold entry point: the SH base gate's patch set,
-        // then `bake_sh_base` (0.5 m cells, bilinear lookup).
+        // then `bake_sh_base` (0.5 m cells, bilinear lookup), at fill 0: the
+        // parity rows measure bounce one, which the reference bakes alone.
         {
             let started = std::time::Instant::now();
             let (handoff, projection) = crate::surface_radiance::plan_sh_base(
                 &fx.geometry,
                 &light_refs,
                 config.probe_spacing,
+                0.0,
                 u64::MAX,
             )
             .expect("the SH base projection fits u64");
@@ -957,9 +1012,11 @@ fn bounce_parity_on_real_maps() {
                 production.probes, full.probes,
                 "the production gather's depth moments equal the reference's"
             );
+            let production_tiles = rgba16f_tiles(&production);
+            report_fill_one(map, &inputs, &config, embedded, &production_tiles);
             candidates.push((
-                Estimator::new("production cold (bake_sh_base)", true, false),
-                rgba16f_tiles(&production),
+                Estimator::new("production cold (bake_sh_base, fill 0)", true, false),
+                production_tiles,
                 reads.iter().map(|&(_, b)| b > 0).collect(),
             ));
         }

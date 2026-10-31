@@ -3,6 +3,7 @@
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::bounce::{add_later_bounces, later_bounce_progress_units};
 use super::gather::{PatchGather, PatchLookup};
 use super::layer::LayerKeys;
 use super::layer_set::{LayerCache, LayerPlan, resolve_layers};
@@ -18,7 +19,8 @@ use crate::sh_bake::{
 use crate::texel_footprint::EmbeddedEmitters;
 
 /// The bake-only cache one SH base bake builds: the gate's patches and
-/// every static light's summed single-bounce radiance over them. It lives
+/// the radiance the probe gather reads over them, every static light's
+/// summed bounce one plus the map's fill of later bounces. It lives
 /// only inside [`bake_sh_base`], so it is freed before the delta SH stage
 /// begins; only the id-34 section leaves.
 struct PatchCache {
@@ -37,12 +39,14 @@ impl Drop for PatchCache {
 /// light content shades one layer over the patches in its reach, seeded by
 /// its content digest ([`LayerPlan`]); with `cache`, a layer is first read
 /// from the build cache and, on a miss, written back the moment it is
-/// shaded. The layers sum in content order, and the probe gather reads the
-/// sum by bilinear lookup. `embedded` is the bounce family's set
-/// ([`crate::direct_sh_bake::bounce_embedded_emitters`]), keyed by
-/// static-light position. Cold (`cache == None`) and warm bake the same
-/// bytes. Progress counts one unit per patch chunk of each layer's reach,
-/// then one per probe.
+/// shaded. The layers sum in content order into bounce one; the later
+/// bounces gather patch to patch at the gate's fill
+/// ([`ShBaseHandoff::bounce_fill`]), and the probe gather reads the result
+/// by bilinear lookup. No layer keys on the fill. `embedded` is the bounce
+/// family's set ([`crate::direct_sh_bake::bounce_embedded_emitters`]),
+/// keyed by static-light position. Cold (`cache == None`) and warm bake the
+/// same bytes. Progress counts one unit per patch chunk of each layer's
+/// reach, then one per patch chunk of each later bounce, then one per probe.
 pub(crate) fn bake_sh_base(
     ctx: &ShBakeCtx<'_>,
     config: &ShConfig,
@@ -54,15 +58,17 @@ pub(crate) fn bake_sh_base(
     let ShBaseHandoff {
         patches,
         light_reach,
+        bounce_fill,
     } = handoff;
     let lights = static_light_refs(ctx);
     let plan = LayerPlan::new(&lights, &light_reach, embedded);
     let shading_units = plan.progress_units();
+    let bounce_units = later_bounce_progress_units(patches.len(), bounce_fill);
     let probes: usize = probe_grid_dims(ctx.geometry, config.probe_spacing)
         .iter()
         .map(|&d| d as usize)
         .product();
-    control.publish_total(shading_units + probes);
+    control.publish_total(shading_units + bounce_units + probes);
     let layer_cache = cache.map(|cache| LayerCache {
         cache,
         keys: LayerKeys::new(ctx.geometry, ctx.bounce_materials),
@@ -75,8 +81,15 @@ pub(crate) fn bake_sh_base(
         layer_cache.as_ref(),
         control,
     );
-    let radiance = PatchRadiance::sum(patches.len(), &plan, &layers);
+    let mut radiance = PatchRadiance::sum(patches.len(), &plan, &layers);
     drop(layers);
+    add_later_bounces(
+        &ctx.ray_ctx(),
+        &patches,
+        &mut radiance,
+        bounce_fill,
+        control,
+    );
     let patch_cache = PatchCache { patches, radiance };
     let gather = PatchGather::new(
         &patch_cache.patches,
@@ -88,7 +101,7 @@ pub(crate) fn bake_sh_base(
         config,
         control,
         RadianceSource::Patches(&gather),
-        shading_units,
+        shading_units + bounce_units,
     )
 }
 

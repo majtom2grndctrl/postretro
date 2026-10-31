@@ -12,6 +12,8 @@ pub(crate) struct BakeCounts {
     pub(crate) shadow_rays: u64,
     /// Probe gather rays (`sh_bake::gather_hit`).
     pub(crate) gather_rays: u64,
+    /// Later-bounce gather rays from patches (`sh_bake::bounce_hit`).
+    pub(crate) bounce_rays: u64,
     /// Gather hits that read the surface radiance cache's patches.
     pub(crate) patch_lookups: u64,
     /// Patch-direct light evaluations: one per (patch, light) a layer shades.
@@ -34,6 +36,7 @@ impl Add for BakeCounts {
         Self {
             shadow_rays: self.shadow_rays + other.shadow_rays,
             gather_rays: self.gather_rays + other.gather_rays,
+            bounce_rays: self.bounce_rays + other.bounce_rays,
             patch_lookups: self.patch_lookups + other.patch_lookups,
             patch_light_evaluations: self.patch_light_evaluations + other.patch_light_evaluations,
             layers_shaded: self.layers_shaded + other.layers_shaded,
@@ -50,6 +53,7 @@ thread_local! {
         Cell::new(BakeCounts {
             shadow_rays: 0,
             gather_rays: 0,
+            bounce_rays: 0,
             patch_lookups: 0,
             patch_light_evaluations: 0,
             layers_shaded: 0,

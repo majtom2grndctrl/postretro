@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use super::bounce::DEFAULT_BOUNCE_FILL;
 use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::layer_set::LayerPlan;
 use super::patches::{PatchSet, Side};
@@ -36,6 +37,7 @@ fn a_cold_bake_traces_no_shadow_ray_from_the_probe_gather() {
             scene.bake_with(
                 &lights,
                 spacing,
+                DEFAULT_BOUNCE_FILL,
                 &NO_EMBEDDED_EMITTERS,
                 None,
                 &BakeControl::unrestricted(),
@@ -70,6 +72,23 @@ fn a_cold_bake_traces_no_shadow_ray_from_the_probe_gather() {
     assert!(coarse.patch_lookups > 0 && coarse.patch_lookups <= coarse.gather_rays);
 }
 
+// AC 4: later bounces gather patch to patch and read the cache as the
+// probe gather does, so fill 1 traces exactly fill 0's shadow rays, every
+// one in patch direct, and the probe gather's rays and lookups do not move.
+#[test]
+fn later_bounces_trace_no_shadow_ray() {
+    let scene = Scene::new();
+    let lights = room_lights();
+    let (_, single) = scene.bake_at(&lights, 0.0, None, 4);
+    let (_, multi) = scene.bake_at(&lights, 1.0, None, 4);
+    assert_eq!(multi.shadow_rays, single.shadow_rays, "{multi:?}");
+    assert!(single.shadow_rays > 0);
+    assert_eq!(single.bounce_rays, 0, "{single:?}");
+    assert!(multi.bounce_rays > 0, "{multi:?}");
+    assert_eq!(multi.gather_rays, single.gather_rays);
+    assert_eq!(multi.patch_lookups, single.patch_lookups);
+}
+
 /// `source` with comment lines removed: the gate reads code, not prose.
 fn code(source: &str) -> String {
     source
@@ -91,10 +110,11 @@ fn function(source: &str, name: &str) -> String {
     source[start..end].to_owned()
 }
 
-// AC 4, grep gate: the probe gather's patch path calls no visibility
-// routine. It covers the gather (`gather.rs`), the patch lookups it reads
-// (`patches.rs`), the gather's hit (`gather_hit`) and the probe bake's
-// patch arm.
+// AC 4, grep gate: the probe gather's patch path and the later bounces
+// call no visibility routine. It covers the gather (`gather.rs`), the patch
+// lookups it reads (`patches.rs`), the gather's hit (`gather_hit`), the
+// probe bake's patch arm, and the later bounces (`bounce.rs`) with their
+// hit (`bounce_hit`).
 #[test]
 fn the_patch_gather_path_calls_no_visibility_routine() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -117,6 +137,11 @@ fn the_patch_gather_path_calls_no_visibility_routine() {
             function(&read("sh_bake/trace.rs"), "gather_hit"),
         ),
         ("patch arm", patch_arms[0].to_owned()),
+        ("bounce.rs", code(&read("surface_radiance/bounce.rs"))),
+        (
+            "bounce_hit",
+            function(&read("sh_bake/trace.rs"), "bounce_hit"),
+        ),
     ];
     for (name, source) in &sources {
         for routine in [

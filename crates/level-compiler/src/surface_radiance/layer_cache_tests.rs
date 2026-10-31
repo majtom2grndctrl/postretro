@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::bounce::DEFAULT_BOUNCE_FILL;
 use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::patches::PatchSet;
 use super::reach::PatchReachIndex;
@@ -208,6 +209,7 @@ fn a_build_stopped_mid_patch_shading_reshades_only_unwritten_layers() {
             scene.bake_with(
                 &lights,
                 1.0,
+                DEFAULT_BOUNCE_FILL,
                 &NO_EMBEDDED_EMITTERS,
                 Some(&stopped),
                 &control,
@@ -283,6 +285,21 @@ fn a_revert_hits_every_layer_the_eviction_sweep_kept() {
     same_id_34(&reverts[0], &reverts[1], "with and without eviction");
 }
 
+// AC 14: no layer keys on `_bounce_fill`, so a fill change re-shades no
+// layer; id 34 moves with the fill and equals a cold bake at the new one.
+#[test]
+fn changing_the_bounce_fill_reshades_no_layer() {
+    let scene = Scene::new();
+    let lights = room_lights();
+    let dir = tempfile::tempdir().unwrap();
+    let (full, counts) = scene.bake_at(&lights, 1.0, Some(&open(dir.path())), 4);
+    assert_eq!(shaded_and_cached(&counts), (4, 0), "{counts:?}");
+    let (half, counts) = scene.bake_at(&lights, 0.5, Some(&open(dir.path())), 4);
+    assert_eq!(shaded_and_cached(&counts), (0, 4), "{counts:?}");
+    assert_ne!(full.compact_atlas, half.compact_atlas, "id 34 moves");
+    same_id_34(&half, &scene.bake_at(&lights, 0.5, None, 4).0, "fill 0.5");
+}
+
 // AC 25: every layer cache read and write runs on a thread holding no
 // governor permit, cold fill and warm hit alike.
 #[test]
@@ -305,6 +322,7 @@ fn layer_cache_reads_and_writes_run_outside_governor_permits() {
             scene.bake_with(
                 &lights,
                 1.0,
+                DEFAULT_BOUNCE_FILL,
                 &NO_EMBEDDED_EMITTERS,
                 Some(&open(dir.path())),
                 &control,

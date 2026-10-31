@@ -1,6 +1,7 @@
 // Bake-only surface radiance cache: patches on static faces that the SH probe gather reads.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+mod bounce;
 mod gather;
 mod layer;
 mod layer_set;
@@ -10,6 +11,9 @@ mod stage;
 mod sum;
 mod working_set;
 
+#[cfg(test)]
+pub(crate) use bounce::{BOUNCE_RAYS_PER_PATCH, LATER_BOUNCE_COUNT, add_later_bounces};
+pub(crate) use bounce::{DEFAULT_BOUNCE_FILL, is_valid_bounce_fill};
 pub(crate) use gather::PatchGather;
 #[cfg(test)]
 pub(crate) use gather::PatchLookup;
@@ -24,6 +28,8 @@ pub(crate) use stage::{bake_sh_base, warn_bounce_only_emitters};
 pub(crate) use sum::PatchRadiance;
 pub(crate) use working_set::{ShBaseWorkingSetProjection, plan_sh_base};
 
+#[cfg(test)]
+mod bounce_tests;
 #[cfg(test)]
 mod cost_tests;
 #[cfg(test)]

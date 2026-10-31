@@ -775,9 +775,10 @@ fn run_after_parsing(
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     )?;
-    // The SH base gate prices the patch cache and the id-34 volume from the
-    // patch set, the static lights' ranges and the probe grid's dimensions.
-    // Its patch set moves whole into the SH base bake.
+    // The SH base gate prices the patch cache, the later bounces at the
+    // map's `_bounce_fill` and the id-34 volume from the patch set, the
+    // static lights' ranges and the probe grid's dimensions. Its patch set
+    // and fill move whole into the SH base bake.
     let (sh_base_handoff, sh_base_projection) = surface_radiance::plan_sh_base(
         &geo_result,
         &static_baked_lights
@@ -786,6 +787,7 @@ fn run_after_parsing(
             .map(|entry| entry.light)
             .collect::<Vec<_>>(),
         sh_config.probe_spacing,
+        map_data.bounce_fill,
         args.working_set_max_bytes,
     )?;
     sh_working_set_gates::admit_sh_working_sets(
@@ -890,7 +892,8 @@ fn run_after_parsing(
     // Warm and cold bake id 34 through one path: the whole volume gathers
     // from the surface radiance cache over the gate's patch set. Warm builds
     // read and write each light's patch layer in the stage cache, so a light
-    // edit re-shades only its layer; the gather re-runs every build. The
+    // edit re-shades only its layer; the later bounces and the gather re-run
+    // every build, so a `_bounce_fill` edit re-shades no layer. The
     // patch cache is freed inside the bake; only id 34 leaves the stage.
     let mut sh_volume_section = surface_radiance::bake_sh_base(
         &sh_ctx,

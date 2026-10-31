@@ -75,6 +75,22 @@ impl PatchRadiance {
         Self::sum(patches.len(), &plan, &layers)
     }
 
+    /// Add `scale` × `front[patch]` to each patch's front side: the later
+    /// bounces joining bounce one at the map's fill.
+    pub(crate) fn add_front_scaled(&mut self, front: &[[f32; 3]], scale: f32) {
+        assert_eq!(front.len(), self.sides.len(), "one front value per patch");
+        for (sides, value) in self.sides.iter_mut().zip(front) {
+            for (s, v) in sides[Side::Front as usize].iter_mut().zip(value) {
+                *s += scale * v;
+            }
+        }
+    }
+
+    /// Whether every side of every patch is black.
+    pub(crate) fn is_zero(&self) -> bool {
+        self.sides.iter().flatten().flatten().all(|&v| v == 0.0)
+    }
+
     pub(crate) fn get(&self, patch: u32, side: Side) -> Vec3 {
         Vec3::from(self.sides[patch as usize][side as usize])
     }

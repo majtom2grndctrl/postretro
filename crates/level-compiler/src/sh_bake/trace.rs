@@ -94,6 +94,17 @@ pub(crate) fn gather_hit(ctx: &RaytracingCtx<'_>, origin: Vec3, dir: Vec3) -> Op
     closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY)
 }
 
+/// A later-bounce gather ray's hit (`surface_radiance::bounce`): the nearest
+/// surface along `dir` from a patch centroid, stepped `RAY_EPSILON` off the
+/// origin as [`gather_hit`] steps a probe's. Counted apart from probe
+/// gather rays, so the probe-side cost counters do not move with the
+/// patch count.
+pub(crate) fn bounce_hit(ctx: &RaytracingCtx<'_>, origin: Vec3, dir: Vec3) -> Option<Hit> {
+    #[cfg(test)]
+    crate::bake_counters::bump(|counts| counts.bounce_rays += 1);
+    closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY)
+}
+
 pub(super) fn closest_hit(
     ctx: &RaytracingCtx<'_>,
     ray_origin: Vec3,

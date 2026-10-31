@@ -18,7 +18,7 @@ Report, not gate. Raw Build Summaries and stage-log excerpts: `results/raw/`; al
 | campaign-test | 2 | 1.74 | 5.12 | 2.94x | 0.50 -> 0.66 | 11.91 -> 11.72 | 24.21 -> 27.36 |
 | stress-warren-mini | 1 | 25.14 | 23.22 | 0.92x | 6.05 -> 6.32 | 208.77 -> 210.41 | 290.04 -> 289.75 |
 | stress-warren-hallway-inspection-mini | 1 | 74.81 | 49.90 | 0.67x | 0.00 -> 0.00 | 340.32 -> 345.36 | 445.20 -> 426.66 |
-| full hallway | — | owner-launched, not run | | | | | |
+| full hallway (`stress-warren-hallway-inspection`) | 1 | 267.49 | 119.00 | 0.44x | 15.93 -> 15.70 | 865.96 -> 852.64 | 1235.83 -> 1072.47 |
 
 The after binary is slower on `campaign-test` (about 2.7-2.9x on SH Bake, +2.5-3 s total) and faster as the map grows: hallway-mini loses a third of SH Bake. campaign-test has 11 static lights (small fixed cost: patch set, layers, later bounces and gather do not shrink with a small map); hallway-mini has 274 static lights and 915,467 patches. The Lightmap Bake column is flat within noise (the change does not touch it). Peak RSS: ~4.1 GB for mini and hallway-mini on both binaries, ~1.2 GB for campaign-test.
 
@@ -60,3 +60,9 @@ Gate-line predictions (after binary): peak 385 MB at every count (the probe-gath
 | after | 4.21 | 4.38 | `sh_patch_layer` 10 hit / 1 miss; `sh_base_volume` miss |
 
 After-binary B phases: plateau 3.05 s, ramp 1.33 s. As designed, the warm edit still re-gathers the whole volume, so warm SH Bake is about the cold cost; the old warm build was faster because it re-baked only the edited light's groups (and shipped approximate bytes). The full-hallway comparison (AC 34) is the owner's run.
+
+## Full hallway, 2026-10-31 (this Mac)
+
+- Cold `--release`, one bake at a time, 5-minute cool-down, `pmset -g therm` CPU speed limit 100 at each start (`results/raw/hallway/gate.txt`). SH Bake 267.5 → 119.0 s (2.25× faster), total 1235.8 → 1072.5 s. Peak memory footprint 4.44 → 4.39 GB.
+- The SH base gate admitted 1,747,036 patches and 757 static lights, predicting a 4.98 GB peak (the layer phase), against the 16 GiB default (`results/raw/hallway/sh-base-gate.txt`).
+- **AC 34 / AC 37 (warm) not measured.** The base binary's warm build A filled its private cache to 28 GB on disk (26.57 GiB spared set, 277,515 entries, against the 2 GiB `--cache-max-size`; the cache keeps a live map's spared set). That took the volume to 3 GB free and the build ended without a Build Summary, so the batch aborted. The cache was deleted at once. This cache size is a property of the existing warm stages on the full hallway, not of this branch, and a warm pair needs about 2 × 28 GB plus headroom. Run the warm pair on a machine with more free disk, or one binary at a time, deleting each cache before the next.

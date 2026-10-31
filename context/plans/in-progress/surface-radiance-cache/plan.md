@@ -86,10 +86,10 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 | 31 | Gate patch set = baked patch set; predicted ≥ measured peak across fixtures/fill/workers/cache mode | bin handoff assertion + cfg(test) peak accounting | achievable as stated | pass: 192 configurations, predicted ≥ measured |
 | 32 | Cache freed before delta SH stage begins | bin test (drop marker observed before DeltaShBake entry) | achievable as stated | pass: cold and warm volume-hit |
 | 33 | Patch count = static faces after culling; mover + exterior-culled face get none | bin fixture test | achievable as stated | pass |
-| 34 | Measure: warm one-light edit on full hallway, phases timed apart | owner-launched run (`measure-hallway.ps1` pattern) | measurement | outstanding: owner-launched full-hallway warm edit (`warm-edit.sh`) |
+| 34 | Measure: warm one-light edit on full hallway, phases timed apart | owner-launched run (`measure-hallway.ps1` pattern) | measurement | blocked by disk: the full-hallway warm cache is 28 GB per binary (existing stages), so this Mac can't hold a pair; run elsewhere or one binary at a time |
 | 35 | Measure: light-count sweep N/2N/4N | synthetic map, cold, one bake at a time | measurement | measured: SH Bake flat 13.9–14.6 s from 16 to 256 lights; base 4.6 → 31.2 s |
-| 36 | Measure: cold `--release --no-cache` Build Summary before/after on 4 maps | before = base-commit binary | measurement | measured: campaign-test 1.6 → 4.4 s SH, warren-mini 25.1 → 23.2 s, hallway-mini 74.8 → 49.9 s |
-| 37 | Measure: hallway cache peak, layer + id-34 entry bytes vs `--cache-max-size` | owner-launched run | measurement | outstanding: owner-launched hallway cache-size run |
+| 36 | Measure: cold `--release --no-cache` Build Summary before/after on 4 maps | before = base-commit binary | measurement | measured: campaign-test 1.6 → 4.4 s SH, warren-mini 25.1 → 23.2 s, hallway-mini 74.8 → 49.9 s; full hallway 267.5 → 119.0 s SH, 1235.8 → 1072.5 s total |
+| 37 | Measure: hallway cache peak, layer + id-34 entry bytes vs `--cache-max-size` | owner-launched run | measurement | blocked with AC 34. Gate prediction for the hallway: 4.98 GB peak, 1.75 M patches, 757 lights |
 | 38 | Owner A/B at campaign-test stations, fill 0 / mid / 1 + white room; owner picks default | owner, in-engine | manual | outstanding (owner): captures in `ab-captures/`. campaign-test moves +1–2/255, white room +17–19/255; default pick pending |
 | 39 | Entities and fog: no patch-scale blotches or new leaks | owner, in-engine | manual | outstanding (owner): captures show no patch blotches or new leaks; white-room seam pixels predate this branch (`ab-captures/seam-check/`) |
 

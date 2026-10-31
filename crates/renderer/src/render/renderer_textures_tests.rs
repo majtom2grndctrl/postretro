@@ -218,7 +218,9 @@ pub(in crate::render) fn install_one_triangle_with_sh(
     direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
 ) {
     with_one_triangle(materials, sh_volume, direct_sh_volume, &[], |geometry| {
-        renderer.install_level_geometry(geometry, Default::default());
+        renderer
+            .install_level_geometry(geometry, Default::default())
+            .expect("level resources install");
     });
 }
 

@@ -251,7 +251,9 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
             cells: &[],
             texture_materials: &[],
         };
-        renderer.install_level_geometry(&geometry, payloads);
+        renderer
+            .install_level_geometry(&geometry, payloads)
+            .expect("level resources install");
     };
 
     install(

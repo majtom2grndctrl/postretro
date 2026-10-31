@@ -541,6 +541,12 @@ fn build_promotion_pass(
     });
 
     let device_limits = device.limits();
+    // Level data cannot reach the `expect` below. `layout` exists only for a
+    // volume that passed `check_sh_volume`, whose compose-grid check runs
+    // this builder's arithmetic (`dynamic_compose_grid_fits`, held equal by
+    // `dynamic_compose_grid_fits_matches_the_upload_builder`) over
+    // ceil(grid / 4); the loader pins id 35's grid to id 34's and id 41's
+    // `affinity_dims` to ceil(grid / 4) (`DirectShDeltaAffinityDimsMismatch`).
     let grid_upload = build_dynamic_compose_grid_upload(
         ComposeGridParams {
             grid_dimensions: layout.grid_dimensions,

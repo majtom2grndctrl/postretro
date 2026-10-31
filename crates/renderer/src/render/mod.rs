@@ -26,6 +26,9 @@ mod ghost_order;
 mod ghost_pipeline;
 pub(crate) mod gpu_create;
 pub(crate) mod install_pipelines;
+mod install_prep;
+#[cfg(test)]
+mod install_prep_tests;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod kinematic_ghost_shape;
@@ -191,6 +194,7 @@ use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
+pub use renderer_resources::LevelInstallError;
 pub use renderer_textures::UploadedWorldTextures;
 pub use upload_thread::{PendingUpload, UploadError, UploadRetirement};
 pub(crate) use upload_thread::{UploadContext, UploadThread};

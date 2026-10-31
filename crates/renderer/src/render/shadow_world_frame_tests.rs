@@ -168,38 +168,41 @@ impl World {
     }
 
     fn install(&self, renderer: &mut Renderer, indexed: bool) {
-        renderer.install_level_geometry(
-            &LevelGeometry {
-                vertices: &self.vertices,
-                vertex_spec_owners: &[],
-                indices: &self.indices,
-                bvh: &self.bvh,
-                lights: &self.lights,
-                light_influences: &[],
-                sh_volume: None,
-                sh_storage: LevelGeometryShStorage::Legacy,
-                lightmap: None,
-                lightmap_streaming: None,
-                chunk_light_list: None,
-                animated_light_chunks: None,
-                animated_light_weight_maps: None,
-                delta_sh_volumes: None,
-                direct_sh_volume: None,
-                direct_sh_delta_volumes: None,
-                animated_direct_sh_delta_volumes: None,
-                billboard_direct_scatter_volume: None,
-                animated_billboard_direct_scatter_delta_volumes: None,
-                entity_shadow_lights: &[],
-                shadowmask_atlas: None,
-                sdf_atlas: None,
-                lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-                cell_draw_index: (indexed && !self.bvh.leaves.is_empty()).then_some(&self.index),
-                kinematic_geometry: None,
-                cells: &self.cells,
-                texture_materials: &[],
-            },
-            Default::default(),
-        );
+        renderer
+            .install_level_geometry(
+                &LevelGeometry {
+                    vertices: &self.vertices,
+                    vertex_spec_owners: &[],
+                    indices: &self.indices,
+                    bvh: &self.bvh,
+                    lights: &self.lights,
+                    light_influences: &[],
+                    sh_volume: None,
+                    sh_storage: LevelGeometryShStorage::Legacy,
+                    lightmap: None,
+                    lightmap_streaming: None,
+                    chunk_light_list: None,
+                    animated_light_chunks: None,
+                    animated_light_weight_maps: None,
+                    delta_sh_volumes: None,
+                    direct_sh_volume: None,
+                    direct_sh_delta_volumes: None,
+                    animated_direct_sh_delta_volumes: None,
+                    billboard_direct_scatter_volume: None,
+                    animated_billboard_direct_scatter_delta_volumes: None,
+                    entity_shadow_lights: &[],
+                    shadowmask_atlas: None,
+                    sdf_atlas: None,
+                    lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+                    cell_draw_index: (indexed && !self.bvh.leaves.is_empty())
+                        .then_some(&self.index),
+                    kinematic_geometry: None,
+                    cells: &self.cells,
+                    texture_materials: &[],
+                },
+                Default::default(),
+            )
+            .expect("level resources install");
     }
 }
 

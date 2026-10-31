@@ -2,78 +2,17 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use crate::render::gpu_create::GpuCreate;
-use postretro_render_cpu::fluid_surface::reflection::{
-    FLUID_REFLECTION_NO_PROBE, fill_probe_indices,
-};
+use postretro_render_cpu::fluid_surface::FluidMaterialRange;
+#[cfg(test)]
+pub(super) use postretro_render_cpu::fluid_surface::prepared::split_planar_ranges;
+pub(super) use postretro_render_cpu::fluid_surface::prepared::{PlanarIndexRange, same_plane};
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
-use postretro_render_cpu::fluid_surface::{FluidMaterialRange, FluidSurfaceMesh};
-use postretro_render_cpu::planar_reflection::{
-    PLANE_HEIGHT_TOLERANCE, PLANE_UP_NORMAL_MIN, PlanarCandidates, planar_preset,
-};
+#[cfg(test)]
+use postretro_render_cpu::planar_reflection::PLANE_HEIGHT_TOLERANCE;
+use postretro_render_cpu::planar_reflection::{PlanarCandidates, planar_preset};
 
 use super::*;
 use crate::render::planar_reflection::PLANAR_LAYER_FORMAT;
-
-/// One run of a material range's triangles: `height` is the plane of a run of
-/// horizontal, up-facing, probe-bound triangles at one height, else `None`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct PlanarIndexRange {
-    pub start: u32,
-    pub count: u32,
-    pub height: Option<f32>,
-}
-
-fn same_plane(a: Option<f32>, b: Option<f32>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => (a - b).abs() <= PLANE_HEIGHT_TOLERANCE,
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-/// Split every material range of `mesh` into runs by plane, in index order,
-/// never across a range. A triangle has a plane only when all three corners
-/// face up, sit within the height tolerance of its first corner and are bound
-/// to a probe, so a plane run always takes the reflecting gate. Install-time.
-pub(super) fn split_planar_ranges(
-    mesh: &FluidSurfaceMesh,
-    volumes: &[EnvironmentVolumeRecord],
-    probes: Option<&ReflectionProbesSection>,
-) -> Vec<PlanarIndexRange> {
-    let mut probe = vec![FLUID_REFLECTION_NO_PROBE; mesh.vertices.len()];
-    fill_probe_indices(volumes, &mesh.face_drift_maps, probes, &mut probe);
-    let mut parts: Vec<PlanarIndexRange> = Vec::new();
-    for volume in &mesh.volumes {
-        for material in &volume.material_ranges {
-            let first_part = parts.len();
-            let end = material.index_start + material.index_count;
-            for start in (material.index_start..end).step_by(3) {
-                let corners = [0, 1, 2].map(|k| mesh.indices[(start + k) as usize] as usize);
-                let h = mesh.vertices[corners[0]].position[1];
-                let height = corners
-                    .iter()
-                    .all(|&corner| {
-                        let vertex = &mesh.vertices[corner];
-                        vertex.normal[1] > PLANE_UP_NORMAL_MIN
-                            && (vertex.position[1] - h).abs() <= PLANE_HEIGHT_TOLERANCE
-                            && probe[corner] != FLUID_REFLECTION_NO_PROBE
-                    })
-                    .then_some(h);
-                match parts[first_part..].last() {
-                    Some(last) if same_plane(last.height, height) => {
-                        parts.last_mut().expect("a run exists").count += 3;
-                    }
-                    _ => parts.push(PlanarIndexRange {
-                        start,
-                        count: 3,
-                        height,
-                    }),
-                }
-            }
-        }
-    }
-    parts
-}
 
 /// Whether `volumes` hold a candidate plane by the selection's install rule:
 /// [`PlanarCandidates::from_volumes`] over every volume, so probe-bound flat

@@ -291,7 +291,9 @@ impl App {
         //    drops them; the stashed world keeps only their headers.
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let geometry = render::level_world_to_geometry(world, &texture_materials);
-        renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
+        renderer
+            .install_level_geometry(&geometry, gpu_lighting_payloads)
+            .unwrap_or_else(|error| panic!("[Engine] {error}"));
         self.level_timings.record("geometry_upload");
         // Fluid surfaces after textures (their UVs normalize by the
         // installed dimensions) and geometry (which drops the last level's).

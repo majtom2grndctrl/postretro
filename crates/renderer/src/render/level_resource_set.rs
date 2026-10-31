@@ -412,7 +412,8 @@ impl Renderer {
             cells: &[],
             texture_materials: &[],
         };
-        self.install_level_geometry(&geometry, Default::default());
+        self.install_level_geometry(&geometry, Default::default())
+            .expect("level resources install");
     }
 
     /// Whether a level's renderer resources are installed (an active set).

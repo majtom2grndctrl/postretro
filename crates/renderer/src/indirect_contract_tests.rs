@@ -459,9 +459,17 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
     require(
         oracle,
         &[
-            "let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale);",
+            "let sh_plan = plan_level_sh_residency(geometry)?;",
+            "let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale, sh_plan)?;",
             "self.publish_level_set(id, PreviousLevelSet::Retire);",
         ],
+    );
+    // The level-data plan runs before the previous set is touched.
+    assert!(
+        oracle
+            .find("letsh_plan=plan_level_sh_residency(geometry)?;")
+            .unwrap()
+            < oracle.find("letfull=self.full_mut();").unwrap()
     );
     let publish = function(&functions, PUBLISH, "publish_level_set");
     assert_eq!(publish.matches("full.level.replace(level)").count(), 1);

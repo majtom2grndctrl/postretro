@@ -16,7 +16,7 @@ use std::ops::Index;
 use super::ownership::StoredNode;
 
 #[derive(Debug)]
-pub(super) struct NodeMap<V> {
+pub struct NodeMap<V> {
     /// Affinity-brick extent of the array, or zero when the grid was too
     /// large for the probe count to justify it (a malformed manifest).
     affinity_dims: [u32; 3],
@@ -41,7 +41,7 @@ impl<V> NodeMap<V> {
     /// Size the array to the 4x4x4 brick grid over `grid_dimensions`. A grid
     /// with more bricks than probes cannot be well-formed; it keeps every key
     /// in the overflow map instead of allocating from an untrusted extent.
-    pub(super) fn for_grid(grid_dimensions: [u32; 3], probe_count: usize) -> Self {
+    pub fn for_grid(grid_dimensions: [u32; 3], probe_count: usize) -> Self {
         let affinity_dims = grid_dimensions.map(|axis| axis.div_ceil(4));
         let brick_count = affinity_dims.iter().try_fold(1usize, |count, &axis| {
             count.checked_mul(usize::try_from(axis).ok()?)
@@ -57,9 +57,12 @@ impl<V> NodeMap<V> {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     fn slot(&self, node: &StoredNode) -> Option<usize> {
@@ -71,7 +74,7 @@ impl<V> NodeMap<V> {
         Some(x as usize + width as usize * (y as usize + height as usize * z as usize))
     }
 
-    pub(super) fn get(&self, node: &StoredNode) -> Option<&V> {
+    pub fn get(&self, node: &StoredNode) -> Option<&V> {
         if let Some(slot) = self.slot(node)
             && let Some((scale, level, value)) = &self.primary[slot]
             && *scale == node.scale
@@ -88,12 +91,7 @@ impl<V> NodeMap<V> {
     /// Insert `value` under `node`, or run `merge` on the value already
     /// there. The table never removes entries, so an empty array cell means
     /// no overflow key shares its origin.
-    pub(super) fn insert_or_update(
-        &mut self,
-        node: StoredNode,
-        value: V,
-        merge: impl FnOnce(&mut V),
-    ) {
+    pub fn insert_or_update(&mut self, node: StoredNode, value: V, merge: impl FnOnce(&mut V)) {
         if let Some(slot) = self.slot(&node) {
             let cell = &mut self.primary[slot];
             if let Some((scale, level, existing)) = cell {
@@ -116,7 +114,7 @@ impl<V> NodeMap<V> {
         }
     }
 
-    pub(super) fn values(&self) -> impl Iterator<Item = &V> {
+    pub fn values(&self) -> impl Iterator<Item = &V> {
         self.primary
             .iter()
             .filter_map(|entry| entry.as_ref().map(|(_, _, value)| value))
@@ -124,7 +122,7 @@ impl<V> NodeMap<V> {
     }
 
     /// Every entry, in unspecified order.
-    pub(super) fn iter(&self) -> impl Iterator<Item = (StoredNode, &V)> {
+    pub fn iter(&self) -> impl Iterator<Item = (StoredNode, &V)> {
         let [width, height, _] = self.affinity_dims;
         let (width, height) = (width as usize, height as usize);
         let primary = self

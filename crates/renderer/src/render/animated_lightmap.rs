@@ -14,15 +14,26 @@
 // still dispatch. The last row is padded with `PADDING_TILE` records.
 
 use crate::render::gpu_create::GpuCreate;
+#[cfg(test)]
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
+#[cfg(test)]
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::animated_lightmap_atlas::{
-    ANIMATED_ATLAS_VRAM_BUDGET_BYTES, animated_atlas_byte_estimate, animated_atlas_fits_budget,
-};
 pub use postretro_render_cpu::animated_lightmap::AnimatedLmDebugConfig;
-use postretro_render_cpu::animated_lightmap::validate_cross_section;
+#[cfg(test)]
+use postretro_render_cpu::animated_lightmap::plan::installed_block_table_section;
+#[cfg(test)]
+use postretro_render_cpu::animated_lightmap::plan::plan_animated_lightmap;
+use postretro_render_cpu::animated_lightmap::plan::{
+    AnimatedLightmapPlan, DispatchTile, compose_grid, pack_dispatch_tiles_into, pad_tiles_to_grid,
+};
+#[cfg(test)]
+use postretro_render_cpu::animated_lightmap::plan::{
+    PADDING_TILE, animated_atlas_extent, animated_atlas_preflight, build_chunk_cell_ids,
+    expand_dispatch_tiles, validate_weight_map_section,
+};
 
 use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
+#[cfg(test)]
 use postretro_render_data::geometry::BvhLeaf;
 use postretro_visibility::VisibleCells;
 
@@ -32,166 +43,8 @@ use super::sh_volume::AnimatedLightBuffers;
 use super::{LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE};
 use postretro_level_format::SectionId;
 
-/// Grid-padding record: the compose shader returns on this `chunk_idx`.
-/// Mirrors `PADDING_TILE` in `animated_lightmap_compose.wgsl`.
-const PADDING_TILE: DispatchTile = DispatchTile {
-    chunk_idx: u32::MAX,
-    tile_origin_x: 0,
-    tile_origin_y: 0,
-    target_page: 0,
-};
-
-/// Row-major 2D workgroup grid `(columns, rows)` for `tile_count` one-tile
-/// workgroups, with neither dimension above `max_per_dim`. Rows are balanced,
-/// so the padding `columns * rows - tile_count` stays below `rows`. `None`
-/// when the count exceeds `max_per_dim²`.
-fn compose_grid(tile_count: u32, max_per_dim: u32) -> Option<(u32, u32)> {
-    let rows = tile_count.div_ceil(max_per_dim).max(1);
-    (rows <= max_per_dim).then(|| (tile_count.div_ceil(rows), rows))
-}
-
-/// Pad `tiles` with `PADDING_TILE` so it fills `grid` exactly; the shader
-/// indexes the tile buffer by flattened grid position.
-fn pad_tiles_to_grid(tiles: &mut Vec<DispatchTile>, (columns, rows): (u32, u32)) {
-    debug_assert!(tiles.len() <= (columns * rows) as usize);
-    tiles.resize((columns * rows) as usize, PADDING_TILE);
-}
-
-/// Compact-atlas dimensions: `page_count` square pages of `page_size`. `None`
-/// is the no-animated-atlas path: wgpu rejects a texture whose array depth is
-/// zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AnimatedAtlasExtent {
-    width: u32,
-    height: u32,
-    depth_or_array_layers: u32,
-}
-
-fn animated_atlas_extent(page_size: u32, page_count: u32) -> Option<AnimatedAtlasExtent> {
-    (page_count > 0).then_some(AnimatedAtlasExtent {
-        width: page_size,
-        height: page_size,
-        depth_or_array_layers: page_count,
-    })
-}
-
-fn validate_weight_map_section(section: &AnimatedLightWeightMapsSection) -> Result<(), String> {
-    if let Some(error) = section.consistency_error() {
-        return Err(format!(
-            "animated light weight maps section is internally inconsistent: {error}"
-        ));
-    }
-
-    // A zero-area chunk has no offset-count records to reference its nonempty
-    // weight pool. Letting it through leaves compose with no dispatch tiles and
-    // reaches wgpu's zero-sized storage-buffer rejection.
-    if section
-        .chunk_rects
-        .iter()
-        .any(|rect| rect.width == 0 || rect.height == 0)
-    {
-        return Err("animated light weight maps section contains a zero-area chunk".to_owned());
-    }
-
-    Ok(())
-}
-
-fn animated_atlas_preflight(
-    page_size: u32,
-    page_count: u32,
-    max_texture_dimension_2d: u32,
-    max_texture_array_layers: u32,
-) -> Result<AnimatedAtlasExtent, String> {
-    let extent = animated_atlas_extent(page_size, page_count)
-        .ok_or_else(|| "animated lightmap atlas has zero pages".to_owned())?;
-
-    if page_size > max_texture_dimension_2d {
-        return Err(format!(
-            "animated lightmap page size {page_size} exceeds device maxTextureDimension2D \
-             {max_texture_dimension_2d}",
-        ));
-    }
-    if page_count > max_texture_array_layers {
-        return Err(format!(
-            "animated lightmap atlas requires {page_count} pages, exceeding device \
-             maxTextureArrayLayers {max_texture_array_layers}",
-        ));
-    }
-
-    let atlas_bytes = animated_atlas_byte_estimate(page_size, page_size, page_count);
-    if !animated_atlas_fits_budget(
-        page_size,
-        page_size,
-        page_count,
-        ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
-    ) {
-        return Err(format!(
-            "animated lightmap atlas {page_size}x{page_size}x{page_count} requires \
-             {atlas_bytes} bytes, exceeding the {}-byte VRAM budget",
-            ANIMATED_ATLAS_VRAM_BUDGET_BYTES,
-        ));
-    }
-
-    Ok(extent)
-}
-
-/// The block table must describe the resource actually bound at group 4.
-/// Inactive resources bind a one-layer zero dummy, so the forward table must
-/// be empty — every vertex resolves to no block — even when the decoded
-/// section carried real blocks.
-pub(crate) fn installed_block_table_section(
-    resource_active: bool,
-    decoded: Option<&AnimatedLightWeightMapsSection>,
-) -> Option<&AnimatedLightWeightMapsSection> {
-    decoded.filter(|_| resource_active)
-}
-
 fn animated_atlas_view_dimension() -> wgpu::TextureViewDimension {
     wgpu::TextureViewDimension::D2Array
-}
-
-/// One 8×8 atlas tile assigned to a chunk. Indexed by flattened 2D
-/// `workgroup_id` in the compose shader.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DispatchTile {
-    chunk_idx: u32,
-    tile_origin_x: u32,
-    tile_origin_y: u32,
-    target_page: u32,
-}
-
-/// GPU storage-buffer layout for the compose-relevant prefix of
-/// `ChunkAtlasRect`, in compact-atlas coordinates. The chunk's block resolves
-/// to `DispatchTile.target_page` on the CPU, so it stays out of this buffer
-/// and WGSL struct.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct GpuChunkRect {
-    compact_x: u32,
-    compact_y: u32,
-    width: u32,
-    height: u32,
-    texel_offset: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct GpuOffsetCount {
-    offset: u32,
-    count: u32,
-}
-
-/// GPU storage-buffer layout for `TexelLight`. The two `u16` octahedral
-/// direction components are packed into one `u32` (low 16 bits = x, high 16
-/// bits = y) so the struct stays naturally aligned for storage-buffer access
-/// (12 bytes; the WGSL `TexelLight` mirrors the same packing).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct GpuTexelLight {
-    light_index: u32,
-    weight: f32,
-    direction_oct_packed: u32,
 }
 
 /// The compose pass's device-only half, built once per renderer (see
@@ -313,23 +166,28 @@ struct DispatchState {
 }
 
 impl AnimatedLightmapResources {
-    /// Build the non-dispatching dummy path through `new`'s `weight_maps: None`
-    /// early-out. Load failures use this instead of retaining a prior level's
-    /// atlas views or compose state.
-    /// It needs no pipeline: the dummy never dispatches.
+    /// Build the non-dispatching dummy: the absent-section plan. Load
+    /// failures use this instead of retaining a prior level's atlas views or
+    /// compose state. It needs no pipeline: the dummy never dispatches.
     pub(crate) fn dummy(
         device: &wgpu::Device,
         animation: &AnimatedLightBuffers,
         debug_config: AnimatedLmDebugConfig,
     ) -> Self {
-        Self::build(device, None, None, &[], animation, None, None, debug_config)
-            .expect("weight_maps: None is the non-failing animated-lightmap dummy path")
+        Self::from_plan(
+            device,
+            AnimatedLightmapPlan::Absent,
+            animation,
+            None,
+            debug_config,
+        )
+        .expect("the absent-section plan is the non-failing animated-lightmap dummy path")
     }
 
-    /// Build the compose pass resources over the renderer's compose pipeline.
+    /// Plan on this device's limits, then build: the main-thread oracle path.
     ///
     /// `static_blocks` — each installed lightmap cell block's `(width,
-    /// height)` by block id, from `lightmap::StaticPool::static_block_extents`.
+    /// height)` by block id, from `StaticPool::static_block_extents`.
     /// Section 25's blocks must lie inside their cell blocks; the compact
     /// atlas itself is `page_size² × compact_layers`. `None` is placeholder
     /// mode (no id 22, zero blocks, or a pool the device rejected): the
@@ -338,6 +196,7 @@ impl AnimatedLightmapResources {
     ///
     /// Returns `Err` on validation or allocation preflight failure; callers log
     /// and bind the non-dispatching dummy resource for this level.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
@@ -349,35 +208,26 @@ impl AnimatedLightmapResources {
         static_blocks: Option<&[(u32, u32)]>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
-        Self::build(
-            device,
+        let plan = plan_animated_lightmap(
             weight_maps,
             animated_chunks,
             bvh_leaves,
-            animation,
-            Some(pipelines),
+            animation.animated_light_count(),
             static_blocks,
-            debug_config,
-        )
+            &super::install_prep::device_limits(&device.limits()),
+        )?;
+        Self::from_plan(device, plan, animation, Some(pipelines), debug_config)
     }
 
-    /// `new`, or with no pipeline the dummy: only an atlas that dispatches
-    /// reaches the pipeline.
-    #[allow(clippy::too_many_arguments)]
-    fn build(
+    /// The GPU half: create the atlases, buffers and bind group `plan` sized.
+    /// Only a dispatching atlas reaches the pipeline, and with none it errs.
+    pub(crate) fn from_plan(
         device: &wgpu::Device,
-        weight_maps: Option<&AnimatedLightWeightMapsSection>,
-        animated_chunks: Option<&AnimatedLightChunksSection>,
-        bvh_leaves: &[BvhLeaf],
+        plan: AnimatedLightmapPlan,
         animation: &AnimatedLightBuffers,
         pipelines: Option<&AnimatedLightmapPipelines>,
-        static_blocks: Option<&[(u32, u32)]>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
-        if let Some(section) = weight_maps {
-            validate_weight_map_section(section)?;
-        }
-
         let dummy_texture = create_zero_texture(
             device,
             "Animated LM Dummy",
@@ -402,123 +252,32 @@ impl AnimatedLightmapResources {
                 ..Default::default()
             });
 
-        let Some(section) = weight_maps else {
-            return Ok(Self {
-                atlas_texture: None,
-                direction_atlas_texture: None,
-                dummy_texture,
-                dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Dummy,
-                section_supplied: false,
-                forward_view: dummy_view,
-                direction_forward_view: dummy_direction_view,
-                dispatch_state: None,
-            });
+        let dummy_path = |residency_state, section_supplied| Self {
+            atlas_texture: None,
+            direction_atlas_texture: None,
+            dummy_texture: dummy_texture.clone(),
+            dummy_direction_texture: dummy_direction_texture.clone(),
+            residency_state,
+            section_supplied,
+            forward_view: dummy_view.clone(),
+            direction_forward_view: dummy_direction_view.clone(),
+            dispatch_state: None,
         };
-
-        // An empty section has no pages. Guard before any atlas allocation:
-        // wgpu rejects a D2 array texture with depth zero.
-        if animated_atlas_extent(section.page_size, section.compact_layers).is_none() {
-            return Ok(Self {
-                atlas_texture: None,
-                direction_atlas_texture: None,
-                dummy_texture,
-                dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Data,
-                section_supplied: true,
-                forward_view: dummy_view,
-                direction_forward_view: dummy_direction_view,
-                dispatch_state: None,
-            });
-        }
-
-        let Some(static_blocks) = static_blocks else {
-            // Placeholder mode (no cell blocks installed), so the block-local
-            // coordinates the block table translates from have no valid
-            // target. Take the dummy-atlas path: the animated term contributes
-            // nothing, which matches the static term already being neutral.
-            log::warn!(
-                "[Renderer] Animated lightmap present but no static lightmap cell blocks \
-                 are installed; skipping animated-light compose for this level."
-            );
-            return Ok(Self {
-                atlas_texture: None,
-                direction_atlas_texture: None,
-                dummy_texture,
-                dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Fallback,
-                section_supplied: true,
-                forward_view: dummy_view,
-                direction_forward_view: dummy_direction_view,
-                dispatch_state: None,
-            });
+        let atlas = match plan {
+            AnimatedLightmapPlan::Absent => {
+                return Ok(dummy_path(ResidencyAllocationState::Dummy, false));
+            }
+            AnimatedLightmapPlan::Empty => {
+                return Ok(dummy_path(ResidencyAllocationState::Data, true));
+            }
+            AnimatedLightmapPlan::NoBlockFrame => {
+                return Ok(dummy_path(ResidencyAllocationState::Fallback, true));
+            }
+            AnimatedLightmapPlan::Atlas(atlas) => *atlas,
         };
-
-        validate_cross_section(
-            section,
-            animated_chunks,
-            animation.animated_light_count(),
-            static_blocks,
-        )?;
-
-        if section.chunk_rects.is_empty() || section.texel_lights.is_empty() {
-            // Nothing to compose. Either no animated chunks, or every animated
-            // light is SDF-typed so the baker emitted zero baked direct weight
-            // (the disjoint-direct split — sdf-per-light-shadows Task 1). The
-            // chunk rects still exist (they pair 1:1 with AnimatedLightChunks
-            // for the SH delta bake), but with no texel-lights there is no
-            // direct term to composite: the forward pass falls back to the
-            // static lightmap and runtime SDF resolves these lights' direct
-            // term. Takes the same no-atlas path as a map with no weight maps.
-            return Ok(Self {
-                atlas_texture: None,
-                direction_atlas_texture: None,
-                dummy_texture,
-                dummy_direction_texture,
-                residency_state: ResidencyAllocationState::Data,
-                section_supplied: true,
-                forward_view: dummy_view,
-                direction_forward_view: dummy_direction_view,
-                dispatch_state: None,
-            });
-        }
-
-        let limits = device.limits();
-        let atlas_extent = animated_atlas_preflight(
-            section.page_size,
-            section.compact_layers,
-            limits.max_texture_dimension_2d,
-            limits.max_texture_array_layers,
-        )?;
-        let atlas_bytes = animated_atlas_byte_estimate(
-            atlas_extent.width,
-            atlas_extent.height,
-            atlas_extent.depth_or_array_layers,
-        );
-
-        let dispatch_tiles = expand_dispatch_tiles(&section.chunk_rects, &section.blocks);
-        let compose_workgroup_count = u32::try_from(dispatch_tiles.len())
-            .map_err(|_| "animated lightmap dispatch tile count exceeds u32".to_owned())?;
-        let max_workgroups_per_dim = limits.max_compute_workgroups_per_dimension;
-        let (_, master_rows) = compose_grid(compose_workgroup_count, max_workgroups_per_dim)
-            .ok_or_else(|| {
-                format!(
-                    "[AnimatedLightmap] dispatch tile count {compose_workgroup_count} exceeds \
-                     the {max_workgroups_per_dim}² compose workgroup grid",
-                )
-            })?;
-        // A visible subset never needs more rows than the full list, and each
-        // row pads by at most one tile, so this capacity holds every frame's grid.
-        let tile_capacity = dispatch_tiles.len() + master_rows as usize;
-        let tile_buffer_bytes = (tile_capacity * std::mem::size_of::<DispatchTile>()) as u64;
-        if tile_buffer_bytes > limits.max_storage_buffer_binding_size
-            || tile_buffer_bytes > limits.max_buffer_size
-        {
-            return Err(format!(
-                "[AnimatedLightmap] dispatch tile buffer ({tile_buffer_bytes} bytes for \
-                 {compose_workgroup_count} tiles) exceeds the device storage-buffer limit",
-            ));
-        }
+        let atlas_extent = atlas.extent;
+        let atlas_bytes = atlas.atlas_bytes;
+        let tile_capacity = atlas.tile_capacity;
 
         // No `COPY_DST` needed — wgpu zero-initializes and the compose pass
         // overwrites every texel the forward pass will sample.
@@ -593,30 +352,27 @@ impl AnimatedLightmapResources {
                 ..Default::default()
             });
 
-        let chunk_rects_bytes = pack_chunk_rects(&section.chunk_rects);
-        let offset_counts_bytes = pack_offset_counts(section);
-        let texel_lights_bytes = pack_texel_lights(section);
-        let mut seed_tiles = dispatch_tiles.clone();
-        seed_tiles.resize(tile_capacity, PADDING_TILE);
-        let dispatch_tiles_bytes = pack_dispatch_tiles(&seed_tiles);
-
         let chunk_rects_buffer =
-            create_storage_buffer(device, "Animated LM Chunk Rects", &chunk_rects_bytes);
-        let offset_counts_buffer =
-            create_storage_buffer(device, "Animated LM Offset Counts", &offset_counts_bytes);
-        let texel_lights_buffer =
-            create_storage_buffer(device, "Animated LM Texel Lights", &texel_lights_bytes);
+            create_storage_buffer(device, "Animated LM Chunk Rects", &atlas.chunk_rects_bytes);
+        let offset_counts_buffer = create_storage_buffer(
+            device,
+            "Animated LM Offset Counts",
+            &atlas.offset_counts_bytes,
+        );
+        let texel_lights_buffer = create_storage_buffer(
+            device,
+            "Animated LM Texel Lights",
+            &atlas.texel_lights_bytes,
+        );
         // Seeded with the full master list padded to capacity; every frame
         // overwrites the prefix its grid reads, so no separate clear is needed.
         let dispatch_tiles_buffer = {
             device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Animated LM Dispatch Tiles"),
-                contents: &dispatch_tiles_bytes,
+                contents: &atlas.dispatch_tiles_bytes,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             })
         };
-
-        let chunk_cell_ids = build_chunk_cell_ids(bvh_leaves, section.chunk_rects.len());
 
         let debug_buffer = {
             device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -676,13 +432,14 @@ impl AnimatedLightmapResources {
 
         log::info!(
             "[Renderer] Animated lightmap: {} chunks, {} covered texels, {} weight entries, {} dispatch tiles",
-            section.chunk_rects.len(),
-            section.offset_counts.len(),
-            section.texel_lights.len(),
-            compose_workgroup_count,
+            atlas.chunk_count,
+            atlas.covered_texels,
+            atlas.weight_entries,
+            atlas.master_tiles.len(),
         );
 
-        let total_tiles = compose_workgroup_count;
+        // The plan proved the master count fits `u32` and its grid.
+        let total_tiles = atlas.master_tiles.len() as u32;
         Ok(Self {
             atlas_texture: Some(atlas_texture),
             direction_atlas_texture: Some(direction_atlas_texture),
@@ -696,16 +453,38 @@ impl AnimatedLightmapResources {
                 compose_pipeline,
                 compute_bind_group,
                 dispatch_tiles_buffer,
-                max_workgroups_per_dim,
-                master_tiles: dispatch_tiles,
-                chunk_cell_ids,
+                max_workgroups_per_dim: atlas.max_workgroups_per_dim,
                 // Pre-sized so `DrawAll` on the first frame doesn't realloc.
                 scratch_tiles: Vec::with_capacity(tile_capacity),
-                scratch_bytes: Vec::with_capacity(dispatch_tiles_bytes.len()),
+                scratch_bytes: Vec::with_capacity(atlas.dispatch_tiles_bytes.len()),
+                master_tiles: atlas.master_tiles,
+                chunk_cell_ids: atlas.chunk_cell_ids,
                 prev_kept: u32::MAX,
                 total_tiles,
             }),
         })
+    }
+
+    /// The meter state, section flag, atlas extent and dispatch tables this
+    /// resource was built with, for the prep-equivalence tests.
+    #[cfg(test)]
+    pub(crate) fn plan_summary(&self) -> String {
+        format!(
+            "{:?}",
+            (
+                self.residency_state,
+                self.section_supplied,
+                self.atlas_texture.as_ref().map(wgpu::Texture::size),
+                self.dispatch_state.as_ref().map(|state| {
+                    (
+                        &state.master_tiles,
+                        &state.chunk_cell_ids,
+                        state.total_tiles,
+                        state.max_workgroups_per_dim,
+                    )
+                }),
+            )
+        )
     }
 
     /// Mark a dummy installed because construction of a supplied section
@@ -859,23 +638,6 @@ pub(crate) fn with_dummy_fallback<T>(
     }
 }
 
-/// Build the chunk → cell-id table from BVH leaf ranges. Chunks not covered
-/// by any leaf keep `u32::MAX` so the per-frame filter always rejects them.
-/// In a valid PRL every animated chunk belongs to exactly one leaf; the
-/// sentinel is a defensive fallback.
-fn build_chunk_cell_ids(bvh_leaves: &[BvhLeaf], chunk_count: usize) -> Vec<u32> {
-    let mut chunk_cell_ids = vec![u32::MAX; chunk_count];
-    for leaf in bvh_leaves {
-        let start = leaf.chunk_range_start as usize;
-        let count = leaf.chunk_range_count as usize;
-        let end = start.saturating_add(count).min(chunk_count);
-        for slot in chunk_cell_ids.iter_mut().take(end).skip(start) {
-            *slot = leaf.cell_id;
-        }
-    }
-    chunk_cell_ids
-}
-
 fn compute_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
     let storage_read = wgpu::BindingType::Buffer {
         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -991,94 +753,6 @@ fn create_storage_buffer(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wg
         contents: bytes,
         usage: wgpu::BufferUsages::STORAGE,
     })
-}
-
-/// Expand each chunk rect into `ceil(w/8) × ceil(h/8)` 8×8 dispatch tiles on
-/// its block's page — the same page the forward block table names for that
-/// block. Tile order is y-major, x-minor; order doesn't affect correctness.
-fn expand_dispatch_tiles(
-    chunk_rects: &[postretro_level_format::animated_light_weight_maps::ChunkAtlasRect],
-    blocks: &[postretro_level_format::animated_light_weight_maps::AnimatedBlock],
-) -> Vec<DispatchTile> {
-    let mut tiles = Vec::new();
-    for (chunk_idx, rect) in chunk_rects.iter().enumerate() {
-        if rect.width == 0 || rect.height == 0 {
-            continue;
-        }
-        let Some(block) = blocks.get(rect.block as usize) else {
-            // Section-25 validation rejects this malformed record at load, but
-            // never compose it onto page 0 if a caller bypasses that boundary.
-            continue;
-        };
-        let tiles_x = rect.width.div_ceil(8);
-        let tiles_y = rect.height.div_ceil(8);
-        for ty in 0..tiles_y {
-            for tx in 0..tiles_x {
-                tiles.push(DispatchTile {
-                    chunk_idx: chunk_idx as u32,
-                    tile_origin_x: tx * 8,
-                    tile_origin_y: ty * 8,
-                    target_page: block.compact_layer,
-                });
-            }
-        }
-    }
-    tiles
-}
-
-fn pack_chunk_rects(
-    chunk_rects: &[postretro_level_format::animated_light_weight_maps::ChunkAtlasRect],
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(chunk_rects.len() * std::mem::size_of::<GpuChunkRect>());
-    for r in chunk_rects {
-        bytes.extend_from_slice(&r.compact_x.to_ne_bytes());
-        bytes.extend_from_slice(&r.compact_y.to_ne_bytes());
-        bytes.extend_from_slice(&r.width.to_ne_bytes());
-        bytes.extend_from_slice(&r.height.to_ne_bytes());
-        bytes.extend_from_slice(&r.texel_offset.to_ne_bytes());
-    }
-    bytes
-}
-
-fn pack_offset_counts(section: &AnimatedLightWeightMapsSection) -> Vec<u8> {
-    let mut bytes =
-        Vec::with_capacity(section.offset_counts.len() * std::mem::size_of::<GpuOffsetCount>());
-    for oc in &section.offset_counts {
-        bytes.extend_from_slice(&oc.offset.to_ne_bytes());
-        bytes.extend_from_slice(&oc.count.to_ne_bytes());
-    }
-    bytes
-}
-
-fn pack_texel_lights(section: &AnimatedLightWeightMapsSection) -> Vec<u8> {
-    let mut bytes =
-        Vec::with_capacity(section.texel_lights.len() * std::mem::size_of::<GpuTexelLight>());
-    for tl in &section.texel_lights {
-        bytes.extend_from_slice(&tl.light_index.to_ne_bytes());
-        bytes.extend_from_slice(&tl.weight.to_ne_bytes());
-        // Pack the two octahedral u16s into one u32. WGSL unpacks via
-        // `direction_oct_packed & 0xFFFF` / `>> 16` — see compose shader.
-        let packed: u32 = (tl.direction_oct[0] as u32) | ((tl.direction_oct[1] as u32) << 16);
-        bytes.extend_from_slice(&packed.to_ne_bytes());
-    }
-    bytes
-}
-
-fn pack_dispatch_tiles(tiles: &[DispatchTile]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(tiles));
-    pack_dispatch_tiles_into(tiles, &mut bytes);
-    bytes
-}
-
-/// Appends packed tile bytes into a caller-owned buffer to avoid per-frame allocation.
-fn pack_dispatch_tiles_into(tiles: &[DispatchTile], bytes: &mut Vec<u8>) {
-    bytes.reserve(std::mem::size_of_val(tiles));
-    for t in tiles {
-        bytes.extend_from_slice(&t.chunk_idx.to_ne_bytes());
-        bytes.extend_from_slice(&t.tile_origin_x.to_ne_bytes());
-        bytes.extend_from_slice(&t.tile_origin_y.to_ne_bytes());
-        bytes.extend_from_slice(&t.target_page.to_ne_bytes());
-    }
 }
 
 #[cfg(test)]
@@ -1469,7 +1143,7 @@ mod tests {
         assert_eq!(section.consistency_error(), None);
 
         let tiles = expand_dispatch_tiles(&section.chunk_rects, &section.blocks);
-        let table = animated_block_table_bytes(Some(&section));
+        let table = animated_block_table_bytes(Some(&section)).expect("a valid section packs");
         let word = |at: usize| u32::from_ne_bytes(table[at..at + 4].try_into().unwrap());
         for tile in &tiles {
             let rect = section.chunk_rects[tile.chunk_idx as usize];

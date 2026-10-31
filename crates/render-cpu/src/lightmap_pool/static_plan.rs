@@ -1,32 +1,32 @@
 // Static lightmap pool plan: whether a level's id-22/42 cell blocks can bind
 // as an all-resident or streamed pool on this device, and where each
-// all-resident block goes. Pure data logic; `pool.rs` turns a plan into
-// textures.
+// all-resident block goes. Pure data logic; the renderer's `pool.rs` turns a
+// plan into textures.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+use super::{AllResidentPool, place_all_resident};
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_GROUP_COUNT, ShadowmaskBlockIndex, group_plane_len,
 };
-use postretro_render_cpu::lightmap_pool::{AllResidentPool, place_all_resident};
 
 /// Every block of a level placed in the pool, and whether the shadowmask
 /// groups install beside them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StaticPoolPlan {
-    pub(crate) header: LightmapHeader,
+pub struct StaticPoolPlan {
+    pub header: LightmapHeader,
     /// `(width, height)` per block id.
-    pub(crate) extents: Vec<(u32, u32)>,
-    pub(crate) pool: AllResidentPool,
+    pub extents: Vec<(u32, u32)>,
+    pub pool: AllResidentPool,
     /// Id 42 is present and every block carries well-formed groups.
-    pub(crate) with_shadowmask: bool,
+    pub with_shadowmask: bool,
 }
 
 /// What the static lightmap binds for a level.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StaticPool {
+pub enum StaticPool {
     /// No id 22: placeholder mode.
     Absent,
     /// Id 22 with zero blocks: placeholder mode.
@@ -43,20 +43,20 @@ pub(crate) enum StaticPool {
 /// A level whose blocks stream: what install needs to build the pool model
 /// and its first texture set. Payloads arrive later, through drains.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StreamingPoolPlan {
-    pub(crate) header: LightmapHeader,
+pub struct StreamingPoolPlan {
+    pub header: LightmapHeader,
     /// `(width, height)` per block id.
-    pub(crate) extents: Vec<(u32, u32)>,
+    pub extents: Vec<(u32, u32)>,
     /// Id 42 is present and the device holds its two-group pool width.
-    pub(crate) with_shadowmask: bool,
+    pub with_shadowmask: bool,
     /// The level's content identity, which every drain batch must carry.
-    pub(crate) content_tag: [u8; 32],
+    pub content_tag: [u8; 32],
     /// The first generation's layer cap, already bounded so the pool plus
     /// its spare layer fit the device's array-layer limit.
-    pub(crate) pool_cap_layers: u32,
+    pub pool_cap_layers: u32,
     /// Device `maxTextureArrayLayers`, the spare layer included: the pool
     /// model defers a pair rather than grow past it.
-    pub(crate) max_array_layers: u32,
+    pub max_array_layers: u32,
 }
 
 impl StaticPool {
@@ -64,7 +64,7 @@ impl StaticPool {
     /// planned for real. False without id 42, for a refused mask pool, and in
     /// placeholder mode, whose all-visible placeholder must never read as an
     /// owner's mask. Loaded into the frame uniforms' mask-present bit.
-    pub(crate) fn static_specular_mask_present(&self) -> bool {
+    pub fn static_specular_mask_present(&self) -> bool {
         match self {
             Self::Blocks(plan) => plan.with_shadowmask,
             Self::Streaming(plan) => plan.with_shadowmask,
@@ -74,7 +74,7 @@ impl StaticPool {
 
     /// The installed cell blocks' extents, which the animated atlas keys on.
     /// `None` in placeholder mode: the animated atlas has no block frame.
-    pub(crate) fn static_block_extents(&self) -> Option<&[(u32, u32)]> {
+    pub fn static_block_extents(&self) -> Option<&[(u32, u32)]> {
         match self {
             Self::Blocks(plan) => Some(&plan.extents),
             Self::Streaming(plan) => Some(&plan.extents),
@@ -89,7 +89,7 @@ impl StaticPool {
 /// layer or the layer count the shelf allocator needs. The shadowmask drops
 /// to its placeholder alone when only its groups are unusable; the level then
 /// draws no static non-SDF world specular.
-pub(crate) fn plan_static_pool(
+pub fn plan_static_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
     payloads: &[LightmapBlockPayload],
@@ -146,7 +146,7 @@ pub(crate) fn plan_static_pool(
 /// a pair rather than grow past the device's layers. The shadowmask drops to
 /// its placeholder alone when the device cannot hold its two-group width; the
 /// level then draws no static non-SDF world specular.
-pub(crate) fn plan_streaming_pool(
+pub fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
     content_tag: [u8; 32],

@@ -74,6 +74,7 @@ pub(in crate::render::sh_streaming) fn initial_fixed_metadata_bytes(
 pub(super) fn preflight_initial_resource_limits(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
+    sparse_compose: &SparseComposeLayouts,
     shape: AtlasShape,
     sparse_capacities: &SparseCapacityFloors,
     limits: &wgpu::Limits,
@@ -103,24 +104,21 @@ pub(super) fn preflight_initial_resource_limits(
         });
     }
     preflight_sparse_carrier(
-        base,
-        sources.indirect_delta.as_ref(),
+        &sparse_compose.indirect,
         sparse_capacities.get(&27).copied(),
         limits,
         true,
     )?;
     if sources.direct_delta.is_some() || sources.animated_direct_delta.is_some() {
         preflight_sparse_carrier(
-            base,
-            sources.direct_delta.as_ref(),
+            planned_direct_layout(sparse_compose)?,
             sparse_capacities.get(&DIRECT_DELTA_SECTION).copied(),
             limits,
             false,
         )?;
-        if let Some(animated) = sources.animated_direct_delta.as_ref() {
+        if sources.animated_direct_delta.is_some() {
             preflight_sparse_carrier(
-                base,
-                Some(animated),
+                planned_animated_direct_layout(sparse_compose)?,
                 sparse_capacities
                     .get(&ANIMATED_DIRECT_DELTA_SECTION)
                     .copied(),
@@ -141,16 +139,42 @@ pub(super) fn preflight_initial_resource_limits(
     Ok(())
 }
 
+/// The planned direct-promotion layout; the plan derives it whenever any
+/// direct compose runs.
+pub(in crate::render::sh_streaming) fn planned_direct_layout(
+    layouts: &SparseComposeLayouts,
+) -> Result<&SparseComposeLayout, ShResidencyDrainError> {
+    layouts
+        .direct
+        .as_ref()
+        .ok_or(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed direct compose has no planned sparse layout",
+        })
+}
+
+/// The planned animated-direct layout; the plan derives it whenever id 45
+/// streams.
+pub(in crate::render::sh_streaming) fn planned_animated_direct_layout(
+    layouts: &SparseComposeLayouts,
+) -> Result<&SparseComposeLayout, ShResidencyDrainError> {
+    layouts
+        .animated_direct
+        .as_ref()
+        .ok_or(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed animated direct compose has no planned sparse layout",
+        })
+}
+
 fn preflight_sparse_carrier(
-    base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
+    layout: &SparseComposeLayout,
     sparse_floor: Option<(u32, u32)>,
     limits: &wgpu::Limits,
     has_descriptor_indices: bool,
 ) -> Result<(), ShResidencyDrainError> {
-    let (affinity_dims, _masks, _levels, descriptors, entries, tiles) =
-        sparse_compose_capacity(base, source, sparse_floor)?;
-    let rows = checked_cell_count(affinity_dims)?;
+    let descriptors = &layout.animation_descriptor_indices;
+    let entries = layout.entry_capacity(sparse_floor);
+    let tiles = layout.tile_f16_capacity(sparse_floor);
+    let rows = checked_cell_count(layout.affinity_dims)?;
     let grid_bytes = dynamic_grid_bytes(rows, limits)?;
     validate_uniform_limits(
         grid_bytes,
@@ -325,130 +349,4 @@ fn dynamic_grid_bytes(rows: u32, limits: &wgpu::Limits) -> Result<u64, ShResiden
         });
     }
     Ok(bytes)
-}
-
-/// Sparse compose allocation data: dimensions, probe masks, cell levels,
-/// animation descriptors, and entry/tile backing floors.
-type SparseComposeCapacity = ([u32; 3], Vec<u64>, Vec<u8>, Vec<u32>, u32, u32);
-
-pub(in crate::render::sh_streaming) fn sparse_compose_capacity(
-    base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
-    sparse_floor: Option<(u32, u32)>,
-) -> Result<SparseComposeCapacity, ShResidencyDrainError> {
-    if let Some(source) = source {
-        let cells = checked_cell_count(source.affinity_dims)?;
-        let cells_usize =
-            usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        if source.valid_probe_masks.len() != cells_usize
-            || source.cell_levels.len() != cells_usize
-            || source.affinity_offsets.len() != cells_usize.saturating_add(1)
-        {
-            return Err(ShResidencyDrainError::MalformedChunk {
-                cluster_id: 0,
-                reason: "streamed indirect sparse metadata has inconsistent row tables",
-            });
-        }
-        let entries = *source.affinity_offsets.last().unwrap_or(&0);
-        if usize::try_from(entries).ok() != Some(source.affinity_lights.len()) {
-            return Err(ShResidencyDrainError::MalformedChunk {
-                cluster_id: 0,
-                reason: "streamed indirect sparse metadata has inconsistent entry table",
-            });
-        }
-        if source
-            .affinity_offsets
-            .windows(2)
-            .any(|pair| pair[0] > pair[1])
-        {
-            return Err(ShResidencyDrainError::MalformedChunk {
-                cluster_id: 0,
-                reason: "streamed indirect sparse metadata offsets are not monotonic",
-            });
-        }
-        let stride = u32::try_from(delta_probe_f16_stride(source.tile_dimension))
-            .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let mut max_row_entries = 0u32;
-        let mut max_row_tile_f16 = 0u32;
-        for row in 0..cells_usize {
-            let level = Level::from_u8(source.cell_levels[row]).ok_or(
-                ShResidencyDrainError::MalformedChunk {
-                    cluster_id: 0,
-                    reason: "streamed indirect sparse metadata has invalid cell level",
-                },
-            )?;
-            let tiles = u32::try_from(stored_delta_tiles(level, source.valid_probe_masks[row]))
-                .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-            let row_entries = source.affinity_offsets[row + 1] - source.affinity_offsets[row];
-            let row_tiles = tiles
-                .checked_mul(stride)
-                .and_then(|count| count.checked_mul(row_entries))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?;
-            max_row_entries = max_row_entries.max(row_entries);
-            max_row_tile_f16 = max_row_tile_f16.max(row_tiles);
-        }
-        return Ok((
-            source.affinity_dims,
-            source.valid_probe_masks.clone(),
-            source.cell_levels.clone(),
-            source.animation_descriptor_indices.clone(),
-            // One largest canonical row is sufficient for the initial sparse
-            // floor. Pool growth adds backing rather than retaining every
-            // legacy CSR payload at level installation.
-            max_row_entries
-                .checked_add(1)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?
-                .max(sparse_floor.map_or(1, |floor| floor.0)),
-            max_row_tile_f16
-                .checked_add(max_row_tile_f16 & 1)
-                .and_then(|count| count.checked_add(2))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?
-                .max(sparse_floor.map_or(2, |floor| floor.1)),
-        ));
-    }
-
-    // Base-only streamed maps still use the indirect compose shader for the
-    // id-34 → total copy. Derive its cell metadata from the retained id-34
-    // projection instead of requiring a dummy id-27 body.
-    let dims = base.grid_dimensions.map(|axis| axis.div_ceil(4));
-    let cells = checked_cell_count(dims)?;
-    let cells_usize = usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-    let mut masks = vec![0u64; cells_usize];
-    let mut levels = vec![0u8; cells_usize];
-    let [width, height, _] = base.grid_dimensions;
-    let xy = width
-        .checked_mul(height)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    for (dense, probe) in base.probes.iter().enumerate() {
-        let dense = u32::try_from(dense).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let xyz = [dense % width, (dense / width) % height, dense / xy];
-        let cell_xyz = xyz.map(|axis| axis / 4);
-        let cell = cell_xyz[0]
-            .checked_add(
-                cell_xyz[1]
-                    .checked_mul(dims[0])
-                    .ok_or(ShResidencyDrainError::SlotOverflow)?,
-            )
-            .and_then(|index| {
-                index.checked_add(cell_xyz[2].checked_mul(dims[0].checked_mul(dims[1])?)?)
-            })
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let local = (xyz[0] % 4) + (xyz[1] % 4) * 4 + (xyz[2] % 4) * 16;
-        let cell_index = usize::try_from(cell).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        if probe.validity != 0 {
-            masks[cell_index] |= 1u64 << local;
-        }
-        levels[cell_index] = probe.density_level;
-    }
-    // Preserve the packed-u32 sentinel even when this base-only path never
-    // allocates delta row payloads. It keeps the CPU and GPU sparse pools on
-    // the same word-aligned address contract.
-    Ok((
-        dims,
-        masks,
-        levels,
-        vec![u32::MAX],
-        sparse_floor.map_or(1, |floor| floor.0).max(1),
-        sparse_floor.map_or(2, |floor| floor.1).max(2),
-    ))
 }

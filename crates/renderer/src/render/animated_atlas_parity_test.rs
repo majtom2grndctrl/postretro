@@ -414,7 +414,7 @@ fn run(
     .expect("parity scene builds a real compact atlas");
     assert!(resources.is_active(), "the scene must compose");
 
-    let table = animated_block_table_bytes(Some(section));
+    let table = animated_block_table_bytes(Some(section)).expect("a valid section packs");
     let table_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("parity block table"),
         contents: &table,

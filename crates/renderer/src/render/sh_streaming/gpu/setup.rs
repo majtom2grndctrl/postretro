@@ -15,6 +15,7 @@ impl StreamingGpuPools {
         queue: &wgpu::Queue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
+        sparse_compose: std::sync::Arc<SparseComposeLayouts>,
         initial_floor: super::super::floor::InitialPoolFloor,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
@@ -29,6 +30,7 @@ impl StreamingGpuPools {
         preflight_initial_resource_limits(
             base,
             sources,
+            &sparse_compose,
             shape,
             &initial_floor.sparse_capacities,
             limits,
@@ -39,6 +41,7 @@ impl StreamingGpuPools {
             queue,
             base,
             sources,
+            sparse_compose,
             shape,
             &initial_floor.sparse_capacities,
             probe_occlusion_enabled,
@@ -58,6 +61,7 @@ impl StreamingGpuPools {
         queue: &wgpu::Queue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
+        sparse_compose: std::sync::Arc<SparseComposeLayouts>,
         shape: AtlasShape,
         sparse_capacity_floors: &SparseCapacityFloors,
         probe_occlusion_enabled: bool,
@@ -276,6 +280,7 @@ impl StreamingGpuPools {
             &compose_indirection,
             sh,
             pipelines,
+            &sparse_compose.indirect,
             sparse_capacity_floors.get(&27).copied(),
         )?;
         let direct_compose = if direct_compose_required {
@@ -303,6 +308,7 @@ impl StreamingGpuPools {
                 &compose_indirection,
                 sh,
                 pipelines,
+                &sparse_compose,
                 sparse_capacity_floors,
             )?)
         } else {
@@ -449,6 +455,7 @@ impl StreamingGpuPools {
             shape.slots
         );
         Ok(Self {
+            sparse_compose,
             pipelines: pipelines.clone(),
             shape,
             limits: limits.clone(),

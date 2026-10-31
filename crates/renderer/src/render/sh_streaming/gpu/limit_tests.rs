@@ -27,6 +27,7 @@ fn replace_shape(
             raw,
             &fixture.map.base(),
             &fixture.map.sources(),
+            std::sync::Arc::clone(&fixture.state.sparse_compose),
             shape,
             &BTreeMap::new(),
             false,

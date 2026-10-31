@@ -57,7 +57,9 @@ fn a_streamed_level_cuts_its_fluid_on_the_manifest_base_lattice() {
         .clone();
     let payloads = world.take_gpu_lighting_payloads();
     let geometry = crate::render::level_world_to_geometry(&world, &[]);
-    renderer.install_level_geometry(&geometry, payloads);
+    renderer
+        .install_level_geometry(&geometry, payloads)
+        .expect("level resources install");
     assert!(!renderer.level().sh_volume_resources.present);
     assert_eq!(renderer.level().sh_volume_resources.grid_origin, [0.0; 3]);
 

@@ -11,7 +11,7 @@ use postretro_level_format::lightmap::{
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy};
 
-use super::plan::StaticPoolPlan;
+use postretro_render_cpu::lightmap_pool::StaticPoolPlan;
 
 /// BC texel block edge and bytes per BC6H / BC5 block.
 const BC_BLOCK_EDGE: u32 = 4;

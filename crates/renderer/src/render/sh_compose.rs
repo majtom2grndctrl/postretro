@@ -331,6 +331,13 @@ impl ShComposeResources {
         footprint.log("SH compose @group(1)");
 
         let device_limits = device.limits();
+        // Level data cannot reach the `expect` below. A present volume passed
+        // `check_sh_volume`, whose compose-grid check runs this builder's
+        // arithmetic (`dynamic_compose_grid_fits`, held equal by
+        // `dynamic_compose_grid_fits_matches_the_upload_builder`) over
+        // ceil(grid / 4); the loader pins id 27's `affinity_dims` to exactly
+        // that (`DeltaShAffinityDimsMismatch`). With no volume the grid is the
+        // 1×1×1 placeholder, which fits any WebGPU device.
         let grid_upload = build_dynamic_compose_grid_upload(
             ComposeGridParams {
                 grid_dimensions: sh.grid_dimensions,

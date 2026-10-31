@@ -6,7 +6,7 @@ use postretro_render_cpu::surface_depth::SurfaceReliefLevels;
 
 use super::{LoadedTexture, upload_texture_data};
 
-const PLACEHOLDER_SIZE: u32 = 64;
+const PLACEHOLDER_SIZE: u32 = postretro_render_cpu::texture_prep::PLACEHOLDER_DIFFUSE_SIZE;
 const CHECKER_SQUARE: u32 = 8;
 const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
 const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];

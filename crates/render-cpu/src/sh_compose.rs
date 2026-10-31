@@ -641,7 +641,9 @@ pub fn build_animated_direct_delta_buffers(
     }
 }
 
-fn affinity_dims_for_grid(grid_dimensions: [u32; 3]) -> [u32; 3] {
+/// The affinity grid over a probe grid: one row per 4×4×4 brick, at least one
+/// per axis.
+pub fn affinity_dims_for_grid(grid_dimensions: [u32; 3]) -> [u32; 3] {
     let factor = AFFINITY_FACTOR as u32;
     [
         grid_dimensions[0].div_ceil(factor).max(1),

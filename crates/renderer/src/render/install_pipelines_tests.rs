@@ -127,7 +127,9 @@ fn a_streamed_install_builds_no_pipeline() {
         let payloads = world.take_gpu_lighting_payloads();
         let geometry = crate::render::level_world_to_geometry(&world, &[]);
         let before = gpu_creation_counts();
-        renderer.install_level_geometry(&geometry, payloads);
+        renderer
+            .install_level_geometry(&geometry, payloads)
+            .expect("level resources install");
         let created = gpu_creation_counts().since(before);
         assert!(
             renderer.level().sh_streaming.is_some(),

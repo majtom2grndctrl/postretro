@@ -1,6 +1,8 @@
 // Animated lightmap debug configuration and CPU packing.
 // See: context/lib/rendering_pipeline.md §4
 
+pub mod plan;
+
 const DEBUG_MAX_LIGHTS_PER_CHUNK: u32 = 4;
 const DEBUG_ENV_VAR: &str = "POSTRETRO_ANIMATED_LM_DEBUG";
 

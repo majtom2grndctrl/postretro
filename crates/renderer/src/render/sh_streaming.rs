@@ -6,15 +6,13 @@
 //! indirection one drain behind the compose indirection.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use postretro_level_format::SectionId;
 #[cfg(test)]
 use postretro_level_format::cluster_directory::ClusterRangeRole;
+#[cfg(test)]
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
-use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
-use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_loader::{PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStreamManifest};
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
@@ -43,8 +41,6 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
-mod node_map;
-mod node_ownership;
 #[cfg(test)]
 mod node_ownership_tests;
 mod ownership;
@@ -61,6 +57,8 @@ mod rows;
 mod sample_region_index;
 mod sample_regions;
 mod setup;
+#[cfg(test)]
+pub(in crate::render) use setup::residency_plan_summary;
 mod sparse_install;
 #[cfg(test)]
 mod tests;
@@ -75,12 +73,10 @@ pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
 #[cfg(test)]
 pub(in crate::render) use gpu::write_nine_cluster_prl;
-use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
+use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
-use node_map::NodeMap;
-use node_ownership::{NodeOwnership, derive_node_ownership, derive_owner_dependencies};
-use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
+use ownership::{StoredNode, StoredNodeLayout, rewrite_slot};
 use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
@@ -105,10 +101,15 @@ const DIRECT_BASE_ID: u32 = SectionId::DirectShVolume as u32;
 const DIRECT_DELTA_ID: u32 = SectionId::DirectShDeltaVolumes as u32;
 const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as u32;
 
-/// Physical entry/f16 backing needed to install every owned row in one
-/// canonical cluster. Values include the allocator's missing-row sentinel
-/// and f16 word alignment, but never reserve all legacy CSR payloads.
-type SparseCapacityFloors = BTreeMap<u32, (u32, u32)>;
+pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
+use postretro_render_cpu::sh_residency::{
+    InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors, SparseComposeLayout,
+    SparseComposeLayouts,
+};
+#[cfg(test)]
+use postretro_render_cpu::sh_residency::{
+    plan_sh_residency, plan_sh_residency_parts, sparse_capacity_floors,
+};
 
 /// One streamed SH compose pass's current-frame work and remaining lag.
 ///
@@ -194,108 +195,6 @@ pub struct ShResidencySnapshot {
     pub compose_planning_cpu_micros: u64,
 }
 
-/// A malformed renderer handoff is never repaired by inventing an address.
-/// The loader has already validated the wire bytes; these errors therefore
-/// catch a violated lifetime/identity contract at the renderer boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShResidencyDrainError {
-    InvalidBatch(String),
-    ContentTagMismatch,
-    GenerationResetRequired {
-        expected: u64,
-        received: u64,
-    },
-    StaleGeneration {
-        current: u64,
-        received: u64,
-    },
-    InvalidTargetBitset,
-    TargetOutOfRange(u32),
-    DuplicateTargetDelta(u32),
-    MalformedChunk {
-        cluster_id: u32,
-        reason: &'static str,
-    },
-    MissingDenseOwner {
-        cluster_id: u32,
-        dense_index: u32,
-    },
-    SlotOverflow,
-    GpuCapacity {
-        reason: &'static str,
-    },
-    /// Only a growth whose required backing exceeds the captured device
-    /// limit. The drain consumes this internal verdict into `refused`.
-    GpuDeviceLimit {
-        reason: &'static str,
-    },
-    /// A valid replacement is waiting only for this family’s previous GPU
-    /// generation to drain. Unlike adapter limits, this is safe to retry
-    /// while retaining the loader-owned ready permit.
-    GpuRetirementPressure {
-        family: &'static str,
-    },
-    InvalidTargetResetLifecycle,
-}
-
-impl fmt::Display for ShResidencyDrainError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidBatch(reason) => write!(f, "invalid SH drain batch: {reason}"),
-            Self::ContentTagMismatch => {
-                write!(f, "SH drain content tag does not match renderer session")
-            }
-            Self::GenerationResetRequired { expected, received } => write!(
-                f,
-                "SH drain generation {received} replaced renderer generation {expected} without a target reset"
-            ),
-            Self::StaleGeneration { current, received } => write!(
-                f,
-                "SH drain generation {received} is older than active renderer generation {current}"
-            ),
-            Self::InvalidTargetBitset => write!(f, "SH drain target reset bitset is malformed"),
-            Self::TargetOutOfRange(id) => write!(f, "SH drain names out-of-range cluster {id}"),
-            Self::DuplicateTargetDelta(id) => write!(
-                f,
-                "SH drain names cluster {id} in conflicting target deltas"
-            ),
-            Self::MalformedChunk { cluster_id, reason } => {
-                write!(
-                    f,
-                    "SH cluster {cluster_id} has malformed renderer payload: {reason}"
-                )
-            }
-            Self::MissingDenseOwner {
-                cluster_id,
-                dense_index,
-            } => write!(
-                f,
-                "SH cluster {cluster_id} patches dense probe {dense_index} without a canonical owner"
-            ),
-            Self::SlotOverflow => write!(
-                f,
-                "SH streamed pool address exceeds probe indirection capacity"
-            ),
-            Self::GpuCapacity { reason } => {
-                write!(f, "SH streamed GPU pool capacity error: {reason}")
-            }
-            Self::GpuDeviceLimit { reason } => {
-                write!(f, "SH streamed GPU device limit: {reason}")
-            }
-            Self::GpuRetirementPressure { family } => write!(
-                f,
-                "SH streamed {family} pool growth waits for its retiring generation"
-            ),
-            Self::InvalidTargetResetLifecycle => write!(
-                f,
-                "SH drain must carry exactly one target reset when a generation begins"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ShResidencyDrainError {}
-
 impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
     fn from(error: crate::render::uploads::UploadError) -> Self {
         use crate::render::uploads::UploadError;
@@ -309,15 +208,6 @@ impl From<crate::render::uploads::UploadError> for ShResidencyDrainError {
                 reason: "streamed texture upload rows disagree with their payload",
             },
         }
-    }
-}
-
-impl ShResidencyDrainError {
-    /// Only a submitted replacement that is still fenced retains the ready
-    /// payload for this drain's retry. Device limits consume it into a refusal;
-    /// malformed shape and arithmetic guards remain fatal contract errors.
-    const fn is_retryable_retirement_pressure(&self) -> bool {
-        matches!(self, Self::GpuRetirementPressure { .. })
     }
 }
 
@@ -405,6 +295,11 @@ pub(super) struct ShResidencyState {
     indirect_compose_epoch: u64,
     direct_compose_epoch: u64,
     install_cpu: InstallCpuCounters,
+    /// The plan's dense slot minima, which size the first pool generation.
+    initial_dense_slots: InitialDenseSlots,
+    /// The plan's sparse compose layouts, shared with the GPU pools so pool
+    /// growth rebuilds carriers without re-deriving them.
+    sparse_compose: std::sync::Arc<SparseComposeLayouts>,
     gpu: Option<StreamingGpuPools>,
     #[cfg(feature = "dev-tools")]
     probe_readback: probe_readback::StreamedProbeReadback,
@@ -553,106 +448,6 @@ fn validate_generation_transition(
         return Err(ShResidencyDrainError::InvalidTargetResetLifecycle);
     }
     Ok(new_generation)
-}
-
-/// Derive an initial sparse backing floor from id-49 ownership, not from the
-/// complete legacy CSR body.  Each owner total represents the exact worst
-/// case for one ready cluster (multiple rows included), so a normal cluster
-/// cannot stall after its first row merely because its second row needs a
-/// separate allocation.  Later residency pressure grows the pool
-/// append-preservingly; this floor is deliberately bounded and never turns
-/// the streamed path into a whole-resident copy.
-fn sparse_capacity_floors(
-    sources: &postretro_level_loader::ShStreamSourceMetadata,
-    sparse_row_owner: &BTreeMap<(u32, u32), u32>,
-) -> Result<SparseCapacityFloors, ShResidencyDrainError> {
-    let mut by_owner = BTreeMap::<(u32, u32), (u32, u32)>::new();
-    for (&(section_id, row), &owner) in sparse_row_owner {
-        let source = match section_id {
-            INDIRECT_DELTA_ID => sources.indirect_delta.as_ref(),
-            DIRECT_DELTA_ID => sources.direct_delta.as_ref(),
-            ANIMATED_DIRECT_DELTA_ID => sources.animated_direct_delta.as_ref(),
-            _ => None,
-        }
-        .ok_or(ShResidencyDrainError::MalformedChunk {
-            cluster_id: owner,
-            reason: "id-49 names a sparse source omitted by stream metadata",
-        })?;
-        let index = usize::try_from(row).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let start =
-            *source
-                .affinity_offsets
-                .get(index)
-                .ok_or(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: owner,
-                    reason: "id-49 sparse row lacks a CSR start",
-                })?;
-        let end = *source.affinity_offsets.get(index + 1).ok_or(
-            ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "id-49 sparse row lacks a CSR end",
-            },
-        )?;
-        let level = Level::from_u8(*source.cell_levels.get(index).ok_or(
-            ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "id-49 sparse row lacks its reconstruction level",
-            },
-        )?)
-        .ok_or(ShResidencyDrainError::MalformedChunk {
-            cluster_id: owner,
-            reason: "id-49 sparse row has an invalid reconstruction level",
-        })?;
-        let mask =
-            *source
-                .valid_probe_masks
-                .get(index)
-                .ok_or(ShResidencyDrainError::MalformedChunk {
-                    cluster_id: owner,
-                    reason: "id-49 sparse row lacks its valid-probe mask",
-                })?;
-        let entries = end
-            .checked_sub(start)
-            .ok_or(ShResidencyDrainError::MalformedChunk {
-                cluster_id: owner,
-                reason: "streamed sparse CSR offsets are not monotonic",
-            })?;
-        let per_entry = u32::try_from(
-            stored_delta_tiles(level, mask)
-                .checked_mul(delta_probe_f16_stride(source.tile_dimension))
-                .ok_or(ShResidencyDrainError::SlotOverflow)?,
-        )
-        .map_err(|_| ShResidencyDrainError::SlotOverflow)?;
-        let tiles = entries
-            .checked_mul(per_entry)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        let total = by_owner.entry((section_id, owner)).or_insert((0, 0));
-        total.0 = total
-            .0
-            .checked_add(entries)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        total.1 = total
-            .1
-            .checked_add(tiles)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    }
-
-    let mut floors = SparseCapacityFloors::new();
-    for ((section_id, _), (entries, tiles)) in by_owner {
-        let floor = floors.entry(section_id).or_insert((1, 2));
-        floor.0 = floor.0.max(
-            entries
-                .checked_add(1)
-                .ok_or(ShResidencyDrainError::SlotOverflow)?,
-        );
-        let aligned_tiles = tiles
-            .checked_add(tiles & 1)
-            .and_then(|count| count.checked_add(2))
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-        floor.1 = floor.1.max(aligned_tiles);
-    }
-
-    Ok(floors)
 }
 
 fn validate_isolated_atlas_block(

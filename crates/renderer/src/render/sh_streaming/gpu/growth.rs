@@ -266,6 +266,7 @@ impl StreamingGpuPools {
                 &self.compose_indirection,
                 sh,
                 &pipelines,
+                &self.sparse_compose.indirect,
                 Some(floor),
             )?)
         } else {
@@ -328,6 +329,7 @@ impl StreamingGpuPools {
                     &self.compose_indirection,
                     sh,
                     &pipelines,
+                    &self.sparse_compose,
                     section_id,
                     floor,
                 )?;

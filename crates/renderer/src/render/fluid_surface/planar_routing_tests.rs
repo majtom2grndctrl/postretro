@@ -1,5 +1,6 @@
 use super::*;
 use crate::render::fluid_reflection_frame_test_fixtures::{green_probe, pool};
+use postretro_render_cpu::fluid_surface::pack_fluid_surfaces;
 
 // Runs follow plane identity: a probe-bound up-facing face at one height is
 // one run with that height, an unbound or down-facing face a run with none,

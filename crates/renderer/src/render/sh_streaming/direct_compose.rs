@@ -18,7 +18,10 @@ pub(super) use sparse::DirectSparseRowUpload;
 use sparse::{RetiredDirectSparseResources, checked_ledger_sum};
 
 use super::gpu::StagedUploads;
-use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors, StreamingShPipelines};
+use super::{
+    AtlasShape, ShResidencyDrainError, SparseCapacityFloors, SparseComposeLayouts,
+    StreamingShPipelines, gpu,
+};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
@@ -89,6 +92,7 @@ impl StreamingDirectCompose {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
+        sparse_compose: &SparseComposeLayouts,
         sparse_capacity_floors: &SparseCapacityFloors,
     ) -> Result<Self, ShResidencyDrainError> {
         let promotion_output = if sources.animated_direct_delta.is_some() {
@@ -104,7 +108,7 @@ impl StreamingDirectCompose {
             device,
             limits,
             base,
-            sources.direct_delta.as_ref(),
+            gpu::planned_direct_layout(sparse_compose)?,
             shape,
             views.base,
             promotion_output,
@@ -127,6 +131,7 @@ impl StreamingDirectCompose {
                 compose_indirection,
                 sh,
                 pipelines,
+                gpu::planned_animated_direct_layout(sparse_compose)?,
                 sparse_capacity_floors.get(&45).copied(),
             )?),
             None => None,
@@ -206,6 +211,7 @@ impl StreamingDirectCompose {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
+        sparse_compose: &SparseComposeLayouts,
         section_id: u32,
         sparse_floor: (u32, u32),
     ) -> Result<DirectSparseReplacement, ShResidencyDrainError> {
@@ -224,7 +230,7 @@ impl StreamingDirectCompose {
                     device,
                     limits,
                     base,
-                    sources.direct_delta.as_ref(),
+                    gpu::planned_direct_layout(sparse_compose)?,
                     shape,
                     views.base,
                     output,
@@ -259,6 +265,7 @@ impl StreamingDirectCompose {
                     compose_indirection,
                     sh,
                     pipelines,
+                    gpu::planned_animated_direct_layout(sparse_compose)?,
                     Some(sparse_floor),
                 )?;
                 self.animated

@@ -6,8 +6,8 @@ use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::sh_compose::ComposeGridParams;
 use postretro_render_cpu::sh_volume::STREAMED_SH_PHYSICAL_TILE_STRIDE;
 
-use super::super::ShResidencyDrainError;
 use super::super::gpu::StagedUploads;
+use super::super::{ShResidencyDrainError, SparseComposeLayout};
 use super::layout::{
     ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, debug_override_bytes, dynamic_grid_entry,
     light_term_mask_bytes, sampler_entry, storage_entry, storage_texture_entry, texture_entry,
@@ -68,7 +68,7 @@ impl StreamingPromotionPass {
         device: &wgpu::Device,
         limits: &wgpu::Limits,
         base: &ShStreamBaseMetadata,
-        source: Option<&ShStreamSparseMetadata>,
+        layout: &SparseComposeLayout,
         shape: AtlasShape,
         base_view: &wgpu::TextureView,
         output_storage: &wgpu::TextureView,
@@ -81,7 +81,7 @@ impl StreamingPromotionPass {
             device,
             limits,
             base,
-            source,
+            layout,
             shape,
             "Streamed Direct SH Promotion Grid Records",
             sparse_floor,
@@ -344,13 +344,14 @@ impl StreamingAnimatedPass {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         pipelines: &StreamingShPipelines,
+        layout: &SparseComposeLayout,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
             device,
             limits,
             base,
-            Some(source),
+            layout,
             shape,
             "Streamed Animated Direct SH Grid Records",
             sparse_floor,

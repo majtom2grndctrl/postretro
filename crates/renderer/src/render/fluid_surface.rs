@@ -9,12 +9,15 @@ use std::num::NonZeroU64;
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_render_cpu::fluid_surface::prepared::{
+    PreparedFluidSurfaces, prepare_fluid_surfaces,
+};
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::{
     FLUID_DRIFT_RATE_STRIDE, FLUID_PARAMS_STRIDE, FLUID_PARAMS_WINDOW_BYTES,
     FLUID_PROBE_INDEX_STRIDE, FLUID_SURFACE_VERTEX_STRIDE, FluidFaceDriftMap, FluidGridLattice,
     FluidShaderVariant, FluidSurfaceDraw, FluidSurfaceSlots, FluidSurfaceVolume, fill_drift_rates,
-    pack_fluid_surfaces, slot_window,
+    slot_window,
 };
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
@@ -467,19 +470,41 @@ impl FluidSurfacePass {
         material_count: usize,
         lattice: Option<&FluidGridLattice>,
     ) -> Option<InstalledFluidSurfaces> {
-        self.clear_level_targets(device);
-        let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count, lattice);
-        if mesh.indices.is_empty() {
-            return None;
-        }
-        let reflection_probes = installable_probe_section(reflection_probes);
-        let (probe_index_buffer, has_probe_bound_face) = create_probe_index_buffer(
-            device,
+        let diffuse_dims: Vec<(u32, u32)> = texture_dimensions
+            .iter()
+            .map(|&[width, height]| (width, height))
+            .collect();
+        let prepared = prepare_fluid_surfaces(
             volumes,
-            &mesh.face_drift_maps,
-            mesh.vertices.len(),
             reflection_probes,
+            &diffuse_dims,
+            material_count,
+            lattice,
         );
+        self.install_prepared(device, queue, prepared, volumes, reflection_probes)
+    }
+
+    /// The GPU half of [`Self::install`]: clear the previous level's targets,
+    /// then upload what prep packed. `None` (no surface face) allocates
+    /// nothing. `volumes` and `reflection_probes` are the ones `prepared` was
+    /// built from.
+    pub(crate) fn install_prepared(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &crate::render::uploads::UploadQueue,
+        prepared: Option<PreparedFluidSurfaces>,
+        volumes: &[EnvironmentVolumeRecord],
+        reflection_probes: Option<&ReflectionProbesSection>,
+    ) -> Option<InstalledFluidSurfaces> {
+        self.clear_level_targets(device);
+        let PreparedFluidSurfaces {
+            mesh,
+            probe_indices,
+            has_probe_bound_face,
+            planar_parts,
+        } = prepared?;
+        let reflection_probes = installable_probe_section(reflection_probes);
+        let probe_index_buffer = create_probe_index_buffer(device, &probe_indices);
         // An install-time upload takes the raw queue, as the SH atlases do.
         let probes = FluidProbeResources::new(device, queue.raw(), reflection_probes);
         let slots = FluidSurfaceSlots::new(&mesh.volumes);
@@ -545,7 +570,6 @@ impl FluidSurfacePass {
                 mesh.vertices.len(),
             ),
         }
-        let planar_parts = planar_routing::split_planar_ranges(&mesh, volumes, reflection_probes);
         let installed = InstalledFluidSurfaces {
             vertex_buffer,
             drift_buffer,
@@ -705,6 +729,26 @@ impl InstalledFluidSurfaces {
                 bytemuck::cast_slice(rows),
             );
         }
+    }
+}
+
+/// What prep decided, read back from the install: vertex count, index and
+/// probe-index buffer bytes, planar runs, whether a probe-bound face built
+/// the probe bind group, and the grid planes.
+#[cfg(test)]
+impl InstalledFluidSurfaces {
+    pub(crate) fn prep_summary(&self) -> String {
+        format!(
+            "{:?}",
+            (
+                self.drift_rates.len(),
+                self.index_buffer.size(),
+                self.probe_index_buffer.size(),
+                &self.planar_parts,
+                self.reflection_probe_bind_group.is_some(),
+                self.grid,
+            )
+        )
     }
 }
 

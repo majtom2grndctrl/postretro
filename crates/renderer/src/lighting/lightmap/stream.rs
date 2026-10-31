@@ -130,7 +130,12 @@ impl LightmapStreamState {
         plan: &StreamingPoolPlan,
         generation_floor: u64,
     ) -> Self {
-        // The spare layer takes one of the device's array layers.
+        // The spare layer takes one of the device's array layers. Level data
+        // cannot reach the `expect` below: only `plan_streaming_pool` builds a
+        // `StreamingPoolPlan`, after its `place_pool` placed these same
+        // extents with this same alignment (`block_alignment()` is at least 4,
+        // so the model's `max(1)` changes nothing) and refused the level
+        // otherwise. `with_layer_limit` fails only when that placement does.
         let model = LightmapPoolModel::with_layer_limit(
             plan.extents.clone(),
             plan.header.block_alignment(),

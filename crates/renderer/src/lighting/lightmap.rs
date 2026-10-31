@@ -4,7 +4,6 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 mod bindings;
-mod plan;
 mod pool;
 #[cfg(test)]
 mod pool_sample_test;
@@ -25,15 +24,18 @@ use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_t
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
 
+#[cfg(test)]
+pub(crate) use bindings::animated_block_table_bytes;
 use bindings::{ANIMATED_BLOCK_TABLE_BYTES, BIND_BLOCK_TABLE, Group4Bindings};
 pub(crate) use bindings::{
-    animated_block_table_bytes, bind_group_layout_entries, block_table_bind_group_layout_entries,
-    filtering_sampler_descriptor,
+    bind_group_layout_entries, block_table_bind_group_layout_entries, filtering_sampler_descriptor,
 };
-#[cfg(test)]
-pub(crate) use plan::StaticPoolPlan;
-pub(crate) use plan::{StaticPool, StreamingPoolPlan, plan_static_pool, plan_streaming_pool};
 pub(crate) use pool::upload_static_pool;
+#[cfg(test)]
+pub(crate) use postretro_render_cpu::lightmap_pool::StaticPoolPlan;
+pub(crate) use postretro_render_cpu::lightmap_pool::{StaticPool, StreamingPoolPlan};
+#[cfg(test)]
+pub(crate) use postretro_render_cpu::lightmap_pool::{plan_static_pool, plan_streaming_pool};
 use stream::{DrainEffects, LightmapStreamState};
 pub use stream::{LightmapResidencyDrainError, LightmapStreamCounters};
 pub(crate) use upload::upload_placeholder_shadowmask;

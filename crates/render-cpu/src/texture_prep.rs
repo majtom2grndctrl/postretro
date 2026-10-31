@@ -11,6 +11,10 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use crate::loaded_texture::{TextureSlotPlan, TextureSlotPolicy, texture_slot_plan};
 
+/// Edge of the checkerboard diffuse placeholder every unusable world or model
+/// material binds; UV normalize reads it for those materials.
+pub const PLACEHOLDER_DIFFUSE_SIZE: u32 = 64;
+
 /// One material's parsed sidecar, ready for the renderer's GPU pass. Owns its
 /// bytes, so it can cross threads.
 #[derive(Debug)]

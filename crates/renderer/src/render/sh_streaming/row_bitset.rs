@@ -29,6 +29,12 @@ impl RowBitSet {
         }
     }
 
+    /// Backing words: the row capacity this set was sized for, in 64s.
+    #[cfg(test)]
+    pub(super) fn word_count(&self) -> usize {
+        self.words.len()
+    }
+
     pub(super) fn contains(&self, row: &u32) -> bool {
         let (word, bit) = split(*row);
         self.words.get(word).is_some_and(|bits| bits & bit != 0)

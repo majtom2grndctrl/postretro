@@ -41,55 +41,22 @@ pub(super) fn plan_lightmap_family(
     let block_table_bgl = crate::lighting::lightmap::block_table_bind_group_layout(device);
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
     let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();
-    // One plan decides the static pool for both consumers: the animated
-    // atlas keys its blocks on the cell blocks the pool installs, and a
-    // placeholder or rejected pool leaves it no block frame.
-    let static_pool = match geometry.lightmap_streaming {
-        Some(streaming) => crate::lighting::lightmap::plan_streaming_pool(
-            geometry.lightmap,
-            geometry.shadowmask_atlas,
-            streaming.content_tag,
-            streaming.pool_cap_layers,
-            device.limits().max_texture_dimension_2d,
-            device.limits().max_texture_array_layers,
-        ),
-        None => crate::lighting::lightmap::plan_static_pool(
-            geometry.lightmap,
-            geometry.shadowmask_atlas,
-            &gpu_lighting_payloads.blocks,
-            device.limits().max_texture_dimension_2d,
-            device.limits().max_texture_array_layers,
-        ),
-    };
-
-    let animated_lightmap = animated_lightmap::with_dummy_fallback(
-        animated_lightmap::AnimatedLightmapResources::new(
-            device,
-            geometry.animated_light_weight_maps,
-            geometry.animated_light_chunks,
+    let cpu_plan = postretro_render_cpu::lightmap_family::plan_lightmap_family(
+        &lightmap_family_inputs(
+            geometry,
+            gpu_lighting_payloads,
             &bvh_leaves,
-            &sh_volume_resources.animation,
-            &pipelines.animated_lightmap,
-            static_pool.static_block_extents(),
-            animated_lm_debug,
+            sh_volume_resources.animation.animated_light_count(),
         ),
-        || {
-            animated_lightmap::AnimatedLightmapResources::dummy(
-                device,
-                &sh_volume_resources.animation,
-                animated_lm_debug,
-            )
-            .into_fallback()
-        },
-        "animated lightmap install",
+        &super::super::install_prep::device_limits(&device.limits()),
     );
-    // Built from the installed resource state: a dummy atlas gets an
-    // empty table, so no vertex applies a compact offset against it.
-    let animated_block_table = crate::lighting::lightmap::animated_block_table_bytes(
-        animated_lightmap::installed_block_table_section(
-            animated_lightmap.is_active(),
-            geometry.animated_light_weight_maps,
-        ),
+    let static_pool = cpu_plan.static_pool;
+    let (animated_lightmap, animated_block_table) = build_animated_lightmap(
+        device,
+        &sh_volume_resources.animation,
+        pipelines,
+        cpu_plan.animated,
+        animated_lm_debug,
     );
 
     (
@@ -101,6 +68,70 @@ pub(super) fn plan_lightmap_family(
             animated_block_table,
         },
         bvh_leaves,
+    )
+}
+
+/// The lightmap family's CPU plan inputs from this install's geometry.
+/// `animated_light_count` is the SH volume's animated descriptor count.
+pub(in crate::render) fn lightmap_family_inputs<'a>(
+    geometry: &LevelGeometry<'a>,
+    gpu_lighting_payloads: &'a postretro_level_loader::GpuLightingPayloads,
+    bvh_leaves: &'a [postretro_render_data::geometry::BvhLeaf],
+    animated_light_count: u32,
+) -> postretro_render_cpu::lightmap_family::LightmapFamilyInputs<'a> {
+    postretro_render_cpu::lightmap_family::LightmapFamilyInputs {
+        lightmap: geometry.lightmap,
+        shadowmask: geometry.shadowmask_atlas,
+        streaming: geometry.lightmap_streaming.map(|streaming| {
+            postretro_render_cpu::lightmap_family::LightmapStreamingInputs {
+                content_tag: streaming.content_tag,
+                pool_cap_layers: streaming.pool_cap_layers,
+            }
+        }),
+        payload_blocks: &gpu_lighting_payloads.blocks,
+        weight_maps: geometry.animated_light_weight_maps,
+        animated_chunks: geometry.animated_light_chunks,
+        bvh_leaves,
+        animated_light_count,
+    }
+}
+
+/// The animated atlas's GPU half and the forward block table that describes
+/// it. A rejected plan, or a build that fails, logs once and binds the
+/// fallback dummy with an empty table, so no vertex applies a compact offset
+/// against it.
+fn build_animated_lightmap(
+    device: &wgpu::Device,
+    animation: &sh_volume::AnimatedLightBuffers,
+    pipelines: &InstallPipelines,
+    plan: Result<postretro_render_cpu::animated_lightmap::plan::AnimatedLightmapPlan, String>,
+    animated_lm_debug: animated_lightmap::AnimatedLmDebugConfig,
+) -> (animated_lightmap::AnimatedLightmapResources, Vec<u8>) {
+    let built = plan.and_then(|plan| {
+        let block_table = plan.block_table_bytes();
+        animated_lightmap::AnimatedLightmapResources::from_plan(
+            device,
+            plan,
+            animation,
+            Some(&pipelines.animated_lightmap),
+            animated_lm_debug,
+        )
+        .map(|resources| (resources, block_table))
+    });
+    animated_lightmap::with_dummy_fallback(
+        built,
+        || {
+            (
+                animated_lightmap::AnimatedLightmapResources::dummy(
+                    device,
+                    animation,
+                    animated_lm_debug,
+                )
+                .into_fallback(),
+                postretro_render_cpu::animated_lightmap::plan::empty_animated_block_table(),
+            )
+        },
+        "animated lightmap install",
     )
 }
 

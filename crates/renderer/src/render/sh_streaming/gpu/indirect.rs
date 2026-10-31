@@ -67,11 +67,14 @@ impl StreamingIndirectCompose {
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
         pipelines: &super::super::StreamingShPipelines,
+        layout: &SparseComposeLayout,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let source = sources.indirect_delta.as_ref();
-        let (affinity_dims, masks, levels, descriptor_indices, entry_capacity, tile_f16_capacity) =
-            sparse_compose_capacity(base, source, sparse_floor)?;
+        let affinity_dims = layout.affinity_dims;
+        let descriptor_indices = layout.animation_descriptor_indices.clone();
+        let entry_capacity = layout.entry_capacity(sparse_floor);
+        let tile_f16_capacity = layout.tile_f16_capacity(sparse_floor);
         let cell_count = checked_cell_count(affinity_dims)?;
         let mut compaction_words = Vec::with_capacity(
             usize::try_from(cell_count)
@@ -79,11 +82,11 @@ impl StreamingIndirectCompose {
                 .saturating_mul(3)
                 .saturating_add(usize::try_from(entry_capacity).unwrap_or(usize::MAX)),
         );
-        for mask in masks {
+        for &mask in &layout.valid_probe_masks {
             compaction_words.push(mask as u32);
             compaction_words.push((mask >> 32) as u32);
         }
-        compaction_words.extend(levels.into_iter().map(u32::from));
+        compaction_words.extend(layout.cell_levels.iter().copied().map(u32::from));
         compaction_words.resize(
             compaction_words
                 .len()

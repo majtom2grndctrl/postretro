@@ -166,6 +166,8 @@ fn planar_recording_uses_only_the_frame_encoder() {
     let mut sources = vec![
         render.join("fluid_surface/planar_routing.rs"),
         render.join("renderer_mirror_lights.rs"),
+        // The per-draw plane routing's install-time split lives in render-cpu.
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../render-cpu/src/fluid_surface/prepared.rs"),
     ];
     let mut planar_files = Vec::new();
     source_files(&planar, &["rs"], &mut planar_files);

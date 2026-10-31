@@ -55,10 +55,12 @@ fn real_map_streamed_scene_stages_every_indirect_promotion_and_animated_writer()
     );
     renderer.normalize_world_uvs(&mut world);
     let lighting = world.take_gpu_lighting_payloads();
-    renderer.install_level_geometry(
-        &crate::render::level_world_to_geometry(&world, &materials),
-        lighting,
-    );
+    renderer
+        .install_level_geometry(
+            &crate::render::level_world_to_geometry(&world, &materials),
+            lighting,
+        )
+        .expect("level resources install");
     assert!(renderer.sh_residency_snapshot().is_some());
 
     // The actual loader reads each encoded chunk positionally and validates

@@ -78,7 +78,9 @@ fn install_range_rejection_preserves_offscreen_renderer_state() {
         ..geometry(&bvh)
     };
     validate_level_geometry_ranges(&bvh.leaves, indices.len()).unwrap();
-    renderer.install_level_geometry(&valid, Default::default());
+    renderer
+        .install_level_geometry(&valid, Default::default())
+        .expect("level resources install");
     let index_buffer = renderer.level().index_buffer.clone();
     let vertex_buffer = renderer.level().vertex_buffer.clone();
     let leaf_buffer = renderer
@@ -100,7 +102,9 @@ fn install_range_rejection_preserves_offscreen_renderer_state() {
     // Direct callers keep a debug assertion as defense in depth, before the
     // installation scope, pool resets, or any resource replacement.
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        renderer.install_level_geometry(&invalid, Default::default());
+        renderer
+            .install_level_geometry(&invalid, Default::default())
+            .expect("level resources install");
     }));
     assert!(rejected.is_err());
     assert_eq!(renderer.level().index_buffer, index_buffer);

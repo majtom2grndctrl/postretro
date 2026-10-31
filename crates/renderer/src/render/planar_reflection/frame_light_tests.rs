@@ -133,38 +133,40 @@ fn install_lit_quads(renderer: &mut Renderer, quads: &[WorldQuad], lights: &[Map
             radius: light.falloff_range,
         })
         .collect();
-    renderer.install_level_geometry(
-        &crate::render::LevelGeometry {
-            vertices: &vertices,
-            vertex_spec_owners: &[],
-            indices: &indices,
-            bvh: &bvh,
-            lights,
-            light_influences: &influences,
-            sh_volume: None,
-            sh_storage: crate::render::LevelGeometryShStorage::Legacy,
-            lightmap: None,
-            lightmap_streaming: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            direct_sh_delta_volumes: None,
-            animated_direct_sh_delta_volumes: None,
-            billboard_direct_scatter_volume: None,
-            animated_billboard_direct_scatter_delta_volumes: None,
-            entity_shadow_lights: &[],
-            shadowmask_atlas: None,
-            sdf_atlas: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            cell_draw_index: None,
-            kinematic_geometry: None,
-            cells: &cells,
-            texture_materials: &[],
-        },
-        Default::default(),
-    );
+    renderer
+        .install_level_geometry(
+            &crate::render::LevelGeometry {
+                vertices: &vertices,
+                vertex_spec_owners: &[],
+                indices: &indices,
+                bvh: &bvh,
+                lights,
+                light_influences: &influences,
+                sh_volume: None,
+                sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                lightmap: None,
+                lightmap_streaming: None,
+                chunk_light_list: None,
+                animated_light_chunks: None,
+                animated_light_weight_maps: None,
+                delta_sh_volumes: None,
+                direct_sh_volume: None,
+                direct_sh_delta_volumes: None,
+                animated_direct_sh_delta_volumes: None,
+                billboard_direct_scatter_volume: None,
+                animated_billboard_direct_scatter_delta_volumes: None,
+                entity_shadow_lights: &[],
+                shadowmask_atlas: None,
+                sdf_atlas: None,
+                lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+                cell_draw_index: None,
+                kinematic_geometry: None,
+                cells: &cells,
+                texture_materials: &[],
+            },
+            Default::default(),
+        )
+        .expect("level resources install");
 }
 
 /// The receiver: the magenta mover panel, doubled to 2.8 m × 3.6 m, standing

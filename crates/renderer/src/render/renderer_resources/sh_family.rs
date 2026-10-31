@@ -38,7 +38,8 @@ pub(super) fn install_sh_volume(
     level_light_count: usize,
     animated_baked_descriptor_indices: &[u32],
     promoted_static_weight_buffer: &wgpu::Buffer,
-) -> LevelShVolume {
+    sh_plan: Option<postretro_render_cpu::sh_residency::ShResidencyPlan>,
+) -> Result<LevelShVolume, sh_streaming::ShResidencyDrainError> {
     // --- SH volume, sh_compose, lightmap, animated lightmap ---
     // This ledger is intentionally scoped to one level install. Every SH
     // constructor records the exact descriptor it sends to wgpu, and the
@@ -76,32 +77,40 @@ pub(super) fn install_sh_volume(
         &mut sh_allocation_ledger,
     );
 
-    let sh_streaming = streaming_manifest.map(|manifest| {
-        sh_streaming::ShResidencyState::from_manifest(manifest, geometry.cells)
-            .and_then(|mut state| {
-                state.initialize_gpu(
-                    device,
-                    queue.raw(),
-                    manifest,
-                    probe_occlusion_enabled,
-                    &mut sh_volume_resources,
-                    &pipelines.sh_streaming,
-                    promoted_static_weight_buffer,
-                )?;
-                Ok(state)
-            })
-            // A streamed level deliberately omits the legacy bodies.
-            // Continuing with dummy legacy bindings here would make a
-            // valid map silently render unlit, which is substantially
-            // worse than a named, fail-fast level-install error.
-            .unwrap_or_else(|error| panic!("cannot install streamed SH level resources: {error}"))
-    });
+    // The plan already ran every level-data check; what can still fail
+    // here is the first pool generation against the device and the live
+    // buffer sizes. Either way the error fails the load.
+    let sh_streaming = match (streaming_manifest, sh_plan) {
+        (Some(manifest), Some(plan)) => {
+            let mut state = sh_streaming::ShResidencyState::from_plan(
+                plan,
+                manifest.base(),
+                manifest.sources(),
+            );
+            state.initialize_gpu(
+                device,
+                queue.raw(),
+                manifest,
+                probe_occlusion_enabled,
+                &mut sh_volume_resources,
+                &pipelines.sh_streaming,
+                promoted_static_weight_buffer,
+            )?;
+            Some(state)
+        }
+        (None, None) => None,
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(sh_streaming::ShResidencyDrainError::InvalidBatch(
+                "a streamed level installs with exactly its residency plan".to_owned(),
+            ));
+        }
+    };
 
-    LevelShVolume {
+    Ok(LevelShVolume {
         sh_volume_resources,
         sh_streaming,
         ledger: sh_allocation_ledger,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

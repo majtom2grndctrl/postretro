@@ -3365,11 +3365,21 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
             "self.set_reflection_target(device,self.wanted_reflection_target(installed));"
         )
     );
+    // `install` is prep then the GPU half; the GPU half clears the previous
+    // level's targets before anything else and re-keys the target last.
     let install = code_only(wgsl_fn(source, "install"));
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
     ));
-    assert!(install.contains("self.clear_level_targets(device);"));
+    assert!(
+        install
+            .ends_with("self.install_prepared(device,queue,prepared,volumes,reflection_probes)}")
+    );
+    let install = code_only(wgsl_fn(source, "install_prepared"));
+    assert!(install.starts_with(
+        "fninstall_prepared(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
+    ));
+    assert!(install.contains("->Option<InstalledFluidSurfaces>{self.clear_level_targets(device);"));
     assert!(install.ends_with(
         "self.set_reflection_target(device,self.wanted_reflection_target(Some(&installed)));\
          Some(installed)}"
@@ -3697,6 +3707,11 @@ fn fluid_pass_declares_no_history_or_precomputed_intersection_binding() {
         (
             "fluid_reflection_probes.rs",
             include_str!("fluid_reflection_probes.rs"),
+        ),
+        // The install's CPU half: mesh packing, probe indices, planar runs.
+        (
+            "render-cpu fluid_surface/prepared.rs",
+            include_str!("../../../render-cpu/src/fluid_surface/prepared.rs"),
         ),
         (
             "fluid_scene_inputs.rs",

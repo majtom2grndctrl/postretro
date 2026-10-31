@@ -16,6 +16,7 @@ use super::level_resource_set::{LevelSetId, PreviousLevelSet};
 use super::renderer_types::FullRenderer;
 use super::smoke::SpriteCollectionAssetSource;
 use super::*;
+use postretro_render_cpu::sh_residency::{ShResidencyDrainError, ShResidencyPlan};
 
 /// Discard the cull-split per-frame mover inputs when level geometry changes.
 fn clear_kinematic_mover_frame_state(
@@ -103,7 +104,10 @@ impl Renderer {
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
-    ) {
+    ) -> Result<(), LevelInstallError> {
+        // Every check that can fail on the level's data runs before the
+        // previous set is touched.
+        let sh_plan = plan_level_sh_residency(geometry)?;
         let full = self.full_mut();
         let fog_pixel_scale = match full.level.as_mut() {
             Some(previous) => {
@@ -116,8 +120,10 @@ impl Renderer {
             }
             None => DEFAULT_LEVEL_FOG_PIXEL_SCALE,
         };
-        let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale);
+        let id =
+            self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale, sh_plan)?;
         self.publish_level_set(id, PreviousLevelSet::Retire);
+        Ok(())
     }
 
     /// Build one level's renderer resources into a fresh, unpublished set
@@ -135,20 +141,26 @@ impl Renderer {
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
-    ) -> LevelSetId {
+    ) -> Result<LevelSetId, LevelInstallError> {
+        let sh_plan = plan_level_sh_residency(geometry)?;
         self.build_level_set_at(
             geometry,
             gpu_lighting_payloads,
             DEFAULT_LEVEL_FOG_PIXEL_SCALE,
+            sh_plan,
         )
     }
 
+    /// `sh_plan` is the streamed level's residency plan (`None` for a legacy
+    /// level). On `Err` no set exists and the staged materials, models and
+    /// sprite collections stay staged for the next build.
     fn build_level_set_at(
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
         fog_pixel_scale: u32,
-    ) -> LevelSetId {
+        sh_plan: Option<ShResidencyPlan>,
+    ) -> Result<LevelSetId, LevelInstallError> {
         debug_assert!(
             validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
             "level geometry must pass the indirect index-range check before installation"
@@ -179,16 +191,6 @@ impl Renderer {
         let has_multi_draw_indirect = *has_multi_draw_indirect;
         let requested_spot_resolution = *spot_shadow_map_resolution;
 
-        let textures = match full.pending_textures.take() {
-            Some(textures) => textures,
-            None => super::renderer_textures::placeholder_level_textures(
-                device,
-                queue.raw(),
-                full,
-                surface_depth_quality,
-            ),
-        };
-
         let world = world_geometry::install_world_buffers(device, geometry);
         let (lights, selection) = lights::install_level_lights(device, geometry);
         let level_light_count = selection.level_light_count;
@@ -218,7 +220,20 @@ impl Renderer {
             level_light_count,
             animated_baked_descriptor_indices,
             &promoted.promoted_static_weight_buffer,
-        );
+            sh_plan,
+        )
+        .map_err(LevelInstallError::StreamedSh)?;
+        // Past the last step that can fail, so a failed build leaves the
+        // staged materials for the next one.
+        let textures = match full.pending_textures.take() {
+            Some(textures) => textures,
+            None => super::renderer_textures::placeholder_level_textures(
+                device,
+                queue.raw(),
+                full,
+                surface_depth_quality,
+            ),
+        };
         let (mesh_lights, kinematic_lights) = lights::rebind_mesh_light_groups(
             device,
             full,
@@ -403,7 +418,7 @@ impl Renderer {
                     .len(),
             );
         }
-        id
+        Ok(id)
     }
 }
 
@@ -457,6 +472,43 @@ fn reset_level_frame_state(full: &mut FullRenderer) {
         &mut full.kinematic_mover_shadow_draws,
         &mut full.mover_occluder_aabbs,
     );
+}
+
+/// Why a level's renderer resources could not be built. Every variant is a
+/// load failure: no set exists, and the caller fails the load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LevelInstallError {
+    /// The streamed-SH residency plan rejected the level's data, or its
+    /// first pool generation does not fit the device.
+    StreamedSh(ShResidencyDrainError),
+}
+
+impl std::fmt::Display for LevelInstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StreamedSh(error) => {
+                write!(f, "cannot install streamed SH level resources: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LevelInstallError {}
+
+/// The streamed level's residency plan, or `None` for a legacy level. A
+/// streamed level deliberately omits the legacy SH bodies, so a rejected
+/// plan fails the install rather than rendering the level unlit.
+fn plan_level_sh_residency(
+    geometry: &LevelGeometry<'_>,
+) -> Result<Option<ShResidencyPlan>, LevelInstallError> {
+    match &geometry.sh_storage {
+        LevelGeometryShStorage::Legacy => Ok(None),
+        LevelGeometryShStorage::Streaming(manifest) => {
+            postretro_render_cpu::sh_residency::plan_sh_residency(manifest, geometry.cells)
+                .map(Some)
+                .map_err(LevelInstallError::StreamedSh)
+        }
+    }
 }
 
 #[cfg(test)]

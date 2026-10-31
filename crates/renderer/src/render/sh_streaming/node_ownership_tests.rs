@@ -8,11 +8,11 @@ use postretro_level_format::cluster_directory::{
     ClusterResourceRecord,
 };
 
-use super::node_ownership::{derive_node_ownership, derive_owner_dependencies};
 use super::ownership::equivalence_tests::{
     GRID_SHAPES, Rng, base_with_probes, key_variants, oracle_derive, synthetic_probes,
 };
 use super::*;
+use postretro_render_cpu::sh_residency::{derive_node_ownership, derive_owner_dependencies};
 
 type OracleOwnership = (BTreeMap<StoredNode, u32>, BTreeMap<u32, Vec<StoredNode>>);
 

@@ -1,27 +1,21 @@
-//! Load-time affinity-row indexes for the sampled-row gate, and the per-frame
-//! resolver that reads them.
+//! The per-frame resolver over the residency plan's load-time sample-region
+//! tables (`postretro_render_cpu::sh_residency::SampleRegionTables`).
 //! See: context/lib/rendering_pipeline.md §4 "Sampled-row compose"
 //!
-//! Two things the gate needs never change after load: each row's scaled-node
-//! writer (a function of the static dense layout) and the rows a runtime
-//! cell's dilated bounds cover. Both are cached here, before residency
-//! filtering, so a frame pays only for the rows it lists plus the bricks of
-//! its dynamic (mover and mesh) regions. Dropped with `ShResidencyState`.
+//! The tables cache each row's scaled-node writer and the rows every runtime
+//! cell's dilated bounds cover, so a frame pays only for the rows it lists
+//! plus the bricks of its dynamic (mover and mesh) regions. Dropped with
+//! `ShResidencyState`.
 
+use postretro_render_cpu::sh_residency::SampleRegionTables;
 use postretro_visibility::VisibleCells;
 
 use super::row_bitset::RowBitSet;
-use super::sample_regions::{
-    SampleRegionGrid, affinity_row, brick_rows_in, region_brick_bounds, scaled_writer_row,
-};
+#[cfg(test)]
+use super::sample_regions::{SampleRegionGrid, scaled_writer_row};
+use super::sample_regions::{affinity_row, brick_rows_in, region_brick_bounds};
 use super::*;
 use crate::render::ShSampleRegion;
-
-const NO_WRITER: u32 = u32::MAX;
-/// `scaled_writer_row` rejected the row's layout as having several writers.
-const MULTIPLE_WRITERS: u32 = u32::MAX - 1;
-/// `scaled_writer_row` rejected the row's address arithmetic.
-const WRITER_OVERFLOW: u32 = u32::MAX - 2;
 
 /// One frame's view-dependent gate inputs.
 #[derive(Clone, Copy)]
@@ -39,16 +33,7 @@ pub(super) struct GateInputs<'a> {
 }
 
 pub(super) struct SampleRegionIndex {
-    origin: [f32; 3],
-    cell_size: [f32; 3],
-    dimensions: [u32; 3],
-    /// Per affinity row: its canonical scaled-node writer, `NO_WRITER`, or
-    /// the error `scaled_writer_row` returns for it.
-    writer_rows: Vec<u32>,
-    /// CSR over runtime cells: the rows each cell's dilated bounds cover,
-    /// regardless of residency.
-    cell_row_offsets: Vec<u32>,
-    cell_rows: Vec<u32>,
+    tables: SampleRegionTables,
     /// Dedup scratch: an entry equals `stamp` once seen this frame.
     row_stamps: Vec<u32>,
     cell_stamps: Vec<u32>,
@@ -56,76 +41,34 @@ pub(super) struct SampleRegionIndex {
 }
 
 impl SampleRegionIndex {
-    /// Cannot fail for a valid dense layout: bricks clamp to the grid, and
-    /// row counts derive from the same layout as the writer lookups below.
-    /// An error here now surfaces at level install (`install_level_geometry`
-    /// panics) rather than on the first frame that touches the row.
+    /// Build the tables here: test fixtures that hand-build a state.
+    #[cfg(test)]
     pub(super) fn build(
         grid: &SampleRegionGrid<'_>,
         cell_bounds: impl ExactSizeIterator<Item = ShSampleRegion>,
     ) -> Result<Self, ShResidencyDrainError> {
-        let row_count = grid
-            .dimensions
-            .iter()
-            .try_fold(1u32, |rows, dimension| {
-                rows.checked_mul(dimension.div_ceil(4))
-            })
-            // An unaddressable row space makes every writer lookup fail, as
-            // `scaled_writer_row` does; the empty cache reproduces that.
-            .unwrap_or(0);
-        if row_count > WRITER_OVERFLOW {
-            return Err(ShResidencyDrainError::SlotOverflow);
-        }
-        let writer_rows = (0..row_count)
-            .map(|row| match scaled_writer_row(grid, row) {
-                Ok(Some(writer)) => writer,
-                Ok(None) => NO_WRITER,
-                Err(ShResidencyDrainError::SlotOverflow) => WRITER_OVERFLOW,
-                Err(_) => MULTIPLE_WRITERS,
-            })
-            .collect();
+        SampleRegionTables::build(grid, cell_bounds).map(Self::from_tables)
+    }
 
-        let cell_count = cell_bounds.len();
-        let mut cell_row_offsets = Vec::with_capacity(cell_count + 1);
-        let mut cell_rows = Vec::new();
-        cell_row_offsets.push(0);
-        for bounds in cell_bounds {
-            if let Some(bricks) =
-                region_brick_bounds(grid.origin, grid.cell_size, grid.dimensions, bounds)
-            {
-                for brick in brick_rows_in(bricks) {
-                    cell_rows.push(affinity_row(brick, grid.dimensions)?);
-                }
-            }
-            cell_row_offsets.push(
-                u32::try_from(cell_rows.len()).map_err(|_| ShResidencyDrainError::SlotOverflow)?,
-            );
-        }
-
-        Ok(Self {
-            origin: grid.origin,
-            cell_size: grid.cell_size,
-            dimensions: grid.dimensions,
-            writer_rows,
-            cell_row_offsets,
-            cell_rows,
-            row_stamps: vec![0; row_count as usize],
-            cell_stamps: vec![0; cell_count],
+    /// The resolver over tables the residency plan built.
+    pub(super) fn from_tables(tables: SampleRegionTables) -> Self {
+        Self {
+            row_stamps: vec![0; tables.row_count()],
+            cell_stamps: vec![0; tables.cell_count()],
             stamp: 0,
-        })
+            tables,
+        }
     }
 
     /// The canonical scaled-node writer of `row`, exactly as
     /// `scaled_writer_row` would compute it from the static dense layout.
     pub(super) fn writer_row(&self, row: u32) -> Result<Option<u32>, ShResidencyDrainError> {
-        match self.writer_rows.get(row as usize).copied() {
-            None | Some(WRITER_OVERFLOW) => Err(ShResidencyDrainError::SlotOverflow),
-            Some(MULTIPLE_WRITERS) => Err(ShResidencyDrainError::GpuCapacity {
-                reason: "one affinity row resolves to multiple scaled-node writers",
-            }),
-            Some(NO_WRITER) => Ok(None),
-            Some(writer) => Ok(Some(writer)),
-        }
+        self.tables.writer_row(row)
+    }
+
+    #[cfg(test)]
+    pub(super) fn tables(&self) -> &SampleRegionTables {
+        &self.tables
     }
 
     /// Gate rows for one frame: resident rows under any input region, closed
@@ -166,9 +109,7 @@ impl SampleRegionIndex {
                 continue;
             }
             *cell_stamp = stamp;
-            let start = self.cell_row_offsets[cell as usize] as usize;
-            let end = self.cell_row_offsets[cell as usize + 1] as usize;
-            for &row in &self.cell_rows[start..end] {
+            for &row in self.tables.cell_rows(cell as usize) {
                 if is_resident(row) && first_sight(&mut self.row_stamps, stamp, row)? {
                     rows.push(row);
                 }
@@ -176,13 +117,16 @@ impl SampleRegionIndex {
         }
 
         for &region in inputs.dynamic_regions {
-            let Some(bricks) =
-                region_brick_bounds(self.origin, self.cell_size, self.dimensions, region)
-            else {
+            let Some(bricks) = region_brick_bounds(
+                self.tables.origin,
+                self.tables.cell_size,
+                self.tables.dimensions,
+                region,
+            ) else {
                 continue;
             };
             for brick in brick_rows_in(bricks) {
-                let row = affinity_row(brick, self.dimensions)?;
+                let row = affinity_row(brick, self.tables.dimensions)?;
                 if is_resident(row) && first_sight(&mut self.row_stamps, stamp, row)? {
                     rows.push(row);
                 }
@@ -192,7 +136,7 @@ impl SampleRegionIndex {
         #[cfg(feature = "dev-tools")]
         if let Some(bricks) = inputs.probe_bricks {
             for brick in brick_rows_in(bricks) {
-                let row = affinity_row(brick, self.dimensions)?;
+                let row = affinity_row(brick, self.tables.dimensions)?;
                 if is_resident(row) && first_sight(&mut self.row_stamps, stamp, row)? {
                     rows.push(row);
                 }

@@ -99,10 +99,12 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
     );
     renderer.normalize_world_uvs(&mut world);
     let lighting = world.take_gpu_lighting_payloads();
-    renderer.install_level_geometry(
-        &crate::render::level_world_to_geometry(&world, &materials),
-        lighting,
-    );
+    renderer
+        .install_level_geometry(
+            &crate::render::level_world_to_geometry(&world, &materials),
+            lighting,
+        )
+        .expect("level resources install");
     assert!(
         renderer.level().sdf_atlas_resources.present,
         "normal install must upload the valid SDF fixture"

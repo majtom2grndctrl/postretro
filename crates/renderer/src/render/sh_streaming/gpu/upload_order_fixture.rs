@@ -86,6 +86,7 @@ impl UploadOrderSh {
                 queue,
                 &fixture.map.base(),
                 &fixture.map.sources(),
+                std::sync::Arc::clone(&fixture.state.sparse_compose),
                 crate::render::sh_streaming::floor::InitialPoolFloor {
                     dense_slots,
                     whole_dense_slots: 128,

@@ -408,12 +408,6 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) fog: FogPass,
 }
 
-/// A streamed level's base lattice wins: its legacy resources still hold the
-/// placeholder (origin 0, 1 m cells), which no sampler reads.
-pub(in crate::render) fn sh_sampler_lattice(
-    streamed: Option<([f32; 3], [f32; 3])>,
-    legacy: Option<([f32; 3], [f32; 3])>,
-) -> Option<postretro_render_cpu::fluid_surface::FluidGridLattice> {
-    let (origin, cell_size) = streamed.or(legacy)?;
-    postretro_render_cpu::fluid_surface::FluidGridLattice::new(origin, cell_size)
-}
+// A streamed level's base lattice wins: its legacy resources still hold the
+// placeholder (origin 0, 1 m cells), which no sampler reads.
+pub(in crate::render) use postretro_render_cpu::sh_volume::sh_sampler_lattice;

@@ -1,0 +1,18 @@
+{
+ "map": "content/dev/maps/ab-whiteroom-fill-0.prl",
+ "camera": {
+  "position": [
+   -4.5,
+   1.6,
+   -4.5
+  ],
+  "yaw_deg": 225.0,
+  "pitch_deg": -5.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/raw/whiteroom-w2-far-corner-full-fill-0.png"
+}

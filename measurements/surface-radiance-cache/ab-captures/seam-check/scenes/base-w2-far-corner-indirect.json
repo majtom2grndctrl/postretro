@@ -1,0 +1,19 @@
+{
+ "map": "content/dev/maps/ab-whiteroom-base.prl",
+ "camera": {
+  "position": [
+   -4.5,
+   1.6,
+   -4.5
+  ],
+  "yaw_deg": 225.0,
+  "pitch_deg": -5.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/seam-check/raw/base-w2-far-corner-indirect.png",
+ "light_term_mask": 2
+}

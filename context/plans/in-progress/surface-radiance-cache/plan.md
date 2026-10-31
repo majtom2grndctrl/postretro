@@ -1,7 +1,7 @@
 # surface-radiance-cache — plan of record
 
 mode: resumable
-status: approved
+status: approved — built; awaiting owner manual rows and "land the plane"
 read at: d2bda6032
 
 Source re-verified at d2bda6032. The only level-compiler commit since the brief's `faaaf8680` is 097b9fa18 (probe-point embedded emitters, the "lands first" dependency). No Decision premise is false.
@@ -51,47 +51,47 @@ Source re-verified at d2bda6032. The only level-compiler commit since the brief'
 
 ## AC-to-proof
 
-| AC | Row (short) | Proof | Status |
-|---|---|---|---|
-| 1 | Parity p50/p99/max ≤ BC6H encode error; control beside | `bounce_parity_on_real_maps` (cache vs reference), campaign-test + fixture room (`#[ignore]`, run on demand) | achievable as stated |
-| 2 | Mean signed rel. error ±1%; back-face hits within bound | same harness + back-face fixture test | achievable as stated |
-| 3 | Embedded fixture: flagged point + flagged sdf light match no-early-out ref; ids 35/41/47/48 + keys + warnings = base; sdf flag warns once naming bounce | bin fixture test + `cmp` vs base-commit PRL + log capture | achievable as stated |
-| 4 | Gather traces no shadow ray; spacing/rays change leaves count unchanged | cfg(test) counters + grep gate on gather path | achievable as stated |
-| 5 | Doubling lights leaves gather/lookup counts; patch-direct evals = Σ reach | cfg(test) counters | achievable as stated |
-| 6 | Bounce-lit room brighter; beyond-reach probe nonzero at fill 1, zero at 0; open-space change < bound | bin fixture tests | achievable as stated |
-| 7 | Energy per bounce decreases (albedo < 1); closed albedo-1 room finite, non-rising | bin fixture tests, area-weighted patch energy | achievable as stated |
-| 8 | Fill 0 = single-bounce bytes; fill 1 = unscaled sum; between, per channel | bin tests | achievable as stated |
-| 9 | Warm id 34 = cold across the listed edit sequence; probe beyond 16 m reach | CLI warm/cold `cmp` suite (`tests/`) over a purpose-built fixture | achievable as stated |
-| 10 | One light edit re-shades only its layer; re-gather no shadow ray; reorder/no edit hits all | bin counters + cache access log | achievable as stated |
-| 11 | Remove/insert/duplicate/unique-reach/flip-to-animated: unchanged layers hit, byte-equal cold | bin tests | achievable as stated |
-| 12 | Flagged light into/out of wall; floor toggle; sample-count change | bin tests (cache access by stage) | achievable as stated |
-| 13 | Reversed order → identical id-34 tiles + moments; duplicate doubles radiance; warm duplicate misses id-34 entry | bin tests | achievable as stated |
-| 14 | Geometry/texture-mean/saturation re-key all; restore hits; `_bounce_fill` re-shades no layer | bin tests (precedent `colour_key_tests.rs`) | achievable as stated |
-| 15 | Animated-only edit re-shades no layer; descriptors/slot table = cold | bin tests | achievable as stated |
-| 16 | Layer removed/corrupted/unfinished (enter hook) re-shades alone; A-B-A revert; eviction moves hits, not bytes | bin tests with governor enter hook + cache tamper | achievable as stated |
-| 17 | Empty cache / after `--release` only → misses, release bytes; first build after change misses old id-34 | CLI tests + stage-version bump | achievable as stated |
-| 18 | Light with no patch in reach: no layer, id 34 unchanged | bin test | achievable as stated |
-| 19 | `_bounce_fill` in FGD + `docs/level_design.md`; invalid → default + warn once, cold/warm/hit | parse tests + CLI log capture + doc grep | achievable as stated |
-| 20 | Knob gate admits `_bounce_fill` only; no bounce/albedo/saturation flag | `tests/coloured_bounce_source_gates.rs` amended | achievable as stated |
-| 21 | No SH-approx warning; help/docs no longer describe approximate warm SH | CLI log test + doc grep gate | achievable as stated |
-| 22 | Cold id 34 identical: 1 vs many workers, repeats, populated cache dir, governor pause | bin determinism tests | achievable as stated |
-| 23 | Density/scale-region change → identical id 34; warm hits all; memo lists + persistence gate renamed | `tests/oversize_lightmap_maps.rs`, `tests/coloured_bounce_cache.rs`, source gate | achievable as stated |
-| 24 | Fixed gather direction set across lights/fill; no direction reads cache radiance | test + grep gate on direction sources | achievable as stated |
-| 25 | Layer + id-34 get/put outside governor permits | bin test (hook asserts no permit held during cache I/O) | achievable as stated |
-| 26 | Depth moments byte-identical to one-sample bake | bin test | achievable as stated |
-| 27 | id 27 bytes = base; first warm build hits pre-change 27/35/47/48/chunk-list entries | `cmp` of `--release` PRLs (stress-warren-mini + animated fixture) vs base build; warm-over-old-cache CLI run | achievable as stated |
-| 28 | Zero static / emissive-only → zero irradiance, no layer; all-miss probe black | bin tests | achievable as stated |
-| 29 | No diff under level-format, runtime crates or shaders; no new `SectionId` | diff + grep gate | achievable as stated |
-| 30 | Forced-low budget refuses by SH base gate name before any shading/ray/embedded test/texture read; N admits, N−1 refuses; delta and lightmap boundaries hold | `tests/lightmap_working_set_contract.rs` pattern, cold + warm | achievable as stated |
-| 31 | Gate patch set = baked patch set; predicted ≥ measured peak across fixtures/fill/workers/cache mode | bin handoff assertion + cfg(test) peak accounting | achievable as stated |
-| 32 | Cache freed before delta SH stage begins | bin test (drop marker observed before DeltaShBake entry) | achievable as stated |
-| 33 | Patch count = static faces after culling; mover + exterior-culled face get none | bin fixture test | achievable as stated |
-| 34 | Measure: warm one-light edit on full hallway, phases timed apart | owner-launched run (`measure-hallway.ps1` pattern) | measurement |
-| 35 | Measure: light-count sweep N/2N/4N | synthetic map, cold, one bake at a time | measurement |
-| 36 | Measure: cold `--release --no-cache` Build Summary before/after on 4 maps | before = base-commit binary | measurement |
-| 37 | Measure: hallway cache peak, layer + id-34 entry bytes vs `--cache-max-size` | owner-launched run | measurement |
-| 38 | Owner A/B at campaign-test stations, fill 0 / mid / 1 + white room; owner picks default | owner, in-engine | manual |
-| 39 | Entities and fog: no patch-scale blotches or new leaks | owner, in-engine | manual |
+| AC | Row (short) | Proof | Status | Result |
+|---|---|---|---|---|
+| 1 | Parity p50/p99/max ≤ BC6H encode error; control beside | `bounce_parity_on_real_maps` (cache vs reference), campaign-test + fixture room (`#[ignore]`, run on demand) | achievable as stated | pass: p50/p99/max inside the BC6H bar on campaign-test and soft_shadow_test (0.5 m bilinear); warren-mini max 1.10× bar, logged per owner ruling |
+| 2 | Mean signed rel. error ±1%; back-face hits within bound | same harness + back-face fixture test | achievable as stated | pass: mean signed +0.55% / −0.05%; zero back-face reads on the AC maps; synthetic back-face test within 2% |
+| 3 | Embedded fixture: flagged point + flagged sdf light match no-early-out ref; ids 35/41/47/48 + keys + warnings = base; sdf flag warns once naming bounce | bin fixture test + `cmp` vs base-commit PRL + log capture | achievable as stated | pass: fixture test; ids 35/41/47/48 equal base (PRL comparison, cache hits); sdf warning once |
+| 4 | Gather traces no shadow ray; spacing/rays change leaves count unchanged | cfg(test) counters + grep gate on gather path | achievable as stated | pass: counters + grep gate |
+| 5 | Doubling lights leaves gather/lookup counts; patch-direct evals = Σ reach | cfg(test) counters | achievable as stated | pass: counters |
+| 6 | Bounce-lit room brighter; beyond-reach probe nonzero at fill 1, zero at 0; open-space change < bound | bin fixture tests | achievable as stated | pass |
+| 7 | Energy per bounce decreases (albedo < 1); closed albedo-1 room finite, non-rising | bin fixture tests, area-weighted patch energy | achievable as stated | pass: grey ratios 0.43–0.44, white room ≈1.00 |
+| 8 | Fill 0 = single-bounce bytes; fill 1 = unscaled sum; between, per channel | bin tests | achievable as stated | pass |
+| 9 | Warm id 34 = cold across the listed edit sequence; probe beyond 16 m reach | CLI warm/cold `cmp` suite (`tests/`) over a purpose-built fixture | achievable as stated | pass: 12-step CLI suite at 1 m spacing (stored tiles > 0) |
+| 10 | One light edit re-shades only its layer; re-gather no shadow ray; reorder/no edit hits all | bin counters + cache access log | achievable as stated | pass |
+| 11 | Remove/insert/duplicate/unique-reach/flip-to-animated: unchanged layers hit, byte-equal cold | bin tests | achievable as stated | pass: incl. `setLightAnimation` CLI case |
+| 12 | Flagged light into/out of wall; floor toggle; sample-count change | bin tests (cache access by stage) | achievable as stated | pass |
+| 13 | Reversed order → identical id-34 tiles + moments; duplicate doubles radiance; warm duplicate misses id-34 entry | bin tests | achievable as stated | pass |
+| 14 | Geometry/texture-mean/saturation re-key all; restore hits; `_bounce_fill` re-shades no layer | bin tests (precedent `colour_key_tests.rs`) | achievable as stated | pass |
+| 15 | Animated-only edit re-shades no layer; descriptors/slot table = cold | bin tests | achievable as stated | pass |
+| 16 | Layer removed/corrupted/unfinished (enter hook) re-shades alone; A-B-A revert; eviction moves hits, not bytes | bin tests with governor enter hook + cache tamper | achievable as stated | pass |
+| 17 | Empty cache / after `--release` only → misses, release bytes; first build after change misses old id-34 | CLI tests + stage-version bump | achievable as stated | pass |
+| 18 | Light with no patch in reach: no layer, id 34 unchanged | bin test | achievable as stated | pass |
+| 19 | `_bounce_fill` in FGD + `docs/level_design.md`; invalid → default + warn once, cold/warm/hit | parse tests + CLI log capture + doc grep | achievable as stated | pass |
+| 20 | Knob gate admits `_bounce_fill` only; no bounce/albedo/saturation flag | `tests/coloured_bounce_source_gates.rs` amended | achievable as stated | pass |
+| 21 | No SH-approx warning; help/docs no longer describe approximate warm SH | CLI log test + doc grep gate | achievable as stated | pass: incl. doc grep gate |
+| 22 | Cold id 34 identical: 1 vs many workers, repeats, populated cache dir, governor pause | bin determinism tests | achievable as stated | pass |
+| 23 | Density/scale-region change → identical id 34; warm hits all; memo lists + persistence gate renamed | `tests/oversize_lightmap_maps.rs`, `tests/coloured_bounce_cache.rs`, source gate | achievable as stated | pass |
+| 24 | Fixed gather direction set across lights/fill; no direction reads cache radiance | test + grep gate on direction sources | achievable as stated | pass |
+| 25 | Layer + id-34 get/put outside governor permits | bin test (hook asserts no permit held during cache I/O) | achievable as stated | pass |
+| 26 | Depth moments byte-identical to one-sample bake | bin test | achievable as stated | pass |
+| 27 | id 27 bytes = base; first warm build hits pre-change 27/35/47/48/chunk-list entries | `cmp` of `--release` PRLs (stress-warren-mini + animated fixture) vs base build; warm-over-old-cache CLI run | achievable as stated | pass: base-binary tests (`#[ignore]`, run once): id 27 identical on stress-warren-mini + animated fixture; pre-change entries hit |
+| 28 | Zero static / emissive-only → zero irradiance, no layer; all-miss probe black | bin tests | achievable as stated | pass |
+| 29 | No diff under level-format, runtime crates or shaders; no new `SectionId` | diff + grep gate | achievable as stated | pass: `SectionId` pin + git diff gate (run once) |
+| 30 | Forced-low budget refuses by SH base gate name before any shading/ray/embedded test/texture read; N admits, N−1 refuses; delta and lightmap boundaries hold | `tests/lightmap_working_set_contract.rs` pattern, cold + warm | achievable as stated | pass |
+| 31 | Gate patch set = baked patch set; predicted ≥ measured peak across fixtures/fill/workers/cache mode | bin handoff assertion + cfg(test) peak accounting | achievable as stated | pass: 192 configurations, predicted ≥ measured |
+| 32 | Cache freed before delta SH stage begins | bin test (drop marker observed before DeltaShBake entry) | achievable as stated | pass: cold and warm volume-hit |
+| 33 | Patch count = static faces after culling; mover + exterior-culled face get none | bin fixture test | achievable as stated | pass |
+| 34 | Measure: warm one-light edit on full hallway, phases timed apart | owner-launched run (`measure-hallway.ps1` pattern) | measurement | outstanding: owner-launched full-hallway warm edit (`warm-edit.sh`) |
+| 35 | Measure: light-count sweep N/2N/4N | synthetic map, cold, one bake at a time | measurement | measured: SH Bake flat 13.9–14.6 s from 16 to 256 lights; base 4.6 → 31.2 s |
+| 36 | Measure: cold `--release --no-cache` Build Summary before/after on 4 maps | before = base-commit binary | measurement | measured: campaign-test 1.6 → 4.4 s SH, warren-mini 25.1 → 23.2 s, hallway-mini 74.8 → 49.9 s |
+| 37 | Measure: hallway cache peak, layer + id-34 entry bytes vs `--cache-max-size` | owner-launched run | measurement | outstanding: owner-launched hallway cache-size run |
+| 38 | Owner A/B at campaign-test stations, fill 0 / mid / 1 + white room; owner picks default | owner, in-engine | manual | outstanding (owner): captures in `ab-captures/`. campaign-test moves +1–2/255, white room +17–19/255; default pick pending |
+| 39 | Entities and fog: no patch-scale blotches or new leaks | owner, in-engine | manual | outstanding (owner): captures show no patch blotches or new leaks; white-room seam pixels predate this branch (`ab-captures/seam-check/`) |
 
 ## Tasks
 
@@ -130,3 +130,8 @@ Hot paths touched: bake only; no per-frame path. Bake constraints: patch shading
 - The ledger does not count the per-face `BTreeMap` in `PatchSet::build`, `Vec` realloc copies or cache file I/O internals (testing_guide §3: a seam proves only what routes through it).
 - id 41 (and id 34's own stored-density levels) can shrink as id 34 brightens. Their coarsening judges relative error against composed brightness, id 34 + id 35 + the deltas (`sh_coarsen.rs`). On the 256-light sweep id 41 was 264.9 MB against the base's 328.7 MB, so the base binary hit `--sh-delta-max-size` and the new one did not. This is expected downstream coupling, not an id-41 estimator change; AC 3 and AC 27 hold as written.
 - Measurement gaps: no timed log line splits patch shading, later bounces and gather. The sweep inferred patch-direct from the progress-bar plateau, and later bounces + gather are reported together.
+
+## Review loop
+- Round 1 (7 reviewers: 3 tracers, contract verifier and adversarial tester on Opus, 2 hygiene on Sonnet): 0 code 🔴; 3 code 🟡 (layer key missing shading constants, layer key over-covering geometry, dead one-sample entry points); 6 🔴 comment/doc drift. All acted on in efd369696; the over-pricing and malformed-map nits were skipped.
+- Round 2 (tracer + hygiene on efd369696): 0 🔴; test-strength and doc 🟡 (vacuous void-brush assertion, cell-id byte invariance, epoch doc scope) fixed in 235f33dc7. Loop closed: no new code defects.
+- Final gate: fmt, clippy, `cargo test` 13,440 passed / 0 failed / 94 ignored, `cargo check --release`.

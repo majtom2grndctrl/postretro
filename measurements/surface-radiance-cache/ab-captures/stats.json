@@ -1,0 +1,226 @@
+{
+ "campaign/c1-rel/full": {
+  "mean": 1.442,
+  "p99": 4.0,
+  "max": 10,
+  "share_gt2": 0.1313,
+  "mean_signed_luma": 1.13,
+  "fill0_mean_luma": 2.62,
+  "half_vs_0": {
+   "mean": 1.079,
+   "p99": 3.0,
+   "max": 9,
+   "share_gt2": 0.0511,
+   "mean_signed_luma": 0.771,
+   "fill0_mean_luma": 2.62
+  }
+ },
+ "campaign/c2-rel/full": {
+  "mean": 1.317,
+  "p99": 4.0,
+  "max": 6,
+  "share_gt2": 0.1361,
+  "mean_signed_luma": 1.082,
+  "fill0_mean_luma": 10.04,
+  "half_vs_0": {
+   "mean": 0.765,
+   "p99": 2.0,
+   "max": 5,
+   "share_gt2": 0.0061,
+   "mean_signed_luma": 0.536,
+   "fill0_mean_luma": 10.04
+  }
+ },
+ "campaign/c3-rel/full": {
+  "mean": 1.65,
+  "p99": 5.0,
+  "max": 6,
+  "share_gt2": 0.1904,
+  "mean_signed_luma": 1.421,
+  "fill0_mean_luma": 3.42,
+  "half_vs_0": {
+   "mean": 0.949,
+   "p99": 3.0,
+   "max": 4,
+   "share_gt2": 0.0181,
+   "mean_signed_luma": 0.723,
+   "fill0_mean_luma": 3.42
+  }
+ },
+ "campaign/c4-rel/full": {
+  "mean": 1.14,
+  "p99": 4.0,
+  "max": 6,
+  "share_gt2": 0.0849,
+  "mean_signed_luma": 0.882,
+  "fill0_mean_luma": 7.21,
+  "half_vs_0": {
+   "mean": 0.652,
+   "p99": 2.0,
+   "max": 4,
+   "share_gt2": 0.0037,
+   "mean_signed_luma": 0.416,
+   "fill0_mean_luma": 7.21
+  }
+ },
+ "campaign/c5-abs/full": {
+  "mean": 0.955,
+  "p99": 3.0,
+  "max": 7,
+  "share_gt2": 0.0343,
+  "mean_signed_luma": 0.679,
+  "fill0_mean_luma": 44.66,
+  "half_vs_0": {
+   "mean": 0.611,
+   "p99": 2.0,
+   "max": 4,
+   "share_gt2": 0.0015,
+   "mean_signed_luma": 0.339,
+   "fill0_mean_luma": 44.66
+  }
+ },
+ "campaign/c6-abs/full": {
+  "mean": 1.002,
+  "p99": 4.0,
+  "max": 6,
+  "share_gt2": 0.0425,
+  "mean_signed_luma": 0.724,
+  "fill0_mean_luma": 47.03,
+  "half_vs_0": {
+   "mean": 0.645,
+   "p99": 2.0,
+   "max": 4,
+   "share_gt2": 0.0024,
+   "mean_signed_luma": 0.362,
+   "fill0_mean_luma": 47.03
+  }
+ },
+ "whiteroom/w1-pillar-shadow-face/full": {
+  "mean": 21.649,
+  "p99": 41.0,
+  "max": 59,
+  "share_gt2": 0.9999,
+  "mean_signed_luma": 16.546,
+  "fill0_mean_luma": 124.98
+ },
+ "whiteroom/w2-far-corner/full": {
+  "mean": 25.291,
+  "p99": 31.0,
+  "max": 34,
+  "share_gt2": 0.9999,
+  "mean_signed_luma": 19.203,
+  "fill0_mean_luma": 97.93
+ },
+ "campaign/c1-rel/indirect": {
+  "mean": 1.491,
+  "p99": 4.0,
+  "max": 10,
+  "share_gt2": 0.1465,
+  "mean_signed_luma": 1.181,
+  "fill0_mean_luma": 1.38,
+  "half_vs_0": {
+   "mean": 1.108,
+   "p99": 3.0,
+   "max": 9,
+   "share_gt2": 0.0565,
+   "mean_signed_luma": 0.804,
+   "fill0_mean_luma": 1.38
+  }
+ },
+ "campaign/c2-rel/indirect": {
+  "mean": 1.422,
+  "p99": 4.0,
+  "max": 6,
+  "share_gt2": 0.1498,
+  "mean_signed_luma": 1.192,
+  "fill0_mean_luma": 3.42,
+  "half_vs_0": {
+   "mean": 0.827,
+   "p99": 2.0,
+   "max": 5,
+   "share_gt2": 0.0061,
+   "mean_signed_luma": 0.591,
+   "fill0_mean_luma": 3.42
+  }
+ },
+ "campaign/c3-rel/indirect": {
+  "mean": 1.665,
+  "p99": 5.0,
+  "max": 6,
+  "share_gt2": 0.1969,
+  "mean_signed_luma": 1.437,
+  "fill0_mean_luma": 3.14,
+  "half_vs_0": {
+   "mean": 0.955,
+   "p99": 3.0,
+   "max": 4,
+   "share_gt2": 0.0192,
+   "mean_signed_luma": 0.731,
+   "fill0_mean_luma": 3.14
+  }
+ },
+ "campaign/c4-rel/indirect": {
+  "mean": 1.17,
+  "p99": 4.0,
+  "max": 6,
+  "share_gt2": 0.0906,
+  "mean_signed_luma": 0.919,
+  "fill0_mean_luma": 4.3,
+  "half_vs_0": {
+   "mean": 0.674,
+   "p99": 2.0,
+   "max": 4,
+   "share_gt2": 0.0037,
+   "mean_signed_luma": 0.433,
+   "fill0_mean_luma": 4.3
+  }
+ },
+ "campaign/c5-abs/indirect": {
+  "mean": 2.145,
+  "p99": 6.0,
+  "max": 8,
+  "share_gt2": 0.3932,
+  "mean_signed_luma": 1.901,
+  "fill0_mean_luma": 8.57,
+  "half_vs_0": {
+   "mean": 1.237,
+   "p99": 3.0,
+   "max": 4,
+   "share_gt2": 0.0484,
+   "mean_signed_luma": 0.958,
+   "fill0_mean_luma": 8.57
+  }
+ },
+ "campaign/c6-abs/indirect": {
+  "mean": 2.285,
+  "p99": 5.0,
+  "max": 7,
+  "share_gt2": 0.4457,
+  "mean_signed_luma": 2.041,
+  "fill0_mean_luma": 9.52,
+  "half_vs_0": {
+   "mean": 1.288,
+   "p99": 3.0,
+   "max": 4,
+   "share_gt2": 0.0493,
+   "mean_signed_luma": 1.028,
+   "fill0_mean_luma": 9.52
+  }
+ },
+ "whiteroom/w1-pillar-shadow-face/indirect": {
+  "mean": 46.782,
+  "p99": 53.0,
+  "max": 60,
+  "share_gt2": 0.9999,
+  "mean_signed_luma": 38.096,
+  "fill0_mean_luma": 44.57
+ },
+ "whiteroom/w2-far-corner/indirect": {
+  "mean": 45.551,
+  "p99": 49.0,
+  "max": 50,
+  "share_gt2": 0.9999,
+  "mean_signed_luma": 36.719,
+  "fill0_mean_luma": 43.11
+ }
+}

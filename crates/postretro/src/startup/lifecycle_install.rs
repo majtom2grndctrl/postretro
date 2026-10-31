@@ -12,6 +12,11 @@ pub(crate) enum LevelInstallRejection {
     GeometryRange(#[from] render::LevelGeometryRangeError),
     #[error("static collision: {0}")]
     StaticCollision(#[from] crate::collision::CollisionMeshError),
+    /// The renderer refused the level's resources: today only a streamed-SH
+    /// residency plan or first pool generation. It arrives after identity
+    /// and segment A ran, but ends the load through the same route.
+    #[error(transparent)]
+    RendererInstall(#[from] render::LevelInstallError),
 }
 
 /// What the renderer stage hands the light bridge: map lights, their
@@ -66,7 +71,7 @@ impl App {
         self.level_timings.record("static_collision");
         self.install_level_identity(&world);
         let script_ctx = self.install_level_segment_a(&world);
-        let Some(light_seed) = self.install_level_renderer_stage(&mut world, &prm_cache_root)
+        let Some(light_seed) = self.install_level_renderer_stage(&mut world, &prm_cache_root)?
         else {
             // The level stays installed, so its collision does too.
             self.collision_world = static_collision;
@@ -210,37 +215,17 @@ impl App {
 
     /// Player render tiers, then textures, UV normalize, geometry and fluid
     /// surfaces. Returns what the light bridge needs, or `None` when no
-    /// renderer exists and the caller takes the renderer-less return.
+    /// renderer exists and the caller takes the renderer-less return. A
+    /// renderer refusal of the level's resources is a rejection.
     fn install_level_renderer_stage(
         &mut self,
         world: &mut postretro_level_loader::LevelWorld,
         prm_cache_root: &Path,
-    ) -> Option<LevelLightSeed> {
+    ) -> Result<Option<LevelLightSeed>, LevelInstallRejection> {
         // Derive material properties from texture names so the renderer can
-        // populate per-material uniforms (shininess) without re-parsing.
-        let texture_materials: Vec<postretro_render_data::material::Material> = {
-            let mut warned = std::collections::HashSet::new();
-            world
-                .texture_names
-                .iter()
-                .map(|n| {
-                    let warned_count = warned.len();
-                    let mat = postretro_render_data::material::derive_material(n, &mut warned);
-                    let prefix = postretro_render_data::material::parse_prefix(n);
-                    if mat == postretro_render_data::material::Material::Default
-                        && !prefix.is_empty()
-                        && warned.len() > warned_count
-                    {
-                        log::warn!(
-                            "[Material] Unknown prefix '{}' in texture '{}' — using default material",
-                            prefix,
-                            n,
-                        );
-                    }
-                    mat
-                })
-                .collect()
-        };
+        // populate per-material uniforms (shininess) without re-parsing. Load
+        // prep builds the same table with the same function.
+        let texture_materials = crate::level_load::level_texture_materials(&world.texture_names);
 
         let (shadow_quality, surface_depth_quality, reflection_quality) = {
             let options = &self
@@ -266,7 +251,7 @@ impl App {
             Some(r) => r,
             None => {
                 log::error!("[Engine] install_level_payload called with no renderer");
-                return None;
+                return Ok(None);
             }
         };
 
@@ -291,9 +276,13 @@ impl App {
         //    drops them; the stashed world keeps only their headers.
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let geometry = render::level_world_to_geometry(world, &texture_materials);
-        renderer
-            .install_level_geometry(&geometry, gpu_lighting_payloads)
-            .unwrap_or_else(|error| panic!("[Engine] {error}"));
+        // Test-only seam: a refusal no fixture's real data provokes.
+        #[cfg(test)]
+        if let Some(error) = super::lifecycle_test_fixtures::take_injected_geometry_install_error()
+        {
+            return Err(error.into());
+        }
+        renderer.install_level_geometry(&geometry, gpu_lighting_payloads)?;
         self.level_timings.record("geometry_upload");
         // Fluid surfaces after textures (their UVs normalize by the
         // installed dimensions) and geometry (which drops the last level's).
@@ -323,13 +312,13 @@ impl App {
             }
         }
 
-        Some((
+        Ok(Some((
             world.lights.clone(),
             world.light_influences.clone(),
             world.animation_descriptors().to_vec(),
             world.animated_direct_descriptor_indices().to_vec(),
             (renderer.scripted_sample_byte_offset() / 4) as u32,
-        ))
+        )))
     }
 
     /// One light entity per map-authored light, before segment B creates the

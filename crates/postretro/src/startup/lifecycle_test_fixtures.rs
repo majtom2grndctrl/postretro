@@ -778,3 +778,20 @@ pub(in crate::startup) fn install_level_payload_source() -> String {
     }
     flattened
 }
+
+thread_local! {
+    static INJECTED_GEOMETRY_INSTALL_ERROR: std::cell::RefCell<Option<crate::render::LevelInstallError>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The next oracle `install_level_geometry` on this thread fails with
+/// `error` instead of running: a renderer refusal no fixture's real data
+/// provokes (the streamed-SH plan accepts every level the parse accepts).
+pub(crate) fn inject_geometry_install_error(error: crate::render::LevelInstallError) {
+    INJECTED_GEOMETRY_INSTALL_ERROR.with(|slot| *slot.borrow_mut() = Some(error));
+}
+
+pub(in crate::startup) fn take_injected_geometry_install_error()
+-> Option<crate::render::LevelInstallError> {
+    INJECTED_GEOMETRY_INSTALL_ERROR.with(|slot| slot.borrow_mut().take())
+}

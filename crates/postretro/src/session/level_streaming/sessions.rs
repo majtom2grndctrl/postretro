@@ -34,6 +34,16 @@ pub(crate) struct WantedStreaming<'a> {
 }
 
 impl LevelStreaming {
+    /// Stages the installing level's decoded hints and lightmap block map
+    /// for the next [`Self::ensure_sessions`] call, which takes them.
+    pub(crate) fn stage_level_data(
+        &mut self,
+        hints: Option<Arc<ClusterHints>>,
+        lightmap: Option<super::level_data::LightmapLevelData>,
+    ) {
+        self.staged = Some(super::StagedLevelData { hints, lightmap });
+    }
+
     /// Makes the sessions match the loaded level. Returns whether anything
     /// streams; when nothing does, every session is released. `make_sh`
     /// builds a fresh SH session from its manifest, its mode, and the
@@ -55,6 +65,8 @@ impl LevelStreaming {
             Option<Arc<ClusterHints>>,
         ) -> Result<ShStreamingSession>,
     ) -> Result<bool> {
+        // Whatever the installing level staged belongs to this call alone.
+        let mut staged = self.staged.take();
         let lightmap = wanted.lightmap.filter(|view| !self.declined(view.manifest));
         if wanted.sh.is_none() && lightmap.is_none() {
             self.clear(sh);
@@ -113,9 +125,13 @@ impl LevelStreaming {
                 .map(|set| CellDemand::new(set.max_lead));
         }
         if self.hints.is_none() {
-            // Tagged for the shared layer: the hints serve both resources.
-            self.hints = decode_level_hints(wanted.cluster_directory)
-                .context("[Streaming] id-49 cluster hints")?;
+            self.hints = match staged.as_mut() {
+                // Decoded and checked by the level's load.
+                Some(staged) => staged.hints.take(),
+                // Tagged for the shared layer: the hints serve both resources.
+                None => decode_level_hints(wanted.cluster_directory)
+                    .context("[Streaming] id-49 cluster hints")?,
+            };
         }
         if let Some((manifest, mode)) = wanted.sh {
             let mut streaming = make_sh(Arc::clone(manifest), mode, self.hints.clone())?;
@@ -125,7 +141,14 @@ impl LevelStreaming {
         if let Some(view) = lightmap
             && self.lightmap.is_none()
         {
-            self.install_lightmap(LightmapStreamingSession::new(view, self.hints.as_deref())?);
+            let prebuilt = staged
+                .and_then(|staged| staged.lightmap)
+                .filter(|data| Arc::ptr_eq(&data.manifest, view.manifest));
+            let session = match prebuilt {
+                Some(data) => LightmapStreamingSession::with_block_map(view, data.blocks)?,
+                None => LightmapStreamingSession::new(view, self.hints.as_deref())?,
+            };
+            self.install_lightmap(session);
         }
         Ok(true)
     }

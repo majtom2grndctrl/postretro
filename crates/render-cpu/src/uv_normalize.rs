@@ -4,11 +4,16 @@
 
 use crate::texture_prep::{PLACEHOLDER_DIFFUSE_SIZE, PreparedTexture, PreparedWorldTextures};
 
-/// Each world material's diffuse `(width, height)` as the GPU pass will
-/// upload it, parallel to `prepared.entries`: a bundle whose plan consumes a
-/// readable diffuse slot uploads that slot's mip 0; every other entry binds
-/// the checkerboard placeholder.
+/// Each bound world material slot's diffuse `(width, height)` as the GPU
+/// pass will upload it, parallel to `prepared.entries`: a bundle whose plan
+/// consumes a readable diffuse slot uploads that slot's mip 0; every other
+/// entry binds the checkerboard placeholder. A level with no materials still
+/// binds one placeholder slot, so its dims are that one placeholder's: UV
+/// normalize and the fluid pack read the slots the level binds.
 pub fn diffuse_dims(prepared: &PreparedWorldTextures) -> Vec<(u32, u32)> {
+    if prepared.entries.is_empty() {
+        return vec![(PLACEHOLDER_DIFFUSE_SIZE, PLACEHOLDER_DIFFUSE_SIZE)];
+    }
     prepared.entries.iter().map(prepared_diffuse_dims).collect()
 }
 
@@ -309,5 +314,11 @@ mod tests {
             diffuse_dims(&prepared),
             [(32, 8), (64, 64), (64, 64), (64, 64)]
         );
+        // No materials still binds the one placeholder slot.
+        let empty = PreparedWorldTextures {
+            entries: Vec::new(),
+            timing: Default::default(),
+        };
+        assert_eq!(diffuse_dims(&empty), [(64, 64)]);
     }
 }

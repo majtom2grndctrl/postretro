@@ -101,6 +101,14 @@ fn prepared_diffuse_dims_match_the_uploaded_textures() {
     let prepared = diffuse_dims(&prepare_world_textures(&names, &keys, dir.path()));
     assert_eq!(prepared, uploaded_diffuse_dims(&renderer));
     assert_eq!(prepared, [(4, 4), (64, 64), (64, 64), (8, 4), (64, 64)]);
+
+    // A level with no materials binds one placeholder slot, and normalizes
+    // and packs fluids by it.
+    let none = TextureCacheKeysSection { keys: Vec::new() };
+    renderer.install_textures(&[], &none, dir.path(), &[]);
+    let prepared = diffuse_dims(&prepare_world_textures(&[], &none, dir.path()));
+    assert_eq!(prepared, uploaded_diffuse_dims(&renderer));
+    assert_eq!(prepared, [(64, 64)]);
 }
 
 /// The fluid summary `InstalledFluidSurfaces::prep_summary` reads back.

@@ -186,6 +186,14 @@ impl ShManifestMetadata {
         self.0.sources()
     }
 
+    /// The id-49 structure the manifest was read with: its clusters, ranges
+    /// and resources. Before the verdict its members are not yet checked
+    /// against the cell table (see [`HandOut`]); the cluster topology is not
+    /// here at all.
+    pub fn cluster_directory(&self) -> &ClusterDirectorySection {
+        self.0.cluster_directory()
+    }
+
     pub fn content_tag(&self) -> [u8; 32] {
         self.0.content_tag()
     }

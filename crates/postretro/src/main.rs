@@ -37,6 +37,8 @@ use postretro_sim::{impact_effects, impact_policy};
 mod client_weapon;
 mod input;
 mod weapon_observers;
+// Level-load stages on the engine load pool: prep from the staged parse.
+mod level_load;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;

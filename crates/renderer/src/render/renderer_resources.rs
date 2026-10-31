@@ -10,6 +10,7 @@ mod sh_family;
 mod shadow_pools;
 mod world_geometry;
 
+pub use lightmap_shadow::lightmap_family_inputs;
 pub(in crate::render) use publish::rebuild_level_extent_groups;
 
 use super::level_resource_set::{LevelSetId, PreviousLevelSet};

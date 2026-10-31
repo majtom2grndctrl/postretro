@@ -72,8 +72,10 @@ pub(super) fn plan_lightmap_family(
 }
 
 /// The lightmap family's CPU plan inputs from this install's geometry.
-/// `animated_light_count` is the SH volume's animated descriptor count.
-pub(in crate::render) fn lightmap_family_inputs<'a>(
+/// `animated_light_count` is the SH volume's animated descriptor count. Shared
+/// by the oracle install and the app's load prep, so both plan from the same
+/// inputs.
+pub fn lightmap_family_inputs<'a>(
     geometry: &LevelGeometry<'a>,
     gpu_lighting_payloads: &'a postretro_level_loader::GpuLightingPayloads,
     bvh_leaves: &'a [postretro_render_data::geometry::BvhLeaf],

@@ -23,6 +23,10 @@ impl App {
     /// Creates the level's streaming sessions at install. Nothing is read
     /// here; Settling's drains make the presented pose's set resident. A
     /// failure is fatal, as it is for the frame's streaming step.
+    ///
+    /// The level-data checks run first, through the same
+    /// `decode_streaming_level_data` load prep runs off the main thread; the
+    /// sessions are then built from what it decoded.
     pub(super) fn install_level_streaming_sessions(&mut self) -> Result<()> {
         let (Some(world), Some(renderer), Some(session)) = (
             self.level.as_ref(),
@@ -31,7 +35,11 @@ impl App {
         ) else {
             return Ok(());
         };
-        session.install_level_streaming(world, renderer)?;
+        let data = crate::session::level_streaming::decode_streaming_level_data(
+            crate::session::level_streaming::StreamingLevelParts::of(world),
+            || Ok(postretro_level_loader::requested_streaming_mode()?),
+        )?;
+        session.install_level_streaming(world, renderer, data)?;
         self.level_timings.record("streaming_sessions");
         Ok(())
     }

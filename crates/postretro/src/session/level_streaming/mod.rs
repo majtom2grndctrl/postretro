@@ -3,6 +3,7 @@
 
 mod hooks;
 mod io;
+mod level_data;
 mod sessions;
 pub(crate) mod settle;
 #[cfg(test)]
@@ -17,6 +18,7 @@ use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
+pub(crate) use level_data::{StreamingLevelData, StreamingLevelParts, decode_streaming_level_data};
 pub(crate) use sessions::WantedStreaming;
 
 use super::lightmap_residency::LightmapStreamingSession;
@@ -78,6 +80,19 @@ pub(crate) struct LevelStreaming {
     /// placeholder). Its level runs without lightmap streaming. Weak, so it
     /// keeps the manifest's allocation, never the manifest.
     declined_lightmap: Option<Weak<LightmapStreamManifest>>,
+    /// The installing level's decoded hints and lightmap block map, staged by
+    /// [`crate::session::Session::install_level_streaming`] for the one
+    /// `ensure_sessions` call that creates its sessions. Taken there, used or
+    /// not, so nothing staged outlives that call.
+    staged: Option<StagedLevelData>,
+}
+
+/// The parts of a [`StreamingLevelData`] that `ensure_sessions` consumes; SH's
+/// topology travels in its session factory instead.
+#[derive(Debug)]
+struct StagedLevelData {
+    hints: Option<Arc<ClusterHints>>,
+    lightmap: Option<level_data::LightmapLevelData>,
 }
 
 impl LevelStreaming {

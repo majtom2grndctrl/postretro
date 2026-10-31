@@ -119,6 +119,7 @@ fn split_planar_ranges_by_probe(mesh: &FluidSurfaceMesh, probe: &[u32]) -> Vec<P
 /// one probe index per mesh vertex, whether any face is probe-bound (which
 /// keys the screen-space reflection target), and every material range's
 /// planar runs.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFluidSurfaces {
     pub mesh: FluidSurfaceMesh,
     pub probe_indices: Vec<u32>,

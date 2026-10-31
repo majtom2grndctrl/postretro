@@ -4,6 +4,17 @@
 /// Every load-stage source file, relative to `src/`. Later stages add theirs.
 const LOAD_STAGE_MODULES: &[&str] = &[
     LOAD_POOL_MODULE,
+    "level_load/coordinator.rs",
+    "level_load/failure.rs",
+    "level_load/failure_tests.rs",
+    "level_load/inputs.rs",
+    "level_load/mod.rs",
+    "level_load/oracle_tests.rs",
+    "level_load/products.rs",
+    "level_load/tasks.rs",
+    "level_load/test_support.rs",
+    "level_load/tests.rs",
+    "session/level_streaming/level_data.rs",
     "startup/loading_screen.rs",
     "startup/loading_screen_images.rs",
     "startup/loading_screen_tests.rs",

@@ -17,7 +17,7 @@ use postretro_visibility::VisibleCells;
 use super::sh_async_workers::{ShAsyncWorkers, ShWorkerRetirement, ShWorkerStats};
 use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagnostics};
 use crate::sh_streaming::budget::{FixedGpuCharges, ShGpuBudgetInputs, StreamedPoolMinima};
-use crate::sh_streaming::controller::{ShResidencyController, SyncReadResult};
+use crate::sh_streaming::controller::{ShLevelTopology, ShResidencyController, SyncReadResult};
 use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::issuer::ReadRoute;
@@ -99,6 +99,30 @@ impl ShStreamingSession {
         Self::from_renderer(manifest, renderer, hints)
     }
 
+    /// As [`Self::from_renderer_with_mode`], over the planner topology the
+    /// level's load already derived and checked for `manifest`
+    /// (`level_streaming::decode_streaming_level_data`). What can still fail
+    /// is not level data: the renderer's residency snapshot, the budget it
+    /// yields, and the generation clock.
+    pub(in crate::session) fn from_renderer_with_topology(
+        manifest: Arc<ShStreamManifest>,
+        renderer: &Renderer,
+        mode: ShStreamingMode,
+        topology: ShLevelTopology,
+    ) -> Result<Self> {
+        let snapshot = renderer.sh_residency_snapshot().with_context(
+            || "[SH streaming] renderer has no residency snapshot for a streamed level",
+        )?;
+        let controller = ShResidencyController::with_topology(
+            manifest.clone(),
+            budget_inputs(snapshot),
+            topology,
+        )?;
+        let mut session = Self::over_controller(manifest, controller);
+        session.mode = mode;
+        Ok(session)
+    }
+
     pub(crate) fn from_snapshot(
         manifest: Arc<ShStreamManifest>,
         snapshot: ShResidencySnapshot,
@@ -106,7 +130,11 @@ impl ShStreamingSession {
     ) -> Result<Self> {
         let controller =
             ShResidencyController::new(manifest.clone(), budget_inputs(snapshot), hints)?;
-        Ok(Self {
+        Ok(Self::over_controller(manifest, controller))
+    }
+
+    fn over_controller(manifest: Arc<ShStreamManifest>, controller: ShResidencyController) -> Self {
+        Self {
             manifest,
             mode: ShStreamingMode::SyncProof,
             controller,
@@ -117,7 +145,7 @@ impl ShStreamingSession {
             log_window: ShStreamingLogWindow::default(),
             sync_stats: ShWorkerStats::default(),
             device_limit_warned: Arc::new(AtomicBool::new(false)),
-        })
+        }
     }
 
     pub(in crate::session) fn is_for(

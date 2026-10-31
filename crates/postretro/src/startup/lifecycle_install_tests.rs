@@ -1056,3 +1056,53 @@ fn connected_client_install_skips_pool_roll_and_preserves_authored_trigger_state
         "the client keeps authored enabled_on_spawn=false rather than running the host roll",
     );
 }
+
+// A renderer refusal of the level's resources (a streamed-SH plan or first
+// pool generation the device rejects) is a rejection the load fails on,
+// through the route `install_range_errors_use_the_existing_boot_and_runtime_
+// failure_routes` pins, never a panic. No fixture's real data makes the
+// renderer refuse, so the seam injects the refusal at the geometry install.
+#[test]
+fn streamed_sh_install_error_rejects_the_load_instead_of_panicking() {
+    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            assert!(
+                std::env::var_os("POSTRETRO_REQUIRE_GPU").is_none(),
+                "POSTRETRO_REQUIRE_GPU is set but no adapter: {error:#}"
+            );
+            eprintln!("streamed-SH install refusal skipped: {error:#}");
+            return;
+        }
+    };
+    let mut app = test_app();
+    app.renderer = Some(renderer);
+    let (_dir, path) = crate::sh_streaming::sync_manifest_test_fixture::write_one_cluster_prl();
+    let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
+    assert!(
+        world.sh_stream_manifest().is_some(),
+        "the fixture streams SH"
+    );
+    super::lifecycle_test_fixtures::inject_geometry_install_error(
+        crate::render::LevelInstallError::StreamedSh(
+            postretro_render_cpu::sh_residency::ShResidencyDrainError::SlotOverflow,
+        ),
+    );
+    let error = app
+        .install_level_payload(world, PathBuf::from("baked"))
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            super::lifecycle_install::LevelInstallRejection::RendererInstall(_)
+        ),
+        "{error}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("cannot install streamed SH level resources"),
+        "{error}"
+    );
+    assert!(app.level.is_none(), "a refused level is never stashed");
+}

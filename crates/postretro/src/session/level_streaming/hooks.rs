@@ -11,7 +11,8 @@ use postretro_level_loader::{
 use postretro_renderer::Renderer;
 use postretro_stage_timing::StageFrame;
 
-use super::{StreamingFrame, WantedStreaming};
+use super::level_data::ShLevelData;
+use super::{StreamingFrame, StreamingLevelData, WantedStreaming};
 use crate::cpu_timing::StreamingStage;
 use crate::session::lightmap_residency::LightmapLevelView;
 use crate::session::sh_residency::{ShStreamingSession, require_loaded_streaming_mode};
@@ -42,7 +43,7 @@ impl crate::session::Session {
         frame: StreamingFrame<'_>,
     ) -> Result<ShDrainBatch> {
         self.level_streaming.poll_retirement();
-        if !self.ensure_level_streaming_sessions(sh_manifest, level, renderer)? {
+        if !self.ensure_level_streaming_sessions(sh_manifest, level, renderer, None)? {
             return Ok(ShDrainBatch::default());
         }
         // Id 51 straight from the level: SH reads the reach whether or not
@@ -76,33 +77,65 @@ impl crate::session::Session {
     /// Level install: creates the level's streaming sessions, so the settle
     /// chokepoint reads a missing session as "not streamed". Reads nothing:
     /// Settling's drains make the presented pose's set resident.
+    ///
+    /// `data` is the level's decoded streaming data
+    /// ([`super::decode_streaming_level_data`] on this `level`), so every
+    /// level-data check has already passed; what can fail here is the
+    /// renderer's residency snapshot, the budget it yields, and the
+    /// generation clocks.
     pub(crate) fn install_level_streaming(
         &mut self,
         level: &LevelWorld,
         renderer: &Renderer,
+        data: StreamingLevelData,
     ) -> Result<()> {
         self.level_streaming.poll_retirement();
-        self.ensure_level_streaming_sessions(level.sh_stream_manifest(), Some(level), renderer)?;
+        let StreamingLevelData {
+            hints,
+            sh,
+            lightmap,
+        } = data;
+        self.level_streaming.stage_level_data(hints, lightmap);
+        self.ensure_level_streaming_sessions(
+            level.sh_stream_manifest(),
+            Some(level),
+            renderer,
+            sh,
+        )?;
         Ok(())
     }
 
     /// Makes the streaming sessions match the loaded level (see
     /// [`super::LevelStreaming::ensure_sessions`]); a new SH session reads
     /// its budget from the renderer. Returns whether anything streams.
+    /// `prebuilt_sh` is the installing level's decoded SH mode and topology,
+    /// used when it is for `sh_manifest`.
     fn ensure_level_streaming_sessions(
         &mut self,
         sh_manifest: Option<&Arc<ShStreamManifest>>,
         level: Option<&LevelWorld>,
         renderer: &Renderer,
+        prebuilt_sh: Option<ShLevelData>,
     ) -> Result<bool> {
+        let prebuilt_sh = prebuilt_sh.filter(|data| {
+            sh_manifest.is_some_and(|manifest| Arc::ptr_eq(manifest, &data.manifest))
+        });
         let sh = match sh_manifest {
             Some(manifest) => {
-                let mode = requested_streaming_mode()?;
-                require_loaded_streaming_mode(mode)?;
+                let mode = match &prebuilt_sh {
+                    // The load's own mode gate already passed.
+                    Some(data) => data.mode,
+                    None => {
+                        let mode = requested_streaming_mode()?;
+                        require_loaded_streaming_mode(mode)?;
+                        mode
+                    }
+                };
                 Some((manifest, mode))
             }
             None => None,
         };
+        let topology = prebuilt_sh.map(|data| data.topology);
         self.level_streaming.ensure_sessions(
             &mut self.sh_streaming,
             WantedStreaming {
@@ -111,9 +144,15 @@ impl crate::session::Session {
                 cluster_directory: level.and_then(LevelWorld::cluster_directory),
                 residency_set: level.and_then(|world| world.cell_residency_set.as_ref()),
             },
-            |manifest, mode, hints| {
-                let hints = hints.context("[SH streaming] a streamed level carries no id 49")?;
-                ShStreamingSession::from_renderer_with_mode(manifest, renderer, mode, hints)
+            |manifest, mode, hints| match topology {
+                Some(topology) => ShStreamingSession::from_renderer_with_topology(
+                    manifest, renderer, mode, topology,
+                ),
+                None => {
+                    let hints =
+                        hints.context("[SH streaming] a streamed level carries no id 49")?;
+                    ShStreamingSession::from_renderer_with_mode(manifest, renderer, mode, hints)
+                }
             },
         )
     }

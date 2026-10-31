@@ -237,6 +237,15 @@ impl TaskGroup {
         }
     }
 
+    /// Cancel the group but keep it: queued tasks drop and tokens flip, as
+    /// in [`Self::cancel`], which still hands back the retirement later.
+    /// For an owner that must stop the group's work at once (a load's first
+    /// failure) but retires it on its own schedule.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn cancel_in_place(&self) {
+        self.cancel_now();
+    }
+
     fn cancel_now(&self) {
         let GroupSpawner { pool, group } = &self.spawner;
         let dropped = {

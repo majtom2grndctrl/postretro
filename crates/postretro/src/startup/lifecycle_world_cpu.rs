@@ -173,6 +173,9 @@ pub(crate) fn install_world_cpu(
         .enumerate()
         .map(|(index, record)| {
             let mut entity = crate::scripting::map_entity::MapEntity::from(record);
+            // Unreachable from level data: `map_entities` is exactly the
+            // MapEntity section's entries, whose count the section stores as
+            // a u32 (`MapEntitySection::from_bytes`), so every ordinal fits.
             entity.map_ordinal =
                 Some(u32::try_from(index).expect("PRL map-entity ordinal fits u32"));
             entity

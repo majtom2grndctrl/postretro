@@ -194,7 +194,7 @@ use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
-pub use renderer_resources::LevelInstallError;
+pub use renderer_resources::{LevelInstallError, lightmap_family_inputs};
 pub use renderer_textures::UploadedWorldTextures;
 pub use upload_thread::{PendingUpload, UploadError, UploadRetirement};
 pub(crate) use upload_thread::{UploadContext, UploadThread};

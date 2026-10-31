@@ -82,15 +82,15 @@ is unaffected.
 Use dev-tools noclip, or walk: the back room is reachable through the opening
 while the wall is open.
 
-- **Station 1 — wall fills the screen (player start).** (368, 720, 48), yaw 90
-  (facing +y, north). The closed wall is 8.1 m away, centred, and fills most of
-  the view. While open, only the pocket edge and the back room show. This is
+- **Station 1 — wall ahead (player start).** (368, 720, 48), yaw 90
+  (facing +y, north). The closed wall is 8.1 m away, centred, and covers about
+  37% of the frame at FOV 100. While open, only the pocket edge and the back room show. This is
   the perf station.
 - **Station 2 — rising room from outside.** (560, 320, 48), yaw 0 (facing +x,
   east). The room's doorway wall is 6.9 m ahead. Watch the roof sit flush in
   the floor, then the room rise with the lamp lit inside.
 - **Station 3 — behind the wall.** (368, 1536, 48), yaw 270 (facing −y,
-  south). The north face of the wall fills the view, with the enemy spot in the
+  south). The north face of the wall is centred ahead, with the enemy spot in the
   foreground.
 
 **Enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x

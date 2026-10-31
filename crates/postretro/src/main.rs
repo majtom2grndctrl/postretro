@@ -40,6 +40,8 @@ mod weapon_observers;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
+// The engine load pool: the one place level-load CPU work runs.
+mod load_pool;
 use postretro_physics::kinematic_mover;
 use postretro_sim::mover_commands;
 mod mod_digest;
@@ -1159,6 +1161,11 @@ pub(crate) struct App {
     /// Upload threads of renderers torn down at suspend, joined by the poll
     /// at the top of every redraw once each has finished. Boot lifetime.
     upload_retirements: Vec<postretro_renderer::UploadRetirement>,
+
+    /// The engine load pool, built on first use and kept for the process
+    /// lifetime, suspend and resume included. Shut down without waiting at
+    /// exit. See: `load_pool`.
+    load_pool: load_pool::EngineLoadPool,
 
     /// Runtime level lifecycle requests drained by `startup::lifecycle` at the
     /// redraw boundary, before gameplay/world work for the frame runs.
@@ -2481,6 +2488,7 @@ impl ApplicationHandler for App {
         {
             audio.release_level_sounds();
         }
+        self.load_pool.shutdown();
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");

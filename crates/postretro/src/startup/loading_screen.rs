@@ -179,13 +179,19 @@ impl App {
                 renderer.expect_ui_image(key);
             }
         }
+        // The pool is built on the first load that wants an image.
+        let images = if wanted.is_empty() {
+            LoadingImages::default()
+        } else {
+            LoadingImages::start(self.load_pool.get_or_build(), &self.content_root, wanted)
+        };
         state.active = Some(ActiveLoad {
             tree,
             progress: progress.clone(),
             shown: 0.0,
             ui_time: 0.0,
             delivered: None,
-            images: LoadingImages::start(&self.content_root, wanted),
+            images,
         });
         let ctx = session.scripting.script_ctx.clone();
         write_loading_slot(&ctx, LEVEL_NAME_SLOT, SlotValue::String(entry.name.clone()));

@@ -383,6 +383,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         level_rx: None,
         level_worker: None,
         upload_retirements: Vec::new(),
+        load_pool: crate::load_pool::EngineLoadPool::shipped(),
         level_requests: VecDeque::new(),
         boot_load: false,
         pending_session: Some(PendingSessionInit {

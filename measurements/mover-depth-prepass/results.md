@@ -8,10 +8,8 @@
 - **GPU tests on Metal:** `postretro-renderer` 1167 passed / 0 failed under `POSTRETRO_REQUIRE_GPU=1`. All 23 `planar_gpu_*` tests (incl. the new main-view mover test), gate and kinematic_brush tests executed, none skipped. `postretro` capture/mover tests: 225 passed / 0 failed.
 - Caveat: the Forward/Kinematic/Depth split is the trace's boundary attribution between back-to-back render passes; the sum and frame figures are label-independent (see below).
 
-Kit, poses and reproduction: `README.md`. Machine-readable: `results.json`. Per-run tables:
-`results-batch.md` (the batch), `results-pilot.md` (the pilot). Per-run records, capture
-reports, logs and clock samples: `runs/`. Parity: `parity.json`; framing previews (after
-binary, 640 px): `previews/`.
+Kit, poses and reproduction: `README.md`. Machine-readable, with every run's figures:
+`results.json`. Parity: `parity.json`.
 
 ## Setup
 

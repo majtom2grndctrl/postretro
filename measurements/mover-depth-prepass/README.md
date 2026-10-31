@@ -6,9 +6,8 @@ brush movers write depth in the main and planar depth pre-passes through a verte
 is `5971fb2b6` (the parent of `0e93759a8`); after is `16c7659ff` on
 `claude/compassionate-bohr-en97cc`, which also merges `origin/main`'s netcode and
 level-lifecycle commits (no renderer or capture code). Results: `results.md` and
-`results.json` (which folds in the `results-batch.json` / `results-pilot.json` that `run.py`
-writes); per-run tables in `results-batch.md` and `results-pilot.md`; per-run records in `runs/`;
-pixel parity in `parity.json`; framing previews (after binary, 640 px) in `previews/`.
+`results.json`, which holds every run's figures; pixel parity in `parity.json`. Raw per-run
+records (`runs/`) and framing previews are not kept: `run.py` and `parity.py` regenerate them.
 
 ## Machine
 

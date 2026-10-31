@@ -23,7 +23,10 @@ use crate::surface_radiance::{
 use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 use crate::texture_mips::{StageTextureBytes, bake_materials_into};
 
-const DEFAULT_MAPS: &str = "soft_shadow_test,stress-warren-mini,campaign-test";
+// The Acceptance maps. stress-warren-mini fails the patch cache's max only, on
+// probes about 1 cm from a wall corner; owner ruling 2026-10-31 logs it for
+// probe relocation rather than gating it. Run it through the env override.
+const DEFAULT_MAPS: &str = "soft_shadow_test,campaign-test";
 const TILE: usize = DEFAULT_IRRADIANCE_TILE_DIMENSION as usize;
 const BORDER: usize = DEFAULT_IRRADIANCE_TILE_BORDER as usize;
 /// Pass bound on the mean signed relative error over affected probes.

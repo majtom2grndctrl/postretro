@@ -20,7 +20,7 @@ Owner request: multi-bounce indirect light, and SH bake cost that does not grow 
 - **Bounded.** Patches exist only on world faces after exterior culling. Patches no gather ray reaches are not shaded if that saves meaningfully; the executor measures the hit share and reports it (`development_guide.md` §1.4). The cache's full lifetime and every co-resident copy are charged to the SH stages' working-set accounting. Overage is a named error, never automatic coarsening.
 - **Speed is measured, not gated (owner).** A missed parity row stops for the owner; a small speed-up does not.
 - **Non-goal: emissive bounce.** It reverses the rule that emissive surfaces light nothing (`resource_management.md` §4.5); a separate owner ruling.
-- **Non-goal: embedded-emitter bias in probe bakes.** Parity requires keeping today's emitter path; the roadmap item fixes it afterward.
+- **Patch direct takes the embedded-emitter early-out.** A light whose emitter sphere reaches into geometry can hide a cap from all four probes, so on the plain all-clear early-out its patches would read too bright where the one-sample baseline, which has no early-out, does not. The SH probe fix lands first (owner, 2026-10-30) and gives direct SH and scatter the lightmap's per-light rule (`texel_footprint::EmbeddedEmitters`, `ProbeEarlyOut::for_light`); patch direct reuses it, so a flagged light traces its full set at any patch with a clear probe.
 - **Non-goal: coloured bounce.** Its own step (owner); this brief carries whatever albedo exists.
 
 ## Acceptance
@@ -30,31 +30,51 @@ Parity: per-probe pre-encode irradiance, single-bounce cache vs the one-sample e
 - [ ] On `campaign-test` and a fixture room, id 34 differences at p50, p99 and max are no larger than the BC6H encode error the baseline volume carries at the same percentiles.
 - [ ] On a fixture with an animated light, id 27 meets the same bound, and base + Σ deltas at full animation equals the all-static bake of the same lights within it.
 - [ ] A probe whose rays all miss geometry reads black; a map with zero static lights bakes an all-zero id 34.
-- [ ] A back-face hit reads what the baseline estimator reads for it.
+- [ ] A back-face hit reads what the baseline estimator reads for it, within the parity bound.
+- [ ] A cold bake traces no shadow ray from a probe gather hit; shadow rays come from patch direct only, and halving probe spacing or doubling rays per probe leaves that count unchanged (cfg(test) counters; research P1).
+- [ ] Over the same probes, the single-bounce cache's mean signed relative error against the one-sample bake is within ±1%, for id 34 and id 27.
+- [ ] id 34 probe depth moments are byte-identical to the one-sample bake's (research P14).
+- [ ] On the embedded-emitter fixture, patches beside a flagged light store its full-set visibility, and patch radiance matches a no-early-out reference within the parity bound (research P13).
+- [ ] A map lit only by emissive textures bakes an all-zero id 34 and allocates no patch layer (research P11).
 
 Multi-bounce:
 - [ ] A probe in a room lit only by bounce off an adjacent lit room reads brighter with multi-bounce than single-bounce; a probe in direct-lit open space changes by less than the parity bound.
 - [ ] Each added bounce adds less energy than the one before, and the total converges under a fixed bounce count.
 - [ ] At s = 0, id 34 and id 27 bytes equal single-bounce output; at s = 1, the unscaled multi-bounce sum; between, each probe reads between the two per channel.
+- [ ] With s > 0, a patch reached only by a later-bounce gather stores its bounce-one radiance; the reach skip drops only patches no gather of any bounce reads, and the skipped set is identical at one worker and at many (research P2).
+- [ ] A closed room of albedo-1 faces at s = 1 bakes a finite id 34, no brighter than bounce count × bounce one per probe per channel (research P10).
 
 Locality and keys:
-- [ ] A patch reached by no light stores zero bounce-one radiance; a patch in reach stores nonzero.
-- [ ] Warm, after one light edit: only that light's patch layer, and only groups and delta entries whose reaching sets hold it, re-bake (counts asserted). Groups beyond its reach hit cache.
+- [ ] A patch reached by no light stores zero bounce-one radiance; a patch inside a light's range, facing it, with a clear segment to it, stores nonzero.
+- [ ] Warm, after one light edit: only that light's patch layer, and only groups whose reaching sets held it before or hold it after the edit, re-bake; a static edit re-bakes no indirect delta entry, and an animated edit only that light's entries (counts asserted). Groups beyond its reach hit cache.
 - [ ] Changing s re-keys the SH stages; restoring it hits cache.
 - [ ] Warm output is never brighter than cold per probe per channel.
+- [ ] After removing a static light, inserting one ahead of the others, or adding a duplicate of one, every patch layer served from cache equals the same light's layer in a cold bake of the edited map, byte for byte; layers of lights whose global index moved re-bake (research P3, P4).
+- [ ] After reordering animated lights in the map, warm id 27 equals cold id 27 byte for byte (research P5).
+- [ ] A geometry edit, a texture-mean edit or a saturation edit re-keys every patch layer, SH group and indirect delta entry; restoring the edit hits cache (research P6, P7).
+- [ ] The first warm build after this change misses every pre-cache `sh_group` and indirect delta entry (research P8).
+- [ ] The later-bounce scale is listed in `prl-build --help`, a non-finite or out-of-range value fails before any stage runs, and no file under `docs/` names it (grep gate).
 
 Order and determinism:
-- [ ] Cold bytes identical at one worker and at many, and across repeat runs.
-- [ ] Atlas-preparation face cuts leave id 34 and id 27 unchanged.
+- [ ] Cold id 34 and id 27 bytes identical at one worker and at many, and across repeat runs.
+- [ ] Cold id 34 and id 27 bytes are unchanged by a populated build cache directory and by a governor pause during patch shading.
+- [ ] Two cold bakes that differ only in lightmap density, so in atlas-preparation face cuts, give identical id 34 and id 27 bytes.
+- [ ] Every probe and patch gather traces the same fixed direction set across two bakes with different lights and s, and no gather direction reads cache radiance (test, plus a grep gate on gather-direction sources).
+- [ ] The diff touches no file under `crates/level-format`, the runtime crates or shaders, and adds no `SectionId`; a cold `campaign-test` bake's section list equals the pre-change list (diff and grep gate).
 
 Bounds:
 - [ ] Cache peak bytes and lifetime measured on the full hallway; counted by the working-set accounting; freed before atlas preparation. A forced-low budget fails with the named error.
+- [ ] A forced-low budget refuses with the named error before any patch is shaded or probe ray traced (research P9).
+- [ ] On the full hallway, patch-layer cache entries' total bytes are measured and reported against `--cache-max-size`; serialization buffers count toward the cache's peak.
+- [ ] A map with no animated lights builds no unit layer (research P12).
+- [ ] Patch count equals the patches over the Geometry stage's static world faces; a fixture with a mover and an exterior-culled face gets no patch on either.
 
 ### Measurement (report, not gate)
+- [ ] Sizing pass, before build: share of cold one-sample SH Bake and Delta SH Bake spent on shadow rays at gather hits, on the full hallway and `stress-warren-mini`, recorded in `research.md`.
 - [ ] Cold `--release --no-cache` Build Summary on hallway-mini, the full hallway, `stress-warren-mini` and `campaign-test`, before (one-sample estimator) and after: SH Bake, Delta SH Bake and total, serialized one bake at a time. Share of patches gather rays reach.
 
 ### Manual
-- [ ] Owner A/B at `campaign-test` stations: s = 0, an intermediate s, and s = 1. Shadowed fill reads right, no hot spots, overall energy acceptable; the owner picks the default s.
+- [ ] Owner A/B at `campaign-test` stations on `--release` builds: s = 0, an intermediate s, and s = 1. Shadowed fill reads right, no hot spots, overall energy acceptable; the owner picks the default s.
 - [ ] Entities and fog under the new id 34 show no patch-scale blotches or new leaks.
 
 ## Path

@@ -57,9 +57,28 @@ Inside SH Bake, one `perf` profile (warren-mini, before c855e3e, 2026-10-07): pr
 | `drafts/lighting-scale--cold-bake-reaching-light-spike` out-of-scope item 1 (bounce samples at 32) | Moot once shadow rays leave probe hits |
 | `drafts/lighting-scale--sh-delta-cell-major-two-pass-bake` | Parked contingency, post-bake RAM reorder; its first slice assumes `base + Σ deltas` bytes this brief changes |
 | `drafts/lighting-scale--sh-delta-receiver-reach-cull` | No work; id 41 only |
-| Roadmap: embedded-emitter bias in SH probe bakes | Patch direct keeps today's four-probe path, so the bias carries into the cache; that item fixes it there afterward |
+| Roadmap: embedded-emitter bias in SH probe bakes | Lands first (owner, 2026-10-30). The one-sample bounce already has no early-out, so the baseline is unbiased; the fix gives direct SH and scatter `ProbeEarlyOut::for_light`, and patch direct reuses it so the cache does not reintroduce the bias |
 | Roadmap: SH probe classification and relocation | Consumes leak counts from the cache's gather rays later |
 | Roadmap: emissive bounce | Separate owner ruling |
+
+## Pin table
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Probe gather ray hits a world face | Patch direct (and any later bounces) finish before a probe gather reads a patch; the hit looks up a patch and traces no shadow ray | Gather traces zero shadow rays. Shadow rays come from patch direct only, and their count does not depend on probe count or rays per probe |
+| P2 | Reach skip with s > 0 | Probe gathers mark the patches they reach → bounce-one shading → later-bounce patch gathers read bounce-one radiance, including from patches no probe ray reached | Every patch a later-bounce gather reads has bounce-one radiance. The skip drops only patches that no gather of any bounce reads |
+| P3 | Static light removed, inserted ahead of others, or flipped to animated | The edit moves the global index of every later static light, so their seeds move | The layer of every light whose global index moved re-keys and re-bakes, the same set today's `group_cache_key` re-keys. A layer served from cache equals the cold layer byte for byte |
+| P4 | Two static lights with identical keyed params | Same content, different global index | Two layer entries. Neither is served for the other |
+| P5 | Animated lights reordered in the `.map` | List position changes; the keyed unit light does not | Warm id 27 equals cold id 27 byte for byte (`build_pipeline.md` §Build Cache: delta seeds follow the keyed light, with no light-global seed axis) |
+| P6 | Geometry edit outside a light's reach | Patch ids taken from pre-cut face order can shift | A layer served from cache equals the cold layer. With today's whole-map geometry hash, every layer, group and delta entry re-bakes |
+| P7 | Texture-mean or saturation edit | Bounce albedo goes into patch radiance before the gather | Every patch layer, group and delta entry re-keys. Restoring both values hits cache (precedent `colour_key_tests.rs`) |
+| P8 | First warm build after the change lands | SH group and indirect delta stage versions bump | Every pre-cache `sh_group` and indirect delta entry misses |
+| P9 | Forced-low working-set budget | The SH-delta gate runs before Materials and before any SH ray (`pipeline.rs` `run_after_parsing`) | Refuses with the named error before any patch is shaded or probe ray traced. Never coarsens |
+| P10 | Closed room, albedo-1 faces, s = 1 | Each bounce ≈ previous bounce × albedo × enclosure | Energy per bounce does not fall. The total is bounded by bounce count × bounce one and stays finite |
+| P11 | Zero static lights; emissive textures only | No layer to build | No patch layer allocated; id 34 all zero |
+| P12 | Zero animated lights | No unit layer to build | No unit layer built; static-only layout, no id 27 |
+| P13 | Light whose emitter sphere reaches into geometry | Embedded classification on pre-cut geometry runs before patch direct, ahead of AtlasPreparation | A flagged light traces its full set at a patch with a clear probe set |
+| P14 | Probe gather hit distance | The ray's hit distance is taken before patch lookup | id 34 depth moments are byte-identical to the one-sample bake |
 
 ## Warm-locality shape
 

@@ -1,7 +1,7 @@
 # surface-radiance-cache — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: d2bda6032
 
 Source re-verified at d2bda6032. The only level-compiler commit since the brief's `faaaf8680` is 097b9fa18 (probe-point embedded emitters, the "lands first" dependency). No Decision premise is false.

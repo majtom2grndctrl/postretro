@@ -101,7 +101,7 @@ Recommended direction after an independent review (2026-10-23). Today's stack, f
 | 2 | Door classification, door influence graph, light → cell reach + compile report (doors, gated lights, texels, KiB) | None; sizes step 5 | Compile-only | None |
 | 3 | Portal-gated reach for runtime lights and fog, from step 2's reach | No regression with doors open | Runtime | Low (Doom 3 prior art) |
 | 4 | Surface radiance cache + surface gather for SH base and deltas | Grey single-bounce mode reproduces id 34 within BC6H tolerance on the campaign map; hallway-mini bake time falls; owner A/B on colour bleeding and multi-bounce | Bake path flag | Bake-only; uniform or cosine rays; no shipped patch lists |
-| 5 | Door channel, world direct (additive PRL section) | Step 2 sizes; masks ≤ ~10% of lightmap mandatory set; ≤ 0.2 ms per door event on the 5300M | Section droppable | Visibility masks, not a swapped ambient layer (Take-Two, claims unread) |
+| 5 | Door channel, world direct (additive PRL section) | Step 2 sizes; masks ≤ ~10% of lightmap mandatory set; ≤ 0.2 ms per door event on the 5300M | Section droppable | Visibility masks, not a swapped ambient layer (Take-Two granted claims read 2026-10-30: absent; watch continuations) |
 | 6 | Door factor in direct-SH compose | Entity behind a closed door goes dark, no promotion pop | Yes | As step 5 |
 | 7 | Slab shadows | 5300M forward ≤ ~0.5 ms at the kinematic-platform stations; promoted-slot pressure falls | Runtime | Kay–Kajiya 1986; not charted |
 | 8 | Probe classification and relocation, fed by step 4's leak counts and navmesh-guided coarsening | Stored tiles and residency fall; no entity or fog regression | Small format change | Appears clear |
@@ -125,7 +125,7 @@ Patent risk sits in runtime update triggers and runtime data layouts, not in bak
 |---|---|---|---|
 | Surface gather | Keep; first | Probes gather 256 rays from the cache instead of re-shadowing every light at every hit. Hallway shadow rays ~47 G → ~0.3 G, plus 246 M gather rays (*est.*, ~6 lights per hit). Adds colour bleeding and optional multi-bounce, so the look changes | Uniform or cosine rays (ARM '177); never ship patch lists (MS '270 cl. 7) |
 | Door influence graph | Keep | Per door: cells, lights, compose rows, texel bounds. Feeds the door channel's light set, compose scoping, seam hints across door and choke portals, a mapper report. A few KB per door | Scopes work; never drops probes at read time ('372) |
-| Light → cell reach | Keep | Bits for the cells whose texels each light lit, ~110 KB for 157 lights × 5,700 cells (*est.*). Filtered by blocked portals at runtime, it replaces sphere-vs-reachable-cell tests for graft 2, the ranker pre-cull and fog | Low (Doom 3) |
+| Light → cell reach | Keep; redefine first | Bits for the cells whose texels or direct-SH receivers each light reaches (texels alone miss characters a light touches where it lights no surface), ~110 KB for 157 lights × 5,700 cells (*est.*). Filtered by blocked portals at runtime, it replaces sphere-vs-reachable-cell tests for graft 2, the ranker pre-cull and fog | Low (Doom 3) |
 | Leak counts | Keep | Backface hits among the radiance rays, plus texel samples inside solids → relocation, validity, mapper report | NVIDIA app, Unity Virtual Offset prior art |
 | Navmesh-guided coarsening | Keep | Protects probes near navmesh and walkable air from coarsening. Never culls: fog, projectiles and jump arcs need air probes | — |
 | Texel-step detector | Keep | Supersamples a sample of texels against the shipped lightmap; warns and suggests `_lightmap_scale`. Makes "edges never show their storage lattice" a compile check | — |
@@ -133,7 +133,7 @@ Patent risk sits in runtime update triggers and runtime data layouts, not in bak
 | Edge-driven density | Only if shadowmask-mode owners fall short | Automates `_lightmap_scale` per face; grows post-atlas cache keys and the mandatory set | Heckbert 1990, q3map2 |
 | Specular occlusion cones | Optional | Bent normal + aperture from gather rays darken owner specular and probe reflections in crevices; ~2 B/texel coarse | — |
 | Emissive bounce | Owner ruling | Opt-in per material. Reverses the recorded rule that emissive surfaces light nothing | q3map2 surface lights |
-| Mover rest-pose channel | Later | Door channel for every mover terminus (docked lifts, platforms) | Contact-AO variant needs counsel (Take-Two) |
+| Mover rest-pose channel | Later | Door channel for every mover terminus (docked lifts, platforms) | Contact-AO variant sits closest to Take-Two's description; granted claims absent, watch continuations |
 
 Killed: link-based probe culling (distance-to-surface and navmesh say the same, and air probes are needed); runtime irradiance gradients (bilinear already reconstructs; as a bake cache only on a fixed grid, to keep cold bakes byte-identical); light trees for entity direct (no per-receiver static occlusion, so they leak through walls; the falloff early-out already took the many-light win); bake-time patch links (ray gathers from the cache do the same job); bounce-layer direction (no bounce layer).
 
@@ -141,7 +141,7 @@ Killed: link-based probe culling (distance-to-surface and navmesh say the same, 
 
 Doors are plain `kinematic_mover`s. Bake already auto-detects seals: a portal is sealed when the union of the mover's convex brushes at waypoint 0 fully covers it. The owner chose auto-detect over an opt-in KVP for camera occlusion (`E17--doors-as-occluders`), with a per-mover override named as an additive extension.
 
-Light-door rule: seals ≥ 1 portal at waypoint 0, has a terminus (`once` or `ping_pong` over a finite chain), not a pure rotator. Open state is the last waypoint. A path with more waypoints fades by path parameter, with a warning. Override KVP, e.g. `_light_door` = `auto` / `on` / `off`: `off` for movers that never rest closed; `on` for partial blockers that seal no portal (shutters, grates), gating lights whose reach overlaps the mover's bounds.
+Light-gate rule (owner, 2026-10-31; `plans/ready/mover-light-flow--foundation/`): the unit is (mover, terminus), not door. Every mover without a spin axis is posed at its first and last waypoint. A pair gates a light when it measurably blocks texels or probes the bake lit, not when it seals a portal, so the open pose, risen rooms, shutters and grates need no override. Doors are the pairs whose waypoint-0 pose seals portals. Intermediate waypoints and mid-segment stops are not states; masks exist only at termini. Override KVP (`_light_door` or similar) waits for a consumer.
 
 | Per door | Baked |
 |---|---|
@@ -252,7 +252,7 @@ Items 1–3 and 7 serve the hybrid (the roadmap's door item and hybrid GI measur
 - Shadowmask-mode owners: moves owner lights' diffuse from bake to runtime.
 - Which materials may read glossy probe reflections, and who flags them.
 - Redesign only, if unparked: tolerance for flatter entity and fog lighting in large cells (or a probes-per-large-cell rule); whether patches store L1 SH (better normal response, more bytes).
-- Allowing patent hosts in the environment's network policy so the newer filings can be charted against claim text (hosts and counsel questions in [ip-check.md](ip-check.md)), and when to engage counsel.
+- When to engage counsel. Patent hosts (`patents.google.com`, `patentscope.wipo.int`) are allowed in the default environment as of 2026-10-30, so remaining filings can be charted against claim text first ([ip-check.md](ip-check.md)).
 
 ## Provenance
 

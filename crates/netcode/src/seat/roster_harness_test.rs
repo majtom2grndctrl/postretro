@@ -106,7 +106,7 @@ fn drain_rosters(
         .filter_map(|message| match message {
             ServerControlMessage::SessionRoster(roster) => Some(roster),
             ServerControlMessage::Divergence(_)
-            | ServerControlMessage::Relevel(_)
+            | ServerControlMessage::Relevel { .. }
             | ServerControlMessage::Tuning(_) => None,
         })
         .collect()

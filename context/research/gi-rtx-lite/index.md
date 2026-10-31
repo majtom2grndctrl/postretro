@@ -125,7 +125,7 @@ Patent risk sits in runtime update triggers and runtime data layouts, not in bak
 |---|---|---|---|
 | Surface gather | Keep; first | Probes gather 256 rays from the cache instead of re-shadowing every light at every hit. Hallway shadow rays ~47 G → ~0.3 G, plus 246 M gather rays (*est.*, ~6 lights per hit). Adds colour bleeding and optional multi-bounce, so the look changes | Uniform or cosine rays (ARM '177); never ship patch lists (MS '270 cl. 7) |
 | Door influence graph | Keep | Per door: cells, lights, compose rows, texel bounds. Feeds the door channel's light set, compose scoping, seam hints across door and choke portals, a mapper report. A few KB per door | Scopes work; never drops probes at read time ('372) |
-| Light → cell reach | Keep | Bits for the cells whose texels each light lit, ~110 KB for 157 lights × 5,700 cells (*est.*). Filtered by blocked portals at runtime, it replaces sphere-vs-reachable-cell tests for graft 2, the ranker pre-cull and fog | Low (Doom 3) |
+| Light → cell reach | Keep; redefine first | Bits for the cells whose texels or direct-SH receivers each light reaches (texels alone miss characters a light touches where it lights no surface), ~110 KB for 157 lights × 5,700 cells (*est.*). Filtered by blocked portals at runtime, it replaces sphere-vs-reachable-cell tests for graft 2, the ranker pre-cull and fog | Low (Doom 3) |
 | Leak counts | Keep | Backface hits among the radiance rays, plus texel samples inside solids → relocation, validity, mapper report | NVIDIA app, Unity Virtual Offset prior art |
 | Navmesh-guided coarsening | Keep | Protects probes near navmesh and walkable air from coarsening. Never culls: fog, projectiles and jump arcs need air probes | — |
 | Texel-step detector | Keep | Supersamples a sample of texels against the shipped lightmap; warns and suggests `_lightmap_scale`. Makes "edges never show their storage lattice" a compile check | — |
@@ -141,7 +141,7 @@ Killed: link-based probe culling (distance-to-surface and navmesh say the same, 
 
 Doors are plain `kinematic_mover`s. Bake already auto-detects seals: a portal is sealed when the union of the mover's convex brushes at waypoint 0 fully covers it. The owner chose auto-detect over an opt-in KVP for camera occlusion (`E17--doors-as-occluders`), with a per-mover override named as an additive extension.
 
-Light-door rule: seals ≥ 1 portal at waypoint 0, has a terminus (`once` or `ping_pong` over a finite chain), not a pure rotator. Open state is the last waypoint. A path with more waypoints fades by path parameter, with a warning. Override KVP, e.g. `_light_door` = `auto` / `on` / `off`: `off` for movers that never rest closed; `on` for partial blockers that seal no portal (shutters, grates), gating lights whose reach overlaps the mover's bounds.
+Light-gate rule (owner, 2026-10-31; `plans/ready/mover-light-flow--foundation/`): the unit is (mover, terminus), not door. Every mover without a spin axis is posed at its first and last waypoint. A pair gates a light when it measurably blocks texels or probes the bake lit, not when it seals a portal, so the open pose, risen rooms, shutters and grates need no override. Doors are the pairs whose waypoint-0 pose seals portals. Intermediate waypoints and mid-segment stops are not states; masks exist only at termini. Override KVP (`_light_door` or similar) waits for a consumer.
 
 | Per door | Baked |
 |---|---|

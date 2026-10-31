@@ -7,8 +7,13 @@ use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 
-use crate::prl::{LevelWorld, PrlLoadError};
+use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
+use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
+
+use crate::prl::PrlLoadError;
 use crate::prl_loader::section_validation_from_error;
+use crate::sh_stream::ShStreamManifest;
 
 /// Decode the always-present environment section. Absence means the PRL was
 /// built before level gravity left FogVolumes, whose old layout the current
@@ -141,11 +146,14 @@ pub(crate) fn decode_reflection_probes(
 /// A non-identity id 27 animates a share by another light's curve; a
 /// non-identity id 45 animates the world's direct term for that light by a
 /// different descriptor than its reflection.
-pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(), PrlLoadError> {
-    let Some(section) = world.reflection_probes.as_ref() else {
+pub(crate) fn validate_reflection_probe_lights(
+    reflection_probes: Option<&ReflectionProbesSection>,
+    roster: ReflectionProbeRoster<'_>,
+) -> Result<(), PrlLoadError> {
+    let Some(section) = reflection_probes else {
         return Ok(());
     };
-    let roster_len = world.animation_descriptors().len();
+    let roster_len = roster.animation_descriptor_count();
     for (p, probe) in section.probes.iter().enumerate() {
         for light in probe.lights.iter().filter(|light| light.is_used()) {
             if light.roster_index as usize >= roster_len {
@@ -162,11 +170,11 @@ pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(),
     for (table, indices) in [
         (
             "DeltaShVolumes (id 27)",
-            indirect_delta_descriptor_indices(world),
+            roster.indirect_delta_descriptor_indices(),
         ),
         (
             "AnimatedDirectShDeltaVolumes (id 45)",
-            world.animated_direct_descriptor_indices(),
+            roster.animated_direct_descriptor_indices(),
         ),
     ] {
         if let Some((slot, descriptor)) = indices
@@ -177,8 +185,7 @@ pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(),
             return Err(section_validation_from_error(
                 "ReflectionProbes",
                 format!(
-                    "{table} maps animated light {slot} to descriptor {descriptor}; probe shares \
-                     need the identity roster"
+                    "{table} maps animated light {slot} to descriptor {descriptor}; probe shares                      need the identity roster"
                 ),
             ));
         }
@@ -186,17 +193,57 @@ pub(crate) fn validate_reflection_probe_lights(world: &LevelWorld) -> Result<(),
     Ok(())
 }
 
-/// Id 27's roster-to-descriptor table, from the streaming metadata or the
-/// resident section; empty when the level has no indirect delta.
-fn indirect_delta_descriptor_indices(world: &LevelWorld) -> &[u32] {
-    match world.sh_stream_manifest() {
-        Some(manifest) => manifest
-            .sources()
-            .indirect_delta
-            .as_ref()
-            .map_or(&[], |metadata| &metadata.animation_descriptor_indices),
-        None => world
-            .delta_sh_volumes()
-            .map_or(&[], |section| &section.animation_descriptor_indices),
+/// The lighting parts [`validate_reflection_probe_lights`] reads: the
+/// animated-light roster and both roster-to-descriptor tables, from the SH
+/// streaming metadata when the level streams SH, else from the resident
+/// sections. Mirrors `LevelWorld::animation_descriptors` and
+/// `LevelWorld::animated_direct_descriptor_indices`, so the check can run
+/// before the world is assembled.
+#[derive(Clone, Copy)]
+pub(crate) struct ReflectionProbeRoster<'a> {
+    pub(crate) sh_manifest: Option<&'a ShStreamManifest>,
+    pub(crate) sh_volume: Option<&'a OctahedralShVolumeSection>,
+    pub(crate) delta_sh_volumes: Option<&'a DeltaShVolumesSection>,
+    pub(crate) animated_direct_sh_delta_volumes: Option<&'a AnimatedDirectShDeltaVolumesSection>,
+}
+
+impl<'a> ReflectionProbeRoster<'a> {
+    fn animation_descriptor_count(&self) -> usize {
+        match self.sh_manifest {
+            Some(manifest) => manifest.base().animation_descriptors.len(),
+            None => self
+                .sh_volume
+                .map_or(0, |section| section.animation_descriptors.len()),
+        }
+    }
+
+    /// Id 27's roster-to-descriptor table; empty when the level has no
+    /// indirect delta.
+    fn indirect_delta_descriptor_indices(&self) -> &'a [u32] {
+        match self.sh_manifest {
+            Some(manifest) => manifest
+                .sources()
+                .indirect_delta
+                .as_ref()
+                .map_or(&[], |metadata| &metadata.animation_descriptor_indices),
+            None => self
+                .delta_sh_volumes
+                .map_or(&[], |section| &section.animation_descriptor_indices),
+        }
+    }
+
+    /// Id 45's roster-to-descriptor table; empty when the level has no
+    /// animated direct delta.
+    fn animated_direct_descriptor_indices(&self) -> &'a [u32] {
+        match self.sh_manifest {
+            Some(manifest) => manifest
+                .sources()
+                .animated_direct_delta
+                .as_ref()
+                .map_or(&[], |metadata| &metadata.animation_descriptor_indices),
+            None => self
+                .animated_direct_sh_delta_volumes
+                .map_or(&[], |section| &section.animation_descriptor_indices),
+        }
     }
 }

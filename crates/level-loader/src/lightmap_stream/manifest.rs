@@ -48,6 +48,26 @@ pub struct LightmapStreamManifest {
     content_tag: [u8; 32],
 }
 
+/// Test-only view for comparing two loads of one PRL.
+#[cfg(test)]
+impl LightmapStreamManifest {
+    /// Every field but the retained file handle (whose `Debug` names an OS
+    /// handle), so two loads of one file compare equal field by field.
+    pub(crate) fn content_debug(&self) -> String {
+        let Self {
+            file: _,
+            lightmap,
+            shadowmask,
+            lightmap_section,
+            shadowmask_section,
+            content_tag,
+        } = self;
+        format!(
+            "{lightmap:?} {shadowmask:?} {lightmap_section:?} {shadowmask_section:?} {content_tag:?}"
+        )
+    }
+}
+
 impl LightmapStreamManifest {
     /// The id-22/42 index parsers already hold each block's blobs adjacent
     /// (irradiance then direction; group A then group B), so a pair is

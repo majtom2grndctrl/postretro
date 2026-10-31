@@ -313,9 +313,59 @@ pub(super) struct EntityDecode {
     pub(super) navmesh: Option<NavMeshSection>,
 }
 
+impl EntityDecode {
+    /// Hand-out 4: the decoded entity group plus the cell draw index. The
+    /// fog cell masks are not part of it: parse-end cross-section validation
+    /// owns them, so they ride hand-out 5. Take them out first.
+    pub(super) fn into_hand_out(
+        self,
+        cell_draw_index: Option<crate::CellDrawIndex>,
+    ) -> super::staged::EntitiesHandOut {
+        let EntityDecode {
+            data_script,
+            map_entities,
+            kinematic_geometry,
+            trigger_volumes,
+            teleporters,
+            ghost_links,
+            environment_volumes,
+            environment_push_forces,
+            reflection_probes,
+            fog_volumes,
+            fog_pixel_scale,
+            fog_cell_masks,
+            navmesh,
+        } = self;
+        debug_assert!(
+            fog_cell_masks.is_none(),
+            "fog cell masks leave the entity group before hand-out 4"
+        );
+        super::staged::EntitiesHandOut {
+            data_script,
+            map_entities,
+            kinematic_geometry,
+            trigger_volumes,
+            teleporters,
+            ghost_links,
+            environment_volumes,
+            environment_push_forces,
+            reflection_probes,
+            fog_volumes,
+            fog_pixel_scale,
+            navmesh,
+            cell_draw_index,
+        }
+    }
+}
+
+/// Decodes the entity group. `usable_portal_count` is the length of the
+/// usable portal array spatial decode produced (`None` when the level has no
+/// usable portals): mover sealed-portal ids it cannot address are dropped
+/// here, so the kinematic geometry leaves this decode final.
 pub(super) fn decode_entities(
     container: &PrlContainer,
     lights: &[MapLight],
+    usable_portal_count: Option<usize>,
 ) -> Result<EntityDecode, PrlLoadError> {
     let read_section = |section: SectionId| container.read_section(section as u32);
 
@@ -354,6 +404,18 @@ pub(super) fn decode_entities(
             None => KinematicGeometry::default(),
         };
     drop_invalid_carried_light_links(&mut kinematic_geometry, lights);
+    // Only the usable array's length decides this drop, so it runs here
+    // rather than beside the parse-end adjacency check that the array is
+    // otherwise validated by.
+    if let Some(portal_count) = usable_portal_count {
+        let dropped_count =
+            drop_out_of_range_sealed_portal_ids(&mut kinematic_geometry, portal_count);
+        if dropped_count > 0 {
+            log::warn!(
+                "[PRL] KinematicGeometry: dropped {dropped_count} sealed portal id(s) outside the {portal_count} loaded portals",
+            );
+        }
+    }
     let kinematic_vertex_count: usize = kinematic_geometry
         .movers
         .iter()

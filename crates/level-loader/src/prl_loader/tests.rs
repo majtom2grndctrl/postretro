@@ -132,7 +132,7 @@ fn write_cell_visibility_load_fixture(
     write_prl_load_fixture(section, name)
 }
 
-fn zero_grid_cluster_directory(resource_ids: &[SectionId]) -> ClusterDirectorySection {
+pub(super) fn zero_grid_cluster_directory(resource_ids: &[SectionId]) -> ClusterDirectorySection {
     ClusterDirectorySection {
         runtime_cell_count: 2,
         primitive_limit: 64,
@@ -179,7 +179,7 @@ fn zero_grid_cluster_directory(resource_ids: &[SectionId]) -> ClusterDirectorySe
     }
 }
 
-fn cluster_directory_blob(section: &ClusterDirectorySection) -> prl_format::SectionBlob {
+pub(super) fn cluster_directory_blob(section: &ClusterDirectorySection) -> prl_format::SectionBlob {
     prl_format::SectionBlob {
         section_id: SectionId::ClusterDirectory as u32,
         version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
@@ -862,7 +862,7 @@ fn sample_kinematic_vertex(position: [f32; 3]) -> PrlVertex {
     )
 }
 
-fn sample_kinematic_section() -> KinematicGeometrySection {
+pub(super) fn sample_kinematic_section() -> KinematicGeometrySection {
     KinematicGeometrySection {
         version: KINEMATIC_GEOMETRY_VERSION,
         movers: vec![KinematicMoverRecord {

@@ -15,14 +15,14 @@ use postretro_level_format::{self as prl_format, SectionId};
 use postretro_render_data::influence::LightInfluence;
 
 use super::geometry::GeometryDecode;
-use super::spatial::{SpatialDecode, SpatialSections};
+use super::spatial::SpatialSections;
 use crate::lightmap_stream::{
     LightmapResidencyInputs, LightmapResidencyRead, LightmapStreamingMode,
 };
 use crate::prl_container::PrlContainer;
 use crate::prl_lightmap::{LoadedLightmap, LoadedShadowmask};
 use crate::sh_stream::ShStreamManifest;
-use crate::{FalloffModel, LightType, MapLight, PrlLoadError, ShadowType};
+use crate::{FalloffModel, LightType, MapLight, PortalData, PrlLoadError, ShadowType};
 
 pub(crate) fn convert_alpha_lights(section: AlphaLightsSection) -> Vec<MapLight> {
     section
@@ -82,7 +82,8 @@ pub(super) fn decode_lighting(
     streaming: Option<&ShStreamManifest>,
     lightmap_requested: LightmapStreamingMode,
     geometry: &GeometryDecode,
-    spatial: &SpatialDecode,
+    spatial: &SpatialSections,
+    portal_data: Option<&[PortalData]>,
 ) -> Result<LightingDecode, PrlLoadError> {
     let read_section = |section: SectionId| container.read_section(section as u32);
     let GeometryDecode {
@@ -94,8 +95,7 @@ pub(super) fn decode_lighting(
         cells,
         cell_residency_set,
         ..
-    } = &spatial.sections;
-    let portal_data = &spatial.portal_data;
+    } = spatial;
 
     // Optional — older maps fall back to empty with a warning.
     let mut lights: Vec<MapLight> = match read_section(SectionId::AlphaLights)? {

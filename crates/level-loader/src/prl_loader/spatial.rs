@@ -407,16 +407,9 @@ pub(crate) fn convert_usable_portals(section: &PortalsSection) -> Option<Vec<Por
     Some(portal_data)
 }
 
-/// Spatial data that ships in `LevelWorld` as decoded.
-pub(super) struct SpatialSections {
-    pub(super) bvh: BvhTree,
-    pub(super) cells: Vec<CellData>,
-    pub(super) cell_portal_refs: Vec<u32>,
-    pub(super) cell_visibility: Option<CellVisibility>,
-    pub(super) cell_residency_set: Option<CellResidencySetSection>,
-    pub(super) cell_locator_root: CellLocatorChild,
-    pub(super) cell_locator_nodes: Vec<CellLocatorNodeData>,
-}
+/// Spatial data that ships in `LevelWorld` as decoded: hand-out 3 of the
+/// staged parse. The portal graph is held apart until parse-end validation.
+pub(super) type SpatialSections = super::staged::SpatialHandOut;
 
 /// Wire-form sections and table facts kept only for parse-end validation.
 pub(super) struct SpatialValidationInputs {
@@ -431,6 +424,9 @@ pub(super) struct SpatialValidationInputs {
 pub(super) struct SpatialDecode {
     pub(super) sections: SpatialSections,
     pub(super) validation_inputs: SpatialValidationInputs,
+    /// Flat portal-index adjacency referenced by `cells[*].portal_ref_*`;
+    /// validated against the portals at parse end.
+    pub(super) cell_portal_refs: Vec<u32>,
     /// Usable portal graph; adjacency against the cells is validated at parse end.
     pub(super) portal_data: Option<Vec<PortalData>>,
 }
@@ -582,7 +578,6 @@ pub(super) fn decode_spatial(
         sections: SpatialSections {
             bvh,
             cells,
-            cell_portal_refs,
             cell_visibility,
             cell_residency_set,
             cell_locator_root,
@@ -596,6 +591,7 @@ pub(super) fn decode_spatial(
             has_legacy_bsp_nodes,
             has_legacy_bsp_leaves,
         },
+        cell_portal_refs,
         portal_data,
     })
 }

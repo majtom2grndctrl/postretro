@@ -10,12 +10,10 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 
-use super::entities::{EntityDecode, drop_out_of_range_sealed_portal_ids};
 use super::geometry::GeometryDecode;
 use super::lighting_sh::ShCompanions;
-use super::spatial::{SpatialDecode, SpatialSections};
+use super::spatial::{SpatialSections, SpatialValidationInputs};
 use super::{ambiguous_runtime_bsp_sections, section_validation};
-use crate::prl::KinematicGeometry;
 use crate::{CellData, MapLight, PortalData, PrlLoadError};
 
 fn validate_light_cells(lights: &[MapLight], cells: &[CellData]) -> Result<(), PrlLoadError> {
@@ -236,23 +234,25 @@ fn validate_portal_adjacency(
     Ok(())
 }
 
-/// Checks that need sections from more than one group. Replaces
-/// `entities.fog_cell_masks` with its validated form.
+/// Checks that need sections from more than one group. Returns the fog cell
+/// masks in their validated form; they are final only after this check.
 pub(super) fn validate_cross_sections(
     geometry: &GeometryDecode,
-    spatial: &SpatialDecode,
+    spatial: &SpatialSections,
+    validation_inputs: &SpatialValidationInputs,
     lights: &[MapLight],
-    entities: &mut EntityDecode,
-) -> Result<(), PrlLoadError> {
+    fog_volume_count: usize,
+    fog_cell_masks: Option<Vec<u32>>,
+) -> Result<Option<Vec<u32>>, PrlLoadError> {
     let GeometryDecode {
         vertices,
         indices,
         face_meta,
         ..
     } = geometry;
-    let SpatialSections { bvh, cells, .. } = &spatial.sections;
-    let has_legacy_bsp_nodes = spatial.validation_inputs.has_legacy_bsp_nodes;
-    let has_legacy_bsp_leaves = spatial.validation_inputs.has_legacy_bsp_leaves;
+    let SpatialSections { bvh, cells, .. } = spatial;
+    let has_legacy_bsp_nodes = validation_inputs.has_legacy_bsp_nodes;
+    let has_legacy_bsp_leaves = validation_inputs.has_legacy_bsp_leaves;
 
     validate_light_cells(lights, cells)?;
 
@@ -267,11 +267,7 @@ pub(super) fn validate_cross_sections(
         return Err(ambiguous_runtime_bsp_sections(sections.join(", ")));
     }
 
-    entities.fog_cell_masks = validate_fog_cell_masks(
-        entities.fog_cell_masks.take(),
-        cells.len(),
-        entities.fog_volumes.len(),
-    )?;
+    let fog_cell_masks = validate_fog_cell_masks(fog_cell_masks, cells.len(), fog_volume_count)?;
 
     if bvh.leaves.is_empty()
         && (!vertices.is_empty() || !indices.is_empty() || !face_meta.is_empty())
@@ -296,7 +292,7 @@ pub(super) fn validate_cross_sections(
             }
         }
     }
-    Ok(())
+    Ok(fog_cell_masks)
 }
 
 /// Runtime SH companion fields, derived after cluster-directory validation.
@@ -349,29 +345,14 @@ pub(super) fn finalize_sh_companions(sh: ShCompanions) -> RuntimeShCompanions {
     }
 }
 
-/// Drops mover portal ids the usable portal array cannot address, then
-/// validates portal adjacency. Returns the runtime portals and `has_portals`.
+/// Validates portal adjacency against the cells. Returns the runtime
+/// portals and `has_portals`. Mover sealed-portal ids the usable array cannot
+/// address were already dropped at entity decode.
 pub(super) fn validate_portals(
-    spatial: &SpatialSections,
+    cells: &[CellData],
+    cell_portal_refs: &[u32],
     portal_data: Option<Vec<PortalData>>,
-    kinematic_geometry: &mut KinematicGeometry,
 ) -> Result<(Vec<PortalData>, bool), PrlLoadError> {
-    let SpatialSections {
-        cells,
-        cell_portal_refs,
-        ..
-    } = spatial;
-
-    if let Some(portal_data) = portal_data.as_ref() {
-        let dropped_count =
-            drop_out_of_range_sealed_portal_ids(kinematic_geometry, portal_data.len());
-        if dropped_count > 0 {
-            log::warn!(
-                "[PRL] KinematicGeometry: dropped {dropped_count} sealed portal id(s) outside the {} loaded portals",
-                portal_data.len(),
-            );
-        }
-    }
     if portal_data.is_none() {
         validate_cell_portal_refs(cells, cell_portal_refs, None)?;
     }

@@ -34,13 +34,8 @@ fn derive_material_with_warning(
     mat
 }
 
-pub(super) struct GeometryDecode {
-    pub(super) vertices: Vec<WorldVertex>,
-    pub(super) indices: Vec<u32>,
-    pub(super) face_meta: Vec<FaceMeta>,
-    pub(super) texture_names: Vec<String>,
-    pub(super) texture_cache_keys: TextureCacheKeysSection,
-}
+/// Hand-out 2 of the staged parse; the monolithic parse holds it as is.
+pub(super) type GeometryDecode = super::staged::GeometryHandOut;
 
 pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode, PrlLoadError> {
     let meta = container.metadata();

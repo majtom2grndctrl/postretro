@@ -3,7 +3,8 @@
 //! the upload phase's progress in parts the upload thread finished.
 //! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, Progress covers the whole load)
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Instant;
 
 use postretro_level_loader::LoadProgress;
 use postretro_render_cpu::texture_prep::PreparedWorldTextures;
@@ -39,9 +40,13 @@ pub(crate) fn level_build_snapshot(tiers: LevelTiers) -> LevelBuildSnapshotInput
 }
 
 /// A load's set builder, carried in the prep inputs from dispatch to the
-/// prep that submits through it.
+/// prep that submits through it, and the instant prep submitted the build's
+/// first part, which the stages read at the set's receipt for log line C.
 #[derive(Clone)]
-pub(crate) struct UploadBuilder(pub(crate) LevelSetBuilder);
+pub(crate) struct UploadBuilder {
+    pub(crate) builder: LevelSetBuilder,
+    pub(crate) first_part: Arc<OnceLock<Instant>>,
+}
 
 impl std::fmt::Debug for UploadBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,6 +69,8 @@ pub(super) struct UploadSlot {
     /// handle keeps nothing alive.
     model_cache: Option<ModelCacheHandle>,
     tracker: Arc<UploadTracker>,
+    /// Set by the first submit: where line C's `upload` mark starts.
+    first_part: Option<Arc<OnceLock<Instant>>>,
 }
 
 impl UploadSlot {
@@ -72,10 +79,13 @@ impl UploadSlot {
     /// a builder the slot credits nothing: prep alone never touches the
     /// upload phase.
     pub(super) fn new(
-        builder: Option<LevelSetBuilder>,
+        upload: Option<UploadBuilder>,
         progress: Arc<LoadProgress>,
         #[cfg(test)] on_part_done: Option<super::test_support::UploadPartHook>,
     ) -> Self {
+        let (builder, first_part) = upload
+            .map(|upload| (upload.builder, upload.first_part))
+            .unzip();
         let tracker = Arc::new(UploadTracker {
             progress,
             state: Mutex::new(TrackerState::default()),
@@ -93,6 +103,7 @@ impl UploadSlot {
             model_cache: builder.as_ref().map(LevelSetBuilder::model_cache),
             builder: Mutex::new(builder),
             tracker,
+            first_part,
         }
     }
 
@@ -109,6 +120,9 @@ impl UploadSlot {
     fn submit(&self, part: impl FnOnce(&LevelSetBuilder)) -> bool {
         match self.lock().as_ref() {
             Some(builder) => {
+                if let Some(first_part) = &self.first_part {
+                    first_part.get_or_init(Instant::now);
+                }
                 part(builder);
                 true
             }

@@ -3,8 +3,10 @@
 //! commit consumes, or in the load's one failure.
 //! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, The commit cannot fail on level data, Cancellation) · research.md §9 (P10, P13, P15)
 
+use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use postretro_level_loader::{LevelLoadProgress, LevelWorld, LoadPhase};
 
@@ -38,12 +40,49 @@ pub(crate) struct LevelBundle {
     /// sweep).
     pub(crate) presentation: PreparedPresentation,
     pub(crate) timings: PrepTimings,
+    /// The set build's wall time, from prep's first part submit to the set's
+    /// receipt on the main thread; `None` for a load that built no set.
+    pub(crate) upload_time: Option<Duration>,
     /// The tiers the load was dispatched at, which every stage built at.
     pub(crate) tiers: LevelTiers,
     /// Where the level's `.prm` sidecars live, as resolved at dispatch: the
     /// commit's sprite registration and model-miss fallback read it.
     pub(crate) prm_cache_root: PathBuf,
     pub(crate) set: BundleSet,
+}
+
+impl LevelBundle {
+    /// What log line C shows inside `bundle_ready`, the dispatch-to-ready
+    /// interval these stages ran in, overlapping each other in wall time:
+    /// the parse, the set build (`upload`, first part to receipt), then each
+    /// prep kind in the order its first task finished. A kind that ran as
+    /// several tasks (one model parse per model) shows once, its tasks'
+    /// durations summed, as `<kind>_x<count>`.
+    pub(crate) fn line_c_marks(&self) -> Vec<(Cow<'static, str>, Duration)> {
+        let mut marks = vec![(Cow::Borrowed("prl_parse"), self.timings.parse)];
+        if let Some(upload) = self.upload_time {
+            marks.push((Cow::Borrowed("upload"), upload));
+        }
+        let mut kinds: Vec<(super::PrepKind, Duration, usize)> = Vec::new();
+        for (kind, duration) in &self.timings.tasks {
+            match kinds.iter_mut().find(|(seen, _, _)| seen == kind) {
+                Some((_, total, count)) => {
+                    *total += *duration;
+                    *count += 1;
+                }
+                None => kinds.push((*kind, *duration, 1)),
+            }
+        }
+        marks.extend(kinds.into_iter().map(|(kind, total, count)| {
+            let label = if count == 1 {
+                Cow::Borrowed(kind.mark())
+            } else {
+                Cow::Owned(format!("{}_x{count}", kind.mark()))
+            };
+            (label, total)
+        }));
+        marks
+    }
 }
 
 /// The renderer side of a bundle.
@@ -76,11 +115,17 @@ pub(crate) fn start_level_load_stages(
     let tiers = inputs.tiers;
     let prm_cache_root = inputs.prm_cache_root.clone();
     let upload = upload.map(|(builder, pending)| {
-        inputs.upload = Some(UploadBuilder(builder.clone()));
+        let first_part = Arc::new(OnceLock::new());
+        inputs.upload = Some(UploadBuilder {
+            builder: builder.clone(),
+            first_part: Arc::clone(&first_part),
+        });
         UploadHandle {
             probe: builder.probe(),
             builder: Some(builder),
             pending: Some(pending),
+            first_part,
+            upload_time: None,
             received: None,
             model_creations: None,
             creations: None,
@@ -158,6 +203,10 @@ struct UploadHandle {
     builder: Option<LevelSetBuilder>,
     probe: LevelSetBuilderProbe,
     pending: Option<PendingLevelSet>,
+    /// Set by prep's first part submit.
+    first_part: Arc<OnceLock<Instant>>,
+    /// First part to receipt, once the set arrived.
+    upload_time: Option<Duration>,
     /// The set, received and resident, until the bundle takes it.
     received: Option<LevelSetId>,
     /// What the build's model parts created on the upload thread, once the
@@ -284,6 +333,7 @@ impl LevelLoadStages {
         match pending.try_take(renderer) {
             None => {}
             Some(Ok(id)) => {
+                upload.upload_time = upload.first_part.get().map(Instant::elapsed);
                 upload.model_creations = pending.model_upload_creations();
                 upload.creations = pending.upload_creations();
                 upload.pending = None;
@@ -370,6 +420,7 @@ impl LevelLoadStages {
             streaming,
             presentation,
             timings,
+            upload_time: self.upload.as_ref().and_then(|upload| upload.upload_time),
             tiers: self.tiers,
             prm_cache_root: self.prm_cache_root.clone(),
             set,

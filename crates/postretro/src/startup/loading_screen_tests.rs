@@ -618,12 +618,12 @@ fn dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images() {
 #[test]
 fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
     const SIZE: [u32; 2] = [1280, 720];
-    let mut renderer = match crate::render::Renderer::new_offscreen(SIZE[0], SIZE[1]) {
-        Ok(renderer) => renderer,
-        Err(err) => {
-            eprintln!("loading frame capture skipped: {err:#}");
-            return;
-        }
+    let Some(mut renderer) = crate::level_load::test_support::offscreen_renderer_sized_or_skip(
+        "loading_frames_render_the_tree_over_the_splash_or_its_background",
+        SIZE[0],
+        SIZE[1],
+    ) else {
+        return;
     };
     let logo = crate::render::splash::load_splash(
         &crate::startup::SplashSource::Base,
@@ -851,12 +851,10 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
 fn loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends() {
     const SHOT: &str = "shots/e1m1";
     const TREE: &str = "load.e1m1";
-    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
-        Ok(renderer) => renderer,
-        Err(err) => {
-            eprintln!("loading-only image upload skipped: {err:#}");
-            return;
-        }
+    let Some(renderer) = crate::level_load::test_support::offscreen_renderer_or_skip(
+        "loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends",
+    ) else {
+        return;
     };
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("ui")).unwrap();

@@ -222,9 +222,8 @@ impl PrepShared {
     ) -> Arc<Self> {
         super::enter_prep_progress(progress, PrepKind::ALL.len());
         // The inputs' builder moves into the slot: tasks reach it only there.
-        let builder = inputs.upload.take().map(|upload| upload.0);
         let upload = UploadSlot::new(
-            builder,
+            inputs.upload.take(),
             Arc::clone(progress.phase(LoadPhase::Upload)),
             #[cfg(test)]
             inputs.hooks.after_upload_part.clone(),

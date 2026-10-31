@@ -187,6 +187,10 @@ impl App {
             None => LoadingStep::Paint,
             Some(Err(failure)) => LoadingStep::Fail(failure),
             Some(Ok(bundle)) => {
+                // The bundle is taken: line C's `bundle_ready` closes here,
+                // with the stages that ran inside it.
+                self.level_timings
+                    .record_containing("bundle_ready", bundle.line_c_marks());
                 #[cfg(test)]
                 let creations = stages
                     .upload_creations()
@@ -206,24 +210,23 @@ impl App {
 
     /// Commit a ready bundle; its report, or `None` when a commit check
     /// failed and took the one failure route. Nothing else here can fail.
+    ///
+    /// Line C folds the commit frame into one `commit_frame` mark, from the
+    /// mark before it (the bundle taken, or the running level's release
+    /// beside it) to Settling entered, its stage marks inside it and summing
+    /// to it.
     pub(in crate::startup) fn commit_ready_level_bundle(
         &mut self,
         bundle: LevelBundle,
         event_loop: &impl LoopExit,
     ) -> Option<LevelCommitReport> {
-        // The stages ran inside the interval `bundle_ready` measures, so
-        // they attach to it rather than join line C's sum.
-        let inside = std::iter::once(("prl_parse", bundle.timings.parse))
-            .chain(
-                bundle
-                    .timings
-                    .tasks
-                    .iter()
-                    .map(|(kind, duration)| (kind.label(), *duration)),
-            )
-            .collect();
-        self.level_timings.record_containing("bundle_ready", inside);
-        match self.commit_level_bundle(bundle) {
+        self.level_timings.open_group();
+        let committed = self.commit_level_bundle(bundle);
+        if committed.is_ok() {
+            self.level_timings.record("enter_settling");
+        }
+        self.level_timings.close_group("commit_frame");
+        match committed {
             Ok(report) => {
                 let uncounted = report.uncounted_creations();
                 if uncounted.total() > 0 {

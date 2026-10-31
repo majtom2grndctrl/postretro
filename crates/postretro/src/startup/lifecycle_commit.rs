@@ -74,6 +74,7 @@ impl App {
             streaming,
             presentation,
             timings: _,
+            upload_time: _,
             tiers,
             prm_cache_root,
             set,

@@ -568,6 +568,9 @@ pub(crate) fn install_world_cpu_with_models(
     } else {
         capture_progress_membership(progress_tracker, script_ctx)
     };
+    // Line C's own mark for the capture, so `level_load_event` times the
+    // `levelLoad` fire alone.
+    timings.record("progress_membership");
 
     // Fire `levelLoad`. Headless fires it too so data-script reactions and
     // crossings compose identically; runs after the clip resolve so a

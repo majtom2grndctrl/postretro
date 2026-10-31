@@ -120,6 +120,10 @@ impl App {
             return;
         };
         let generation = active.generation;
+        // The bundle is taken: line C's `bundle_ready` closes here, with
+        // the stages that ran inside it.
+        self.level_timings
+            .record_containing("bundle_ready", bundle.line_c_marks());
         let ActivePhase::Staged(stages) =
             std::mem::replace(&mut active.phase, ActivePhase::Ready(Box::new(bundle)))
         else {
@@ -161,9 +165,13 @@ impl App {
         else {
             unreachable!("a held bundle belongs to a load beside the running level");
         };
+        // Line C: how long the ready bundle waited for its caller, then the
+        // running level's release; the commit frame follows.
+        self.level_timings.record("bundle_held");
         if self.level_is_installed_state() {
             self.unload_level();
         }
+        self.level_timings.record("running_release");
         self.level_load = Some(*load);
         self.commit_ready_level_bundle(*bundle, event_loop)
     }

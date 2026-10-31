@@ -36,6 +36,8 @@ pub(crate) struct SettleState {
     hold: Duration,
     /// What the per-entry `[Settling]` line reports.
     log: SettleLog,
+    /// Line C's `settle_hold` was recorded, at the first release decided.
+    hold_marked: bool,
 }
 
 impl SettleState {
@@ -45,6 +47,7 @@ impl SettleState {
             release: None,
             hold: Duration::ZERO,
             log: SettleLog::default(),
+            hold_marked: false,
         }
     }
 }
@@ -230,7 +233,9 @@ impl App {
 
     /// Decide this frame's release and move the bar, never down: the settle
     /// set's shortfall credits the load's Settling phase, and a release
-    /// (settled or timed out) fills the bar.
+    /// (settled or timed out) fills the bar. The first release decided
+    /// closes line C's `settle_hold`, as the `[Settling]` line's `hold_ms`
+    /// ends at the deciding frame.
     pub(in crate::startup) fn advance_settle(&mut self, report: SettleReport, now: Instant) {
         let Some(settle) = self.settle.as_mut() else {
             return;
@@ -239,6 +244,11 @@ impl App {
         let release = settle_decision(report, elapsed);
         settle.release = release;
         settle.hold = elapsed;
+        let close_hold = release.is_some() && !settle.hold_marked;
+        settle.hold_marked |= close_hold;
+        if close_hold {
+            self.level_timings.record("settle_hold");
+        }
         self.credit_settle_progress(unsettled_units(report), release.is_some());
     }
 
@@ -253,11 +263,19 @@ impl App {
                 report.lightmap.describe(),
             );
         }
+        let mut hold_marked = false;
         if let Some(settle) = self.settle.take() {
             let timed_out = matches!(release, SettleRelease::TimedOut(_));
+            hold_marked = settle.hold_marked;
             self.settle_summary = Some(settle.log.finish(timed_out, settle.hold));
         }
-        self.level_timings.record("settle_hold");
+        // Line C's `reveal`: the deciding frame to this edge, a timed-out
+        // reveal included. A hold no deciding frame closed (none in
+        // production: a release is always decided first) is closed here.
+        if !hold_marked {
+            self.level_timings.record("settle_hold");
+        }
+        self.level_timings.record("reveal");
         self.end_loading_screen();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.clear_splash();
@@ -548,6 +566,10 @@ mod tests {
             has_mark(&app, "settle_hold"),
             "the hold is its own line C mark"
         );
+        assert!(
+            has_mark(&app, "reveal"),
+            "a timed-out reveal is line C's reveal mark too"
+        );
     }
 
     const SETTLE_LINE: &str = "[Settling] entry outcome=";
@@ -679,7 +701,9 @@ mod tests {
         assert_eq!(app.boot_state, BootState::Frontend);
         assert!(app.settle.is_none(), "no stale settle or timer");
         assert!(!app.pending_level_log, "no reveal edge fired");
-        assert!(!has_mark(&app, "settle_hold"));
+        // The deciding frame closed line C's hold; no reveal mark follows.
+        assert!(has_mark(&app, "settle_hold"));
+        assert!(!has_mark(&app, "reveal"));
         assert_eq!(
             progress(&app),
             SlotValue::Number(0.0),

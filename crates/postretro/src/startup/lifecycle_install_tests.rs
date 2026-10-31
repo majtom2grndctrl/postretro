@@ -1278,16 +1278,10 @@ fn connected_client_install_skips_pool_roll_and_preserves_authored_trigger_state
 // renderer refuse, so the seam injects the refusal at the geometry install.
 #[test]
 fn streamed_sh_install_error_rejects_the_load_instead_of_panicking() {
-    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
-        Ok(renderer) => renderer,
-        Err(error) => {
-            assert!(
-                std::env::var_os("POSTRETRO_REQUIRE_GPU").is_none(),
-                "POSTRETRO_REQUIRE_GPU is set but no adapter: {error:#}"
-            );
-            eprintln!("streamed-SH install refusal skipped: {error:#}");
-            return;
-        }
+    let Some(renderer) = crate::level_load::test_support::offscreen_renderer_or_skip(
+        "streamed_sh_install_error_rejects_the_load_instead_of_panicking",
+    ) else {
+        return;
     };
     let mut app = test_app();
     app.renderer = Some(renderer);

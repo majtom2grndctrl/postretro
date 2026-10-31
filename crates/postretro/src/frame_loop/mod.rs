@@ -2734,8 +2734,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 // Reveal frame just presented — close out
                 // log line C with the present-cost of the frame
                 // the user is about to see.
-                app.level_timings.record("first_level_frame");
-                log::info!("{}", app.level_timings.summary());
+                app.level_timings.log_level_line();
                 app.pending_level_log = false;
             }
         } else {

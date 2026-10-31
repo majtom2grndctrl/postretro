@@ -1163,6 +1163,58 @@ fn loading_screen_request_supersedes_beside_load() {
     );
 }
 
+// Marks, beside a running level: the load logs its own line C, after its
+// reveal like any load: dispatch, `bundle_ready` closed on the Running frame
+// that took the bundle (its stages inside), `bundle_held` until its caller
+// commits, the running level's release, the commit frame, the settle hold
+// and the reveal. No loading-screen mark: it has none. It adds up from the
+// beside entry to the reveal.
+#[test]
+fn beside_load_logs_its_own_line_c() {
+    let test = "beside_load_logs_its_own_line_c";
+    let running = CommitCase::textured();
+    let beside = CommitCase::textured_with_model();
+    let Some((mut app, exit)) = running_level(test, &running) else {
+        return;
+    };
+    let capture = LogCapture::start();
+    let wall_start = Instant::now();
+    begin_beside(&mut app, &beside, |_| {});
+    run_running_until(&mut app, &exit, "the held bundle", held, |_, _| {});
+    for _ in 0..2 {
+        running_frame(&mut app, &exit).expect("Running while held");
+    }
+    commit_held(&mut app, &exit);
+    settle_and_reveal(&mut app);
+    let wall = wall_start.elapsed();
+    app.level_timings.log_level_line();
+    let line = logged_line_c(&capture);
+    eprintln!("{test}: {line}");
+    let marks = parse_line_c(&line);
+    let names: Vec<&str> = marks.iter().map(|mark| mark.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "load_dispatch",
+            "bundle_ready",
+            "bundle_held",
+            "running_release",
+            "commit_frame",
+            "settle_hold",
+            "reveal",
+            "first_level_frame"
+        ],
+        "{line}"
+    );
+    assert_adds_up_to(&marks, wall);
+    let bundle_ready = &marks[1];
+    assert_eq!(bundle_ready.inside[0].0, "prl_parse", "{line}");
+    assert_eq!(bundle_ready.inside[1].0, "upload", "{line}");
+    assert!(marks[2].ms > 0.0, "held across Running frames: {line}");
+    assert_group_sums(&marks[4]);
+    retire_all(&mut app);
+}
+
 // The beside poll and commit, the gate: the Running frame polls a load
 // beside the level after its world-less early return and before its input;
 // the beside entry, poll, hold, commit (the release spliced in), cancel and

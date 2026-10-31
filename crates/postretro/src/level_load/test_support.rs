@@ -497,21 +497,76 @@ pub(crate) fn write_late_rejected_level()
     })
 }
 
-/// An offscreen renderer, or `None` (with a note) on a machine without an
-/// adapter. With `POSTRETRO_REQUIRE_GPU` set, a missing adapter fails the
-/// test instead.
-pub(crate) fn offscreen_renderer_or_skip(test: &str) -> Option<crate::render::Renderer> {
-    match crate::render::Renderer::new_offscreen(64, 64) {
+/// Whether `POSTRETRO_REQUIRE_GPU` demands an adapter, read as the renderer
+/// crate's GPU harness reads it: any non-empty value other than `0`.
+pub(crate) fn gpu_required() -> bool {
+    gpu_required_by(std::env::var("POSTRETRO_REQUIRE_GPU").ok().as_deref())
+}
+
+pub(crate) fn gpu_required_by(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// The one decision every app-crate test that needs a renderer makes on the
+/// renderer it tried to build, under the renderer crate's harness policy:
+/// the renderer; `None`, with a note, when no adapter exists; a failure when
+/// no adapter exists and `required` (`POSTRETRO_REQUIRE_GPU`), so a run that
+/// must prove something on an adapter cannot pass by skipping; and always a
+/// failure when an adapter exists but renderer init failed.
+pub(crate) fn renderer_or_skip<T>(
+    test: &str,
+    built: anyhow::Result<T>,
+    required: bool,
+) -> Option<T> {
+    match built {
         Ok(renderer) => Some(renderer),
-        Err(error) => {
+        Err(error) if error.to_string().contains("requires a GPU adapter") => {
             assert!(
-                std::env::var_os("POSTRETRO_REQUIRE_GPU").is_none(),
-                "{test}: POSTRETRO_REQUIRE_GPU is set but no adapter: {error:#}"
+                !required,
+                "{test}: POSTRETRO_REQUIRE_GPU is set but no GPU adapter is available ({error:#})"
             );
-            eprintln!("{test}: skipped, no adapter ({error:#})");
+            eprintln!("{test}: skipped, no GPU adapter ({error:#})");
             None
         }
+        Err(error) => {
+            panic!("{test}: adapter present but renderer initialization failed: {error:#}")
+        }
     }
+}
+
+/// A 64×64 offscreen renderer, or `None` (with a note) on a machine without
+/// an adapter; see [`renderer_or_skip`].
+pub(crate) fn offscreen_renderer_or_skip(test: &str) -> Option<crate::render::Renderer> {
+    offscreen_renderer_sized_or_skip(test, 64, 64)
+}
+
+/// [`offscreen_renderer_or_skip`] at `width`×`height`.
+pub(crate) fn offscreen_renderer_sized_or_skip(
+    test: &str,
+    width: u32,
+    height: u32,
+) -> Option<crate::render::Renderer> {
+    renderer_or_skip(
+        test,
+        crate::render::Renderer::new_offscreen(width, height),
+        gpu_required(),
+    )
+}
+
+/// A 64×64 offscreen renderer whose install-pipeline build (its upload
+/// thread's first job) waits for the returned handle; see
+/// [`renderer_or_skip`].
+pub(crate) fn offscreen_renderer_holding_pipeline_build_or_skip(
+    test: &str,
+) -> Option<(
+    crate::render::Renderer,
+    postretro_renderer::PipelineBuildRelease,
+)> {
+    renderer_or_skip(
+        test,
+        crate::render::Renderer::new_offscreen_holding_pipeline_build(64, 64),
+        gpu_required(),
+    )
 }
 
 /// A whole load's patience: a set build waits for the install pipelines

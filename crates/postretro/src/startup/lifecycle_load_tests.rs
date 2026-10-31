@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use postretro_level_loader::{HandOutStage, LevelLoadProgress};
+use postretro_level_loader::{HandOutStage, LevelLoadProgress, LoadPhase};
 use postretro_renderer::{PipelineBuildRelease, gpu_creation_counts};
 use postretro_test_log_capture::LogCapture;
 
@@ -100,17 +100,7 @@ fn gpu_app(test: &str, case: &CommitCase) -> Option<App> {
 /// An offscreen renderer whose install-pipeline build (its upload thread's
 /// first job) waits for the returned handle; `None` without an adapter.
 fn held_renderer(test: &str) -> Option<(Renderer, PipelineBuildRelease)> {
-    match Renderer::new_offscreen_holding_pipeline_build(64, 64) {
-        Ok(held) => Some(held),
-        Err(error) => {
-            assert!(
-                std::env::var_os("POSTRETRO_REQUIRE_GPU").is_none(),
-                "{test}: POSTRETRO_REQUIRE_GPU is set but no adapter: {error:#}"
-            );
-            eprintln!("{test}: skipped, no adapter ({error:#})");
-            None
-        }
-    }
+    crate::level_load::test_support::offscreen_renderer_holding_pipeline_build_or_skip(test)
 }
 
 /// Every dispatch from here on reads `case`'s `.prm` root and edits, then
@@ -1538,10 +1528,39 @@ fn tiers_snapshot_at_dispatch_not_enqueue() {
     retire_all(&mut app);
 }
 
+/// A boundary's label and each phase's own fraction there.
+type PhaseSample = (String, [f32; 4]);
+
+/// Each phase's own fraction, in [`LoadPhase::ALL`] order.
+fn phase_fractions(counter: &LevelLoadProgress) -> [f32; 4] {
+    LoadPhase::ALL.map(|phase| counter.phase(phase).fraction())
+}
+
+/// Index of `phase` in [`phase_fractions`].
+fn phase_index(phase: LoadPhase) -> usize {
+    LoadPhase::ALL
+        .iter()
+        .position(|candidate| *candidate == phase)
+        .unwrap()
+}
+
 // Progress 1: the whole load's counter never decreases; it rises during
 // the parse, prep, upload and Settling, stays below 1.0 until reveal and is
 // exactly 1.0 at reveal, a timed-out reveal included. A level with no
 // textures or models (an empty texture prep) reaches 1.0 too.
+//
+// Sampled at each stage boundary (each hand-out, a prep task finished while
+// prep still runs, each upload part, the commit, Settling, the release and
+// the reveal), every phase credits part of its own share before it ends: the
+// bar rises inside each phase, not only at its end. On the streamed-manifest
+// map the bar moved at hand-out 1, which the parse sends before its first
+// section read (the level loader's
+// `staged_parse_progress_moves_before_the_first_section_read`). The
+// streamed-SH case is the near-empty level: one cluster, no textures, models
+// or sounds, so its texture, sound and model prep kinds are empty; it reaches
+// 1.0 at a timed-out reveal (P15). The level loader's
+// `near_empty_level_and_empty_phases_reach_one` covers a prep set with no
+// kinds at all, which no App load has.
 #[test]
 fn load_progress_spans_every_phase() {
     let test = "load_progress_spans_every_phase";
@@ -1553,13 +1572,20 @@ fn load_progress_spans_every_phase() {
     register_loading_tree(&mut app);
     for (case, timeout) in [(&textured, false), (&bare, true)] {
         let samples: Arc<std::sync::Mutex<Vec<(&'static str, f32)>>> = Arc::default();
+        // Each phase's fraction at each boundary, beside the whole bar.
+        let phases: Arc<std::sync::Mutex<Vec<PhaseSample>>> = Arc::default();
+        let first_hand_out: Arc<std::sync::Mutex<Option<HandOutStage>>> = Arc::default();
         let counter: Arc<std::sync::Mutex<Option<Arc<LevelLoadProgress>>>> = Arc::default();
         let (hand_out_samples, part_samples) = (Arc::clone(&samples), Arc::clone(&samples));
+        let (hand_out_phases, part_phases) = (Arc::clone(&phases), Arc::clone(&phases));
+        let hand_out_first = Arc::clone(&first_hand_out);
         let (hand_out_counter, part_counter) = (Arc::clone(&counter), Arc::clone(&counter));
         use_case(&mut app, case, move |inputs| {
             let samples = Arc::clone(&hand_out_samples);
+            let phases = Arc::clone(&hand_out_phases);
+            let first = Arc::clone(&hand_out_first);
             let counter = Arc::clone(&hand_out_counter);
-            inputs.hooks.after_hand_out = Some(Arc::new(move |stage, _| {
+            inputs.hooks.after_hand_out = Some(Arc::new(move |stage, probe| {
                 if let Some(counter) = counter.lock().unwrap().as_ref() {
                     let label = if stage == HandOutStage::Final {
                         "parse end"
@@ -1567,16 +1593,43 @@ fn load_progress_spans_every_phase() {
                         "hand-out"
                     };
                     samples.lock().unwrap().push((label, counter.fraction()));
+                    first.lock().unwrap().get_or_insert(stage);
+                    phases
+                        .lock()
+                        .unwrap()
+                        .push((format!("{stage:?}"), phase_fractions(counter)));
+                    if stage == HandOutStage::Final {
+                        // Prep cannot finish while this hook holds the
+                        // parse (assembly waits for the verdict), so once
+                        // one of its tasks finished, prep is mid-way.
+                        assert!(
+                            probe.wait_until(|state| !state.finished.is_empty()),
+                            "a prep task finished before the parse returned"
+                        );
+                        samples
+                            .lock()
+                            .unwrap()
+                            .push(("prep task", counter.fraction()));
+                        phases
+                            .lock()
+                            .unwrap()
+                            .push(("prep task".to_string(), phase_fractions(counter)));
+                    }
                 }
             }));
             let samples = Arc::clone(&part_samples);
+            let phases = Arc::clone(&part_phases);
             let counter = Arc::clone(&part_counter);
-            inputs.hooks.after_upload_part = Some(Arc::new(move |_| {
+            inputs.hooks.after_upload_part = Some(Arc::new(move |part| {
                 if let Some(counter) = counter.lock().unwrap().as_ref() {
                     samples
                         .lock()
                         .unwrap()
                         .push(("upload part", counter.fraction()));
+                    phases
+                        .lock()
+                        .unwrap()
+                        .push((format!("upload {part:?}"), phase_fractions(counter)));
                 }
             }));
         });
@@ -1612,6 +1665,10 @@ fn load_progress_spans_every_phase() {
             .lock()
             .unwrap()
             .push(("settling", load_counter.fraction()));
+        phases
+            .lock()
+            .unwrap()
+            .push(("settling".to_string(), phase_fractions(&load_counter)));
         assert!(
             load_counter.fraction() < 1.0,
             "{}: below 1.0 until reveal",
@@ -1643,8 +1700,59 @@ fn load_progress_spans_every_phase() {
             "{}: the bar paints 1.0",
             case.label
         );
+        // The reveal itself, on the next redraw: the load's counter reads
+        // exactly 1.0 there, every phase finished, timed out or not.
+        assert!(app.reveal_if_released(), "{}: revealed", case.label);
+        assert_eq!(app.boot_state, BootState::Running, "{}", case.label);
+        assert_eq!(
+            load_counter.fraction(),
+            1.0,
+            "{}: exactly 1.0 at reveal",
+            case.label
+        );
+        assert!(load_counter.is_finished(), "{}", case.label);
+        if timeout {
+            assert!(
+                app.level.as_ref().unwrap().texture_names.is_empty(),
+                "the near-empty level has no textures"
+            );
+        }
 
         let samples = samples.lock().unwrap().clone();
+        assert!(
+            samples.iter().all(|(_, value)| *value < 1.0),
+            "{}: below 1.0 at every boundary before the release: {samples:?}",
+            case.label
+        );
+        let phases = phases.lock().unwrap().clone();
+        let mid_phase = |phase: LoadPhase, at: &str| {
+            let fraction = phases
+                .iter()
+                .find(|(label, _)| label.as_str() == at)
+                .unwrap_or_else(|| panic!("{}: no {at} sample: {phases:?}", case.label))
+                .1[phase_index(phase)];
+            assert!(
+                fraction > 0.0 && fraction < 1.0,
+                "{}: {phase:?} credits part of its share inside the phase, at {at}: {fraction} ({phases:?})",
+                case.label
+            );
+        };
+        // Hand-out 1, before the first section read: the parse has
+        // credited its table read and not finished.
+        let first = first_hand_out.lock().unwrap().expect("a hand-out arrived");
+        assert_eq!(first, HandOutStage::ShManifest, "{}", case.label);
+        mid_phase(LoadPhase::Parse, &format!("{first:?}"));
+        mid_phase(LoadPhase::Prep, "prep task");
+        mid_phase(LoadPhase::Upload, "upload Finish");
+        mid_phase(LoadPhase::Settling, "settling");
+        if timeout {
+            // The streamed-manifest map: the bar moved at hand-out 1, which
+            // carries the SH manifest and goes out before any section read.
+            assert!(
+                case.label == "streamed-sh" && samples[0].0 == "hand-out" && samples[0].1 > 0.0,
+                "progress moved before the first section read: {samples:?}"
+            );
+        }
         for pair in samples.windows(2) {
             assert!(
                 pair[1].1 >= pair[0].1,
@@ -1759,6 +1867,250 @@ fn suspend_clears_model_cache_and_drops_ready_bundle() {
         "the dropped bundle's set never reached the resumed renderer"
     );
     assert!(!renderer.model_cache_keys().is_empty());
+    retire_all(&mut app);
+}
+
+/// One mark of log line C: its name, milliseconds, and its `incl.` marks.
+#[derive(Debug)]
+struct LineCMark {
+    name: String,
+    ms: f64,
+    inside: Vec<(String, f64)>,
+}
+
+fn line_c_entry(entry: &str) -> (String, f64) {
+    let (name, value) = entry
+        .split_once('=')
+        .unwrap_or_else(|| panic!("a `name=…ms` entry: {entry}"));
+    let ms = value
+        .strip_suffix("ms")
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("milliseconds: {entry}"));
+    (name.to_string(), ms)
+}
+
+/// Parse a logged line C: `[Startup] a=1.0ms, b=2.0ms (incl. c=0.5ms), …`.
+fn parse_line_c(line: &str) -> Vec<LineCMark> {
+    let body = line.strip_prefix("[Startup] ").expect("a [Startup] line");
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (at, c) in body.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&body[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&body[start..]);
+    parts
+        .into_iter()
+        .map(|part| {
+            let part = part.trim();
+            let (head, inside) = match part.find(" (incl. ") {
+                Some(at) => (
+                    &part[..at],
+                    part[at + " (incl. ".len()..]
+                        .strip_suffix(')')
+                        .expect("a closed incl. group")
+                        .split(", ")
+                        .map(line_c_entry)
+                        .collect(),
+                ),
+                None => (part, Vec::new()),
+            };
+            let (name, ms) = line_c_entry(head);
+            LineCMark { name, ms, inside }
+        })
+        .collect()
+}
+
+/// The one line C `capture` holds.
+fn logged_line_c(capture: &LogCapture) -> String {
+    let lines: Vec<String> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level == log::Level::Info
+                && record.message.starts_with("[Startup] load_dispatch=")
+        })
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(lines.len(), 1, "one line C: {lines:?}");
+    lines.into_iter().next().unwrap()
+}
+
+/// Rounding per printed mark: each prints to 0.1 ms.
+const LINE_C_ROUNDING_MS: f64 = 0.05;
+
+/// A group's `incl.` marks are disjoint and consecutive: they sum to it.
+fn assert_group_sums(mark: &LineCMark) {
+    let sum: f64 = mark.inside.iter().map(|(_, ms)| ms).sum();
+    let rounding = LINE_C_ROUNDING_MS * (mark.inside.len() + 1) as f64;
+    assert!(
+        (sum - mark.ms).abs() <= rounding,
+        "{}'s marks sum to it: {sum} vs {} ({:?})",
+        mark.name,
+        mark.ms,
+        mark.inside
+    );
+}
+
+/// The edges a wall clock around a load sees outside line C: the request
+/// drain before `begin_level_load` resets the timings, and the reveal's tail
+/// after its mark (loading screen end, splash clear, reveal publish).
+const LINE_C_EDGE_TOLERANCE_MS: f64 = 50.0;
+
+/// Line C's top-level marks before `first_level_frame` add up to the wall
+/// time from the load's start to its reveal, within each mark's rounding and
+/// [`LINE_C_EDGE_TOLERANCE_MS`]; `incl.` groups stay out of the sum.
+fn assert_adds_up_to(marks: &[LineCMark], wall: Duration) {
+    let through_reveal: Vec<&LineCMark> = marks
+        .iter()
+        .take_while(|mark| mark.name != "first_level_frame")
+        .collect();
+    assert_eq!(
+        through_reveal.last().map(|mark| mark.name.as_str()),
+        Some("reveal"),
+        "{marks:?}"
+    );
+    let sum: f64 = through_reveal.iter().map(|mark| mark.ms).sum();
+    let wall_ms = wall.as_secs_f64() * 1000.0;
+    let rounding = LINE_C_ROUNDING_MS * through_reveal.len() as f64;
+    assert!(
+        sum <= wall_ms + rounding,
+        "the marks fit inside the wall clock: {sum} ms vs {wall_ms} ms ({marks:?})"
+    );
+    assert!(
+        wall_ms - sum <= LINE_C_EDGE_TOLERANCE_MS + rounding,
+        "the marks add up to the wall clock: {sum} ms vs {wall_ms} ms ({marks:?})"
+    );
+}
+
+/// Hold the committed level in Settling for a while, decide the release,
+/// wait a redraw's gap, and reveal: `settle_hold` and `reveal` each span a
+/// measurable interval of their own.
+fn settle_and_reveal(app: &mut App) {
+    std::thread::sleep(Duration::from_millis(20));
+    app.advance_settle(
+        SettleReport {
+            sh: ResourceSettle::Settled,
+            lightmap: ResourceSettle::Settled,
+        },
+        Instant::now(),
+    );
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(app.reveal_if_released(), "the release reveals");
+    assert!(app.pending_level_log, "line C closes on the reveal frame");
+}
+
+// Marks: line C names each staged-load stage (dispatch; the stages inside
+// `bundle_ready`: the parse, the off-main set build as `upload`, each prep
+// kind), the progress-membership capture and every other stage of the
+// commit frame inside `commit_frame`, the settle hold and the reveal, then
+// the reveal frame. Read from the real line an App load logs, its
+// top-level marks add up to the wall time from the load's start to its
+// reveal, and the commit frame's marks add up to it.
+#[test]
+fn line_c_names_staged_marks_and_adds_up() {
+    let test = "line_c_names_staged_marks_and_adds_up";
+    let case = CommitCase::textured_with_model();
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    use_case(&mut app, &case, |_| {});
+    let exit = TestExit::default();
+    let capture = LogCapture::start();
+    request_path(&mut app, &case.map);
+    // Line C starts in the drain that begins the load.
+    let wall_start = Instant::now();
+    app.drain_level_requests();
+    assert_eq!(app.boot_state, BootState::Loading);
+    run_to_commit(&mut app, &exit, "the load");
+    settle_and_reveal(&mut app);
+    let wall = wall_start.elapsed();
+    // The reveal frame's tail, as the frame loop runs it after its present.
+    app.level_timings.log_level_line();
+    let line = logged_line_c(&capture);
+    eprintln!("{test}: {line}");
+    let marks = parse_line_c(&line);
+
+    let names: Vec<&str> = marks.iter().map(|mark| mark.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "load_dispatch",
+            "bundle_ready",
+            "commit_frame",
+            "settle_hold",
+            "reveal",
+            "first_level_frame"
+        ],
+        "{line}"
+    );
+    assert_adds_up_to(&marks, wall);
+    let mark = |name: &str| marks.iter().find(|mark| mark.name == name).unwrap();
+    assert!(mark("settle_hold").ms >= 19.0, "{line}");
+    assert!(mark("reveal").ms >= 9.0, "{line}");
+
+    // Inside `bundle_ready`: the stages that ran in it, overlapping, each
+    // named once.
+    let bundle_ready = mark("bundle_ready");
+    let inside: Vec<&str> = bundle_ready
+        .inside
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(inside[..2], ["prl_parse", "upload"], "{line}");
+    for kind in [
+        "texture_prep",
+        "range_check",
+        "assemble",
+        "collision",
+        "streaming_data",
+        "lightmap_family",
+        "fluid",
+        "model_prediction",
+        "model_parse",
+    ] {
+        assert!(inside.contains(&kind), "{kind} in bundle_ready: {line}");
+    }
+    let mut unique = inside.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), inside.len(), "no repeated label: {line}");
+    for (name, ms) in &bundle_ready.inside[..2] {
+        assert!(
+            *ms > 0.0 && *ms <= bundle_ready.ms + LINE_C_ROUNDING_MS * 2.0,
+            "{name} ran inside bundle_ready: {line}"
+        );
+    }
+
+    // Inside `commit_frame`: the commit's stages from the bundle taken to
+    // Settling entered, the progress-membership capture among them, adding
+    // up to it.
+    let commit = mark("commit_frame");
+    let stages: Vec<&str> = commit
+        .inside
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(stages.first(), Some(&"commit_checks"), "{line}");
+    assert_eq!(stages.last(), Some(&"enter_settling"), "{line}");
+    let at = |name: &str| {
+        stages
+            .iter()
+            .position(|stage| *stage == name)
+            .unwrap_or_else(|| panic!("{name} in commit_frame: {line}"))
+    };
+    assert!(at("set_publish") < at("model_bindings"));
+    assert!(at("model_bindings") < at("progress_membership"));
+    assert!(at("progress_membership") < at("level_load_event"));
+    assert!(at("level_load_event") < at("streaming_sessions"));
+    assert_group_sums(commit);
     retire_all(&mut app);
 }
 
@@ -1907,6 +2259,77 @@ fn commit_path_has_no_blocking_wait() {
             function_source(retirements, name).to_string(),
         ));
     }
+    // What the commit calls outside the spliced install files: the commit
+    // checks' streaming preparation and its install, the model sweep with
+    // its miss fallback, sprite registration, the world's CPU install, the
+    // loading-tree promotion, Settling's entry, and the renderer's receipt,
+    // publish and cache commit.
+    let finish = include_str!("lifecycle_finish.rs");
+    let settling = include_str!("settling.rs");
+    let residency = include_str!("lifecycle_spawn_residency.rs");
+    let hooks = include_str!("../session/level_streaming/hooks.rs");
+    let images = include_str!("loading_screen_images.rs");
+    let level_build = include_str!("../../../renderer/src/render/level_build.rs");
+    let publish = include_str!("../../../renderer/src/render/renderer_resources/publish.rs");
+    let cache = include_str!("../../../renderer/src/render/model_cache.rs");
+    for (name, source, function) in [
+        (
+            "enter_installed_level_settling",
+            finish,
+            "enter_installed_level_settling",
+        ),
+        ("enter_settling", settling, "enter_settling"),
+        (
+            "install_prepared_level_streaming_sessions",
+            residency,
+            "install_prepared_level_streaming_sessions",
+        ),
+        ("prepare_level_streaming", hooks, "prepare_level_streaming"),
+        (
+            "install_prepared_level_streaming",
+            hooks,
+            "install_prepared_level_streaming",
+        ),
+        (
+            "promote_level_tree_images",
+            images,
+            "promote_level_tree_images",
+        ),
+        ("PendingLevelSet::try_take", level_build, "try_take"),
+        ("Renderer::publish_level_set", publish, "publish_level_set"),
+        ("Renderer::commit_model_cache", cache, "commit_model_cache"),
+    ] {
+        checked.push((
+            name.to_string(),
+            function_source(source, function).to_string(),
+        ));
+    }
+    for (name, source) in [
+        (
+            "lifecycle_world_cpu.rs",
+            include_str!("lifecycle_world_cpu.rs"),
+        ),
+        (
+            "lifecycle_model_sweep.rs",
+            include_str!("lifecycle_model_sweep.rs"),
+        ),
+        (
+            "lifecycle_sprite_collections.rs",
+            include_str!("lifecycle_sprite_collections.rs"),
+        ),
+        (
+            "level_load/model_cache.rs",
+            include_str!("../level_load/model_cache.rs"),
+        ),
+        (
+            "level_load/commit.rs",
+            include_str!("../level_load/commit.rs"),
+        ),
+    ] {
+        let production = source.split("\n#[cfg(test)]").next().unwrap_or("");
+        assert!(production.len() > 200, "{name}: the production half reads");
+        checked.push((format!("{name} (production)"), production.to_string()));
+    }
     for (name, source) in &checked {
         let waits = blocking_waits_in(source);
         assert!(waits.is_empty(), "`{name}` blocks: {waits:?}");
@@ -1928,15 +2351,7 @@ fn commit_path_has_no_blocking_wait() {
 fn sources_above_level_loader() -> Vec<(PathBuf, String)> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut out = Vec::new();
-    for krate in [
-        "postretro",
-        "renderer",
-        "render-cpu",
-        "sim",
-        "physics",
-        "visibility",
-        "lighting",
-    ] {
+    for krate in CRATES_ABOVE_LEVEL_LOADER {
         let mut stack = vec![crates.join(krate).join("src")];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1968,10 +2383,37 @@ fn sources_above_level_loader() -> Vec<(PathBuf, String)> {
     out
 }
 
+/// Every workspace crate that depends on the level loader, directly or
+/// through another (normal dependencies, not dev-dependencies), by directory.
+/// `crates_above_level_loader_cover_every_dependent` keeps it complete.
+const CRATES_ABOVE_LEVEL_LOADER: &[&str] = &[
+    "ai",
+    "level-compiler",
+    "lighting",
+    "netcode",
+    "physics",
+    "postretro",
+    "render-cpu",
+    "renderer",
+    "sim",
+    "tool",
+    "visibility",
+];
+
 /// Types named `*Progress` that are not load-progress counters.
 const NOT_LOAD_PROGRESS: &[&str] = &[
     // A weapon activation's per-tick state on a remote pawn.
     "RemoteActivationProgress",
+    // The level compiler's bake-stage reporter: compile progress, offline.
+    "StageProgress",
+    // The level compiler's TUI worker: a detached bake's stage counts.
+    "DetachProgress",
+];
+
+/// Files whose `fn fraction(` is not a progress counter.
+const NOT_PROGRESS_FRACTION: &[&str] = &[
+    // An emitter's texel coverage fraction per key, in the level compiler.
+    "embedded_emitter.rs",
 ];
 
 /// The progress-counter definitions in `source`: a type named `*Progress`
@@ -2017,8 +2459,12 @@ fn no_progress_counter_above_level_loader() {
     let defined: Vec<String> = sources
         .iter()
         .flat_map(|(path, source)| {
+            let fraction_exempt = NOT_PROGRESS_FRACTION
+                .iter()
+                .any(|file| path.ends_with(file));
             progress_counters_in(source)
                 .into_iter()
+                .filter(move |found| !(fraction_exempt && found == "fn fraction"))
                 .map(move |found| format!("{}: {found}", path.display()))
         })
         .collect();
@@ -2036,6 +2482,70 @@ fn no_progress_counter_above_level_loader() {
         ["struct ParseProgress", "LOAD_PARSE_SHARE", "fn fraction"]
     );
     assert!(progress_counters_in("struct ProgressTracker;").is_empty());
+}
+
+/// The `[package]` name of the crate in `dir`, and the workspace crates its
+/// normal dependency tables name.
+fn crate_manifest(dir: &Path) -> Option<(String, Vec<String>)> {
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
+    let mut name = None;
+    let mut deps = Vec::new();
+    let mut section = String::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line.to_string();
+            continue;
+        }
+        if section == "[package]" && line.starts_with("name") {
+            name = line.split('"').nth(1).map(str::to_string);
+        }
+        let normal = section == "[dependencies]"
+            || (section.starts_with("[target.") && section.ends_with(".dependencies]"));
+        if normal && line.starts_with("postretro") {
+            let dep: String = line
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            deps.push(dep);
+        }
+    }
+    Some((name?, deps))
+}
+
+// The progress gate's crate list follows the dependency graph: every crate
+// that depends on the level loader, directly or through another, is scanned.
+#[test]
+fn crates_above_level_loader_cover_every_dependent() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let manifests: Vec<(String, String, Vec<String>)> = std::fs::read_dir(&crates)
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| {
+            let dir = entry.file_name().to_string_lossy().into_owned();
+            crate_manifest(&entry.path()).map(|(name, deps)| (dir, name, deps))
+        })
+        .collect();
+    assert!(manifests.len() > 20, "the scan reads the workspace crates");
+    let mut above: Vec<String> = vec!["postretro-level-loader".to_string()];
+    loop {
+        let before = above.len();
+        for (_, name, deps) in &manifests {
+            if !above.contains(name) && deps.iter().any(|dep| above.contains(dep)) {
+                above.push(name.clone());
+            }
+        }
+        if above.len() == before {
+            break;
+        }
+    }
+    let mut dirs: Vec<&str> = manifests
+        .iter()
+        .filter(|(_, name, _)| name != "postretro-level-loader" && above.contains(name))
+        .map(|(dir, _, _)| dir.as_str())
+        .collect();
+    dirs.sort_unstable();
+    assert_eq!(dirs, CRATES_ABOVE_LEVEL_LOADER);
 }
 
 // Off the main thread 7, the retired worker: no production path spawns the

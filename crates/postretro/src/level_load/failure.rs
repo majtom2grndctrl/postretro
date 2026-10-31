@@ -62,6 +62,23 @@ impl PrepKind {
         PrepKind::ModelParse,
     ];
 
+    /// The kind's mark in log line C, inside `bundle_ready`.
+    pub(crate) fn mark(self) -> &'static str {
+        match self {
+            PrepKind::Textures => "texture_prep",
+            PrepKind::ShResidency => "sh_residency_plan",
+            PrepKind::RangeCheck => "range_check",
+            PrepKind::Assemble => "assemble",
+            PrepKind::Collision => "collision",
+            PrepKind::StreamingData => "streaming_data",
+            PrepKind::LightmapFamily => "lightmap_family",
+            PrepKind::Fluid => "fluid",
+            PrepKind::Sounds => "sound_decode",
+            PrepKind::ModelPrediction => "model_prediction",
+            PrepKind::ModelParse => "model_parse",
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             PrepKind::Textures => "texture prep",

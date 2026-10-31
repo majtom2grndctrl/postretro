@@ -24,6 +24,8 @@ mod upload;
 #[cfg(test)]
 mod failure_tests;
 #[cfg(test)]
+mod gpu_gate_tests;
+#[cfg(test)]
 mod model_cache_tests;
 #[cfg(test)]
 pub(crate) mod model_tests;

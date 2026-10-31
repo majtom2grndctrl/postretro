@@ -1,0 +1,284 @@
+{
+  "label": "batch-null-before-r2",
+  "arm": "null-before",
+  "round": 2,
+  "pose": "null",
+  "binary_arm": "before",
+  "binary": "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/2865c938-7f16-41c3-8a01-a7087d1839f0/scratchpad/before/postretro",
+  "camera": {
+    "map_units": [
+      1200,
+      1500,
+      48
+    ],
+    "yaw": 90.0,
+    "pitch": 0.0,
+    "position": [
+      -38.1,
+      1.2192,
+      -30.48
+    ]
+  },
+  "warmup_frames": 120,
+  "sample_frames": 240,
+  "resolution": [
+    3840,
+    2160
+  ],
+  "started_utc": "2026-10-31T05:00:08Z",
+  "problems": [],
+  "xctrace_exit": 0,
+  "elapsed_s": 62.2,
+  "clock": {
+    "basis": "busy",
+    "samples": 22,
+    "samples_total": 31,
+    "clock_mhz": {
+      "min": 1001,
+      "median": 1166,
+      "max": 1219
+    },
+    "temp_c": {
+      "min": 76,
+      "median": 78,
+      "max": 79
+    },
+    "power_w": {
+      "min": 27,
+      "median": 33,
+      "max": 35
+    },
+    "activity_pct": {
+      "min": 80,
+      "median": 94,
+      "max": 99
+    }
+  },
+  "locked_seen": false,
+  "screensaver_seen": false,
+  "foreign_processes_seen": [],
+  "adapter": {
+    "name": "AMD Radeon Pro 5300M",
+    "backend": "Metal",
+    "device_type": "DiscreteGpu"
+  },
+  "capture": {
+    "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/mover-depth-prepass-traces/batch-null-before-r2.png",
+    "resolution": [
+      3840,
+      2160
+    ],
+    "camera": {
+      "position": [
+        -38.1,
+        1.2192,
+        -30.48
+      ],
+      "yaw_deg": 90.0,
+      "pitch_deg": 0.0,
+      "fov_deg": 100.0
+    },
+    "force_full_resident_sh_compose": false,
+    "animation_time_seconds": 6.0
+  },
+  "engine_revision": "16c7659ff48e3fa21efbfca5ac587dab6ae161c3",
+  "report_keys": [
+    "adapter",
+    "capture",
+    "cpu_completion",
+    "cpu_stages",
+    "gpu_timing",
+    "lightmap_streaming",
+    "map",
+    "renderer_accounted_lightmap",
+    "renderer_accounted_sh",
+    "revision",
+    "schema",
+    "workload"
+  ],
+  "extent_lines": [],
+  "gpu": {
+    "source": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/mover-depth-prepass-traces/batch-null-before-r2-gpu.xml",
+    "encoder_counts": {
+      "(wgpu internal) Signal": 153,
+      "(wgpu internal) Transit": 1,
+      "Bloom Bright Pass": 362,
+      "Bloom Downsample Pass": 1421,
+      "Bloom Horizontal Gaussian Pass": 1762,
+      "Bloom Scene Composite Pass": 210,
+      "Bloom Upsample Pass": 1448,
+      "Bloom Vertical Gaussian Pass": 1786,
+      "Candidate Cull Pass": 365,
+      "Capture Measurement Encoder": 360,
+      "Depth Pre-Pass": 362,
+      "Frame Capture Encoder": 1,
+      "PNG Readback Encoder": 1,
+      "Per-frame Upload Copies": 361,
+      "Promoted Cube Entity Shadow Depth Pass": 4332,
+      "Promoted Spot Entity Shadow Depth Pass": 361,
+      "Streamed Direct SH Promotion": 20,
+      "Streamed SH Compose": 2,
+      "Textured Pass": 362
+    },
+    "marker": "Candidate Cull Pass",
+    "expected_frames": 360,
+    "frame_count_ok": true,
+    "marker_count": 365,
+    "framed_frames": 364,
+    "steady_frames": 240,
+    "modal_counts": {
+      "Depth Pre-Pass": 1,
+      "Textured Pass": 1,
+      "Kinematic Brush Pass": 0,
+      "SDF Shadow Pass": 0
+    },
+    "per_frame_count_histogram": {
+      "Depth Pre-Pass": {
+        "1": 240
+      },
+      "Textured Pass": {
+        "1": 240
+      },
+      "Kinematic Brush Pass": {
+        "0": 240
+      },
+      "SDF Shadow Pass": {
+        "0": 240
+      }
+    },
+    "complete_frames": 240,
+    "available": true,
+    "gpu_frame_complete": {
+      "per_frame_ms": 31.0993,
+      "median_ms": 31.0744,
+      "p10_ms": 30.5538,
+      "p90_ms": 31.4644
+    },
+    "gpu_frame_incomplete": null,
+    "passes": {
+      "(wgpu internal) Signal": {
+        "per_frame_ms": 0.0978,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.2575
+      },
+      "(wgpu internal) Transit": {
+        "per_frame_ms": 0.0002,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0
+      },
+      "Bloom Bright Pass": {
+        "per_frame_ms": 0.5212,
+        "median_ms": 0.5161,
+        "p10_ms": 0.5006,
+        "p90_ms": 0.5409
+      },
+      "Bloom Downsample Pass": {
+        "per_frame_ms": 0.1395,
+        "median_ms": 0.1304,
+        "p10_ms": 0.0827,
+        "p90_ms": 0.2098
+      },
+      "Bloom Horizontal Gaussian Pass": {
+        "per_frame_ms": 0.2106,
+        "median_ms": 0.2122,
+        "p10_ms": 0.1405,
+        "p90_ms": 0.2959
+      },
+      "Bloom Scene Composite Pass": {
+        "per_frame_ms": 0.1374,
+        "median_ms": 0.2122,
+        "p10_ms": 0.0,
+        "p90_ms": 0.261
+      },
+      "Bloom Upsample Pass": {
+        "per_frame_ms": 0.2115,
+        "median_ms": 0.2125,
+        "p10_ms": 0.1802,
+        "p90_ms": 0.2475
+      },
+      "Bloom Vertical Gaussian Pass": {
+        "per_frame_ms": 0.2559,
+        "median_ms": 0.2543,
+        "p10_ms": 0.1798,
+        "p90_ms": 0.3168
+      },
+      "Candidate Cull Pass": {
+        "per_frame_ms": 0.0397,
+        "median_ms": 0.0348,
+        "p10_ms": 0.0255,
+        "p90_ms": 0.0704
+      },
+      "Capture Measurement Encoder": {
+        "per_frame_ms": 0.0395,
+        "median_ms": 0.0341,
+        "p10_ms": 0.0278,
+        "p90_ms": 0.0671
+      },
+      "Depth Pre-Pass": {
+        "per_frame_ms": 0.1287,
+        "median_ms": 0.1264,
+        "p10_ms": 0.1069,
+        "p90_ms": 0.162
+      },
+      "Frame Capture Encoder": {
+        "per_frame_ms": 0.0005,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0
+      },
+      "Per-frame Upload Copies": {
+        "per_frame_ms": 0.2465,
+        "median_ms": 0.1394,
+        "p10_ms": 0.0887,
+        "p90_ms": 0.1657
+      },
+      "Promoted Cube Entity Shadow Depth Pass": {
+        "per_frame_ms": 0.316,
+        "median_ms": 0.2974,
+        "p10_ms": 0.2522,
+        "p90_ms": 0.3963
+      },
+      "Promoted Spot Entity Shadow Depth Pass": {
+        "per_frame_ms": 0.0359,
+        "median_ms": 0.0313,
+        "p10_ms": 0.0,
+        "p90_ms": 0.078
+      },
+      "Textured Pass": {
+        "per_frame_ms": 28.7356,
+        "median_ms": 28.7902,
+        "p10_ms": 28.3406,
+        "p90_ms": 29.041
+      },
+      "Kinematic Brush Pass": {
+        "per_frame_ms": 0.0,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0
+      },
+      "SDF Shadow Pass": {
+        "per_frame_ms": 0.0,
+        "median_ms": 0.0,
+        "p10_ms": 0.0,
+        "p90_ms": 0.0
+      }
+    },
+    "sum": {
+      "per_frame_ms": 28.8643,
+      "median_ms": 28.9229,
+      "p10_ms": 28.4675,
+      "p90_ms": 29.1778
+    }
+  },
+  "depth_ms": 0.1287,
+  "forward_ms": 28.7356,
+  "mover_ms": 0.0,
+  "sdf_ms": 0.0,
+  "sum_ms": 28.8643,
+  "frame_ms": 31.0993,
+  "complete_frames": 240,
+  "machine_state_ok": true,
+  "valid": true
+}

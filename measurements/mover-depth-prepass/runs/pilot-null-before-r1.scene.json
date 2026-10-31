@@ -1,0 +1,23 @@
+{
+  "map": "/Users/dhiester/Projects/Personal/postretro/content/dev/maps/mover-setpiece.prl",
+  "camera": {
+    "position": [
+      -38.1,
+      1.2192,
+      -30.48
+    ],
+    "yaw_deg": 90.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "/var/folders/2d/gsn5t4bx2vsfbf_vybxvc86m0000gn/T/mover-depth-prepass-traces/pilot-null-before-r1.png",
+  "measurement": {
+    "report": "/Users/dhiester/Projects/Personal/postretro/measurements/mover-depth-prepass/runs/pilot-null-before-r1.report.json",
+    "warmup_frames": 120,
+    "sample_frames": 240
+  }
+}

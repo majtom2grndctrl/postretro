@@ -1,0 +1,107 @@
+{
+  "poses": {
+    "wall": {
+      "map_units": [
+        368,
+        720,
+        48
+      ],
+      "yaw": 90.0,
+      "pitch": 0.0,
+      "position": [
+        -18.288,
+        1.2192,
+        -9.3472
+      ]
+    },
+    "north": {
+      "map_units": [
+        368,
+        1536,
+        48
+      ],
+      "yaw": 270.0,
+      "pitch": 0.0,
+      "position": [
+        -39.0144,
+        1.2192,
+        -9.3472
+      ]
+    },
+    "offscreen": {
+      "map_units": [
+        368,
+        720,
+        48
+      ],
+      "yaw": 225.0,
+      "pitch": 0.0,
+      "position": [
+        -18.288,
+        1.2192,
+        -9.3472
+      ]
+    },
+    "null": {
+      "map_units": [
+        1200,
+        1500,
+        48
+      ],
+      "yaw": 90.0,
+      "pitch": 0.0,
+      "position": [
+        -38.1,
+        1.2192,
+        -30.48
+      ]
+    }
+  },
+  "results": {
+    "wall": {
+      "image": [
+        3840,
+        2160
+      ],
+      "channels": 4,
+      "identical": true,
+      "differing_pixels": 0,
+      "max_channel_delta": 0
+    },
+    "north": {
+      "image": [
+        3840,
+        2160
+      ],
+      "channels": 4,
+      "identical": true,
+      "differing_pixels": 0,
+      "max_channel_delta": 0
+    },
+    "offscreen": {
+      "image": [
+        3840,
+        2160
+      ],
+      "channels": 4,
+      "identical": true,
+      "differing_pixels": 0,
+      "max_channel_delta": 0
+    },
+    "null": {
+      "image": [
+        3840,
+        2160
+      ],
+      "channels": 4,
+      "identical": true,
+      "differing_pixels": 0,
+      "max_channel_delta": 0
+    }
+  },
+  "method": "untraced --capture, 4 warmup + 4 sampled frames, 3840x2160, RGBA8 PNG per binary; compared byte-for-byte after zlib inflate (identical filtered streams imply identical pixels)",
+  "binaries": {
+    "before": "5971fb2b6",
+    "after": "16c7659ff"
+  }
+}

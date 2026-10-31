@@ -9,9 +9,9 @@ use postretro_render_cpu::sh_volume::STREAMED_SH_PHYSICAL_TILE_STRIDE;
 use super::super::ShResidencyDrainError;
 use super::super::gpu::StagedUploads;
 use super::layout::{
-    ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, animated_bgl_entries, debug_override_bytes,
-    dynamic_grid_entry, light_term_mask_bytes, promotion_bgl_entries, sampler_entry, storage_entry,
-    storage_texture_entry, texture_entry, u32_bytes, uniform_entry,
+    ANIMATED_LIGHT_SCALE_SIZE, DEBUG_OVERRIDE_SIZE, debug_override_bytes, dynamic_grid_entry,
+    light_term_mask_bytes, sampler_entry, storage_entry, storage_texture_entry, texture_entry,
+    u32_bytes, uniform_entry,
 };
 use super::sparse::{
     DirectSparseRowUpload, RetiredDirectSparseResources, StreamingSparseBuffers,
@@ -28,7 +28,7 @@ use crate::render::renderer_types::PromotedBakedLightState;
 use crate::render::sh_compose_dispatch::{
     DynamicComposeGridUpload, build_dynamic_compose_grid_upload_for_rows_into,
 };
-use crate::render::sh_indirection::WGSL_DECODE_HELPER;
+use crate::render::sh_streaming::StreamingShPipelines;
 use crate::render::sh_streaming::gpu::AtlasShape;
 use crate::render::sh_volume::ShVolumeResources;
 
@@ -38,7 +38,8 @@ const BIND_FRAME_LIGHT_TERM_MASK: u32 = 29;
 const BIND_ANIMATED_LIGHT_SCALE: u32 = 26;
 const BIND_ANIMATED_COMPACTION_META: u32 = 27;
 const BIND_ANIMATED_PROBE_INDIRECTION: u32 = 28;
-const ANIMATED_DIRECT_COMPOSE_ENTRY_POINT: &str = "animated_compose_main";
+pub(in crate::render::sh_streaming) const ANIMATED_DIRECT_COMPOSE_ENTRY_POINT: &str =
+    "animated_compose_main";
 
 pub(super) struct StreamingPromotionPass {
     pipeline: wgpu::ComputePipeline,
@@ -73,6 +74,7 @@ impl StreamingPromotionPass {
         output_storage: &wgpu::TextureView,
         selection_weights: &wgpu::Buffer,
         compose_indirection: &wgpu::Buffer,
+        pipelines: &StreamingShPipelines,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
@@ -96,35 +98,8 @@ impl StreamingPromotionPass {
             contents: &light_term_mask_bytes(LightTermMask::ALL),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Streamed Direct SH Promotion BGL"),
-            entries: &promotion_bgl_entries(),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Streamed Direct SH Promotion Pipeline Layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed Direct SH Promotion Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                [
-                    include_str!("../../../shaders/direct_sh_compose.wgsl"),
-                    "\n",
-                    WGSL_DECODE_HELPER,
-                ]
-                .concat()
-                .into(),
-            ),
-        });
-        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed Direct SH Promotion Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let bgl = pipelines.promotion.bind_group_layout.clone();
+        let pipeline = pipelines.promotion.pipeline.clone();
         let bind_group = Self::build_bind_group(
             device,
             &bgl,
@@ -368,7 +343,7 @@ impl StreamingAnimatedPass {
         output_storage: &wgpu::TextureView,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &StreamingShPipelines,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let (grid, sparse, grid_buffer, grid_capacity) = build_grid_and_sparse(
@@ -399,37 +374,8 @@ impl StreamingAnimatedPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let sampler = nearest_sampler(device, "Streamed Animated Direct SH Sampler");
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Streamed Animated Direct SH BGL"),
-            entries: &animated_bgl_entries(),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Streamed Animated Direct SH Pipeline Layout"),
-            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bgl)],
-            immediate_size: 0,
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed Animated Direct SH Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                [
-                    include_str!("../../../shaders/animated_direct_sh_compose.wgsl"),
-                    "\n",
-                    include_str!("../../../shaders/curve_eval.wgsl"),
-                    "\n",
-                    WGSL_DECODE_HELPER,
-                ]
-                .concat()
-                .into(),
-            ),
-        });
-        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed Animated Direct SH Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some(ANIMATED_DIRECT_COMPOSE_ENTRY_POINT),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let bgl = pipelines.animated.bind_group_layout.clone();
+        let pipeline = pipelines.animated.pipeline.clone();
         let bind_group = Self::build_bind_group(
             device,
             &bgl,
@@ -585,7 +531,7 @@ mod tests {
             "\n",
             include_str!("../../../shaders/curve_eval.wgsl"),
             "\n",
-            super::WGSL_DECODE_HELPER,
+            crate::render::sh_indirection::WGSL_DECODE_HELPER,
         ]
         .concat();
         let module = naga::front::wgsl::parse_str(&source)

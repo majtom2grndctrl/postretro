@@ -99,7 +99,27 @@ pub(crate) fn offscreen_renderer_or_skip(
     width: u32,
     height: u32,
 ) -> Option<super::Renderer> {
-    match super::Renderer::new_offscreen(width, height) {
+    renderer_or_skip(test, super::Renderer::new_offscreen(width, height))
+}
+
+/// [`offscreen_renderer_or_skip`] whose install-pipeline build waits on the
+/// upload thread until the returned handle is released or dropped.
+pub(crate) fn offscreen_renderer_holding_pipeline_build_or_skip(
+    test: &str,
+    width: u32,
+    height: u32,
+) -> Option<(
+    super::Renderer,
+    super::install_pipelines::PipelineBuildRelease,
+)> {
+    renderer_or_skip(
+        test,
+        super::Renderer::new_offscreen_holding_pipeline_build(width, height),
+    )
+}
+
+fn renderer_or_skip<T>(test: &str, built: anyhow::Result<T>) -> Option<T> {
+    match built {
         Ok(renderer) => Some(renderer),
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
             assert!(

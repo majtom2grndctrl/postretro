@@ -25,6 +25,7 @@ mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
 pub(crate) mod gpu_create;
+pub(crate) mod install_pipelines;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod kinematic_ghost_shape;
@@ -187,7 +188,7 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
 pub use renderer_textures::UploadedWorldTextures;
-pub use upload_thread::{PendingUpload, UploadError};
+pub use upload_thread::{PendingUpload, UploadError, UploadRetirement};
 pub(crate) use upload_thread::{UploadContext, UploadThread};
 
 pub use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};

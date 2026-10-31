@@ -17,6 +17,7 @@ use super::direct_sh_compose::{
     storage_texture_bgl_entry, texture_bgl_entry, uniform_bgl_entry,
 };
 use super::direct_sh_resources::DirectAtlasLayout;
+use super::install_pipelines::new_install_compute_pipeline;
 #[cfg(test)]
 use super::renderer_types::PromotedShadowPoolKind;
 use super::renderer_types::{
@@ -103,6 +104,58 @@ const _: () = assert!(
 #[cfg(feature = "dev-tools")]
 const ANIMATED_DIRECT_FOOTPRINT_LABEL: &str = "DIRECT SH compose id-45 animated-add @group(1)";
 
+/// The animated-add pass's device-only half, built once per renderer inside
+/// [`super::direct_sh_compose::DirectShComposePipelines`].
+#[derive(Clone)]
+pub(super) struct AnimatedDirectShComposePipelines {
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl AnimatedDirectShComposePipelines {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Animated Direct SH Compose BGL"),
+            entries: &animated_compose_bgl_entries(),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Animated Direct SH Compose Pipeline Layout"),
+            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let shader_source = [
+            include_str!("../shaders/animated_direct_sh_compose.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+            "\n",
+            WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Animated Direct SH Compose Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+        let pipeline = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Animated Direct SH Compose Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("animated_compose_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            bind_group_layout,
+            pipeline,
+        }
+    }
+}
+
 pub(super) struct AnimatedDirectShComposePipeline {
     pub(super) pipeline: wgpu::ComputePipeline,
     pub(super) bind_group: wgpu::BindGroup,
@@ -129,7 +182,7 @@ pub(super) fn build_animated_direct_pass(
     probe_indirection_words: &[u32],
     animated_delta: &AnimatedDirectShDeltaVolumesSection,
     views: AnimatedDirectShPassViews<'_>,
-    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    pipelines: &AnimatedDirectShComposePipelines,
     sh_section_present: bool,
     ledger: &mut ShAllocationLedger,
 ) -> AnimatedDirectShComposePipeline {
@@ -302,41 +355,11 @@ pub(super) fn build_animated_direct_pass(
         usage: animated_light_scale_allocation.usage,
     });
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Animated Direct SH Compose BGL"),
-        entries: &animated_compose_bgl_entries(),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Animated Direct SH Compose Pipeline Layout"),
-        bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
-        immediate_size: 0,
-    });
-    let shader_source = [
-        include_str!("../shaders/animated_direct_sh_compose.wgsl"),
-        "\n",
-        include_str!("../shaders/curve_eval.wgsl"),
-        "\n",
-        WGSL_DECODE_HELPER,
-    ]
-    .concat();
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Animated Direct SH Compose Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    });
-    let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Animated Direct SH Compose Pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("animated_compose_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
-
     let intermediate_sampler =
         nearest_sampler(device, "Animated Direct SH Compose Intermediate Sampler");
     let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Animated Direct SH Compose Bind Group"),
-        layout: &bind_group_layout,
+        layout: &pipelines.bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -398,7 +421,7 @@ pub(super) fn build_animated_direct_pass(
     });
 
     AnimatedDirectShComposePipeline {
-        pipeline,
+        pipeline: pipelines.pipeline.clone(),
         bind_group,
         dispatches: grid_upload.dispatches,
         animated_light_scale_buffer,

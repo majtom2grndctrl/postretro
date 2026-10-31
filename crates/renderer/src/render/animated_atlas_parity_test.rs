@@ -21,7 +21,9 @@ use postretro_level_format::animated_light_weight_maps::{
 use postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE;
 use postretro_visibility::VisibleCells;
 
-use super::animated_lightmap::{AnimatedLightmapResources, AnimatedLmDebugConfig};
+use super::animated_lightmap::{
+    AnimatedLightmapPipelines, AnimatedLightmapResources, AnimatedLmDebugConfig,
+};
 use super::pipeline_layout::uniform_bind_group_layout_entries;
 use super::sh_volume::AnimatedLightBuffers;
 use crate::lighting::lightmap::{animated_block_table_bytes, filtering_sampler_descriptor};
@@ -405,7 +407,7 @@ fn run(
         Some(&chunks),
         &[],
         &animation,
-        &uniform_layout,
+        &AnimatedLightmapPipelines::new(device, &uniform_layout),
         Some(&STATIC_BLOCKS),
         AnimatedLmDebugConfig::disabled(),
     )

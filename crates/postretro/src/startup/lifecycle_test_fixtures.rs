@@ -238,6 +238,7 @@ pub(crate) fn test_app() -> App {
         level_load: None,
         level_rx: None,
         level_worker: None,
+        upload_retirements: Vec::new(),
         level_requests: VecDeque::new(),
         boot_load: false,
         pending_session: None,

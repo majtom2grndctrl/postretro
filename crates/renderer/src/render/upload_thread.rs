@@ -41,8 +41,8 @@ type Job = Box<dyn FnOnce(&UploadContext) + Send + 'static>;
 /// One thread that runs GPU creation jobs in submission order.
 pub struct UploadThread {
     jobs: Option<mpsc::Sender<Job>>,
-    // Kept, not joined: see `Drop`.
-    _handle: Option<JoinHandle<()>>,
+    // Kept, not joined: see `Drop`. Handed off by `take_retirement`.
+    handle: Option<JoinHandle<()>>,
 }
 
 impl UploadThread {
@@ -59,7 +59,7 @@ impl UploadThread {
             })?;
         Ok(Self {
             jobs: Some(jobs),
-            _handle: Some(handle),
+            handle: Some(handle),
         })
     }
 
@@ -71,16 +71,72 @@ impl UploadThread {
         job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
     ) -> PendingUpload<T> {
         let (result_tx, result_rx) = mpsc::channel();
-        let wrapped: Job = Box::new(move |context| {
-            // The receiver may be gone (a cancelled load); nothing waits then.
-            let _ = result_tx.send(run_job(context, job));
+        // The receiver may be gone (a cancelled load); nothing waits then. A
+        // send failure in `submit_then` drops this sender, so the pending
+        // handle reads `ThreadGone`.
+        self.submit_then(job, move |result| {
+            let _ = result_tx.send(result);
         });
+        PendingUpload { result: result_rx }
+    }
+
+    /// Queue `job`, then hand its result to `deliver` on the upload thread,
+    /// after the job's flush and error scopes, before the next job starts. A
+    /// later job therefore observes everything `deliver` published. If the
+    /// thread is gone, both closures drop unrun.
+    pub(crate) fn submit_then<T: 'static>(
+        &self,
+        job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
+        deliver: impl FnOnce(Result<T, UploadError>) + Send + 'static,
+    ) {
+        let wrapped: Job = Box::new(move |context| deliver(run_job(context, job)));
         if let Some(jobs) = &self.jobs {
-            // A send failure drops `wrapped` and its sender, so the pending
-            // handle reads `ThreadGone`.
             let _ = jobs.send(wrapped);
         }
-        PendingUpload { result: result_rx }
+    }
+
+    /// Close the job queue and hand off the thread for a poll-and-join
+    /// retirement. Jobs already queued still run (on this device; their
+    /// results reach dropped receivers), then the thread ends. Later
+    /// submissions read `ThreadGone`. `None` once taken.
+    pub(crate) fn take_retirement(&mut self) -> Option<UploadRetirement> {
+        self.jobs.take();
+        self.handle.take().map(UploadRetirement::from_thread)
+    }
+}
+
+/// A torn-down renderer's upload thread, joined only once it has finished.
+/// Dropping it detaches the thread: nothing here ever blocks.
+#[derive(Debug)]
+pub struct UploadRetirement {
+    handle: Option<JoinHandle<()>>,
+}
+
+impl UploadRetirement {
+    /// Retire any finished-or-finishing thread; the app's tests build one
+    /// from a plain thread, since a real upload thread needs a device.
+    pub fn from_thread(handle: JoinHandle<()>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    /// `true` once the thread has finished and been joined. Joins only when
+    /// `is_finished`, so the join returns at once; never waits.
+    pub fn try_finish(&mut self) -> bool {
+        match &self.handle {
+            Some(handle) if !handle.is_finished() => false,
+            Some(_) => {
+                if let Some(handle) = self.handle.take() {
+                    // A job panic was caught inside the thread; a join error
+                    // here would mean the loop itself panicked, with nothing
+                    // left to recover.
+                    let _ = handle.join();
+                }
+                true
+            }
+            None => true,
+        }
     }
 }
 

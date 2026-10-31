@@ -2,6 +2,7 @@
 // cull owners recreated over the index buffer they address.
 // See: context/lib/rendering_pipeline.md §5
 
+use super::super::install_pipelines::InstallPipelines;
 use super::super::renderer_types::FullRenderer;
 use super::*;
 use crate::render::gpu_create::GpuCreate;
@@ -74,6 +75,7 @@ pub(super) fn install_world_buffers(
 pub(super) fn install_bvh_and_cull(
     device: &wgpu::Device,
     full: &mut FullRenderer,
+    pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,
     has_multi_draw_indirect: bool,
@@ -89,6 +91,7 @@ pub(super) fn install_bvh_and_cull(
     full.compute_cull = if !full.bvh_leaves.is_empty() {
         Some(ComputeCullPipeline::new(
             device,
+            &pipelines.compute_cull,
             geometry.bvh,
             has_multi_draw_indirect,
         ))
@@ -98,8 +101,11 @@ pub(super) fn install_bvh_and_cull(
     // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
     // to the freshly-installed leaf count. Empty-geometry install → `None`,
     // so `release_level_resources` drops it for free.
-    full.candidate_cull = full
-        .compute_cull
-        .as_ref()
-        .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
+    full.candidate_cull = full.compute_cull.as_ref().map(|c| {
+        crate::candidate_cull::CandidateCullPipeline::new(
+            device,
+            &pipelines.candidate_cull,
+            c.total_leaves(),
+        )
+    });
 }

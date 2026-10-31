@@ -66,7 +66,7 @@ impl StreamingIndirectCompose {
         total_storage_view: &wgpu::TextureView,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &super::super::StreamingShPipelines,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let source = sources.indirect_delta.as_ref();
@@ -247,35 +247,8 @@ impl StreamingIndirectCompose {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Streamed SH Compose BGL"),
-            entries: &compose_bgl_entries(),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Streamed SH Compose Pipeline Layout"),
-            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-        let shader_source = [
-            include_str!("../../../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../../../shaders/curve_eval.wgsl"),
-            "\n",
-            WGSL_DECODE_HELPER,
-        ]
-        .concat();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed SH Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed SH Compose Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let bind_group_layout = pipelines.indirect.bind_group_layout.clone();
+        let pipeline = pipelines.indirect.pipeline.clone();
         let bind_group = Self::build_bind_group(
             device,
             &bind_group_layout,

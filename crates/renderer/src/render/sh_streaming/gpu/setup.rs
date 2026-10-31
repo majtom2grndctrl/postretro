@@ -18,7 +18,7 @@ impl StreamingGpuPools {
         initial_floor: super::super::floor::InitialPoolFloor,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &super::super::StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
     ) -> Result<Self, ShResidencyDrainError> {
         let shape = AtlasShape::for_slots(
@@ -43,7 +43,7 @@ impl StreamingGpuPools {
             &initial_floor.sparse_capacities,
             probe_occlusion_enabled,
             sh,
-            uniform_bind_group_layout,
+            pipelines,
             selection_weights,
             initial_floor.effective_floor_bytes,
             initial_floor.dense_group_minimum_bytes,
@@ -62,7 +62,7 @@ impl StreamingGpuPools {
         sparse_capacity_floors: &SparseCapacityFloors,
         probe_occlusion_enabled: bool,
         sh: &mut ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &super::super::StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
         effective_floor_bytes: u64,
         dense_group_minimum_bytes: u64,
@@ -275,7 +275,7 @@ impl StreamingGpuPools {
             &total_storage_view,
             &compose_indirection,
             sh,
-            uniform_bind_group_layout,
+            pipelines,
             sparse_capacity_floors.get(&27).copied(),
         )?;
         let direct_compose = if direct_compose_required {
@@ -302,7 +302,7 @@ impl StreamingGpuPools {
                 },
                 &compose_indirection,
                 sh,
-                uniform_bind_group_layout,
+                pipelines,
                 sparse_capacity_floors,
             )?)
         } else {
@@ -449,6 +449,7 @@ impl StreamingGpuPools {
             shape.slots
         );
         Ok(Self {
+            pipelines: pipelines.clone(),
             shape,
             limits: limits.clone(),
             base_format,

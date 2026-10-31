@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.1
 
 use crate::render::gpu_create::GpuCreate;
+use crate::render::install_pipelines::new_install_compute_pipeline;
 use std::collections::HashSet;
 #[cfg(feature = "dev-tools")]
 use std::sync::Arc;
@@ -260,75 +261,16 @@ impl SubmittedCounterReadback {
 /// params uniform, and the pipeline; binds the camera cull's existing leaf,
 /// indirect, and status buffers (passed per dispatch) so it writes the SAME
 /// global per-leaf slots as the tree walk.
-pub struct CandidateCullPipeline {
-    pipeline: wgpu::ComputePipeline,
+/// The candidate cull's device-only half, built once per renderer (see
+/// `InstallPipelines`). Each level's candidate cull holds clones of these.
+#[derive(Clone)]
+pub(crate) struct CandidateCullPipelines {
     bind_group_layout: wgpu::BindGroupLayout,
-
-    uniform_buffer: wgpu::Buffer,
-    candidate_buffer: wgpu::Buffer,
-    params_buffer: wgpu::Buffer,
-    /// 4-byte storage counter the kernel `atomicAdd`s per submitted leaf
-    /// (binding 6). Cleared to 0 before each dispatch. Always present — the
-    /// bind group layout requires it whether or not the readback is wired up.
-    submitted_counter_buffer: wgpu::Buffer,
-    /// Deferred GPU→CPU readback ring for `submitted_counter_buffer`. Dev-tools
-    /// only; absent in shipping builds (no ring allocation, no per-frame map).
-    #[cfg(feature = "dev-tools")]
-    submitted_readback: SubmittedCounterReadback,
-
-    total_leaves: u32,
-    /// Reused per frame to avoid reallocating the upload staging vector.
-    candidate_scratch: Vec<u8>,
-    /// Reused per frame by [`Self::gather`]: the deduped, CSR-expanded candidate
-    /// leaf list. Cleared (not reallocated) each frame so the candidate path
-    /// allocates nothing on the hot path (development_guide.md §1.4).
-    gather_out: Vec<u32>,
-    /// Reused per frame by [`Self::gather`]: the first-seen dedupe set for
-    /// visible cell ids. Cleared each frame alongside `gather_out`.
-    gather_seen: HashSet<u32>,
-    /// [`Self::dispatch`] calls, so frame tests can prove which camera-cull
-    /// path ran in every feature set.
-    #[cfg(test)]
-    pub(crate) dispatches: u32,
+    pipeline: wgpu::ComputePipeline,
 }
 
-impl CandidateCullPipeline {
-    pub fn new(device: &wgpu::Device, total_leaves: u32) -> Self {
-        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-            label: Some("Candidate Cull Uniforms"),
-            size: crate::compute_cull::CULL_UNIFORMS_SIZE as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Worst case: every leaf is a candidate. `.max(1)` keeps a valid
-        // (non-zero) storage buffer for empty-geometry edge cases.
-        let candidate_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-            label: Some("Candidate Leaves"),
-            size: (total_leaves.max(1) as u64) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-            label: Some("Candidate Cull Params"),
-            size: CANDIDATE_PARAMS_SIZE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // GPU submitted-leaf counter (binding 6). STORAGE for the kernel's
-        // atomicAdd, COPY_DST so the CPU can clear it to 0 each frame, COPY_SRC
-        // so the dev-tools readback can copy it into the MAP_READ ring.
-        let submitted_counter_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-            label: Some("Candidate Submitted Counter"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
+impl CandidateCullPipelines {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Candidate Cull Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(CANDIDATE_CULL_SHADER_SOURCE.into()),
@@ -374,13 +316,100 @@ impl CandidateCullPipeline {
             immediate_size: 0,
         });
 
-        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Candidate Cull Compute Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("candidate_cull_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
+        let pipeline = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Candidate Cull Compute Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("candidate_cull_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            bind_group_layout,
+            pipeline,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
+    }
+}
+
+pub struct CandidateCullPipeline {
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+
+    uniform_buffer: wgpu::Buffer,
+    candidate_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
+    /// 4-byte storage counter the kernel `atomicAdd`s per submitted leaf
+    /// (binding 6). Cleared to 0 before each dispatch. Always present — the
+    /// bind group layout requires it whether or not the readback is wired up.
+    submitted_counter_buffer: wgpu::Buffer,
+    /// Deferred GPU→CPU readback ring for `submitted_counter_buffer`. Dev-tools
+    /// only; absent in shipping builds (no ring allocation, no per-frame map).
+    #[cfg(feature = "dev-tools")]
+    submitted_readback: SubmittedCounterReadback,
+
+    total_leaves: u32,
+    /// Reused per frame to avoid reallocating the upload staging vector.
+    candidate_scratch: Vec<u8>,
+    /// Reused per frame by [`Self::gather`]: the deduped, CSR-expanded candidate
+    /// leaf list. Cleared (not reallocated) each frame so the candidate path
+    /// allocates nothing on the hot path (development_guide.md §1.4).
+    gather_out: Vec<u32>,
+    /// Reused per frame by [`Self::gather`]: the first-seen dedupe set for
+    /// visible cell ids. Cleared each frame alongside `gather_out`.
+    gather_seen: HashSet<u32>,
+    /// [`Self::dispatch`] calls, so frame tests can prove which camera-cull
+    /// path ran in every feature set.
+    #[cfg(test)]
+    pub(crate) dispatches: u32,
+}
+
+impl CandidateCullPipeline {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        pipelines: &CandidateCullPipelines,
+        total_leaves: u32,
+    ) -> Self {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Candidate Cull Uniforms"),
+            size: crate::compute_cull::CULL_UNIFORMS_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Worst case: every leaf is a candidate. `.max(1)` keeps a valid
+        // (non-zero) storage buffer for empty-geometry edge cases.
+        let candidate_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Candidate Leaves"),
+            size: (total_leaves.max(1) as u64) * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Candidate Cull Params"),
+            size: CANDIDATE_PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // GPU submitted-leaf counter (binding 6). STORAGE for the kernel's
+        // atomicAdd, COPY_DST so the CPU can clear it to 0 each frame, COPY_SRC
+        // so the dev-tools readback can copy it into the MAP_READ ring.
+        let submitted_counter_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Candidate Submitted Counter"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         log::info!(
@@ -389,8 +418,8 @@ impl CandidateCullPipeline {
         );
 
         Self {
-            pipeline,
-            bind_group_layout,
+            pipeline: pipelines.pipeline.clone(),
+            bind_group_layout: pipelines.bind_group_layout.clone(),
             uniform_buffer,
             candidate_buffer,
             params_buffer,
@@ -404,6 +433,11 @@ impl CandidateCullPipeline {
             #[cfg(test)]
             dispatches: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
     }
 
     /// Run the pure candidate gather into this pipeline's reused scratch,

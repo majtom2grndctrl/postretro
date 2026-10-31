@@ -26,6 +26,7 @@ use crate::compute_cull::{MAX_VISIBLE_CELLS, VISIBLE_CELLS_WORDS};
 use postretro_render_data::geometry::BvhLeaf;
 use postretro_visibility::VisibleCells;
 
+use super::install_pipelines::new_install_compute_pipeline;
 use super::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use super::sh_volume::AnimatedLightBuffers;
 use super::{LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE};
@@ -193,6 +194,66 @@ struct GpuTexelLight {
     direction_oct_packed: u32,
 }
 
+/// The compose pass's device-only half, built once per renderer (see
+/// `InstallPipelines`). Level halves hold clones of these handles.
+#[derive(Clone)]
+pub(crate) struct AnimatedLightmapPipelines {
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl AnimatedLightmapPipelines {
+    /// `uniform_bind_group_layout` must include `wgpu::ShaderStages::COMPUTE` —
+    /// the compose pipeline is a compute pipeline and wgpu validation fails at
+    /// `create_compute_pipeline` time otherwise. The canonical BGL in
+    /// `render/mod.rs` declares `VERTEX | FRAGMENT | COMPUTE` for this reason;
+    /// dropping COMPUTE there would break this pass. `wgpu::BindGroupLayout` is
+    /// opaque so this cannot be runtime-checked — it must be preserved at the
+    /// call site.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Animated LM Compute BGL"),
+            entries: &compute_bgl_entries(),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Animated LM Pipeline Layout"),
+            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        // curve_eval.wgsl is appended rather than imported; matches the pattern in forward.wgsl.
+        let shader_source = concat!(
+            include_str!("../shaders/animated_lightmap_compose.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+        );
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Animated LM Compose Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+
+        let pipeline = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Animated LM Compose Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("compose_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            bind_group_layout,
+            pipeline,
+        }
+    }
+}
+
 /// Compose-pass resources. Always allocated — maps with no
 /// `AnimatedLightWeightMaps` section get a 1×1 zero dummy atlas and skip the
 /// per-frame dispatch.
@@ -255,34 +316,17 @@ impl AnimatedLightmapResources {
     /// Build the non-dispatching dummy path through `new`'s `weight_maps: None`
     /// early-out. Load failures use this instead of retaining a prior level's
     /// atlas views or compose state.
+    /// It needs no pipeline: the dummy never dispatches.
     pub(crate) fn dummy(
         device: &wgpu::Device,
         animation: &AnimatedLightBuffers,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
         debug_config: AnimatedLmDebugConfig,
     ) -> Self {
-        Self::new(
-            device,
-            None,
-            None,
-            &[],
-            animation,
-            uniform_bind_group_layout,
-            None,
-            debug_config,
-        )
-        .expect("weight_maps: None is the non-failing animated-lightmap dummy path")
+        Self::build(device, None, None, &[], animation, None, None, debug_config)
+            .expect("weight_maps: None is the non-failing animated-lightmap dummy path")
     }
 
-    /// Build the compose pass resources.
-    ///
-    /// `uniform_bind_group_layout` must include `wgpu::ShaderStages::COMPUTE` —
-    /// the compose pipeline is a compute pipeline and wgpu validation fails at
-    /// `create_compute_pipeline` time otherwise. The canonical BGL in
-    /// `render/mod.rs` declares `VERTEX | FRAGMENT | COMPUTE` for this reason;
-    /// dropping COMPUTE there would break this pass. `wgpu::BindGroupLayout` is
-    /// opaque so this cannot be runtime-checked — it must be preserved at the
-    /// call site.
+    /// Build the compose pass resources over the renderer's compose pipeline.
     ///
     /// `static_blocks` — each installed lightmap cell block's `(width,
     /// height)` by block id, from `lightmap::StaticPool::static_block_extents`.
@@ -301,7 +345,32 @@ impl AnimatedLightmapResources {
         animated_chunks: Option<&AnimatedLightChunksSection>,
         bvh_leaves: &[BvhLeaf],
         animation: &AnimatedLightBuffers,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &AnimatedLightmapPipelines,
+        static_blocks: Option<&[(u32, u32)]>,
+        debug_config: AnimatedLmDebugConfig,
+    ) -> Result<Self, String> {
+        Self::build(
+            device,
+            weight_maps,
+            animated_chunks,
+            bvh_leaves,
+            animation,
+            Some(pipelines),
+            static_blocks,
+            debug_config,
+        )
+    }
+
+    /// `new`, or with no pipeline the dummy: only an atlas that dispatches
+    /// reaches the pipeline.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        device: &wgpu::Device,
+        weight_maps: Option<&AnimatedLightWeightMapsSection>,
+        animated_chunks: Option<&AnimatedLightChunksSection>,
+        bvh_leaves: &[BvhLeaf],
+        animation: &AnimatedLightBuffers,
+        pipelines: Option<&AnimatedLightmapPipelines>,
         static_blocks: Option<&[(u32, u32)]>,
         debug_config: AnimatedLmDebugConfig,
     ) -> Result<Self, String> {
@@ -557,40 +626,14 @@ impl AnimatedLightmapResources {
             })
         };
 
-        let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Animated LM Compute BGL"),
-            entries: &compute_bgl_entries(),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Animated LM Pipeline Layout"),
-            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&compute_bgl)],
-            immediate_size: 0,
-        });
-
-        // curve_eval.wgsl is appended rather than imported; matches the pattern in forward.wgsl.
-        let shader_source = concat!(
-            include_str!("../shaders/animated_lightmap_compose.wgsl"),
-            "\n",
-            include_str!("../shaders/curve_eval.wgsl"),
-        );
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Animated LM Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-
-        let compose_pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Animated LM Compose Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let Some(pipelines) = pipelines else {
+            return Err("animated lightmap compose was built without its pipeline".to_owned());
+        };
+        let compose_pipeline = pipelines.pipeline.clone();
 
         let compute_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Animated LM Compute Bind Group"),
-            layout: &compute_bgl,
+            layout: &pipelines.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,

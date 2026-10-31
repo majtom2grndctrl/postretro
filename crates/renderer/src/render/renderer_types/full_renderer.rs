@@ -54,9 +54,10 @@ pub(in crate::render) struct FullRenderer {
     /// Off-main GPU creation for level loads. Lives as long as this full
     /// renderer, so a rebuilt one after suspend spawns its own.
     pub(in crate::render) upload_thread: super::upload_thread::UploadThread,
-    /// Retained so `install_level_geometry` can pass it to `ShComposeResources`
-    /// and `AnimatedLightmapResources` without recreating the layout inline.
-    pub(in crate::render) uniform_bind_group_layout: wgpu::BindGroupLayout,
+    /// This renderer's install-time pipelines, published once by the upload
+    /// thread's first job. Every level install binds these; none builds one.
+    pub(in crate::render) install_pipelines:
+        std::sync::Arc<super::install_pipelines::InstallPipelinesSlot>,
 
     /// GPU half of the debug UI. Lazily constructed by `ensure_debug_ui_gpu`
     /// on first panel open; stays resident for the rest of the session.

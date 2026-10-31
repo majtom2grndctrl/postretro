@@ -23,6 +23,14 @@ fn is_owner(site: &Site, path: &str, owner: &str, function: &str) -> bool {
     site.path == path && site.owner == owner && site.function == function
 }
 
+/// The windowed constructor and the offscreen instance helper (shared by
+/// `new_offscreen` and its held-pipeline-build test variant) own the
+/// renderer's instances.
+fn is_renderer_instance_owner(site: &Site) -> bool {
+    is_owner(site, INIT, "Renderer", "new")
+        || is_owner(site, INIT, "", "offscreen_instance_from_env")
+}
+
 fn rust_violations(sources: &[Source]) -> Vec<String> {
     let (_, sites) = scan(sources);
     let mut errors = Vec::new();
@@ -37,7 +45,6 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             ("path" | "macro" | "import", "INDIRECT_FIRST_INSTANCE") => false,
             ("call", "ComputeCullPipeline::new") => {
                 is_owner(site, WORLD_GEOMETRY, "", "install_bvh_and_cull")
-                    || is_owner(site, BOOT, "", "build_full_renderer")
             }
             ("call", "build_world_vertex_buffers") => {
                 is_owner(site, BOOT, "", "build_full_renderer")
@@ -104,9 +111,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                     && is_owner(site, "compute_cull.rs", "", "draw_indirect_buckets")
             }
             ("call", "Instance::new") => {
-                site.path == INIT
-                    && site.owner == "Renderer"
-                    && matches!(site.function.as_str(), "new" | "new_offscreen")
+                is_renderer_instance_owner(site)
                     && site
                         .text
                         .contains("flags:renderer_instance_flags_from_env(),")
@@ -116,11 +121,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                 "import",
                 "ComputeCullPipeline" | "draw_indirect_buckets" | "build_world_vertex_buffers",
             ) => !site.text.contains("as"),
-            ("call", "renderer_instance_flags_from_env") => {
-                site.path == INIT
-                    && site.owner == "Renderer"
-                    && matches!(site.function.as_str(), "new" | "new_offscreen")
-            }
+            ("call", "renderer_instance_flags_from_env") => is_renderer_instance_owner(site),
             ("reference", _) if name.ends_with("renderer_instance_flags_from_env") => false,
             ("literal", "WGPU_VALIDATION_INDIRECT_CALL") => {
                 is_owner(site, INIT, "", "renderer_instance_flags_from_env")
@@ -371,7 +372,7 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
     // Inventory is discovered; counts keep removing a checked seam from passing.
     for (kind, name, count) in [
         ("path", "INDIRECT", 1),
-        ("call", "ComputeCullPipeline::new", 2),
+        ("call", "ComputeCullPipeline::new", 1),
         ("method", "draw_indirect", 2),
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
@@ -462,7 +463,7 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
     require(
         cull,
         &[
-            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
+            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, &pipelines.compute_cull, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
             "full.bvh_leaves = bvh_leaves;",
         ],
     );
@@ -498,7 +499,7 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
         boot,
         &[
             "let geometry: Option<&LevelGeometry> = None;",
-            "let compute_cull = geometry.filter(|g| !g.bvh.leaves.is_empty()).map(|g| ComputeCullPipeline::new(device, g.bvh, has_multi_draw_indirect));",
+            "let compute_cull: Option<ComputeCullPipeline> = None;",
             "} = build_world_vertex_buffers(device, geometry);",
         ],
     );

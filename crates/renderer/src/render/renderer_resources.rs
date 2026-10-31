@@ -64,6 +64,8 @@ impl Renderer {
 
     /// Release all level-owned GPU resources while keeping the device, queue,
     /// surface, UI, and window-facing state alive for the no-level Frontend.
+    /// Builds no pipeline: the empty install below binds the renderer's
+    /// install pipelines like any other.
     pub fn release_level_resources(&mut self) {
         self.queue.assert_empty("level unload");
         let empty_keys = TextureCacheKeysSection::default();
@@ -158,6 +160,9 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        // This main-thread install is the oracle: it may wait for the
+        // renderer's one pipeline build, and builds no pipeline itself.
+        let pipelines = full.install_pipelines.wait_for_oracle();
         let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
 
         // Drop the prior generation at the level boundary. Construction waits
@@ -183,6 +188,7 @@ impl Renderer {
             device,
             queue,
             full,
+            &pipelines,
             geometry,
             streaming_manifest,
             level_light_count,
@@ -191,9 +197,21 @@ impl Renderer {
         lights::rebind_mesh_light_groups(device, full);
 
         install_marks.mark("buffers_and_sh_streaming");
-        sh_family::install_compose_family(device, queue, full, geometry, sh_allocation_ledger);
-        let (lightmap_plan, bvh_leaves) =
-            lightmap_shadow::plan_lightmap_family(device, full, geometry, &gpu_lighting_payloads);
+        sh_family::install_compose_family(
+            device,
+            queue,
+            full,
+            &pipelines,
+            geometry,
+            sh_allocation_ledger,
+        );
+        let (lightmap_plan, bvh_leaves) = lightmap_shadow::plan_lightmap_family(
+            device,
+            full,
+            &pipelines,
+            geometry,
+            &gpu_lighting_payloads,
+        );
         install_marks.mark("sdf_atlas_and_compose");
         lightmap_shadow::install_lightmap(
             device,
@@ -215,6 +233,7 @@ impl Renderer {
         world_geometry::install_bvh_and_cull(
             device,
             full,
+            &pipelines,
             geometry,
             bvh_leaves,
             has_multi_draw_indirect,

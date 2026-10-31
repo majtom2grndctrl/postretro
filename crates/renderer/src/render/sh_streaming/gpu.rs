@@ -26,7 +26,6 @@ use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
 };
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
-use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_volume::ShVolumeResources;
 
 mod bindings;
@@ -42,6 +41,8 @@ mod isolated_tiles;
 #[cfg(test)]
 #[path = "gpu/load_fixture.rs"]
 mod load_fixture;
+#[cfg(test)]
+pub(in crate::render) use load_fixture::write_nine_cluster_prl;
 mod setup;
 mod upload;
 #[cfg(test)]
@@ -241,6 +242,9 @@ pub(super) struct DenseGrowthInputs<'a> {
 }
 
 pub(super) struct StreamingGpuPools {
+    /// The renderer's streamed compose pipelines; sparse growth rebinds
+    /// against these and builds none.
+    pipelines: super::StreamingShPipelines,
     pub(super) shape: AtlasShape,
     limits: wgpu::Limits,
     pub(super) base_format: wgpu::TextureFormat,
@@ -335,7 +339,7 @@ pub(super) fn validate_storage_buffer_size(
     Ok(())
 }
 
-fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(in crate::render::sh_streaming) fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,

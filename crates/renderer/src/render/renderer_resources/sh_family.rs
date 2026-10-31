@@ -2,13 +2,16 @@
 // and the compose family, with the one allocation ledger they share.
 // See: context/lib/rendering_pipeline.md §4, §12
 
+use super::super::install_pipelines::InstallPipelines;
 use super::super::renderer_types::FullRenderer;
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn install_sh_volume(
     device: &wgpu::Device,
     queue: &UploadQueue,
     full: &mut FullRenderer,
+    pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     streaming_manifest: Option<&postretro_level_loader::ShStreamManifest>,
     level_light_count: usize,
@@ -61,7 +64,7 @@ pub(super) fn install_sh_volume(
                         manifest,
                         full.probe_occlusion_enabled,
                         &mut full.sh_volume_resources,
-                        &full.uniform_bind_group_layout,
+                        &pipelines.sh_streaming,
                         &full.promoted_static_weight_buffer,
                     )?;
                     Ok(state)
@@ -83,6 +86,7 @@ pub(super) fn install_compose_family(
     device: &wgpu::Device,
     queue: &UploadQueue,
     full: &mut FullRenderer,
+    pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     mut sh_allocation_ledger: sh_residency::ShAllocationLedger,
 ) {
@@ -101,7 +105,7 @@ pub(super) fn install_compose_family(
         compose_delta_sh_volumes,
         geometry.sh_volume.is_some(),
         geometry.delta_sh_volumes.is_some(),
-        &full.uniform_bind_group_layout,
+        &pipelines.sh_compose,
         &mut sh_allocation_ledger,
     );
     full.direct_sh_compose = DirectShComposeResources::new(
@@ -112,7 +116,7 @@ pub(super) fn install_compose_family(
         geometry.direct_sh_delta_volumes,
         geometry.animated_direct_sh_delta_volumes,
         &full.promoted_static_weight_buffer,
-        &full.uniform_bind_group_layout,
+        &pipelines.direct_sh_compose,
         geometry.sh_volume.is_some(),
         &mut sh_allocation_ledger,
     );
@@ -121,7 +125,7 @@ pub(super) fn install_compose_family(
         &full.sh_volume_resources.billboard_direct_scatter,
         &full.sh_volume_resources.animation,
         geometry.animated_billboard_direct_scatter_delta_volumes,
-        &full.uniform_bind_group_layout,
+        &pipelines.billboard_direct_scatter_compose,
         geometry
             .billboard_direct_scatter_volume
             .map_or(full.sh_volume_resources.grid_dimensions, |section| {

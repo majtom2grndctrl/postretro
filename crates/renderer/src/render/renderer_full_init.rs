@@ -2,6 +2,7 @@
 // built from boot state (the boot phase lives in `renderer_init.rs`).
 // See: context/lib/rendering_pipeline.md
 
+use super::install_pipelines::{self, PipelineBuildGate};
 use super::renderer_types::{FullRenderer, PromotedBakedLightState};
 use super::*;
 use crate::render::gpu_create::GpuCreate;
@@ -17,11 +18,11 @@ pub(crate) fn build_full_renderer(
     queue: &wgpu::Queue,
     surface_format: wgpu::TextureFormat,
     extents: postretro_render_cpu::render_extent::RenderExtents,
-    has_multi_draw_indirect: bool,
     cube_array_supported: bool,
     bloom_render_profile: BloomRenderProfile,
     spot_shadow_map_resolution: u32,
     surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
+    pipeline_build_gate: Option<PipelineBuildGate>,
 ) -> Result<FullRenderer> {
     // Dummy buffers until `install_level_geometry` replaces them.
     let geometry: Option<&LevelGeometry> = None;
@@ -160,14 +161,11 @@ pub(crate) fn build_full_renderer(
         geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
     let cell_draw_index: Option<postretro_level_loader::CellDrawIndex> =
         geometry.and_then(|g| g.cell_draw_index.cloned());
-    let compute_cull = geometry
-        .filter(|g| !g.bvh.leaves.is_empty())
-        .map(|g| ComputeCullPipeline::new(device, g.bvh, has_multi_draw_indirect));
-    // Candidate-cull path — built in lockstep with `compute_cull`, sized to
-    // the same leaf count so it writes the same global slots.
-    let candidate_cull = compute_cull
-        .as_ref()
-        .map(|c| crate::candidate_cull::CandidateCullPipeline::new(device, c.total_leaves()));
+    // No level, no cull: the BVH cull and its candidate path are install-time
+    // families, built over the renderer's install pipelines by the first
+    // level install.
+    let compute_cull: Option<ComputeCullPipeline> = None;
+    let candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline> = None;
     let shadow_world =
         super::shadow_world_draws::ShadowWorldDraws::install(geometry.map(|g| g.bvh), index_count);
 
@@ -224,22 +222,10 @@ pub(crate) fn build_full_renderer(
         .map(|g| g.lightmap_mode)
         .unwrap_or(postretro_level_loader::LightmapMode::Shadowed);
 
-    let compose_sh_volume = geometry
-        .and_then(|g| g.sh_volume)
-        .filter(|_| sh_volume_resources.present);
-    let compose_delta_sh_volumes = geometry
-        .and_then(|g| g.delta_sh_volumes)
-        .filter(|_| sh_volume_resources.present);
-    let sh_compose = ShComposeResources::new(
-        device,
-        &sh_volume_resources,
-        compose_sh_volume,
-        compose_delta_sh_volumes,
-        geometry.and_then(|g| g.sh_volume).is_some(),
-        geometry.and_then(|g| g.delta_sh_volumes).is_some(),
-        &uniform_bind_group_layout,
-        &mut sh_allocation_ledger,
-    );
+    // SH compose keeps its pipeline, not its instance: the no-level renderer
+    // holds the disabled form, and each level install binds the pipeline the
+    // upload thread built.
+    let sh_compose = ShComposeResources::disabled();
 
     #[cfg(feature = "dev-tools")]
     let sh_delta_volumes_meta =
@@ -261,29 +247,13 @@ pub(crate) fn build_full_renderer(
     let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
     // Full init never carries a level's payloads (`install_level_geometry`
     // plans the pool and uploads them), so it binds the placeholder pool and
-    // the animated atlas has no block frame. Level install replaces both.
+    // the non-dispatching dummy atlas, which needs no pipeline. Level install
+    // replaces both.
     let static_pool = crate::lighting::lightmap::StaticPool::Absent;
-    let animated_lightmap = animated_lightmap::with_dummy_fallback(
-        animated_lightmap::AnimatedLightmapResources::new(
-            device,
-            geometry.and_then(|g| g.animated_light_weight_maps),
-            geometry.and_then(|g| g.animated_light_chunks),
-            &bvh_leaves,
-            &sh_volume_resources.animation,
-            &uniform_bind_group_layout,
-            static_pool.static_block_extents(),
-            animated_lm_debug,
-        ),
-        || {
-            animated_lightmap::AnimatedLightmapResources::dummy(
-                device,
-                &sh_volume_resources.animation,
-                &uniform_bind_group_layout,
-                animated_lm_debug,
-            )
-            .into_fallback()
-        },
-        "animated lightmap initialization",
+    let animated_lightmap = animated_lightmap::AnimatedLightmapResources::dummy(
+        device,
+        &sh_volume_resources.animation,
+        animated_lm_debug,
     );
     let animated_block_table = crate::lighting::lightmap::animated_block_table_bytes(
         animated_lightmap::installed_block_table_section(
@@ -608,31 +578,10 @@ pub(crate) fn build_full_renderer(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let direct_sh_compose = DirectShComposeResources::new(
-        device,
-        &sh_volume_resources.direct,
-        &sh_volume_resources.animation,
-        &sh_volume_resources.probe_indirection_words,
-        geometry.and_then(|g| g.direct_sh_delta_volumes),
-        geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
-        &promoted_static_weight_buffer,
-        &uniform_bind_group_layout,
-        geometry.and_then(|g| g.sh_volume).is_some(),
-        &mut sh_allocation_ledger,
-    );
-    let billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::new(
-        device,
-        &sh_volume_resources.billboard_direct_scatter,
-        &sh_volume_resources.animation,
-        geometry.and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
-        &uniform_bind_group_layout,
-        geometry
-            .and_then(|geometry| geometry.billboard_direct_scatter_volume)
-            .map_or(sh_volume_resources.grid_dimensions, |section| {
-                section.grid_dimensions
-            }),
-        &mut sh_allocation_ledger,
-    );
+    // With no level, both compose families take their disabled forms, which
+    // need no pipeline.
+    let direct_sh_compose = DirectShComposeResources::disabled();
+    let billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::disabled();
     // Full initialization builds only no-level bindings. Keep its accounting
     // local; `install_level_geometry` publishes the report for a real level.
     let _bootstrap_sh_residency = sh_allocation_ledger.finish();
@@ -640,6 +589,13 @@ pub(crate) fn build_full_renderer(
     // fails full init like any other resource it cannot create.
     let upload_thread = UploadThread::spawn(device.clone(), queue.clone())
         .context("spawning the render-upload thread")?;
+    // The upload thread's first job: every install-time pipeline, built once
+    // for this renderer, off the main thread. Level installs read the slot.
+    let install_pipelines = install_pipelines::submit_install_pipeline_build(
+        &upload_thread,
+        uniform_bind_group_layout.clone(),
+        pipeline_build_gate,
+    );
     Ok(FullRenderer {
         pipeline,
         depth_prepass_pipeline,
@@ -840,7 +796,7 @@ pub(crate) fn build_full_renderer(
         loaded_textures,
         stored_texture_materials: Vec::new(),
         upload_thread,
-        uniform_bind_group_layout,
+        install_pipelines,
         #[cfg(feature = "dev-tools")]
         debug_ui_gpu: None,
     })

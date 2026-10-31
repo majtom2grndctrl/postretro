@@ -31,7 +31,7 @@ fn replace_shape(
             &BTreeMap::new(),
             false,
             &mut fixture.sh,
-            &fixture.uniforms,
+            &fixture.pipelines,
             &fixture.weights,
             0,
             0,
@@ -74,7 +74,6 @@ fn grow_sparse(
         &f.map.sources(),
         required,
         &mut f.sh,
-        &f.uniforms,
         &f.weights,
     )
 }
@@ -133,7 +132,7 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             manifest.sources(),
             false,
             &mut f.sh,
-            &f.uniforms,
+            &f.pipelines,
             &f.weights,
             &limits,
             DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES,
@@ -184,7 +183,6 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
                 &device,
                 &queue,
                 &mut f.sh,
-                &f.uniforms,
                 &f.weights,
                 ShDrainBatch {
                     generation: 1,
@@ -211,7 +209,6 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
                 &device,
                 &queue,
                 &mut f.sh,
-                &f.uniforms,
                 &f.weights,
                 ShDrainBatch {
                     generation: 1,
@@ -229,7 +226,6 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: 1,
@@ -680,7 +676,6 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: f.state.generation,
@@ -699,7 +694,6 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: 1,
@@ -718,7 +712,6 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: 3,
@@ -807,7 +800,6 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: f.state.generation,
@@ -862,7 +854,6 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
             &device,
             &queue,
             &mut f.sh,
-            &f.uniforms,
             &f.weights,
             ShDrainBatch {
                 generation: f.state.generation,
@@ -1121,7 +1112,7 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
                 &f.map.sources(),
                 false,
                 &mut f.sh,
-                &f.uniforms,
+                &f.pipelines,
                 &f.weights,
                 &limits,
                 extra,

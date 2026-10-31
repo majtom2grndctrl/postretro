@@ -1156,6 +1156,10 @@ pub(crate) struct App {
     /// the OS thread reaps when its work returns.
     level_worker: Option<JoinHandle<()>>,
 
+    /// Upload threads of renderers torn down at suspend, joined by the poll
+    /// at the top of every redraw once each has finished. Boot lifetime.
+    upload_retirements: Vec<postretro_renderer::UploadRetirement>,
+
     /// Runtime level lifecycle requests drained by `startup::lifecycle` at the
     /// redraw boundary, before gameplay/world work for the frame runs.
     level_requests: VecDeque<LevelRequest>,
@@ -2054,6 +2058,10 @@ impl ApplicationHandler for App {
             self.boot_phase()
         );
         self.window_state = None;
+        // Hand off the upload thread before the renderer drops: a job still
+        // running on the old device finishes into dropped receivers, and the
+        // redraw poll joins the thread once it has.
+        self.retire_renderer_upload_thread();
         self.renderer = None;
         // Session-owned debug UI is reset here (it borrows the window and reads
         // the renderer's device limits); `ensure_debug_ui` rebuilds it on the next

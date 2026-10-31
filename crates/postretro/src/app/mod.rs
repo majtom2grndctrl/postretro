@@ -23,6 +23,7 @@ pub(crate) mod ui_images;
 pub(crate) mod ui_input_frames;
 #[cfg(test)]
 mod ui_input_frames_tests;
+pub(crate) mod upload_retirement;
 pub(crate) mod world_less_frame;
 
 pub(crate) mod window_modes;

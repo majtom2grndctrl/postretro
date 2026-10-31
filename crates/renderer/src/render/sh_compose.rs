@@ -12,6 +12,7 @@ use postretro_render_cpu::sh_compose::{
 };
 use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
+use super::install_pipelines::new_install_compute_pipeline;
 use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, compose_origin_bytes, compose_storage_payloads,
@@ -54,17 +55,88 @@ const BIND_ANIMATION_DESCRIPTOR_INDICES: u32 = 25;
 const BIND_PROBE_INDIRECTION: u32 = 26;
 const BIND_DELTA_COMPACTION_META: u32 = 27;
 const BIND_BASE_ATLAS_SAMPLER: u32 = 2;
-/// GPU-side compose pass. Always present — levels without an SH section get
-/// dummy 1×1 octahedral atlases plus valid zeroed depth-moment resources and a
-/// valid one-workgroup copy-through dispatch. After that initial pass, the
-/// full-grid compose is gated on animated-descriptor activity or a frame-mask
-/// change; when it dispatches, it still performs no per-cell or per-tile cull.
-pub struct ShComposeResources {
+/// The compose pass's device-only half: its group-1 layout and pipeline,
+/// built once per renderer (see `InstallPipelines`). Level halves bind
+/// against this layout and hold clones of these handles.
+#[derive(Clone)]
+pub(crate) struct ShComposePipelines {
+    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl ShComposePipelines {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("SH Compose BGL"),
+            entries: &compose_bgl_entries(),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("SH Compose Pipeline Layout"),
+            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
+        let shader_source = [
+            include_str!("../shaders/sh_compose.wgsl"),
+            "\n",
+            include_str!("../shaders/curve_eval.wgsl"),
+            "\n",
+            WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("SH Compose Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+
+        let pipeline = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("SH Compose Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("compose_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            bind_group_layout,
+            pipeline,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
+    }
+}
+
+/// The compose pipeline bound to one level's buffers.
+struct BoundCompose {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     /// Adapter-bounded rows of the flattened affinity grid. Each selects a
     /// matching dynamically-offset fixed 64 KiB gather record at binding 18.
     dispatches: Vec<DynamicComposeDispatch>,
+}
+
+/// GPU-side compose pass. Every installed level has one: levels without an SH
+/// section get dummy 1×1 octahedral atlases plus valid zeroed depth-moment
+/// resources and a valid one-workgroup copy-through dispatch. After that
+/// initial pass, the full-grid compose is gated on animated-descriptor
+/// activity or a frame-mask change; when it dispatches, it still performs no
+/// per-cell or per-tile cull. The no-level renderer holds the disabled form,
+/// which owns no pipeline and never dispatches: no frame composes SH without a
+/// level, and the zeroed dummy total atlas would read the same either way.
+pub struct ShComposeResources {
+    /// `None` in the disabled (no-level) form.
+    bound: Option<BoundCompose>,
     /// Per-delta-light map to the shared animated-light descriptor slot.
     /// This is the same list bound at binding 25.
     animation_descriptor_indices: Vec<u32>,
@@ -78,7 +150,24 @@ pub struct ShComposeResources {
 }
 
 impl ShComposeResources {
-    /// Build the compose pipeline and bind group. When `delta` is `None` or
+    /// The pipeline this level's compose binds, `None` when disabled.
+    #[cfg(test)]
+    pub(crate) fn bound_pipeline(&self) -> Option<&wgpu::ComputePipeline> {
+        self.bound.as_ref().map(|bound| &bound.pipeline)
+    }
+
+    /// The no-level form: no pipeline, no bind group, no dispatch.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            bound: None,
+            animation_descriptor_indices: Vec::new(),
+            pending_copy_through: false,
+            was_active: false,
+            last_composed_mask: LightTermMask::ALL,
+        }
+    }
+
+    /// Bind the renderer's compose pipeline to this level's buffers. When `delta` is `None` or
     /// empty, all CSR offset ranges are empty (`start == end`), so the result is
     /// a pure base→total copy.
     #[expect(
@@ -92,7 +181,7 @@ impl ShComposeResources {
         delta: Option<&DeltaShVolumesSection>,
         sh_section_present: bool,
         delta_section_present: bool,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &ShComposePipelines,
         ledger: &mut ShAllocationLedger,
     ) -> Self {
         // Build the sparse CSR metadata. Probes stay in the format-owned f16
@@ -319,41 +408,6 @@ impl ShComposeResources {
             usage: origin_allocation.usage,
         });
 
-        // Build the bind group layout + pipeline.
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("SH Compose BGL"),
-            entries: &compose_bgl_entries(),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("SH Compose Pipeline Layout"),
-            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-
-        // curve_eval.wgsl provides `sample_curve_catmull_rom` used by the shader.
-        let shader_source = [
-            include_str!("../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../shaders/curve_eval.wgsl"),
-            "\n",
-            WGSL_DECODE_HELPER,
-        ]
-        .concat();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("SH Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-
-        let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("SH Compose Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
         // BC6H cannot use textureLoad on Metal. Compose reads its immutable
         // base at exact texel centers through this nearest, non-filtering
         // sampler; it is deliberately local to this compose bind group.
@@ -429,7 +483,7 @@ impl ShComposeResources {
 
         let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Compose Bind Group"),
-            layout: &bind_group_layout,
+            layout: &pipelines.bind_group_layout,
             entries: &entries,
         });
 
@@ -443,9 +497,11 @@ impl ShComposeResources {
 
         let animation_descriptor_indices = buffers.animation_descriptor_indices;
         Self {
-            pipeline,
-            bind_group,
-            dispatches: grid_upload.dispatches,
+            bound: Some(BoundCompose {
+                pipeline: pipelines.pipeline.clone(),
+                bind_group,
+                dispatches: grid_upload.dispatches,
+            }),
             animation_descriptor_indices,
             pending_copy_through: true,
             was_active: false,
@@ -471,6 +527,9 @@ impl ShComposeResources {
         frame_light_term_mask: LightTermMask,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
     ) {
+        let Some(bound) = self.bound.as_ref() else {
+            return;
+        };
         if !should_dispatch(
             active,
             self.pending_copy_through,
@@ -486,10 +545,10 @@ impl ShComposeResources {
                 label: Some("SH Compose"),
                 timestamp_writes,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&bound.pipeline);
             pass.set_bind_group(0, uniform_bind_group, &[]);
-            for dispatch in &self.dispatches {
-                pass.set_bind_group(1, &self.bind_group, &[dispatch.dynamic_offset]);
+            for dispatch in &bound.dispatches {
+                pass.set_bind_group(1, &bound.bind_group, &[dispatch.dynamic_offset]);
                 pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
             }
         }

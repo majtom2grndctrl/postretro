@@ -11,12 +11,14 @@ mod sparse;
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSourceMetadata};
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 
+pub(super) use layout::{animated_bgl_entries, promotion_bgl_entries};
+pub(super) use passes::ANIMATED_DIRECT_COMPOSE_ENTRY_POINT;
 use passes::{StreamingAnimatedPass, StreamingPromotionPass};
 pub(super) use sparse::DirectSparseRowUpload;
 use sparse::{RetiredDirectSparseResources, checked_ledger_sum};
 
 use super::gpu::StagedUploads;
-use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors};
+use super::{AtlasShape, ShResidencyDrainError, SparseCapacityFloors, StreamingShPipelines};
 use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::renderer_types::PromotedBakedLightState;
@@ -86,7 +88,7 @@ impl StreamingDirectCompose {
         views: StreamingDirectViews<'_>,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &StreamingShPipelines,
         sparse_capacity_floors: &SparseCapacityFloors,
     ) -> Result<Self, ShResidencyDrainError> {
         let promotion_output = if sources.animated_direct_delta.is_some() {
@@ -108,6 +110,7 @@ impl StreamingDirectCompose {
             promotion_output,
             views.selection_weights,
             compose_indirection,
+            pipelines,
             sparse_capacity_floors.get(&41).copied(),
         )?;
         let animated = match sources.animated_direct_delta.as_ref() {
@@ -123,7 +126,7 @@ impl StreamingDirectCompose {
                 views.total_storage,
                 compose_indirection,
                 sh,
-                uniform_bind_group_layout,
+                pipelines,
                 sparse_capacity_floors.get(&45).copied(),
             )?),
             None => None,
@@ -202,7 +205,7 @@ impl StreamingDirectCompose {
         views: StreamingDirectViews<'_>,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &StreamingShPipelines,
         section_id: u32,
         sparse_floor: (u32, u32),
     ) -> Result<DirectSparseReplacement, ShResidencyDrainError> {
@@ -227,6 +230,7 @@ impl StreamingDirectCompose {
                     output,
                     views.selection_weights,
                     compose_indirection,
+                    pipelines,
                     Some(sparse_floor),
                 )?;
                 Ok(DirectSparseReplacement {
@@ -254,7 +258,7 @@ impl StreamingDirectCompose {
                     views.total_storage,
                     compose_indirection,
                     sh,
-                    uniform_bind_group_layout,
+                    pipelines,
                     Some(sparse_floor),
                 )?;
                 self.animated

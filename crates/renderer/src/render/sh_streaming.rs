@@ -50,6 +50,7 @@ mod node_ownership_tests;
 mod ownership;
 mod patches;
 mod payload;
+mod pipelines;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
 #[cfg(feature = "dev-tools")]
@@ -72,6 +73,8 @@ use direct_compose::DirectSparseRowUpload;
 use floor::plan_initial_pool_floor;
 pub(crate) use gpu::StagedUploads;
 use gpu::StreamingGpuPools;
+#[cfg(test)]
+pub(in crate::render) use gpu::write_nine_cluster_prl;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, sparse_compose_capacity, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
@@ -80,6 +83,7 @@ use node_ownership::{NodeOwnership, derive_node_ownership, derive_owner_dependen
 use ownership::{StoredNode, StoredNodeLayout, derive_dense_node_layout, rewrite_slot};
 use patches::SlotRun;
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
+pub(crate) use pipelines::StreamingShPipelines;
 #[cfg(feature = "dev-tools")]
 pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_bitset::{RowBitSet, RowQueue};
@@ -502,7 +506,6 @@ impl Renderer {
             device,
             queue,
             &mut full.sh_volume_resources,
-            &full.uniform_bind_group_layout,
             &full.promoted_static_weight_buffer,
             batch,
         )

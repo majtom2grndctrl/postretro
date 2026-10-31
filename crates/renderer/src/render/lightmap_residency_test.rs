@@ -134,7 +134,7 @@ fn install_animated(
         Some(chunks),
         &[],
         &animation,
-        &uniform_layout,
+        &super::animated_lightmap::AnimatedLightmapPipelines::new(device, &uniform_layout),
         Some(static_blocks),
         AnimatedLmDebugConfig::disabled(),
     );
@@ -142,13 +142,8 @@ fn install_animated(
     let resources = with_dummy_fallback(
         built,
         || {
-            AnimatedLightmapResources::dummy(
-                device,
-                &animation,
-                &uniform_layout,
-                AnimatedLmDebugConfig::disabled(),
-            )
-            .into_fallback()
+            AnimatedLightmapResources::dummy(device, &animation, AnimatedLmDebugConfig::disabled())
+                .into_fallback()
         },
         "animated lightmap meter test",
     );

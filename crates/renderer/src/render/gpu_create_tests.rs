@@ -69,7 +69,18 @@ fn creation_counter_counts_oracle_install() {
     assert!(install.buffers > 0, "{install:?}");
     assert!(install.textures > 0, "{install:?}");
     assert!(install.bind_groups > 0, "{install:?}");
-    assert!(install.pipelines > 0, "{install:?}");
+    // Install-time pipelines are built once per renderer on the upload
+    // thread, so the oracle install binds them and builds none; the
+    // pipeline count is proven nonzero on the thread that builds them.
+    assert_eq!(install.pipelines, 0, "{install:?}");
+    assert!(
+        renderer
+            .full()
+            .install_pipelines
+            .pipelines_created_by_job()
+            .is_some_and(|count| count > 0),
+        "the upload thread's build job counts its pipelines"
+    );
 }
 
 #[test]

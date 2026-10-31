@@ -9,11 +9,12 @@ use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_D
 use postretro_render_cpu::sh_volume::LEGACY_SH_PHYSICAL_TILE_STRIDE;
 
 use super::animated_direct_sh_compose::{
-    AnimatedDirectShComposePipeline, AnimatedDirectShDebugOverride, AnimatedDirectShPassViews,
-    build_animated_direct_pass,
+    AnimatedDirectShComposePipeline, AnimatedDirectShComposePipelines,
+    AnimatedDirectShDebugOverride, AnimatedDirectShPassViews, build_animated_direct_pass,
 };
 use super::direct_sh_compose_carrier::DirectPromotionStorage;
 use super::direct_sh_resources::{DirectAtlasLayout, DirectShResources};
+use super::install_pipelines::new_install_compute_pipeline;
 use super::renderer_types::PromotedBakedLightState;
 use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
@@ -97,6 +98,64 @@ pub(super) struct DirectShComposeFrameInputs<'a> {
     pub(super) timestamp_writes: DirectShComposeTimestampWrites<'a>,
 }
 
+/// The direct-compose passes' device-only half: the promotion pass and the
+/// section-45 animated-add pass, built once per renderer (see
+/// `InstallPipelines`). Level halves hold clones of these handles.
+#[derive(Clone)]
+pub(crate) struct DirectShComposePipelines {
+    promotion_layout: wgpu::BindGroupLayout,
+    promotion: wgpu::ComputePipeline,
+    animated: AnimatedDirectShComposePipelines,
+}
+
+impl DirectShComposePipelines {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
+        let promotion_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Direct SH Compose BGL"),
+            entries: &promotion_compose_bgl_entries(),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Direct SH Compose Pipeline Layout"),
+            bind_group_layouts: &[Some(&promotion_layout)],
+            immediate_size: 0,
+        });
+        let shader_source = [
+            include_str!("../shaders/direct_sh_compose.wgsl"),
+            "\n",
+            WGSL_DECODE_HELPER,
+        ]
+        .concat();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Direct SH Compose Shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        });
+        let promotion = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Direct SH Compose Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("compose_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            promotion_layout,
+            promotion,
+            animated: AnimatedDirectShComposePipelines::new(device, uniform_bind_group_layout),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn promotion_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.promotion
+    }
+}
+
 struct DirectShComposePipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
@@ -121,6 +180,7 @@ struct DirectShComposePipeline {
 /// bookkeeping must stay in lockstep when the pass is built.
 struct PromotionPassInputs<'a> {
     device: &'a wgpu::Device,
+    pipelines: &'a DirectShComposePipelines,
     direct: &'a DirectShResources,
     probe_indirection_words: &'a [u32],
     delta: Option<&'a DirectShDeltaVolumesSection>,
@@ -139,6 +199,12 @@ impl DirectShComposeResources {
         Self { pipeline: None }
     }
 
+    /// The promotion pipeline this level's compose binds, `None` when disabled.
+    #[cfg(test)]
+    pub(crate) fn promotion_pipeline(&self) -> Option<&wgpu::ComputePipeline> {
+        self.pipeline.as_ref().map(|pass| &pass.pipeline)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
@@ -148,7 +214,7 @@ impl DirectShComposeResources {
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: Option<&AnimatedDirectShDeltaVolumesSection>,
         weights_buffer: &wgpu::Buffer,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &DirectShComposePipelines,
         sh_section_present: bool,
         ledger: &mut ShAllocationLedger,
     ) -> Self {
@@ -163,7 +229,7 @@ impl DirectShComposeResources {
                 delta,
                 animated_delta,
                 weights_buffer,
-                uniform_bind_group_layout,
+                pipelines,
                 direct_delta_present,
                 sh_section_present,
                 ledger,
@@ -172,6 +238,7 @@ impl DirectShComposeResources {
             // the static-direct mask works even without promotion deltas.
             None => Self::new_case1(PromotionPassInputs {
                 device,
+                pipelines,
                 direct,
                 probe_indirection_words,
                 delta,
@@ -220,7 +287,7 @@ impl DirectShComposeResources {
         delta: Option<&DirectShDeltaVolumesSection>,
         animated_delta: &AnimatedDirectShDeltaVolumesSection,
         weights_buffer: &wgpu::Buffer,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &DirectShComposePipelines,
         direct_delta_present: bool,
         sh_section_present: bool,
         ledger: &mut ShAllocationLedger,
@@ -246,6 +313,7 @@ impl DirectShComposeResources {
             intermediate_storage_view,
             PromotionPassInputs {
                 device,
+                pipelines,
                 direct,
                 probe_indirection_words,
                 delta,
@@ -265,7 +333,7 @@ impl DirectShComposeResources {
                 intermediate_sampled: intermediate_sampled_view,
                 output_storage: composed_storage_view,
             },
-            uniform_bind_group_layout,
+            &pipelines.animated,
             sh_section_present,
             ledger,
         ));
@@ -369,6 +437,7 @@ fn build_promotion_pass(
 ) -> DirectShComposePipeline {
     let PromotionPassInputs {
         device,
+        pipelines,
         direct,
         probe_indirection_words,
         delta,
@@ -544,39 +613,11 @@ fn build_promotion_pass(
         usage: light_term_mask_allocation.usage,
     });
 
-    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Direct SH Compose BGL"),
-        entries: &promotion_compose_bgl_entries(),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("Direct SH Compose Pipeline Layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
-        immediate_size: 0,
-    });
-    let shader_source = [
-        include_str!("../shaders/direct_sh_compose.wgsl"),
-        "\n",
-        WGSL_DECODE_HELPER,
-    ]
-    .concat();
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("Direct SH Compose Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-    });
-    let pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Direct SH Compose Pipeline"),
-        layout: Some(&pipeline_layout),
-        module: &shader,
-        entry_point: Some("compose_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
-
     // Non-filtering (nearest) sampler for the BC6H base atlas point-fetch.
     let base_sampler = nearest_sampler(device, "Direct SH Compose Base Atlas Sampler");
     let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Direct SH Compose Bind Group"),
-        layout: &bind_group_layout,
+        layout: &pipelines.promotion_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -634,7 +675,7 @@ fn build_promotion_pass(
     });
 
     DirectShComposePipeline {
-        pipeline,
+        pipeline: pipelines.promotion.clone(),
         bind_group,
         dispatches: grid_upload.dispatches,
         debug_override_buffer,

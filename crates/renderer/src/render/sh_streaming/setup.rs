@@ -250,7 +250,7 @@ impl ShResidencyState {
         manifest: &ShStreamManifest,
         probe_occlusion_enabled: bool,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
     ) -> Result<(), ShResidencyDrainError> {
         let limits = device.limits();
@@ -261,7 +261,7 @@ impl ShResidencyState {
             manifest.sources(),
             probe_occlusion_enabled,
             sh,
-            uniform_bind_group_layout,
+            pipelines,
             selection_weights,
             &limits,
             0,
@@ -277,7 +277,7 @@ impl ShResidencyState {
         sources: &postretro_level_loader::ShStreamSourceMetadata,
         probe_occlusion_enabled: bool,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &StreamingShPipelines,
         selection_weights: &wgpu::Buffer,
         limits: &wgpu::Limits,
         extra_floor_charge: u64,
@@ -325,7 +325,7 @@ impl ShResidencyState {
             initial_floor,
             probe_occlusion_enabled,
             sh,
-            uniform_bind_group_layout,
+            pipelines,
             selection_weights,
         )?);
         Ok(())

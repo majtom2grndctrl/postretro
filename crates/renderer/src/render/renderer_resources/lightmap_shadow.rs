@@ -2,6 +2,7 @@
 // lightmap resources, and the SDF shadow rebind over the fresh SH depth.
 // See: context/lib/rendering_pipeline.md §4
 
+use super::super::install_pipelines::InstallPipelines;
 use super::super::renderer_types::FullRenderer;
 use super::lights::LevelLightBuffers;
 use super::*;
@@ -21,6 +22,7 @@ pub(super) struct LightmapFamilyPlan {
 pub(super) fn plan_lightmap_family(
     device: &wgpu::Device,
     full: &FullRenderer,
+    pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: &postretro_level_loader::GpuLightingPayloads,
 ) -> (
@@ -59,7 +61,7 @@ pub(super) fn plan_lightmap_family(
             geometry.animated_light_chunks,
             &bvh_leaves,
             &full.sh_volume_resources.animation,
-            &full.uniform_bind_group_layout,
+            &pipelines.animated_lightmap,
             static_pool.static_block_extents(),
             animated_lm_debug,
         ),
@@ -67,7 +69,6 @@ pub(super) fn plan_lightmap_family(
             animated_lightmap::AnimatedLightmapResources::dummy(
                 device,
                 &full.sh_volume_resources.animation,
-                &full.uniform_bind_group_layout,
                 animated_lm_debug,
             )
             .into_fallback()

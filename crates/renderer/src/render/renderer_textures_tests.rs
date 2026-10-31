@@ -201,6 +201,17 @@ fn read_srgb_mip0(
 
 /// One triangle in one cell whose leaf draws material bucket 0.
 pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials: &[Material]) {
+    install_one_triangle_with_sh(renderer, materials, None, None);
+}
+
+/// [`install_one_triangle`] with an SH volume and baked direct SH, so the SH
+/// and direct compose families bind real data.
+pub(in crate::render) fn install_one_triangle_with_sh(
+    renderer: &mut Renderer,
+    materials: &[Material],
+    sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+) {
     let vertices: Vec<WorldVertex> = [[-0.4, -0.4, 0.0], [0.4, -0.4, 0.0], [0.0, 0.4, 0.0]]
         .map(|position| WorldVertex {
             position,
@@ -275,7 +286,7 @@ pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials
             bvh: &bvh,
             lights: &[],
             light_influences: &[],
-            sh_volume: None,
+            sh_volume,
             sh_storage: LevelGeometryShStorage::Legacy,
             lightmap: None,
             lightmap_streaming: None,
@@ -283,7 +294,7 @@ pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials
             animated_light_chunks: None,
             animated_light_weight_maps: None,
             delta_sh_volumes: None,
-            direct_sh_volume: None,
+            direct_sh_volume,
             direct_sh_delta_volumes: None,
             animated_direct_sh_delta_volumes: None,
             billboard_direct_scatter_volume: None,

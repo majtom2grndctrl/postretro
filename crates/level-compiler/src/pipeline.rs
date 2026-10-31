@@ -777,7 +777,7 @@ fn run_after_parsing(
     )?;
     // The SH base gate prices the patch cache and the id-34 volume from the
     // patch set, the static lights' ranges and the probe grid's dimensions.
-    // Its patch set moves whole into the cold SH base bake.
+    // Its patch set moves whole into the SH base bake.
     let (sh_base_handoff, sh_base_projection) = surface_radiance::plan_sh_base(
         &geo_result,
         &static_baked_lights
@@ -884,39 +884,31 @@ fn run_after_parsing(
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
     let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
-    let mut sh_volume_section = if let Some(ref cache) = stage_cache {
-        // Warm path: per-probe-group SH. Each group bakes/loads a cached
-        // entry over its probe subset with a bounded reaching-light set, then the
-        // groups assemble into the volume. This is a deliberate approximation —
-        // lights past the reach cutoff drop, so far-bounce regions run slightly
-        // dim. Not byte-identical to the cold whole-volume bake; the cold
-        // `--no-cache` build is the exact ship source of truth. It reads no
-        // patch cache, so the gate's patch set is freed unread.
-        drop(sh_base_handoff);
+    if stage_cache.is_some() {
         log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
-        sh_group::bake_sh_volume_grouped_controlled(&sh_ctx, &sh_config, Some(cache), &sh_control)
-    } else {
-        // Cold / exact path (`--no-cache`): the whole volume gathers from the
-        // surface radiance cache over the gate's patch set. The cache is
-        // freed inside the bake; only id 34 leaves the stage.
-        surface_radiance::bake_sh_base(
-            &sh_ctx,
-            &sh_config,
-            sh_base_handoff,
-            &bounce_embedded_emitters,
-            &sh_control,
-        )
-    };
+    }
+    // Warm and cold bake id 34 through one path: the whole volume gathers
+    // from the surface radiance cache over the gate's patch set. Warm builds
+    // read and write each light's patch layer in the stage cache, so a light
+    // edit re-shades only its layer; the gather re-runs every build. The
+    // patch cache is freed inside the bake; only id 34 leaves the stage.
+    let mut sh_volume_section = surface_radiance::bake_sh_base(
+        &sh_ctx,
+        &sh_config,
+        sh_base_handoff,
+        &bounce_embedded_emitters,
+        stage_cache.as_ref(),
+        &sh_control,
+    );
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` and buried lights omitted), so remap the
     // lookup table exactly once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
-    // Both warm grouped and cold monolithic bakes reach this packaging seam as
-    // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
-    // records format-independent; final v11 packing/BC6H encoding happens only
-    // after the delta envelope and base-density classifier settle.
+    // The SH base bake reaches this packaging seam as a lossless RGBA16F
+    // valid-probe-order intermediate; final v11 packing/BC6H encoding happens
+    // only after the delta envelope and base-density classifier settle.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
     // Base stored-set packing now happens only after all delta classifiers have
     // finalized their cell levels. Retain this dense RGBA16F source for every

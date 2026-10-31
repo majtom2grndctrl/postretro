@@ -18,7 +18,7 @@ use crate::partition::{Aabb, BspLeaf, BspTree};
 use crate::sh_bake::{RaytracingCtx, gather_hit};
 
 /// Geometry with one fan-triangulated face per convex polygon, in order.
-fn polygon_geometry(polygons: &[Vec<Vec3>]) -> GeometryResult {
+pub(super) fn polygon_geometry(polygons: &[Vec<Vec3>]) -> GeometryResult {
     let (mut vertices, mut indices, mut faces, mut ranges) = (vec![], vec![], vec![], vec![]);
     for polygon in polygons {
         let base = vertices.len() as u32;
@@ -296,6 +296,7 @@ fn a_layer_is_byte_identical_at_one_worker_and_many() {
     let ctx = ray_ctx(&geometry, &bvh, &primitives);
     let patches = PatchSet::build_with_size(&geometry, 0.25);
     let light = soft_point([0.2, 2.0, 0.1], 0.4);
+    let in_reach = PatchReachIndex::new(patches.patches()).in_reach(&light);
     let control = BakeControl::unrestricted();
     let bits = |layer: &SparseLayer| -> Vec<(u32, Side, [u32; 3])> {
         layer
@@ -310,10 +311,12 @@ fn a_layer_is_byte_identical_at_one_worker_and_many() {
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            pool.install(|| shade_light_layer(&ctx, &patches, &light, 7, embedded, &control))
+            pool.install(|| {
+                shade_light_layer(&ctx, &patches, &in_reach, &light, 7, embedded, &control)
+            })
         };
         let one = at(1);
-        assert!(patches.len() > PATCHES_PER_CHUNK, "the layer spans chunks");
+        assert!(in_reach.len() > PATCHES_PER_CHUNK, "the layer spans chunks");
         assert!(
             one.entries
                 .windows(2)
@@ -341,8 +344,9 @@ fn a_layer_bakes_the_lights_colour_and_intensity_in() {
     let mut red = white.clone();
     red.color = [1.0, 0.0, 0.0];
     red.intensity = 2.0;
-    let white = shade_light_layer(&ctx, &patches, &white, 0, false, &control);
-    let red = shade_light_layer(&ctx, &patches, &red, 0, false, &control);
+    let in_reach = PatchReachIndex::new(patches.patches()).in_reach(&white);
+    let white = shade_light_layer(&ctx, &patches, &in_reach, &white, 0, false, &control);
+    let red = shade_light_layer(&ctx, &patches, &in_reach, &red, 0, false, &control);
     assert!(!white.entries.is_empty());
     assert_eq!(white.entries.len(), red.entries.len());
     for (w, r) in white.entries.iter().zip(&red.entries) {
@@ -401,7 +405,7 @@ fn reach_count_equals_the_range_test_at_every_patch() {
 // AC 31, the gate's half: a light's layer holds at most one entry per side
 // of each patch the gate counted in its reach, and only those patches, so
 // the gate's layer term bounds what shading allocates. Progress advances
-// one unit per patch chunk.
+// one unit per chunk of the reach.
 #[test]
 fn a_layer_holds_entries_only_on_patches_the_gate_counts_in_reach() {
     let geometry = shadowed_floor();
@@ -417,8 +421,11 @@ fn a_layer_holds_entries_only_on_patches_the_gate_counts_in_reach() {
             std::sync::Arc::new(crate::governor::Governor::new(usize::MAX, false)),
             &progress,
         );
-        let layer = shade_light_layer(&ctx, &patches, &light, 0, false, &control);
+        let in_reach = index.in_reach(&light);
+        let layer = shade_light_layer(&ctx, &patches, &in_reach, &light, 0, false, &control);
         let reach = index.count_in_reach(&light);
+        assert_eq!(in_reach.len() as u64, reach);
+        assert!(in_reach.windows(2).all(|w| w[0] < w[1]), "ascending");
         assert!(!layer.entries.is_empty());
         assert!(layer.entries.len() as u64 <= 2 * reach, "{origin:?}");
         assert!(layer.entries.iter().all(|entry| {
@@ -429,7 +436,7 @@ fn a_layer_holds_entries_only_on_patches_the_gate_counts_in_reach() {
         }));
         assert_eq!(
             progress.completed(),
-            patches.len().div_ceil(PATCHES_PER_CHUNK)
+            in_reach.len().div_ceil(PATCHES_PER_CHUNK)
         );
     }
 }

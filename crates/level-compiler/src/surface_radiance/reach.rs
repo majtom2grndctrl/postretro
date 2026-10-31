@@ -48,18 +48,36 @@ impl<'a> PatchReachIndex<'a> {
     /// own range test ([`light_reaches_point`]), so a layer holds at most
     /// two entries (one per side) per counted patch.
     pub(crate) fn count_in_reach(&self, light: &MapLight) -> u64 {
+        let mut count = 0u64;
+        self.for_each_in_reach(light, |_| count += 1);
+        count
+    }
+
+    /// The patches [`Self::count_in_reach`] counts, ascending by index: the
+    /// only patches a layer shades.
+    pub(crate) fn in_reach(&self, light: &MapLight) -> Vec<u32> {
+        let mut patches = Vec::new();
+        self.for_each_in_reach(light, |index| patches.push(index));
+        patches.sort_unstable();
+        patches
+    }
+
+    /// Visit each patch whose centroid `light` reaches, bucket by bucket.
+    fn for_each_in_reach(&self, light: &MapLight, mut visit: impl FnMut(u32)) {
+        let reaches =
+            |index: u32| light_reaches_point(light, self.patches[index as usize].centroid);
         if light.light_type == LightType::Directional {
-            return self.patches.len() as u64;
+            (0..self.patches.len() as u32).for_each(visit);
+            return;
         }
         let range = f64::from(light.falloff_range.max(1.0e-4));
         let origin = light.origin;
         if !origin.is_finite() || !range.is_finite() {
             // No box bounds the reach: test every patch.
-            return self
-                .patches
-                .iter()
-                .filter(|patch| light_reaches_point(light, patch.centroid))
-                .count() as u64;
+            (0..self.patches.len() as u32)
+                .filter(|&index| reaches(index))
+                .for_each(visit);
+            return;
         }
         // One bucket of margin each way: the test runs in f32, the box in f64.
         let lo = bucket_of(origin - DVec3::splat(range)).map(|c| c.saturating_sub(1));
@@ -67,20 +85,19 @@ impl<'a> PatchReachIndex<'a> {
         let first = self
             .buckets
             .partition_point(|&(cell, _, _)| cell[0] < lo[0]);
-        self.buckets[first..]
+        for &(cell, start, end) in self.buckets[first..]
             .iter()
             .take_while(|&&(cell, _, _)| cell[0] <= hi[0])
-            .filter(|&&(cell, _, _)| (lo[1]..=hi[1]).contains(&cell[1]))
-            .filter(|&&(cell, _, _)| (lo[2]..=hi[2]).contains(&cell[2]))
-            .map(|&(_, start, end)| {
-                self.order[start as usize..end as usize]
-                    .iter()
-                    .filter(|&&index| {
-                        light_reaches_point(light, self.patches[index as usize].centroid)
-                    })
-                    .count() as u64
-            })
-            .sum()
+        {
+            if !(lo[1]..=hi[1]).contains(&cell[1]) || !(lo[2]..=hi[2]).contains(&cell[2]) {
+                continue;
+            }
+            for &index in &self.order[start as usize..end as usize] {
+                if reaches(index) {
+                    visit(index);
+                }
+            }
+        }
     }
 
     /// [`Self::count_in_reach`] for every light, in slice order.

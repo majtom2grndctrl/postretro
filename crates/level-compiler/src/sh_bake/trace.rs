@@ -89,6 +89,8 @@ fn closest_hit_in_leaf(
 /// here, so the distance the depth moments take is the same whatever the
 /// hit's radiance comes from.
 pub(crate) fn gather_hit(ctx: &RaytracingCtx<'_>, origin: Vec3, dir: Vec3) -> Option<Hit> {
+    #[cfg(test)]
+    crate::bake_counters::bump(|counts| counts.gather_rays += 1);
     closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY)
 }
 
@@ -153,6 +155,8 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
 }
 
 pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {

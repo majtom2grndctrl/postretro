@@ -13,8 +13,6 @@ use coloured_bounce_support::{
     TEXTURE_VALIDATION_START, cache_tally, corrupt_pixels, current_compiler, grey_compiler,
     sidecars, write_png,
 };
-use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 /// Per-entry delta cache lines are debug-level; the tallies read them.
 const TALLY_LOG: &str = "info,prl_build::delta_sh_cache=debug";
@@ -39,8 +37,9 @@ const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
     "shadowmask_atlas",
 ];
 
-/// The two stages whose keys fold the material table.
-const SH_STAGES: [&str; 2] = ["sh_group", "indirect_delta_sh_subblock"];
+/// The two stages whose keys fold the material table: the SH base's
+/// per-light patch layers and the indirect deltas.
+const SH_STAGES: [&str; 2] = ["sh_patch_layer", "indirect_delta_sh_subblock"];
 
 fn cache_dir(fixture: &Fixture) -> PathBuf {
     fixture.root().join("cache")
@@ -236,36 +235,6 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     assert_ne!(unmasked.sections[&27], first.sections[&27]);
 }
 
-/// Warm and cold id 34 share a grid and atlas of finite, nonnegative
-/// irradiance. Their values differ: cold gathers from the surface radiance
-/// cache while warm keeps the grouped per-hit estimator.
-fn warm_matches_cold_layout(warm: &[u8], cold: &[u8]) {
-    let warm = OctahedralShVolumeSection::from_bytes(warm).unwrap();
-    let cold = OctahedralShVolumeSection::from_bytes(cold).unwrap();
-    assert_eq!(warm.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
-    assert_eq!(cold.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
-    assert_eq!(warm.grid_dimensions, cold.grid_dimensions);
-    assert_eq!(warm.compact_atlas.len(), cold.compact_atlas.len());
-    assert!(!warm.compact_atlas.is_empty());
-    for (warm, cold) in warm
-        .compact_atlas
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .zip(cold.compact_atlas.as_chunks::<8>().0)
-    {
-        for channel in 0..3 {
-            let warm = u16::from_le_bytes([warm[channel * 2], warm[channel * 2 + 1]]);
-            let cold = u16::from_le_bytes([cold[channel * 2], cold[channel * 2 + 1]]);
-            // Nonnegative finite IEEE binary16 values sit below the infinity bits.
-            assert!(
-                warm < 0x7c00 && cold < 0x7c00,
-                "nonnegative finite irradiance"
-            );
-        }
-    }
-}
-
 #[test]
 #[ignore = "focused sidecar/cache/worker determinism gate"]
 fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
@@ -311,7 +280,10 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
                 rebuilt.sections[&27], cold.sections[&27],
                 "warm indirect deltas are exact"
             );
-            warm_matches_cold_layout(&rebuilt.sections[&34], &cold.sections[&34]);
+            assert_eq!(
+                rebuilt.sections[&34], cold.sections[&34],
+                "warm id 34 bakes the cold bytes"
+            );
             // Warm sidecars must also work when the stage cache is empty.
             std::fs::remove_dir_all(cache_dir(&fixture)).unwrap();
             let empty_cache = bake(&fixture, true, 2);

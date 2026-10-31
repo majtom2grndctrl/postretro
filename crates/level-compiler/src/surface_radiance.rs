@@ -3,6 +3,7 @@
 
 mod gather;
 mod layer;
+mod layer_set;
 mod patches;
 mod reach;
 mod stage;
@@ -24,6 +25,12 @@ pub(crate) use sum::PatchRadiance;
 pub(crate) use working_set::{ShBaseWorkingSetProjection, plan_sh_base};
 
 #[cfg(test)]
+mod cost_tests;
+#[cfg(test)]
+mod layer_cache_tests;
+#[cfg(test)]
 mod pipeline_tests;
+#[cfg(test)]
+mod test_scene;
 #[cfg(test)]
 mod tests;

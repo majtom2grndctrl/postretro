@@ -1001,7 +1001,7 @@ fn cells_only_the_clear_light_reaches_keep_their_bytes() {
 // --- warnings through the pipeline ------------------------------------------
 
 /// An axis-aligned brush from `min` to `max`, Quake map units.
-fn box_brush(min: [i32; 3], max: [i32; 3]) -> String {
+pub(crate) fn box_brush(min: [i32; 3], max: [i32; 3]) -> String {
     const TEXTURE: &str = "concrete_pavement_036";
     let ([x0, y0, z0], [x1, y1, z1]) = (min, max);
     format!(
@@ -1229,12 +1229,14 @@ fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
         geometry: &fixture.geometry,
     };
     let patches = PatchSet::build(&fixture.geometry);
+    let reach = crate::surface_radiance::PatchReachIndex::new(patches.patches());
     let trace = |from, to| crate::sh_bake::segment_clear(&ctx, from, to);
     let n = DEFAULT_AREA_SAMPLE_COUNT;
     for (index, light) in lights.iter().enumerate() {
         let layer = shade_light_layer(
             &ctx,
             &patches,
+            &reach.in_reach(light),
             light,
             index as u64,
             bounce.is_embedded(index),

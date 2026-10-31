@@ -58,6 +58,8 @@ impl<'a> PatchGather<'a> {
     /// The stored radiance of the patch (or blend) and side `hit` reads;
     /// zero on a face with no patch.
     pub(crate) fn radiance_at(&self, hit: &Hit, dir: Vec3) -> Vec3 {
+        #[cfg(test)]
+        crate::bake_counters::bump(|counts| counts.patch_lookups += 1);
         match self.lookup {
             #[cfg(test)]
             PatchLookup::Nearest => self

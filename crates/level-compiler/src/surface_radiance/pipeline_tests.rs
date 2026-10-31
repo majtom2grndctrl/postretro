@@ -1,4 +1,4 @@
-// Surface radiance cache through the production pipeline: patch domain and cache lifetime.
+// Surface radiance cache through the production pipeline: patch domain, cache lifetime, layer keys.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use std::path::Path;
@@ -9,7 +9,9 @@ use glam::Vec3;
 use postretro_test_log_capture::LogCapture;
 
 use super::PatchSet;
+use super::layer::SH_PATCH_LAYER_STAGE_ID;
 use super::stage::stage_events;
+use crate::cache::CacheTestAccess;
 use crate::coloured_bounce_test_fixtures::{
     Appearance, mover_entity, room_map, without_fluid, write_texture, write_textures,
 };
@@ -196,4 +198,131 @@ fn patches_tile_the_interior_and_skip_the_mover_and_exterior_faces() {
             area[plane]
         );
     }
+}
+
+/// A sealed 256 u room (the embedded-emitter fixture's) holding two
+/// lights, at Quake-unit `west` and `centre`.
+fn two_light_room(west: [i32; 3], centre: [i32; 3]) -> String {
+    use crate::embedded_emitter_probe_tests::box_brush;
+    let brushes = [
+        box_brush([-16, -16, -16], [272, 272, 0]),
+        box_brush([-16, -16, 128], [272, 272, 144]),
+        box_brush([-16, -16, 0], [0, 272, 128]),
+        box_brush([256, -16, 0], [272, 272, 128]),
+        box_brush([0, -16, 0], [256, 0, 128]),
+        box_brush([0, 256, 0], [256, 272, 128]),
+    ];
+    let light = |[x, y, z]: [i32; 3]| {
+        format!(
+            "{{\n\"classname\" \"light\"\n\"origin\" \"{x} {y} {z}\"\n\"light\" \"300\"\n\
+             \"_falloff_range\" \"256\"\n}}"
+        )
+    };
+    [
+        format!(
+            "{{\n\"classname\" \"worldspawn\"\n{}\n}}",
+            brushes.join("\n")
+        ),
+        "{\n\"classname\" \"player_spawn\"\n\"origin\" \"128 128 24\"\n}".to_owned(),
+        light(west),
+        light(centre),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+/// One warm in-process compile of `map_text` with its stage cache under
+/// `root` and `extra` flags: the patch-layer cache accesses it made and
+/// the embedded-emitter warnings it logged on this thread.
+fn compile_warm(root: &Path, map_text: &str, extra: &[&str]) -> (CacheTestAccess, usize) {
+    let maps = root.join("maps");
+    std::fs::create_dir_all(&maps).unwrap();
+    std::fs::create_dir_all(root.join("baked/materials")).unwrap();
+    let map = maps.join("two_lights.map");
+    std::fs::write(&map, map_text).unwrap();
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+    let args = crate::parse_args_from(
+        [
+            path(&map),
+            "-o".to_owned(),
+            path(&root.join("out.prl")),
+            "--baked-root".to_owned(),
+            path(&root.join("baked")),
+            "--cache-dir".to_owned(),
+            path(&root.join("cache")),
+            "--sh-probe-spacing".to_owned(),
+            "4".to_owned(),
+            "--lightmap-density".to_owned(),
+            "0.25".to_owned(),
+        ]
+        .into_iter()
+        .chain(extra.iter().map(|flag| (*flag).to_owned())),
+    )
+    .unwrap();
+    let cache = crate::construct_stage_cache(&args).expect("a warm build");
+    let logs = LogCapture::start();
+    let started = Instant::now();
+    let reporter: Arc<dyn Reporter> = Arc::new(PlainReporter::new(
+        started,
+        crate::logger::LogSink::default(),
+    ));
+    crate::pipeline::run(
+        &args,
+        Some(cache.clone()),
+        started,
+        reporter,
+        Arc::new(crate::governor::Governor::new(2, false)),
+    )
+    .expect("the two-light room compiles");
+    let warnings = logs
+        .records()
+        .into_iter()
+        .filter(|record| record.message.contains("emitter inside geometry"))
+        .count();
+    (cache.test_access(SH_PATCH_LAYER_STAGE_ID), warnings)
+}
+
+// AC 12, research P16, P19: each layer key folds only its own light's
+// effective embedded flag. Moving the flagged light out of its wall, or
+// another light into one, re-shades only the moved light's layer; toggling
+// `--no-penumbra-floor` re-shades only the flagged light's; changing
+// `--soft-shadow-samples` re-shades none.
+#[test]
+fn a_flagged_lights_edits_and_the_floor_toggle_reshade_only_flagged_layers() {
+    let root = tempfile::tempdir().unwrap();
+    let flagged = two_light_room([6, 128, 64], [128, 128, 64]);
+    let reshaded = |access: CacheTestAccess| (access.writes, access.read_hits);
+
+    let (first, warnings) = compile_warm(root.path(), &flagged, &[]);
+    assert_eq!(warnings, 1, "the west light is flagged");
+    assert_eq!(reshaded(first), (2, 0), "{first:?}");
+
+    let (samples, _) = compile_warm(root.path(), &flagged, &["--soft-shadow-samples", "8"]);
+    assert_eq!(
+        reshaded(samples),
+        (0, 2),
+        "--soft-shadow-samples: {samples:?}"
+    );
+
+    let (floor_off, warnings) = compile_warm(root.path(), &flagged, &["--no-penumbra-floor"]);
+    assert_eq!(warnings, 0, "no flag without the floor");
+    assert_eq!(
+        reshaded(floor_off),
+        (1, 1),
+        "--no-penumbra-floor: {floor_off:?}"
+    );
+
+    let out_of_wall = two_light_room([64, 128, 64], [128, 128, 64]);
+    let (moved_out, warnings) = compile_warm(root.path(), &out_of_wall, &[]);
+    assert_eq!(warnings, 0);
+    assert_eq!(
+        reshaded(moved_out),
+        (1, 1),
+        "out of the wall: {moved_out:?}"
+    );
+
+    let into_wall = two_light_room([6, 128, 64], [250, 128, 64]);
+    let (moved_in, warnings) = compile_warm(root.path(), &into_wall, &[]);
+    assert_eq!(warnings, 2, "both lights are flagged");
+    assert_eq!(reshaded(moved_in), (1, 1), "into the wall: {moved_in:?}");
 }

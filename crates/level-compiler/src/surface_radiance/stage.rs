@@ -1,14 +1,16 @@
-// SH base stage over the patch cache: shade, sum and gather, then free the cache.
+// SH base stage over the patch cache: layers cached or shaded, summed, gathered, then freed.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use super::gather::{PatchGather, PatchLookup};
-use super::layer::layer_progress_units;
+use super::layer::LayerKeys;
+use super::layer_set::{LayerCache, LayerPlan, resolve_layers};
 use super::patches::PatchSet;
 use super::sum::PatchRadiance;
 use super::working_set::ShBaseHandoff;
 use crate::bake_control::BakeControl;
+use crate::cache::StageCache;
 use crate::light_namespaces::StaticBakedLights;
 use crate::sh_bake::{
     RadianceSource, ShBakeCtx, ShConfig, bake_sh_volume_after, probe_grid_dims, static_light_refs,
@@ -31,17 +33,22 @@ impl Drop for PatchCache {
     }
 }
 
-/// Bake id 34 through the surface radiance cache: each static light
-/// shades its layer over the gate's patch set (seed axis and embedded flag
-/// keyed by its global static index), the layers sum in that order, and
-/// the probe gather reads the sum by bilinear lookup. `embedded` is the
-/// bounce family's set ([`crate::direct_sh_bake::bounce_embedded_emitters`]).
-/// Progress counts one unit per light per patch chunk, then one per probe.
+/// Bake id 34 through the surface radiance cache. Each distinct static
+/// light content shades one layer over the patches in its reach, seeded by
+/// its content digest ([`LayerPlan`]); with `cache`, a layer is first read
+/// from the build cache and, on a miss, written back the moment it is
+/// shaded. The layers sum in content order, and the probe gather reads the
+/// sum by bilinear lookup. `embedded` is the bounce family's set
+/// ([`crate::direct_sh_bake::bounce_embedded_emitters`]), keyed by
+/// static-light position. Cold (`cache == None`) and warm bake the same
+/// bytes. Progress counts one unit per patch chunk of each layer's reach,
+/// then one per probe.
 pub(crate) fn bake_sh_base(
     ctx: &ShBakeCtx<'_>,
     config: &ShConfig,
     handoff: ShBaseHandoff,
     embedded: &EmbeddedEmitters,
+    cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> OctahedralShVolumeSection {
     let ShBaseHandoff {
@@ -49,25 +56,33 @@ pub(crate) fn bake_sh_base(
         light_reach,
     } = handoff;
     let lights = static_light_refs(ctx);
-    debug_assert_eq!(
-        light_reach.len(),
-        lights.len(),
-        "the gate priced every static light"
-    );
-    let shading_units = lights.len() * layer_progress_units(patches.len());
+    let plan = LayerPlan::new(&lights, &light_reach, embedded);
+    let shading_units = plan.progress_units();
     let probes: usize = probe_grid_dims(ctx.geometry, config.probe_spacing)
         .iter()
         .map(|&d| d as usize)
         .product();
     control.publish_total(shading_units + probes);
-    let priced_patches = patches.len();
-    let radiance =
-        PatchRadiance::single_bounce(&ctx.ray_ctx(), &patches, &lights, embedded, control);
-    // AC 31: the bake shades exactly the set the gate priced, as the delta
-    // bakes' CSRs equal their plans.
-    debug_assert_eq!(radiance.patch_count(), priced_patches);
-    let cache = PatchCache { patches, radiance };
-    let gather = PatchGather::new(&cache.patches, &cache.radiance, PatchLookup::Bilinear);
+    let layer_cache = cache.map(|cache| LayerCache {
+        cache,
+        keys: LayerKeys::new(ctx.geometry, ctx.bounce_materials),
+    });
+    let layers = resolve_layers(
+        &ctx.ray_ctx(),
+        &patches,
+        &lights,
+        &plan,
+        layer_cache.as_ref(),
+        control,
+    );
+    let radiance = PatchRadiance::sum(patches.len(), &plan, &layers);
+    drop(layers);
+    let patch_cache = PatchCache { patches, radiance };
+    let gather = PatchGather::new(
+        &patch_cache.patches,
+        &patch_cache.radiance,
+        PatchLookup::Bilinear,
+    );
     bake_sh_volume_after(
         ctx,
         config,

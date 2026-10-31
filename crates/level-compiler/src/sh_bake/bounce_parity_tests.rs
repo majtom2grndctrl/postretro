@@ -946,7 +946,7 @@ fn bounce_parity_on_real_maps() {
             .expect("the SH base projection fits u64");
             let reads = back_face_reads(&inputs, &config, &handoff.patches);
             let production = crate::surface_radiance::bake_sh_base(
-                &inputs, &config, handoff, embedded, &control,
+                &inputs, &config, handoff, embedded, None, &control,
             );
             eprintln!(
                 "{map}: production cold bake_sh_base {:.1?}; gate predicted {} bytes ({projection})",

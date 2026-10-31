@@ -110,7 +110,7 @@ pub(crate) enum RadianceSource<'a> {
     /// visibility mode: today's per-hit estimator.
     Lights(BounceVisibility),
     /// Read the surface radiance cache's patch at the hit; traces no shadow
-    /// ray. The cold SH base bake (`surface_radiance::bake_sh_base`).
+    /// ray. The SH base bake, warm and cold (`surface_radiance::bake_sh_base`).
     Patches(&'a PatchGather<'a>),
 }
 

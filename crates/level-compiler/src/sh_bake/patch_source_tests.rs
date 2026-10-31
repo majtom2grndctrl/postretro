@@ -171,6 +171,7 @@ fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
                 &config,
                 handoff,
                 &NO_EMBEDDED_EMITTERS,
+                None,
                 &BakeControl::unrestricted(),
             )
         })

@@ -80,6 +80,8 @@ pub mod visibility;
 mod working_set;
 
 #[cfg(test)]
+mod bake_counters;
+#[cfg(test)]
 mod binary_tests;
 #[cfg(test)]
 mod cache_cross_bake_tests;

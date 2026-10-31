@@ -1331,6 +1331,8 @@ pub(crate) fn segment_clear_remembering(
     to: Vec3,
     last_occluder: &Cell<Option<usize>>,
 ) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {

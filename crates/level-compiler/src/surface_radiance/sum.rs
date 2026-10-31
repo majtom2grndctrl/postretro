@@ -1,14 +1,18 @@
-// Summed patch radiance: every static light's layer added in one fixed order.
+// Summed patch radiance: every static light's layer added in content order.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use glam::Vec3;
 
-use super::layer::{SparseLayer, shade_light_layer};
-use super::patches::{PatchSet, Side};
-use crate::bake_control::BakeControl;
-use crate::map_data::MapLight;
-use crate::sh_bake::RaytracingCtx;
-use crate::texel_footprint::EmbeddedEmitters;
+use super::layer::SparseLayer;
+use super::layer_set::LayerPlan;
+use super::patches::Side;
+#[cfg(test)]
+use super::{layer_set::resolve_layers, patches::PatchSet, reach::PatchReachIndex};
+#[cfg(test)]
+use crate::{
+    bake_control::BakeControl, map_data::MapLight, sh_bake::RaytracingCtx,
+    texel_footprint::EmbeddedEmitters,
+};
 
 /// Dense outgoing radiance per patch, front and back: what a gather hit
 /// reads.
@@ -35,9 +39,29 @@ impl PatchRadiance {
         }
     }
 
-    /// Single-bounce patch radiance: each of `lights` shades its layer and
-    /// adds it, in slice order. `lights[i]`'s seed axis and embedded flag
-    /// key on `i`, its position in the static-light slice.
+    /// Sum `layers` (index-parallel to `plan.layers`) over `patch_count`
+    /// patches in plan order, each added once per light sharing it. The
+    /// plan's order follows content alone, so the float sum, and so every
+    /// byte the gather reads, is the same for any entity order.
+    pub(crate) fn sum(patch_count: usize, plan: &LayerPlan, layers: &[SparseLayer]) -> Self {
+        assert_eq!(
+            plan.layers.len(),
+            layers.len(),
+            "one layer per planned layer"
+        );
+        let mut sum = Self::zeroed(patch_count);
+        for (planned, layer) in plan.layers.iter().zip(layers) {
+            for _ in 0..planned.occurrences {
+                sum.add(layer);
+            }
+        }
+        sum
+    }
+
+    /// Single-bounce patch radiance with no build cache: every light in
+    /// `lights` (the static-light slice, keying `embedded`) shades its
+    /// layer over its reach, and the layers sum in content order.
+    #[cfg(test)]
     pub(crate) fn single_bounce(
         ctx: &RaytracingCtx<'_>,
         patches: &PatchSet,
@@ -45,24 +69,10 @@ impl PatchRadiance {
         embedded: &EmbeddedEmitters,
         control: &BakeControl,
     ) -> Self {
-        let mut sum = Self::zeroed(patches.len());
-        for (index, light) in lights.iter().enumerate() {
-            let layer = shade_light_layer(
-                ctx,
-                patches,
-                light,
-                index as u64,
-                embedded.is_embedded(index),
-                control,
-            );
-            sum.add(&layer);
-        }
-        sum
-    }
-
-    /// Patches the sum covers: the patch set it was shaded over.
-    pub(crate) fn patch_count(&self) -> usize {
-        self.sides.len()
+        let reach = PatchReachIndex::new(patches.patches()).counts_in_reach(lights);
+        let plan = LayerPlan::new(lights, &reach, embedded);
+        let layers = resolve_layers(ctx, patches, lights, &plan, None, control);
+        Self::sum(patches.len(), &plan, &layers)
     }
 
     pub(crate) fn get(&self, patch: u32, side: Side) -> Vec3 {

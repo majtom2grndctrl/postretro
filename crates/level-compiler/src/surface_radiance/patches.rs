@@ -13,7 +13,7 @@ pub(crate) const PATCH_SIZE_M: f64 = 0.5;
 /// A cell whose clipped area is below this (m²) holds no patch: it is a
 /// rounding sliver along a face edge, and a hit there reads the face's
 /// nearest patch.
-const MIN_PATCH_AREA_M2: f64 = 1.0e-6;
+pub(super) const MIN_PATCH_AREA_M2: f64 = 1.0e-6;
 
 /// Which side of its face a patch record lights: the side the face's
 /// winding normal points to, or the other. A gather ray reads the side it

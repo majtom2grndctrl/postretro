@@ -271,8 +271,8 @@ pub(crate) struct InstalledFluidSurfaces {
     /// install rule (`PlanarCandidates::from_volumes`, area floor included):
     /// what holds the planar layer, with the app's verdict over it.
     planar_candidate: bool,
-    /// The planes the faces were cut along; tests read it.
-    #[cfg(test)]
+    /// The planes the faces were cut along; tests and the set summary read
+    /// it.
     grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
     /// Parameter-row uploads so far; tests read it.
     #[cfg(test)]
@@ -422,7 +422,6 @@ impl FluidLevelLayout {
             slots,
             planar_parts,
             planar_candidate: planar_routing::has_candidate_plane(volumes, reflection_probes),
-            #[cfg(test)]
             grid: mesh.grid,
             #[cfg(test)]
             param_uploads: 0,
@@ -811,7 +810,6 @@ impl InstalledFluidSurfaces {
 /// What prep decided, read back from the install: vertex count, index and
 /// probe-index buffer bytes, planar runs, whether a probe-bound face built
 /// the probe bind group, and the grid planes.
-#[cfg(test)]
 impl InstalledFluidSurfaces {
     pub(crate) fn prep_summary(&self) -> String {
         format!(

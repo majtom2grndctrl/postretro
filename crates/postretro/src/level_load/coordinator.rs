@@ -1,6 +1,7 @@
 //! The prep stage's shared state: the staged parse's hand-outs, each task's
-//! product, and the rules that spawn a task once its inputs exist and settle
-//! the load's one outcome.
+//! product, the rules that spawn a task once its inputs exist and settle the
+//! load's one outcome, and, for a load that builds a renderer set, the hand-off
+//! of each GPU-bound product to the set's builder as soon as it exists.
 //! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline) · research.md §9 (P10, P18, P19)
 
 use std::collections::BTreeSet;
@@ -10,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use postretro_audio::DecodedLevelSounds;
 use postretro_level_loader::{
-    CompleteHandOuts, EntitiesHandOut, FinalHandOut, GeometryHandOut, HandOut, HandOutStage,
-    LevelLoadProgress, LevelWorld, LoadCancel, LoadPhase, LoadProgress, PrlLoadError,
+    CompleteHandOuts, EntitiesHandOut, FinalHandOut, GeometryHandOut, GpuLightingPayloads, HandOut,
+    HandOutStage, LevelLoadProgress, LevelWorld, LoadCancel, LoadPhase, LoadProgress, PrlLoadError,
     ShManifestHandOut, SpatialHandOut, StagedParseOutcome,
 };
 use postretro_render_cpu::fluid_surface::prepared::PreparedFluidSurfaces;
@@ -19,12 +20,14 @@ use postretro_render_cpu::lightmap_family::LightmapFamilyPlan;
 use postretro_render_cpu::sh_residency::ShResidencyPlan;
 
 use super::tasks::{self, TexturePrep};
+use super::upload::UploadSlot;
 use super::{
     LevelLoadFailure, LevelPrepInputs, LoadStage, PrepKind, PrepTimings, PreparedGpuLevel,
     PreparedLevel, PreparedModel, PreparedModels, PreparedPresentation,
 };
 use crate::collision::CollisionWorld;
 use crate::load_pool::{CancelToken, GroupSpawner, Priority, TaskError, TaskHandle};
+use crate::render::LevelGeometryParts;
 use crate::session::level_streaming::StreamingLevelData;
 
 /// What a finished prep task hands back.
@@ -32,7 +35,8 @@ enum Product {
     Textures(TexturePrep),
     ShResidency(Box<ShResidencyPlan>),
     RangeChecked,
-    Assembled(Box<LevelWorld>),
+    /// The assembled level and the GPU-only lighting payloads taken out of it.
+    Assembled(Box<LevelWorld>, GpuLightingPayloads),
     Collision(Box<CollisionWorld>),
     Streaming(StreamingLevelData),
     LightmapFamily(LightmapFamilyPlan),
@@ -50,6 +54,9 @@ pub(super) struct PrepShared {
     spawner: GroupSpawner,
     parse_progress: Arc<LoadProgress>,
     prep_progress: Arc<LoadProgress>,
+    /// The load's set builder, when it builds one, and the upload phase's
+    /// progress.
+    pub(super) upload: UploadSlot,
     /// Set by the load's outcome and by cancel. No task spawns or starts
     /// after it, and the parse stops at its next stage boundary.
     stopped: AtomicBool,
@@ -87,7 +94,13 @@ struct PrepState {
     range_checked: bool,
     assemble_spawned: bool,
     world: Option<Arc<LevelWorld>>,
+    /// The world's lighting payloads, shared with the lightmap family plan
+    /// until the geometry part takes them.
+    payloads: Option<Arc<GpuLightingPayloads>>,
     world_readers_spawned: bool,
+    /// The geometry part and `finish` went to the set builder.
+    geometry_submitted: bool,
+    finish_submitted: bool,
     collision: Option<CollisionWorld>,
     streaming: Option<StreamingLevelData>,
     lightmap_family: Option<LightmapFamilyPlan>,
@@ -125,6 +138,7 @@ impl PrepState {
         self.textures = None;
         self.sh_residency = None;
         self.world = None;
+        self.payloads = None;
         self.collision = None;
         self.streaming = None;
         self.lightmap_family = None;
@@ -159,7 +173,10 @@ impl PrepState {
             Product::Textures(textures) => self.textures = Some(textures),
             Product::ShResidency(plan) => self.sh_residency = Some(Some(*plan)),
             Product::RangeChecked => self.range_checked = true,
-            Product::Assembled(world) => self.world = Some(Arc::new(*world)),
+            Product::Assembled(world, payloads) => {
+                self.world = Some(Arc::new(*world));
+                self.payloads = Some(Arc::new(payloads));
+            }
             Product::Collision(collision) => self.collision = Some(*collision),
             Product::Streaming(streaming) => self.streaming = Some(streaming),
             Product::LightmapFamily(plan) => self.lightmap_family = Some(plan),
@@ -195,16 +212,20 @@ impl LoadCancel for PrepCancel<'_> {
 
 impl PrepShared {
     pub(super) fn new(
-        inputs: LevelPrepInputs,
+        mut inputs: LevelPrepInputs,
         spawner: GroupSpawner,
         progress: &LevelLoadProgress,
     ) -> Arc<Self> {
         super::enter_prep_progress(progress, PrepKind::ALL.len());
+        // The inputs' builder moves into the slot: tasks reach it only there.
+        let builder = inputs.upload.take().map(|upload| upload.0);
+        let upload = UploadSlot::new(builder, Arc::clone(progress.phase(LoadPhase::Upload)));
         Arc::new(Self {
             inputs,
             spawner,
             parse_progress: Arc::clone(progress.phase(LoadPhase::Parse)),
             prep_progress: Arc::clone(progress.phase(LoadPhase::Prep)),
+            upload,
             stopped: AtomicBool::new(false),
             state: Mutex::new(PrepState::default()),
         })
@@ -222,17 +243,24 @@ impl PrepShared {
 
     /// Queue the staged parse as the load's first task.
     pub(super) fn start_parse(self: &Arc<Self>) {
+        if !self.inputs.audio_enabled {
+            // No audio: nothing to decode, credited at once. Before the parse
+            // is queued: only a task's `advance` completes the prep, so a
+            // credit landing after the last task's completion check would
+            // leave the prep waiting forever.
+            let mut state = self.lock();
+            state.sounds = Some(None);
+            self.credit(&mut state, PrepKind::Sounds);
+        }
         let shared = Arc::clone(self);
         let handle = self.spawner.spawn(Priority::Load, move |token| {
             shared.run_parse(token);
         });
-        let mut state = self.lock();
-        state.handles.push((LoadStage::Parse, handle));
-        if !self.inputs.audio_enabled {
-            // No audio: nothing to decode, credited at once.
-            state.sounds = Some(None);
-            self.credit(&mut state, PrepKind::Sounds);
-        }
+        #[cfg(test)]
+        self.inputs
+            .hooks
+            .after_parse_queued(&super::test_support::PrepProbe::new(Arc::clone(self)));
+        self.lock().handles.push((LoadStage::Parse, handle));
     }
 
     fn run_parse(self: &Arc<Self>, token: &CancelToken) {
@@ -295,10 +323,19 @@ impl PrepShared {
             HandOut::Geometry(geometry) => {
                 state.geometry = Some(Arc::clone(&geometry));
                 self.spawn(state, PrepKind::Textures, move |shared| {
-                    Ok(Product::Textures(tasks::prep_textures(
-                        &geometry,
-                        &shared.inputs.prm_cache_root,
-                    )))
+                    let mut prep = tasks::prep_textures(&geometry, &shared.inputs.prm_cache_root);
+                    // The upload starts here, before the parse returns: the
+                    // prepared sidecars go to the build from this thread.
+                    if shared.upload.is_active()
+                        && let Some(textures) = prep.textures.take()
+                    {
+                        shared.upload.textures(textures, &prep.materials);
+                        #[cfg(test)]
+                        if shared.inputs.hooks.upload_textures_twice {
+                            shared.upload.duplicate_textures();
+                        }
+                    }
+                    Ok(Product::Textures(prep))
                 });
             }
             HandOut::Spatial(spatial) => {
@@ -327,10 +364,11 @@ impl PrepShared {
                 let map_entities = entities.map_entities.clone();
                 state.entities = Some(entities);
                 self.spawn(state, PrepKind::ModelPrediction, move |shared| {
-                    Ok(Product::ModelsPredicted(tasks::predict_models(
-                        &map_entities,
-                        &shared.inputs.models,
-                    )))
+                    let handles = tasks::predict_models(&map_entities, &shared.inputs.models);
+                    // The upload's part count is known now, before any model
+                    // part goes out.
+                    shared.upload.plan(handles.len());
+                    Ok(Product::ModelsPredicted(handles))
                 });
                 if self.inputs.audio_enabled {
                     self.spawn(state, PrepKind::Sounds, |shared| {
@@ -361,20 +399,24 @@ impl PrepShared {
             return;
         }
         let shared = Arc::clone(self);
-        let handle = self.spawner.spawn(Priority::Load, move |token| {
-            if token.is_cancelled() || shared.stopped() {
-                return;
-            }
-            shared.lock().started.insert(kind);
-            #[cfg(test)]
-            if let Some(message) = shared.inputs.hooks.inject(kind) {
-                shared.finish(kind, Duration::ZERO, Err(message));
-                return;
-            }
-            let started = Instant::now();
-            let result = work(&shared);
-            shared.finish(kind, started.elapsed(), result);
-        });
+        let handle =
+            self.spawner.spawn(Priority::Load, move |token| {
+                if token.is_cancelled() || shared.stopped() {
+                    return;
+                }
+                shared.lock().started.insert(kind);
+                #[cfg(test)]
+                if let Some(message) = shared.inputs.hooks.inject(kind) {
+                    shared.inputs.hooks.before_injected_failure(
+                        &super::test_support::PrepProbe::new(Arc::clone(&shared)),
+                    );
+                    shared.finish(kind, Duration::ZERO, Err(message));
+                    return;
+                }
+                let started = Instant::now();
+                let result = work(&shared);
+                shared.finish(kind, started.elapsed(), result);
+            });
         state.handles.push((LoadStage::Prep(kind), handle));
     }
 
@@ -437,7 +479,9 @@ impl PrepShared {
                 );
                 #[cfg(test)]
                 shared.inputs.hooks.edit_world(&mut world);
-                Ok(Product::Assembled(Box::new(world)))
+                // Out before the level is shared: the geometry part owns them.
+                let payloads = world.take_gpu_lighting_payloads();
+                Ok(Product::Assembled(Box::new(world), payloads))
             });
         }
         if !state.model_parse_spawned
@@ -448,17 +492,91 @@ impl PrepShared {
         }
         if !state.world_readers_spawned
             && let Some(world) = state.world.clone()
+            && let Some(payloads) = state.payloads.clone()
             && let Some(dims) = state
                 .textures
                 .as_ref()
                 .map(|textures| textures.dims.clone())
         {
             state.world_readers_spawned = true;
-            self.spawn_world_readers(state, &world, dims);
+            self.spawn_world_readers(state, &world, payloads, dims);
+        }
+        if self.upload.is_active() {
+            self.submit_geometry(state);
+            self.submit_finish(state);
+            if state.settled {
+                return;
+            }
         }
         if state.finished.len() == PrepKind::ALL.len() {
             self.complete(state);
         }
+    }
+
+    /// The geometry part, as soon as its inputs exist: the assembled level
+    /// (UVs normalized), its lighting payloads, the material table, the SH
+    /// plan, the lightmap family plan and the fluid pack. Submitted from
+    /// whichever pool thread stored the last of them. The planar candidate
+    /// is the app's verdict over its fluid tables (session data, not level
+    /// data), so the build keys the planar targets by the install rule and a
+    /// different verdict re-keys them on main at publish.
+    fn submit_geometry(&self, state: &mut PrepState) {
+        if state.geometry_submitted
+            || state.lightmap_family.is_none()
+            || state.fluid.is_none()
+            || state.sh_residency.is_none()
+        {
+            return;
+        }
+        let (Some(world), Some(textures)) = (state.world.clone(), state.textures.as_ref()) else {
+            return;
+        };
+        // The lightmap plan dropped its share before its product was stored.
+        let payloads = match state.payloads.take().map(Arc::try_unwrap) {
+            Some(Ok(payloads)) => payloads,
+            _ => {
+                let failure = LevelLoadFailure::prep(
+                    PrepKind::LightmapFamily,
+                    "the level's lighting payloads are still shared",
+                );
+                self.settle(state, Err(failure));
+                return;
+            }
+        };
+        let (Some(sh_residency), Some(lightmap_family), Some(fluid)) = (
+            state.sh_residency.take(),
+            state.lightmap_family.take(),
+            state.fluid.take(),
+        ) else {
+            return;
+        };
+        state.geometry_submitted = true;
+        self.upload.geometry(LevelGeometryParts {
+            world,
+            texture_materials: textures.materials.clone(),
+            gpu_lighting_payloads: payloads,
+            sh_residency,
+            lightmap_family,
+            fluid,
+            planar_candidate: None,
+        });
+    }
+
+    /// `finish`, once every part that will go out has: textures and every
+    /// model (each submitted from its own task before its product was
+    /// stored) and geometry. Never after a failure: a settled load stopped
+    /// the slot.
+    fn submit_finish(&self, state: &mut PrepState) {
+        if state.finish_submitted
+            || !state.geometry_submitted
+            || state.textures.is_none()
+            || state.predicted_models.is_none()
+            || !state.models.iter().all(Option::is_some)
+        {
+            return;
+        }
+        state.finish_submitted = true;
+        self.upload.finish();
     }
 
     /// The tasks that read the assembled level: after the verdict, so on
@@ -467,6 +585,7 @@ impl PrepShared {
         self: &Arc<Self>,
         state: &mut PrepState,
         world: &Arc<LevelWorld>,
+        payloads: Arc<GpuLightingPayloads>,
         dims: Vec<(u32, u32)>,
     ) {
         let level = Arc::clone(world);
@@ -482,6 +601,7 @@ impl PrepShared {
         self.spawn(state, PrepKind::LightmapFamily, move |shared| {
             Ok(Product::LightmapFamily(tasks::plan_lightmap(
                 &level,
+                &payloads,
                 &shared.inputs.device_limits,
                 shared.inputs.lightmap_pool_cap_layers,
             )))
@@ -508,71 +628,101 @@ impl PrepShared {
             self.spawn(state, PrepKind::ModelParse, move |shared| {
                 #[cfg(test)]
                 shared.inputs.hooks.before_model_parse(index);
-                let model = tasks::prep_model(
+                let mut model = tasks::prep_model(
                     &handle,
                     &shared.inputs.content_root,
                     &shared.inputs.prm_cache_root,
                 );
+                // The model's part goes out from this thread; the clip entry
+                // and hit zones stay for the commit. A failed parse submits
+                // nothing and degrades at commit as the oracle sweep's does.
+                if shared.upload.is_active() {
+                    match model.parsed.as_mut() {
+                        Ok(parsed) => {
+                            if let Some(upload) = parsed.upload.take() {
+                                shared
+                                    .upload
+                                    .model(&model.handle, upload.model, upload.materials);
+                            }
+                        }
+                        Err(_) => shared.upload.forgo_model(),
+                    }
+                }
                 Ok(Product::Model(index, Box::new(model)))
             });
         }
     }
 
-    /// Every kind finished: hand the products on as one prepared level.
+    /// Every kind finished: hand the products on as one prepared level. A
+    /// load that builds a set handed its GPU-bound products to the builder
+    /// already, `finish` included, and drops prep's builder here; a load
+    /// that builds none keeps them.
     fn complete(&self, state: &mut PrepState) {
-        // Each reader dropped its clone before its product was stored, so
-        // the state holds the only reference.
-        let world = match state.world.take().map(Arc::try_unwrap) {
-            Some(Ok(world)) => world,
-            _ => {
-                let failure = LevelLoadFailure::prep(
-                    PrepKind::Assemble,
-                    "the assembled level is still shared",
-                );
-                self.settle(state, Err(failure));
-                return;
-            }
-        };
         let models: Option<Vec<PreparedModel>> =
             std::mem::take(&mut state.models).into_iter().collect();
         let (
+            Some(world),
             Some(textures),
-            Some(sh_residency),
             Some(collision),
             Some(streaming),
-            Some(lightmap_family),
-            Some(fluid),
             Some(sounds),
             Some(models),
         ) = (
+            state.world.take(),
             state.textures.take(),
-            state.sh_residency.take(),
             state.collision.take(),
             state.streaming.take(),
-            state.lightmap_family.take(),
-            state.fluid.take(),
             state.sounds.take(),
             models,
         )
         else {
-            let failure =
-                LevelLoadFailure::prep(PrepKind::Assemble, "a finished prep task left no product");
-            self.settle(state, Err(failure));
+            self.settle(state, Err(missing_product()));
             return;
         };
-        let prepared = PreparedLevel {
-            world,
-            gpu: PreparedGpuLevel {
-                textures: textures.textures,
+        let gpu = if self.upload.is_active() {
+            if !state.finish_submitted {
+                self.settle(state, Err(missing_product()));
+                return;
+            }
+            self.upload.release();
+            None
+        } else {
+            // Each reader dropped its clone of the payloads before its
+            // product was stored, so the state holds the only one.
+            let payloads = state.payloads.take().map(Arc::try_unwrap);
+            let (
+                Some(prepared),
+                Some(Ok(gpu_lighting_payloads)),
+                Some(sh_residency),
+                Some(lightmap_family),
+                Some(fluid),
+            ) = (
+                textures.textures,
+                payloads,
+                state.sh_residency.take(),
+                state.lightmap_family.take(),
+                state.fluid.take(),
+            )
+            else {
+                self.settle(state, Err(missing_product()));
+                return;
+            };
+            Some(PreparedGpuLevel {
+                textures: prepared,
                 texture_materials: textures.materials,
                 diffuse_dims: textures.dims,
+                gpu_lighting_payloads,
                 sh_residency,
                 lightmap_family,
                 fluid,
                 device_limits: self.inputs.device_limits,
                 tiers: self.inputs.tiers,
                 prm_cache_root: self.inputs.prm_cache_root.clone(),
-            },
+            })
+        };
+        let prepared = PreparedLevel {
+            world,
+            gpu,
             collision,
             streaming,
             presentation: PreparedPresentation {
@@ -608,6 +758,9 @@ impl PrepShared {
         self.stopped.store(true, Ordering::Release);
         if outcome.is_err() {
             state.clear_products();
+            // The outcome is stored below under the same state lock, so a
+            // poll that sees the build cancelled then finds this failure.
+            self.upload.stop();
         }
         state.outcome = Some(outcome);
         state.settled = true;
@@ -665,14 +818,22 @@ impl PrepShared {
         self.lock().outcome.take()
     }
 
-    /// The load was cancelled: stop, drop everything, report nothing.
+    /// The load was cancelled: stop, cancel the build, drop everything,
+    /// report nothing.
     pub(super) fn cancel(&self) {
         self.stopped.store(true, Ordering::Release);
+        self.upload.stop();
         let mut state = self.lock();
         state.settled = true;
         state.outcome = None;
         state.held_failure = None;
         state.clear_products();
+    }
+
+    /// Whether the parse returned an accepting verdict: from then on, every
+    /// hand-out a pre-verdict task or part read is final.
+    pub(super) fn parse_verdict_accepted(&self) -> bool {
+        self.lock().parse_accepted
     }
 
     #[cfg(test)]
@@ -686,4 +847,10 @@ impl PrepShared {
             settled: state.settled,
         }
     }
+}
+
+/// A finished prep task (or a part it owed the set builder) left nothing:
+/// a coordinator bug, reported as one load failure rather than a panic.
+fn missing_product() -> LevelLoadFailure {
+    LevelLoadFailure::prep(PrepKind::Assemble, "a finished prep task left no product")
 }

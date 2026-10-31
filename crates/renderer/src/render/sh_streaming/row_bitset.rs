@@ -30,7 +30,6 @@ impl RowBitSet {
     }
 
     /// Backing words: the row capacity this set was sized for, in 64s.
-    #[cfg(test)]
     pub(super) fn word_count(&self) -> usize {
         self.words.len()
     }

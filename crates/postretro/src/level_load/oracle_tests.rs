@@ -100,6 +100,10 @@ fn assert_prep_matches_oracle(
     let (prep, outcome, _progress) = run_prep(&pool, inputs);
     drop(prep.cancel());
     let prepared = outcome.unwrap_or_else(|failure| panic!("{label}: prep failed: {failure}"));
+    let gpu = prepared
+        .gpu
+        .as_ref()
+        .expect("a load that builds no set keeps its GPU products");
 
     let mut world = postretro_level_loader::load_prl(map.to_str().unwrap())
         .unwrap_or_else(|error| panic!("{label}: the monolithic parse failed: {error}"));
@@ -111,17 +115,14 @@ fn assert_prep_matches_oracle(
         prm_cache_root,
     );
     assert_eq!(
-        texture_summary(&prepared.gpu.textures.entries),
+        texture_summary(&gpu.textures.entries),
         texture_summary(&oracle_textures.entries),
         "{label}: prepared textures"
     );
     let materials = level_texture_materials(&world.texture_names);
-    assert_eq!(
-        prepared.gpu.texture_materials, materials,
-        "{label}: materials"
-    );
+    assert_eq!(gpu.texture_materials, materials, "{label}: materials");
     let dims = diffuse_dims(&oracle_textures);
-    assert_eq!(prepared.gpu.diffuse_dims, dims, "{label}: diffuse dims");
+    assert_eq!(gpu.diffuse_dims, dims, "{label}: diffuse dims");
 
     // Normalized vertices: the oracle's renderer path when there is one.
     match renderer {
@@ -146,7 +147,7 @@ fn assert_prep_matches_oracle(
         .sh_stream_manifest()
         .map(|manifest| plan_sh_residency(manifest, &world.cells).expect("the oracle plan"));
     assert_eq!(
-        format!("{:?}", prepared.gpu.sh_residency),
+        format!("{:?}", gpu.sh_residency),
         format!("{oracle_sh:?}"),
         "{label}: SH residency plan"
     );
@@ -171,10 +172,7 @@ fn assert_prep_matches_oracle(
         ),
         &limits,
     );
-    assert_eq!(
-        prepared.gpu.lightmap_family, family,
-        "{label}: lightmap family plan"
-    );
+    assert_eq!(gpu.lightmap_family, family, "{label}: lightmap family plan");
     let lattice = sh_sampler_lattice(
         stream_base.map(|base| (base.grid_origin, base.cell_size)),
         usable.map(|section| (section.grid_origin, section.cell_size)),
@@ -186,7 +184,7 @@ fn assert_prep_matches_oracle(
         dims.len(),
         lattice.as_ref(),
     );
-    assert_eq!(prepared.gpu.fluid, fluid, "{label}: fluid surfaces");
+    assert_eq!(gpu.fluid, fluid, "{label}: fluid surfaces");
 
     // Streaming level data: what `install_level_streaming_sessions` decodes.
     let oracle_streaming = decode_streaming_level_data(StreamingLevelParts::of(&world), || {
@@ -208,8 +206,7 @@ fn assert_prep_matches_oracle(
     );
 
     Coverage {
-        baked_texture: prepared
-            .gpu
+        baked_texture: gpu
             .textures
             .entries
             .iter()
@@ -217,10 +214,10 @@ fn assert_prep_matches_oracle(
         streamed_sh: prepared.streaming.sh.is_some(),
         streamed_lightmap: prepared.streaming.lightmap.is_some(),
         animated_atlas: matches!(
-            prepared.gpu.lightmap_family.animated,
+            gpu.lightmap_family.animated,
             Ok(postretro_render_cpu::animated_lightmap::plan::AnimatedLightmapPlan::Atlas(_))
         ),
-        fluid: prepared.gpu.fluid.is_some(),
+        fluid: gpu.fluid.is_some(),
     }
 }
 

@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use postretro_level_loader::{
-    CompleteHandOuts, GeometryHandOut, LevelWorld, ShManifestMetadata, ShStreamingMode,
-    SpatialHandOut, assemble,
+    CompleteHandOuts, GeometryHandOut, GpuLightingPayloads, LevelWorld, ShManifestMetadata,
+    ShStreamingMode, SpatialHandOut, assemble,
 };
 use postretro_render_cpu::device_limits::DeviceLimits;
 use postretro_render_cpu::fluid_surface::prepared::{
@@ -25,7 +25,7 @@ use postretro_level_format::map_entity::MapEntityRecord;
 use postretro_render_cpu::texture_prep::prepare_model_materials;
 
 use super::model_prediction::{ModelPredictionInputs, predict_level_models};
-use super::products::{ParsedModelProducts, PreparedModel};
+use super::products::{ModelUpload, ParsedModelProducts, PreparedModel};
 use crate::collision::CollisionWorld;
 use crate::render::{LevelInstallError, level_world_to_geometry, lightmap_family_inputs};
 use crate::scripting_systems::hit_zones::ModelHitZones;
@@ -38,7 +38,8 @@ use crate::startup::lifecycle::{ParsedSweepModel, model_clip_entry, parse_sweep_
 /// normalize and the fluid pack read.
 #[derive(Debug)]
 pub(super) struct TexturePrep {
-    pub(super) textures: PreparedWorldTextures,
+    /// The CPU pass; `None` once handed to the load's set builder.
+    pub(super) textures: Option<PreparedWorldTextures>,
     pub(super) materials: Vec<Material>,
     pub(super) dims: Vec<(u32, u32)>,
 }
@@ -55,7 +56,7 @@ pub(super) fn prep_textures(geometry: &GeometryHandOut, prm_cache_root: &Path) -
     let dims = diffuse_dims(&textures);
     TexturePrep {
         materials: level_texture_materials(&geometry.texture_names),
-        textures,
+        textures: Some(textures),
         dims,
     }
 }
@@ -162,6 +163,7 @@ fn sh_volume_view(
 /// from the same inputs the oracle install plans from.
 pub(super) fn plan_lightmap(
     world: &LevelWorld,
+    payloads: &GpuLightingPayloads,
     limits: &DeviceLimits,
     pool_cap_layers: u32,
 ) -> LightmapFamilyPlan {
@@ -174,7 +176,7 @@ pub(super) fn plan_lightmap(
     plan_lightmap_family(
         &lightmap_family_inputs(
             &geometry,
-            &world.gpu_lighting_payloads,
+            payloads,
             &geometry.bvh.leaves,
             animated_light_count,
         ),
@@ -253,8 +255,10 @@ pub(super) fn prep_model(
     let clip_entry = model_clip_entry(&result);
     let parsed = result.map(|model| ParsedModelProducts {
         hit_zones: ModelHitZones::build(&model),
-        materials: prepare_model_materials(&model.submeshes, prm_cache_root),
-        model,
+        upload: Some(ModelUpload {
+            materials: prepare_model_materials(&model.submeshes, prm_cache_root),
+            model,
+        }),
     });
     PreparedModel {
         handle,

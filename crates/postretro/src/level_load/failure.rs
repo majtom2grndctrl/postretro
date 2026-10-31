@@ -4,6 +4,8 @@
 
 use postretro_level_loader::PrlLoadError;
 
+use crate::render::LevelBuildError;
+
 /// One kind of prep task. Each runs once per load, as soon as the hand-outs
 /// (or other prep products) it reads exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -97,6 +99,8 @@ impl PrepKind {
 pub(crate) enum LoadStage {
     Parse,
     Prep(PrepKind),
+    /// The renderer's off-main set build on the upload thread.
+    Upload,
 }
 
 impl LoadStage {
@@ -104,6 +108,7 @@ impl LoadStage {
         match self {
             LoadStage::Parse => "level parse",
             LoadStage::Prep(kind) => kind.label(),
+            LoadStage::Upload => "level upload",
         }
     }
 }
@@ -132,6 +137,16 @@ impl LevelLoadFailure {
             stage: LoadStage::Parse,
             message: error.to_string(),
             parse_error: Some(error),
+        }
+    }
+
+    /// The set build's one error: a captured wgpu error, a job panic, the
+    /// upload thread gone, or a GPU half rejecting the level's data.
+    pub(crate) fn upload(error: &LevelBuildError) -> Self {
+        Self {
+            stage: LoadStage::Upload,
+            message: error.to_string(),
+            parse_error: None,
         }
     }
 

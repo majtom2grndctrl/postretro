@@ -1,9 +1,12 @@
-//! Level-load stages that run off the main thread. Today: the prep stage,
-//! driven by the staged parse on the engine load pool, which runs every
-//! level-data check and builds every CPU product the upload stage and the
-//! commit consume, the level's decoded sounds and predicted, parsed models
-//! included. Production loads still install through the level worker
-//! and the main-thread oracle until the load state machine wires this in.
+//! Level-load stages that run off the main thread: the prep stage, driven by
+//! the staged parse on the engine load pool, which runs every level-data
+//! check and builds every CPU product the upload stage and the commit
+//! consume (the level's decoded sounds and predicted, parsed models
+//! included), handing each GPU-bound product to the renderer's off-main set
+//! build as soon as it exists; and the load-stage handle that joins the two
+//! into one bundle for the commit. Production loads still install through
+//! the level worker and the main-thread oracle until the load state machine
+//! wires this in.
 //! See: context/lib/boot_sequence.md §9 · context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
 
 // The load state machine consumes this stage; until then only tests drive it.
@@ -14,7 +17,9 @@ mod failure;
 mod inputs;
 mod model_prediction;
 mod products;
+mod stages;
 mod tasks;
+mod upload;
 
 #[cfg(test)]
 mod failure_tests;
@@ -24,6 +29,8 @@ mod model_tests;
 mod oracle_tests;
 #[cfg(test)]
 mod sound_tests;
+#[cfg(test)]
+mod stages_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -40,6 +47,12 @@ pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
 pub(crate) use products::{
     PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedModel, PreparedModels,
     PreparedPresentation,
+};
+// The load state machine (task 11) consumes the handle; until then only
+// tests do.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub(crate) use stages::{
+    BundleSet, LevelBundle, LevelLoadStages, LoadRetirement, start_level_load_stages,
 };
 pub(crate) use tasks::level_texture_materials;
 
@@ -118,6 +131,19 @@ impl LevelPrep {
     pub(crate) fn cancel(self) -> GroupRetirement {
         self.shared.cancel();
         self.group.cancel()
+    }
+
+    /// [`Self::cancel`], keeping the prep: it stops now and reports
+    /// nothing, and `cancel` still hands back its retirement later. For an
+    /// owner whose load already failed elsewhere (the upload).
+    pub(crate) fn cancel_in_place(&self) {
+        self.shared.cancel();
+        self.group.cancel_in_place();
+    }
+
+    /// Whether the parse returned an accepting verdict.
+    pub(crate) fn parse_accepted(&self) -> bool {
+        self.shared.parse_verdict_accepted()
     }
 
     /// The prep's live state, for tests that watch which tasks ran.

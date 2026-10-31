@@ -45,9 +45,21 @@ pub(crate) struct PrepTestHooks {
     /// Runs in each model parse task, with its prediction index, before the
     /// parse: blocking here delays that model.
     pub(crate) before_model_parse: Option<BeforeModelParse>,
+    /// The textures task submits a second textures part, which the set
+    /// build refuses: a real upload-thread failure.
+    pub(crate) upload_textures_twice: bool,
+    /// Runs in a task whose failure is injected, just before it fails:
+    /// blocking here holds the failure until the probe shows what the test
+    /// waits for.
+    pub(crate) before_injected_failure: Option<ProbeHook>,
+    /// Runs on the dispatching thread right after the parse task was
+    /// queued: blocking here lets the parse and its tasks run ahead of the
+    /// rest of dispatch.
+    pub(crate) after_parse_queued: Option<ProbeHook>,
 }
 
 type BeforeModelParse = Arc<dyn Fn(usize) + Send + Sync>;
+type ProbeHook = Arc<dyn Fn(&PrepProbe) + Send + Sync>;
 
 impl std::fmt::Debug for PrepTestHooks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,6 +87,18 @@ impl PrepTestHooks {
     pub(super) fn after_hand_out(&self, stage: HandOutStage, probe: &PrepProbe) {
         if let Some(hook) = &self.after_hand_out {
             hook(stage, probe);
+        }
+    }
+
+    pub(super) fn before_injected_failure(&self, probe: &PrepProbe) {
+        if let Some(hook) = &self.before_injected_failure {
+            hook(probe);
+        }
+    }
+
+    pub(super) fn after_parse_queued(&self, probe: &PrepProbe) {
+        if let Some(hook) = &self.after_parse_queued {
+            hook(probe);
         }
     }
 
@@ -125,6 +149,32 @@ impl PrepProbe {
 
     pub(crate) fn state(&self) -> ProbeState {
         self.shared.probe_state()
+    }
+
+    /// The set build's parts the upload thread finished, in order (empty for
+    /// a load that builds no set).
+    pub(crate) fn upload_parts_done(&self) -> Vec<crate::render::LevelBuildPart> {
+        self.shared.upload.tracker().parts_done()
+    }
+
+    /// Whether the set build reported a failure.
+    pub(crate) fn upload_failed(&self) -> bool {
+        self.shared.upload.tracker().failed()
+    }
+
+    /// Poll until `done` holds of the probe, up to [`HOLD_TIMEOUT`];
+    /// whether it did.
+    pub(crate) fn wait_for(&self, done: impl Fn(&PrepProbe) -> bool) -> bool {
+        let deadline = Instant::now() + HOLD_TIMEOUT;
+        loop {
+            if done(self) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Poll until `done` holds, up to [`HOLD_TIMEOUT`]; whether it did.
@@ -189,6 +239,7 @@ pub(crate) fn inputs_for(map: &Path, prm_cache_root: &Path) -> LevelPrepInputs {
         },
         audio_enabled: true,
         models: prediction_inputs(&[], false),
+        upload: None,
         hooks: PrepTestHooks::default(),
     }
 }

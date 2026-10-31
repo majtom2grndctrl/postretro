@@ -37,7 +37,7 @@ use crate::render::queue_writes::QueueWrites;
 use crate::render::renderer_textures::tests::{chain, with_one_triangle, write_prm};
 use crate::render::upload_thread::tests::wait_for;
 use crate::render::upload_thread::{UPLOAD_SUBMIT_CHUNK_BYTES, UploadThread};
-use crate::render::{LevelGeometryShStorage, fluid_surface, sh_streaming};
+use crate::render::{LevelGeometryShStorage, sh_streaming};
 
 /// Poll `pending` until it reports, failing after a bound; its outcome is
 /// reported once.
@@ -272,70 +272,9 @@ fn build_fluid(renderer: &mut Renderer, tiers: LevelBuildSnapshotInputs) -> Leve
     take(renderer, &mut pending).expect("the off-main fluid build succeeds")
 }
 
-/// Everything a set's build decided, by family: counts, sizes, formats and
-/// plan values. Equal summaries are equal builds.
+/// Everything a set's build decided, by family.
 fn summary(level: &LevelResourceSet) -> String {
-    let textures: Vec<_> = level
-        .loaded_textures
-        .iter()
-        .map(|texture| {
-            (
-                texture.diffuse_texture.size(),
-                texture.diffuse_texture.format(),
-                texture.mip_count,
-            )
-        })
-        .collect();
-    let buffers = [
-        &level.vertex_buffer,
-        &level.spec_owner_buffer,
-        &level.index_buffer,
-        &level.wireframe_index_buffer,
-        &level.lights_buffer,
-        &level.influence_buffer,
-        &level.promoted_static_weight_buffer,
-    ]
-    .map(wgpu::Buffer::size);
-    let fluid = (level
-        .fluid_surfaces
-        .as_ref()
-        .map(fluid_surface::InstalledFluidSurfaces::prep_summary),);
-    format!(
-        "textures={textures:?} gpu_textures={} materials={:?} buffers={buffers:?} \
-         indices=({}, {}) geometry={} leaves={} cull={} lights=({}, {}, {}, {}) \
-         shadow=({}, {}, {}, {}) extent=({:?}, {}, {:?}) sh=({}, {:?}, {:?}) \
-         lightmap=({}, {}) shadowmask={} fluid={fluid:?} fog_masks={:?} models={:?} smoke={:?}",
-        level.gpu_textures.len(),
-        level.stored_texture_materials,
-        level.index_count,
-        level.wireframe_index_count,
-        level.has_geometry,
-        level.bvh_leaves.len(),
-        level.compute_cull.is_some(),
-        level.light_count,
-        level.animated_baked_light_count,
-        level.total_light_count,
-        level.dynamic_light_capacity,
-        level.shadow.tier.resolution(),
-        level.shadow.promoted.is_some(),
-        level.shadow.dynamic.spot.is_some(),
-        level.shadow.dynamic.cube.is_some(),
-        level.extent.extent,
-        level.extent.fog.pixel_scale(),
-        level.extent.fog.scatter_dims(),
-        level.sh_volume_resources.present,
-        level.sh_residency_report,
-        level
-            .sh_streaming
-            .as_ref()
-            .map(sh_streaming::ShResidencyState::plan_summary),
-        level.lightmap_residency_report.log_line(),
-        level.animated_lightmap.plan_summary(),
-        level.shadowmask_present,
-        level.fog_cell_masks,
-        level.models.handles(),
-        level.smoke.collection_ids(),
-    )
+    level_resource_summary(level)
 }
 
 fn active_summary(renderer: &Renderer) -> String {

@@ -3,7 +3,7 @@
 // See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, Per-load renderer resources, Off-main GPU creation, The commit cannot fail on level data)
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak, mpsc};
 
 use postretro_level_format::environment_volumes::EnvironmentVolumeRecord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
@@ -217,6 +217,7 @@ impl Renderer {
             submitter,
             state: Mutex::new(BuildState::default()),
             result: Mutex::new(Some(result)),
+            events: OnceLock::new(),
         });
         if shared.submitter.is_none() {
             shared.fail(LevelBuildError::Upload(UploadError::ThreadGone));
@@ -403,6 +404,9 @@ pub enum LevelBuildError {
     Abandoned,
     /// The set was built against a renderer that is gone (a suspend).
     StaleRenderer,
+    /// The caller cancelled the build ([`LevelSetBuilder::cancel`]): never a
+    /// load failure of its own.
+    Cancelled,
 }
 
 impl std::fmt::Display for LevelBuildError {
@@ -415,11 +419,52 @@ impl std::fmt::Display for LevelBuildError {
             Self::DuplicatePart(part) => write!(f, "level build received {part} twice"),
             Self::Abandoned => write!(f, "level build was abandoned before it finished"),
             Self::StaleRenderer => write!(f, "level build belongs to a renderer that is gone"),
+            Self::Cancelled => write!(f, "level build was cancelled"),
         }
     }
 }
 
 impl std::error::Error for LevelBuildError {}
+
+/// One kind of build part, as [`LevelBuildEvent`] names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LevelBuildPart {
+    Textures,
+    Geometry,
+    Model,
+    Smoke,
+    Finish,
+}
+
+/// What a build reports to its [`LevelSetBuilder::on_event`] hook, on the
+/// upload thread (or the thread that ended the build).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LevelBuildEvent {
+    /// The part's job ran and its writes are submitted. A part that found
+    /// the build already ended reports nothing.
+    PartDone(LevelBuildPart),
+    /// The build failed; a cancel ([`LevelSetBuilder::cancel`]) reports
+    /// nothing.
+    Failed,
+}
+
+type LevelBuildEventHook = Box<dyn Fn(LevelBuildEvent) + Send + Sync>;
+
+/// Whether a build's every builder and queued part is gone, read without
+/// keeping the build alive.
+#[derive(Clone)]
+pub struct LevelSetBuilderProbe {
+    shared: Weak<BuildShared>,
+}
+
+impl LevelSetBuilderProbe {
+    /// Every builder clone dropped and every queued part ran (or dropped
+    /// with a retired upload thread): nothing holds the upload thread's
+    /// channel for this build any more.
+    pub fn is_released(&self) -> bool {
+        self.shared.strong_count() == 0
+    }
+}
 
 /// Queues one build's parts on the upload thread, from any thread. Parts run
 /// in submission order on the one upload thread, each under its own
@@ -446,10 +491,34 @@ const _: fn() = || {
 };
 
 impl LevelSetBuilder {
+    /// Report each part's completion and the build's failure to `hook`, from
+    /// the upload thread. Set once, before the first part; a second hook is
+    /// refused (returns `false`). The hook must not hold a builder: it lives
+    /// as long as the build.
+    pub fn on_event(&self, hook: impl Fn(LevelBuildEvent) + Send + Sync + 'static) -> bool {
+        self.shared.events.set(Box::new(hook)).is_ok()
+    }
+
+    /// End the build now: every queued and later part does nothing, its
+    /// partial resources drop, and the pending handle reports
+    /// [`LevelBuildError::Cancelled`] unless the build already ended. Never
+    /// waits on the upload thread.
+    pub fn cancel(&self) {
+        self.shared.fail(LevelBuildError::Cancelled);
+    }
+
+    /// A probe that tells when this build's builders and queued parts are
+    /// all gone.
+    pub fn probe(&self) -> LevelSetBuilderProbe {
+        LevelSetBuilderProbe {
+            shared: Arc::downgrade(&self.shared),
+        }
+    }
+
     /// The set's world materials: upload the prepared sidecars and build one
     /// material bind group per texture at the build's Surface Depth tier.
     pub fn textures(&self, prepared: PreparedWorldTextures, texture_materials: Vec<Material>) {
-        self.queue_part(move |shared, upload| {
+        self.queue_part(Some(LevelBuildPart::Textures), move |shared, upload| {
             let (loaded, _timing) =
                 upload_prepared_textures(&upload.device, &upload.writes, &prepared);
             let textures = build_level_textures(
@@ -513,7 +582,7 @@ impl LevelSetBuilder {
     /// The geometry part over any owned level data that lends a
     /// [`LevelGeometry`] on the upload thread (a world, or a test fixture).
     pub(in crate::render) fn geometry_from(&self, source: GeometrySource, rest: GeometryRest) {
-        self.queue_part(move |shared, upload| {
+        self.queue_part(Some(LevelBuildPart::Geometry), move |shared, upload| {
             let context = &shared.context;
             if shared.state().set.is_some() {
                 return Err(LevelBuildError::DuplicatePart("geometry"));
@@ -546,7 +615,7 @@ impl LevelSetBuilder {
         materials: PreparedModelMaterials,
     ) {
         let handle = postretro_model::ModelHandle::from(handle.into());
-        self.queue_part(move |shared, upload| {
+        self.queue_part(Some(LevelBuildPart::Model), move |shared, upload| {
             let mut samplers = std::mem::take(&mut shared.state().samplers);
             let entry = super::renderer_models::build_model_entry(
                 &upload.device,
@@ -566,7 +635,7 @@ impl LevelSetBuilder {
     /// Sprite collections into the set's smoke part, as
     /// `register_smoke_collection` registers them.
     pub fn smoke(&self, collections: Vec<SmokeCollectionRequest>) {
-        self.queue_part(move |shared, upload| {
+        self.queue_part(Some(LevelBuildPart::Smoke), move |shared, upload| {
             let mut level = std::mem::take(&mut shared.state().smoke);
             for collection in &collections {
                 shared.context.smoke.register_collection(
@@ -590,7 +659,7 @@ impl LevelSetBuilder {
     /// Join the parts into the set and deliver it, after this job's writes
     /// (and so every earlier part's) are submitted.
     pub fn finish(&self) {
-        self.queue_part(|shared, upload| {
+        self.queue_part(Some(LevelBuildPart::Finish), |shared, upload| {
             let mut state = shared.state();
             let mut set = state.set.take().ok_or(LevelBuildError::MissingGeometry)?;
             let textures = match state.textures.take() {
@@ -616,11 +685,14 @@ impl LevelSetBuilder {
         &self,
         work: impl FnOnce(&UploadContext) -> Result<(), LevelBuildError> + Send + 'static,
     ) {
-        self.queue_part(move |_, upload| work(upload).map(|()| PartDone::Stored));
+        self.queue_part(None, move |_, upload| {
+            work(upload).map(|()| PartDone::Stored)
+        });
     }
 
     fn queue_part(
         &self,
+        part: Option<LevelBuildPart>,
         work: impl FnOnce(&BuildShared, &UploadContext) -> Result<PartDone, LevelBuildError>
         + Send
         + 'static,
@@ -639,7 +711,7 @@ impl LevelSetBuilder {
                     job_shared.state().creations.add(created);
                     Ok(outcome)
                 },
-                move |result| deliver_shared.settle(result),
+                move |result| deliver_shared.settle(part, result),
             )
         });
         if !queued {
@@ -678,6 +750,8 @@ struct BuildShared {
     submitter: Option<UploadSubmitter>,
     state: Mutex<BuildState>,
     result: Mutex<Option<mpsc::Sender<Result<BuiltLevelSet, LevelBuildError>>>>,
+    /// The caller's progress hook, if it set one.
+    events: OnceLock<LevelBuildEventHook>,
 }
 
 /// The build's partial state: what each part produced, held with the jobs
@@ -718,6 +792,12 @@ impl BuildShared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    fn report(&self, event: LevelBuildEvent) {
+        if let Some(hook) = self.events.get() {
+            hook(event);
+        }
+    }
+
     fn deliver(&self, outcome: Result<BuiltLevelSet, LevelBuildError>) {
         let sender = self
             .result
@@ -745,14 +825,28 @@ impl BuildShared {
                 ..BuildState::default()
             };
         }
+        if !matches!(error, LevelBuildError::Cancelled) {
+            self.report(LevelBuildEvent::Failed);
+        }
         self.deliver(Err(error));
     }
 
     /// A part's verdict, on the upload thread after its writes were
     /// submitted and its error scopes popped.
-    fn settle(&self, result: Result<Result<PartDone, LevelBuildError>, UploadError>) {
+    fn settle(
+        &self,
+        part: Option<LevelBuildPart>,
+        result: Result<Result<PartDone, LevelBuildError>, UploadError>,
+    ) {
         match result {
-            Ok(Ok(PartDone::Stored | PartDone::Skipped)) => {}
+            Ok(Ok(PartDone::Stored)) => {
+                if let Some(part) = part
+                    && !self.state().ended()
+                {
+                    self.report(LevelBuildEvent::PartDone(part));
+                }
+            }
+            Ok(Ok(PartDone::Skipped)) => {}
             Ok(Ok(PartDone::Finished(set))) => {
                 let creations = {
                     let mut state = self.state();
@@ -762,6 +856,9 @@ impl BuildShared {
                     state.finished = true;
                     state.creations.0
                 };
+                if let Some(part) = part {
+                    self.report(LevelBuildEvent::PartDone(part));
+                }
                 self.deliver(Ok(BuiltLevelSet {
                     set,
                     built_tier: self.context.shadow_tier.is_none(),
@@ -825,6 +922,85 @@ impl PendingLevelSet {
     /// taken: nonzero for any set, beside a main-thread count of zero.
     pub fn upload_creations(&self) -> Option<GpuCreationCounts> {
         self.upload_creations
+    }
+}
+
+/// Everything a set's build decided, by family: counts, sizes, formats and
+/// plan values. Equal summaries are equal builds.
+pub(in crate::render) fn level_resource_summary(level: &LevelResourceSet) -> String {
+    let textures: Vec<_> = level
+        .loaded_textures
+        .iter()
+        .map(|texture| {
+            (
+                texture.diffuse_texture.size(),
+                texture.diffuse_texture.format(),
+                texture.mip_count,
+            )
+        })
+        .collect();
+    let buffers = [
+        &level.vertex_buffer,
+        &level.spec_owner_buffer,
+        &level.index_buffer,
+        &level.wireframe_index_buffer,
+        &level.lights_buffer,
+        &level.influence_buffer,
+        &level.promoted_static_weight_buffer,
+    ]
+    .map(wgpu::Buffer::size);
+    let fluid = (level
+        .fluid_surfaces
+        .as_ref()
+        .map(super::fluid_surface::InstalledFluidSurfaces::prep_summary),);
+    format!(
+        "textures={textures:?} gpu_textures={} materials={:?} buffers={buffers:?} \
+         indices=({}, {}) geometry={} leaves={} cull={} lights=({}, {}, {}, {}) \
+         shadow=({}, {}, {}, {}) extent=({:?}, {}, {:?}) sh=({}, {:?}, {:?}) \
+         lightmap=({}, {}) shadowmask={} fluid={fluid:?} fog_masks={:?} models={:?} smoke={:?}",
+        level.gpu_textures.len(),
+        level.stored_texture_materials,
+        level.index_count,
+        level.wireframe_index_count,
+        level.has_geometry,
+        level.bvh_leaves.len(),
+        level.compute_cull.is_some(),
+        level.light_count,
+        level.animated_baked_light_count,
+        level.total_light_count,
+        level.dynamic_light_capacity,
+        level.shadow.tier.resolution(),
+        level.shadow.promoted.is_some(),
+        level.shadow.dynamic.spot.is_some(),
+        level.shadow.dynamic.cube.is_some(),
+        level.extent.extent,
+        level.extent.fog.pixel_scale(),
+        level.extent.fog.scatter_dims(),
+        level.sh_volume_resources.present,
+        level.sh_residency_report,
+        level
+            .sh_streaming
+            .as_ref()
+            .map(super::sh_streaming::ShResidencyState::plan_summary),
+        level.lightmap_residency_report.log_line(),
+        level.animated_lightmap.plan_summary(),
+        level.shadowmask_present,
+        level.fog_cell_masks,
+        level.models.handles(),
+        level.smoke.collection_ids(),
+    )
+}
+
+impl Renderer {
+    /// The active set's [`level_resource_summary`]: what its build decided,
+    /// family by family. Equal summaries are equal builds, so an app-side
+    /// equivalence test compares a staged load's set with the oracle's.
+    /// `None` with no set published.
+    pub fn active_level_resource_summary(&self) -> Option<String> {
+        self.full
+            .as_ref()
+            .and_then(|full| full.level.as_ref())
+            .map(level_resource_summary)
     }
 }
 

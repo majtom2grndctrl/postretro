@@ -66,7 +66,6 @@ impl SampleRegionIndex {
         self.tables.writer_row(row)
     }
 
-    #[cfg(test)]
     pub(super) fn tables(&self) -> &SampleRegionTables {
         &self.tables
     }

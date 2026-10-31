@@ -215,8 +215,8 @@ use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
 pub use level_build::{
-    LevelBuildError, LevelBuildSnapshotInputs, LevelGeometryParts, LevelSetBuilder,
-    PendingLevelSet, SmokeCollectionRequest,
+    LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
+    LevelSetBuilder, LevelSetBuilderProbe, PendingLevelSet, SmokeCollectionRequest,
 };
 use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures, SamplerMaps};
 pub use level_resource_set::{LevelSetId, PreviousLevelSet};

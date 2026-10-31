@@ -79,8 +79,7 @@ impl LevelModels {
 
     /// Insert (or replace) the entry at `handle`. Re-loading the same handle
     /// replaces the cache entry (idempotent upload).
-    /// Every cached handle, sorted (tests).
-    #[cfg(test)]
+    /// Every cached handle, sorted (tests and the set summary).
     pub(in crate::render) fn handles(&self) -> Vec<String> {
         let mut handles: Vec<String> = self
             .entries

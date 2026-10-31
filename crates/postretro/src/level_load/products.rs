@@ -4,13 +4,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use postretro_audio::DecodedLevelSounds;
 use postretro_model::gltf_loader::{LoadedModel, ModelLoadError};
 use postretro_render_cpu::texture_prep::PreparedModelMaterials;
 
-use postretro_level_loader::LevelWorld;
+use postretro_level_loader::{GpuLightingPayloads, LevelWorld};
 use postretro_render_cpu::device_limits::DeviceLimits;
 use postretro_render_cpu::fluid_surface::prepared::PreparedFluidSurfaces;
 use postretro_render_cpu::lightmap_family::LightmapFamilyPlan;
@@ -27,13 +28,17 @@ use crate::startup::lifecycle::ModelClipEntry;
 /// One level, every level-data check passed and every CPU product built.
 #[derive(Debug)]
 pub(crate) struct PreparedLevel {
-    /// The assembled level, UVs normalized by the prepared texture dims. It
-    /// still holds its GPU-only lightmap and shadowmask payloads, which the
-    /// upload takes (`LevelWorld::take_gpu_lighting_payloads`); the commit
-    /// installs the rest as today's `App::level`.
-    pub(crate) world: LevelWorld,
-    /// What the upload stage builds the load's renderer set from.
-    pub(crate) gpu: PreparedGpuLevel,
+    /// The assembled level, UVs normalized by the prepared texture dims, its
+    /// GPU-only lightmap and shadowmask payloads taken
+    /// (`LevelWorld::take_gpu_lighting_payloads`); the commit installs it as
+    /// today's `App::level`. Shared: a load that builds a set hands the
+    /// geometry part a clone, which the part drops before the set arrives,
+    /// so the load-stage handle unwraps it then.
+    pub(crate) world: Arc<LevelWorld>,
+    /// What the upload stage builds the load's renderer set from, kept here
+    /// only by a load that builds no set (no renderer at dispatch). A load
+    /// with a set builder handed each product to it as it was made.
+    pub(crate) gpu: Option<PreparedGpuLevel>,
     /// The static collision world the commit installs.
     pub(crate) collision: CollisionWorld,
     /// What the commit creates the level's streaming sessions from.
@@ -55,6 +60,9 @@ pub(crate) struct PreparedGpuLevel {
     /// for a level with no materials): what UV normalize and the fluid pack
     /// used.
     pub(crate) diffuse_dims: Vec<(u32, u32)>,
+    /// The level's GPU-only lightmap and shadowmask payloads, taken out of
+    /// the world at assembly.
+    pub(crate) gpu_lighting_payloads: GpuLightingPayloads,
     /// The streamed-SH residency plan; `None` for a level without an SH
     /// manifest.
     pub(crate) sh_residency: Option<ShResidencyPlan>,
@@ -165,12 +173,20 @@ pub(crate) struct PreparedModel {
 
 /// A parsed model and the CPU products built from it.
 pub(crate) struct ParsedModelProducts {
-    /// The parse itself, which the upload reads (mesh, skeleton, clips).
-    pub(crate) model: LoadedModel,
     /// The hit-zone entry `HitZoneStore::insert_built` installs.
     pub(crate) hit_zones: ModelHitZones,
+    /// What the upload's model part reads, kept here only by a load that
+    /// builds no set; a load with a set builder moved it into the model's
+    /// part from the parse task.
+    pub(crate) upload: Option<ModelUpload>,
+}
+
+/// One parsed model's upload inputs.
+pub(crate) struct ModelUpload {
+    /// The parse itself, which the upload reads (mesh, skeleton, clips).
+    pub(crate) model: LoadedModel,
     /// The submesh material plan and each distinct key's prepared diffuse,
-    /// so the upload's model job only creates GPU objects.
+    /// so the upload's model part only creates GPU objects.
     pub(crate) materials: PreparedModelMaterials,
 }
 

@@ -337,21 +337,25 @@ fn prepared_models_match_the_oracle_sweep() {
 
         match (&model.parsed, &oracle.result) {
             (Ok(parsed), Ok(loaded)) => {
+                let upload = parsed
+                    .upload
+                    .as_ref()
+                    .expect("a load that builds no set keeps each model's upload inputs");
                 assert_eq!(
-                    parse_summary(&parsed.model),
+                    parse_summary(&upload.model),
                     parse_summary(loaded),
                     "{}: parse",
                     model.handle
                 );
                 let plan = plan_submesh_materials(&loaded.submeshes);
-                assert_eq!(parsed.materials.plan, plan, "{}: plan", model.handle);
+                assert_eq!(upload.materials.plan, plan, "{}: plan", model.handle);
                 let diffuse: Vec<_> = plan
                     .distinct_keys
                     .iter()
                     .map(|key| prepare_model_diffuse_texture(key, parse_blake3_key(key), &prm_root))
                     .collect();
                 assert_eq!(
-                    texture_summary(&parsed.materials.diffuse),
+                    texture_summary(&upload.materials.diffuse),
                     texture_summary(&diffuse),
                     "{}: diffuse",
                     model.handle

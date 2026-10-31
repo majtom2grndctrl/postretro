@@ -46,6 +46,9 @@ pub(crate) struct LevelPrepInputs {
     /// The descriptors, built-in classnames and net role the model
     /// prediction reads.
     pub(crate) models: ModelPredictionInputs,
+    /// The load's renderer-set builder, begun at dispatch; prep tasks hand
+    /// it each GPU-bound product. `None` runs prep only (no renderer).
+    pub(crate) upload: Option<super::upload::UploadBuilder>,
     /// Test-only failure injection and parse holds.
     #[cfg(test)]
     pub(crate) hooks: super::test_support::PrepTestHooks,
@@ -90,6 +93,7 @@ impl App {
                 &session.classname_dispatch,
                 self.is_connected_client(),
             ),
+            upload: None,
             #[cfg(test)]
             hooks: Default::default(),
         })

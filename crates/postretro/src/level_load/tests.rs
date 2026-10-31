@@ -43,6 +43,10 @@ fn texture_prep_starts_before_the_last_section_read() {
     }
     let (_prep, outcome, _progress) = run_prep(&pool, inputs);
     let prepared = outcome.expect("the textured level prepares");
+    let gpu = prepared
+        .gpu
+        .as_ref()
+        .expect("a load that builds no set keeps its GPU products");
     assert!(
         hold_reached.load(Ordering::Acquire),
         "the parse reached hand-out 2"
@@ -53,12 +57,12 @@ fn texture_prep_starts_before_the_last_section_read() {
     );
     assert!(
         matches!(
-            prepared.gpu.textures.entries.as_slice(),
+            gpu.textures.entries.as_slice(),
             [postretro_render_cpu::texture_prep::PreparedTexture::Bundle { .. }]
         ),
         "texture prep read the wall's sidecar"
     );
-    assert_eq!(prepared.gpu.diffuse_dims, [(32, 16)]);
+    assert_eq!(gpu.diffuse_dims, [(32, 16)]);
 }
 
 // P19: the planner topology reads the manifest's cluster adjacency and seam
@@ -97,6 +101,10 @@ fn planner_topology_waits_for_parse_install() {
     }
     let (_prep, outcome, _progress) = run_prep(&pool, inputs);
     let prepared = outcome.expect("the streamed level prepares");
+    let gpu = prepared
+        .gpu
+        .as_ref()
+        .expect("a load that builds no set keeps its GPU products");
     assert!(
         !holds_timed_out.load(Ordering::Acquire),
         "a hold timed out waiting for its stage's tasks"
@@ -111,7 +119,7 @@ fn planner_topology_waits_for_parse_install() {
         .sh
         .as_ref()
         .expect("the fixture streams SH, so prep decoded its topology");
-    assert!(prepared.gpu.sh_residency.is_some());
+    assert!(gpu.sh_residency.is_some());
     assert_eq!(sh.manifest.cluster_count(), 1);
 }
 
@@ -282,9 +290,13 @@ fn prepared_level_carries_its_dispatch_snapshot_and_timings() {
     let (limits, tiers, audio_enabled) = (inputs.device_limits, inputs.tiers, inputs.audio_enabled);
     let (_prep, outcome, _progress) = run_prep(&pool, inputs);
     let prepared = outcome.expect("the textured level prepares");
-    assert_eq!(prepared.gpu.device_limits, limits);
-    assert_eq!(prepared.gpu.tiers, tiers);
-    assert_eq!(prepared.gpu.prm_cache_root, prm_root.path());
+    let gpu = prepared
+        .gpu
+        .as_ref()
+        .expect("a load that builds no set keeps its GPU products");
+    assert_eq!(gpu.device_limits, limits);
+    assert_eq!(gpu.tiers, tiers);
+    assert_eq!(gpu.prm_cache_root, prm_root.path());
     let PreparedPresentation { sounds, models } = prepared.presentation;
     // The test App has no audio device; the fallback inputs have audio on,
     // and the fixture's content root has no sounds.
@@ -313,4 +325,43 @@ fn prepared_level_carries_its_dispatch_snapshot_and_timings() {
         .filter(|kind| audio_enabled || *kind != PrepKind::Sounds)
         .collect();
     assert_eq!(timed, ran);
+}
+
+// A dispatch with no audio credits sound decode itself. When the parse and
+// every task it spawns finish before the dispatching thread gets to that
+// credit (a busy machine descheduling it right after it queued the parse),
+// the credit must still complete the prep: it once landed after the last
+// task's completion check and the prep never yielded.
+#[test]
+fn prep_without_audio_completes_when_the_parse_outruns_dispatch() {
+    let (level, prm_root) = write_textured_level();
+    let pool = test_pool();
+    let mut inputs = inputs_for(level.path(), prm_root.path());
+    inputs.audio_enabled = false;
+    let ran_ahead = Arc::new(AtomicBool::new(false));
+    {
+        let ran_ahead = Arc::clone(&ran_ahead);
+        inputs.hooks.after_parse_queued = Some(Arc::new(move |probe: &PrepProbe| {
+            // Hold dispatch until the parse accepted and every task but the
+            // dispatch-credited sound decode finished.
+            let others_done = probe.wait_until(|state| {
+                state.parse_accepted
+                    && PrepKind::ALL
+                        .iter()
+                        .filter(|kind| **kind != PrepKind::Sounds)
+                        .all(|kind| state.finished.contains(kind))
+            });
+            ran_ahead.store(others_done, Ordering::Release);
+        }));
+    }
+    let (_prep, outcome, _progress) = run_prep(&pool, inputs);
+    assert!(
+        ran_ahead.load(Ordering::Acquire),
+        "the parse and its tasks finished while dispatch was held"
+    );
+    let prepared = outcome.expect("the prep completes");
+    assert!(
+        prepared.presentation.sounds.is_none(),
+        "no audio, no sounds"
+    );
 }

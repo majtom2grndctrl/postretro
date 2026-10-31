@@ -112,9 +112,9 @@ pub(crate) enum BounceVisibility {
 #[derive(Clone, Copy)]
 pub(crate) enum RadianceSource<'a> {
     /// Shade every static light at the hit, resolving soft shadows by the
-    /// visibility mode: the per-hit estimator (the delta bake reaches it
-    /// through `bake_probe_indirect_rgb`), here as the SH base's test-only
-    /// reference.
+    /// visibility mode: the per-hit estimator. The variant is test-only (the
+    /// SH base's per-hit parity reference); the delta bake uses the same
+    /// estimator (`sample_radiance_rgb`) without this enum.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "only the test-only reference bakes construct it")

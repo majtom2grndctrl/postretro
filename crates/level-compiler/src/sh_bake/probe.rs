@@ -210,9 +210,8 @@ fn bake_probe_rgb_along(
     (acc, sum_d, sum_d2)
 }
 
-/// Bake one probe's SH coefficients + depth-moment metadata from either
-/// `RadianceSource`: the surface radiance cache's patches (production id 34)
-/// or the per-hit estimator (the test-only parity reference).
+/// Test-only per-hit wrapper: bake one probe's SH coefficients + depth-moment
+/// metadata with `RadianceSource::Lights(BounceVisibility::OneSample)`.
 /// `probe_index` is the probe's flat linear index in the global grid
 /// (`x + y*nx + z*nx*ny`); it seeds only the deterministic soft-visibility
 /// lattice rotation, so passing the same global index keeps the per-probe
@@ -245,7 +244,9 @@ pub(crate) fn bake_probe(
     )
 }
 
-/// [`bake_probe`] with the gather hits' radiance source chosen, along
+/// [`bake_probe`] from either `RadianceSource`: the surface radiance cache's
+/// patches (production id 34) or the per-hit estimator (the test-only parity
+/// reference), with the gather hits' radiance source chosen, along
 /// `directions` ([`probe_gather_directions`]).
 // `bake_probe`'s inputs plus the radiance source; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]

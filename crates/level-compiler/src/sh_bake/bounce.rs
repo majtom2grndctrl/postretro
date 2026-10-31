@@ -21,15 +21,16 @@ use crate::texel_footprint::ProbeEarlyOut;
 /// bake. The light axis is the delta bake's unit-light digest in production; the
 /// test-only base reference uses the light's global `static_lights` index, which
 /// keeps a kept light's lattice rotation identical whether the reference sees the
-/// full light set or a subset. SplitMix64-style integer avalanche of those indices plus
-/// `SAMPLING_LATTICE_OFFSET`: a pure function of the indices, so it reproduces
-/// byte-for-byte across separate processes. NO `RandomState`, NO hash-map iteration
-/// order — the byte-identical-`.prl` determinism AC depends on this staying
-/// index-derived. The animated delta bake (id 27) reaches this through
-/// `sample_radiance_rgb`, seeded on a digest of its keyed unit light rather than
-/// an index; the test-only base reference passes global light indices through the
-/// same path and inherits the same deterministic seed. The surface radiance cache's patch shading mixes (patch seed id, side, light axis)
-/// through the same avalanche.
+/// full light set or a subset. SplitMix64-style integer avalanche of those
+/// indices plus `SAMPLING_LATTICE_OFFSET`: a pure function of the indices, so
+/// it reproduces byte-for-byte across separate processes. NO `RandomState`, NO
+/// hash-map iteration order — the byte-identical-`.prl` determinism AC depends
+/// on this staying index-derived. The animated delta bake (id 27) reaches this
+/// through `sample_radiance_rgb`, seeded on a digest of its keyed unit light
+/// rather than an index; the test-only base reference passes global light
+/// indices through the same path and inherits the same deterministic seed. The
+/// surface radiance cache's patch shading mixes (patch seed id, side, light
+/// axis) through the same avalanche.
 pub(crate) fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u64 {
     // Distinct odd multipliers keep the three index axes from aliasing onto each
     // other (e.g. probe 1/ray 0 vs probe 0/ray 1) before the avalanche.
@@ -75,9 +76,9 @@ pub(crate) fn bounce_sample_index(
 /// Indirect (bounced) radiance along one ray plus the ray's hit distance —
 /// direct term is the lightmap's responsibility. Production consumer is the
 /// animated delta bake, which discards the distance; the test-only base parity
-/// reference consumes it for depth moments. A ray that misses all geometry returns `SKY_COLOR` and
-/// `far_sentinel` as its distance — the depth-moment bake reads "no hit" as
-/// "fully open" at the probe-spacing scale.
+/// reference consumes it for depth moments. A ray that misses all geometry
+/// returns `SKY_COLOR` and `far_sentinel` as its distance — the depth-moment
+/// bake reads "no hit" as "fully open" at the probe-spacing scale.
 ///
 /// `probe_index`/`ray_index` only feed the deterministic soft-visibility seed
 /// (`soft_visibility_seed`); they never alter which geometry is traced. Each

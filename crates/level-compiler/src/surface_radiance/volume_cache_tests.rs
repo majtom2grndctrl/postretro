@@ -229,8 +229,9 @@ fn animated_only_edits_hit_the_volume_and_rebuild_its_animation_tables() {
 
 // Research P20: a brush edit that moves only leaf solidity leaves every
 // face and so every layer as it was, but flips probe validity, which the
-// geometry hash does not cover: the volume misses on validity alone and
-// the warm bake equals a cold bake of the edit.
+// layer geometry digest does not cover and the volume's cell-id fingerprint
+// does: the volume misses on validity alone and the warm bake equals a cold
+// bake of the edit.
 #[test]
 fn a_validity_only_edit_hits_every_layer_and_misses_the_volume() {
     let lights = room_lights();

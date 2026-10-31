@@ -504,6 +504,7 @@ struct ChunkEntries {
 mod tests {
     use super::super::test_scene::{Scene, room_lights};
     use super::*;
+    use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
     /// Every layer key of `lights` over `scene`, and the gathered volume's.
     fn keys(scene: &Scene, lights: &[MapLight]) -> (Vec<String>, String) {
@@ -530,12 +531,27 @@ mod tests {
         for face in &mut renumbered.geometry.faces {
             face.leaf_index += 3;
         }
-        let (renumbered_layers, renumbered_volume) = keys(&Scene::of(renumbered), &lights);
+        let renumbered_scene = Scene::of(renumbered);
+        let (renumbered_layers, renumbered_volume) = keys(&renumbered_scene, &lights);
         assert_eq!(
             renumbered_layers, layers,
             "a cell renumber re-keyed a layer"
         );
         assert_ne!(renumbered_volume, volume, "a cell renumber kept the volume");
+        // An unchanged key serves cached bytes, so shading must not depend on
+        // the cell id: the renumbered scene's BVH is rebuilt with the new ids.
+        let bytes = |scene: &Scene| -> Vec<Vec<u8>> {
+            scene
+                .cold_layers(&lights, &NO_EMBEDDED_EMITTERS)
+                .into_iter()
+                .map(|(_, bytes)| bytes)
+                .collect()
+        };
+        assert_eq!(
+            bytes(&renumbered_scene),
+            bytes(&base),
+            "a cell renumber changed a layer's bytes under an unchanged key"
+        );
 
         let mut appended = base.geometry.clone();
         appended

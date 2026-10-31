@@ -117,7 +117,9 @@ pub(crate) struct ShBaseHandoff {
 /// `budget_bytes`. `animation_table_bytes` is id 34's animation tables
 /// ([`crate::sh_bake::animation_table_bytes`]), which the section carries.
 /// The projection is returned whatever the budget; [`ShBaseWorkingSetProjection::admit`]
-/// decides, so the pipeline can order this gate against the others.
+/// decides, so the pipeline can order this gate against the others. The
+/// exceptions are an `ArithmeticOverflow` and a `PatchCount` refusal, which
+/// return before ordering.
 /// A patch set past [`super::patches::MAX_PATCHES`] refuses here by name.
 pub(crate) fn plan_sh_base(
     geometry: &GeometryResult,

@@ -348,11 +348,18 @@ fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
     corridor.pillar = true;
     warm_equals_cold(&temp, &corridor, "geometry", cache, &[]);
     // Research P20: the void brush changes no face a layer reads, and the
-    // spacing edit no geometry, so every layer access hits. Two static
-    // lights: two hits when the volume misses and reads its layers, none
-    // when it hits.
+    // spacing edit no geometry, so every layer access hits. Both edits move
+    // probe validity or the grid, so the volume misses and reads its two
+    // static lights' layers: two hits, no misses. (A volume hit would read
+    // no layer, so the check would prove nothing; the misses are pinned.)
     corridor.void_brush = true;
     let void = warm_equals_cold(&temp, &corridor, "void-brush", cache, &[]);
+    assert_eq!(
+        void.count("[cache] sh_base_volume miss"),
+        1,
+        "the void brush flips probe validity, so the volume misses\n{}",
+        void.log
+    );
     let spacing = warm_equals_cold(
         &temp,
         &corridor,
@@ -360,18 +367,14 @@ fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
         cache,
         &["--sh-probe-spacing", "3"],
     );
+    assert_eq!(spacing.count("[cache] sh_base_volume miss"), 1);
     for (step, built) in [("void brush", &void), ("probe spacing", &spacing)] {
-        let layer_reads = if built.count("[cache] sh_base_volume miss") == 1 {
-            2
-        } else {
-            0
-        };
         assert_eq!(
             (
                 built.count("[cache] sh_patch_layer hit"),
                 built.count("[cache] sh_patch_layer miss"),
             ),
-            (layer_reads, 0),
+            (2, 0),
             "{step}: every layer access hits\n{}",
             built.log
         );

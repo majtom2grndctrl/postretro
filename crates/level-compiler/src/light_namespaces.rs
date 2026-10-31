@@ -147,8 +147,9 @@ impl<'a> AnimatedBakedLights<'a> {
     /// Build the raw `MapData::lights` to animated-descriptor slot table.
     ///
     /// This metadata depends only on namespace membership. Planning can use it
-    /// before the base SH rays run, and both cold and grouped SH bakes reuse the
-    /// same source so their emitted table cannot drift from the planner.
+    /// before the base SH rays run, and the SH base bake rebuilds its table from
+    /// the same source every build, cached volume or not, so the emitted table
+    /// cannot drift from the planner.
     pub fn slot_for_source_lights(&self, source_light_count: usize) -> Vec<u32> {
         let mut slots = vec![ANIMATED_SLOT_NONE; source_light_count];
         for (slot, entry) in self.entries.iter().enumerate() {

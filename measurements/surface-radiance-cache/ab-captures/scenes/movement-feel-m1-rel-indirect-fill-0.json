@@ -1,0 +1,19 @@
+{
+ "map": "content/dev/maps/ab-movement-feel-fill-0.prl",
+ "camera": {
+  "position": [
+   15.588,
+   3.0,
+   -1.788
+  ],
+  "yaw_deg": 247.5,
+  "pitch_deg": -12.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/raw/movement-feel-m1-rel-indirect-fill-0.png",
+ "light_term_mask": 2
+}

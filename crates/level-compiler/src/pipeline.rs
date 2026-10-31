@@ -31,6 +31,7 @@ mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
+mod sh_working_set_gates;
 mod stage_registry;
 mod texture_stage;
 use crate::buried_lights::BuriedLights;
@@ -40,7 +41,7 @@ use crate::{
     cell_visibility_bake, chunk_light_list_bake, delta_sections, delta_sh_bake, direct_sh_bake,
     entity_shadow_select, environment_volumes, fog_cell_masks, geometry, kinematic_geometry,
     light_namespaces, lightmap_bake, map_data, navmesh_bake, pack, parse, partition, portals,
-    reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, sh_group,
+    reflection_probes, sdf_bake, sh_analyze, sh_bake, sh_coarsen, sh_density, surface_radiance,
     texture_mips, texture_validation, trigger_volumes, visibility,
 };
 use finalized_publication::{
@@ -752,7 +753,7 @@ fn run_after_parsing(
     let subblock_f16_len = PROBES_PER_CELL
         .checked_mul(delta_probe_f16_stride(DEFAULT_IRRADIANCE_TILE_DIMENSION))
         .ok_or_else(|| anyhow::anyhow!("delta sub-block f16 length overflow"))?;
-    let delta_working_set_projection = match gate_delta_working_set(
+    let delta_working_set_projection = project_delta_working_set(
         [
             DeltaCsrProjectionInput {
                 label: "DeltaShVolumes (id 27)",
@@ -773,21 +774,68 @@ fn run_after_parsing(
         subblock_f16_len,
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
-    ) {
-        Ok(projection) => projection,
-        Err(error @ DeltaWorkingSetGateError::BudgetExceeded(_)) => {
-            if let DeltaWorkingSetGateError::BudgetExceeded(projection) = &error {
-                log::info!(
-                    "[Compiler] SH delta working-set gate: estimated peak {} bytes, budget {} bytes, refused",
-                    projection.estimated_peak_bytes,
-                    projection.budget_bytes,
-                );
-            }
-            return Err(anyhow::Error::new(error));
-        }
-        Err(error) => return Err(anyhow::Error::new(error)),
+    )?;
+    // The SH base gate prices the patch cache, the later bounces at the
+    // map's `_bounce_fill` and the id-34 volume from the patch set, the
+    // static lights' ranges and the probe grid's dimensions. Its patch set
+    // and fill move whole into the SH base bake.
+    let (sh_base_handoff, sh_base_projection) = surface_radiance::plan_sh_base(
+        &geo_result,
+        &static_baked_lights
+            .entries()
+            .iter()
+            .map(|entry| entry.light)
+            .collect::<Vec<_>>(),
+        sh_bake::animation_table_bytes(&animated_baked_lights, map_data.lights.len()),
+        sh_config.probe_spacing,
+        map_data.bounce_fill,
+        args.working_set_max_bytes,
+    )?;
+    sh_working_set_gates::admit_sh_working_sets(
+        delta_working_set_projection,
+        &sh_base_projection,
+        args.verbose,
+    )?;
+
+    // Static lights whose emitter sphere reaches into geometry, tested once
+    // on the pre-cut geometry after both SH gates admit and before any
+    // texture read. The bounce family's set, for the SH base bake's patch
+    // direct, tests every static light with a sphere, `sdf` included; the
+    // probe-point set (direct SH, its deltas, billboard scatter) is filtered
+    // from it, so no light is traced twice. The lightmap stage tests the
+    // probe-point lights on the cut geometry and warns once for each light
+    // either test flags; the `sdf` lights only the bounce set holds warn
+    // here.
+    log::info!(
+        "[Compiler] Embedded-emitter classification: {} static lights, penumbra floor {}",
+        static_baked_lights.len(),
+        if lightmap_config.penumbra_floor {
+            "on"
+        } else {
+            "off"
+        },
+    );
+    let emitter_progress = StageProgress::indeterminate();
+    let emitter_control = BakeControl::new(Arc::clone(&governor), &emitter_progress);
+    let emitter_scene = direct_sh_bake::EmitterScene {
+        static_lights: &static_baked_lights,
+        bvh: &bvh,
+        primitives: &bvh_primitives,
+        geometry: &geo_result,
     };
-    log_delta_working_set_projection(&delta_working_set_projection, args.verbose);
+    let bounce_embedded_emitters = direct_sh_bake::bounce_embedded_emitters(
+        &emitter_scene,
+        lightmap_config.penumbra_floor,
+        &emitter_control,
+    );
+    let static_embedded_emitters =
+        direct_sh_bake::probe_point_emitters(&bounce_embedded_emitters, &static_baked_lights);
+    surface_radiance::warn_bounce_only_emitters(
+        &bounce_embedded_emitters,
+        &static_embedded_emitters,
+        &static_baked_lights,
+        &map_data.light_source_labels,
+    );
 
     let raw_entity_shadow_lights_section = planned_deltas.entity_shadow_lights;
     let entity_shadow_lights_elapsed = planned_deltas.entity_shadow_lights_elapsed;
@@ -838,30 +886,30 @@ fn run_after_parsing(
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());
     let sh_control = BakeControl::new(Arc::clone(&governor), &sh_progress);
-    let mut sh_volume_section = if let Some(ref cache) = stage_cache {
-        // Warm path: per-probe-group SH. Each group bakes/loads a cached
-        // entry over its probe subset with a bounded reaching-light set, then the
-        // groups assemble into the volume. This is a deliberate approximation —
-        // lights past the reach cutoff drop, so far-bounce regions run slightly
-        // dim. Not byte-identical to the cold whole-volume bake; the cold
-        // `--no-cache` build is the exact ship source of truth.
-        log::warn!("{}", sh_group::WARM_SH_APPROX_WARNING);
-        sh_group::bake_sh_volume_grouped_controlled(&sh_ctx, &sh_config, Some(cache), &sh_control)
-    } else {
-        // Cold / exact path (`--no-cache`): the monolithic whole-volume bake, the
-        // shippable source of truth. No per-group reads/writes, no warning.
-        sh_bake::bake_sh_volume_controlled(&sh_ctx, &sh_config, &sh_control)
-    };
+    // Warm and cold bake id 34 through one path: the whole volume gathers
+    // from the surface radiance cache over the gate's patch set, so a warm
+    // build ships the cold bytes. Warm builds cache the gathered volume as
+    // one entry keyed on everything the gather reads; on a miss they read
+    // and write each light's patch layer, so a light edit re-shades only its
+    // layer and a `_bounce_fill` edit re-shades none. The patch cache is
+    // freed inside the bake; only id 34 leaves the stage.
+    let mut sh_volume_section = surface_radiance::bake_sh_base(
+        &sh_ctx,
+        &sh_config,
+        sh_base_handoff,
+        &bounce_embedded_emitters,
+        stage_cache.as_ref(),
+        &sh_control,
+    );
     // SH bake stages use raw MapData source indices so bake-only animated
     // lights can own descriptors. Runtime map lights come from compact
     // AlphaLights (`_bake_only` and buried lights omitted), so remap the
     // lookup table exactly once at the PRL boundary.
     sh_volume_section.slot_for_map_light =
         alpha_lights_ns.compact_source_table(&raw_slot_for_map_light);
-    // Both warm grouped and cold monolithic bakes reach this packaging seam as
-    // the same lossless RGBA16F valid-probe-order intermediate. Keep group-cache
-    // records format-independent; final v11 packing/BC6H encoding happens only
-    // after the delta envelope and base-density classifier settle.
+    // The SH base bake reaches this packaging seam as a lossless RGBA16F
+    // valid-probe-order intermediate; final v11 packing/BC6H encoding happens
+    // only after the delta envelope and base-density classifier settle.
     let compact_atlas_bytes = sh_volume_section.compact_atlas.len();
     // Base stored-set packing now happens only after all delta classifiers have
     // finalized their cell levels. Retain this dense RGBA16F source for every
@@ -945,17 +993,9 @@ fn run_after_parsing(
     let direct_sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::DirectShBake, direct_sh_progress.clone());
     let direct_sh_control = BakeControl::new(Arc::clone(&governor), &direct_sh_progress);
-    // Static lights whose emitter sphere reaches into geometry trace their full
-    // set at every probe: direct SH here, its deltas and the billboard scatter
-    // below. Tested once for all three, on the pre-cut geometry; the probe
-    // stages run before the atlas cut, so they cannot reuse the lightmap
-    // stage's set. That stage tests the same lights on the cut geometry and
-    // warns once for each light either test flags.
-    let static_embedded_emitters = direct_sh_bake::embedded_emitters(
-        &sh_ctx,
-        lightmap_config.penumbra_floor,
-        &direct_sh_control,
-    );
+    // `static_embedded_emitters` (classified after the SH gates) makes a
+    // flagged light trace its full set at every probe: direct SH here, its
+    // deltas and the billboard scatter below.
     // Baked static-direct octahedral SH for dynamic objects. Emitted IFF there are
     // static (baked) lights — a map whose only lights are animated produces NO
     // direct section (absence; the loader treats it as direct = 0), so animated
@@ -982,9 +1022,9 @@ fn run_after_parsing(
             embedded_emitters: &static_embedded_emitters,
         };
         // Warm path passes the shared `StageCache`; cold (`--no-cache`/`--release`)
-        // passes `None`. Unlike the indirect bake's warm bounded-light approximation,
-        // the direct bake uses a strict whole-section cache key with the provably-zero
-        // light-reach cull in both modes — output is byte-identical regardless of path.
+        // passes `None`. The direct bake uses a strict whole-section cache key with
+        // the provably-zero light-reach cull in both modes — output is
+        // byte-identical regardless of path.
         let raw = direct_sh_bake::bake_direct_sh_volume_cached_controlled(
             &inputs,
             &sh_config,

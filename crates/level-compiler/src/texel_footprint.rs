@@ -617,9 +617,9 @@ mod clip_reach;
 mod embedded_emitter;
 mod pairing;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
-pub(crate) use embedded_emitter::EmbeddedEmitters;
 #[cfg(test)]
 pub(crate) use embedded_emitter::has_embedded_emitter;
+pub(crate) use embedded_emitter::{EmbeddedEmitters, has_emitter_sphere};
 #[cfg(test)]
 pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fraction};
 use pairing::EmitterPairing;

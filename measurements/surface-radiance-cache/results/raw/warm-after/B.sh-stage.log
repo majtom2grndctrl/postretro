@@ -1,0 +1,15 @@
+    0.32   0.35s  SH volume bake...
+    0.83 [INFO prl_build::surface_radiance::volume] [cache] sh_base_volume miss
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer miss
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    0.83 [INFO prl_build::surface_radiance::layer_set] [cache] sh_patch_layer hit
+    2.36   SH Bake:   0%  ETA 478.9s
+    4.70   4.73s  Delta SH volume bake...

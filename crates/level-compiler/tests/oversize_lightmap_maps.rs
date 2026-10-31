@@ -278,8 +278,14 @@ fn density_edit_that_moves_a_cut_keeps_the_pre_atlas_caches() {
         ["--lightmap-density", density, "--cache-dir", cache].map(str::to_owned)
     };
     let assert_pre_atlas_hits = |log: &str, edit: &str| {
+        // The SH base's gathered volume hits, so no patch layer is read and
+        // none re-shades: each is marked used through the volume.
+        assert!(
+            !log.contains("[cache] sh_patch_layer miss"),
+            "a patch layer re-shaded after {edit}"
+        );
         for stage in [
-            "sh_group",
+            "sh_base_volume",
             "direct_sh_volume",
             "chunk_light_list",
             "navmesh",

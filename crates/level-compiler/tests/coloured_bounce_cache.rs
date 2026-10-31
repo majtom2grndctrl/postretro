@@ -13,16 +13,16 @@ use coloured_bounce_support::{
     TEXTURE_VALIDATION_START, cache_tally, corrupt_pixels, current_compiler, grey_compiler,
     sidecars, write_png,
 };
-use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
-use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 /// Per-entry delta cache lines are debug-level; the tallies read them.
 const TALLY_LOG: &str = "info,prl_build::delta_sh_cache=debug";
 const LABEL: &str = "room";
 
 /// Every stage that caches an entry for the red-wall room. Each existed, and
-/// cached its entries, before coloured bounce; that change added none.
-const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
+/// cached its entries, before coloured bounce, which added none; the SH
+/// base's patch layers and gathered volume have since replaced its grouped
+/// entries.
+const PRE_CHANGE_CACHED_STAGES: [&str; 15] = [
     "animated_billboard_direct_scatter",
     "animated_lm_weight_maps",
     "billboard_direct_scatter",
@@ -35,12 +35,23 @@ const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
     "lightmap_section",
     "navmesh",
     "reflection_probes",
-    "sh_group",
+    "sh_base_volume",
+    "sh_patch_layer",
     "shadowmask_atlas",
 ];
 
-/// The two stages whose keys fold the material table.
-const SH_STAGES: [&str; 2] = ["sh_group", "indirect_delta_sh_subblock"];
+/// The stages whose keys fold the material table: the SH base's gathered
+/// volume and per-light patch layers, and the indirect deltas.
+const SH_STAGES: [&str; 3] = [
+    "sh_base_volume",
+    "sh_patch_layer",
+    "indirect_delta_sh_subblock",
+];
+
+/// A gathered-volume hit reads no patch layer: it stands in for them all.
+fn served_by_volume(bake: &Bake, stage: &str) -> bool {
+    stage == "sh_patch_layer" && tally(&bake.log, "sh_base_volume") == (1, 0)
+}
 
 fn cache_dir(fixture: &Fixture) -> PathBuf {
     fixture.root().join("cache")
@@ -85,7 +96,8 @@ fn all_miss(bake: &Bake, totals: Option<&Bake>) {
             "{stage} must rebake every entry:\n{}",
             bake.log
         );
-        if let Some(previous) = totals {
+        // A previous build the gathered volume served counted no layer.
+        if let Some(previous) = totals.filter(|previous| !served_by_volume(previous, stage)) {
             let (old_hits, old_misses) = tally(&previous.log, stage);
             assert_eq!(
                 misses,
@@ -98,6 +110,10 @@ fn all_miss(bake: &Bake, totals: Option<&Bake>) {
 
 fn all_hit(bake: &Bake, previous: &Bake) {
     for stage in SH_STAGES {
+        if served_by_volume(bake, stage) {
+            assert_eq!(tally(&bake.log, stage), (0, 0), "{stage}:\n{}", bake.log);
+            continue;
+        }
         let (hits, misses) = tally(&bake.log, stage);
         let (old_hits, old_misses) = tally(&previous.log, stage);
         assert!(
@@ -105,11 +121,13 @@ fn all_hit(bake: &Bake, previous: &Bake) {
             "{stage} must reuse every entry:\n{}",
             bake.log
         );
-        assert_eq!(
-            hits,
-            old_hits + old_misses,
-            "{stage} entry count stays fixed"
-        );
+        if !served_by_volume(previous, stage) {
+            assert_eq!(
+                hits,
+                old_hits + old_misses,
+                "{stage} entry count stays fixed"
+            );
+        }
     }
 }
 
@@ -135,7 +153,7 @@ fn cache_entries(dir: &Path) -> BTreeSet<String> {
 
 #[test]
 #[ignore = "focused cold-bake/material-cache integration gate"]
-fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
+fn mean_edits_rekey_every_sh_entry_but_auxiliary_and_fluid_edits_hit() {
     let fixture = Fixture::red_wall();
     let first = bake(&fixture, true, 1);
     all_miss(&first, None);
@@ -170,7 +188,7 @@ fn mean_edits_rekey_every_group_and_entry_but_auxiliary_and_fluid_edits_hit() {
             "{name} does not affect static-world bounce"
         );
     }
-    // A regional repaint moves the mean, so every group and indirect entry misses.
+    // A regional repaint moves the mean, so every SH base and indirect entry misses.
     write_png(&fixture.texture("red"), |i| {
         if i < 128 {
             [0, 0, 255, 255]
@@ -236,37 +254,6 @@ fn glow_mask_changes_rekey_but_nonzero_emissive_intensity_changes_hit() {
     assert_ne!(unmasked.sections[&27], first.sections[&27]);
 }
 
-fn warm_is_no_brighter_than_cold(warm: &[u8], cold: &[u8]) {
-    let warm = OctahedralShVolumeSection::from_bytes(warm).unwrap();
-    let cold = OctahedralShVolumeSection::from_bytes(cold).unwrap();
-    assert_eq!(warm.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
-    assert_eq!(cold.irradiance_format, IRRADIANCE_FORMAT_RGBA16F);
-    assert_eq!(warm.grid_dimensions, cold.grid_dimensions);
-    assert_eq!(warm.compact_atlas.len(), cold.compact_atlas.len());
-    assert!(!warm.compact_atlas.is_empty());
-    for (warm, cold) in warm
-        .compact_atlas
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .zip(cold.compact_atlas.as_chunks::<8>().0)
-    {
-        for channel in 0..3 {
-            let warm = u16::from_le_bytes([warm[channel * 2], warm[channel * 2 + 1]]);
-            let cold = u16::from_le_bytes([cold[channel * 2], cold[channel * 2 + 1]]);
-            // Positive finite IEEE binary16 values have the same order as their bits.
-            assert!(
-                warm < 0x7c00 && cold < 0x7c00,
-                "nonnegative finite irradiance"
-            );
-            assert!(
-                warm <= cold,
-                "warm channel {warm:#06x} exceeds cold {cold:#06x}"
-            );
-        }
-    }
-}
-
 #[test]
 #[ignore = "focused sidecar/cache/worker determinism gate"]
 fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
@@ -312,7 +299,10 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
                 rebuilt.sections[&27], cold.sections[&27],
                 "warm indirect deltas are exact"
             );
-            warm_is_no_brighter_than_cold(&rebuilt.sections[&34], &cold.sections[&34]);
+            assert_eq!(
+                rebuilt.sections[&34], cold.sections[&34],
+                "warm id 34 bakes the cold bytes"
+            );
             // Warm sidecars must also work when the stage cache is empty.
             std::fs::remove_dir_all(cache_dir(&fixture)).unwrap();
             let empty_cache = bake(&fixture, true, 2);
@@ -370,8 +360,9 @@ fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
         assert_eq!(*hits, cold_tally[stage].1, "{stage} reads every entry");
     }
     for stage in PRE_CHANGE_CACHED_STAGES {
-        // A lightmap section hit serves the layer without reading partitions.
-        if stage != "lightmap_layer" {
+        // A lightmap section hit serves the layer without reading partitions,
+        // and a gathered-volume hit the SH base's patch layers.
+        if !["lightmap_layer", "sh_patch_layer"].contains(&stage) {
             assert!(warm_tally.contains_key(stage), "{stage} must be read warm");
         }
     }
@@ -384,9 +375,10 @@ fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
 }
 
 /// One-shot pre-change oracle: a stage cache the saved pre-colour compiler
-/// wrote misses every SH group and indirect delta entry, while the stages
-/// coloured bounce left alone hit that same cache. A fresh cache from either
-/// compiler holds the same number of entries.
+/// wrote serves no SH base entry and misses every indirect delta entry,
+/// while the stages coloured bounce left alone hit that same cache. A fresh
+/// cache holds the pre-colour build's entries, with the SH base's layers and
+/// gathered volume in place of its probe groups.
 #[test]
 #[ignore = "one-shot pre-change oracle: needs POSTRETRO_GREY_PRL_BUILD"]
 fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
@@ -403,10 +395,19 @@ fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
 
     let current = bake(&fixture, true, 1);
     let current_tally = cache_tally(&current.log);
+    // The grouped entries are not read at all: the SH base's patch layers
+    // and gathered volume replaced them, under their own stage ids.
+    assert_eq!(tally(&current.log, "sh_group"), (0, 0));
     assert_eq!(
-        tally(&current.log, "sh_group"),
-        (0, old_groups),
-        "every pre-colour group entry misses"
+        tally(&current.log, "sh_base_volume"),
+        (0, 1),
+        "the gathered volume misses"
+    );
+    let (layer_hits, layer_misses) = tally(&current.log, "sh_patch_layer");
+    assert!(
+        layer_hits == 0 && layer_misses > 0,
+        "every patch layer misses:\n{}",
+        current.log
     );
     let (delta_hits, delta_misses) = tally(&current.log, "indirect_delta_sh_subblock");
     assert!(
@@ -431,8 +432,9 @@ fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
     run(&fresh, true, 1, &[]).into_bake();
     assert_eq!(
         cache_entries(&cache_dir(&fresh)).len(),
-        old_entries.len(),
-        "coloured bounce caches no entry the pre-colour build did not"
+        old_entries.len() - old_groups + layer_misses + 1,
+        "coloured bounce caches no entry the pre-colour build did not, beyond \
+         the SH base's layers and volume in place of its groups"
     );
 }
 
@@ -444,8 +446,11 @@ fn budget_and_invalid_animation_fail_before_corrupt_world_texture_is_read() {
     let refused = run(&fixture, false, 1, &["--working-set-max-size", "0"]);
     let log = &refused.log;
     assert!(!refused.succeeded());
+    // A zero budget fails both SH gates; the cheaper prediction refuses by
+    // its own name.
     assert!(
-        log.contains("SH delta working-set gate refused before dense baking"),
+        log.contains("SH base working-set gate refused before patch shading")
+            || log.contains("SH delta working-set gate refused before dense baking"),
         "{log}"
     );
     assert!(

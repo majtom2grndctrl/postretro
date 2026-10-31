@@ -1,0 +1,42 @@
+{
+ "w1/full": {
+  "base": 46,
+  "branch_release_bin": 46,
+  "branch_original_capture": 46,
+  "base_mean_luma": 125.0,
+  "branch_mean_luma": 125.0,
+  "overlap_exact": 46,
+  "base_within2px_of_branch": 46,
+  "branch_within2px_of_base": 46
+ },
+ "w1/indirect": {
+  "base": 61,
+  "branch_release_bin": 61,
+  "branch_original_capture": 61,
+  "base_mean_luma": 44.6,
+  "branch_mean_luma": 44.6,
+  "overlap_exact": 61,
+  "base_within2px_of_branch": 61,
+  "branch_within2px_of_base": 61
+ },
+ "w2/full": {
+  "base": 0,
+  "branch_release_bin": 0,
+  "branch_original_capture": 0,
+  "base_mean_luma": 97.9,
+  "branch_mean_luma": 97.9,
+  "overlap_exact": 0,
+  "base_within2px_of_branch": 0,
+  "branch_within2px_of_base": 0
+ },
+ "w2/indirect": {
+  "base": 56,
+  "branch_release_bin": 56,
+  "branch_original_capture": 56,
+  "base_mean_luma": 43.1,
+  "branch_mean_luma": 43.1,
+  "overlap_exact": 56,
+  "base_within2px_of_branch": 56,
+  "branch_within2px_of_base": 56
+ }
+}

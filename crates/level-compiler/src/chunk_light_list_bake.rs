@@ -190,7 +190,9 @@ pub(crate) fn chunk_light_list_cache_key_with_version(
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
 
-    hasher.update(&crate::sh_group::geometry_content_hash(inputs.geometry));
+    hasher.update(&crate::bake_content_keys::geometry_content_hash(
+        inputs.geometry,
+    ));
     update_bsp_fingerprint(&mut hasher, inputs.tree, inputs.exterior_leaves);
 
     // Portal polygon vertices never affect the flood: only the directed leaf

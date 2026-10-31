@@ -1,0 +1,19 @@
+{
+ "map": "content/dev/maps/ab-campaign-fill-0.5.prl",
+ "camera": {
+  "position": [
+   -34.487,
+   2.52,
+   -37.065
+  ],
+  "yaw_deg": 337.5,
+  "pitch_deg": -12.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/raw/campaign-c2-rel-indirect-fill-0.5.png",
+ "light_term_mask": 2
+}

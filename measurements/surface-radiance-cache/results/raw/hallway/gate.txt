@@ -1,0 +1,10 @@
+	CPU_Speed_Limit 	= 100
+cold-before START Sat Oct 31 10:27:54 PDT 2026
+cold-before END Sat Oct 31 10:48:32 PDT 2026
+97958 /bin/zsh -c source /Users/dhiester/.claude/shell-snapshots/snapshot-zsh-1793418440835-fodve5.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \builtin unalias -- 'which'; \builtin unset -f -- 'which'; } >/dev/null 2>&1 || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'tail -n +1 -f /private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/bff9e759-cf43-4be0-9557-5b1392586530/scratchpad/hallway/driver.out | grep --line-buffered -iE '"'"'error|BUSY|cannot|No such'"'"' ' < /dev/null && pwd -P >| /tmp/claude-7cfe-cwd
+	CPU_Speed_Limit 	= 100
+cold-after START Sat Oct 31 10:53:33 PDT 2026
+cold-after END Sat Oct 31 11:11:27 PDT 2026
+	CPU_Speed_Limit 	= 100
+A START Sat Oct 31 11:16:29 PDT 2026
+ABORT warm-before

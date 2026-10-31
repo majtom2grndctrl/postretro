@@ -1,11 +1,17 @@
 // PNG-backed, pre-encoding colour and base/delta estimator contracts.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use glam::{DVec3, Vec3};
+
+use super::bounce::*;
+use super::sh_math::*;
+use super::trace::*;
 use super::*;
 use crate::bvh_build::build_bvh;
 use crate::coloured_bounce_test_fixtures::{Appearance, room_map, write_textures};
 use crate::delta_sh_bake::{indirect_light_axis, unit_radiance_light};
 use crate::fixture_pipeline::FixturePipeline;
+use crate::lightmap_bake::soft_visibility_one_sample;
 use crate::surface_materials::stats::BounceMaterials;
 use crate::texture_mips::{StageTextureBytes, bake_materials_into};
 use postretro_level_format::geometry::NO_TEXTURE;

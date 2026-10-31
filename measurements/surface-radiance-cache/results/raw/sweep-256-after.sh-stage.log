@@ -1,0 +1,32 @@
+    4.63 [INFO prl_build::pipeline::sh_working_set_gates] [Compiler] SH base working-set gate: estimated peak 384868580 bytes, budget 17179869184 bytes, admitted (402368 patches, 256 static lights: peak of gate 53163284, layers 248016744, sum 133923884, later bounces 50752420, probe gather 384868580, id-34 entry 322173528 bytes)
+    4.63   4.65s  SH volume bake...
+    5.13   SH Bake:   2%  ETA 18.5s
+    5.63   SH Bake:   2%  ETA 35.3s
+    6.14   SH Bake:   2%  ETA 50.9s
+    6.64   SH Bake:   2%  ETA 65.1s
+    7.15   SH Bake:   3%  ETA 78.4s
+    7.65   SH Bake:   3%  ETA 90.6s
+    8.15   SH Bake:   3%  ETA 101.9s
+    8.66   SH Bake:   3%  ETA 112.6s
+    9.16   SH Bake:   3%  ETA 122.5s
+    9.67   SH Bake:   3%  ETA 131.7s
+   10.17   SH Bake:   3%  ETA 140.4s
+   10.67   SH Bake:   3%  ETA 148.6s
+   11.18   SH Bake:   4%  ETA 156.3s
+   11.68   SH Bake:   4%  ETA 163.5s
+   12.18   SH Bake:   4%  ETA 170.4s
+   12.68   SH Bake:   6%  ETA 114.3s
+   13.19   SH Bake:  15%  ETA 46.5s
+   13.69   SH Bake:  23%  ETA 28.7s
+   14.20   SH Bake:  31%  ETA 20.4s
+   14.70   SH Bake:  39%  ETA 15.2s
+   15.20   SH Bake:  47%  ETA 11.7s
+   15.71   SH Bake:  56%  ETA 8.5s
+   16.21   SH Bake:  64%  ETA 6.5s
+   16.71   SH Bake:  70%  ETA 5.0s
+   17.22   SH Bake:  76%  ETA 3.8s
+   17.72   SH Bake:  84%  ETA 2.3s
+   18.23   SH Bake:  93%  ETA 1.0s
+   18.73   SH Bake: 100%  ETA 0.0s
+   19.20  19.22s  Delta SH volume bake...
+   19.20   Delta SH Bake: skipped

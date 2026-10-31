@@ -39,6 +39,7 @@
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
 use crate::bake_control::BakeControl;
+use bvh::bvh::Bvh;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
@@ -59,10 +60,13 @@ use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
     decompose_affinity_for_lights,
 };
+use crate::bake_content_keys::geometry_content_hash;
 use crate::bc6h;
+use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
-use crate::light_namespaces::AlphaLightsNs;
+use crate::geometry::GeometryResult;
+use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
@@ -70,8 +74,7 @@ use crate::sh_bake::{
     pack_octahedral_irradiance_tile, probe_grid_layout, sh_atlas_array_layout, static_light_refs,
     vec3_from,
 };
-use crate::sh_group::geometry_content_hash;
-use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
+use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut, has_emitter_sphere};
 
 /// Cache stage id for the whole-section direct SH bake on the shared `StageCache`.
 pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
@@ -107,42 +110,85 @@ pub struct DirectBakeInputs<'a, 'b> {
     pub portals: &'a [Portal],
     /// Static lights whose emitter sphere reaches into geometry, keyed by
     /// position in `sh_ctx.static_lights` (the global index the seeds use):
-    /// [`embedded_emitters`]. Flagged lights trace their full sample set.
+    /// [`probe_point_emitters`]. Flagged lights trace their full sample set.
     pub(crate) embedded_emitters: &'a EmbeddedEmitters,
 }
 
-/// The static-direct lights' emitter tests, keyed by position in
-/// `sh_ctx.static_lights`, with the penumbra floor on; with it off nothing is
-/// flagged, so `--no-penumbra-floor` probes keep their pre-floor bytes. The
-/// test reads only the lights and geometry, which every keyed probe-point
-/// stage folds; the cached stages also fold the flagged keys
-/// ([`EmbeddedEmitters::hash_keys`]), so toggling the floor re-keys only when
-/// a light is flagged. Tested on the pre-cut geometry; the lightmap stage
-/// tests the same lights on the cut geometry, so the verdicts can differ only
-/// where a face cut passes through a light's sphere. This set does not warn:
-/// the lightmap stage takes it and warns once for each light either test
-/// flags.
-pub(crate) fn embedded_emitters(
-    sh_ctx: &ShBakeCtx<'_>,
+/// The bounce family's emitter tests: every static point or spot light with
+/// an emitter sphere, `sdf`-shadowed included, keyed by position in
+/// `static_lights`, with the penumbra floor on; empty with it off. The
+/// surface radiance cache's patch direct reads this set, since every static
+/// light bounces whatever direct path it takes; the probe-point set is
+/// filtered from it ([`probe_point_emitters`]).
+pub(crate) fn bounce_embedded_emitters(
+    scene: &EmitterScene<'_>,
     penumbra_floor: bool,
     control: &BakeControl,
 ) -> EmbeddedEmitters {
     if !penumbra_floor {
         return EmbeddedEmitters::default();
     }
-    EmbeddedEmitters::classify(
-        sh_ctx
+    EmbeddedEmitters::classify_bounce(
+        scene
             .static_lights
             .entries()
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry.light.shadow_type == ShadowType::StaticLightMap)
             .map(|(index, entry)| (index, entry.light)),
-        sh_ctx.bvh,
-        sh_ctx.primitives,
-        sh_ctx.geometry,
+        scene.bvh,
+        scene.primitives,
+        scene.geometry,
         control,
     )
+}
+
+/// The probe-point bakes' static emitter flags (direct SH, its entity-shadow
+/// deltas, billboard scatter), keyed by position in `static_lights`: the
+/// bounce family's set ([`bounce_embedded_emitters`]) kept for the lights
+/// those bakes test, `StaticLightMap` lights with an emitter sphere. A
+/// light's fraction reads only the light and the pre-cut geometry, so the
+/// kept flags, fractions and order, and so the
+/// [`EmbeddedEmitters::hash_keys`] bytes, are what testing those lights
+/// alone gives, and no light is traced twice. Empty when the bounce set is,
+/// as with the penumbra floor off, so `--no-penumbra-floor` probes keep
+/// their pre-floor bytes; the cached stages fold the flagged keys, so
+/// toggling the floor re-keys only when a light is flagged. The lightmap
+/// stage tests the same lights on the cut geometry, so the verdicts can
+/// differ only where a face cut passes through a light's sphere. This set
+/// does not warn: the lightmap stage takes it and warns once for each light
+/// either test flags.
+pub(crate) fn probe_point_emitters(
+    bounce: &EmbeddedEmitters,
+    static_lights: &StaticBakedLights<'_>,
+) -> EmbeddedEmitters {
+    let entries = static_lights.entries();
+    bounce.filtered(|key| {
+        entries.get(key).is_some_and(|entry| {
+            entry.light.shadow_type == ShadowType::StaticLightMap && has_emitter_sphere(entry.light)
+        })
+    })
+}
+
+/// What the static emitter tests read: the static lights and the pre-cut
+/// geometry they are tested against. No material or probe input, so the
+/// pipeline classifies before the material stage.
+pub(crate) struct EmitterScene<'a> {
+    pub(crate) static_lights: &'a StaticBakedLights<'a>,
+    pub(crate) bvh: &'a Bvh<f32, 3>,
+    pub(crate) primitives: &'a [BvhPrimitive],
+    pub(crate) geometry: &'a GeometryResult,
+}
+
+#[cfg(test)]
+impl<'a> EmitterScene<'a> {
+    pub(crate) fn of(ctx: &ShBakeCtx<'a>) -> Self {
+        Self {
+            static_lights: ctx.static_lights,
+            bvh: ctx.bvh,
+            primitives: ctx.primitives,
+            geometry: ctx.geometry,
+        }
+    }
 }
 
 /// Each of the static-direct lights' probe early-outs, from its global
@@ -881,8 +927,8 @@ fn direct_cache_key(
 /// bake (matching the indirect cold path).
 ///
 /// The cull is the STRICT provably-zero falloff+portal+spot-cone test in BOTH warm
-/// and cold modes — it does NOT inherit warm SH's lossy bounded-light dilation — so the
-/// bake output is byte-identical whether or not a cache is present.
+/// and cold modes, so the bake output is byte-identical whether or not a cache is
+/// present.
 pub fn bake_direct_sh_volume_cached(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,

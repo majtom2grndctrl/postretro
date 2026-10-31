@@ -25,7 +25,7 @@
 // Sub-blocks are COINCIDENT with base SH probes 1:1: the base-probe global coords
 // of in-cell probe `local` in cell `(cx,cy,cz)` are `(cx*4+lx, cy*4+ly, cz*4+lz)`
 // and its world position is `base_origin + global_coords * base_spacing` — the
-// same origin/spacing the base `bake_sh_volume` uses.
+// same origin/spacing the base SH grid uses (`probe_grid_layout`).
 //
 // Index-space contract: `affinity_lights[i]` and
 // `animation_descriptor_indices[affinity_lights[i]]` both index
@@ -168,13 +168,13 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     let probe_spacing = config.probe_spacing;
     let animated_light_count = inputs.animated_lights.len();
 
-    // Base SH grid origin/spacing — these MUST match `bake_sh_volume` so the
+    // Base SH grid origin/spacing — these MUST match `probe_grid_layout` so the
     // affinity cells (and thus the baked sub-blocks) land on real base probes.
     let base_origin = world_aabb_min(inputs);
 
     // Affinity decomposition: per-light affinity-cell lists + grid dims. Shares
     // the same world AABB / spacing as the base grid (the `geometry_vertices`
-    // and `probe_spacing` are identical to `bake_sh_volume`'s).
+    // and `probe_spacing` are identical to `probe_grid_layout`'s).
     let geometry_vertices = vertex_positions(inputs);
     let decomposition = decompose_affinity(&AffinityInputs {
         geometry_vertices: &geometry_vertices,
@@ -234,14 +234,14 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
     // two direct-delta bakes it has no light-global seed axis to add.
     let light_seed_axes = vec![0; keyed_lights.len()];
     let bounce_hash = cache.and_then(|_| {
-        crate::sh_group::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
+        crate::bake_content_keys::bounce_material_hash(inputs.bounce_materials, inputs.geometry)
     });
     let cached_subblocks = bake_or_load_delta_subblocks(
         &DeltaShCacheInputs {
             bounce_hash: bounce_hash.as_ref(),
             stage_id: INDIRECT_DELTA_SH_STAGE_ID,
             stage_version: INDIRECT_DELTA_SH_STAGE_VERSION,
-            geometry_hash: crate::sh_group::geometry_content_hash(inputs.geometry),
+            geometry_hash: crate::bake_content_keys::geometry_content_hash(inputs.geometry),
             affinity_dims,
             affinity_lights: &affinity_lights,
             csr_entry_cells: &csr_cells,
@@ -536,7 +536,7 @@ fn vertex_positions(inputs: &DeltaBakeInputs<'_>) -> Vec<[f32; 3]> {
 }
 
 /// Base SH grid origin = geometry vertex AABB min. Identical to
-/// `sh_bake::world_aabb`'s min so sub-blocks are coincident with base probes.
+/// `sh_bake::grid::world_aabb`'s min so sub-blocks are coincident with base probes.
 /// Returns the origin alone; an empty-geometry origin is unused (the empty-light
 /// guard already returned `None` only when there ARE animated lights, but a map
 /// with animated lights and no geometry yields a degenerate but valid section).
@@ -861,7 +861,9 @@ mod tests {
             .expect("expected a section")
         };
         let one = bake(BounceVisibility::OneSample);
-        let full = bake(BounceVisibility::FullSet);
+        let full = bake(BounceVisibility::FullSet(
+            &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        ));
         assert!(
             one.delta_subblocks.iter().any(|&h| h != 0),
             "the fixture must bake a nonzero bounce"
@@ -979,7 +981,7 @@ mod tests {
                 &crate::sh_bake::ShConfig { probe_spacing: 1.0 },
                 None,
                 &BakeControl::unrestricted(),
-                BounceVisibility::FullSet,
+                BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
             )
             .0
             .expect("expected a section");
@@ -1061,7 +1063,11 @@ mod tests {
         );
         assert_ne!(
             ab.to_bytes(),
-            bake(&[a.clone(), b.clone()], BounceVisibility::FullSet).to_bytes(),
+            bake(
+                &[a.clone(), b.clone()],
+                BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS)
+            )
+            .to_bytes(),
             "the fixture's soft samples must matter"
         );
         assert_eq!(

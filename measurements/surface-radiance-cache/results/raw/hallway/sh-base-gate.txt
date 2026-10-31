@@ -1,0 +1,1 @@
+[INFO prl_build::pipeline::sh_working_set_gates] [Compiler] SH base working-set gate: estimated peak 4979956801 bytes, budget 17179869184 bytes, admitted (1747036 patches, 757 static lights: peak of gate 231547444, layers 4979956801, sum 2447308809, later bounces 238056393, probe gather 3669222745, id-34 entry 3328192329 bytes)

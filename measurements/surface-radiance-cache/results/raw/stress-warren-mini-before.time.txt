@@ -1,0 +1,2 @@
+pgrep-check: clean
+bin=before map=content/dev/maps/stress-warren-mini.map rc=0 wall_s=291

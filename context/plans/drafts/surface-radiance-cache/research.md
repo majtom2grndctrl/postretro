@@ -1,6 +1,6 @@
 # surface-radiance-cache — research
 
-Read at 704ed232e. Findings that inform the brief; the brief's Decisions are the record.
+Read at 704ed232e; estimator, albedo and pins re-read at db827b1df. Findings that inform the brief; the brief's Decisions are the record.
 
 ## Cost basis
 
@@ -23,15 +23,17 @@ Inside SH Bake, one `perf` profile (warren-mini, before c855e3e, 2026-10-07): pr
 ## Today's estimator
 
 - `sh_bake.rs` `RAYS_PER_PROBE` (256), uniform Fibonacci sphere (`sphere_directions`, rotated by `SAMPLING_LATTICE_OFFSET`), weight 4π/256, cosine lobe after projection (`apply_cosine_lobe_rgb`).
-- Per hit, `sample_radiance_rgb`: every light in the slice → `bounce_contribution` (range, cone, n·l early-outs; `done/lighting-scale--cold-sh-bake-*`) → `light_contribution_lambert` × `soft_visibility(…, DEFAULT_AREA_SAMPLE_COUNT, segment_clear)`: 1 ray hard, 4-probe set escalating to 32 soft. Sum × `BOUNCE_ALBEDO` (0.45/π). `SKY_COLOR` black. No emissive.
+- Per hit, `sample_radiance_rgb` (`sh_bake/bounce.rs`): every light in the slice → `bounce_contribution` (range, cone, n·l early-outs; `done/lighting-scale--cold-sh-bake-*`) → `light_contribution_lambert` × visibility × the hit texture's bounce albedo. Production visibility is `BounceVisibility::OneSample`: one emitter sample per (hit, light), stratified across the probe's rays, no early-out. `FullSet` (cfg(test)) is `soft_visibility`'s probe-and-escalate set, kept as the parity reference. `SKY_COLOR` black. No emissive.
 - Single bounce. Indirect only; probe direct is id 35.
-- Seeds: `soft_visibility_seed(probe_index, ray_index, global_light_index)`.
+- Seeds: base `soft_visibility_seed(probe_index, ray_index, global_light_index)`; deltas seed from a digest of the keyed unit light, so a reorder never changes bytes.
 - `Hit` keeps point, normal, distance. `closest_hit_in_leaf` sees `BvhPrimitive.material_bucket_id` (= `face.texture_index`, set in `bvh_build::collect_primitives`). `ray_triangle_hit` is double-sided with the normal flipped toward the ray, so a back-face hit shades the side the ray came from.
 - Cold `bake_sh_volume_controlled`: per probe, all static lights. Warm `bake_sh_volume_grouped_controlled` (`sh_group.rs`): 4³ groups, `reaching_lights` (falloff + `SH_REACH_CUTOFF_METERS`), `group_cache_key` folds reach cutoff, group size, reaching lights with global indices, `geometry_content_hash`, layout, validity. Warm is a deliberate dimmer-or-equal approximation (`done/incremental-bake-per-element/`).
 - Deltas (`delta_sh_bake.rs`): per (animated light, affinity cell) 64-probe sub-block, `bake_probe_indirect_rgb` with `unit_radiance_light`; nothing shared across lights. `delta_sh_entry_cache_key`, `INDIRECT_DELTA_SH_STAGE_ID` v3.
 - Bakes the cache cannot serve (no gather hits): ids 35, 41, 45, 47/48.
 
-## Albedo before SH
+## Albedo
+
+Coloured bounce has landed (`done/coloured-sh-bounce/`): per-texture snapped means after one bake-wide saturation constant, grey 0.45 fallback, folded into SH group and delta keys. Findings that shaped it, kept for patch albedo:
 
 - `TextureMips` (`texture_mips::bake_world_texture_mips`) reads only the texture-name table, `texture_root`, `prm_root`. No SH, atlas, lightmap or BVH input; per-texture content-addressed sidecars (`filename_key_for`, `bundle_hash_for`); no `StageCache` key. ~5.5 s on campaign-test, serial (`done/cell-visibility-relation/research.md`).
 - Name table grows after Geometry: `environment_volumes::encode_environment_volumes_section` interns fluid-only textures just before `TextureMips`, deliberately.
@@ -55,9 +57,10 @@ Inside SH Bake, one `perf` profile (warren-mini, before c855e3e, 2026-10-07): pr
 |---|---|
 | `done/lighting-scale--cold-sh-bake-falloff-early-out`, `-contribution-early-out` | The cache replaces their seam (`sample_radiance_rgb`); patch direct keeps the same early-outs |
 | `drafts/lighting-scale--cold-bake-reaching-light-spike` out-of-scope item 1 (bounce samples at 32) | Moot once shadow rays leave probe hits |
-| `drafts/lighting-scale--sh-delta-cell-major-two-pass-bake` | Parked contingency, post-bake RAM reorder; its first slice assumes `base + Σ deltas` bytes this brief changes |
+| `drafts/lighting-scale--sh-delta-cell-major-two-pass-bake` | Parked contingency, post-bake RAM reorder; this brief leaves id 27 bytes alone, the animated follow-up changes them |
+| `drafts/surface-radiance-cache-animated` | Follow-up (owner, 2026-10-30): id 27 through unit patch layers, after counsel reads '451 cl. 1 |
 | `drafts/lighting-scale--sh-delta-receiver-reach-cull` | No work; id 41 only |
-| Roadmap: embedded-emitter bias in SH probe bakes | Lands first (owner, 2026-10-30). The one-sample bounce already has no early-out, so the baseline is unbiased; the fix gives direct SH and scatter `ProbeEarlyOut::for_light`, and patch direct reuses it so the cache does not reintroduce the bias |
+| Roadmap: embedded-emitter bias in SH probe bakes | Lands first (owner, 2026-10-30). The one-sample bounce has no early-out, so it carries no bias; the fix gives direct SH and scatter a per-light embedded-emitter rule, and patch direct reuses it |
 | Roadmap: SH probe classification and relocation | Consumes leak counts from the cache's gather rays later |
 | Roadmap: emissive bounce | Separate owner ruling |
 
@@ -65,20 +68,18 @@ Inside SH Bake, one `perf` profile (warren-mini, before c855e3e, 2026-10-07): pr
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
-| P1 | Probe gather ray hits a world face | Patch direct (and any later bounces) finish before a probe gather reads a patch; the hit looks up a patch and traces no shadow ray | Gather traces zero shadow rays. Shadow rays come from patch direct only, and their count does not depend on probe count or rays per probe |
-| P2 | Reach skip with s > 0 | Probe gathers mark the patches they reach → bounce-one shading → later-bounce patch gathers read bounce-one radiance, including from patches no probe ray reached | Every patch a later-bounce gather reads has bounce-one radiance. The skip drops only patches that no gather of any bounce reads |
-| P3 | Static light removed, inserted ahead of others, or flipped to animated | The edit moves the global index of every later static light, so their seeds move | The layer of every light whose global index moved re-keys and re-bakes, the same set today's `group_cache_key` re-keys. A layer served from cache equals the cold layer byte for byte |
-| P4 | Two static lights with identical keyed params | Same content, different global index | Two layer entries. Neither is served for the other |
-| P5 | Animated lights reordered in the `.map` | List position changes; the keyed unit light does not | Warm id 27 equals cold id 27 byte for byte (`build_pipeline.md` §Build Cache: delta seeds follow the keyed light, with no light-global seed axis) |
-| P6 | Geometry edit outside a light's reach | Patch ids taken from pre-cut face order can shift | A layer served from cache equals the cold layer. With today's whole-map geometry hash, every layer, group and delta entry re-bakes |
-| P7 | Texture-mean or saturation edit | Bounce albedo goes into patch radiance before the gather | Every patch layer, group and delta entry re-keys. Restoring both values hits cache (precedent `colour_key_tests.rs`) |
-| P8 | First warm build after the change lands | SH group and indirect delta stage versions bump | Every pre-cache `sh_group` and indirect delta entry misses |
-| P9 | Forced-low working-set budget | The SH-delta gate runs before Materials and before any SH ray (`pipeline.rs` `run_after_parsing`) | Refuses with the named error before any patch is shaded or probe ray traced. Never coarsens |
-| P10 | Closed room, albedo-1 faces, s = 1 | Each bounce ≈ previous bounce × albedo × enclosure | Energy per bounce does not fall. The total is bounded by bounce count × bounce one and stays finite |
-| P11 | Zero static lights; emissive textures only | No layer to build | No patch layer allocated; id 34 all zero |
-| P12 | Zero animated lights | No unit layer to build | No unit layer built; static-only layout, no id 27 |
-| P13 | Light whose emitter sphere reaches into geometry | Embedded classification on pre-cut geometry runs before patch direct, ahead of AtlasPreparation | A flagged light traces its full set at a patch with a clear probe set |
-| P14 | Probe gather hit distance | The ray's hit distance is taken before patch lookup | id 34 depth moments are byte-identical to the one-sample bake |
+| P1 | Probe gather ray hits a world face | Patch direct (and, cold, later bounces) finish before a probe gather reads a patch; the hit looks up a patch and traces no shadow ray | Gather traces zero shadow rays. Shadow rays come from patch direct only, and their count does not depend on probe count or rays per probe |
+| P2 | Reach skip with fill > 0 | Probe gathers mark the patches they reach → bounce-one shading → later-bounce patch gathers read bounce-one radiance, including from patches no probe ray reached | Every patch a later-bounce gather reads has bounce-one radiance. The skip drops only patches no gather of any bounce reads |
+| P3 | Static light removed, inserted ahead of others, or flipped to animated | Global indices of later lights move; layer keys and seeds follow content | Unchanged lights' layers hit cache and equal their cold layers byte for byte. Groups whose reaching set changed re-bake |
+| P4 | Two static lights with identical content | Same digest, different position | Each contributes once; a shared entry serves both only if their layers are identical by construction |
+| P5 | Geometry edit outside a light's reach | Patch ids taken from pre-cut face order can shift | A layer served from cache equals the cold layer. With today's whole-map geometry hash, every layer and group re-bakes |
+| P6 | Texture-mean or saturation edit | Bounce albedo goes into patch radiance before the gather | Every patch layer and group re-keys. Restoring both values hits cache (precedent `colour_key_tests.rs`) |
+| P7 | First warm build after the change lands | SH group stage version bumps | Every pre-cache SH group entry misses |
+| P8 | Forced-low working-set budget | The SH base gate runs before Materials and before any SH ray (`pipeline.rs` `run_after_parsing`) | Refuses with the named error before any patch is shaded or probe ray traced. Never coarsens |
+| P9 | Closed room, albedo-1 faces, fill 1 | Each bounce ≈ previous bounce × albedo × enclosure | Energy per bounce does not fall. The total is bounded by bounce count × bounce one and stays finite |
+| P10 | Zero static lights; emissive textures only | No layer to build | No patch layer allocated; id 34 all zero |
+| P11 | Light whose emitter sphere reaches into geometry | Embedded classification on pre-cut geometry runs before patch direct, ahead of AtlasPreparation | The flagged light's patches match a no-early-out reference |
+| P12 | Probe gather hit distance | The ray's hit distance is taken before patch lookup | id 34 depth moments are byte-identical to the one-sample bake |
 
 ## Warm-locality shape
 
@@ -87,3 +88,7 @@ Today's warm group sums only its reaching lights. A cache that stores one summed
 ## Direction review (2026-10-24)
 
 `/validate-plan`: Direction sound. Strongest rival: keep the per-hit estimator with one shadow ray per (hit, light), estimated full-hallway SH Bake ~621 s → ~200 s, still scaling with lights. Owner ordered it first as the least visible change, then colour as its own step, then this cache with multi-bounce. The one-sample form draws one emitter sample stratified across a probe's 256 rays, so its expectation equals `soft_visibility`'s; a fixed centre ray would bias penumbrae.
+
+## Detail review and reshape (2026-10-30)
+
+`/review-brief` (premise, rows, subtract) found coloured bounce already landed, patch direct a different estimator from the one-sample baseline, a static-seed rule that conflicted with id 27, per-light bounce in id 27 against the IP guard, no SH base working-set accounting, and no row proving gather shadow rays left. Owner reshape: animated deltas split to a follow-up, later-bounce weight as a `worldspawn` key under `index.md` §2, texture-level multiplier deferred to surface lights, slope proof in place of a sizing gate.

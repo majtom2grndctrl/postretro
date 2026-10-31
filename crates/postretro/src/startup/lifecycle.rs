@@ -53,13 +53,19 @@ mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
 
-use lifecycle_model_sweep::ParsedSweepModel;
+#[cfg(test)]
+pub(crate) use lifecycle_model_sweep::parse_sweep_models;
+pub(crate) use lifecycle_model_sweep::{
+    ModelClipEntry, ParsedSweepModel, model_clip_entry, parse_sweep_model,
+};
 use lifecycle_reaction_rebuild::{
     SubscriberRebuild, build_trigger_bindings, capture_progress_membership,
     rebuild_reaction_subscribers,
 };
 pub(crate) use lifecycle_spawners::{resolve_spawners_for_level, resolved_spawner_mesh_models};
-pub(crate) use lifecycle_world_cpu::{install_world_cpu, start_installed_presentation_animations};
+pub(crate) use lifecycle_world_cpu::{
+    install_world_cpu, is_region_companion, start_installed_presentation_animations,
+};
 pub(crate) use lifecycle_world_handles::{
     WorldInstallHandles, WorldInstallProducts, bind_installed_first_player,
     install_world_gravity_and_nav,

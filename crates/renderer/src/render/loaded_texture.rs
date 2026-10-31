@@ -13,7 +13,7 @@ use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_render_cpu::loaded_texture::slot_levels;
 use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
 use postretro_render_cpu::texture_prep::{
-    PreparedTexture, PreparedWorldTextures, prepare_model_diffuse_texture, prepare_world_textures,
+    PreparedTexture, PreparedWorldTextures, prepare_world_textures,
 };
 
 pub(super) use placeholders::placeholder_loaded_texture;
@@ -182,20 +182,6 @@ pub(super) fn upload_prepared_texture(
         // A model plan never consumes specular, so models stay flat.
         surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
     }
-}
-
-/// Load one model material from the shared diffuse-addressed `.prm` cache.
-/// Models consume only diffuse in this slice even when the cache entry is a
-/// richer world bundle; specular and normal always use neutral placeholders.
-pub(super) fn load_model_diffuse_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    name: &str,
-    key: [u8; 32],
-    prm_cache_root: &Path,
-) -> LoadedTexture {
-    let prepared = prepare_model_diffuse_texture(name, key, prm_cache_root);
-    upload_prepared_texture(device, queue, &prepared)
 }
 
 /// The raw relief band of every mip of the specular slot, from the exact bytes

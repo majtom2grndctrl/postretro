@@ -113,7 +113,71 @@ impl ModelHitZones {
     fn has_zones(joint_zones: &[Option<JointZone>]) -> bool {
         joint_zones.iter().any(Option::is_some)
     }
+
+    /// Build a model's retained hit-zone data from its parse, consuming it.
+    /// Pure, and the costly half of an install: the derived bound is computed
+    /// here, from the skeleton's rest pose and every clip.
+    pub fn from_loaded(model: gltf_loader::LoadedModel) -> Self {
+        let gltf_loader::LoadedModel {
+            skeleton,
+            clips,
+            joint_zones,
+            sockets,
+            pose_stack,
+            legs,
+            ..
+        } = model;
+        Self::from_parts(skeleton, clips, joint_zones, sockets, legs, pose_stack)
+    }
+
+    /// [`from_loaded`](Self::from_loaded) on a parse another consumer still
+    /// needs: the parts it keeps are cloned.
+    pub fn build(model: &gltf_loader::LoadedModel) -> Self {
+        Self::from_parts(
+            model.skeleton.clone(),
+            model.clips.clone(),
+            model.joint_zones.clone(),
+            model.sockets.clone(),
+            model.legs.clone(),
+            model.pose_stack.clone(),
+        )
+    }
+
+    fn from_parts(
+        skeleton: Skeleton,
+        clips: Vec<AnimationClip>,
+        joint_zones: Vec<Option<JointZone>>,
+        sockets: HashMap<String, SocketBinding>,
+        legs: Vec<LegChain>,
+        pose_stack: PoseModifierStack,
+    ) -> Self {
+        // Only zone-bearing models get a derived bound; an AABB-only model needs
+        // none here (it falls back to the authored hitbox in the consumer). A
+        // non-finite bound also resolves to `None` (see `derive_bound`), degrading
+        // that model to the authored AABB.
+        let derived_bound = if Self::has_zones(&joint_zones) {
+            derive_bound(&skeleton, &clips, &joint_zones)
+        } else {
+            None
+        };
+        Self {
+            skeleton: Arc::new(skeleton),
+            clips: Arc::new(clips),
+            joint_zones,
+            sockets,
+            derived_bound,
+            legs,
+            pose_stack: Arc::new(pose_stack),
+        }
+    }
 }
+
+// Compile-time guard: a level load builds hit zones on its load pool and
+// hands them to the main thread.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<ModelHitZones>();
+};
 
 /// All models' hit-zone data, keyed by handle. One entry per model TYPE (not per
 /// instance). Owned by the `App` beside `collision_world`; populated at the
@@ -206,19 +270,37 @@ impl HitZoneStore {
         loaded: Result<gltf_loader::LoadedModel, gltf_loader::ModelLoadError>,
         warning_owner: ModelLoadWarningOwner,
     ) {
+        self.insert_built(
+            model_rel,
+            open_path,
+            loaded.map(ModelHitZones::from_loaded),
+            warning_owner,
+        );
+    }
+
+    /// Install a hit-zone entry [`ModelHitZones::from_loaded`] or
+    /// [`ModelHitZones::build`] already built, possibly on another thread: the
+    /// cheap, main-thread half of [`insert_loaded`](Self::insert_loaded), with
+    /// the same failure warning, replacement and pose-modifier membership.
+    pub fn insert_built(
+        &mut self,
+        model_rel: &str,
+        open_path: &Path,
+        built: Result<ModelHitZones, gltf_loader::ModelLoadError>,
+        warning_owner: ModelLoadWarningOwner,
+    ) {
         let handle = ModelHandle::from(model_rel.to_string());
         self.models.remove(handle.as_str());
         self.pose_modified_models.remove(&handle);
 
-        let model = match loaded {
-            Ok(m) => m,
+        let zones = match built {
+            Ok(zones) => zones,
             Err(err) => {
                 if warning_owner == ModelLoadWarningOwner::GameSide
                     && self.model_load_warnings.insert(model_rel.to_owned())
                 {
                     log::warn!(
-                        "[Model] model load failed for {}: {err} — \
-                         any mesh or attachment using it remains unresolved",
+                        "[Model] model load failed for {}: {err} —                          any mesh or attachment using it remains unresolved",
                         open_path.display(),
                     );
                 }
@@ -226,43 +308,12 @@ impl HitZoneStore {
             }
         };
 
-        let gltf_loader::LoadedModel {
-            skeleton,
-            clips,
-            joint_zones,
-            sockets,
-            pose_stack,
-            legs,
-            ..
-        } = model;
-
-        // Only zone-bearing models get a derived bound; an AABB-only model needs
-        // none here (it falls back to the authored hitbox in the consumer). A
-        // non-finite bound also resolves to `None` (see `derive_bound`), degrading
-        // that model to the authored AABB.
-        let derived_bound = if ModelHitZones::has_zones(&joint_zones) {
-            derive_bound(&skeleton, &clips, &joint_zones)
-        } else {
-            None
-        };
-
-        if pose_stack.is_empty() {
+        if zones.pose_stack.is_empty() {
             self.pose_modified_models.remove(&handle);
         } else {
             self.pose_modified_models.insert(handle.clone());
         }
-        self.models.insert(
-            handle.as_str().to_owned(),
-            ModelHitZones {
-                skeleton: Arc::new(skeleton),
-                clips: Arc::new(clips),
-                joint_zones,
-                sockets,
-                derived_bound,
-                legs,
-                pose_stack: Arc::new(pose_stack),
-            },
-        );
+        self.models.insert(handle.as_str().to_owned(), zones);
     }
 
     /// The retained hit-zone data for a model handle, or `None` if the model was

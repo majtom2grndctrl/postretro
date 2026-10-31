@@ -279,13 +279,24 @@ fn prepared_level_carries_its_dispatch_snapshot_and_timings() {
                 inputs_for(level.path(), prm_root.path())
             }
         };
-    let (limits, tiers) = (inputs.device_limits, inputs.tiers);
+    let (limits, tiers, audio_enabled) = (inputs.device_limits, inputs.tiers, inputs.audio_enabled);
     let (_prep, outcome, _progress) = run_prep(&pool, inputs);
     let prepared = outcome.expect("the textured level prepares");
     assert_eq!(prepared.gpu.device_limits, limits);
     assert_eq!(prepared.gpu.tiers, tiers);
     assert_eq!(prepared.gpu.prm_cache_root, prm_root.path());
-    let PreparedPresentation {} = prepared.presentation;
+    let PreparedPresentation { sounds, models } = prepared.presentation;
+    // The test App has no audio device; the fallback inputs have audio on,
+    // and the fixture's content root has no sounds.
+    assert_eq!(
+        sounds.map(|sounds| sounds.file_count()),
+        audio_enabled.then_some(0),
+        "sounds decode exactly when the dispatch had audio"
+    );
+    assert!(
+        models.is_empty(),
+        "no descriptor or placement names a model"
+    );
 
     assert!(prepared.timings.parse > std::time::Duration::ZERO);
     let timed: std::collections::BTreeSet<PrepKind> = prepared
@@ -294,10 +305,12 @@ fn prepared_level_carries_its_dispatch_snapshot_and_timings() {
         .iter()
         .map(|(kind, _)| *kind)
         .collect();
-    // Every kind ran as a task but the empty SH plan, credited on hand-out 1.
+    // Every kind ran as a task but the empty SH plan, credited on hand-out 1,
+    // and the empty model parse, credited when the prediction came back empty.
     let ran: std::collections::BTreeSet<PrepKind> = PrepKind::ALL
         .into_iter()
-        .filter(|kind| *kind != PrepKind::ShResidency)
+        .filter(|kind| !matches!(kind, PrepKind::ShResidency | PrepKind::ModelParse))
+        .filter(|kind| audio_enabled || *kind != PrepKind::Sounds)
         .collect();
     assert_eq!(timed, ran);
 }

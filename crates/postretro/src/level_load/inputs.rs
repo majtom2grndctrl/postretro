@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use postretro_level_loader::ShStreamingMode;
 use postretro_render_cpu::device_limits::DeviceLimits;
 
+use super::model_prediction::ModelPredictionInputs;
 use crate::App;
 use crate::options::{ReflectionQuality, ShadowQuality, SurfaceDepthQuality};
 
@@ -26,7 +27,7 @@ pub(crate) struct LevelTiers {
 #[derive(Debug)]
 pub(crate) struct LevelPrepInputs {
     pub(crate) map_path: PathBuf,
-    /// The mod's content root; sound decode reads it.
+    /// The mod's content root; sound decode and the model parse read it.
     pub(crate) content_root: PathBuf,
     /// Where the world materials' `.prm` sidecars live.
     pub(crate) prm_cache_root: PathBuf,
@@ -39,6 +40,12 @@ pub(crate) struct LevelPrepInputs {
     /// The lightmap streaming pool's layer cap.
     pub(crate) lightmap_pool_cap_layers: u32,
     pub(crate) tiers: LevelTiers,
+    /// Whether the session has audio, read where the install decides to load
+    /// sounds: without it prep decodes none.
+    pub(crate) audio_enabled: bool,
+    /// The descriptors, built-in classnames and net role the model
+    /// prediction reads.
+    pub(crate) models: ModelPredictionInputs,
     /// Test-only failure injection and parse holds.
     #[cfg(test)]
     pub(crate) hooks: super::test_support::PrepTestHooks,
@@ -60,7 +67,8 @@ impl App {
         content_root: PathBuf,
     ) -> Option<LevelPrepInputs> {
         let renderer = self.renderer.as_ref()?;
-        let options = &self.session.as_ref()?.player_options;
+        let session = self.session.as_ref()?;
+        let options = &session.player_options;
         let prm_cache_root =
             crate::startup::worker::resolve_prm_root(&content_root, self.baked_root.as_deref());
         Some(LevelPrepInputs {
@@ -76,6 +84,12 @@ impl App {
                 surface_depth_quality: options.surface_depth_quality,
                 reflection_quality: options.reflection_quality,
             },
+            audio_enabled: session.audio.is_some(),
+            models: ModelPredictionInputs::capture(
+                &session.scripting.script_ctx.data_registry.borrow().entities,
+                &session.classname_dispatch,
+                self.is_connected_client(),
+            ),
             #[cfg(test)]
             hooks: Default::default(),
         })

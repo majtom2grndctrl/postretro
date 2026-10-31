@@ -98,11 +98,6 @@ pub(crate) fn resolved_spawner_mesh_models(
 
     let mut seen = std::collections::HashSet::new();
     let mut models = Vec::new();
-    let mut add_model = |model: &str| {
-        if !model.is_empty() && seen.insert(model.to_string()) {
-            models.push(model.to_string());
-        }
-    };
     for (id, _) in registry.iter_with_kind(postretro_entities::ComponentKind::Spawner) {
         let Ok(spawner) = registry.get_component::<SpawnerComponent>(id) else {
             continue;
@@ -116,15 +111,10 @@ pub(crate) fn resolved_spawner_mesh_models(
         ) else {
             continue;
         };
-        let Some(mesh) = descriptor.mesh.as_ref() else {
-            continue;
-        };
-        add_model(&mesh.model);
-        let mut attachment_models: Vec<&str> =
-            mesh.attachments.values().map(String::as_str).collect();
-        attachment_models.sort_unstable();
-        for attachment_model in attachment_models {
-            add_model(attachment_model);
+        for model in crate::scripting::builtins::descriptor_mesh_models(descriptor) {
+            if seen.insert(model) {
+                models.push(model.to_string());
+            }
         }
     }
     models

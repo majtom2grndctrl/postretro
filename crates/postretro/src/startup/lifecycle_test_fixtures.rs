@@ -469,7 +469,7 @@ pub(crate) fn level_world(
 pub(crate) struct TriggerPoolWorldInstall {
     pub(super) report: TriggerPoolInstallReport,
     pub(crate) registry: postretro_entities::EntityRegistry,
-    pub(super) upload_models: Vec<String>,
+    pub(crate) upload_models: Vec<String>,
     pub(super) hit_zone_store: crate::scripting_systems::hit_zones::HitZoneStore,
 }
 

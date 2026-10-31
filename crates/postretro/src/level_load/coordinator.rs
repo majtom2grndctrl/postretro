@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use postretro_audio::DecodedLevelSounds;
 use postretro_level_loader::{
     CompleteHandOuts, EntitiesHandOut, FinalHandOut, GeometryHandOut, HandOut, HandOutStage,
     LevelLoadProgress, LevelWorld, LoadCancel, LoadPhase, LoadProgress, PrlLoadError,
@@ -20,7 +21,7 @@ use postretro_render_cpu::sh_residency::ShResidencyPlan;
 use super::tasks::{self, TexturePrep};
 use super::{
     LevelLoadFailure, LevelPrepInputs, LoadStage, PrepKind, PrepTimings, PreparedGpuLevel,
-    PreparedLevel, PreparedPresentation,
+    PreparedLevel, PreparedModel, PreparedModels, PreparedPresentation,
 };
 use crate::collision::CollisionWorld;
 use crate::load_pool::{CancelToken, GroupSpawner, Priority, TaskError, TaskHandle};
@@ -36,6 +37,10 @@ enum Product {
     Streaming(StreamingLevelData),
     LightmapFamily(LightmapFamilyPlan),
     Fluid(Option<PreparedFluidSurfaces>),
+    Sounds(DecodedLevelSounds),
+    ModelsPredicted(Vec<String>),
+    /// One predicted model, at its index in the prediction.
+    Model(usize, Box<PreparedModel>),
 }
 
 /// One load's prep, shared by the parse task, every prep task and the main
@@ -87,6 +92,13 @@ struct PrepState {
     streaming: Option<StreamingLevelData>,
     lightmap_family: Option<LightmapFamilyPlan>,
     fluid: Option<Option<PreparedFluidSurfaces>>,
+    /// `Some(None)` when the dispatch had no audio.
+    sounds: Option<Option<DecodedLevelSounds>>,
+    predicted_models: Option<Vec<String>>,
+    model_parse_spawned: bool,
+    /// Each predicted model's prep, at its index in the prediction, as the
+    /// parse tasks finish in any order.
+    models: Vec<Option<PreparedModel>>,
 
     started: BTreeSet<PrepKind>,
     finished: BTreeSet<PrepKind>,
@@ -117,6 +129,9 @@ impl PrepState {
         self.streaming = None;
         self.lightmap_family = None;
         self.fluid = None;
+        self.sounds = None;
+        self.predicted_models = None;
+        self.models.clear();
     }
 
     fn take_complete_hand_outs(&mut self) -> Option<CompleteHandOuts> {
@@ -137,7 +152,9 @@ impl PrepState {
         })
     }
 
-    fn store(&mut self, product: Product) {
+    /// Store a task's product; whether its kind is now complete (every
+    /// model parse task of a load shares one kind).
+    fn store(&mut self, product: Product) -> bool {
         match product {
             Product::Textures(textures) => self.textures = Some(textures),
             Product::ShResidency(plan) => self.sh_residency = Some(Some(*plan)),
@@ -147,7 +164,19 @@ impl PrepState {
             Product::Streaming(streaming) => self.streaming = Some(streaming),
             Product::LightmapFamily(plan) => self.lightmap_family = Some(plan),
             Product::Fluid(fluid) => self.fluid = Some(fluid),
+            Product::Sounds(sounds) => self.sounds = Some(Some(sounds)),
+            Product::ModelsPredicted(handles) => {
+                self.models = handles.iter().map(|_| None).collect();
+                self.predicted_models = Some(handles);
+            }
+            Product::Model(index, model) => {
+                if let Some(slot) = self.models.get_mut(index) {
+                    *slot = Some(*model);
+                }
+                return self.models.iter().all(Option::is_some);
+            }
         }
+        true
     }
 }
 
@@ -197,7 +226,13 @@ impl PrepShared {
         let handle = self.spawner.spawn(Priority::Load, move |token| {
             shared.run_parse(token);
         });
-        self.lock().handles.push((LoadStage::Parse, handle));
+        let mut state = self.lock();
+        state.handles.push((LoadStage::Parse, handle));
+        if !self.inputs.audio_enabled {
+            // No audio: nothing to decode, credited at once.
+            state.sounds = Some(None);
+            self.credit(&mut state, PrepKind::Sounds);
+        }
     }
 
     fn run_parse(self: &Arc<Self>, token: &CancelToken) {
@@ -253,7 +288,7 @@ impl PrepShared {
                 if sh_manifest.manifest.is_none() {
                     // An empty kind: nothing to plan, credited at once.
                     state.sh_residency = Some(None);
-                    self.credit(state, PrepKind::ShResidency, None);
+                    self.credit(state, PrepKind::ShResidency);
                 }
                 state.sh_manifest = Some(sh_manifest);
             }
@@ -286,7 +321,30 @@ impl PrepShared {
                     });
                 }
             }
-            HandOut::Entities(entities) => state.entities = Some(entities),
+            HandOut::Entities(entities) => {
+                // The prediction owns a copy of the map entities, so the
+                // state stays the hand-out's only holder for assembly.
+                let map_entities = entities.map_entities.clone();
+                state.entities = Some(entities);
+                self.spawn(state, PrepKind::ModelPrediction, move |shared| {
+                    Ok(Product::ModelsPredicted(tasks::predict_models(
+                        &map_entities,
+                        &shared.inputs.models,
+                    )))
+                });
+                if self.inputs.audio_enabled {
+                    self.spawn(state, PrepKind::Sounds, |shared| {
+                        #[cfg(test)]
+                        let sounds = tasks::decode_sounds_reordered(
+                            &shared.inputs.content_root,
+                            shared.inputs.hooks.sound_decode_order,
+                        );
+                        #[cfg(not(test))]
+                        let sounds = tasks::decode_sounds(&shared.inputs.content_root);
+                        Ok(Product::Sounds(sounds))
+                    });
+                }
+            }
             HandOut::Final(final_hand_out) => state.final_hand_out = Some(final_hand_out),
         }
     }
@@ -333,18 +391,18 @@ impl PrepShared {
         match result {
             Err(message) => self.fail(&mut state, LevelLoadFailure::prep(kind, message)),
             Ok(product) => {
-                state.store(product);
-                self.credit(&mut state, kind, Some(elapsed));
+                state.timings.push((kind, elapsed));
+                if state.store(product) {
+                    self.credit(&mut state, kind);
+                }
                 self.advance(&mut state);
             }
         }
     }
 
-    fn credit(&self, state: &mut PrepState, kind: PrepKind, elapsed: Option<Duration>) {
+    /// Mark `kind` finished, once, and credit it to prep's progress.
+    fn credit(&self, state: &mut PrepState, kind: PrepKind) {
         if state.finished.insert(kind) {
-            if let Some(elapsed) = elapsed {
-                state.timings.push((kind, elapsed));
-            }
             self.prep_progress.advance(1);
         }
     }
@@ -381,6 +439,12 @@ impl PrepShared {
                 shared.inputs.hooks.edit_world(&mut world);
                 Ok(Product::Assembled(Box::new(world)))
             });
+        }
+        if !state.model_parse_spawned
+            && let Some(handles) = state.predicted_models.clone()
+        {
+            state.model_parse_spawned = true;
+            self.spawn_model_parses(state, handles);
         }
         if !state.world_readers_spawned
             && let Some(world) = state.world.clone()
@@ -432,6 +496,28 @@ impl PrepShared {
         });
     }
 
+    /// One parse task per predicted model; their results land at their
+    /// prediction index whatever order they finish in. An empty prediction
+    /// credits the kind at once.
+    fn spawn_model_parses(self: &Arc<Self>, state: &mut PrepState, handles: Vec<String>) {
+        if handles.is_empty() {
+            self.credit(state, PrepKind::ModelParse);
+            return;
+        }
+        for (index, handle) in handles.into_iter().enumerate() {
+            self.spawn(state, PrepKind::ModelParse, move |shared| {
+                #[cfg(test)]
+                shared.inputs.hooks.before_model_parse(index);
+                let model = tasks::prep_model(
+                    &handle,
+                    &shared.inputs.content_root,
+                    &shared.inputs.prm_cache_root,
+                );
+                Ok(Product::Model(index, Box::new(model)))
+            });
+        }
+    }
+
     /// Every kind finished: hand the products on as one prepared level.
     fn complete(&self, state: &mut PrepState) {
         // Each reader dropped its clone before its product was stored, so
@@ -447,6 +533,8 @@ impl PrepShared {
                 return;
             }
         };
+        let models: Option<Vec<PreparedModel>> =
+            std::mem::take(&mut state.models).into_iter().collect();
         let (
             Some(textures),
             Some(sh_residency),
@@ -454,6 +542,8 @@ impl PrepShared {
             Some(streaming),
             Some(lightmap_family),
             Some(fluid),
+            Some(sounds),
+            Some(models),
         ) = (
             state.textures.take(),
             state.sh_residency.take(),
@@ -461,6 +551,8 @@ impl PrepShared {
             state.streaming.take(),
             state.lightmap_family.take(),
             state.fluid.take(),
+            state.sounds.take(),
+            models,
         )
         else {
             let failure =
@@ -483,7 +575,10 @@ impl PrepShared {
             },
             collision,
             streaming,
-            presentation: PreparedPresentation::default(),
+            presentation: PreparedPresentation {
+                sounds,
+                models: PreparedModels::new(models),
+            },
             timings: PrepTimings {
                 parse: state.parse_time,
                 tasks: state.timings.clone(),

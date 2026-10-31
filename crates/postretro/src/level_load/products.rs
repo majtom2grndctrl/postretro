@@ -2,8 +2,13 @@
 //! consumes, and the main-pinned ones the commit consumes.
 //! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use postretro_audio::DecodedLevelSounds;
+use postretro_model::gltf_loader::{LoadedModel, ModelLoadError};
+use postretro_render_cpu::texture_prep::PreparedModelMaterials;
 
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::device_limits::DeviceLimits;
@@ -15,7 +20,9 @@ use postretro_render_data::material::Material;
 
 use super::{LevelTiers, PrepKind};
 use crate::collision::CollisionWorld;
+use crate::scripting_systems::hit_zones::ModelHitZones;
 use crate::session::level_streaming::StreamingLevelData;
+use crate::startup::lifecycle::ModelClipEntry;
 
 /// One level, every level-data check passed and every CPU product built.
 #[derive(Debug)]
@@ -31,7 +38,7 @@ pub(crate) struct PreparedLevel {
     pub(crate) collision: CollisionWorld,
     /// What the commit creates the level's streaming sessions from.
     pub(crate) streaming: StreamingLevelData,
-    /// Sound and model products: empty until their prep lands.
+    /// The sounds and models the commit registers and installs.
     pub(crate) presentation: PreparedPresentation,
     /// Where the load's time went, for log line C.
     pub(crate) timings: PrepTimings,
@@ -61,10 +68,128 @@ pub(crate) struct PreparedGpuLevel {
     pub(crate) prm_cache_root: PathBuf,
 }
 
-/// The seam for sound decode and model prediction and parse, which land in
-/// prep next; empty until then.
+/// The main-pinned presentation products: the level's sounds, decoded, and
+/// its predicted models, parsed with their CPU products built.
 #[derive(Debug, Default)]
-pub(crate) struct PreparedPresentation {}
+pub(crate) struct PreparedPresentation {
+    /// The level's sounds in sorted path order, for the commit to register
+    /// (`Audio::register_level_sounds`). `None` when the dispatch snapshot
+    /// had no audio, as the install then loads none.
+    pub(crate) sounds: Option<DecodedLevelSounds>,
+    pub(crate) models: PreparedModels,
+}
+
+/// Every predicted model, prepared, in predicted order and keyed by handle.
+#[derive(Debug, Default)]
+pub(crate) struct PreparedModels {
+    models: Vec<PreparedModel>,
+    by_handle: HashMap<String, usize>,
+}
+
+impl PreparedModels {
+    /// `models` in predicted order; a repeated handle keeps its first entry.
+    pub(crate) fn new(models: Vec<PreparedModel>) -> Self {
+        let mut prepared = Self::default();
+        for model in models {
+            if !prepared.by_handle.contains_key(&model.handle) {
+                prepared
+                    .by_handle
+                    .insert(model.handle.clone(), prepared.models.len());
+                prepared.models.push(model);
+            }
+        }
+        prepared
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
+    /// The predicted handles, in predicted order.
+    pub(crate) fn handles(&self) -> impl Iterator<Item = &str> {
+        self.models.iter().map(|model| model.handle.as_str())
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &PreparedModel> {
+        self.models.iter()
+    }
+
+    pub(crate) fn get(&self, handle: &str) -> Option<&PreparedModel> {
+        self.by_handle.get(handle).map(|&index| &self.models[index])
+    }
+
+    /// The models, in predicted order, for a consumer that takes them.
+    pub(crate) fn into_models(self) -> Vec<PreparedModel> {
+        self.models
+    }
+
+    /// The prediction misses: handles the real sweep holds that prep did not
+    /// prepare, in the sweep's order. Each one is a counted synchronous
+    /// fallback at commit.
+    pub(crate) fn misses<'a>(&self, real_sweep: &'a [String]) -> Vec<&'a str> {
+        real_sweep
+            .iter()
+            .map(String::as_str)
+            .filter(|handle| !self.by_handle.contains_key(*handle))
+            .collect()
+    }
+
+    /// The over-predictions: handles prep prepared that the real sweep does
+    /// not hold, in predicted order. Each one cost a parse and nothing else.
+    pub(crate) fn over_predictions(&self, real_sweep: &[String]) -> Vec<&str> {
+        let real: std::collections::HashSet<&str> = real_sweep.iter().map(String::as_str).collect();
+        self.handles()
+            .filter(|handle| !real.contains(handle))
+            .collect()
+    }
+}
+
+/// One predicted model, prepared on the pool by the oracle sweep's own
+/// builders: the parse (`parse_sweep_model`), the clip-table entry
+/// (`model_clip_entry`), the hit zones (`ModelHitZones::build`) and the CPU
+/// half of the upload (`prepare_model_materials`).
+pub(crate) struct PreparedModel {
+    /// The verbatim handle: the renderer's cache key and `MeshComponent.model`.
+    pub(crate) handle: String,
+    /// `content_root.join(handle)`, the file that was opened; a failed
+    /// parse's warning names it.
+    pub(crate) open_path: PathBuf,
+    /// The game-side clip-table entry; the empty entry with zero bounds for a
+    /// model that failed to parse.
+    pub(crate) clip_entry: ModelClipEntry,
+    /// The parse and what it feeds, or the parse's error, which degrades
+    /// exactly as the oracle sweep's: warned, nothing cached, never a load
+    /// failure.
+    pub(crate) parsed: Result<ParsedModelProducts, ModelLoadError>,
+}
+
+/// A parsed model and the CPU products built from it.
+pub(crate) struct ParsedModelProducts {
+    /// The parse itself, which the upload reads (mesh, skeleton, clips).
+    pub(crate) model: LoadedModel,
+    /// The hit-zone entry `HitZoneStore::insert_built` installs.
+    pub(crate) hit_zones: ModelHitZones,
+    /// The submesh material plan and each distinct key's prepared diffuse,
+    /// so the upload's model job only creates GPU objects.
+    pub(crate) materials: PreparedModelMaterials,
+}
+
+impl std::fmt::Debug for PreparedModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedModel")
+            .field("handle", &self.handle)
+            .field("clips", &self.clip_entry.clips.len())
+            .field(
+                "parsed",
+                &self
+                    .parsed
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(ToString::to_string),
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 /// Prep's own timings: the parse's wall time, then each task's, in the order
 /// they finished. Log-only.
@@ -80,4 +205,6 @@ const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<PreparedLevel>();
     assert_send::<PreparedGpuLevel>();
+    assert_send::<PreparedPresentation>();
+    assert_send::<PreparedModel>();
 };

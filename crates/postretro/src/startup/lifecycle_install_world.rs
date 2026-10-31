@@ -110,10 +110,10 @@ impl App {
              clip_tables: &mut crate::scripting_systems::mesh_anim::MeshClipTables| {
                 // Clear per-level transient mesh-pass state at the model-cache
                 // install seam, then upload each distinct model and build its
-                // game-side clip table from the renderer's clip metadata (glTF
-                // index order). The sweep parsed every model already; a failed
-                // parse warns here, caches nothing, so the metadata is empty and
-                // the table maps no clips.
+                // game-side clip table from the same parse (glTF index order),
+                // the values the renderer caches. The sweep parsed every model
+                // already; a failed parse warns here, caches nothing, and gets
+                // the empty entry with zero bounds, so the table maps no clips.
                 renderer.clear_mesh_pass_for_level_load();
                 for model in models {
                     renderer.upload_parsed_skinned_model(
@@ -122,13 +122,8 @@ impl App {
                         &model.result,
                         prm_cache_root,
                     );
-                    let meta = renderer.skinned_model_clip_metadata(&model.handle);
-                    let bounds = renderer.skinned_model_local_bounds(&model.handle);
-                    clip_tables.insert_with_bounds(
-                        postretro_model::ModelHandle::from(model.handle.clone()),
-                        &meta,
-                        bounds,
-                    );
+                    super::lifecycle_model_sweep::model_clip_entry(&model.result)
+                        .insert_into(clip_tables, &model.handle);
                 }
                 if !models.is_empty() {
                     log::info!(

@@ -10,9 +10,7 @@ use postretro_render_cpu::fluid_surface::prepared::prepare_fluid_surfaces;
 use postretro_render_cpu::lightmap_family::plan_lightmap_family;
 use postretro_render_cpu::sh_residency::plan_sh_residency;
 use postretro_render_cpu::sh_volume::{animated_light_count, sh_sampler_lattice, usable_sh_volume};
-use postretro_render_cpu::texture_prep::{
-    PreparedTexture, PreparedWorldTextures, prepare_world_textures,
-};
+use postretro_render_cpu::texture_prep::{PreparedTexture, prepare_world_textures};
 use postretro_render_cpu::uv_normalize::{diffuse_dims, normalize_world_uvs_with_dims};
 
 use super::test_support::{
@@ -24,9 +22,8 @@ use crate::session::level_streaming::{StreamingLevelParts, decode_streaming_leve
 
 /// Every upload-shaping property of the CPU texture pass, payloads by length
 /// and checksum.
-fn texture_summary(prepared: &PreparedWorldTextures) -> Vec<String> {
-    prepared
-        .entries
+pub(super) fn texture_summary(entries: &[PreparedTexture]) -> Vec<String> {
+    entries
         .iter()
         .map(|entry| match entry {
             PreparedTexture::Placeholder => "placeholder".to_string(),
@@ -114,8 +111,8 @@ fn assert_prep_matches_oracle(
         prm_cache_root,
     );
     assert_eq!(
-        texture_summary(&prepared.gpu.textures),
-        texture_summary(&oracle_textures),
+        texture_summary(&prepared.gpu.textures.entries),
+        texture_summary(&oracle_textures.entries),
         "{label}: prepared textures"
     );
     let materials = level_texture_materials(&world.texture_names);

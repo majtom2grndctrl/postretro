@@ -10,6 +10,7 @@ use postretro_level_format::prm::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 
 use crate::loaded_texture::{TextureSlotPlan, TextureSlotPolicy, texture_slot_plan};
+use crate::material_plan::{SubmeshMaterialPlan, parse_blake3_key, plan_submesh_materials};
 
 /// Edge of the checkerboard diffuse placeholder every unusable world or model
 /// material binds; UV normalize reads it for those materials.
@@ -51,12 +52,23 @@ pub struct PreparedWorldTextures {
     pub timing: TexturePrepTiming,
 }
 
+/// The CPU half of one skinned model's materials: its submeshes grouped by
+/// material key, and each distinct key's diffuse sidecar read, parsed and
+/// planned, parallel to `plan.distinct_keys`. The renderer's GPU pass uploads
+/// one texture and builds one bind group per distinct key from it.
+#[derive(Debug)]
+pub struct PreparedModelMaterials {
+    pub plan: SubmeshMaterialPlan,
+    pub diffuse: Vec<PreparedTexture>,
+}
+
 // Compile-time guard: prepared products cross from load prep to the
 // renderer's upload thread.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<PreparedWorldTextures>();
     assert_send::<PreparedTexture>();
+    assert_send::<PreparedModelMaterials>();
 };
 
 /// Plans a `texture_2d` upload, or `None` when the sidecar is layered: the
@@ -203,6 +215,26 @@ pub fn prepare_model_diffuse_texture(
     }
 }
 
+/// Plan one skinned model's submesh materials and prepare each distinct
+/// key's diffuse texture from the shared diffuse-addressed `.prm` cache. A
+/// key that is not 64 hex digits reads as the zero key, whose texture is the
+/// placeholder. Never fails: an unusable sidecar degrades to a placeholder
+/// with a warning.
+pub fn prepare_model_materials(
+    submeshes: &[postretro_model::gltf_loader::Submesh],
+    prm_cache_root: &Path,
+) -> PreparedModelMaterials {
+    let plan = plan_submesh_materials(submeshes);
+    let diffuse = plan
+        .distinct_keys
+        .iter()
+        .map(|key_hex| {
+            prepare_model_diffuse_texture(key_hex, parse_blake3_key(key_hex), prm_cache_root)
+        })
+        .collect();
+    PreparedModelMaterials { plan, diffuse }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +342,30 @@ mod tests {
             prepare_model_diffuse_texture("model", [8u8; 32], dir.path()),
             PreparedTexture::Placeholder
         ));
+    }
+
+    // One prepared diffuse per distinct key, parallel to the plan, keyed by
+    // the hex the submesh carries; a malformed key reads as the placeholder.
+    #[test]
+    fn prepare_model_materials_prepares_one_diffuse_per_distinct_key() {
+        use postretro_model::gltf_loader::Submesh;
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        write_prm(dir.path(), key, &diffuse_prm(1));
+        let hex: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+        let submesh = |material_key: &str, start: u32| Submesh {
+            material_key: material_key.to_string(),
+            indices: start..start + 3,
+        };
+        let submeshes = [submesh(&hex, 0), submesh("not-a-key", 3), submesh(&hex, 6)];
+        let prepared = prepare_model_materials(&submeshes, dir.path());
+        assert_eq!(prepared.plan, plan_submesh_materials(&submeshes));
+        assert_eq!(prepared.diffuse.len(), 2);
+        assert!(matches!(
+            &prepared.diffuse[0],
+            PreparedTexture::Bundle { name, .. } if *name == hex
+        ));
+        assert!(matches!(prepared.diffuse[1], PreparedTexture::Placeholder));
     }
 
     // Regression: parsed multi-layer PRMs reached the legacy one-chain mip

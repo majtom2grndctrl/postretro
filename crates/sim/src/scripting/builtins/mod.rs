@@ -35,20 +35,29 @@ pub mod data_archetype_test_fixtures;
 pub use data_archetype::apply_data_archetype_dispatch;
 #[allow(unused_imports)]
 pub use data_archetype::{
-    PLAYER_START_CLASSNAME, PlayerSpawned, spawn_from_player_starts,
+    PLAYER_START_CLASSNAME, PlayerSpawned, player_spawn_entity_class, spawn_from_player_starts,
     spawn_from_player_starts_with_carried_loadout,
 };
 // Connected-client host-authoritative map-placement suppression. `gen-script-types`
 // pulls in the scripting tree but never installs a level, so the import is unused there.
 #[allow(unused_imports)]
 pub use data_archetype::{
-    movement_descriptor_mesh_models, touchable_wieldable_world_models, weapon_presentation_models,
+    descriptor_mesh_models, movement_descriptor_mesh_models, touchable_wieldable_world_models,
+    weapon_presentation_models,
+};
+// Silent placement readers for the level-load model prediction, which mirrors
+// the built-in handlers' model rules without spawning.
+#[allow(unused_imports)]
+pub use entity_spawner::{
+    CLASSNAME as ENTITY_SPAWNER_CLASSNAME, authored_archetype as entity_spawner_archetype,
 };
 #[allow(unused_imports)]
 pub use host_replicated::{
     descriptor_is_host_replicated, descriptor_materializes_ai_enemy,
     filter_out_client_host_replicated_placements, suppressed_client_host_replicated_mesh_models,
 };
+#[allow(unused_imports)]
+pub use prop_mesh::{CLASSNAME as PROP_MESH_CLASSNAME, authored_model as prop_mesh_model};
 
 /// Use the real ownership chokepoints in cross-crate gameplay harnesses.
 #[cfg(any(test, feature = "test-support"))]
@@ -113,6 +122,12 @@ impl ClassnameDispatch {
 
     pub fn lookup(&self, classname: &str) -> Option<ClassnameHandler> {
         self.handlers.get(classname).copied()
+    }
+
+    /// Every classname a built-in handler claims, in no fixed order. A level
+    /// load snapshots it at dispatch for its model prediction.
+    pub fn classnames(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.handlers.keys().copied()
     }
 
     /// Test-only: count of registered handlers. Used by unit tests asserting

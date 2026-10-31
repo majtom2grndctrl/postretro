@@ -286,11 +286,28 @@ fn concurrent_prep_failures_report_once() {
         },
     );
     assert_eq!(failure.stage, LoadStage::Parse, "{failure}");
+
+    // The model prediction reads hand-out 4, which the parse may still
+    // reject: its panic waits for the verdict, and the rejection wins.
+    let failure = only_failure(
+        Fixture::LateRejected,
+        PrepTestHooks {
+            panic: Some(PrepKind::ModelPrediction),
+            ..Default::default()
+        },
+    );
+    assert_eq!(failure.stage, LoadStage::Parse, "{failure}");
 }
 
 #[test]
 fn panicking_prep_task_fails_the_load() {
-    for kind in [PrepKind::Fluid, PrepKind::Textures, PrepKind::Assemble] {
+    for kind in [
+        PrepKind::Fluid,
+        PrepKind::Textures,
+        PrepKind::Assemble,
+        PrepKind::Sounds,
+        PrepKind::ModelPrediction,
+    ] {
         let failure = only_failure(
             Fixture::Textured,
             PrepTestHooks {

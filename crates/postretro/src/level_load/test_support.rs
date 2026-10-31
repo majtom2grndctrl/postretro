@@ -39,7 +39,15 @@ pub(crate) struct PrepTestHooks {
     /// Runs on the parse's thread after each hand-out's tasks were spawned:
     /// blocking here holds the parse.
     pub(crate) after_hand_out: Option<AfterHandOut>,
+    /// Reorders the sound files' decode (indices into the sorted scan), to
+    /// force a completion order other than path order.
+    pub(crate) sound_decode_order: Option<fn(&mut [usize])>,
+    /// Runs in each model parse task, with its prediction index, before the
+    /// parse: blocking here delays that model.
+    pub(crate) before_model_parse: Option<BeforeModelParse>,
 }
+
+type BeforeModelParse = Arc<dyn Fn(usize) + Send + Sync>;
 
 impl std::fmt::Debug for PrepTestHooks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -67,6 +75,12 @@ impl PrepTestHooks {
     pub(super) fn after_hand_out(&self, stage: HandOutStage, probe: &PrepProbe) {
         if let Some(hook) = &self.after_hand_out {
             hook(stage, probe);
+        }
+    }
+
+    pub(super) fn before_model_parse(&self, index: usize) {
+        if let Some(hook) = &self.before_model_parse {
+            hook(index);
         }
     }
 
@@ -141,7 +155,23 @@ pub(crate) fn test_device_limits() -> DeviceLimits {
     }
 }
 
-/// Prep inputs for `map` with test limits and default tiers.
+/// The model prediction's inputs for a session with the engine's built-in
+/// classname handlers, `descriptors`, and the given net role.
+pub(crate) fn prediction_inputs(
+    descriptors: &[postretro_scripting_core::data_descriptors::EntityTypeDescriptor],
+    connected_client: bool,
+) -> super::model_prediction::ModelPredictionInputs {
+    let mut dispatch = crate::scripting::builtins::ClassnameDispatch::new();
+    crate::scripting::builtins::register_builtins(&mut dispatch);
+    super::model_prediction::ModelPredictionInputs::capture(
+        descriptors,
+        &dispatch,
+        connected_client,
+    )
+}
+
+/// Prep inputs for `map` with test limits and default tiers, audio on, and
+/// no descriptors to predict models from.
 pub(crate) fn inputs_for(map: &Path, prm_cache_root: &Path) -> LevelPrepInputs {
     let options = crate::options::PlayerOptions::default();
     LevelPrepInputs {
@@ -157,6 +187,8 @@ pub(crate) fn inputs_for(map: &Path, prm_cache_root: &Path) -> LevelPrepInputs {
             surface_depth_quality: options.surface_depth_quality,
             reflection_quality: options.reflection_quality,
         },
+        audio_enabled: true,
+        models: prediction_inputs(&[], false),
         hooks: PrepTestHooks::default(),
     }
 }

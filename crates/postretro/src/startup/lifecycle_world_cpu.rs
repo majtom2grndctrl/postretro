@@ -16,6 +16,14 @@ use postretro_scripting_core::reaction_dispatch::{
     dispatch_deferred_named_events_with_sequences, fire_named_event_with_sequences,
 };
 
+/// Region companions carry tags and keys for installs above; they are never
+/// placements, whatever descriptor shares their classname. The model
+/// prediction skips them by the same rule.
+pub(crate) fn is_region_companion(classname: &str) -> bool {
+    classname == "trigger_teleport"
+        || classname == postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME
+}
+
 /// Finish windowed CPU presentation install after reactions and attachment setup.
 /// Settling does not advance these clocks. The first running frame must sample
 /// install-time animations from zero, matching their captured wire start.
@@ -183,12 +191,7 @@ pub(crate) fn install_world_cpu(
         .collect();
     let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
-        // Region companions carry tags and keys for installs above; they are
-        // never placements, whatever descriptor shares their classname.
-        .filter(|entity| {
-            entity.classname != "trigger_teleport"
-                && entity.classname != postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME
-        })
+        .filter(|entity| !is_region_companion(&entity.classname))
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
     let builtin_handled = {
         let mut registry = script_ctx.registry.borrow_mut();

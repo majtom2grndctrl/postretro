@@ -31,11 +31,22 @@ pub(crate) enum PrepKind {
     /// The fluid surfaces' CPU pack, on the assembled level and the texture
     /// dims.
     Fluid,
+    /// The mod's `sounds/` scan and decode, which reads no level data. Starts
+    /// on hand-out 4, behind the tasks the parse's earlier hand-outs feed; a
+    /// dispatch with no audio credits it at once.
+    Sounds,
+    /// The model handle prediction, on hand-out 4's map entities and the
+    /// dispatch snapshot's descriptors.
+    ModelPrediction,
+    /// One glTF parse per predicted model, with its clip entry, hit zones and
+    /// material CPU products; credited once every model finished. An empty
+    /// prediction credits it at once.
+    ModelParse,
 }
 
 impl PrepKind {
     /// Every prep kind: the fixed prep set of every level.
-    pub(crate) const ALL: [PrepKind; 8] = [
+    pub(crate) const ALL: [PrepKind; 11] = [
         PrepKind::Textures,
         PrepKind::ShResidency,
         PrepKind::RangeCheck,
@@ -44,6 +55,9 @@ impl PrepKind {
         PrepKind::StreamingData,
         PrepKind::LightmapFamily,
         PrepKind::Fluid,
+        PrepKind::Sounds,
+        PrepKind::ModelPrediction,
+        PrepKind::ModelParse,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -56,16 +70,24 @@ impl PrepKind {
             PrepKind::StreamingData => "streaming level data",
             PrepKind::LightmapFamily => "lightmap family plan",
             PrepKind::Fluid => "fluid surfaces",
+            PrepKind::Sounds => "sound decode",
+            PrepKind::ModelPrediction => "model prediction",
+            PrepKind::ModelParse => "model parse",
         }
     }
 
     /// Whether the task runs on hand-outs the parse may still reject. Its
     /// failure is held until the parse's verdict: a rejection wins over it,
-    /// since its input was never promised valid.
+    /// since its input was never promised valid. Sound decode reads no level
+    /// data, so its failure stands on its own.
     pub(crate) fn before_verdict(self) -> bool {
         matches!(
             self,
-            PrepKind::Textures | PrepKind::ShResidency | PrepKind::RangeCheck
+            PrepKind::Textures
+                | PrepKind::ShResidency
+                | PrepKind::RangeCheck
+                | PrepKind::ModelPrediction
+                | PrepKind::ModelParse
         )
     }
 }

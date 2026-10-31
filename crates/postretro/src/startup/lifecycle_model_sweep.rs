@@ -27,16 +27,64 @@ pub(crate) struct ParsedSweepModel {
 pub(crate) fn parse_sweep_models(models: &[String], content_root: &Path) -> Vec<ParsedSweepModel> {
     models
         .iter()
-        .map(|handle| {
-            let open_path = content_root.join(handle);
-            let result = gltf_loader::load_model(&open_path);
-            ParsedSweepModel {
-                handle: handle.clone(),
-                open_path,
-                result,
-            }
-        })
+        .map(|handle| parse_sweep_model(handle, content_root))
         .collect()
+}
+
+/// Parse one sweep model: the oracle sweep's per-model step, and what a level
+/// load's prep runs on its pool for each predicted model. Pure.
+pub(crate) fn parse_sweep_model(handle: &str, content_root: &Path) -> ParsedSweepModel {
+    let open_path = content_root.join(handle);
+    let result = gltf_loader::load_model(&open_path);
+    ParsedSweepModel {
+        handle: handle.to_string(),
+        open_path,
+        result,
+    }
+}
+
+/// One model's game-side clip-table entry: its clips' names and durations in
+/// glTF order, and its mesh's conservative local bound. A model that failed
+/// to parse gets the empty entry, zero bounds, as the renderer reports for a
+/// model it never cached.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ModelClipEntry {
+    pub(crate) clips: Vec<postretro_model::ClipMetadata>,
+    pub(crate) bounds: postretro_render_data::cone_frustum::Aabb,
+}
+
+/// The clip-table entry a parse yields. Pure: the windowed sweep builds its
+/// tables from it, and prep builds the same entry on its pool.
+pub(crate) fn model_clip_entry(result: &Result<LoadedModel, ModelLoadError>) -> ModelClipEntry {
+    match result {
+        Ok(model) => ModelClipEntry {
+            clips: model
+                .clips
+                .iter()
+                .map(|clip| postretro_model::ClipMetadata {
+                    name: clip.name.clone(),
+                    duration: clip.duration,
+                })
+                .collect(),
+            bounds: model.mesh.bounds(),
+        },
+        Err(_) => ModelClipEntry::default(),
+    }
+}
+
+impl ModelClipEntry {
+    /// Enter it in `tables` under `handle`.
+    pub(crate) fn insert_into(
+        &self,
+        tables: &mut crate::scripting_systems::mesh_anim::MeshClipTables,
+        handle: &str,
+    ) {
+        tables.insert_with_bounds(
+            postretro_model::ModelHandle::from(handle.to_string()),
+            &self.clips,
+            self.bounds,
+        );
+    }
 }
 
 /// Install each parsed model's hit-zone entry, consuming the parses. Equivalent

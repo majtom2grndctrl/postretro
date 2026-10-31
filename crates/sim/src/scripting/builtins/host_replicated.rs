@@ -1,6 +1,7 @@
 // Host descriptor classification and connected-client placement suppression.
 // See: context/lib/networking.md
 
+#[cfg(test)]
 use std::collections::HashSet;
 
 use glam::Vec3;
@@ -10,7 +11,9 @@ use postretro_foundation::NavAgentParams;
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use super::MapEntity;
-use super::data_archetype::{DEFAULT_AGENT_PARAMS, find_descriptor};
+use super::data_archetype::{
+    DEFAULT_AGENT_PARAMS, distinct_descriptor_mesh_models, find_descriptor,
+};
 
 pub fn ai_capsule_center_from_feet_offset(
     descriptor: &EntityTypeDescriptor,
@@ -106,31 +109,12 @@ pub fn suppressed_client_host_replicated_mesh_models(
     entities: &[MapEntity],
     descriptors: &[EntityTypeDescriptor],
 ) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut ordered = Vec::new();
-    for entity in entities {
-        let Some(descriptor) = find_descriptor(descriptors, &entity.classname) else {
-            continue;
-        };
-        if !descriptor_is_host_replicated(descriptor) {
-            continue;
-        }
-        let Some(mesh) = descriptor.mesh.as_ref() else {
-            continue;
-        };
-        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
-            ordered.push(mesh.model.clone());
-        }
-        let mut attachment_models: Vec<&str> =
-            mesh.attachments.values().map(String::as_str).collect();
-        attachment_models.sort_unstable();
-        for attachment_model in attachment_models {
-            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
-                ordered.push(attachment_model.to_string());
-            }
-        }
-    }
-    ordered
+    distinct_descriptor_mesh_models(
+        entities
+            .iter()
+            .filter_map(|entity| find_descriptor(descriptors, &entity.classname))
+            .filter(|descriptor| descriptor_is_host_replicated(descriptor)),
+    )
 }
 
 #[cfg(test)]

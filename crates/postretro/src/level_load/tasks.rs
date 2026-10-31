@@ -20,11 +20,19 @@ use postretro_render_cpu::texture_prep::{PreparedWorldTextures, prepare_world_te
 use postretro_render_cpu::uv_normalize::{diffuse_dims, normalize_world_uvs_with_dims};
 use postretro_render_data::material::Material;
 
+use postretro_audio::DecodedLevelSounds;
+use postretro_level_format::map_entity::MapEntityRecord;
+use postretro_render_cpu::texture_prep::prepare_model_materials;
+
+use super::model_prediction::{ModelPredictionInputs, predict_level_models};
+use super::products::{ParsedModelProducts, PreparedModel};
 use crate::collision::CollisionWorld;
 use crate::render::{LevelInstallError, level_world_to_geometry, lightmap_family_inputs};
+use crate::scripting_systems::hit_zones::ModelHitZones;
 use crate::session::level_streaming::{
     StreamingLevelData, StreamingLevelParts, decode_streaming_level_data,
 };
+use crate::startup::lifecycle::{ParsedSweepModel, model_clip_entry, parse_sweep_model};
 
 /// Texture prep's product: the CPU pass, the material table, and the dims UV
 /// normalize and the fluid pack read.
@@ -189,4 +197,69 @@ pub(super) fn prep_fluid(
         dims.len(),
         lattice.as_ref(),
     )
+}
+
+/// The mod's sounds, decoded in sorted path order by the audio crate's own
+/// decode half, the one `Audio::load_level_sounds` runs. Never fails: a bad
+/// file, a missing or an empty directory are ordinary values the commit's
+/// registration warns about.
+pub(super) fn decode_sounds(content_root: &Path) -> DecodedLevelSounds {
+    postretro_audio::decode_level_sounds(content_root)
+}
+
+/// [`decode_sounds`], with the files decoded in the order `reorder` leaves
+/// them: a test seam that forces completion order. Registration order stays
+/// the scan's sorted order whatever this does.
+#[cfg(test)]
+pub(super) fn decode_sounds_reordered(
+    content_root: &Path,
+    reorder: Option<fn(&mut [usize])>,
+) -> DecodedLevelSounds {
+    let Some(reorder) = reorder else {
+        return decode_sounds(content_root);
+    };
+    let scan = postretro_audio::scan_level_sounds(content_root);
+    let mut order: Vec<usize> = (0..scan.file_count()).collect();
+    reorder(&mut order);
+    let decoded = order
+        .into_iter()
+        .map(|index| scan.decode_file(index))
+        .collect();
+    scan.finish(decoded)
+}
+
+/// The model handles the commit's sweep will upload, predicted from hand-out
+/// 4's map entities and the dispatch snapshot.
+pub(super) fn predict_models(
+    map_entities: &[MapEntityRecord],
+    inputs: &ModelPredictionInputs,
+) -> Vec<String> {
+    predict_level_models(map_entities, inputs)
+}
+
+/// One predicted model, through the oracle sweep's builders: the glTF parse,
+/// its clip-table entry, its hit zones and its materials' CPU half. A parse
+/// failure is carried, never raised: the commit degrades it as today.
+pub(super) fn prep_model(
+    handle: &str,
+    content_root: &Path,
+    prm_cache_root: &Path,
+) -> PreparedModel {
+    let ParsedSweepModel {
+        handle,
+        open_path,
+        result,
+    } = parse_sweep_model(handle, content_root);
+    let clip_entry = model_clip_entry(&result);
+    let parsed = result.map(|model| ParsedModelProducts {
+        hit_zones: ModelHitZones::build(&model),
+        materials: prepare_model_materials(&model.submeshes, prm_cache_root),
+        model,
+    });
+    PreparedModel {
+        handle,
+        open_path,
+        clip_entry,
+        parsed,
+    }
 }

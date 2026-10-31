@@ -4,6 +4,7 @@
 
 use super::mesh_pass::{MeshPass, ModelAnimationData};
 use super::*;
+use postretro_render_cpu::texture_prep::{PreparedModelMaterials, prepare_model_materials};
 
 impl Renderer {
     /// Load one skinned model into the active level set's models (or, with
@@ -334,8 +335,10 @@ impl Renderer {
     /// Dedup: one GPU material bind group is built per *distinct* key — a model
     /// reusing a material across primitives builds it once and shares it. Each
     /// submesh range is then paired with its (possibly shared) bind group. The
-    /// dedup + range bookkeeping is the GPU-free [`plan_submesh_materials`];
-    /// this method is the thin GPU layer that builds the bind groups.
+    /// dedup + range bookkeeping and each key's sidecar read, parse and plan
+    /// are the GPU-free [`prepare_model_materials`], which a level load also
+    /// runs on its pool; this method is the thin GPU layer that uploads the
+    /// textures and builds the bind groups.
     ///
     /// Degrades to a placeholder per distinct key when its key is absent/garbled
     /// or its `.prm` is missing. Model materials consume only diffuse; specular
@@ -345,7 +348,8 @@ impl Renderer {
         model: &postretro_model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
     ) -> (Vec<(wgpu::BindGroup, std::ops::Range<u32>)>, SamplerMaps) {
-        let plan = plan_submesh_materials(&model.submeshes);
+        let PreparedModelMaterials { plan, diffuse } =
+            prepare_model_materials(&model.submeshes, prm_cache_root);
         let mut samplers = SamplerMaps::default();
 
         let surface_depth_quality = self.surface_depth_quality;
@@ -364,16 +368,15 @@ impl Renderer {
         let distinct_bind_groups: Vec<wgpu::BindGroup> = plan
             .distinct_keys
             .iter()
-            .map(|key_hex| {
-                let key = parse_blake3_key(key_hex);
-                let tex =
-                    load_model_diffuse_texture(device, queue.raw(), key_hex, key, prm_cache_root);
+            .zip(&diffuse)
+            .map(|(key_hex, prepared)| {
+                let tex = upload_prepared_texture(device, queue.raw(), prepared);
 
                 let character_model_sampler =
                     samplers.character(&full.samplers, device, tex.mip_count);
                 // Skinned models are outside Surface Depth's scope: they never
                 // bind the world material bundle's surface map —
-                // `load_model_diffuse_texture` binds the neutral single-channel
+                // the model diffuse plan binds the neutral single-channel
                 // specular placeholder — so their uniform is flat whatever the
                 // switch says. The uniform buffer handle is therefore
                 // deliberately not retained; the bind group keeps the buffer

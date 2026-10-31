@@ -179,8 +179,8 @@ use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::render::loaded_texture::{
-    LoadedTexture, TextureLoadTiming, load_model_diffuse_texture, load_textures,
-    placeholder_loaded_texture,
+    LoadedTexture, TextureLoadTiming, load_textures, placeholder_loaded_texture,
+    upload_prepared_texture,
 };
 pub use gpu_create::{GpuCreationCounts, gpu_creation_counts};
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
@@ -252,9 +252,7 @@ pub(crate) use postretro_render_cpu::frame_uniforms::{
     build_uniform_data,
 };
 pub use postretro_render_cpu::frame_uniforms::{LightTermMask, SdfShadowMode};
-pub(crate) use postretro_render_cpu::material_plan::{
-    parse_blake3_key, plan_submesh_materials, resolve_model_open_path_and_handle,
-};
+pub(crate) use postretro_render_cpu::material_plan::resolve_model_open_path_and_handle;
 pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original

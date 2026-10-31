@@ -9,8 +9,11 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "level_load/failure_tests.rs",
     "level_load/inputs.rs",
     "level_load/mod.rs",
+    "level_load/model_prediction.rs",
+    "level_load/model_tests.rs",
     "level_load/oracle_tests.rs",
     "level_load/products.rs",
+    "level_load/sound_tests.rs",
     "level_load/tasks.rs",
     "level_load/test_support.rs",
     "level_load/tests.rs",
@@ -18,6 +21,7 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "startup/loading_screen.rs",
     "startup/loading_screen_images.rs",
     "startup/loading_screen_tests.rs",
+    "startup/lifecycle_model_sweep.rs",
 ];
 
 /// The one load-stage module allowed to start threads.

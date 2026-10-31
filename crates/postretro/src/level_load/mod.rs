@@ -1,7 +1,8 @@
 //! Level-load stages that run off the main thread. Today: the prep stage,
 //! driven by the staged parse on the engine load pool, which runs every
 //! level-data check and builds every CPU product the upload stage and the
-//! commit consume. Production loads still install through the level worker
+//! commit consume, the level's decoded sounds and predicted, parsed models
+//! included. Production loads still install through the level worker
 //! and the main-thread oracle until the load state machine wires this in.
 //! See: context/lib/boot_sequence.md §9 · context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
 
@@ -11,13 +12,18 @@
 mod coordinator;
 mod failure;
 mod inputs;
+mod model_prediction;
 mod products;
 mod tasks;
 
 #[cfg(test)]
 mod failure_tests;
 #[cfg(test)]
+mod model_tests;
+#[cfg(test)]
 mod oracle_tests;
+#[cfg(test)]
+mod sound_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -31,7 +37,10 @@ use crate::load_pool::{CancelToken, GroupRetirement, TaskGroup};
 
 pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
-pub(crate) use products::{PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedPresentation};
+pub(crate) use products::{
+    PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedModel, PreparedModels,
+    PreparedPresentation,
+};
 pub(crate) use tasks::level_texture_materials;
 
 use coordinator::PrepShared;

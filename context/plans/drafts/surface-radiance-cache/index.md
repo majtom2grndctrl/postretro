@@ -4,7 +4,7 @@ Brief · resumable · reads: `context/lib/index.md` §2 · `context/lib/build_pi
 
 ## Problem
 
-Owner request: multi-bounce indirect light, and SH bake cost that does not grow with light count as maps grow. Cause: every probe gather hit shadows every reaching light, so shadow rays scale with probes × rays × lights; a second bounce on that estimator multiplies again, so shadowed areas get no fill from light bounced twice. Done means the SH base (id 34) gathers outgoing radiance from a surface radiance cache built once per bake, with multi-bounce: gather cost no longer depends on light count, and patch shading scales with patches × lights in reach.
+Owner request: multi-bounce indirect light, and SH bake cost that does not grow with light count as maps grow. Levels will outgrow today's maps, and surface lights will multiply light counts. Cause: every probe gather hit shadows every reaching light, so shadow rays scale with probes × rays × lights; a second bounce on that estimator multiplies again, so shadowed areas get no fill from light bounced twice. Done means the SH base (id 34) gathers outgoing radiance from a surface radiance cache built once per bake, with multi-bounce: gather cost no longer depends on light count, and patch shading scales with patches × lights in reach. An author's warm build shows the same indirect light the release build ships.
 
 ## Decisions
 
@@ -12,8 +12,8 @@ Owner request: multi-bounce indirect light, and SH bake cost that does not grow 
 - **Patch direct uses probe-and-escalate visibility.** Today's light evaluation and early-outs, under the SH probe bakes' embedded-emitter rule, which lands first (owner, 2026-10-30). Patches shade once, so a converged estimate is affordable. Parity therefore compares against the test-only full-set bounce, which uses the same visibility, and measures discretisation alone; the shipping one-sample estimator is the speed baseline.
 - **Scope: id 34.** Animated indirect deltas (id 27) keep today's estimator until `surface-radiance-cache-animated` follows (owner, 2026-10-30), after counsel reads '451 cl. 1 against per-light bounce. Until then an animated light's bounce lacks the cache's later bounces; accepted. Ids 35, 41, 45, 47 and 48 trace no gather hits.
 - **Albedo is the production bounce albedo.** Coloured bounce has landed; patches store what the gather reads today. Bounce stays physical.
-- **Multi-bounce is in scope (owner), a look change judged by A/B.** Later bounces gather patch to patch over a fixed bounce count. A `worldspawn` key `_bounce_fill` ∈ [0, 1] weights them: shipped bounce = bounce one + fill × later bounces. `0` is single bounce, `1` physical fill; the A/B picks the default. Invalid values fall back to the default with a warning. FGD and `docs/level_design.md` carry it; no compiler flag (`index.md` §2). This reverses `done/coloured-sh-bounce`'s no-knob ruling for later bounces only.
-- **Warm locality kept (owner).** Editing one light re-bakes only that light's bounce-one patch layer and the SH groups that reach it. Warm builds bake bounce one only, so they stay local and dimmer-or-equal to cold (`done/incremental-bake-per-element/`); later bounces and `_bounce_fill` reach only cold and release bakes.
+- **Multi-bounce is in scope (owner), a look change judged by A/B.** Later bounces gather patch to patch over a fixed bounce count. A `worldspawn` key `_bounce_fill` ∈ [0, 1] weights them: shipped bounce = bounce one + fill × later bounces. To authors it is how much light keeps bouncing past the first hit: `0` contrasty single bounce, `1` full physical fill. The A/B picks the default. The name stays clear of ericw-tools' `_bouncescale`, which scales all bounced light and would mislead Quake mappers. Invalid values fall back to the default with a warning. FGD and `docs/level_design.md` carry it; no compiler flag (`index.md` §2). This reverses `done/coloured-sh-bounce`'s no-knob ruling for later bounces only.
+- **Warm id 34 equals cold.** Warm SH approximated indirect light because every gather hit re-shadowed its reaching lights (`build_pipeline.md` §Build Cache); the cache removes that cost, so warm builds bake every bounce and match release byte for byte. An author tuning lights on warm builds sees what ships, at any fill. Locality lives where the cost scales with lights: a light edit re-shades only that light's bounce-one layer (owner's warm-locality ruling, kept for the shadow-ray work). Later bounces and the probe gather re-run over the summed cache, costing gather rays only.
 - **Keys follow content, not list position.** Patch layers key on the light's content, positions and bounce materials, the inputs SH group keys already fold. Seeds derive from patch ids and the keyed light's digest, as id 27 already seeds, so inserting or reordering lights never changes a cached layer's bytes.
 - **IP guard (owner).** Gather rays stay uniform or cosine, never aimed by a prior result (ARM '177). Id 34 ships only summed bounce; nothing per light reaches a texel or patch in PRL. The cache never reaches PRL (`ip-check.md` Piece 6).
 - **Lifetime.** The cache is built after Geometry on pre-cut faces and freed when the SH base bake ends, before atlas preparation; no face identity crosses the cut (`build_pipeline.md` §Compiler pipeline). Bake-only: no format, runtime or shader change.
@@ -46,11 +46,12 @@ Multi-bounce:
 
 Locality and keys:
 - [ ] A patch reached by no light stores zero bounce-one radiance; a patch inside a light's range, facing it, with a clear segment to it, stores nonzero.
-- [ ] Warm, after one light edit: only that light's patch layer, and only groups whose reaching sets held it before or hold it after the edit, re-bake (counts asserted). Groups beyond its reach hit cache.
-- [ ] Warm output is never brighter than cold per probe per channel.
+- [ ] Warm, after one light edit: only that light's patch layer re-shades (counts asserted); every other layer hits cache.
+- [ ] After any sequence of light, geometry and `_bounce_fill` edits, warm id 34 bytes equal a cold bake of the final map.
+- [ ] With no edit, a warm build hits every patch layer and every SH group.
 - [ ] After removing a static light, inserting one ahead of the others, or adding a duplicate, every patch layer served from cache equals that light's layer in a cold bake of the edited map, byte for byte (research P3, P4).
 - [ ] A geometry, texture-mean or saturation edit re-keys every patch layer and SH group; restoring it hits cache (research P5, P6).
-- [ ] Changing `_bounce_fill` re-bakes no patch layer and no warm group; cold output moves with it.
+- [ ] Changing `_bounce_fill` re-shades no patch layer; id 34 moves with it, warm and cold alike.
 - [ ] The first warm build after this change misses every pre-cache SH group entry (research P7).
 - [ ] `_bounce_fill` appears in the FGD and `docs/level_design.md`; a non-finite or out-of-range value bakes the default and warns once; no `prl-build` flag sets it.
 
@@ -67,17 +68,18 @@ Bounds:
 - [ ] Patch count equals the patches over the Geometry stage's static world faces; a fixture with a mover and an exterior-culled face gets no patch on either.
 
 ### Measurement (report, not gate)
+- [ ] Warm SH Bake after one light edit on the full hallway, against today's warm build.
 - [ ] Light-count sweep: one synthetic map at N, 2N and 4N static lights; gather time and patch-direct time reported separately, cold, one bake at a time.
 - [ ] Cold `--release --no-cache` Build Summary on hallway-mini, the full hallway, `stress-warren-mini` and `campaign-test`, before (one-sample estimator) and after: SH Bake and total. Share of patches gather rays reach.
 
 ### Manual
-- [ ] Owner A/B at `campaign-test` stations on `--release` builds: fill 0, an intermediate fill, and fill 1. Shadowed fill reads right, no hot spots, overall energy acceptable; the owner picks the default.
+- [ ] Owner A/B at `campaign-test` stations on `--release` builds: fill 0, an intermediate fill, and fill 1, plus a closed white-walled room. Shadowed fill reads right, no hot spots, overall energy acceptable; the owner picks the default.
 - [ ] Entities and fog under the new id 34 show no patch-scale blotches or new leaks.
 
 ## Path
 
 - Shape: per-light sparse patch layers for bounce one, over the patches in each light's reach. Cold sums static layers; warm groups sum their reaching lights (`research.md` §Warm-locality shape). Layers store unit transport, scaled by colour × intensity when summed, so a colour or intensity edit re-bakes no layer and the animated follow-up shares them; it extends the cache's lifetime through the delta bake. Rival: one summed layer, which re-keys every group on any light edit.
-- Later bounces gather over the summed bounce-one layer, cold only, so they key globally without breaking warm locality.
+- Later bounces gather over the summed bounce-one layer. SH groups key on the summed cache's digest, so any light edit re-gathers every group; that costs gather rays, not shadow rays.
 - First slice: single-bounce cache feeding id 34 on `campaign-test`, with the parity row. It falsifies the riskiest assumption, that patch discretisation stays inside the BC6H bound.
 - Seams: `sh_bake.rs` `sample_radiance_rgb` and `closest_hit_in_leaf` (hit → face → patch), `bake_probe_indirect_rgb`, `sh_group.rs` `group_cache_key`, `pipeline.rs` `run_after_parsing`; working-set precedent `pipeline/delta_working_set.rs`.
 - `sh_bake.rs` is large; split before extending if it passes ~800 lines.
@@ -85,7 +87,6 @@ Bounds:
 
 ## Open questions
 
-- `_bounce_fill` name and help text — owner — at promotion
 - Bounce count — **delegated**: the convergence row decides; a code constant, changed with a stage-version bump.
 - Patch size, and nearest vs filtered lookup across patches — **delegated**: the parity row and the RAM row decide.
 - Whether a patch stores both sides of a face or back-face hits are shaded another way — **delegated**: the back-face row decides.

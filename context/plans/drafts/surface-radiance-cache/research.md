@@ -70,7 +70,7 @@ Coloured bounce has landed (`done/coloured-sh-bounce/`): per-texture snapped mea
 |---|---|---|---|
 | P1 | Probe gather ray hits a world face | Patch direct (and, cold, later bounces) finish before a probe gather reads a patch; the hit looks up a patch and traces no shadow ray | Gather traces zero shadow rays. Shadow rays come from patch direct only, and their count does not depend on probe count or rays per probe |
 | P2 | Reach skip with fill > 0 | Probe gathers mark the patches they reach → bounce-one shading → later-bounce patch gathers read bounce-one radiance, including from patches no probe ray reached | Every patch a later-bounce gather reads has bounce-one radiance. The skip drops only patches no gather of any bounce reads |
-| P3 | Static light removed, inserted ahead of others, or flipped to animated | Global indices of later lights move; layer keys and seeds follow content | Unchanged lights' layers hit cache and equal their cold layers byte for byte. Groups whose reaching set changed re-bake |
+| P3 | Static light removed, inserted ahead of others, or flipped to animated | Global indices of later lights move; layer keys and seeds follow content | Unchanged lights' layers hit cache and equal their cold layers byte for byte. Groups re-gather over the new summed cache |
 | P4 | Two static lights with identical content | Same digest, different position | Each contributes once; a shared entry serves both only if their layers are identical by construction |
 | P5 | Geometry edit outside a light's reach | Patch ids taken from pre-cut face order can shift | A layer served from cache equals the cold layer. With today's whole-map geometry hash, every layer and group re-bakes |
 | P6 | Texture-mean or saturation edit | Bounce albedo goes into patch radiance before the gather | Every patch layer and group re-keys. Restoring both values hits cache (precedent `colour_key_tests.rs`) |
@@ -83,7 +83,9 @@ Coloured bounce has landed (`done/coloured-sh-bounce/`): per-texture snapped mea
 
 ## Warm-locality shape
 
-Today's warm group sums only its reaching lights. A cache that stores one summed radiance per patch keys on every light, so one light edit re-keys every group. Per-light patch layers (sparse: patches inside each light's reach) keep the group's sum restricted to its reaching set, reproduce the warm approximation exactly, and are the same structure animated deltas need as unit layers. Cold sums all static layers. Memory scales with Σ(patches in each light's reach), not patches × lights.
+Today's warm group sums only its reaching lights, an approximation forced by per-hit shadow rays. With the cache, shadow rays live in patch direct, so locality belongs there: per-light patch layers (sparse: patches inside each light's reach) confine a light edit's shadow-ray work to that light. Summing layers and re-gathering every group costs gather rays only (~246 M on the hallway, est.), so warm id 34 can equal cold. A single summed layer would re-shade every patch on any edit. Per-light unit-transport layers are also the structure the animated follow-up reads. Memory scales with Σ(patches in each light's reach), not patches × lights.
+
+Reshape 2 (2026-10-30): the earlier "warm bakes bounce one only" kept SH-group locality but showed authors dimmer fill on warm builds than release ships; reversed under `index.md` §2 (defaults that set authors up for success).
 
 ## Direction review (2026-10-24)
 

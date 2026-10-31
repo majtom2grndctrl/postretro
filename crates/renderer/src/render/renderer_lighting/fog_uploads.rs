@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
+use crate::render::renderer_types::FullRenderer;
 
 impl Renderer {
     /// Collects dynamic spots with a shadow slot this frame.
@@ -182,16 +183,46 @@ impl Renderer {
         full.fog.upload_points(queue, points);
     }
 
-    /// Set the global `fog_pixel_scale` from worldspawn. No-op when unchanged.
+    /// Set the active level's `fog_pixel_scale` from worldspawn, rebuilding
+    /// its scatter target. No-op when unchanged or with no active set.
     pub fn set_fog_pixel_scale(&mut self, scale: u32) {
-        // Fog scatter divides the scene extent, so a map's fog reads the same
-        // at every render resolution.
-        let scene = self.scene_extent();
+        if let Some(id) = self.active_level_set() {
+            self.set_level_set_fog_pixel_scale(id, scale);
+        }
+    }
+
+    /// Set built set `id`'s `fog_pixel_scale` from worldspawn, active or
+    /// resident, rebuilding its scatter target at the extent the set's
+    /// groups are built at. No-op when unchanged or for an unknown set.
+    pub fn set_level_set_fog_pixel_scale(&mut self, id: LevelSetId, scale: u32) {
         let Self { device, full, .. } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.fog
-            .set_pixel_scale(device, scale, scene.width, scene.height, &full.depth_view);
+        let FullRenderer {
+            level,
+            resident_levels,
+            fog,
+            depth_view,
+            ..
+        } = &mut **full;
+        let Some(level) = level
+            .iter_mut()
+            .chain(resident_levels.iter_mut())
+            .find(|level| level.id == id)
+        else {
+            return;
+        };
+        // Fog scatter divides the scene extent, so a map's fog reads the same
+        // at every render resolution.
+        let extent = level.extent.extent;
+        fog.set_target_pixel_scale(
+            device,
+            &mut level.extent.fog,
+            scale,
+            extent.width,
+            extent.height,
+            depth_view,
+        );
     }
 }

@@ -3206,13 +3206,18 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         "set_reflection_style",
         "set_ssr_scale",
         "bind_group",
+        "live_bind_group",
+        "bind_live",
     ] {
         let body = code_only(wgsl_fn(inputs, per_frame));
         assert!(!body.contains("create_bind_group") && !body.contains("new_bind_group"));
     }
 
     // Exactly two callers rebuild group 5: the scene-target follow-up and a
-    // reflection target change. A release binds the prebuilt placeholder.
+    // reflection target change. A release binds the prebuilt placeholder, and
+    // publishing another level set takes the target back to its own set over
+    // the same placeholder; a published set's lent group binds as it was
+    // built. None of the hand-offs builds anything.
     let pass_code = format!("{}{}", code_only(source), code_only(reflection_source));
     assert_eq!(pass_code.matches("self.scene_inputs.rebuild(").count(), 1);
     assert_eq!(
@@ -3225,8 +3230,29 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         pass_code
             .matches("self.scene_inputs.bind_placeholder(")
             .count(),
-        1
+        2
     );
+    assert_eq!(pass_code.matches("self.scene_inputs.bind_live(").count(), 1);
+    let planar_source = include_str!("fluid_surface/planar_routing.rs");
+    for (file, hand_off) in [
+        (source, "take_level_targets"),
+        (source, "lend_level_targets"),
+        (reflection_source, "take_reflection_target"),
+        (reflection_source, "lend_reflection_target"),
+        (planar_source, "take_planar_layer"),
+        (planar_source, "lend_planar_layer"),
+    ] {
+        let body = code_only(wgsl_fn(file, hand_off));
+        for build in [
+            "create_bind_group",
+            "new_bind_group",
+            "create_target",
+            "::new(",
+            "rebuild",
+        ] {
+            assert!(!body.contains(build), "{hand_off} builds: {body}");
+        }
+    }
     let follow = code_only(wgsl_fn(reflection_source, "rebuild_scene_inputs"));
     let target_first = follow
         .find("letsuperseded=self.reflection.resize(device,scene_depth,scene_color);")
@@ -3300,17 +3326,40 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         taken < created && created < rebound && rebound < dropped,
         "{change}"
     );
+    // A published level set built at another scene extent recreates its
+    // lent target in the same order: take, create at the tier's extent,
+    // rebind, then drop the superseded one.
+    let lent = code_only(wgsl_fn(reflection_source, "rebuild_lent_reflection_target"));
+    let lent_taken = lent
+        .find("letSome(superseded)=self.reflection.target.take()else{return;};")
+        .expect("take the lent target");
+    let lent_created = lent
+        .find("self.reflection.create_target(device,extent);")
+        .expect("create at the tier's extent");
+    let lent_rebound = lent
+        .find("self.rebind_reflection_target(device);")
+        .expect("rebind");
+    let lent_dropped = lent.find("drop(superseded);").expect("drop");
+    assert!(
+        lent_taken < lent_created && lent_created < lent_rebound && lent_rebound < lent_dropped,
+        "{lent}"
+    );
     assert_eq!(
         pass_code
             .matches("self.rebind_reflection_target(device)")
             .count(),
-        1
+        2
     );
-    // Exactly four callers change the target: install keys it to a
+    // Exactly five callers change the target: install keys it to a
     // probe-bound face and the kept tier after starting from a clear; clear
-    // (level change and unload) drops it; a tier change and the capture's
-    // fraction override re-key it.
-    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 4);
+    // drops it; a tier change and the capture's fraction override re-key it;
+    // a publish re-keys the published set's lent target to the kept tier.
+    assert_eq!(pass_code.matches(".set_reflection_target(").count(), 5);
+    assert!(
+        code_only(wgsl_fn(reflection_source, "reconcile_reflection_target")).contains(
+            "self.set_reflection_target(device,self.wanted_reflection_target(installed));"
+        )
+    );
     assert!(
         code_only(wgsl_fn(reflection_source, "set_reflection_target_fraction")).contains(
             "self.set_reflection_target(device,self.wanted_reflection_target(installed));"
@@ -3415,7 +3464,8 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     }
 
     // The scene-target rebuild: after the scene depth and colour are
-    // recreated, and the fog pass rebinds the depth.
+    // recreated, group 5 follows, then the active level set's extent-bound
+    // groups (its fog target among them) rebind the depth.
     let extent = include_str!("renderer_extent.rs");
     let rebuild = code_only(wgsl_fn(extent, "rebuild_scene_targets"));
     let depth = rebuild
@@ -3424,20 +3474,30 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     let colour = rebuild
         .find("full.screen_effects.resize(device,scene);")
         .expect("scene colour recreated");
-    let fog = rebuild.find("full.fog.resize(").expect("fog resize");
     let fluid = rebuild
         .find(
             "full.fluid_surface.rebuild_scene_inputs(device,&full.depth_view,\
              full.screen_effects.scene_color_view(),);",
         )
         .expect("fluid group 5 rebuild");
-    assert!(depth < colour && colour < fog && fog < fluid);
-    // Unload, and every level change, reaches group 5 only through the clear.
+    let level = rebuild
+        .find("rebuild_level_extent_groups(device,full,&mutlevel,scene);")
+        .expect("the active set's extent-bound groups rebuild");
+    assert!(depth < colour && colour < fluid && fluid < level);
+    let publish_source = include_str!("renderer_resources/publish.rs");
+    let level_rebuild = code_only(wgsl_fn(publish_source, "rebuild_level_extent_groups"));
+    assert!(
+        level_rebuild.contains("full.fog.resize_target("),
+        "{level_rebuild}"
+    );
+    // Unload, and every level change, reaches group 5 only through the
+    // target hand-offs and the release, never the scene-target rebuild.
     let resources = code_only(
         &[
             include_str!("renderer_resources.rs"),
             include_str!("renderer_resources/lightmap_shadow.rs"),
             include_str!("renderer_resources/lights.rs"),
+            publish_source,
             include_str!("renderer_resources/sh_family.rs"),
             include_str!("renderer_resources/shadow_pools.rs"),
             include_str!("renderer_resources/world_geometry.rs"),
@@ -3445,7 +3505,17 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .concat(),
     );
     assert!(!resources.contains("rebuild_scene_inputs"));
-    assert!(resources.contains("full.fluid_surface.clear_level_targets(device);"));
+    assert!(!resources.contains("clear_level_targets"));
+    // Publishing takes the replaced set's targets back, building nothing,
+    // before lending the published set's.
+    let publish = code_only(wgsl_fn(publish_source, "publish_level_set"));
+    let take = publish
+        .find("letreplaced_fluid=full.fluid_surface.take_level_targets();")
+        .expect("publish takes the replaced set's targets");
+    let lend = publish
+        .find("full.fluid_surface.lend_level_targets(")
+        .expect("publish lends the published set's targets");
+    assert!(take < lend, "{publish}");
     // Release drops the target over the prebuilt placeholder group, building
     // nothing.
     assert!(resources.contains("full.fluid_surface.release_level_targets();"));

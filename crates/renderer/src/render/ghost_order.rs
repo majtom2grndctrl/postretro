@@ -99,6 +99,8 @@ pub(super) struct GhostDrawOrder {
 /// Everything the ordered ghost draws read.
 pub(super) struct GhostDrawSources<'a> {
     pub(super) mesh_pass: &'a MeshPass,
+    /// The active set's models every skinned ghost resolves through.
+    pub(super) models: &'a super::mesh_pass::LevelModels,
     pub(super) skinned: Option<&'a MeshFramePlan>,
     pub(super) movers: &'a KinematicGhostPass,
     pub(super) brush: &'a KinematicLevelState,
@@ -292,6 +294,7 @@ impl GhostDrawOrder {
                         if let Some(plan) = sources.skinned {
                             sources.mesh_pass.record_ghost_spans(
                                 pass,
+                                sources.models,
                                 plan,
                                 self.spans(unit),
                                 mode,

@@ -289,7 +289,7 @@ fn record_planar_passes(
             );
             forward.set_bind_group(3, sh, &[]);
             forward.set_bind_group(4, &level.lightmap_resources.bind_group, &[]);
-            forward.set_bind_group(5, &full.spot_shadow_pool.bind_group, &[]);
+            forward.set_bind_group(5, &level.extent.spot_shadow, &[]);
             forward.set_bind_group(
                 LIGHTMAP_BLOCK_TABLE_GROUP,
                 &level.lightmap_resources.block_table_bind_group,
@@ -339,9 +339,9 @@ fn record_planar_passes(
         skinned.set_bind_group(0, &pass.uniform_bind_group, &[]);
         skinned.set_bind_group(4, sh_mesh, &[]);
         full.mesh_pass
-            .record_mirror_draws(&mut skinned, &level.mesh_lights, plan);
+            .record_mirror_draws(&mut skinned, &level.models, &level.mesh_lights, plan);
     }
-    if pass.sprites.has_draws() && full.smoke_pass.has_any_sheet() {
+    if pass.sprites.has_draws() && level.smoke.has_any_sheet() {
         // After the opaque mirror, as the billboard pass follows the opaque
         // scene: depth-tested, never written, additive. The mirror's group 0
         // turns every quad to the mirror camera.
@@ -358,7 +358,8 @@ fn record_planar_passes(
         sprites.set_bind_group(0, &pass.uniform_bind_group, &[]);
         sprites.set_bind_group(2, &level.lighting_bind_group, &[]);
         sprites.set_bind_group(3, sh, &[]);
-        pass.sprites.record_draws(&mut sprites, &full.smoke_pass);
+        pass.sprites
+            .record_draws(&mut sprites, &full.smoke_pass, &level.smoke);
     }
     {
         // Cleared every frame it records, colour and depth, so a texel no

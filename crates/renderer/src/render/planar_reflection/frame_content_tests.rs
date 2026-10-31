@@ -467,9 +467,11 @@ fn planar_mirror_sprites_record_on_the_frame_encoder() {
     }
     let record = include_str!("record.rs");
     assert!(record.contains(
-        "full.mesh_pass\n            .record_mirror_draws(&mut skinned, &level.mesh_lights, plan);"
+        "full.mesh_pass\n            .record_mirror_draws(&mut skinned, &level.models, &level.mesh_lights, plan);"
     ));
-    assert!(record.contains("pass.sprites.record_draws(&mut sprites, &full.smoke_pass);"));
+    assert!(record.contains(
+        "pass.sprites\n            .record_draws(&mut sprites, &full.smoke_pass, &level.smoke);"
+    ));
     for excluded in [
         "ghost_order",
         "kinematic_ghost",

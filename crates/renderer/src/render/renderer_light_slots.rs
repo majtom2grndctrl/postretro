@@ -836,7 +836,7 @@ impl Renderer {
                 .copy_from_slice(&bytes);
         }
         queue.write_buffer(
-            &full.spot_shadow_pool.matrices_buffer,
+            &full.spot_shadow_pool.textures.matrices_buffer,
             0,
             &fragment_matrices,
         );

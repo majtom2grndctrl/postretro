@@ -436,6 +436,11 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
         body(targets, "impl PlanarTargets", "new"),
         body(fluid, "impl Renderer", "set_reflection_quality"),
         body(fluid, "impl Renderer", "install_fluid_surfaces"),
+        body(fluid, "impl Renderer", "reconcile_published_fluid_targets"),
+        body(fluid, "impl FluidSurfacePass", "take_level_targets"),
+        body(fluid, "impl FluidSurfacePass", "lend_level_targets"),
+        body(routing, "impl FluidSurfacePass", "take_planar_layer"),
+        body(routing, "impl FluidSurfacePass", "lend_planar_layer"),
     ];
     for text in bodies {
         for compile in [
@@ -468,9 +473,10 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
             assert!(!source.contains(lifecycle), "{file} reaches {lifecycle}");
         }
     }
-    // The rebuild follows the scene targets alone; the sync follows the
-    // tier, the fluid install and the app's verdict, and the commit reaches
-    // it only through a deferred build.
+    // The rebuild follows the scene targets, and a published set built at
+    // another extent; the sync follows the tier, the fluid install, the
+    // app's verdict and a publish at the set's own extent, and the commit
+    // reaches it only through a deferred build.
     let extent = include_str!("../renderer_extent.rs");
     assert_eq!(extent.matches("self.rebuild_planar_layer();").count(), 1);
     assert_eq!(
@@ -480,5 +486,8 @@ fn planar_lifecycle_compiles_nothing_and_never_runs_per_frame() {
         1
     );
     assert!(!extent.contains("sync_planar_layer("));
-    assert_eq!(fluid.matches("self.sync_planar_layer();").count(), 2);
+    assert_eq!(fluid.matches("self.sync_planar_layer();").count(), 3);
+    assert_eq!(fluid.matches("self.rebuild_planar_layer();").count(), 1);
+    let publish = body(fluid, "impl Renderer", "reconcile_published_fluid_targets");
+    assert!(publish.contains("if extent_changed"), "{publish}");
 }

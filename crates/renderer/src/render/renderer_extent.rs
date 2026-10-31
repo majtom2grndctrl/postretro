@@ -125,39 +125,24 @@ impl Renderer {
             height,
             full.screen_effects.scene_color_texture(),
         );
-        full.fog.resize(device, width, height, &full.depth_view);
-        // After depth and scene colour: the fluid reflection target follows
-        // them, then fluid group 5 and the reflection pass's inputs rebuild
-        // over all three, with or without a level installed.
+        // After depth and scene colour: the fluid reflection pass's inputs
+        // and its placeholder group 5 rebuild over both, with or without a
+        // level installed.
         full.fluid_surface.rebuild_scene_inputs(
             device,
             &full.depth_view,
             full.screen_effects.scene_color_view(),
         );
-        // The SDF shadow target is half the scene; the depth view also changed,
-        // so the active level's SDF group 1 is rebuilt over both.
+        // The SDF shadow target is half the scene.
         full.sdf_shadow_pass.resize(device, width, height);
-        if let Some(level) = full.level.as_mut() {
-            full.sdf_shadow_pass.rebind_level_extent(
-                device,
-                &mut level.sdf_shadow,
-                &full.depth_view,
-            );
+        // Only the active set's extent-bound groups follow: its spot group 5
+        // (over the SDF factor and scene depth, both just recreated), fog
+        // scatter target, SDF group 1 and fluid reflection targets. A resident
+        // set keeps the extent it was built at until its publish rebuilds it.
+        if let Some(mut level) = full.level.take() {
+            super::renderer_resources::rebuild_level_extent_groups(device, full, &mut level, scene);
+            full.level = Some(level);
         }
-        // Group 5 references the SDF factor and scene depth, both just
-        // recreated. The cube binding's presence is fixed for the renderer's
-        // lifetime (`Some` pool iff CUBE_ARRAY_TEXTURES), so the BGL is rebuilt
-        // with the same flag.
-        let cube_array_supported = full.cube_shadow_pool.is_some();
-        let spot_shadow_bgl = SpotShadowPool::bind_group_layout(device, cube_array_supported);
-        let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
-        full.spot_shadow_pool.rebuild_bind_group(
-            device,
-            &spot_shadow_bgl,
-            &full.sdf_shadow_pass.shadow_view,
-            &full.depth_view,
-            cube_sampling_view,
-        );
         // After fluid group 5 holds the new scene depth: the planar layer, its
         // group 5 and the mirror targets follow it at the new extent.
         self.rebuild_planar_layer();

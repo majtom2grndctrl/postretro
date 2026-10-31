@@ -2,8 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.1, §9
 
 use crate::render::gpu_create::GpuCreate;
-use postretro_model::ModelHandle;
-use postretro_render_cpu::mesh_instances::{JointCounts, MeshFramePlan, instance_casts_into_cone};
+use postretro_render_cpu::mesh_instances::{MeshFramePlan, instance_casts_into_cone};
 
 use super::mesh_pass::MeshPass;
 
@@ -162,9 +161,13 @@ impl MeshPass {
     /// SAME documented DX12 exposure (gfx-rs/wgpu#2471). See the per-draw comment at
     /// the `draw_indexed` site below; the per-instance palette base still travels in
     /// the SSBO entry, never in `first_instance`.
+    // One positional arg per draw input: the active set's models beside the
+    // frame plan, filter, light-space group and offset, and cone planes.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_skinned_depth(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &super::mesh_pass::LevelModels,
         plan: &MeshFramePlan,
         filter: MeshDepthInstanceFilter,
         light_space_bind_group: &wgpu::BindGroup,
@@ -183,7 +186,7 @@ impl MeshPass {
 
         let mut submitted: u32 = 0;
         for group in &plan.groups {
-            let Some(model) = self.models.get(&group.model) else {
+            let Some(model) = models.get(&group.model) else {
                 continue;
             };
             if model.submeshes.is_empty() {
@@ -230,22 +233,6 @@ impl MeshPass {
             }
         }
         submitted
-    }
-}
-
-/// Joint-count and model-bound lookup over the mesh cache, so the GPU-free
-/// frame planner can assign palette runs and stamp per-light caster bounds
-/// without a wgpu reference. Missing models keep the existing zero-bound
-/// degradation path.
-impl JointCounts for MeshPass {
-    fn joint_count(&self, model: &ModelHandle) -> Option<u32> {
-        self.models
-            .get(model)
-            .map(|model| model.skeleton.joints.len() as u32)
-    }
-
-    fn model_bounds(&self, model: &ModelHandle) -> postretro_render_data::cone_frustum::Aabb {
-        self.model_bounds.get(model).copied().unwrap_or_default()
     }
 }
 

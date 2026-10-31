@@ -523,12 +523,16 @@ impl Renderer {
         });
     }
 
-    /// Current `fog_pixel_scale` — read by the debug-UI slider on first draw.
-    /// The setter (`set_fog_pixel_scale` above) drives a scatter-target
-    /// rebuild rather than a per-frame uniform write.
+    /// The active level's `fog_pixel_scale` — read by the debug-UI slider on
+    /// first draw; with no active set, the scale a new set starts at. The
+    /// setter (`set_fog_pixel_scale` above) drives a scatter-target rebuild
+    /// rather than a per-frame uniform write.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn fog_pixel_scale(&self) -> u32 {
-        self.full().fog.pixel_scale
+        self.full().level.as_ref().map_or_else(
+            || postretro_render_cpu::fog_volume::clamp_fog_pixel_scale(0),
+            |level| level.extent.fog.pixel_scale(),
+        )
     }
 
     /// Boot-ready: the surface/device/queue/boot-splash exist and the surface is

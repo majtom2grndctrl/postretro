@@ -56,13 +56,10 @@ mod record;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
-
+use postretro_model::BonePaletteEntry;
 use postretro_model::anim::LocalTrs;
-use postretro_model::skeleton::AnimationClip;
-use postretro_model::{BonePaletteEntry, ModelHandle};
 
-pub(super) use models::{ModelAnimationData, UploadedModel};
+pub(super) use models::{LevelModels, ModelAnimationData, UploadedModel};
 use pose::{PaletteCache, SnapshotStore};
 
 /// Byte size of one `BonePaletteEntry` (mat4x4<f32> = 64 B).
@@ -155,28 +152,9 @@ pub struct MeshPass {
     /// lifetime — the same flag drives the pipeline's no-cube shader strip.
     cube_array_supported: bool,
 
-    /// Uploaded models keyed by handle (the raw `MeshComponent.model` string).
-    /// One entry per distinct model; mirrors `SmokePass::sheets`. The level-load
-    /// level-load model sweep populates this via [`MeshPass::insert_model`].
-    pub(super) models: HashMap<ModelHandle, UploadedModel>,
-
-    /// Per-model conservative LOCAL-space pose envelope, keyed by handle and
-    /// populated at `insert_model` from the CPU `SkinnedMesh::bounds`. Kept on
-    /// the cache (not in `UploadedModel`, which stays GPU-only) so the GPU-free
-    /// frame planner can stamp each `PlannedInstance` for CPU shadow and
-    /// sampled-SH planning. The renderer's GPU draw never reads it.
-    pub(super) model_bounds: HashMap<ModelHandle, postretro_render_data::cone_frustum::Aabb>,
-
-    /// Per-model animation clips, keyed by handle, in glTF (authored) index
-    /// order — the FULL clip set parsed from the document, not just the first.
-    /// Kept on the cache beside `model_bounds` (not in `UploadedModel`, which
-    /// stays GPU-only) so the clip-name / metadata query seam is testable
-    /// without a `wgpu::Device`. `plan_and_upload` samples each instance by the
-    /// clip indices its per-instance `MeshSampleParams` carry (the collector
-    /// resolves state → clip index game-side); the name/metadata accessors read
-    /// the whole list. A model with no animation maps to an empty `Vec`.
-    model_clips: HashMap<ModelHandle, Vec<AnimationClip>>,
-
+    // The uploaded models, their pose envelopes and clips are level
+    // resources: each [`LevelModels`] lives in its level set, and every draw
+    // resolves its handle through the active set's.
     /// Per-entity `"smooth"`-interrupt snapshot store, keyed by entity seed. A
     /// GPU-free CPU map (the `model_bounds` precedent): a capture instruction
     /// installs an entry, and end-of-frame retention keeps it only while the

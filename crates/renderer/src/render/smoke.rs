@@ -545,10 +545,58 @@ impl<T> SpriteAssetCache<T> {
     fn uploaded_asset_count(&self) -> usize {
         self.assets.len()
     }
+}
 
-    fn clear(&mut self) {
-        self.assets.clear();
-        self.collection_assets.clear();
+/// One level set's sprite collections: the collection-id draw bindings and
+/// the uploaded asset arrays beneath them. Dropped with the set, so releasing
+/// a level frees its sheets and creates nothing.
+pub(crate) struct SmokeLevelCollections {
+    /// Loaded sprite-frame arrays keyed by collection id. Populated at level load.
+    sheets: HashMap<String, SpriteSheet>,
+    /// Uploaded texture arrays keyed by asset reference. Multiple collection
+    /// ids may bind the same asset views while retaining distinct group-1 draw
+    /// bindings and `SpriteDrawParams` uniforms.
+    sprite_assets: SpriteAssetCache<SpriteAssetResources>,
+}
+
+impl Default for SmokeLevelCollections {
+    fn default() -> Self {
+        Self {
+            sheets: HashMap::new(),
+            sprite_assets: SpriteAssetCache::new(),
+        }
+    }
+}
+
+impl SmokeLevelCollections {
+    /// Whether any collection is registered. Used by the renderer to skip the
+    /// pass entirely on levels with no emitters.
+    pub fn has_any_sheet(&self) -> bool {
+        !self.sheets.is_empty()
+    }
+
+    /// Collection `collection`'s group-1 bind group (frame array, sampler and
+    /// draw params), if it registered this level.
+    pub(super) fn sheet_bind_group(&self, collection: &str) -> Option<&wgpu::BindGroup> {
+        self.sheets.get(collection).map(|sheet| &sheet.bind_group)
+    }
+
+    /// Move every collection of `other` in, keeping one this set already
+    /// registered.
+    pub(super) fn absorb(&mut self, other: &mut SmokeLevelCollections) {
+        let other = std::mem::take(other);
+        for (asset, resource) in other.sprite_assets.assets {
+            self.sprite_assets.assets.entry(asset).or_insert(resource);
+        }
+        for (collection, asset) in other.sprite_assets.collection_assets {
+            self.sprite_assets
+                .collection_assets
+                .entry(collection)
+                .or_insert(asset);
+        }
+        for (collection, sheet) in other.sheets {
+            self.sheets.entry(collection).or_insert(sheet);
+        }
     }
 }
 
@@ -699,14 +747,9 @@ pub struct SmokePass {
     /// frame).
     instance_bind_group: wgpu::BindGroup,
 
-    /// Loaded sprite-frame arrays keyed by collection id. Populated at level load.
-    sheets: HashMap<String, SpriteSheet>,
-
-    /// Uploaded texture arrays keyed by asset reference. Multiple collection
-    /// ids may bind the same asset views while retaining distinct group-1 draw
-    /// bindings and `SpriteDrawParams` uniforms.
-    sprite_assets: SpriteAssetCache<SpriteAssetResources>,
-
+    // The registered collections (sprite sheets and their uploaded asset
+    // arrays) are level resources: each level set holds its own
+    // [`SmokeLevelCollections`].
     /// Shared linear sampler for sprite-frame arrays.
     sampler: wgpu::Sampler,
     /// Shared 1×1/one-layer `R8Unorm` fallback with R = 1.0 for missing
@@ -988,8 +1031,6 @@ impl SmokePass {
             instance_buffer_capacity,
             instance_window,
             instance_bind_group,
-            sheets: HashMap::new(),
-            sprite_assets: SpriteAssetCache::new(),
             sampler,
             specular_placeholder_texture,
             specular_placeholder_view,
@@ -1198,7 +1239,8 @@ impl SmokePass {
     /// and `SpriteDrawParams` uniform; its asset reference owns the deduped
     /// texture arrays and views beneath it.
     pub fn register_collection(
-        &mut self,
+        &self,
+        level: &mut SmokeLevelCollections,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         collection_id: &str,
@@ -1212,14 +1254,14 @@ impl SmokePass {
             );
             return;
         }
-        if self.sheets.contains_key(collection_id) {
+        if level.sheets.contains_key(collection_id) {
             log::warn!(
                 "[Smoke] duplicate collection id '{collection_id}' rejected; level installation must resolve one draw contract"
             );
             return;
         }
 
-        if self
+        if level
             .sprite_assets
             .get_or_try_upload(asset_source.asset, || {
                 Self::upload_sprite_asset(
@@ -1236,7 +1278,7 @@ impl SmokePass {
             return;
         }
 
-        let sprite_asset = self
+        let sprite_asset = level
             .sprite_assets
             .resource(asset_source.asset)
             .expect("successful sprite asset upload must populate the cache");
@@ -1322,7 +1364,7 @@ impl SmokePass {
             ],
         });
 
-        self.sheets.insert(
+        level.sheets.insert(
             collection_id.to_string(),
             SpriteSheet {
                 bind_group,
@@ -1330,21 +1372,9 @@ impl SmokePass {
                 slot_mask,
             },
         );
-        self.sprite_assets
+        level
+            .sprite_assets
             .record_collection(collection_id, asset_source.asset);
-    }
-
-    /// Drop per-level sprite sheet textures and bind groups. The shared
-    /// instance buffer is renderer-lifetime scratch and stays allocated.
-    pub fn clear_collections(&mut self) {
-        self.sheets.clear();
-        self.sprite_assets.clear();
-    }
-
-    /// Whether any collection is registered. Used by the renderer to skip the
-    /// pass entirely on levels with no emitters.
-    pub fn has_any_sheet(&self) -> bool {
-        !self.sheets.is_empty()
     }
 
     /// The group-1 sprite-sheet layout, shared by the billboard ghost pipeline
@@ -1363,12 +1393,6 @@ impl SmokePass {
     /// planar mirror's) binds into this pipeline.
     pub(super) fn instance_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
         &self.instance_bind_group_layout
-    }
-
-    /// Collection `collection`'s group-1 bind group (frame array, sampler and
-    /// draw params), if it registered this level.
-    pub(super) fn sheet_bind_group(&self, collection: &str) -> Option<&wgpu::BindGroup> {
-        self.sheets.get(collection).map(|sheet| &sheet.bind_group)
     }
 
     /// Upload every collection's packed sprite instances into the single shared
@@ -1401,6 +1425,7 @@ impl SmokePass {
     /// which rebases `sprites[0]` in the shader to that region's first instance.
     pub fn record_draws<'a>(
         &'a mut self,
+        level: &SmokeLevelCollections,
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
         pass: &mut wgpu::RenderPass<'a>,
@@ -1465,7 +1490,7 @@ impl SmokePass {
 
         pass.set_pipeline(&self.pipeline);
         for placement in &placements {
-            let Some(sheet) = self.sheets.get(placement.collection) else {
+            let Some(sheet) = level.sheets.get(placement.collection) else {
                 continue;
             };
             pass.set_bind_group(1, &sheet.bind_group, &[]);

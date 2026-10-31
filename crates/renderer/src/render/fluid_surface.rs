@@ -285,6 +285,25 @@ impl InstalledFluidSurfaces {
     }
 }
 
+/// One level set's fluid reflection targets: the screen-space reflection
+/// target with the group 5 over it, and the planar layer with its group 5.
+/// The set owns them; while it is the active set they are lent to the fluid
+/// pass, which draws through them, and publishing another set hands them
+/// back. Building a set never touches the pass's.
+#[derive(Default)]
+pub(crate) struct FluidLevelTargets {
+    reflection: Option<reflection_pass::LentReflectionTarget>,
+    planar: planar_routing::LentPlanarLayer,
+}
+
+impl FluidLevelTargets {
+    /// Whether the set holds a reflection target (tests).
+    #[cfg(test)]
+    pub(crate) fn has_reflection_target(&self) -> bool {
+        self.reflection.is_some()
+    }
+}
+
 pub(crate) struct FluidSurfacePass {
     /// One pipeline per `FluidShaderVariant`, in `FluidShaderVariant::ALL`
     /// order, over one layout: the reflection-free variant and the
@@ -392,6 +411,22 @@ impl FluidSurfacePass {
     #[cfg(test)]
     pub(crate) fn scene_inputs(&self) -> &FluidSceneInputs {
         &self.scene_inputs
+    }
+
+    /// Take the active set's reflection target and planar layer back for its
+    /// set, building nothing: group 5 rebinds its prebuilt placeholder group.
+    pub(in crate::render) fn take_level_targets(&mut self) -> FluidLevelTargets {
+        FluidLevelTargets {
+            reflection: self.take_reflection_target(),
+            planar: self.take_planar_layer(),
+        }
+    }
+
+    /// Lend a just-published set's reflection target and planar layer to the
+    /// pass, building nothing. Call after `take_level_targets`.
+    pub(in crate::render) fn lend_level_targets(&mut self, targets: FluidLevelTargets) {
+        self.lend_reflection_target(targets.reflection);
+        self.lend_planar_layer(targets.planar);
     }
 
     /// Drop a released level's reflection target and planar layer, building
@@ -915,6 +950,33 @@ impl Renderer {
         // on a level with a candidate plane, released below. Compiles nothing.
         self.sync_planar_layer();
         log::info!("[Renderer] Reflection quality: {quality:?}");
+    }
+
+    /// Bring the published set's lent reflection targets in line with the
+    /// kept tier and the current scene: `extent_changed` (the set was built
+    /// at another extent) recreates its reflection target, planar layer and
+    /// mirror targets over the current scene targets; otherwise only a tier
+    /// that moved while the set was resident creates, resizes or releases
+    /// them, and the extent they already have builds nothing.
+    pub(in crate::render) fn reconcile_published_fluid_targets(&mut self, extent_changed: bool) {
+        let Self { device, full, .. } = self;
+        let full = full
+            .as_mut()
+            .expect("renderer full-init must complete before full-ready paths run");
+        if extent_changed {
+            full.fluid_surface.rebuild_lent_reflection_target(device);
+        }
+        full.fluid_surface.reconcile_reflection_target(
+            full.level
+                .as_ref()
+                .and_then(|level| level.fluid_surfaces.as_ref()),
+            device,
+        );
+        if extent_changed {
+            self.rebuild_planar_layer();
+        } else {
+            self.sync_planar_layer();
+        }
     }
 
     /// The reflection tier the next frame draws at.

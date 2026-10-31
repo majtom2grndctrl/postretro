@@ -217,6 +217,20 @@ pub(in crate::render) fn install_one_triangle_with_sh(
     sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
 ) {
+    with_one_triangle(materials, sh_volume, direct_sh_volume, &[], |geometry| {
+        renderer.install_level_geometry(geometry, Default::default());
+    });
+}
+
+/// The one-triangle level (one cell, one BVH leaf, the triangle at z = 0
+/// facing +Z) with `lights`, handed to `use_geometry` to install or build.
+pub(in crate::render) fn with_one_triangle<R>(
+    materials: &[Material],
+    sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
+    direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
+    lights: &[postretro_level_loader::MapLight],
+    use_geometry: impl FnOnce(&LevelGeometry<'_>) -> R,
+) -> R {
     let vertices: Vec<WorldVertex> = [[-0.4, -0.4, 0.0], [0.4, -0.4, 0.0], [0.0, 0.4, 0.0]]
         .map(|position| WorldVertex {
             position,
@@ -283,38 +297,35 @@ pub(in crate::render) fn install_one_triangle_with_sh(
         is_exterior: false,
         is_drawable: true,
     }];
-    renderer.install_level_geometry(
-        &LevelGeometry {
-            vertices: &vertices,
-            vertex_spec_owners: &[],
-            indices: &indices,
-            bvh: &bvh,
-            lights: &[],
-            light_influences: &[],
-            sh_volume,
-            sh_storage: LevelGeometryShStorage::Legacy,
-            lightmap: None,
-            lightmap_streaming: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume,
-            direct_sh_delta_volumes: None,
-            animated_direct_sh_delta_volumes: None,
-            billboard_direct_scatter_volume: None,
-            animated_billboard_direct_scatter_delta_volumes: None,
-            entity_shadow_lights: &[],
-            shadowmask_atlas: None,
-            sdf_atlas: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            cell_draw_index: Some(&index),
-            kinematic_geometry: None,
-            cells: &cells,
-            texture_materials: materials,
-        },
-        Default::default(),
-    );
+    use_geometry(&LevelGeometry {
+        vertices: &vertices,
+        vertex_spec_owners: &[],
+        indices: &indices,
+        bvh: &bvh,
+        lights,
+        light_influences: &[],
+        sh_volume,
+        sh_storage: LevelGeometryShStorage::Legacy,
+        lightmap: None,
+        lightmap_streaming: None,
+        chunk_light_list: None,
+        animated_light_chunks: None,
+        animated_light_weight_maps: None,
+        delta_sh_volumes: None,
+        direct_sh_volume,
+        direct_sh_delta_volumes: None,
+        animated_direct_sh_delta_volumes: None,
+        billboard_direct_scatter_volume: None,
+        animated_billboard_direct_scatter_delta_volumes: None,
+        entity_shadow_lights: &[],
+        shadowmask_atlas: None,
+        sdf_atlas: None,
+        lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+        cell_draw_index: Some(&index),
+        kinematic_geometry: None,
+        cells: &cells,
+        texture_materials: materials,
+    })
 }
 
 #[test]

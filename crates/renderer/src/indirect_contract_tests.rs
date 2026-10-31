@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const INSTALL: &str = "render/renderer_resources.rs";
+const PUBLISH: &str = "render/renderer_resources/publish.rs";
 const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
 const INIT: &str = "render/renderer_init.rs";
@@ -450,9 +451,25 @@ fn indirect_contract_compiled_pipeline_sources_ban_index_builtins() {
 fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
     let sources = load_sources(&source_root());
     let (functions, _) = scan(&sources);
-    // The install is a sequencer: the buffer phase uploads the index buffer,
-    // and the cull phase, called after it, recreates every cull owner.
-    let install = function(&functions, INSTALL, "install_level_geometry");
+    // The build is a sequencer: the buffer phase uploads the index buffer,
+    // and the cull phase, called after it, recreates every cull owner. The
+    // oracle install builds one set and publishes it; publishing is the only
+    // way a built set becomes the drawn one.
+    let oracle = function(&functions, INSTALL, "install_level_geometry");
+    require(
+        oracle,
+        &[
+            "let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale);",
+            "self.publish_level_set(id, PreviousLevelSet::Retire);",
+        ],
+    );
+    let publish = function(&functions, PUBLISH, "publish_level_set");
+    assert_eq!(publish.matches("full.level.replace(level)").count(), 1);
+    assert!(
+        !publish.contains("LevelResourceSet{"),
+        "publish builds no set"
+    );
+    let install = function(&functions, INSTALL, "build_level_set_at");
     let buffers = function(&functions, WORLD_GEOMETRY, "install_world_buffers");
     require(
         buffers,
@@ -483,9 +500,12 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
         ],
     );
     assert_eq!(
-        install.matches("full.level=Some(LevelResourceSet{").count(),
+        install
+            .matches("full.resident_levels.push(LevelResourceSet{")
+            .count(),
         1
     );
+    assert!(!install.contains("full.level="), "a build never publishes");
     require(
         function(
             &functions,

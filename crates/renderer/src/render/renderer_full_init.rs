@@ -43,23 +43,26 @@ pub(crate) fn build_full_renderer(
         lighting_bind_group_layout,
     } = build_uniform_bind_groups(device, &uniform_data);
 
-    // BGL owned here so forward pipeline layout and shadow pool bind group share it.
-    // The BGL carries bindings 3 (SDF shadow factor) and 4 (scene depth) — both
-    // owned outside the pool. Binding 5 (point-light cube-array depth) is present
-    // only when `cube_array_supported`; the shared BGL, the forward + fog
-    // pipelines, and the shader variants all key off the same flag. The pool
-    // itself is built later (after depth_view + sdf_shadow_pass exist) so its
-    // bind group can reference those targets directly at construction.
+    // BGL owned here so the forward pipeline layout and every level set's spot
+    // shadow bind group share it. The BGL carries bindings 3 (SDF shadow
+    // factor) and 4 (scene depth) — both owned outside the pool. Binding 5
+    // (point-light cube-array depth) is present only when
+    // `cube_array_supported`; the shared BGL, the forward + fog pipelines, and
+    // the shader variants all key off the same flag. Each level set builds its
+    // group at its build, over the extent-bound views of that moment.
     let spot_shadow_bgl = SpotShadowPool::bind_group_layout(device, cube_array_supported);
 
     // Sampler pool seeded with the placeholder's mip count of `1`. The
     // pool grows in `install_textures` once `LoadedTexture::mip_count`
     // values arrive from the .prm sidecars. Placeholders always pick up
     // the `1` entry; never miss this lookup.
-    let mut mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
-    mip_count_aniso_samplers.insert(1, create_mip_aniso_sampler(device, 1));
-    let mut mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
-    mip_count_character_model_samplers.insert(1, create_mip_character_model_sampler(device, 1));
+    let mut samplers = SamplerMaps::default();
+    samplers
+        .aniso
+        .insert(1, create_mip_aniso_sampler(device, 1));
+    samplers
+        .character
+        .insert(1, create_mip_character_model_sampler(device, 1));
 
     let (_depth_texture, depth_view) = create_depth_texture(device, scene.width, scene.height);
     let ghost_depth = ghost_depth::GhostDepthTarget::new(device, scene.width, scene.height);
@@ -118,41 +121,30 @@ pub(crate) fn build_full_renderer(
         scene.height,
     );
 
-    // Cube point-shadow pool — built before the spot pool because the
-    // spot-shadow bind group (the shared group-5 BGL) references the cube
-    // sampling view at binding 5. Disabled (None) when the adapter lacks
+    // Cube point-shadow pool. Every level set's spot-shadow bind group (the
+    // shared group-5 BGL) references its sampling view at binding 5. Disabled (None) when the adapter lacks
     // CUBE_ARRAY_TEXTURES — in that case binding 5 is omitted from the BGL and
     // NO cube view (not even a dummy) is created, since a `CubeArray` view
     // itself requires the feature. `cube_shadow_pool.is_some()` therefore
     // mirrors `cube_array_supported` exactly.
     let cube_shadow_pool =
         crate::lighting::cube_shadow::CubeShadowPool::new(device, cube_array_supported);
-    let cube_sampling_view = cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
 
-    // Now that the SDF shadow factor target + scene depth view both
-    // exist, build the spot-shadow pool — its bind group references
-    // both targets at bindings 3/4 and (when present) the cube sampling view
-    // at binding 5. See `SpotShadowPool::new` docs.
-    let spot_shadow_pool = SpotShadowPool::new(
+    // The boot shadow tier: the spot pool's textures at the boot resolution,
+    // registered so the first build at it reuses them. Each level set binds
+    // them (with the SDF shadow factor, scene depth and, when present, the
+    // cube sampling view) in its own group 5.
+    let shadow_tier = Arc::new(shadow_tier::ShadowTier::new(
         device,
-        &spot_shadow_bgl,
-        &sdf_shadow_pass.shadow_view,
-        &depth_view,
-        cube_sampling_view,
         spot_shadow_map_resolution,
-    );
-    // Both selected-static and section-45 animated-baked candidates use the
-    // fixed-projection promoted cache. Construction precedes mesh/kinematic
-    // bind-group wiring so their sampleable cache bindings are valid even for
-    // an animated-only map.
-    // No level, no promotion candidate: the first install allocates the
-    // promoted cache when its level has a source.
+    ));
+    let mut shadow_tiers = shadow_tier::TierRegistry::default();
+    shadow_tiers.register(spot_shadow_map_resolution, &shadow_tier);
+    let spot_shadow_pool = SpotShadowPool::over(shadow_tier.spot.clone());
+    // No level, no promotion candidate or dynamic light: the first publish
+    // points both caches at its set's tier.
     let promoted_depth_cache: Option<PromotedDepthCache> = None;
-    let dynamic_depth_cache = DynamicDepthCacheGpu::new(
-        device,
-        dynamic_depth_cache::DynamicCacheAllocation::for_lights(&[], cube_array_supported),
-        spot_shadow_map_resolution,
-    );
+    let dynamic_depth_cache = DynamicDepthCacheGpu::over(Default::default());
     {
         use crate::lighting::spot_shadow::{SHADOW_DEPTH_FORMAT, SHADOW_POOL_SIZE};
         // Depth32Float = 4 B/texel; MiB = bytes >> 20. Derived from the fixed
@@ -302,10 +294,6 @@ pub(crate) fn build_full_renderer(
 
     let fog = FogPass::new(
         device,
-        scene.width,
-        scene.height,
-        postretro_render_cpu::fog_volume::clamp_fog_pixel_scale(0),
-        &depth_view,
         &uniform_bind_group_layout,
         &sh_volume_resources.bind_group_layout,
         &spot_shadow_bgl,
@@ -336,7 +324,13 @@ pub(crate) fn build_full_renderer(
         depth_prepass_pipeline,
         frame_timing,
         level: None,
+        resident_levels: Vec::new(),
+        next_level_set_id: 0,
+        extent_rebuilds: 0,
         pending_textures: None,
+        pending_models: Default::default(),
+        pending_samplers: Default::default(),
+        pending_smoke: Default::default(),
         lightmap_generation_floor: 0,
         uniform_buffer,
         uniform_bind_group,
@@ -358,6 +352,9 @@ pub(crate) fn build_full_renderer(
         last_camera_position: Vec3::ZERO,
         last_view_proj: Mat4::IDENTITY,
         spot_shadow_pool,
+        shadow_tier,
+        shadow_tiers,
+        spot_shadow_bgl: spot_shadow_bgl.clone(),
         cube_shadow_pool,
         kinematic_brush,
         kinematic_ghost,
@@ -446,8 +443,7 @@ pub(crate) fn build_full_renderer(
         fog,
         texture_bind_group_layout,
         lighting_bind_group_layout,
-        mip_count_aniso_samplers,
-        mip_count_character_model_samplers,
+        samplers,
         upload_thread,
         install_pipelines,
         #[cfg(feature = "dev-tools")]

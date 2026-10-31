@@ -132,22 +132,15 @@ fn bind_loaded_textures(
     let bind_groups_started = std::time::Instant::now();
     let total = || before_bind_groups + bind_groups_started.elapsed();
 
-    // Sampler pool grows monotonically: every distinct `mip_count` seen in
-    // this batch needs a sampler with matching `lod_max_clamp`. The `1`
-    // entry seeded in `Renderer::new` covers placeholders; new mip counts
-    // beyond `1` arrive here when real textures load.
-    for tex in &loaded {
-        full.mip_count_aniso_samplers
-            .entry(tex.mip_count)
-            .or_insert_with(|| create_mip_aniso_sampler(device, tex.mip_count));
-    }
-
+    // Every distinct `mip_count` seen in this batch needs a sampler with
+    // matching `lod_max_clamp`. The renderer's add-only map serves the ones it
+    // holds (the `1` entry seeded in `Renderer::new` covers placeholders); the
+    // rest are created into the staged materials' own map, which merges into
+    // the renderer's when their set publishes.
+    let mut samplers = SamplerMaps::default();
     let mut gpu_textures: Vec<GpuTexture> = Vec::with_capacity(loaded.len());
     for (idx, tex) in loaded.iter().enumerate() {
-        let aniso_sampler = full
-            .mip_count_aniso_samplers
-            .get(&tex.mip_count)
-            .expect("aniso mip sampler must have been eagerly populated");
+        let aniso_sampler = samplers.aniso(&full.samplers, device, tex.mip_count);
         let material = texture_materials
             .get(idx)
             .copied()
@@ -156,7 +149,7 @@ fn bind_loaded_textures(
             device,
             &full.texture_bind_group_layout,
             tex,
-            aniso_sampler,
+            &aniso_sampler,
             material,
             surface_depth_quality,
             &format!("Material {idx}"),
@@ -180,6 +173,7 @@ fn bind_loaded_textures(
         loaded_textures: loaded,
         gpu_textures,
         stored_texture_materials: texture_materials.to_vec(),
+        samplers,
     });
     log_texture_install_timing(load_timing, bind_groups_started.elapsed(), total());
 }
@@ -194,7 +188,8 @@ pub(super) fn placeholder_level_textures(
 ) -> LevelTextures {
     let placeholder = placeholder_loaded_texture(device, queue);
     let aniso_sampler = full
-        .mip_count_aniso_samplers
+        .samplers
+        .aniso
         .get(&1)
         .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
     let binding = build_material_bind_group(
@@ -210,6 +205,7 @@ pub(super) fn placeholder_level_textures(
         loaded_textures: vec![placeholder],
         gpu_textures: vec![binding.into()],
         stored_texture_materials: Vec::new(),
+        samplers: SamplerMaps::default(),
     }
 }
 

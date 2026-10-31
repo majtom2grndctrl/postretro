@@ -227,7 +227,11 @@ impl BillboardGhostPass {
     /// Record one draw per collection with ghost sprites. Group 0 (camera)
     /// must be set by the caller. A collection with no registered sheet this
     /// level draws nothing.
-    pub(crate) fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, smoke: &SmokePass) {
+    pub(crate) fn record_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        smoke: &super::smoke::SmokeLevelCollections,
+    ) {
         if self.batch_count == 0 {
             return;
         }

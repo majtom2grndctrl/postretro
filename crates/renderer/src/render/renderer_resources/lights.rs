@@ -2,6 +2,8 @@
 // forward lighting bind group, and the mesh and mover group-2 rebinds.
 // See: context/lib/rendering_pipeline.md §4
 
+use super::super::level_resource_set::LevelShadowTier;
+use super::super::promoted_depth_cache::PromotedDepthTextures;
 use super::super::renderer_types::FullRenderer;
 use super::*;
 use crate::render::gpu_create::GpuCreate;
@@ -283,36 +285,36 @@ pub(super) fn install_lighting_bind_group(
 }
 
 /// Build the mesh and mover group-2 light bind groups over one level's light,
-/// influence and SH animation buffers and the renderer's current shadow pools.
+/// influence and SH animation buffers and its shadow tier's pools.
 pub(super) fn rebind_mesh_light_groups(
     device: &wgpu::Device,
     full: &FullRenderer,
+    shadow: &LevelShadowTier,
     lights_buffer: &wgpu::Buffer,
     mirror_lights_buffer: &wgpu::Buffer,
     influence_buffer: &wgpu::Buffer,
     sh_volume_resources: &ShVolumeResources,
 ) -> (LevelLightGroups, LevelLightGroups) {
-    // Rebuild the mesh group-2 dynamic-direct light bind group over the
-    // just-reallocated runtime buffers — the `is_dynamic`-filtered
-    // `lights_buffer` (b0), the fresh `influence_buffer` (b1), and the new
-    // `sh_volume_resources` scripted-descriptor (b2) / anim-sample (b3)
-    // buffers. The forward `lighting_bind_group` above is rebuilt for the same
-    // reason; this mirrors it for the mesh pass so a level swap does not leave
-    // the mesh group-2 bind group dangling at the prior level's buffers.
-    // b5–b8 re-reference the current pool-owned shadow resources. Supplying
-    // them here rebinds the mesh pass after reallocated b0–b4 buffers or any
-    // level-boundary pool replacement. The cube view is `Some` iff
+    // Build the mesh group-2 dynamic-direct light bind group over the level's
+    // runtime buffers — the `is_dynamic`-filtered `lights_buffer` (b0), the
+    // `influence_buffer` (b1), and the `sh_volume_resources`
+    // scripted-descriptor (b2) / anim-sample (b3) buffers. The forward
+    // `lighting_bind_group` is built for the same reason; this mirrors it for
+    // the mesh pass so each set's group 2 references only its own buffers.
+    // b5–b8 reference the set's shadow tier: its pool, and its promoted
+    // cache when the level has a promoted source. The cube view is `Some` iff
     // `cube_shadow_pool` is present (the `Some`-iff-layout invariant).
     let cube_sampling_view = full.cube_shadow_pool.as_ref().map(|p| &p.sampling_view);
-    let promoted_spot_cache = full
-        .promoted_depth_cache
-        .as_ref()
-        .map(PromotedDepthCache::spot_sampled_view)
-        .unwrap_or(&full.spot_shadow_pool.array_view);
-    let promoted_cube_cache = full
-        .promoted_depth_cache
-        .as_ref()
-        .and_then(PromotedDepthCache::cube_sampled_view)
+    let spot = &shadow.tier.spot;
+    let promoted_spot_cache = shadow
+        .promoted
+        .as_deref()
+        .map(PromotedDepthTextures::spot_sampled_view)
+        .unwrap_or(&spot.array_view);
+    let promoted_cube_cache = shadow
+        .promoted
+        .as_deref()
+        .and_then(PromotedDepthTextures::cube_sampled_view)
         .or(cube_sampling_view);
     let mesh = full.mesh_pass.light_bind_groups(
         device,
@@ -321,9 +323,9 @@ pub(super) fn rebind_mesh_light_groups(
         influence_buffer,
         &sh_volume_resources.scripted_light_descriptors,
         &sh_volume_resources.animation.anim_samples,
-        &full.spot_shadow_pool.array_view,
-        &full.spot_shadow_pool.compare_sampler,
-        &full.spot_shadow_pool.matrices_buffer,
+        &spot.array_view,
+        &spot.compare_sampler,
+        &spot.matrices_buffer,
         cube_sampling_view,
         promoted_spot_cache,
         promoted_cube_cache,
@@ -335,9 +337,9 @@ pub(super) fn rebind_mesh_light_groups(
         influence_buffer,
         &sh_volume_resources.scripted_light_descriptors,
         &sh_volume_resources.animation.anim_samples,
-        &full.spot_shadow_pool.array_view,
-        &full.spot_shadow_pool.compare_sampler,
-        &full.spot_shadow_pool.matrices_buffer,
+        &spot.array_view,
+        &spot.compare_sampler,
+        &spot.matrices_buffer,
         cube_sampling_view,
         promoted_spot_cache,
         promoted_cube_cache,

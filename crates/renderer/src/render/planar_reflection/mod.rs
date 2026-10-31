@@ -37,6 +37,11 @@ use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::planar_reflection::{MirrorCamera, PlanarPreset, planar_preset};
 use targets::PlanarTargets;
 
+/// A level set's planar mirror colour and depth targets with the mask and
+/// resolve groups over them, held by the set while another set is active.
+#[derive(Default)]
+pub(in crate::render) struct LentMirrorTargets(Option<PlanarTargets>);
+
 /// The planar layer's texel format: premultiplied (c·X, c), filterable, as
 /// the screen-space reflection target.
 pub(in crate::render) const PLANAR_LAYER_FORMAT: wgpu::TextureFormat =
@@ -208,6 +213,20 @@ impl PlanarReflectionPass {
         }
         union_cells(main, &self.visible, &mut self.compose_union);
         &self.compose_union
+    }
+
+    /// Take the active set's mirror targets back for its set, building
+    /// nothing.
+    pub(in crate::render) fn take_level_targets(&mut self) -> LentMirrorTargets {
+        LentMirrorTargets(self.targets.take())
+    }
+
+    /// Lend a just-published set's mirror targets, building nothing; the
+    /// inputs and camera re-upload on the next planar frame.
+    pub(in crate::render) fn lend_level_targets(&mut self, lent: LentMirrorTargets) {
+        self.targets = lent.0;
+        self.uploaded_inputs = None;
+        self.uploaded_camera = None;
     }
 
     /// Drop the level's mirror view, visible cells, targets, world draws and

@@ -3,7 +3,7 @@
 
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
-use super::{MeshPass, UploadedModel};
+use super::{LevelModels, MeshPass, UploadedModel};
 use crate::render::LevelLightGroups;
 
 impl MeshPass {
@@ -26,10 +26,11 @@ impl MeshPass {
     pub(in crate::render) fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &LevelModels,
         lights: &LevelLightGroups,
         plan: &MeshFramePlan,
     ) {
-        self.record_draws_where(pass, lights, plan, false, |instance| {
+        self.record_draws_where(pass, models, lights, plan, false, |instance| {
             instance.forward_visible
         });
     }
@@ -43,12 +44,18 @@ impl MeshPass {
     pub(in crate::render) fn record_mirror_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &LevelModels,
         lights: &LevelLightGroups,
         plan: &MeshFramePlan,
     ) {
-        self.record_draws_where(pass, lights, plan, self.mirror_light_records, |instance| {
-            instance.mirror.drawn()
-        });
+        self.record_draws_where(
+            pass,
+            models,
+            lights,
+            plan,
+            self.mirror_light_records,
+            |instance| instance.mirror.drawn(),
+        );
     }
 
     /// One instanced draw per maximal contiguous run of instances `drawn`
@@ -56,6 +63,7 @@ impl MeshPass {
     fn record_draws_where(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &LevelModels,
         lights: &LevelLightGroups,
         plan: &MeshFramePlan,
         mirror_light_records: bool,
@@ -75,7 +83,7 @@ impl MeshPass {
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
 
         for group in &plan.groups {
-            let Some(model) = self.models.get(&group.model) else {
+            let Some(model) = models.get(&group.model) else {
                 continue;
             };
             if model.submeshes.is_empty() {

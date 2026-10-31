@@ -139,7 +139,7 @@ const TARGET_TEST_COPY_USAGE: wgpu::TextureUsages = if cfg!(test) {
 /// The depth orders fluid against fluid, so the nearest surface owns a texel;
 /// scene depth never occludes, so water hidden behind an object standing in
 /// it is still shaded.
-struct FluidReflectionTarget {
+pub(super) struct FluidReflectionTarget {
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
     _depth: wgpu::Texture,
@@ -184,6 +184,13 @@ impl FluidReflectionTarget {
             extent,
         }
     }
+}
+
+/// A level set's reflection target and the fluid group 5 built over it,
+/// held by the set while another set is active.
+pub(super) struct LentReflectionTarget {
+    target: FluidReflectionTarget,
+    group: wgpu::BindGroup,
 }
 
 /// The reflection pipeline, its inputs, and the target with its placeholder.
@@ -644,6 +651,59 @@ impl FluidSurfacePass {
             .rebuild(device, &scene_depth, self.reflection.bound_view());
         self.scene_inputs
             .set_ssr_scale(self.reflection.target_scale());
+    }
+
+    /// Take the active set's reflection target and the group 5 over it,
+    /// rebinding group 5 to the prebuilt placeholder group. Builds nothing:
+    /// publishing another set hands the target back to its own set.
+    pub(super) fn take_reflection_target(&mut self) -> Option<LentReflectionTarget> {
+        let target = self.reflection.target.take()?;
+        let group = self.scene_inputs.live_bind_group().clone();
+        self.scene_inputs
+            .bind_placeholder(&self.reflection.placeholder_view);
+        self.scene_inputs
+            .set_ssr_scale(self.reflection.target_scale());
+        Some(LentReflectionTarget { target, group })
+    }
+
+    /// Bind a just-published set's reflection target and the group 5 it
+    /// holds over it, building nothing. The pass holds no target of its own
+    /// here: the previous active set's was taken first.
+    pub(super) fn lend_reflection_target(&mut self, lent: Option<LentReflectionTarget>) {
+        debug_assert!(self.reflection.target.is_none());
+        let Some(LentReflectionTarget { target, group }) = lent else {
+            return;
+        };
+        self.scene_inputs.bind_live(group, &target.view);
+        self.reflection.target = Some(target);
+        self.scene_inputs
+            .set_ssr_scale(self.reflection.target_scale());
+    }
+
+    /// A just-published set built at another scene extent: recreate its
+    /// reflection target at the kept tier's fraction of the current extent
+    /// and rebuild group 5 over the current scene depth, dropping the
+    /// superseded target after. Nothing without a target.
+    pub(in crate::render) fn rebuild_lent_reflection_target(&mut self, device: &wgpu::Device) {
+        let Some(superseded) = self.reflection.target.take() else {
+            return;
+        };
+        if let Some(extent) = self.reflection.tier_target_extent() {
+            self.reflection.create_target(device, extent);
+        }
+        self.rebind_reflection_target(device);
+        drop(superseded);
+    }
+
+    /// Match the published set's reflection target to the kept tier and the
+    /// set's fluid surfaces, as a fluid install does: the extent it already
+    /// has builds nothing.
+    pub(in crate::render) fn reconcile_reflection_target(
+        &mut self,
+        installed: Option<&InstalledFluidSurfaces>,
+        device: &wgpu::Device,
+    ) {
+        self.set_reflection_target(device, self.wanted_reflection_target(installed));
     }
 
     /// Drop the live reflection target, rebinding group 5 to the prebuilt

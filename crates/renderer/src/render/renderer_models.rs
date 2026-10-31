@@ -2,11 +2,12 @@
 // draw submission, and UV normalization.
 // See: context/lib/resource_management.md
 
-use super::mesh_pass::ModelAnimationData;
+use super::mesh_pass::{MeshPass, ModelAnimationData};
 use super::*;
 
 impl Renderer {
-    /// Load one skinned model into the renderer's model cache: parse the glTF,
+    /// Load one skinned model into the active level set's models (or, with
+    /// none, stage it for the next build): parse the glTF,
     /// resolve each submesh's material key (blake3 content-hash of the base-color
     /// PNG, the same recipe the level compiler uses to name `.prm` sidecars) to a
     /// `LoadedTexture`, build one bind group per distinct key, and upload to the
@@ -78,7 +79,8 @@ impl Renderer {
             }
         };
 
-        let submesh_materials = self.resolve_skinned_model_material(model, prm_cache_root);
+        let (submesh_materials, samplers) =
+            self.resolve_skinned_model_material(model, prm_cache_root);
 
         let postretro_model::gltf_loader::LoadedModel {
             mesh,
@@ -107,7 +109,7 @@ impl Renderer {
         }
 
         // `handle` is the verbatim cache key — see `load_skinned_model`'s doc. The
-        // full clip set is handed to the cache; per-instance sample parameters
+        // full clip set is handed to the entry; per-instance sample parameters
         // select clips during palette sampling.
         // `resolve_skinned_model_material` (a `&mut self` helper) already ran
         // above into `submesh_materials`, so destructuring `self` here is safe.
@@ -115,9 +117,8 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.mesh_pass.insert_model(
+        let entry = MeshPass::upload_model(
             device,
-            handle,
             mesh,
             submesh_materials,
             ModelAnimationData {
@@ -126,6 +127,19 @@ impl Renderer {
                 pose_stack: pose_stack.clone(),
             },
         );
+        match full.level.as_mut() {
+            // The active set is already published: its new samplers join the
+            // renderer's maps now, as its publish would have merged them.
+            Some(level) => {
+                level.models.insert(handle, std::sync::Arc::new(entry));
+                full.samplers.merge(samplers);
+            }
+            None => {
+                full.pending_models
+                    .insert(handle, std::sync::Arc::new(entry));
+                full.pending_samplers.merge(samplers);
+            }
+        }
 
         log::info!(
             "[Model] skinned model uploaded: {} clip(s) parsed, {} tag(s)",
@@ -147,9 +161,8 @@ impl Renderer {
         &self,
         model_handle: &str,
     ) -> Vec<postretro_render_cpu::mesh_pass::ClipMetadata> {
-        self.full()
-            .mesh_pass
-            .model_clip_metadata(&postretro_model::ModelHandle::from(model_handle))
+        self.active_models()
+            .clip_metadata(&postretro_model::ModelHandle::from(model_handle))
     }
 
     /// The local-space bound for a cached skinned model, keyed by the same
@@ -158,9 +171,8 @@ impl Renderer {
         &self,
         model_handle: &str,
     ) -> postretro_render_data::cone_frustum::Aabb {
-        self.full()
-            .mesh_pass
-            .model_local_bounds(&postretro_model::ModelHandle::from(model_handle))
+        self.active_models()
+            .local_bounds(&postretro_model::ModelHandle::from(model_handle))
     }
 
     /// Replace this frame's skinned-mesh instance list with the inputs emitted by
@@ -305,9 +317,19 @@ impl Renderer {
         self.full_mut().mesh_pass.clear_for_level_load();
     }
 
+    /// The active set's models, else those staged for the next build.
+    fn active_models(&self) -> &super::mesh_pass::LevelModels {
+        let full = self.full();
+        full.level
+            .as_ref()
+            .map_or(&full.pending_models, |level| &level.models)
+    }
+
     /// Resolve each submesh's material key (content-hash hex → `.prm`) to a
     /// material bind group, returning one `(bind group, index range)` per
-    /// submesh in submesh order for the mesh pass to draw.
+    /// submesh in submesh order for the mesh pass to draw, and the
+    /// character-model samplers it created that the renderer's add-only map
+    /// lacked (never written into it here).
     ///
     /// Dedup: one GPU material bind group is built per *distinct* key — a model
     /// reusing a material across primitives builds it once and shares it. Each
@@ -322,8 +344,9 @@ impl Renderer {
         &mut self,
         model: &postretro_model::gltf_loader::LoadedModel,
         prm_cache_root: &Path,
-    ) -> Vec<(wgpu::BindGroup, std::ops::Range<u32>)> {
+    ) -> (Vec<(wgpu::BindGroup, std::ops::Range<u32>)>, SamplerMaps) {
         let plan = plan_submesh_materials(&model.submeshes);
+        let mut samplers = SamplerMaps::default();
 
         let surface_depth_quality = self.surface_depth_quality;
         let Self {
@@ -346,10 +369,8 @@ impl Renderer {
                 let tex =
                     load_model_diffuse_texture(device, queue.raw(), key_hex, key, prm_cache_root);
 
-                let character_model_sampler = full
-                    .mip_count_character_model_samplers
-                    .entry(tex.mip_count)
-                    .or_insert_with(|| create_mip_character_model_sampler(device, tex.mip_count));
+                let character_model_sampler =
+                    samplers.character(&full.samplers, device, tex.mip_count);
                 // Skinned models are outside Surface Depth's scope: they never
                 // bind the world material bundle's surface map —
                 // `load_model_diffuse_texture` binds the neutral single-channel
@@ -361,7 +382,7 @@ impl Renderer {
                     device,
                     &full.texture_bind_group_layout,
                     &tex,
-                    character_model_sampler,
+                    &character_model_sampler,
                     Material::Default,
                     surface_depth_quality,
                     &format!("Skinned Model Material {key_hex}"),
@@ -373,10 +394,12 @@ impl Renderer {
         // The resulting Vec is moved into the mesh pass (ownership transfer), so
         // each slot must hold its own handle. Clone the shared handle (cheap Arc
         // clone inside wgpu) for submeshes that reuse a distinct material.
-        plan.draws
+        let submeshes = plan
+            .draws
             .into_iter()
             .map(|draw| (distinct_bind_groups[draw.distinct].clone(), draw.indices))
-            .collect()
+            .collect();
+        (submeshes, samplers)
     }
 
     /// Normalize texel-space UVs on static world and kinematic mover vertices

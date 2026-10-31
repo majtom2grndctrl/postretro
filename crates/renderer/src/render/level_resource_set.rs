@@ -2,8 +2,112 @@
 // one set the renderer publishes as active and drops whole at release.
 // See: context/plans/in-progress/level-load-pipeline/index.md · context/lib/rendering_pipeline.md §4
 
+use super::dynamic_depth_cache::DynamicCacheTextures;
+use super::promoted_depth_cache::PromotedDepthTextures;
 use super::renderer_types::{PromotedBakedLightRecord, PromotedBakedLightState};
+use super::shadow_tier::ShadowTier;
 use super::*;
+use postretro_render_cpu::render_extent::Extent;
+
+/// One build's key, minted by the renderer per [`Renderer::build_level_set`]
+/// and never a catalog id, so two loads of one map are two sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LevelSetId(u64);
+
+impl LevelSetId {
+    pub(in crate::render) fn mint(next: &mut u64) -> Self {
+        *next += 1;
+        Self(*next)
+    }
+}
+
+/// What [`Renderer::publish_level_set`] does with the set it replaces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviousLevelSet {
+    /// Drop it (the main-thread oracle install does this).
+    Retire,
+    /// Keep it built and resident, unpublished, until released or published
+    /// again.
+    KeepResident,
+}
+
+/// One set's shadow textures: its tier (the spot pool, shared by every set
+/// at that resolution) and the tier's promoted and dynamic world-depth cache
+/// textures this level uses.
+pub(in crate::render) struct LevelShadowTier {
+    pub(in crate::render) tier: std::sync::Arc<ShadowTier>,
+    pub(in crate::render) promoted: Option<std::sync::Arc<PromotedDepthTextures>>,
+    pub(in crate::render) dynamic: DynamicCacheTextures,
+}
+
+/// Every bind group and target one set holds that a scene-extent change
+/// invalidates, with the extent it was built at: the spot pool's group 5
+/// (over the SDF shadow factor and scene depth) and the fog scatter target
+/// with its groups. The set's SDF shadow group 1 and fluid reflection targets
+/// rebuild with these.
+pub(in crate::render) struct LevelExtentGroups {
+    pub(in crate::render) extent: Extent,
+    pub(in crate::render) spot_shadow: wgpu::BindGroup,
+    pub(in crate::render) fog: fog_pass::FogLevelTarget,
+}
+
+/// The renderer's add-only sampler maps, or one set's missing entries: one
+/// sampler per distinct mip count, world (anisotropic) and character-model.
+#[derive(Default)]
+pub(in crate::render) struct SamplerMaps {
+    pub(in crate::render) aniso: HashMap<u32, wgpu::Sampler>,
+    pub(in crate::render) character: HashMap<u32, wgpu::Sampler>,
+}
+
+impl SamplerMaps {
+    /// The world sampler for `mip_count`: the renderer's, else this map's,
+    /// created into this map when neither has one. Never writes `renderer`.
+    pub(in crate::render) fn aniso(
+        &mut self,
+        renderer: &SamplerMaps,
+        device: &wgpu::Device,
+        mip_count: u32,
+    ) -> wgpu::Sampler {
+        if let Some(sampler) = renderer.aniso.get(&mip_count) {
+            return sampler.clone();
+        }
+        self.aniso
+            .entry(mip_count)
+            .or_insert_with(|| create_mip_aniso_sampler(device, mip_count))
+            .clone()
+    }
+
+    /// The character-model sampler for `mip_count`, as [`Self::aniso`].
+    pub(in crate::render) fn character(
+        &mut self,
+        renderer: &SamplerMaps,
+        device: &wgpu::Device,
+        mip_count: u32,
+    ) -> wgpu::Sampler {
+        if let Some(sampler) = renderer.character.get(&mip_count) {
+            return sampler.clone();
+        }
+        self.character
+            .entry(mip_count)
+            .or_insert_with(|| create_mip_character_model_sampler(device, mip_count))
+            .clone()
+    }
+
+    /// Fold `local` in, keeping an entry this map already holds.
+    pub(in crate::render) fn merge(&mut self, local: SamplerMaps) {
+        for (mip_count, sampler) in local.aniso {
+            self.aniso.entry(mip_count).or_insert(sampler);
+        }
+        for (mip_count, sampler) in local.character {
+            self.character.entry(mip_count).or_insert(sampler);
+        }
+    }
+
+    /// Move every entry of `other` into this map, keeping its own.
+    pub(in crate::render) fn absorb(&mut self, other: &mut SamplerMaps) {
+        self.merge(std::mem::take(other));
+    }
+}
 
 /// One load's world materials: the uploaded textures, their material bind
 /// groups, and the per-texture materials they were built from.
@@ -15,6 +119,9 @@ pub(in crate::render) struct LevelTextures {
     /// textures holds one placeholder slot).
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
     pub(in crate::render) stored_texture_materials: Vec<Material>,
+    /// Samplers the materials' bind groups needed that the renderer's
+    /// add-only maps lacked; merged into those maps when the set publishes.
+    pub(in crate::render) samplers: SamplerMaps,
 }
 
 /// A dynamic-object pass's group 2 over one load's light buffers: the main
@@ -34,11 +141,31 @@ impl LevelLightGroups {
     }
 }
 
-/// Every renderer resource one level install creates or resets. The renderer
-/// holds at most one active set (`FullRenderer::level`); frames that need
-/// level data skip when there is none, and releasing a level drops the set
-/// and creates nothing.
+/// Every renderer resource one level load creates. The renderer holds at
+/// most one active set (`FullRenderer::level`), the only one frames read,
+/// plus any built, unpublished sets (`FullRenderer::resident_levels`).
+/// Frames that need level data skip when there is no active set, and
+/// releasing a set drops it and creates nothing.
 pub(in crate::render) struct LevelResourceSet {
+    /// This build's key.
+    pub(in crate::render) id: LevelSetId,
+    /// The set's shadow tier and the cache textures it uses.
+    pub(in crate::render) shadow: LevelShadowTier,
+    /// Extent-bound groups and targets, with the extent they were built at.
+    pub(in crate::render) extent: LevelExtentGroups,
+    /// Samplers this set created that the renderer's maps lacked, merged
+    /// into them at publish.
+    pub(in crate::render) samplers: SamplerMaps,
+    /// The skinned models this level draws, resolved by handle.
+    pub(in crate::render) models: mesh_pass::LevelModels,
+    /// The smoke pass's sprite collections this level registered.
+    pub(in crate::render) smoke: smoke::SmokeLevelCollections,
+    /// The fluid reflection target and planar layer, with their groups 5,
+    /// while another set is active; lent to the fluid pass while this one is.
+    pub(in crate::render) fluid_targets: fluid_surface::FluidLevelTargets,
+    /// The planar mirror targets, held as `fluid_targets` is.
+    pub(in crate::render) mirror_targets: planar_reflection::LentMirrorTargets,
+
     // --- World materials ---
     pub(in crate::render) loaded_textures: Vec<LoadedTexture>,
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
@@ -200,6 +327,7 @@ impl LevelResourceSet {
             loaded_textures: std::mem::take(&mut self.loaded_textures),
             gpu_textures: std::mem::take(&mut self.gpu_textures),
             stored_texture_materials: std::mem::take(&mut self.stored_texture_materials),
+            samplers: std::mem::take(&mut self.samplers),
         }
     }
 }
@@ -287,8 +415,39 @@ impl Renderer {
         self.install_level_geometry(&geometry, Default::default());
     }
 
-    /// Whether a level's renderer resources are installed.
+    /// Whether a level's renderer resources are installed (an active set).
     pub fn has_level_resources(&self) -> bool {
         self.full.as_ref().is_some_and(|full| full.level.is_some())
+    }
+
+    /// The active set's key, `None` with no level published.
+    pub fn active_level_set(&self) -> Option<LevelSetId> {
+        self.full
+            .as_ref()
+            .and_then(|full| full.level.as_ref())
+            .map(|level| level.id)
+    }
+
+    /// Every built, unpublished set's key, oldest first.
+    pub fn resident_level_sets(&self) -> Vec<LevelSetId> {
+        self.full.as_ref().map_or_else(Vec::new, |full| {
+            full.resident_levels.iter().map(|level| level.id).collect()
+        })
+    }
+
+    /// How many publishes found their set built at another scene extent and
+    /// rebuilt its extent-bound groups and fog target (the counted fallback).
+    pub fn extent_rebuilds(&self) -> u64 {
+        self.full.as_ref().map_or(0, |full| full.extent_rebuilds)
+    }
+
+    /// The set `id`, active or resident.
+    #[cfg(test)]
+    pub(in crate::render) fn level_set(&self, id: LevelSetId) -> Option<&LevelResourceSet> {
+        let full = self.full();
+        full.level
+            .iter()
+            .chain(&full.resident_levels)
+            .find(|level| level.id == id)
     }
 }

@@ -21,31 +21,44 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) texture_bind_group_layout: wgpu::BindGroupLayout,
     /// Retained so `install_level_geometry` can rebuild the lighting bind group.
     pub(in crate::render) lighting_bind_group_layout: wgpu::BindGroupLayout,
-    /// Post Retro linear+anisotropic samplers, one per distinct uploaded
-    /// `mip_count`. Sampler descriptors are identical except for
-    /// `lod_max_clamp = (mip_count - 1) as f32`. Keyed by
-    /// `LoadedTexture::mip_count`. Engine-lifetime — persists across level
-    /// reloads so re-installing the same mip chain reuses the existing sampler.
-    /// Placeholders pick up the `1` entry seeded at construction. World and mover
-    /// material bind groups bind their matching sampler at group-1 binding 5.
-    pub(in crate::render) mip_count_aniso_samplers: HashMap<u32, wgpu::Sampler>,
-    /// Character-model samplers, one per distinct uploaded `mip_count`. These
-    /// use nearest magnification with linear minification and mip filtering,
-    /// and disable anisotropy. Like the world sampler pool, descriptors differ
-    /// only in `lod_max_clamp` and entries persist across level reloads. Character
-    /// material bind groups bind their matching sampler at group-1 binding 5.
-    pub(in crate::render) mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler>,
+    /// The add-only sampler maps, one sampler per distinct uploaded
+    /// `mip_count` (keyed by `LoadedTexture::mip_count`), a named exception to
+    /// per-load ownership. `aniso`: Post Retro linear+anisotropic samplers,
+    /// identical except for `lod_max_clamp = (mip_count - 1) as f32`; world
+    /// and mover material bind groups bind their matching sampler at group-1
+    /// binding 5, and placeholders pick up the `1` entry seeded at
+    /// construction. `character`: nearest magnification with linear
+    /// minification and mip filtering, no anisotropy, for character
+    /// materials. Engine-lifetime: a build creates any sampler it is missing
+    /// into its set's own map, and publishing the set merges that map in,
+    /// keeping an existing entry. A build never writes these.
+    pub(in crate::render) samplers: SamplerMaps,
     /// The active level's resources: every buffer, texture, bind group and
-    /// per-level state one install builds. `None` with no level installed;
-    /// release drops it and creates nothing. See `level_resource_set.rs`.
+    /// per-level state one load builds, the only set frames read. `None`
+    /// with no level published; release drops it and creates nothing. See
+    /// `level_resource_set.rs`.
     pub(in crate::render) level: Option<LevelResourceSet>,
-    /// World materials `install_textures` staged for the next
-    /// `install_level_geometry`, which takes them into the set it publishes.
+    /// Built, unpublished sets, each keyed by its `LevelSetId`. Never drawn.
+    pub(in crate::render) resident_levels: Vec<LevelResourceSet>,
+    /// The last minted `LevelSetId`.
+    pub(in crate::render) next_level_set_id: u64,
+    /// Publishes that found their set built at another scene extent and
+    /// rebuilt its extent-bound groups and fog target (the counted fallback).
+    pub(in crate::render) extent_rebuilds: u64,
+    /// World materials `install_textures` staged for the next build, which
+    /// takes them into its set.
     pub(in crate::render) pending_textures: Option<LevelTextures>,
+    /// Models uploaded with no active set, taken by the next build.
+    pub(in crate::render) pending_models: mesh_pass::LevelModels,
+    /// Samplers those staged models created, taken by the next build.
+    pub(in crate::render) pending_samplers: SamplerMaps,
+    /// Sprite collections registered with no active set, taken by the next
+    /// build.
+    pub(in crate::render) pending_smoke: smoke::SmokeLevelCollections,
     /// Renderer-wide, add-only lightmap generation floor. Every set reserves
-    /// its first generation from it, and each retired set folds its high
-    /// water back in, so a reload's first drain never accepts a previous
-    /// level's generation.
+    /// its first generation above it and every live set's high water, and
+    /// each retired set folds its high water back in, so no set's first drain
+    /// accepts another live or earlier set's generation.
     pub(in crate::render) lightmap_generation_floor: u64,
     /// Off-main GPU creation for level loads. Lives as long as this full
     /// renderer, so a rebuilt one after suspend spawns its own.
@@ -115,7 +128,18 @@ pub(in crate::render) struct FullRenderer {
     /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
     /// pool derives camera frustum planes from it for cone-frustum culling.
     pub(in crate::render) last_view_proj: Mat4,
+    /// The active set's spot pool: its shadow tier's textures and this
+    /// frame's slot assignment. Replaced whole at publish.
     pub(in crate::render) spot_shadow_pool: SpotShadowPool,
+    /// The active set's shadow tier (before any publish, full init's at the
+    /// boot shadow resolution), held so a build at its resolution reuses it.
+    pub(in crate::render) shadow_tier: Arc<super::super::shadow_tier::ShadowTier>,
+    /// Resolution → weak handle to every live shadow tier; a build looks its
+    /// tier up here.
+    pub(in crate::render) shadow_tiers:
+        super::super::shadow_tier::TierRegistry<super::super::shadow_tier::ShadowTier>,
+    /// The forward and fog group-5 layout every set's spot shadow group binds.
+    pub(in crate::render) spot_shadow_bgl: wgpu::BindGroupLayout,
     /// Dynamic point-light cube-array shadow pool. `None` when the adapter lacks
     /// `CUBE_ARRAY_TEXTURES` — point shadows then cleanly off, spot unaffected.
     /// `Some` iff `cube_array_supported`, so its presence mirrors group-5 binding
@@ -132,9 +156,11 @@ pub(in crate::render) struct FullRenderer {
     /// built at full init at every tier.
     pub(in crate::render) planar_reflection: planar_reflection::PlanarReflectionPass,
     pub(in crate::render) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
-    /// `None` only when a map has neither selected-static nor section-45
+    /// The active set's promoted cache over its tier's shared textures.
+    /// `None` only when the level has neither selected-static nor section-45
     /// animated-baked promotion candidates. Either source can use the same
     /// static world-depth cache, so an animated-only map still allocates it.
+    /// Rebuilt cold at publish.
     pub(in crate::render) promoted_depth_cache: Option<PromotedDepthCache>,
     /// Missing cache-plan entries are defensive degradation, warned once per
     /// installed level rather than once per rendered frame.

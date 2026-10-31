@@ -251,13 +251,17 @@ impl Renderer {
         // independent plans would overlap their bases. Static-light promotion
         // deliberately sees only the world partition.
         let mesh_frame_plans: Option<mesh_instances::MeshFramePlans> = if render_world
-            && self.full().mesh_pass.has_model()
+            && self
+                .full()
+                .level
+                .as_ref()
+                .is_some_and(|level| level.models.has_model())
             && !(self.full().mesh_draws.is_empty() && self.full().ghost_mesh_draws.is_empty())
         {
             Some(mesh_instances::plan_mesh_frame_plans(
                 &self.full().mesh_draws,
                 &self.full().ghost_mesh_draws,
-                &self.full().mesh_pass,
+                &self.level().models,
             ))
         } else {
             None
@@ -409,8 +413,13 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_ref()
+                    .expect("a level-gated renderer path requires an active level set");
                 full.mesh_pass.plan_and_upload(
                     queue,
+                    &level.models,
                     &[&plans.world, &plans.viewmodel, &plans.ghost],
                     &mut full.bone_palette_scratch,
                     &cpu,
@@ -559,7 +568,7 @@ impl Renderer {
                 render_pass.set_bind_group(2, &self.level().lighting_bind_group, &[]);
                 render_pass.set_bind_group(3, self.level().sh_bind_group(), &[]);
                 render_pass.set_bind_group(4, &self.level().lightmap_resources.bind_group, &[]);
-                render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
+                render_pass.set_bind_group(5, &self.level().extent.spot_shadow, &[]);
                 render_pass.set_bind_group(
                     LIGHTMAP_BLOCK_TABLE_GROUP,
                     &self.level().lightmap_resources.block_table_bind_group,
@@ -694,9 +703,12 @@ impl Renderer {
             // the dynamic-direct knobs (group 3 = instance data; group 2
             // unallocated).
             mesh_enc.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
-            self.full()
-                .mesh_pass
-                .record_draws(&mut mesh_enc, &self.level().mesh_lights, plan);
+            self.full().mesh_pass.record_draws(
+                &mut mesh_enc,
+                &self.level().models,
+                &self.level().mesh_lights,
+                plan,
+            );
         }
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
@@ -775,6 +787,7 @@ impl Renderer {
                 &mut ghost_pass,
                 &ghost_order::GhostDrawSources {
                     mesh_pass: &full.mesh_pass,
+                    models: &level.models,
                     skinned: skinned_ghost_plan,
                     movers: &full.kinematic_ghost,
                     brush: &level.kinematic,
@@ -865,10 +878,7 @@ impl Renderer {
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
-        if render_world
-            && self.full().smoke_pass.has_any_sheet()
-            && !particle_collections.is_empty()
-        {
+        if render_world && self.level().smoke.has_any_sheet() && !particle_collections.is_empty() {
             let _smoke_scope = cpu.scope(RenderStage::Smoke);
             let smoke_ts = self
                 .full()
@@ -912,7 +922,12 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_ref()
+                    .expect("a level-gated renderer path requires an active level set");
                 full.smoke_pass.record_draws(
+                    &level.smoke,
                     device,
                     queue,
                     &mut smoke_pass_enc,
@@ -946,9 +961,9 @@ impl Renderer {
                 ..Default::default()
             });
             ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            let full = self.full();
-            full.billboard_ghost
-                .record_draws(&mut ghost_pass, &full.smoke_pass);
+            self.full()
+                .billboard_ghost
+                .record_draws(&mut ghost_pass, &self.level().smoke);
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.
@@ -1001,7 +1016,7 @@ impl Renderer {
                 );
             }
 
-            let (scatter_w, scatter_h) = self.full().fog.scatter_dims();
+            let (scatter_w, scatter_h) = self.level().extent.fog.scatter_dims();
             // 8×8 matches @workgroup_size(8,8); div_ceil covers edge pixels.
             let groups_x = scatter_w.div_ceil(8);
             let groups_y = scatter_h.div_ceil(8);
@@ -1013,8 +1028,8 @@ impl Renderer {
                 raymarch.set_pipeline(&self.full().fog.raymarch_pipeline);
                 raymarch.set_bind_group(0, &self.full().uniform_bind_group, &[]);
                 raymarch.set_bind_group(3, self.level().sh_bind_group(), &[]);
-                raymarch.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
-                raymarch.set_bind_group(6, &self.full().fog.bind_group, &[]);
+                raymarch.set_bind_group(5, &self.level().extent.spot_shadow, &[]);
+                raymarch.set_bind_group(6, &self.level().extent.fog.bind_group, &[]);
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
             }
 
@@ -1033,7 +1048,7 @@ impl Renderer {
                 ..Default::default()
             });
             composite.set_pipeline(&self.full().fog.composite_pipeline);
-            composite.set_bind_group(0, &self.full().fog.composite_bind_group, &[]);
+            composite.set_bind_group(0, &self.level().extent.fog.composite_bind_group, &[]);
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
@@ -1129,6 +1144,7 @@ impl Renderer {
             viewmodel_pass.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
             self.full().mesh_pass.record_draws(
                 &mut viewmodel_pass,
+                &self.level().models,
                 &self.level().mesh_lights,
                 plan,
             );

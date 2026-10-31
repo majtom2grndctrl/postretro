@@ -101,7 +101,7 @@ pub(super) enum BoundSceneInputs {
 /// The planar layer at its extent, with its own depth: as the SSR target's,
 /// the depth orders fluid against fluid, nearest wins, and scene depth never
 /// occludes.
-struct PlanarLayer {
+pub(super) struct PlanarLayer {
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
     _depth: wgpu::Texture,
@@ -178,6 +178,14 @@ pub(super) struct PlanarRouting {
     layer_builds: u32,
 }
 
+/// A level set's planar layer and the group 5 over it, held by the set
+/// while another set is active.
+#[derive(Default)]
+pub(super) struct LentPlanarLayer {
+    layer: Option<PlanarLayer>,
+    group: Option<FluidSceneInputs>,
+}
+
 impl PlanarRouting {
     pub(super) fn set_fog_weight(&mut self, weight: f32) {
         self.fog_weight = Some(weight);
@@ -226,6 +234,32 @@ impl FluidSurfacePass {
     /// The planar layer's extent; `None` without one.
     pub(in crate::render) fn planar_layer_extent(&self) -> Option<(u32, u32)> {
         self.planar.layer.as_ref().map(|layer| layer.extent)
+    }
+
+    /// Take the active set's planar layer and its group 5, building nothing;
+    /// the routed plane clears with them.
+    pub(super) fn take_planar_layer(&mut self) -> LentPlanarLayer {
+        self.planar.route = None;
+        LentPlanarLayer {
+            layer: self.planar.layer.take(),
+            group: self.planar.group.take(),
+        }
+    }
+
+    /// Bind a just-published set's planar layer and its group 5, building
+    /// nothing; the group takes the pass's current fog weight and style.
+    pub(super) fn lend_planar_layer(&mut self, lent: LentPlanarLayer) {
+        self.planar.route = None;
+        self.planar.layer = lent.layer;
+        self.planar.group = lent.group;
+        if let Some(group) = self.planar.group.as_mut() {
+            if let Some(weight) = self.planar.fog_weight {
+                group.set_fog_weight(weight);
+            }
+            if let Some(style) = self.planar.style {
+                group.set_reflection_style(style);
+            }
+        }
     }
 
     /// Drop the planar layer and its group 5 with no rebuild: a level

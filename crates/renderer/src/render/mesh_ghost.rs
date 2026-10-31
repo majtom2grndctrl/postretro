@@ -135,6 +135,7 @@ impl MeshPass {
     pub(super) fn record_ghost_spans(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &super::mesh_pass::LevelModels,
         plan: &MeshFramePlan,
         spans: &[SkinnedGhostSpan],
         mode: GhostTransparency,
@@ -149,7 +150,7 @@ impl MeshPass {
             let Some(group) = plan.groups.get(span.group as usize) else {
                 continue;
             };
-            let Some(model) = self.models.get(&group.model) else {
+            let Some(model) = models.get(&group.model) else {
                 continue;
             };
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));

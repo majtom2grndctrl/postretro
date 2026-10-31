@@ -8,6 +8,9 @@ use super::pipeline::*;
 use super::pose::*;
 use super::*;
 
+use std::collections::HashMap;
+
+use postretro_model::ModelHandle;
 use postretro_model::sample_params::SnapshotTag;
 use postretro_render_cpu::ghost_instance::GhostInstanceLook;
 use postretro_render_cpu::mesh_instances::MeshPaletteCacheKey;

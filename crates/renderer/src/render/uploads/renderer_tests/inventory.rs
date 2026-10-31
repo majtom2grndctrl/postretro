@@ -538,7 +538,7 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         (
             "renderer_light_slots.rs",
             include_str!("../../renderer_light_slots.rs"),
-            "&full.spot_shadow_pool.matrices_buffer",
+            "&full.spot_shadow_pool.textures.matrices_buffer",
             0,
         ),
         (

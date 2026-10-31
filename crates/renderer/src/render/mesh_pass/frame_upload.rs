@@ -9,7 +9,7 @@ use postretro_render_cpu::ghost_instance::GhostInstanceLook;
 use postretro_render_cpu::mesh_instances::{MAX_PALETTE_ENTRIES, MeshFramePlan};
 
 use super::pose::{InstancePoseSample, sample_instance};
-use super::{BONE_PALETTE_ENTRY_SIZE, INSTANCE_ENTRY_SIZE, MeshPass};
+use super::{BONE_PALETTE_ENTRY_SIZE, INSTANCE_ENTRY_SIZE, LevelModels, MeshPass};
 use crate::render::UNIFORM_SIZE;
 
 /// Pack one instance's SSBO bytes (model matrix column-major + base index +
@@ -84,6 +84,7 @@ impl MeshPass {
     pub fn plan_and_upload(
         &mut self,
         queue: &crate::render::uploads::UploadQueue,
+        models: &LevelModels,
         plans: &[&MeshFramePlan],
         scratch: &mut Vec<BonePaletteEntry>,
         cpu: &postretro_stage_timing::StageFrame<crate::render::cpu_stages::RenderStage>,
@@ -96,12 +97,10 @@ impl MeshPass {
         }
 
         // Disjoint field borrows: the capture step mutates `snapshot_store` +
-        // `capture_scratch` while reading `model_clips`/`models`; the sample step
+        // `capture_scratch` while reading the level's models; the sample step
         // reads `snapshot_store`. Destructuring lets the borrow checker see they
         // are distinct fields (a `self.method` call would borrow all of `self`).
         let Self {
-            models,
-            model_clips,
             snapshot_store,
             palette_cache,
             capture_scratch,
@@ -114,12 +113,12 @@ impl MeshPass {
 
         for plan in plans {
             for group in &plan.groups {
-                let Some(model) = models.get(&group.model) else {
+                let Some(entry) = models.entry(&group.model) else {
                     // Planner only emits groups for cached models, but guard anyway.
                     continue;
                 };
-                let clips = model_clips.get(&group.model);
-                let resolve_clip = |idx: usize| clips.and_then(|c| c.get(idx));
+                let model = &entry.uploaded;
+                let resolve_clip = |idx: usize| entry.clips.get(idx);
 
                 for (i, inst) in group.instances.iter().enumerate() {
                     let instance_index = group.instance_offset as usize + i;

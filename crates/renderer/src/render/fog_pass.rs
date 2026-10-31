@@ -68,7 +68,6 @@ const AABB_EPSILON: f32 = 1.0e-3;
 const FOG_HYSTERESIS_SECONDS: f64 = 0.3;
 
 pub struct FogPass {
-    pub pixel_scale: u32,
     pub step_size: f32,
 
     // --- Raymarch (compute) pipeline ---
@@ -77,7 +76,6 @@ pub struct FogPass {
 
     // --- Composite (fullscreen blit) pipeline ---
     pub composite_pipeline: wgpu::RenderPipeline,
-    pub composite_bind_group: wgpu::BindGroup,
     composite_bgl: wgpu::BindGroupLayout,
     composite_sampler: wgpu::Sampler,
 
@@ -95,20 +93,6 @@ pub struct FogPass {
     /// indexed by `(plane_offset, plane_count)` on each `FogVolume`. Sized for
     /// the worst case (`MAX_FOG_VOLUMES * 16` planes) so it never reallocates.
     pub fog_planes_buffer: wgpu::Buffer,
-
-    // --- Scatter target ---
-    scatter_view: wgpu::TextureView,
-    #[allow(dead_code)]
-    scatter_texture: wgpu::Texture,
-    /// Low-res dimensions currently allocated for the scatter target. Used
-    /// to skip reallocation when the scene extent changes without changing the
-    /// pixel scale.
-    scatter_dims: (u32, u32),
-
-    /// Group 6 bind group. Rebuilt on any call to `resize` — the depth
-    /// view is always re-bound even when scatter dims are unchanged,
-    /// because the scene depth texture is recreated on every resize.
-    pub bind_group: wgpu::BindGroup,
 
     /// Number of dense-packed `FogVolume` records the shader iterates this
     /// frame. Updated per-frame by `repack_active`. Shader loops against this
@@ -130,9 +114,43 @@ pub struct FogPass {
     pub point_count: u32,
 }
 
+/// One level set's fog scatter target at its pixel scale and the scene
+/// extent it was built at, with the two bind groups over it: the raymarch's
+/// group 6 (which also binds scene depth) and the composite's. Extent-bound:
+/// a window resize rebuilds only the active set's, and publishing a set
+/// built at another extent rebuilds it once.
+pub(crate) struct FogLevelTarget {
+    /// The level's worldspawn `fog_pixel_scale`, clamped.
+    pixel_scale: u32,
+    #[allow(dead_code)]
+    scatter_texture: wgpu::Texture,
+    scatter_view: wgpu::TextureView,
+    /// Low-res dimensions currently allocated for the scatter target. Used
+    /// to skip reallocation when the scene extent changes without changing the
+    /// pixel scale.
+    scatter_dims: (u32, u32),
+    /// Group 6 bind group. Rebuilt on every `resize_target` — the depth view
+    /// is always re-bound even when scatter dims are unchanged, because the
+    /// scene depth texture is recreated on every resize.
+    pub bind_group: wgpu::BindGroup,
+    pub composite_bind_group: wgpu::BindGroup,
+}
+
+impl FogLevelTarget {
+    pub fn pixel_scale(&self) -> u32 {
+        self.pixel_scale
+    }
+
+    /// Current low-res scatter target dimensions.
+    pub fn scatter_dims(&self) -> (u32, u32) {
+        self.scatter_dims
+    }
+}
+
 /// One level's canonical fog volumes, their bounding planes, live mask and
-/// hysteresis timestamps. Lives in the level's resource set; the pass keeps
-/// its fixed-size buffers, scatter target and per-frame repack scratch.
+/// hysteresis timestamps. Lives in the level's resource set beside its
+/// scatter target (`FogLevelTarget`); the pass keeps its fixed-size buffers
+/// and per-frame repack scratch.
 #[derive(Default)]
 pub(crate) struct FogLevelState {
     /// Canonical fog-volume list in source order (one entry per
@@ -276,18 +294,11 @@ impl FogPass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
-        scene_width: u32,
-        scene_height: u32,
-        pixel_scale: u32,
-        depth_view: &wgpu::TextureView,
         camera_bgl: &wgpu::BindGroupLayout,
         sh_bgl: &wgpu::BindGroupLayout,
         spot_shadow_bgl: &wgpu::BindGroupLayout,
         cube_array_supported: bool,
     ) -> Self {
-        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
-        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
-
         // --- Group 6 layout ---
         let raymarch_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Fog Raymarch BGL (group 6)"),
@@ -411,22 +422,8 @@ impl FogPass {
             mapped_at_creation: false,
         });
 
-        // --- Scatter target ---
-        let (scatter_texture, scatter_view) =
-            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
-
-        // --- Group 6 bind group ---
-        let bind_group = build_group6(
-            device,
-            &raymarch_bgl,
-            depth_view,
-            &volumes_buffer,
-            &scatter_view,
-            &params_buffer,
-            &spots_buffer,
-            &fog_points_buffer,
-            &fog_planes_buffer,
-        );
+        // The scatter target and its groups 6 and composite are each level
+        // set's (`FogLevelTarget`), built at the set's extent.
 
         // --- Raymarch compute pipeline ---
         // Without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits binding 5, so
@@ -496,20 +493,6 @@ impl FogPass {
                 },
             ],
         });
-        let composite_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fog Composite Bind Group"),
-            layout: &composite_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&scatter_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&composite_sampler),
-                },
-            ],
-        });
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fog Composite Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
@@ -558,12 +541,10 @@ impl FogPass {
         });
 
         Self {
-            pixel_scale,
             step_size: fog_volume::DEFAULT_FOG_STEP_SIZE,
             raymarch_pipeline,
             raymarch_bind_group_layout: raymarch_bgl,
             composite_pipeline,
-            composite_bind_group,
             composite_bgl,
             composite_sampler,
             volumes_buffer,
@@ -571,10 +552,6 @@ impl FogPass {
             spots_buffer,
             fog_points_buffer,
             fog_planes_buffer,
-            scatter_view,
-            scatter_texture,
-            scatter_dims,
-            bind_group,
             active_count: 0,
             repack_scratch: Vec::new(),
             planes_scratch: Vec::with_capacity(FOG_PLANES_BUFFER_CAPACITY),
@@ -583,67 +560,113 @@ impl FogPass {
         }
     }
 
-    /// Resize the scatter target and rebuild the group-6 bind group.
-    /// Call on a scene-extent change or `fog_pixel_scale` change.
-    pub fn resize(
-        &mut self,
+    /// Build one level set's scatter target at `pixel_scale` (clamped) for a
+    /// `scene_width × scene_height` scene, with its group 6 over `depth_view`
+    /// and its composite group.
+    pub fn build_target(
+        &self,
         device: &wgpu::Device,
+        scene_width: u32,
+        scene_height: u32,
+        pixel_scale: u32,
+        depth_view: &wgpu::TextureView,
+    ) -> FogLevelTarget {
+        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
+        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
+        let (scatter_texture, scatter_view) =
+            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
+        let composite_bind_group = self.composite_group(device, &scatter_view);
+        let bind_group = self.group6(device, depth_view, &scatter_view);
+        FogLevelTarget {
+            pixel_scale,
+            scatter_texture,
+            scatter_view,
+            scatter_dims,
+            bind_group,
+            composite_bind_group,
+        }
+    }
+
+    /// Resize `target`'s scatter texture for a new scene extent and rebuild
+    /// its group 6. Call on a scene-extent change or a pixel-scale change.
+    pub fn resize_target(
+        &self,
+        device: &wgpu::Device,
+        target: &mut FogLevelTarget,
         scene_width: u32,
         scene_height: u32,
         depth_view: &wgpu::TextureView,
     ) {
-        let dims = scatter_dims_for(scene_width, scene_height, self.pixel_scale);
-        if dims != self.scatter_dims {
+        let dims = scatter_dims_for(scene_width, scene_height, target.pixel_scale);
+        if dims != target.scatter_dims {
             let (tex, view) = create_scatter_target(device, dims.0, dims.1);
-            self.scatter_texture = tex;
-            self.scatter_view = view;
-            self.scatter_dims = dims;
-            self.composite_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Fog Composite Bind Group"),
-                layout: &self.composite_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.scatter_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                    },
-                ],
-            });
+            target.scatter_texture = tex;
+            target.scatter_view = view;
+            target.scatter_dims = dims;
+            target.composite_bind_group = self.composite_group(device, &target.scatter_view);
         }
         // Depth view may have been recreated even if scatter dims are
         // unchanged (e.g., a scene-extent change that happens to match the scale).
-        self.bind_group = build_group6(
-            device,
-            &self.raymarch_bind_group_layout,
-            depth_view,
-            &self.volumes_buffer,
-            &self.scatter_view,
-            &self.params_buffer,
-            &self.spots_buffer,
-            &self.fog_points_buffer,
-            &self.fog_planes_buffer,
-        );
+        target.bind_group = self.group6(device, depth_view, &target.scatter_view);
     }
 
-    /// Set the global `fog_pixel_scale` from worldspawn. Rebuilds the scatter
+    /// Set `target`'s `fog_pixel_scale` from worldspawn. Rebuilds the scatter
     /// target if the value changed.
-    pub fn set_pixel_scale(
-        &mut self,
+    pub fn set_target_pixel_scale(
+        &self,
         device: &wgpu::Device,
+        target: &mut FogLevelTarget,
         scale: u32,
         scene_width: u32,
         scene_height: u32,
         depth_view: &wgpu::TextureView,
     ) {
         let clamped = clamp_fog_pixel_scale(scale);
-        if clamped == self.pixel_scale {
+        if clamped == target.pixel_scale {
             return;
         }
-        self.pixel_scale = clamped;
-        self.resize(device, scene_width, scene_height, depth_view);
+        target.pixel_scale = clamped;
+        self.resize_target(device, target, scene_width, scene_height, depth_view);
+    }
+
+    fn composite_group(
+        &self,
+        device: &wgpu::Device,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fog Composite Bind Group"),
+            layout: &self.composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                },
+            ],
+        })
+    }
+
+    fn group6(
+        &self,
+        device: &wgpu::Device,
+        depth_view: &wgpu::TextureView,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        build_group6(
+            device,
+            &self.raymarch_bind_group_layout,
+            depth_view,
+            &self.volumes_buffer,
+            scatter_view,
+            &self.params_buffer,
+            &self.spots_buffer,
+            &self.fog_points_buffer,
+            &self.fog_planes_buffer,
+        )
     }
 
     /// Compute the per-frame `active_mask` as `(cell_mask & live_mask) |
@@ -787,11 +810,6 @@ impl FogPass {
         self.active_count = 0;
         self.spot_count = 0;
         self.point_count = 0;
-    }
-
-    /// Current low-res scatter target dimensions.
-    pub fn scatter_dims(&self) -> (u32, u32) {
-        self.scatter_dims
     }
 
     /// Whether the pass should execute this frame. Skips the compute

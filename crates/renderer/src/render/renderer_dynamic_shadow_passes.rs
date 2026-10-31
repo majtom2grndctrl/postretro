@@ -131,7 +131,7 @@ impl Renderer {
                         .mark_spot_world_rendered(plan);
                 }
 
-                let view = &full.spot_shadow_pool.views[slot as usize];
+                let view = &full.spot_shadow_pool.textures.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Promoted Spot Entity Shadow Depth Pass"),
                     color_attachments: &[],
@@ -154,6 +154,7 @@ impl Renderer {
                     if let Some(mesh_plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             mesh_plan,
                             MeshDepthInstanceFilter::AllRetained,
                             &full.shadow_vs_bind_group,
@@ -230,15 +231,14 @@ impl Renderer {
                 dynamic_depth_cache::copy_cached_world_depth(
                     encoder,
                     full.dynamic_depth_cache
-                        .spot_texture
-                        .as_ref()
+                        .spot_texture()
                         .expect("dynamic spot cache allocated"),
                     plan.cache_layer as u32,
-                    &full.spot_shadow_pool.array_texture,
+                    &full.spot_shadow_pool.textures.array_texture,
                     slot,
-                    full.spot_shadow_pool.resolution,
+                    full.spot_shadow_pool.textures.resolution,
                 );
-                let view = &full.spot_shadow_pool.views[slot as usize];
+                let view = &full.spot_shadow_pool.textures.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Dynamic Spot Entity Shadow Depth Pass"),
                     color_attachments: &[],
@@ -259,6 +259,7 @@ impl Renderer {
                     if let Some(mesh_plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             mesh_plan,
                             MeshDepthInstanceFilter::DynamicCasters,
                             &full.shadow_vs_bind_group,
@@ -289,7 +290,7 @@ impl Renderer {
                 continue;
             }
 
-            let view = &full.spot_shadow_pool.views[slot as usize];
+            let view = &full.spot_shadow_pool.textures.views[slot as usize];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Spot Shadow Depth Pass"),
                 color_attachments: &[],
@@ -338,6 +339,7 @@ impl Renderer {
                 if let Some(plan) = &mesh_frame_plan {
                     let submitted = full.mesh_pass.record_skinned_depth(
                         &mut pass,
+                        &level.models,
                         plan,
                         MeshDepthInstanceFilter::DynamicCasters,
                         &full.shadow_vs_bind_group,
@@ -502,6 +504,7 @@ impl Renderer {
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
+                                &level.models,
                                 mesh_plan,
                                 MeshDepthInstanceFilter::AllRetained,
                                 &full.cube_shadow_vs_bind_group,
@@ -580,8 +583,7 @@ impl Renderer {
                     dynamic_depth_cache::copy_cached_world_depth(
                         encoder,
                         full.dynamic_depth_cache
-                            .cube_texture
-                            .as_ref()
+                            .cube_texture()
                             .expect("dynamic cube cache allocated"),
                         dynamic_depth_cache::DynamicDepthCache::cube_face_layer(plan, face) as u32,
                         &pool.array_texture,
@@ -609,6 +611,7 @@ impl Renderer {
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
+                                &level.models,
                                 mesh_plan,
                                 MeshDepthInstanceFilter::DynamicCasters,
                                 &full.cube_shadow_vs_bind_group,
@@ -692,6 +695,7 @@ impl Renderer {
                     if let Some(plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             plan,
                             MeshDepthInstanceFilter::DynamicCasters,
                             &full.cube_shadow_vs_bind_group,

@@ -75,16 +75,27 @@ impl PromotedDepthCacheFramePlan {
     }
 }
 
-pub(super) struct PromotedDepthCache {
+/// The promoted world-depth cache's textures at one spot resolution: spot
+/// layers at the tier's resolution and cube faces at the fixed cube one.
+/// Shared through `Arc` by every level set built at that tier
+/// (`shadow_tier.rs`); the views keep their textures alive.
+pub(super) struct PromotedDepthTextures {
     spot_views: Vec<wgpu::TextureView>,
     spot_sampled_view: wgpu::TextureView,
     cube_face_views: Vec<wgpu::TextureView>,
     cube_sampled_view: Option<wgpu::TextureView>,
+}
+
+/// The active level's promoted cache: its tier's shared textures and which
+/// layer holds which light's warm world depth. Built fresh when a set is
+/// published, so no warm layer survives a level boundary.
+pub(super) struct PromotedDepthCache {
+    textures: std::sync::Arc<PromotedDepthTextures>,
     spot_layers: Vec<LayerState>,
     cube_layers: Vec<LayerState>,
 }
 
-impl PromotedDepthCache {
+impl PromotedDepthTextures {
     pub fn new(
         device: &wgpu::Device,
         cube_array_supported: bool,
@@ -164,6 +175,24 @@ impl PromotedDepthCache {
             spot_sampled_view,
             cube_face_views,
             cube_sampled_view,
+        }
+    }
+
+    pub fn spot_sampled_view(&self) -> &wgpu::TextureView {
+        &self.spot_sampled_view
+    }
+
+    pub fn cube_sampled_view(&self) -> Option<&wgpu::TextureView> {
+        self.cube_sampled_view.as_ref()
+    }
+}
+
+impl PromotedDepthCache {
+    /// The cache over a tier's shared textures, every layer cold. Creates
+    /// nothing.
+    pub fn over(textures: std::sync::Arc<PromotedDepthTextures>) -> Self {
+        Self {
+            textures,
             spot_layers: vec![LayerState::default(); MAX_PROMOTED_SPOT],
             cube_layers: vec![LayerState::default(); MAX_PROMOTED_CUBE],
         }
@@ -195,19 +224,11 @@ impl PromotedDepthCache {
     }
 
     pub fn spot_view(&self, plan: PromotedSpotCachePlan) -> &wgpu::TextureView {
-        &self.spot_views[plan.cache_layer as usize]
-    }
-
-    pub fn spot_sampled_view(&self) -> &wgpu::TextureView {
-        &self.spot_sampled_view
+        &self.textures.spot_views[plan.cache_layer as usize]
     }
 
     pub fn cube_face_view(&self, plan: PromotedCubeCachePlan, face: usize) -> &wgpu::TextureView {
-        &self.cube_face_views[plan.cache_layer(face) as usize]
-    }
-
-    pub fn cube_sampled_view(&self) -> Option<&wgpu::TextureView> {
-        self.cube_sampled_view.as_ref()
+        &self.textures.cube_face_views[plan.cache_layer(face) as usize]
     }
 }
 

@@ -59,6 +59,7 @@ mod sh_residency;
 mod sh_sample_regions;
 mod sh_streaming;
 mod sh_volume;
+mod shadow_tier;
 mod shadowmask;
 mod smoke;
 mod splash_pass;
@@ -206,7 +207,8 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
-use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures};
+use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures, SamplerMaps};
+pub use level_resource_set::{LevelSetId, PreviousLevelSet};
 pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,

@@ -251,6 +251,24 @@ impl FluidSceneInputs {
         }
     }
 
+    /// The live group: over the reflection target while one is bound, else
+    /// the placeholder's. A level set takes it with its target.
+    pub fn live_bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Bind a level set's live group, built over the current scene depth and
+    /// `reflection_target`, with no bind group built.
+    pub fn bind_live(&mut self, group: wgpu::BindGroup, reflection_target: &wgpu::TextureView) {
+        self.bind_group = group;
+        #[cfg(test)]
+        {
+            self.reflection_target = reflection_target.clone();
+        }
+        #[cfg(not(test))]
+        let _ = reflection_target;
+    }
+
     /// Bind the prebuilt placeholder group: a released reflection target's
     /// group drops with no bind group built.
     pub fn bind_placeholder(&mut self, placeholder: &wgpu::TextureView) {

@@ -1,13 +1,18 @@
-// Renderer level resources: sprite-collection registration, level release
-// (drop the active set), and the phased install that builds and publishes it.
-// See: context/lib/resource_management.md
+// Renderer level resources: sprite-collection registration, the phased build
+// of one load's resource set, and the oracle wrappers over build, publish and
+// release (`publish.rs`).
+// See: context/lib/resource_management.md · context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources)
 
 mod lightmap_shadow;
 mod lights;
+mod publish;
 mod sh_family;
 mod shadow_pools;
 mod world_geometry;
 
+pub(in crate::render) use publish::rebuild_level_extent_groups;
+
+use super::level_resource_set::{LevelSetId, PreviousLevelSet};
 use super::renderer_types::FullRenderer;
 use super::smoke::SpriteCollectionAssetSource;
 use super::*;
@@ -24,13 +29,15 @@ fn clear_kinematic_mover_frame_state(
 }
 
 impl Renderer {
-    /// Upload one draw contract per collection. Level installation resolves every
-    /// emitter and projectile consumer's frame count before this boundary; the
-    /// smoke pass owns its baked-sidecar attempt and PNG-decode fallback. The
-    /// baked-sidecar eligibility is an asset-level flag established by map-authored
-    /// billboard emitters, so collections using the same asset share its cache
-    /// decision. Duplicate calls for an id are reported and rejected rather than
-    /// silently overriding an accepted descriptor's cadence or emissive strength.
+    /// Upload one draw contract per collection into the active level set (or,
+    /// with none, stage it for the next build). Level installation resolves
+    /// every emitter and projectile consumer's frame count before this
+    /// boundary; the smoke pass owns its baked-sidecar attempt and PNG-decode
+    /// fallback. The baked-sidecar eligibility is an asset-level flag
+    /// established by map-authored billboard emitters, so collections using
+    /// the same asset share its cache decision. Duplicate calls for an id are
+    /// reported and rejected rather than silently overriding an accepted
+    /// descriptor's cadence or emissive strength.
     pub fn register_smoke_collection(
         &mut self,
         collection_id: &str,
@@ -49,7 +56,12 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         queue.assert_empty("smoke collection install");
+        let collections = match full.level.as_mut() {
+            Some(level) => &mut level.smoke,
+            None => &mut full.pending_smoke,
+        };
         full.smoke_pass.register_collection(
+            collections,
             device,
             queue.raw(),
             collection_id,
@@ -64,55 +76,85 @@ impl Renderer {
 
     /// Release the active level's renderer resources while keeping the
     /// device, queue, surface, UI, and window-facing state alive for the
-    /// no-level Frontend: drops the active `LevelResourceSet` (and any
-    /// staged textures) and clears the per-frame inputs that index it.
-    /// Creates no GPU object; the renderer-wide floor keeps the dropped
-    /// set's lightmap generations.
+    /// no-level Frontend: releases the active set (and drops anything staged
+    /// for the next build). Resident, unpublished sets stay. Creates no GPU
+    /// object; the renderer-wide floor keeps the dropped set's lightmap
+    /// generations.
     pub fn release_level_resources(&mut self) {
-        self.queue.assert_empty("level unload");
-        let full = self.full_mut();
-        if let Some(level) = full.level.take() {
-            full.retire_level_set(level);
+        if let Some(id) = self.active_level_set() {
+            self.release_level_set(id);
         }
+        let full = self.full_mut();
         full.pending_textures = None;
-
-        full.smoke_pass.clear_collections();
-        full.billboard_ghost.clear();
-        full.mesh_pass.release_level_resources();
-        full.mesh_draws.clear();
-        full.ghost_mesh_draws.clear();
-        full.kinematic_brush.clear_frame_draws();
-        full.kinematic_ghost.clear();
-        clear_kinematic_mover_frame_state(
-            &mut full.kinematic_mover_draws,
-            &mut full.kinematic_mover_shadow_draws,
-            &mut full.mover_occluder_aabbs,
-        );
-        full.bone_palette_scratch.clear();
-        full.fluid_surface.release_level_targets();
-        full.planar_reflection.clear_level();
-        full.fog.clear_frame_counts();
+        full.pending_models = Default::default();
+        full.pending_smoke = Default::default();
+        full.pending_samplers = Default::default();
     }
 
-    /// Builds one level's renderer resources into a fresh `LevelResourceSet`
-    /// and publishes it as the active set, dropping the previous one. Takes
-    /// the materials `install_textures` staged (else keeps the previous
-    /// set's, else binds one placeholder), and the level's GPU-only lightmap
-    /// and shadowmask payloads by value, dropping them once their textures
-    /// exist. Call `validate_level_geometry_ranges` before the first install
-    /// step; release indirect draws rely on its checked leaf/index-buffer
-    /// mapping.
+    /// Build one level's renderer resources into a fresh set and publish it
+    /// as the active set, retiring the previous one: the main-thread oracle
+    /// install. With no materials staged by `install_textures`, the previous
+    /// active set's carry over; its models, sprite collections and fog pixel
+    /// scale carry over too, as they did when those lived renderer-wide.
+    /// Call `validate_level_geometry_ranges` before the first install step;
+    /// release indirect draws rely on its checked leaf/index-buffer mapping.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(
         &mut self,
         geometry: &LevelGeometry<'_>,
         gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     ) {
+        let full = self.full_mut();
+        let fog_pixel_scale = match full.level.as_mut() {
+            Some(previous) => {
+                if full.pending_textures.is_none() {
+                    full.pending_textures = Some(previous.take_textures());
+                }
+                full.pending_models.absorb(&mut previous.models);
+                full.pending_smoke.absorb(&mut previous.smoke);
+                previous.extent.fog.pixel_scale()
+            }
+            None => DEFAULT_LEVEL_FOG_PIXEL_SCALE,
+        };
+        let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale);
+        self.publish_level_set(id, PreviousLevelSet::Retire);
+    }
+
+    /// Build one level's renderer resources into a fresh, unpublished set
+    /// and return its key. Takes the materials `install_textures` staged
+    /// (else binds one placeholder), any models and sprite collections staged
+    /// with no active set, and the level's GPU-only lightmap and shadowmask
+    /// payloads by value, dropping them once their textures exist. The set's
+    /// extent-bound groups are built at the current scene extent, its spot
+    /// shadow pool is looked up by the current shadow tier, and its lightmap
+    /// generations start above every live set's. Changes nothing the active
+    /// set or its frames read: no cache resets, no retirement, no write to
+    /// the renderer's sampler maps. Call `validate_level_geometry_ranges`
+    /// first.
+    pub fn build_level_set(
+        &mut self,
+        geometry: &LevelGeometry<'_>,
+        gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
+    ) -> LevelSetId {
+        self.build_level_set_at(
+            geometry,
+            gpu_lighting_payloads,
+            DEFAULT_LEVEL_FOG_PIXEL_SCALE,
+        )
+    }
+
+    fn build_level_set_at(
+        &mut self,
+        geometry: &LevelGeometry<'_>,
+        gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
+        fog_pixel_scale: u32,
+    ) -> LevelSetId {
         debug_assert!(
             validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
             "level geometry must pass the indirect index-range check before installation"
         );
         let surface_depth_quality = self.surface_depth_quality;
+        let scene = self.scene_extent();
         let Self {
             device,
             queue,
@@ -125,7 +167,7 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        // This main-thread install is the oracle: it may wait for the
+        // This main-thread build is the oracle: it may wait for the
         // renderer's one pipeline build, and builds no pipeline itself.
         let pipelines = full.install_pipelines.wait_for_oracle();
         let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
@@ -137,14 +179,7 @@ impl Renderer {
         let has_multi_draw_indirect = *has_multi_draw_indirect;
         let requested_spot_resolution = *spot_shadow_map_resolution;
 
-        // Drop the prior set at the level boundary, before this one's
-        // resources exist; its materials carry over when none were staged.
-        let previous_textures = full.level.take().map(|mut previous| {
-            let textures = previous.take_textures();
-            full.retire_level_set(previous);
-            textures
-        });
-        let textures = match full.pending_textures.take().or(previous_textures) {
+        let textures = match full.pending_textures.take() {
             Some(textures) => textures,
             None => super::renderer_textures::placeholder_level_textures(
                 device,
@@ -154,12 +189,18 @@ impl Renderer {
             ),
         };
 
-        shadow_pools::rebuild_spot_shadow_pool_for_tier(device, full, requested_spot_resolution);
         let world = world_geometry::install_world_buffers(device, geometry);
         let (lights, selection) = lights::install_level_lights(device, geometry);
         let level_light_count = selection.level_light_count;
         let animated_baked_descriptor_indices = selection.animated_baked_descriptor_indices;
-        let promoted = shadow_pools::reset_level_shadow_caches(device, full, geometry, &selection);
+        let shadow = shadow_pools::level_shadow_tier(
+            device,
+            full,
+            geometry,
+            &selection,
+            requested_spot_resolution,
+        );
+        let promoted = shadow_pools::level_promoted_state(device, geometry, &selection);
         let (lighting, light_buffers) = lights::install_lighting_bind_group(
             device,
             &full.lighting_bind_group_layout,
@@ -181,6 +222,7 @@ impl Renderer {
         let (mesh_lights, kinematic_lights) = lights::rebind_mesh_light_groups(
             device,
             full,
+            &shadow,
             &lights.lights_buffer,
             lighting.mirror_lighting.lights_buffer(),
             &lighting.influence_buffer,
@@ -206,13 +248,14 @@ impl Renderer {
             &gpu_lighting_payloads,
         );
         install_marks.mark("sdf_atlas_and_compose");
+        let generation_floor = full.reserve_lightmap_generation_floor();
         let lightmap = lightmap_shadow::install_lightmap(
             device,
             queue,
             geometry,
             gpu_lighting_payloads,
             lightmap_plan,
-            full.lightmap_generation_floor,
+            generation_floor,
         );
         let sdf_shadow = lightmap_shadow::rebind_sdf_shadow(
             device,
@@ -246,15 +289,29 @@ impl Renderer {
             geometry.texture_materials.len(),
             kinematic_lights,
         );
-        reset_level_frame_state(device, full);
+        let extent =
+            publish::build_level_extent_groups(device, full, &shadow, scene, fog_pixel_scale);
 
         let has_geometry = world.has_geometry;
         let LevelTextures {
             loaded_textures,
             gpu_textures,
             stored_texture_materials: _,
+            mut samplers,
         } = textures;
-        full.level = Some(LevelResourceSet {
+        samplers.absorb(&mut full.pending_samplers);
+        let id = LevelSetId::mint(&mut full.next_level_set_id);
+        let models = std::mem::take(&mut full.pending_models);
+        let smoke = std::mem::take(&mut full.pending_smoke);
+        full.resident_levels.push(LevelResourceSet {
+            id,
+            shadow,
+            extent,
+            samplers,
+            models,
+            smoke,
+            fluid_targets: Default::default(),
+            mirror_targets: Default::default(),
             loaded_textures,
             gpu_textures,
             stored_texture_materials: geometry.texture_materials.to_vec(),
@@ -336,17 +393,41 @@ impl Renderer {
 
         install_marks.log(has_geometry);
         if has_geometry {
-            let level = full.level.as_ref().expect("the set was just published");
             log::info!(
                 "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
-                level.index_count,
-                level.bvh_leaves.len(),
+                world.index_count,
+                full.resident_levels
+                    .last()
+                    .expect("the set was just built")
+                    .bvh_leaves
+                    .len(),
             );
         }
+        id
     }
 }
 
+/// A new set's fog pixel scale until worldspawn's arrives
+/// (`Renderer::set_fog_pixel_scale`).
+const DEFAULT_LEVEL_FOG_PIXEL_SCALE: u32 = 0;
+
 impl FullRenderer {
+    /// The lightmap generation floor a new set reserves: above the
+    /// renderer-wide add-only floor and every live set's high water, so its
+    /// generations stay disjoint from every live set's accepted ones (the
+    /// streaming controllers' generations are process-monotonic).
+    fn reserve_lightmap_generation_floor(&mut self) -> u64 {
+        let live = self
+            .level
+            .iter()
+            .chain(&self.resident_levels)
+            .map(|level| level.lightmap_resources.generation_high_water())
+            .max()
+            .unwrap_or(0);
+        self.lightmap_generation_floor = self.lightmap_generation_floor.max(live);
+        self.lightmap_generation_floor
+    }
+
     /// Drop a level set the renderer no longer draws, folding its lightmap
     /// generations into the renderer-wide floor first. Creates nothing.
     pub(in crate::render) fn retire_level_set(&mut self, level: LevelResourceSet) {
@@ -358,16 +439,19 @@ impl FullRenderer {
 }
 
 /// Per-frame draw state the previous level's ids index: mover draw lists and
-/// ghosts, and the fluid and planar targets keyed to its surfaces.
-fn reset_level_frame_state(device: &wgpu::Device, full: &mut FullRenderer) {
+/// ghosts, skinned and billboard draw inputs, and the fluid and planar frame
+/// state keyed to its surfaces. CPU-only.
+fn reset_level_frame_state(full: &mut FullRenderer) {
     full.kinematic_brush.clear_frame_draws();
     // Mover ids are the new level's: drop the last frame's mover ghosts.
     full.kinematic_ghost.clear();
-    // Fluid surfaces install after this through `install_fluid_surfaces`;
-    // every geometry install drops the previous level's reflection target
-    // and planar layer, rebinding group 5 to the placeholder.
-    full.fluid_surface.clear_level_targets(device);
+    full.billboard_ghost.clear();
+    full.mesh_draws.clear();
+    full.ghost_mesh_draws.clear();
+    full.bone_palette_scratch.clear();
+    full.mesh_pass.clear_for_level_load();
     full.planar_reflection.clear_level();
+    full.fog.clear_frame_counts();
     clear_kinematic_mover_frame_state(
         &mut full.kinematic_mover_draws,
         &mut full.kinematic_mover_shadow_draws,

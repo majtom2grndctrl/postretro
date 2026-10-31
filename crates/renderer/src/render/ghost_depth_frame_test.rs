@@ -646,7 +646,7 @@ fn a_nearer_ghost_blends_over_a_farther_one_and_each_hides_its_own_inner_surface
     let planned = plan_mesh_frame_plans(
         std::slice::from_ref(&world),
         &[skinned_ghost(SKINNED_FAR_GHOST, 1, FAR_LOOK)],
-        &renderer.full().mesh_pass,
+        &renderer.level().models,
     );
     assert!(
         planned

@@ -2,7 +2,6 @@
 // See: context/lib/rendering_pipeline.md §9
 
 use crate::render::gpu_create::GpuCreate;
-use std::collections::HashMap;
 
 use postretro_render_cpu::mesh_instances::{MAX_INSTANCES, MAX_PALETTE_ENTRIES};
 
@@ -379,9 +378,6 @@ impl MeshPass {
             mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,
-            models: HashMap::new(),
-            model_bounds: HashMap::new(),
-            model_clips: HashMap::new(),
             snapshot_store: SnapshotStore::default(),
             palette_cache: PaletteCache::default(),
             capture_scratch: Vec::new(),

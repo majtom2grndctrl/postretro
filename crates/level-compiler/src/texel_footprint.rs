@@ -305,8 +305,11 @@ pub(crate) enum TexelSampler {
     },
 }
 
-/// Which agreements of the nine footprint probes end a texel's footprint
-/// without tracing the rest of its set.
+/// Which agreements of a light's probes end a sample without tracing the rest
+/// of its set: the nine footprint probes of a floored texel, or the four
+/// centre-point probes that the floor-off texel sampler and the probe-point
+/// bakes (direct SH and its deltas, billboard scatter) trace through
+/// [`soft_visibility_early_out`](crate::lightmap_bake::soft_visibility_early_out).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProbeEarlyOut {
     /// All blocked stores 0, all clear stores 1: an ordinary light.
@@ -319,14 +322,16 @@ pub(crate) enum ProbeEarlyOut {
     /// it and the ring all blocked, a real occluder stands in the way, and
     /// the texel stores 0 as an ordinary light's does.
     Blocked,
-    /// None: every sample traced, the full-set reference.
-    #[cfg(test)]
+    /// None: every sample traced. A probe-point bake's rule for a flagged
+    /// light ([`ProbeEarlyOut::for_probe_point`]), and the texel tests'
+    /// full-set reference.
     Off,
 }
 
 impl ProbeEarlyOut {
-    /// The early-out a light takes in production, from its
-    /// [`EmbeddedEmitters`] flag.
+    /// The texel-footprint rule: the early-out a light takes in a lightmap
+    /// texel bake, from its [`EmbeddedEmitters`] flag. Probe-point bakes use
+    /// [`ProbeEarlyOut::for_probe_point`].
     pub(crate) fn for_light(embedded_emitter: bool) -> Self {
         if embedded_emitter {
             Self::Blocked
@@ -335,13 +340,29 @@ impl ProbeEarlyOut {
         }
     }
 
-    /// Whether the probes' `clear` count of `surviving` ends the texel; only
-    /// asked when no probe was clipped.
-    fn ends(self, clear: u32, surviving: u32) -> bool {
+    /// The early-out a probe-point bake (direct SH and its deltas, billboard
+    /// scatter) takes for a light, from its [`EmbeddedEmitters`] flag. A
+    /// flagged light traces its full set at every probe: the centre-point set
+    /// is four lattice samples spread over the sphere, with no probe at the
+    /// emitter's centre, so four blocked probes can be two in the embedded
+    /// cap and two behind a partial occluder, and the all-blocked early-out
+    /// that [`ProbeEarlyOut::Blocked`] keeps for a footprint would store 0
+    /// where the full set reads more. An unflagged light keeps both
+    /// early-outs, so its bytes are unchanged.
+    pub(crate) fn for_probe_point(embedded_emitter: bool) -> Self {
+        if embedded_emitter {
+            Self::Off
+        } else {
+            Self::Agreed
+        }
+    }
+
+    /// Whether the probes' `clear` count of `surviving` ends the sample; a
+    /// footprint asks only when no probe was clipped.
+    pub(crate) fn ends(self, clear: u32, surviving: u32) -> bool {
         match self {
             Self::Agreed => clear == 0 || clear == surviving,
             Self::Blocked => clear == 0,
-            #[cfg(test)]
             Self::Off => false,
         }
     }
@@ -410,6 +431,7 @@ impl TexelSampler {
                 light,
                 site.seed,
                 || *probes,
+                ProbeEarlyOut::Agreed,
                 trace,
             ),
             Self::Footprint {

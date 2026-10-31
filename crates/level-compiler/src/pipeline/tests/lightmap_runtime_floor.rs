@@ -206,6 +206,7 @@ fn compile_adjacent_stages(
         &alpha_lights,
         None,
         &[],
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &primitives,
         &config,

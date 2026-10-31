@@ -28,8 +28,9 @@ use crate::animated_direct_sh_bake::{
 };
 use crate::bake_control::BakeControl;
 use crate::billboard_direct_scatter_bake::{
-    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_ID,
-    BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, BillboardDirectScatterBakeInputs,
+    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
+    BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
+    BillboardDirectScatterBakeInputs,
     bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled,
     bake_billboard_direct_scatter_volume_cached_controlled,
 };
@@ -280,10 +281,12 @@ fn bake_deltas_with_controls(
         portals: &[],
         animated_lights: &animated_lights,
         mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let direct_inputs = DirectBakeInputs {
         sh_ctx: &sh_ctx,
         portals: &[],
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let selected = EntityShadowLightsSection {
         light_indices: vec![0, 1],
@@ -357,6 +360,7 @@ fn bake_animated_delta_pair(
         portals: &[],
         animated_lights: &animated_lights,
         mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let config = ShConfig { probe_spacing: 1.0 };
     let (indirect, indirect_tally) =
@@ -408,6 +412,7 @@ fn bake_direct_delta_only(
         &DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         },
         &ShConfig { probe_spacing: 1.0 },
         &alpha_lights,
@@ -801,6 +806,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         let direct_inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         bake_direct_sh_volume_cached_controlled(
             &direct_inputs,
@@ -814,6 +820,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
             portals: &[],
             animated_lights: &animated_lights,
             mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,
@@ -839,6 +846,8 @@ fn run_pre_atlas_and_fused_cache_fixture(
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            static_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         assert!(
             bake_billboard_direct_scatter_volume_cached_controlled(
@@ -906,6 +915,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         &alpha_lights,
         Some(&selection),
         &[],
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &primitives,
         &config,
@@ -1375,10 +1385,11 @@ fn five_stage_version_bumps_miss_then_hit() {
 
 #[test]
 fn lighting_scale_cache_versions_pin_current_epochs() {
-    assert_eq!(DIRECT_SH_STAGE_VERSION, 5);
-    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
-    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
-    assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
+    assert_eq!(DIRECT_SH_STAGE_VERSION, 6);
+    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 4);
+    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 4);
+    assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 4);
+    assert_eq!(ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
     assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 5);
     assert_eq!(SH_GROUP_STAGE_VERSION, 4);
 

@@ -12,6 +12,7 @@ use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection
 use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
+use crate::texel_footprint::ProbeEarlyOut;
 use thiserror::Error;
 
 mod atlas_layout;
@@ -189,7 +190,9 @@ pub struct LightmapConfig {
     pub direction_texel_scale: u32,
     /// Receiver footprint floor (`texel_footprint`): each texel's per-light
     /// visibility is filtered over a one-texel cone footprint so no baked edge
-    /// steps between texels. Off bakes centre-point visibility.
+    /// steps between texels. Off bakes centre-point visibility and drops the
+    /// embedded-emitter test on every path, so probe-point bakes keep their
+    /// 4-probe early-out for every light; output equals the pre-floor bake.
     /// Default [`crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT`].
     pub penumbra_floor: bool,
 }
@@ -815,12 +818,14 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-// `soft_visibility` and `soft_visibility_with` are the centre-point sampler.
-// `TexelSampler::Centre` (floor off) and the probe-point bakers (direct SH,
-// animated direct SH, scatter) call them, each wrapping its own `segment_clear`
-// as the trace closure. The SH bounce traces one sample of the same lattice per
-// hit (`soft_visibility_one_sample`). The floored texel path is
-// `texel_footprint`.
+// `soft_visibility_early_out` is the centre-point sampler's production entry;
+// `soft_visibility` is its test-only `ProbeEarlyOut::Agreed` wrapper.
+// `TexelSampler::Centre` (floor off) reaches it through `soft_visibility_with`.
+// The probe-point bakers (direct SH, animated direct SH, scatter) call
+// `soft_visibility_early_out` with `ProbeEarlyOut::for_probe_point`. Each
+// wraps its own `segment_clear` as the trace closure. The SH bounce traces one
+// sample of the same lattice per hit (`soft_visibility_one_sample`). The
+// floored texel path is `texel_footprint`.
 
 /// Probe samples traced before escalating. Tracing this many first lets the
 /// fully-lit / fully-shadowed common case (where every probe agrees) stay cheap;
@@ -836,7 +841,7 @@ pub(crate) const SOFT_PROBE_SAMPLES: u32 = 4;
 
 /// Default full stratified sample count once a penumbra is detected. The
 /// area-sample-count bake knob overrides this per call via
-/// `soft_visibility`'s `full_samples` argument; callers without a knob pass
+/// soft visibility's `full_samples` argument; callers without a knob pass
 /// this default, and the SH bounce, where bounce is low-frequency, uses it as
 /// the lattice its one sample per hit draws from.
 /// The probe set is a spread **subset** of `full_samples` (not a prefix), so a
@@ -976,6 +981,13 @@ pub(crate) fn probe_sample_direction(light: &MapLight, i: u32, count: u32) -> Ve
 /// only the escalated sample count `full_samples` is caller-supplied — so the bake
 /// stays deterministic regardless of the knob's value. Callers without a knob pass
 /// [`DEFAULT_AREA_SAMPLE_COUNT`].
+///
+/// Either probe agreement ends the trace ([`ProbeEarlyOut::Agreed`]); a caller
+/// that must trace the full set for a light whose emitter sphere reaches into
+/// geometry, skipping both early-outs ([`ProbeEarlyOut::Off`]), calls
+/// [`soft_visibility_early_out`]. Production callers name their early-out, so
+/// only tests call this.
+#[cfg(test)]
 pub(crate) fn soft_visibility(
     surface_point: Vec3,
     surface_normal: Vec3,
@@ -984,12 +996,40 @@ pub(crate) fn soft_visibility(
     full_samples: u32,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
+    soft_visibility_early_out(
+        surface_point,
+        surface_normal,
+        light,
+        seed,
+        full_samples,
+        ProbeEarlyOut::Agreed,
+        trace,
+    )
+}
+
+/// Soft visibility ending the trace only on the probe agreements `early_out`
+/// names. The probe-point bakes (direct SH and its deltas, billboard scatter)
+/// pass [`ProbeEarlyOut::for_probe_point`] of the light's
+/// [`EmbeddedEmitters`](crate::texel_footprint::EmbeddedEmitters) flag: a
+/// flagged light traces its full set, since its embedded cap can hide from all
+/// four probes. [`ProbeEarlyOut::Agreed`] is the plain centre-point sampler,
+/// bit for bit.
+pub(crate) fn soft_visibility_early_out(
+    surface_point: Vec3,
+    surface_normal: Vec3,
+    light: &MapLight,
+    seed: u64,
+    full_samples: u32,
+    early_out: ProbeEarlyOut,
+    trace: impl Fn(Vec3, Vec3) -> bool,
+) -> f32 {
     soft_visibility_with(
         surface_point,
         surface_normal,
         light,
         seed,
         || SoftProbes::new(light, full_samples),
+        early_out,
         trace,
     )
 }
@@ -1006,7 +1046,7 @@ pub(crate) struct SoftProbes {
 
 impl SoftProbes {
     /// `full_samples` is clamped to at least the probe count, as in
-    /// [`soft_visibility`].
+    /// [`soft_visibility_early_out`].
     pub(crate) fn new(light: &MapLight, full_samples: u32) -> Self {
         let full_samples = full_samples.max(SOFT_PROBE_SAMPLES);
         let probes = match light.light_type {
@@ -1040,14 +1080,15 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// [`soft_visibility`] with a caller-supplied probe set; `probes` runs only
-/// for a soft (non-zero-radius) emitter.
+/// [`soft_visibility_early_out`] with a caller-supplied probe set; `probes`
+/// runs only for a soft (non-zero-radius) emitter.
 pub(crate) fn soft_visibility_with(
     surface_point: Vec3,
     surface_normal: Vec3,
     light: &MapLight,
     seed: u64,
     probes: impl FnOnce() -> SoftProbes,
+    early_out: ProbeEarlyOut,
     trace: impl Fn(Vec3, Vec3) -> bool,
 ) -> f32 {
     let origin = surface_point + surface_normal * RAY_EPSILON;
@@ -1081,7 +1122,9 @@ pub(crate) fn soft_visibility_with(
     }
 
     // Fully-lit or fully-shadowed probes agree — no penumbra, stay cheap.
-    if clear == 0 || clear == SOFT_PROBE_SAMPLES {
+    // `early_out` names which agreements end the trace; `Off` (a flagged
+    // embedded emitter at a probe point) never ends here and traces the full set.
+    if early_out.ends(clear, SOFT_PROBE_SAMPLES) {
         return clear as f32 / SOFT_PROBE_SAMPLES as f32;
     }
 
@@ -1102,7 +1145,7 @@ pub(crate) fn soft_visibility_with(
     clear as f32 / full_samples as f32
 }
 
-/// One-ray twin of [`soft_visibility`] for an estimator that averages many
+/// One-ray twin of `soft_visibility` for an estimator that averages many
 /// receivers, such as the SH bounce over a probe's gather rays: returns 1.0
 /// when its single shadow ray is clear, 0.0 when occluded. A hard emitter
 /// (`radius <= 0`) traces exactly the ray `soft_visibility` traces, so the

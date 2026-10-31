@@ -84,6 +84,8 @@ mod binary_tests;
 mod cache_cross_bake_tests;
 #[cfg(test)]
 mod cache_prune_tests;
+#[cfg(test)]
+mod embedded_emitter_probe_tests;
 
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -749,8 +751,14 @@ pub struct Args {
     /// Receiver footprint floor on static lightmap texels and on the animated
     /// weight maps (`LightmapConfig::penumbra_floor`). On unless
     /// `--no-penumbra-floor`, which bakes centre-point visibility for
-    /// before/after comparison. Folds into every lightmap-layer key and the
-    /// `animated_lm_weight_maps` key, so toggling it re-bakes both.
+    /// before/after comparison. Off also drops the probe-point embedded-emitter
+    /// rule: no light is flagged, so direct SH, entity-shadow direct deltas,
+    /// animated direct SH and billboard scatter keep the 4-probe early-out for
+    /// every light, matching the pre-floor bake. Folds into every
+    /// lightmap-layer key and the `animated_lm_weight_maps` key, so toggling
+    /// it re-bakes both. The direct-SH and billboard-scatter keys fold the
+    /// flagged-light set, so toggling re-keys those only when some light is
+    /// flagged.
     penumbra_floor: bool,
     /// SDF occluder-atlas voxel edge length in meters. Overrides
     /// `sdf_bake::DEFAULT_VOXEL_SIZE_METERS` for this run.
@@ -845,7 +853,7 @@ fn help_text() -> String {
          --lightmap-density <METERS> Fixed lightmap texel size in meters, > 0 (default: {density})\n    \
          --sh-density-fidelity <MULTIPLIER> Base SH density fidelity multiplier, > 0 (default: {sh_density_fidelity})\n    \
          --soft-shadow-samples <N>  Soft-shadow penumbra area-sample count, >= {probe_floor} (default: {samples})\n    \
-         --no-penumbra-floor        Bake lightmap shadow visibility at texel centres instead of over the one-texel receiver footprint, so sharp edges show texel steps; for comparison (default: off, floored)\n    \
+         --no-penumbra-floor        Bake lightmap shadow visibility at texel centres instead of over the one-texel receiver footprint, so sharp edges show texel steps, and skip the extra probe tracing for lights embedded in geometry in the SH and billboard bakes; for comparison (default: off, floored)\n    \
          --sdf-voxel-size <METERS>  SDF occluder-atlas voxel edge length in meters, > 0 (default: {voxel})\n    \
          --cache-dir <PATH>         Override the stage-cache directory (default: <workspace>/.build-caches/prl-cache)\n    \
          --baked-root <DIR>         Directory that CONTAINS materials/; .prm sidecars are written to <DIR>/materials/. Pass the engine the same directory. (default: <workspace>/baked)\n    \

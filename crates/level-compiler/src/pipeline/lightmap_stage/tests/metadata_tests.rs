@@ -91,6 +91,7 @@ fn metadata_gate_refuses_high_pair_count_before_hashing_or_cache_access() {
             &alpha_lights,
             None,
             &[],
+            &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
             &bvh,
             &primitives,
             &config(false),

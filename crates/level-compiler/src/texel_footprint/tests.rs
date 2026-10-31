@@ -1968,6 +1968,7 @@ fn floor_disabled_bakes_centre_point_soft_visibility() {
                     &light,
                     crate::chart_raster::chart_texel_seed(&chart, x as i32, y as i32),
                     || probes,
+                    crate::texel_footprint::ProbeEarlyOut::Agreed,
                     |from, to| {
                         crate::lightmap_bake::segment_clear_remembering(
                             &fixture.bvh,

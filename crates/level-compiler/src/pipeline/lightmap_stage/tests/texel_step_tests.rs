@@ -235,6 +235,7 @@ fn bake(
         &alpha_lights,
         run.selection,
         &labels,
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &primitives,
         config,

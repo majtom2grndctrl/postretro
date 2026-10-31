@@ -136,6 +136,34 @@ pub(crate) struct PartitionHooks {
     pub(crate) in_consume: Option<ConsumeHook>,
 }
 
+/// Warn each static light flagged by this stage's emitter test (`texels`,
+/// keyed by source index) or by the probe-point bakes' test (`probes`, keyed
+/// by position in `static_lights`, [`crate::direct_sh_bake::embedded_emitters`]),
+/// once, on the caller thread. The probe stages run first and do not warn, so
+/// a light only they flag still warns here.
+fn warn_embedded_emitters(
+    texels: &EmbeddedEmitters,
+    probes: &EmbeddedEmitters,
+    static_lights: &StaticBakedLights<'_>,
+    light_source_labels: &[String],
+) {
+    let entries = static_lights.entries();
+    // Source indices ascend with position in the static namespace.
+    let probes = probes.rekeyed(|position| entries[position].source_index);
+    EmbeddedEmitters::warn(
+        "static",
+        texels,
+        &probes,
+        |source| {
+            entries
+                .binary_search_by_key(&source, |entry| entry.source_index)
+                .ok()
+                .map(|at| entries[at].light)
+        },
+        |source| light_source_labels.get(source).map(String::as_str),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_prepared(
     args: &Args,
@@ -147,6 +175,7 @@ pub(crate) fn bake_fused_prepared(
     alpha_lights: &AlphaLightsNs<'_>,
     shadow_selection: Option<&EntityShadowLightsSection>,
     light_source_labels: &[String],
+    probe_embedded_emitters: &EmbeddedEmitters,
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
@@ -162,6 +191,7 @@ pub(crate) fn bake_fused_prepared(
         alpha_lights,
         shadow_selection,
         light_source_labels,
+        probe_embedded_emitters,
         bvh,
         primitives,
         config,
@@ -181,6 +211,7 @@ pub(crate) fn bake_fused_windowed(
     alpha_lights: &AlphaLightsNs<'_>,
     shadow_selection: Option<&EntityShadowLightsSection>,
     light_source_labels: &[String],
+    probe_embedded_emitters: &EmbeddedEmitters,
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
@@ -201,6 +232,13 @@ pub(crate) fn bake_fused_windowed(
     // No consumer can use these charts, so zero admission also means no
     // layer/owner/key metadata allocation, even with many authored lights.
     if static_lights.is_empty() || prepared.placements.is_empty() {
+        // No texel to bake, so only the probe-point bakes' flags warn.
+        warn_embedded_emitters(
+            &EmbeddedEmitters::default(),
+            probe_embedded_emitters,
+            static_lights,
+            light_source_labels,
+        );
         return Ok(FusedLightingOutput {
             lightmap: LightmapBakeOutput {
                 section: postretro_level_format::lightmap::LightmapSection::empty(
@@ -235,10 +273,11 @@ pub(crate) fn bake_fused_windowed(
         .filter(|entry| entry.light.shadow_type != ShadowType::Sdf)
         .collect();
     // Lights whose emitter sphere reaches into geometry skip the all-clear
-    // probe early-out. Tested once per light, warm or cold: the test reads
-    // only the light and geometry inside its layer key's bound
-    // (`lightmap_layer::layer_influence_aabb`), so a cached partition was
-    // baked under the same verdict, and the warning never rides a memo.
+    // probe early-out. Tested once per light, warm or cold, on the cut
+    // geometry this stage bakes: the test reads only the light and geometry
+    // inside its layer key's bound (`lightmap_layer::layer_influence_aabb`),
+    // so a cached partition was baked under the same verdict, and the
+    // warning never rides a memo.
     let embedded_emitters = if config.penumbra_floor && window.tests_embedded_emitters() {
         EmbeddedEmitters::classify(
             layer_lights
@@ -252,15 +291,11 @@ pub(crate) fn bake_fused_windowed(
     } else {
         EmbeddedEmitters::default()
     };
-    embedded_emitters.warn(
-        "static",
-        |source| {
-            layer_lights
-                .iter()
-                .find(|entry| entry.source_index == source)
-                .map(|entry| entry.light)
-        },
-        |source| light_source_labels.get(source).map(String::as_str),
+    warn_embedded_emitters(
+        &embedded_emitters,
+        probe_embedded_emitters,
+        static_lights,
+        light_source_labels,
     );
     // Partition keys feed only the cache, so an uncached bake hashes nothing.
     let layer_prefixes = if stage_cache.is_some() && !prepared.placements.is_empty() {

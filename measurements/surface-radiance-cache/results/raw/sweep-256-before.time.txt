@@ -1,0 +1,2 @@
+pgrep-check: clean
+bin=before map=measurements/surface-radiance-cache/sweep/light-sweep-256.map rc=1 wall_s=49

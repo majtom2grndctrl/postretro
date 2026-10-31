@@ -82,15 +82,15 @@ is unaffected.
 Use dev-tools noclip, or walk: the back room is reachable through the opening
 while the wall is open.
 
-- **Station 1 — wall fills the screen (player start).** (368, 720, 48), yaw 90
-  (facing +y, north). The closed wall is 8.1 m away, centred, and fills most of
-  the view. While open, only the pocket edge and the back room show. This is
+- **Station 1 — wall ahead (player start).** (368, 720, 48), yaw 90
+  (facing +y, north). The closed wall is 8.1 m away, centred, and covers about
+  37% of the frame at FOV 100. While open, only the pocket edge and the back room show. This is
   the perf station.
 - **Station 2 — rising room from outside.** (560, 320, 48), yaw 0 (facing +x,
   east). The room's doorway wall is 6.9 m ahead. Watch the roof sit flush in
   the floor, then the room rise with the lamp lit inside.
 - **Station 3 — behind the wall.** (368, 1536, 48), yaw 270 (facing −y,
-  south). The north face of the wall fills the view, with the enemy spot in the
+  south). The north face of the wall is centred ahead, with the enemy spot in the
   foreground.
 
 **Enemy spot.** A red 64 × 64 × 8 plinth (`debug_floor_red`) at x
@@ -113,8 +113,8 @@ Command forms come from `context/lib/development_guide.md` §Build and run and
 
 1. Spawn at station 1 and do not touch the input. The movers start on spawn.
 2. Record at least two full wall cycles (about 40 s). GPU timing logs one
-   window every 120 readbacks. Read `forward` and `depth_prepass`. The mover
-   pass has no timing pair, so time it with a Metal System Trace (step 5).
+   window every 120 readbacks. Read the mover pass (`kinematic_brush` in the
+   GPU timing window) beside `forward` and `depth_prepass`.
 3. Per-window values swing with the wall's phase: the closed wall covers most
    of the screen, and the open wall covers almost nothing. Compare means over
    the same number of whole cycles, or compare only the windows logged while
@@ -123,9 +123,9 @@ Command forms come from `context/lib/development_guide.md` §Build and run and
    Follow §12's confounder rules: no bake or build running alongside, pin the
    GPU clock with a saturating resolution, and record the surface and scene
    extents.
-5. Use an Instruments Metal System Trace (§12) for the mover pass, labelled
-   `Kinematic Brush Pass`, and for everything else when the adapter lacks
-   timestamp queries.
+5. If the adapter lacks timestamp queries, GPU timing reports unsupported. Use
+   an Instruments Metal System Trace instead (§12). The mover pass is labelled
+   `Kinematic Brush Pass`.
 
 These are manual, in-engine checks. Compiling the map validates only the
 authored content.

@@ -244,6 +244,7 @@ pub(crate) use postretro_render_cpu::mesh_instances;
 // `render::*` paths (external callers and sibling render modules depend on these).
 pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
+pub(crate) use kinematic_brush::MoverView;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;

@@ -373,6 +373,28 @@ fn planar_gpu_mirror_only_mover_and_skinned_mesh_reflect() {
     renderer.release_level_resources();
 }
 
+// A mover in plain view, in front of the back wall, shades in the main view:
+// its depth joins the depth pre-pass and its colour draw tests `Equal`
+// against it, so a pre-pass that missed it, or a clip path that drifted from
+// the pre-pass's, would leave the wall where the mover stands.
+#[test]
+fn planar_gpu_main_view_mover_shades_over_the_wall_behind_it() {
+    let Some((mut renderer, view)) = mesh_renderer() else {
+        return;
+    };
+    renderer.set_mesh_draws(&[]);
+    set_mover(&mut renderer, None);
+    let base = capture_checked(&mut renderer, view);
+    set_mover(&mut renderer, Some(Vec3::new(2.5, 1.2, 7.0)));
+    let frame = capture_checked(&mut renderer, view);
+    let shown = pixels()
+        .filter(|&pixel| !near_the_plane(view, pixel, LARGE_X))
+        .filter(|&pixel| magenta(rgb(&frame, pixel)) && !magenta(rgb(&base, pixel)))
+        .count();
+    assert!(shown >= 8, "the mover in view draws ({shown} pixels)");
+    renderer.release_level_resources();
+}
+
 // AC 15. Ghosts (skinned, mover and billboard) and the viewmodel at the
 // skinned quad's pose above the selected plane, each even marked as the
 // mirror's, add no texel to the planar layer; a real mirror-only mesh at that

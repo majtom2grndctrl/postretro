@@ -1,5 +1,5 @@
 // Renderer-owned draw path for PRL-loaded kinematic brush movers.
-// See: context/lib/rendering_pipeline.md
+// See: context/lib/rendering_pipeline.md §7.2, §7.3
 
 use std::collections::HashMap;
 
@@ -67,6 +67,8 @@ pub(crate) struct ActiveMoverDraw {
 
 pub(crate) struct KinematicBrushPass {
     pipeline: wgpu::RenderPipeline,
+    /// Depth-only `vs_depth` pipeline recorded into a view's depth pre-pass.
+    depth_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -359,6 +361,65 @@ fn material_index(texture_index: u32, material_count: usize) -> usize {
     if index < material_count { index } else { 0 }
 }
 
+const MOVER_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute {
+        offset: 0,
+        shader_location: 0,
+        format: wgpu::VertexFormat::Float32x3,
+    },
+    wgpu::VertexAttribute {
+        offset: 12,
+        shader_location: 1,
+        format: wgpu::VertexFormat::Float32x2,
+    },
+    wgpu::VertexAttribute {
+        offset: 20,
+        shader_location: 2,
+        format: wgpu::VertexFormat::Uint16x2,
+    },
+    wgpu::VertexAttribute {
+        offset: 24,
+        shader_location: 3,
+        format: wgpu::VertexFormat::Uint16x2,
+    },
+];
+
+/// One vertex layout and primitive state for the mover depth and colour
+/// pipelines, so both rasterize the same triangles with the same culling.
+fn mover_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: postretro_render_data::geometry::WorldVertex::STRIDE as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &MOVER_VERTEX_ATTRIBUTES,
+    }
+}
+
+fn mover_primitive_state() -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        front_face: wgpu::FrontFace::Ccw,
+        cull_mode: Some(wgpu::Face::Back),
+        ..Default::default()
+    }
+}
+
+/// Which view a mover recording serves. Depth and colour recording for a
+/// view walk the same [`KinematicBrushPass::view_draws`] list, so a mover in
+/// one is in the other: one missing from the depth leaves a hole under the
+/// colour draw's `Equal` test, one missing from the colour leaves an unshaded
+/// depth silhouette.
+#[derive(Clone, Copy)]
+pub(crate) enum MoverView {
+    /// The main camera: every camera-visible mover.
+    Main,
+    /// The planar mirror: the camera-visible movers whose world bounds reach
+    /// the mirror's cull frustum and its clip plane's upper side.
+    Mirror {
+        cull_planes: [glam::Vec4; 6],
+        clip_plane: glam::Vec4,
+    },
+}
+
 impl KinematicBrushPass {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -407,51 +468,22 @@ impl KinematicBrushPass {
             immediate_size: 0,
         });
 
+        // Colour draws test `Equal` against the depth `vs_depth` wrote in the
+        // depth pre-pass and write none, so each mover pixel shades once.
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Kinematic Brush Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: postretro_render_data::geometry::WorldVertex::STRIDE
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 20,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 24,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Uint16x2,
-                        },
-                    ],
-                })],
+                buffers: &[Some(mover_vertex_layout())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
+            primitive: mover_primitive_state(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -466,6 +498,41 @@ impl KinematicBrushPass {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
+            multiview_mask: None,
+            cache: None,
+        });
+        // Vertex-only, from the colour shader's own module so the two clip
+        // paths cannot drift: camera and instance transforms only.
+        let depth_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Kinematic Brush Depth Pipeline Layout"),
+                bind_group_layouts: &[
+                    Some(camera_bgl),
+                    None,
+                    None,
+                    Some(&instance_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Kinematic Brush Depth Pipeline"),
+            layout: Some(&depth_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_depth"),
+                buffers: &[Some(mover_vertex_layout())],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: mover_primitive_state(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: depth_format,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: None,
             multiview_mask: None,
             cache: None,
         });
@@ -503,6 +570,7 @@ impl KinematicBrushPass {
 
         Self {
             pipeline,
+            depth_pipeline,
             vertex_buffer,
             index_buffer,
             index_count: 0,
@@ -941,52 +1009,70 @@ impl KinematicBrushPass {
         )
     }
 
-    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, materials: &[GpuTexture]) {
-        self.record_draws_with(pass, materials, false, |_| true);
+    /// This frame's movers for `view`: the one list both
+    /// [`Self::record_depth`] and [`Self::record_draws`] walk. Movers the
+    /// mirror cannot show (bounds off its cull frustum or wholly below its
+    /// clip plane) cost it no vertex work.
+    fn view_draws(&self, view: MoverView) -> impl Iterator<Item = &ActiveMoverDraw> + '_ {
+        self.beauty_draws.iter().filter(move |active| match view {
+            MoverView::Main => true,
+            MoverView::Mirror {
+                cull_planes,
+                clip_plane,
+            } => {
+                let local = self.mover_bounds[active.mover_draw_index];
+                self.instance_model(active.instance_index)
+                    .is_none_or(|model| {
+                        mover_reaches_mirror(local, model, &cull_planes, clip_plane)
+                    })
+            }
+        })
     }
 
-    /// The planar mirror's mover draws: [`Self::record_draws`] with group 2
-    /// over the mirror's light records on a frame a mirror-only light holds
-    /// a shadow slot, skipping each mover whose world bounds miss the
-    /// mirror's cull frustum (`cull_planes`) or lie wholly below its clip
-    /// plane, so the mirror pays no vertex work for movers it cannot show.
-    pub fn record_mirror_draws(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        materials: &[GpuTexture],
-        cull_planes: &[glam::Vec4; 6],
-        clip_plane: glam::Vec4,
-    ) {
-        self.record_draws_with(pass, materials, self.mirror_light_records, |active| {
-            let local = self.mover_bounds[active.mover_draw_index];
-            self.instance_model(active.instance_index)
-                .is_none_or(|model| mover_reaches_mirror(local, model, cull_planes, clip_plane))
-        });
+    /// Whether `view` has a mover to draw, so a view's mover passes open
+    /// only when they record something.
+    pub(crate) fn has_view_draws(&self, view: MoverView) -> bool {
+        self.has_draws() && self.view_draws(view).next().is_some()
     }
 
-    /// The model transform `upload_instances` packed at `instance_index`.
-    fn instance_model(&self, instance_index: u32) -> Option<glam::Mat4> {
-        let start = instance_index as usize * INSTANCE_ENTRY_SIZE;
-        let bytes = self
-            .instance_bytes
-            .get(start..start + INSTANCE_ENTRY_SIZE)?;
-        let mut cols = [0.0f32; 16];
-        for (value, word) in cols.iter_mut().zip(bytes.as_chunks::<4>().0) {
-            *value = f32::from_ne_bytes(*word);
+    /// Append `view`'s mover depth to its open depth pre-pass, after the
+    /// static world. The caller binds group 0 (that view's camera).
+    pub(crate) fn record_depth(&self, pass: &mut wgpu::RenderPass<'_>, view: MoverView) {
+        if !self.has_draws() {
+            return;
         }
-        Some(glam::Mat4::from_cols_array(&cols))
+        pass.set_pipeline(&self.depth_pipeline);
+        pass.set_bind_group(3, &self.instance_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        for active in self.view_draws(view) {
+            let range = self.mover_index_ranges[active.mover_draw_index];
+            if range.index_count == 0 {
+                continue;
+            }
+            pass.draw_indexed(
+                range.index_start..range.index_start + range.index_count,
+                0,
+                active.instance_index..active.instance_index + 1,
+            );
+        }
     }
 
-    fn record_draws_with(
+    /// `view`'s mover colour draws, `Equal` against the depth
+    /// [`Self::record_depth`] wrote for the same view. The mirror reads its
+    /// own light records (group 2) on a frame a mirror-only light holds a
+    /// shadow slot. The caller binds groups 0 and 4.
+    pub(crate) fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         materials: &[GpuTexture],
-        mirror_light_records: bool,
-        draws: impl Fn(&ActiveMoverDraw) -> bool,
+        view: MoverView,
     ) {
         if !self.has_draws() {
             return;
         }
+        let mirror_light_records =
+            matches!(view, MoverView::Mirror { .. }) && self.mirror_light_records;
         let light_bind_group = if mirror_light_records {
             self.mirror_light_bind_group.as_ref()
         } else {
@@ -999,7 +1085,7 @@ impl KinematicBrushPass {
         pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        for active in self.beauty_draws.iter().filter(|&active| draws(active)) {
+        for active in self.view_draws(view) {
             let mover = &self.movers[active.mover_draw_index];
             let instance_range = active.instance_index..active.instance_index + 1;
             for range in &mover.material_ranges {
@@ -1018,6 +1104,19 @@ impl KinematicBrushPass {
                 );
             }
         }
+    }
+
+    /// The model transform `upload_instances` packed at `instance_index`.
+    fn instance_model(&self, instance_index: u32) -> Option<glam::Mat4> {
+        let start = instance_index as usize * INSTANCE_ENTRY_SIZE;
+        let bytes = self
+            .instance_bytes
+            .get(start..start + INSTANCE_ENTRY_SIZE)?;
+        let mut cols = [0.0f32; 16];
+        for (value, word) in cols.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *value = f32::from_ne_bytes(*word);
+        }
+        Some(glam::Mat4::from_cols_array(&cols))
     }
 }
 
@@ -1479,6 +1578,65 @@ mod tests {
                 .map(|member| member.offset)
                 .collect::<Vec<_>>(),
             vec![0, 4, 8, 12, 16, 20, 24, 28],
+        );
+    }
+
+    // The colour draw tests `Equal` against the depth `vs_depth` wrote in the
+    // pre-pass, so both entries must reach clip space by the same data flow
+    // (one helper pair, no inline `view_proj` multiply) with the position
+    // `@invariant`; otherwise FMA reassociation can drop mover pixels.
+    #[test]
+    fn mover_depth_and_colour_entries_share_one_invariant_clip_path() {
+        let module =
+            naga::front::wgsl::parse_str(SHADER_SOURCE).expect("kinematic brush shader parses");
+        for entry_name in ["vs_depth", "vs_main"] {
+            let entry = module
+                .entry_points
+                .iter()
+                .find(|entry| entry.name == entry_name)
+                .unwrap_or_else(|| panic!("kinematic brush shader declares {entry_name}"));
+            assert_eq!(entry.stage, naga::ShaderStage::Vertex, "{entry_name}");
+            let result = entry.function.result.as_ref().expect("returns a position");
+            let naga::TypeInner::Struct { members, .. } = &module.types[result.ty].inner else {
+                panic!("{entry_name} returns a struct");
+            };
+            assert!(
+                members.iter().any(|member| matches!(
+                    member.binding,
+                    Some(naga::Binding::BuiltIn(naga::BuiltIn::Position {
+                        invariant: true
+                    }))
+                )),
+                "{entry_name}: clip position is @invariant"
+            );
+            let body: String = strip_wgsl_comments(extract_wgsl_fn(SHADER_SOURCE, entry_name))
+                .split_whitespace()
+                .collect();
+            assert_eq!(
+                body.matches("out.clip_position=").count(),
+                1,
+                "{entry_name}: one clip-position write"
+            );
+            assert!(
+                !body.contains("view_proj"),
+                "{entry_name}: clip space only through mover_clip_position"
+            );
+        }
+        let code = |name| -> String {
+            strip_wgsl_comments(extract_wgsl_fn(SHADER_SOURCE, name))
+                .split_whitespace()
+                .collect()
+        };
+        assert!(code("vs_depth").contains(
+            "out.clip_position=mover_clip_position(mover_world_position(in.position,instance_index));"
+        ));
+        let main = code("vs_main");
+        assert!(main.contains("letworld_pos=mover_world_position(in.position,instance_index);"));
+        assert!(main.contains("out.clip_position=mover_clip_position(world_pos);"));
+        assert!(code("mover_clip_position").contains("returncamera.view_proj*world_pos;"));
+        assert!(
+            code("mover_world_position")
+                .contains("returninstances[instance_index].model*vec4<f32>(position,1.0);")
         );
     }
 

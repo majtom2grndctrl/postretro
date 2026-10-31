@@ -628,6 +628,7 @@ pub(crate) fn build_frame_timing(
         pass_labels[TIMING_PAIR_FLUID_REFLECTION] = "fluid_reflection";
         pass_labels[TIMING_PAIR_PLANAR_REFLECTION] = "planar_reflection";
         pass_labels[TIMING_PAIR_PLANAR_FORWARD] = "planar_forward";
+        pass_labels[TIMING_PAIR_KINEMATIC_BRUSH] = "kinematic_brush";
         Some(FrameTiming::new(device, queue, pass_labels))
     } else {
         None

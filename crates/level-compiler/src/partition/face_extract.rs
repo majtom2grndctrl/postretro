@@ -11,12 +11,16 @@
 
 use glam::DVec3;
 
+use super::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use super::types::*;
 use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
 
-/// Matches the generous epsilon the BSP builder uses for face classification.
-const SPLIT_EPSILON: f64 = 0.1;
+/// Tolerance for splitting a brush side against BSP node planes. Derived from
+/// the BSP builder's region classification tolerance: a wider value here drops
+/// any exposed strip narrower than itself beside a splitting plane, while the
+/// BSP still calls that region open, leaving a see-through hole.
+const SPLIT_EPSILON: f64 = REGION_CLASSIFICATION_EPSILON;
 
 /// Tight on purpose: the splitter pool reuses the same brush-side plane objects
 /// the walker reads back, so this checks for exact reuse, not approximate parallelism.
@@ -1238,6 +1242,46 @@ mod tests {
                 face.normal, face.distance
             );
         }
+    }
+
+    #[test]
+    fn step_back_ledge_strip_narrower_than_ten_cm_keeps_its_face() {
+        // A box sits 2.54 cm (one inch) back from the box below it, exposing a
+        // strip of the lower box's top. The BSP splits at the upper box's wall
+        // plane and calls the strip open; a split tolerance of 0.1 m would drop
+        // it, leaving a see-through hole.
+        let inset = 0.0254;
+        let brushes = vec![
+            box_brush_with_sides(
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(10.0, 10.0, 5.0),
+                "wall",
+            ),
+            box_brush_with_sides(
+                DVec3::new(inset, 0.0, 5.0),
+                DVec3::new(10.0, 10.0, 10.0),
+                "wall",
+            ),
+        ];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("stepped boxes should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        let strip_area: f64 = result
+            .faces
+            .iter()
+            .filter(|f| f.normal.z > 0.99 && (f.distance - 5.0).abs() < 1e-6)
+            .map(|f| polygon_area(&f.vertices, DVec3::Z))
+            .sum();
+        let expected = inset * 10.0;
+        assert!(
+            (strip_area - expected).abs() < 1e-6,
+            "exposed ledge strip must keep its full area: got {strip_area}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn split_epsilon_is_the_bsp_classification_epsilon() {
+        assert_eq!(SPLIT_EPSILON, REGION_CLASSIFICATION_EPSILON);
     }
 
     #[test]

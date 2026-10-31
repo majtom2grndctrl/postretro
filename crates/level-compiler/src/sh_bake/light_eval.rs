@@ -128,7 +128,7 @@ pub(super) fn light_reaches_point(light: &MapLight, point: Vec3) -> bool {
 /// runs first because a non-finite light origin yields a NaN term rather than
 /// zero; skipping it on range keeps this bit-identical to the range-only guard
 /// it extends for every input.
-pub(super) fn bounce_contribution(
+pub(crate) fn bounce_contribution(
     light: &MapLight,
     hit_point: Vec3,
     hit_normal: Vec3,

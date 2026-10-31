@@ -222,7 +222,7 @@ fn sample_radiance_rgb_full_term_guard_matches_range_only_reference_bit_identica
             100.0,
             7,
             ray_index as u64,
-            BounceVisibility::FullSet,
+            BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
         );
         let reference =
             range_only_reference(&ctx, origin, dir, &lights, 100.0, 7, ray_index as u64);
@@ -354,7 +354,7 @@ fn sh_bounce_scales_by_soft_visibility_fraction() {
         far,
         0,
         0,
-        BounceVisibility::FullSet,
+        BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
     )
     .0;
 
@@ -378,7 +378,7 @@ fn sh_bounce_scales_by_soft_visibility_fraction() {
         far,
         0,
         0,
-        BounceVisibility::FullSet,
+        BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
     )
     .0;
 

@@ -69,6 +69,10 @@ pub mod shadowmask_bake;
 pub mod size_options;
 pub mod streaming_hints;
 pub(crate) mod surface_materials;
+// The patch cache bakes only under tests until the SH base stage reads it
+// (surface-radiance-cache plan, task 3).
+#[cfg_attr(not(test), allow(dead_code, unused_imports))]
+pub(crate) mod surface_radiance;
 pub mod texel_footprint;
 pub mod texel_step_detector;
 pub mod texture_mips;

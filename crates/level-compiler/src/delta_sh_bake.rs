@@ -861,7 +861,9 @@ mod tests {
             .expect("expected a section")
         };
         let one = bake(BounceVisibility::OneSample);
-        let full = bake(BounceVisibility::FullSet);
+        let full = bake(BounceVisibility::FullSet(
+            &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        ));
         assert!(
             one.delta_subblocks.iter().any(|&h| h != 0),
             "the fixture must bake a nonzero bounce"
@@ -979,7 +981,7 @@ mod tests {
                 &crate::sh_bake::ShConfig { probe_spacing: 1.0 },
                 None,
                 &BakeControl::unrestricted(),
-                BounceVisibility::FullSet,
+                BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
             )
             .0
             .expect("expected a section");
@@ -1061,7 +1063,11 @@ mod tests {
         );
         assert_ne!(
             ab.to_bytes(),
-            bake(&[a.clone(), b.clone()], BounceVisibility::FullSet).to_bytes(),
+            bake(
+                &[a.clone(), b.clone()],
+                BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS)
+            )
+            .to_bytes(),
             "the fixture's soft samples must matter"
         );
         assert_eq!(

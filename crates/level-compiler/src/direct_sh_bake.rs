@@ -145,6 +145,37 @@ pub(crate) fn embedded_emitters(
     )
 }
 
+/// The bounce family's emitter tests: every static point or spot light with
+/// an emitter sphere, `sdf`-shadowed included, keyed by position in
+/// `sh_ctx.static_lights`, with the penumbra floor on; empty with it off, as
+/// [`embedded_emitters`] is. The probe-point set above, its consumers and
+/// its bytes are untouched: the surface radiance cache's patch direct reads
+/// this one, since every static light bounces whatever direct path it takes.
+// Bakes only under tests until the SH base stage classifies before patch
+// direct (surface-radiance-cache plan, task 3).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn bounce_embedded_emitters(
+    sh_ctx: &ShBakeCtx<'_>,
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify_bounce(
+        sh_ctx
+            .static_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.light)),
+        sh_ctx.bvh,
+        sh_ctx.primitives,
+        sh_ctx.geometry,
+        control,
+    )
+}
+
 /// Each of the static-direct lights' probe early-outs, from its global
 /// index's flag.
 pub(crate) fn direct_early_outs(

@@ -4,7 +4,6 @@
 use glam::{DVec3, Vec3};
 
 use super::bounce::*;
-use super::light_eval::*;
 use super::test_fixtures::{multi_triangle_geometry, soft_point_light, tree_all_empty};
 use super::trace::*;
 use super::*;
@@ -46,7 +45,12 @@ fn bake_volume_both_ways(
     let control = BakeControl::unrestricted();
     (
         bake_sh_volume_with_visibility(&inputs, &config, &control, BounceVisibility::OneSample),
-        bake_sh_volume_with_visibility(&inputs, &config, &control, BounceVisibility::FullSet),
+        bake_sh_volume_with_visibility(
+            &inputs,
+            &config,
+            &control,
+            BounceVisibility::FullSet(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
+        ),
     )
 }
 
@@ -278,7 +282,9 @@ fn one_sample_bounce_mean_converges_to_full_set_fraction() {
                     .x
                 };
                 let one = sample(BounceVisibility::OneSample);
-                let full = sample(BounceVisibility::FullSet);
+                let full = sample(BounceVisibility::FullSet(
+                    &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+                ));
                 let Some(hit) = closest_hit(&ctx, origin + *dir * RAY_EPSILON, *dir, f32::INFINITY)
                 else {
                     continue;

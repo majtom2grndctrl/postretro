@@ -26,11 +26,15 @@ pub(super) fn sphere_directions(count: u32, seed: u64) -> Vec<Vec3> {
     out
 }
 
-pub(super) struct Hit {
-    pub(super) texture_index: u32,
-    pub(super) point: Vec3,
-    pub(super) normal: Vec3,
-    pub(super) distance: f32,
+pub(crate) struct Hit {
+    pub(crate) texture_index: u32,
+    pub(crate) point: Vec3,
+    /// The triangle's geometric normal, flipped toward the ray.
+    pub(crate) normal: Vec3,
+    pub(crate) distance: f32,
+    /// Index-buffer offset of the hit triangle's first index: names the
+    /// pre-cut face through `GeometryResult::face_index_ranges`.
+    pub(crate) triangle: u32,
 }
 
 /// Test one leaf's triangles against the ray; keeps the nearest hit in
@@ -50,6 +54,7 @@ fn closest_hit_in_leaf(
     let mut tri = start;
     let mut changed = false;
     while tri + 3 <= end {
+        let triangle = tri as u32;
         let i0 = geom.indices[tri] as usize;
         let i1 = geom.indices[tri + 1] as usize;
         let i2 = geom.indices[tri + 2] as usize;
@@ -70,12 +75,21 @@ fn closest_hit_in_leaf(
                     point: ray_origin + ray_dir * dist,
                     normal,
                     distance: dist,
+                    triangle,
                 });
                 changed = true;
             }
         }
     }
     changed
+}
+
+/// A probe gather ray's hit: the nearest surface along `dir` from `origin`,
+/// stepped `RAY_EPSILON` off the origin. Every gather source reads its hit
+/// here, so the distance the depth moments take is the same whatever the
+/// hit's radiance comes from.
+pub(crate) fn gather_hit(ctx: &RaytracingCtx<'_>, origin: Vec3, dir: Vec3) -> Option<Hit> {
+    closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY)
 }
 
 pub(super) fn closest_hit(
@@ -138,7 +152,7 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
     Some((t, normal))
 }
 
-pub(super) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {

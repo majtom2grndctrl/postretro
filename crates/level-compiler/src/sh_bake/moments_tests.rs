@@ -55,7 +55,7 @@ fn probe_depth_moments_keep_squared_distance_at_least_mean_squared() {
         None,
         far_sentinel,
         0,
-        BounceVisibility::OneSample,
+        RadianceSource::Lights(BounceVisibility::OneSample),
     );
     let mean_d = sum_d / RAYS_PER_PROBE as f32;
     let mean_sq_d = sum_d2 / RAYS_PER_PROBE as f32;

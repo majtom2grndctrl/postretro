@@ -553,3 +553,43 @@ fn the_embedded_flag_is_exactly_a_fraction_at_the_threshold() {
         .count();
     assert_eq!(warnings, flagged);
 }
+
+#[test]
+fn the_bounce_family_flags_sdf_shadowed_spheres_the_probe_set_skips() {
+    let fixture = walled_floor();
+    let lightmapped = beside_wall(0.1);
+    let mut sdf = beside_wall(0.1);
+    sdf.shadow_type = ShadowType::Sdf;
+    let mut hard_sdf = sdf.clone();
+    hard_sdf.light_size = 0.0;
+    let clear_sdf = {
+        let mut light = beside_wall(0.3);
+        light.shadow_type = ShadowType::Sdf;
+        light
+    };
+    let lights = [&lightmapped, &sdf, &hard_sdf, &clear_sdf];
+    let control = BakeControl::unrestricted();
+    let classify = |bounce: bool| {
+        let keyed = lights.iter().enumerate().map(|(key, &light)| (key, light));
+        let (bvh, primitives, geometry) = (&fixture.bvh, &fixture.primitives, &fixture.geometry);
+        if bounce {
+            EmbeddedEmitters::classify_bounce(keyed, bvh, primitives, geometry, &control)
+        } else {
+            EmbeddedEmitters::classify(keyed, bvh, primitives, geometry, &control)
+        }
+    };
+    let probe = classify(false);
+    let bounce = classify(true);
+    assert!(probe.is_embedded(0) && bounce.is_embedded(0));
+    assert!(
+        !probe.is_embedded(1) && bounce.is_embedded(1),
+        "the sdf-shadowed light bounces, so the bounce family tests its sphere"
+    );
+    assert_eq!(
+        bounce.fraction(1),
+        bounce.fraction(0),
+        "an sdf light's sphere reads as a lightmapped one's"
+    );
+    assert!(!bounce.is_embedded(2), "a hard light has no sphere");
+    assert!(!bounce.is_embedded(3), "a clear sphere is not flagged");
+}

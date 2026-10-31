@@ -14,8 +14,11 @@ pub(crate) use animation::animation_descriptor_for_light;
 pub use animation::validate_light_animations;
 #[cfg(test)]
 pub(crate) use bounce::bounce_sample_index;
+pub(crate) use bounce::{reflected_radiance, soft_visibility_seed};
 pub(crate) use grid::{ProbeGridLayout, probe_grid_layout, probe_is_valid_pub, vec3_from};
-pub(crate) use light_eval::{incident_radiance_at_point, spot_cone_parameters};
+pub(crate) use light_eval::{
+    bounce_contribution, incident_radiance_at_point, spot_cone_parameters,
+};
 pub(crate) use probe::{bake_probe, bake_probe_direct_rgb, bake_probe_indirect_rgb};
 pub use section::log_stats;
 pub(crate) use section::{
@@ -23,9 +26,10 @@ pub(crate) use section::{
     sh_atlas_array_layout,
 };
 pub(crate) use sh_math::pack_octahedral_irradiance_tile;
+pub(crate) use trace::{Hit, gather_hit, segment_clear};
 
 use animation::animation_descriptor_for;
-use probe::bake_probe_with_visibility;
+use probe::bake_probe_with_source;
 use sh_math::pack_octahedral_irradiance_atlas;
 
 use std::collections::HashSet;
@@ -48,6 +52,9 @@ use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT;
 use crate::map_data::MapLight;
 use crate::partition::BspTree;
+use crate::surface_radiance::PatchGather;
+#[cfg(test)]
+use crate::texel_footprint::EmbeddedEmitters;
 
 /// Default grid cell size in meters. Overridden by `--probe-spacing`.
 pub const DEFAULT_PROBE_SPACING: f32 = 1.0;
@@ -63,7 +70,7 @@ const _: () = assert!(RAYS_PER_PROBE.is_multiple_of(DEFAULT_AREA_SAMPLE_COUNT));
 /// double-count it at runtime.
 const BOUNCE_ALBEDO: f32 = crate::surface_materials::stats::GREY_BOUNCE_ALBEDO;
 
-const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
+pub(crate) const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// Offset to avoid self-intersections at the probe origin and shadow-ray hit points.
 const RAY_EPSILON: f32 = 1.0e-3;
@@ -74,20 +81,37 @@ const SAMPLING_LATTICE_OFFSET: u64 = 0x5048_4542_414b_4552; // "PHBAKER"
 
 /// How the bounce resolves a soft light's shadow at a gather-ray hit. A hard
 /// light traces its one hard ray either way, bit for bit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum BounceVisibility {
     /// One emitter sample per (hit, light), stratified across the probe's
     /// gather rays (`bounce_sample_index`). Every bake ships this.
     OneSample,
     /// `soft_visibility`'s probe-and-escalate set at every hit: the bake
-    /// before stratification, kept as the parity reference.
+    /// before stratification, kept as the parity reference. A light the set
+    /// flags (keyed by its global `static_lights` index) traces its full set
+    /// with no early-out, the probe-point bakes' embedded-emitter rule.
     #[cfg(test)]
-    FullSet,
+    FullSet(&'static EmbeddedEmitters),
     /// [`Self::FullSet`] with every hit's seed re-avalanched under this salt:
     /// another draw of the full set's own lattice-rotation noise, the parity
     /// measurement's control.
     #[cfg(test)]
-    FullSetReseeded(u64),
+    FullSetReseeded(u64, &'static EmbeddedEmitters),
+}
+
+/// Where a probe gather ray's hit takes its outgoing radiance from. Either
+/// way the ray, its hit and its distance are the same, so the depth moments
+/// are too.
+#[derive(Clone, Copy)]
+pub(crate) enum RadianceSource<'a> {
+    /// Shade every static light at the hit, resolving soft shadows by the
+    /// visibility mode: today's per-hit estimator.
+    Lights(BounceVisibility),
+    /// Read the surface radiance cache's patch at the hit; traces no shadow
+    /// ray. Bakes only under tests until the SH base stage reads the cache
+    /// (surface-radiance-cache plan, task 3).
+    #[cfg_attr(not(test), allow(dead_code))]
+    Patches(&'a PatchGather<'a>),
 }
 
 /// Shared between the base SH baker and per-light delta SH baker (`delta_sh_bake.rs`).
@@ -180,6 +204,16 @@ pub(crate) fn bake_sh_volume_with_visibility(
     control: &BakeControl,
     visibility: BounceVisibility,
 ) -> OctahedralShVolumeSection {
+    bake_sh_volume_with_source(inputs, config, control, RadianceSource::Lights(visibility))
+}
+
+/// The whole-volume bake with the gather hits' radiance source chosen.
+pub(crate) fn bake_sh_volume_with_source(
+    inputs: &ShBakeCtx<'_>,
+    config: &ShConfig,
+    control: &BakeControl,
+    source: RadianceSource<'_>,
+) -> OctahedralShVolumeSection {
     let probe_spacing_meters = config.probe_spacing;
     let layout = probe_grid_layout(inputs, config);
     if layout.is_empty() {
@@ -221,7 +255,7 @@ pub(crate) fn bake_sh_volume_with_visibility(
         .into_par_iter()
         .map(|i| {
             let _permit = control.governor().enter();
-            let probe = bake_probe_with_visibility(
+            let probe = bake_probe_with_source(
                 inputs,
                 vec3_from(layout.probe_positions[i]),
                 &static_lights,
@@ -230,7 +264,7 @@ pub(crate) fn bake_sh_volume_with_visibility(
                 far_sentinel,
                 layout.validity[i] != 0,
                 i as u64,
-                visibility,
+                source,
             );
             control.advance(1);
             probe
@@ -298,6 +332,8 @@ mod grid_tests;
 mod light_eval_tests;
 #[cfg(test)]
 mod moments_tests;
+#[cfg(test)]
+mod patch_source_tests;
 #[cfg(test)]
 mod section_tests;
 #[cfg(test)]

@@ -71,6 +71,7 @@ pub(crate) const EMBEDDED_EMITTER_MIN_FRACTION: f32 =
 /// buried-light test keeps (`buried_lights.rs`), is still flagged, but counts
 /// only the directions whose lead starts in front of the face, so its
 /// fraction reads low.
+#[cfg(test)]
 pub(crate) fn embedded_emitter_fraction(
     light: &MapLight,
     bvh: &Bvh<f32, 3>,
@@ -80,6 +81,17 @@ pub(crate) fn embedded_emitter_fraction(
     if !has_emitter_sphere(light) {
         return 0.0;
     }
+    sphere_fraction(light, bvh, primitives, geometry)
+}
+
+/// [`embedded_emitter_fraction`] for a light already known to have a
+/// sphere to trace.
+fn sphere_fraction(
+    light: &MapLight,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+) -> f32 {
     let embedded = (0..EMBEDDED_EMITTER_DIRECTIONS)
         .filter(|&index| direction_embedded(light, index, bvh, primitives, geometry))
         .count();
@@ -137,10 +149,16 @@ fn direction_embedded(
 /// Whether the emitter test has a sphere to trace: a point or spot light of
 /// finite, non-zero size that bakes texels.
 fn has_emitter_sphere(light: &MapLight) -> bool {
+    has_bounce_emitter_sphere(light) && light.shadow_type != ShadowType::Sdf
+}
+
+/// Whether the bounce family's emitter test has a sphere to trace: a point
+/// or spot light of finite, non-zero size, `sdf`-shadowed included, since
+/// every static light bounces.
+fn has_bounce_emitter_sphere(light: &MapLight) -> bool {
     matches!(light.light_type, LightType::Point | LightType::Spot)
         && light.light_size > 0.0
         && light.light_size.is_finite()
-        && light.shadow_type != ShadowType::Sdf
 }
 
 /// The lights of one bake whose emitter sphere reaches into geometry by at
@@ -170,9 +188,48 @@ impl EmbeddedEmitters {
         geometry: &GeometryResult,
         control: &BakeControl,
     ) -> Self {
+        Self::classify_where(
+            lights,
+            has_emitter_sphere,
+            bvh,
+            primitives,
+            geometry,
+            control,
+        )
+    }
+
+    /// [`Self::classify`] for the bounce family (the surface radiance
+    /// cache's patch direct and its parity reference): every point or spot
+    /// light with an emitter sphere is tested, `sdf`-shadowed included.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn classify_bounce<'l>(
+        lights: impl IntoIterator<Item = (usize, &'l MapLight)>,
+        bvh: &Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        control: &BakeControl,
+    ) -> Self {
+        Self::classify_where(
+            lights,
+            has_bounce_emitter_sphere,
+            bvh,
+            primitives,
+            geometry,
+            control,
+        )
+    }
+
+    fn classify_where<'l>(
+        lights: impl IntoIterator<Item = (usize, &'l MapLight)>,
+        has_sphere: fn(&MapLight) -> bool,
+        bvh: &Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        control: &BakeControl,
+    ) -> Self {
         let lights: Vec<(usize, &MapLight)> = lights
             .into_iter()
-            .filter(|&(_, light)| has_emitter_sphere(light))
+            .filter(|&(_, light)| has_sphere(light))
             .collect();
         // Strictly: a duplicate key would leave `fraction`'s binary search
         // free to find either entry.
@@ -182,7 +239,7 @@ impl EmbeddedEmitters {
             .par_iter()
             .map(|&(_, light)| {
                 let _permit = control.governor().enter();
-                embedded_emitter_fraction(light, bvh, primitives, geometry)
+                sphere_fraction(light, bvh, primitives, geometry)
             })
             .collect();
         Self {

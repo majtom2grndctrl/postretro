@@ -4,14 +4,15 @@
 use glam::Vec3;
 
 use super::light_eval::bounce_contribution;
-use super::trace::{closest_hit, segment_clear};
-use super::{
-    BOUNCE_ALBEDO, BounceVisibility, RAY_EPSILON, RaytracingCtx, SAMPLING_LATTICE_OFFSET, SKY_COLOR,
-};
+use super::trace::{gather_hit, segment_clear};
+use super::{BOUNCE_ALBEDO, BounceVisibility, RaytracingCtx, SAMPLING_LATTICE_OFFSET, SKY_COLOR};
 #[cfg(test)]
-use crate::lightmap_bake::soft_visibility;
+use crate::lightmap_bake::soft_visibility_early_out;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_one_sample};
 use crate::map_data::MapLight;
+use crate::surface_materials::stats::BounceMaterials;
+#[cfg(test)]
+use crate::texel_footprint::ProbeEarlyOut;
 
 /// Deterministic per-(probe, ray, light) seed for the soft-visibility area-sample
 /// rotation. `sh_bake` has no texel coordinate to hash (unlike the lightmap/animated
@@ -26,8 +27,10 @@ use crate::map_data::MapLight;
 /// order — the byte-identical-`.prl` determinism AC depends on this staying
 /// index-derived. The base SH volume and the sparse animated delta tiles both reach
 /// this through `sample_radiance_rgb`, so both inherit the same deterministic seed;
-/// the delta bake's light axis is a digest of its keyed light, not an index.
-pub(super) fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u64 {
+/// the delta bake's light axis is a digest of its keyed light, not an index. The
+/// surface radiance cache's patch shading mixes (patch seed id, side, light axis)
+/// through the same avalanche.
+pub(crate) fn soft_visibility_seed(probe_index: u64, ray_index: u64, light_index: u64) -> u64 {
     // Distinct odd multipliers keep the three index axes from aliasing onto each
     // other (e.g. probe 1/ray 0 vs probe 0/ray 1) before the avalanche.
     let mut z = SAMPLING_LATTICE_OFFSET
@@ -113,7 +116,7 @@ pub(super) fn sample_radiance_rgb(
     ray_index: u64,
     visibility: BounceVisibility,
 ) -> (Vec3, f32) {
-    match closest_hit(ctx, origin + dir * RAY_EPSILON, dir, f32::INFINITY) {
+    match gather_hit(ctx, origin, dir) {
         None => (Vec3::from(SKY_COLOR), far_sentinel),
         Some(hit) => {
             let mut radiance = Vec3::ZERO;
@@ -147,21 +150,23 @@ pub(super) fn sample_radiance_rgb(
                         trace,
                     ),
                     #[cfg(test)]
-                    BounceVisibility::FullSet => soft_visibility(
+                    BounceVisibility::FullSet(embedded) => soft_visibility_early_out(
                         hit.point,
                         hit.normal,
                         light,
                         seed,
                         DEFAULT_AREA_SAMPLE_COUNT,
+                        ProbeEarlyOut::for_probe_point(embedded.is_embedded(global_index as usize)),
                         trace,
                     ),
                     #[cfg(test)]
-                    BounceVisibility::FullSetReseeded(salt) => soft_visibility(
+                    BounceVisibility::FullSetReseeded(salt, embedded) => soft_visibility_early_out(
                         hit.point,
                         hit.normal,
                         light,
                         soft_visibility_seed(seed, salt, 0),
                         DEFAULT_AREA_SAMPLE_COUNT,
+                        ProbeEarlyOut::for_probe_point(embedded.is_embedded(global_index as usize)),
                         trace,
                     ),
                 };
@@ -170,16 +175,27 @@ pub(super) fn sample_radiance_rgb(
                 }
                 radiance += contribution * v;
             }
-            let bounced = match ctx
-                .bounce_materials
-                .and_then(|materials| materials.resolved_albedo(hit.texture_index))
-            {
-                Some(albedo) => radiance * albedo / std::f32::consts::PI,
-                // The scalar multiply, not a splatted Vec3, keeps an unresolved
-                // hit's bytes identical to the pre-colour grey bake.
-                None => radiance * BOUNCE_ALBEDO / std::f32::consts::PI,
-            };
-            (bounced, hit.distance)
+            (
+                reflected_radiance(ctx.bounce_materials, hit.texture_index, radiance),
+                hit.distance,
+            )
         }
+    }
+}
+
+/// Outgoing radiance of a Lambertian surface of texture `texture_index` under
+/// `irradiance`: its bounce albedo over π, the texture's resolved mean or
+/// grey. Shared by the per-hit estimator and the surface radiance cache's
+/// patch shading, so both reflect light alike.
+pub(crate) fn reflected_radiance(
+    materials: Option<&BounceMaterials>,
+    texture_index: u32,
+    irradiance: Vec3,
+) -> Vec3 {
+    match materials.and_then(|materials| materials.resolved_albedo(texture_index)) {
+        Some(albedo) => irradiance * albedo / std::f32::consts::PI,
+        // The scalar multiply, not a splatted Vec3, keeps an unresolved
+        // hit's bytes identical to the pre-colour grey bake.
+        None => irradiance * BOUNCE_ALBEDO / std::f32::consts::PI,
     }
 }

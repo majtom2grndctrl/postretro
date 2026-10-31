@@ -10,7 +10,8 @@ use super::light_eval::incident_radiance_at_point;
 use super::sh_math::{accumulate_sh_rgb, apply_cosine_lobe_rgb};
 use super::trace::{segment_clear, sphere_directions};
 use super::{
-    BakedProbe, BounceVisibility, RAYS_PER_PROBE, RaytracingCtx, SAMPLING_LATTICE_OFFSET, ShBakeCtx,
+    BakedProbe, BounceVisibility, RAYS_PER_PROBE, RadianceSource, RaytracingCtx,
+    SAMPLING_LATTICE_OFFSET, ShBakeCtx,
 };
 use crate::lightmap_bake::soft_visibility_early_out;
 use crate::map_data::MapLight;
@@ -128,6 +129,8 @@ pub(crate) fn bake_probe_direct_rgb(
 /// `sample_radiance_rgb`), so all `RAYS_PER_PROBE` rays accumulate and the
 /// caller's division by the constant is exact. Accumulation is a sequential sum
 /// over the fixed direction list so the bake stays byte-identical across runs.
+/// `source` picks only where a hit's radiance comes from; the directions and
+/// the hits, so the moments, are the same either way.
 pub(super) fn bake_probe_rgb_with_moments(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
@@ -135,7 +138,7 @@ pub(super) fn bake_probe_rgb_with_moments(
     light_global_indices: Option<&[u64]>,
     far_sentinel: f32,
     probe_index: u64,
-    visibility: BounceVisibility,
+    source: RadianceSource<'_>,
 ) -> ([f32; 27], f32, f32) {
     let ctx = inputs.ray_ctx();
     let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
@@ -144,17 +147,20 @@ pub(super) fn bake_probe_rgb_with_moments(
     let mut sum_d = 0.0f32;
     let mut sum_d2 = 0.0f32;
     for (ray_index, dir) in directions.iter().enumerate() {
-        let (radiance, distance) = sample_radiance_rgb(
-            &ctx,
-            probe_pos,
-            *dir,
-            static_lights,
-            light_global_indices,
-            far_sentinel,
-            probe_index,
-            ray_index as u64,
-            visibility,
-        );
+        let (radiance, distance) = match source {
+            RadianceSource::Lights(visibility) => sample_radiance_rgb(
+                &ctx,
+                probe_pos,
+                *dir,
+                static_lights,
+                light_global_indices,
+                far_sentinel,
+                probe_index,
+                ray_index as u64,
+                visibility,
+            ),
+            RadianceSource::Patches(patches) => patches.sample(&ctx, probe_pos, *dir, far_sentinel),
+        };
         accumulate_sh_rgb(&mut acc, *dir, radiance, mc_weight);
         sum_d += distance;
         sum_d2 += distance * distance;
@@ -185,7 +191,7 @@ pub(crate) fn bake_probe(
     valid: bool,
     probe_index: u64,
 ) -> BakedProbe {
-    bake_probe_with_visibility(
+    bake_probe_with_source(
         inputs,
         probe_pos,
         static_lights,
@@ -193,14 +199,14 @@ pub(crate) fn bake_probe(
         far_sentinel,
         valid,
         probe_index,
-        BounceVisibility::OneSample,
+        RadianceSource::Lights(BounceVisibility::OneSample),
     )
 }
 
-/// [`bake_probe`] with the bounce's soft-light visibility chosen.
-// `bake_probe`'s inputs plus the visibility mode; see `sample_radiance_rgb`.
+/// [`bake_probe`] with the gather hits' radiance source chosen.
+// `bake_probe`'s inputs plus the radiance source; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn bake_probe_with_visibility(
+pub(super) fn bake_probe_with_source(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
@@ -208,7 +214,7 @@ pub(super) fn bake_probe_with_visibility(
     far_sentinel: f32,
     valid: bool,
     probe_index: u64,
-    visibility: BounceVisibility,
+    source: RadianceSource<'_>,
 ) -> BakedProbe {
     if !valid {
         return BakedProbe::default();
@@ -220,7 +226,7 @@ pub(super) fn bake_probe_with_visibility(
         light_global_indices,
         far_sentinel,
         probe_index,
-        visibility,
+        source,
     );
     // All RAYS_PER_PROBE rays accumulate (sky misses via the sentinel), so these
     // are exact divisions by the constant.

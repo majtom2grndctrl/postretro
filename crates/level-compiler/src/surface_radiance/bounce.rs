@@ -104,6 +104,9 @@ pub(crate) fn add_later_bounces(
     let mut running = vec![[0.0f32; 3]; count];
     let mut previous = vec![[0.0f32; 3]; count];
     let mut next = vec![[0.0f32; 3]; count];
+    #[cfg(test)]
+    let _held = [&running, &previous, &next]
+        .map(|buffer| crate::live_bytes::hold_vec("later-bounce buffers", buffer));
     for bounce in 0..LATER_BOUNCE_COUNT {
         let source = if bounce == 0 {
             BounceSource::First(radiance)
@@ -160,6 +163,8 @@ fn gather_bounce(
 ) {
     debug_assert_eq!(out.len(), patches.len());
     let directions = cosine_directions(BOUNCE_RAYS_PER_PATCH);
+    #[cfg(test)]
+    let _directions = crate::live_bytes::hold_vec("later-bounce buffers", &directions);
     out.par_chunks_mut(PATCHES_PER_CHUNK)
         .enumerate()
         .for_each(|(chunk, out)| {
@@ -186,8 +191,15 @@ fn gather_patch(
 ) -> Vec3 {
     let [tangent, bitangent, normal] = patch_frame(patch.normal, patch.seed_id());
     let mut incoming = Vec3::ZERO;
-    for local in directions {
+    for (_ray, local) in (0u32..).zip(directions) {
         let dir = tangent * local.x + bitangent * local.y + normal * local.z;
+        #[cfg(test)]
+        crate::bake_counters::record_direction(
+            crate::bake_counters::Gather::Patch,
+            patch.seed_id(),
+            _ray,
+            dir,
+        );
         let Some(hit) = bounce_hit(ctx, patch.centroid, dir) else {
             continue;
         };

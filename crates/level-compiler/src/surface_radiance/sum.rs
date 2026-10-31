@@ -19,12 +19,17 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PatchRadiance {
     sides: Vec<[[f32; 3]; 2]>,
+    #[cfg(test)]
+    held: crate::live_bytes::Held,
 }
 
 impl PatchRadiance {
     pub(crate) fn zeroed(patch_count: usize) -> Self {
+        let sides = vec![[[0.0; 3]; 2]; patch_count];
         Self {
-            sides: vec![[[0.0; 3]; 2]; patch_count],
+            #[cfg(test)]
+            held: crate::live_bytes::hold_vec("summed patch radiance", &sides),
+            sides,
         }
     }
 

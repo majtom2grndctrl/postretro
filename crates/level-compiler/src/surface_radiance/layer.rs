@@ -33,6 +33,28 @@ pub(super) fn layer_progress_units(patches_in_reach: usize) -> usize {
     patches_in_reach.div_ceil(PATCHES_PER_CHUNK)
 }
 
+/// Host bytes a layer over `reach` patches holds once shaded or decoded:
+/// at most an entry for each side of every patch. `None` on overflow.
+pub(super) fn layer_bytes(reach: u64) -> Option<u64> {
+    reach.checked_mul((Side::BOTH.len() * size_of::<LayerEntry>()) as u64)
+}
+
+/// The most a layer over `reach` patches holds beside itself while it
+/// resolves, by step: shading's chunk scratch (exact, both sides per patch)
+/// with the in-reach list; then a cache write's stream buffer; or, on a
+/// hit, the raw entry it decodes. `None` on overflow.
+pub(super) fn layer_transient_bytes(reach: u64) -> Option<u64> {
+    let chunks = reach.div_ceil(PATCHES_PER_CHUNK as u64);
+    let shading = layer_bytes(reach)?
+        .checked_add(chunks.checked_mul(size_of::<ChunkEntries>() as u64)?)?
+        .checked_add(reach.checked_mul(size_of::<u32>() as u64)?)?;
+    let payload = reach
+        .checked_mul((Side::BOTH.len() * ENTRY_BYTES) as u64)?
+        .checked_add(HEADER_BYTES as u64)?;
+    let stream = crate::cache::StageCache::stream_buffer_bytes(payload);
+    Some(shading.max(stream).max(payload))
+}
+
 /// One lit side of one patch.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayerEntry {
@@ -48,6 +70,8 @@ pub(crate) struct LayerEntry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SparseLayer {
     pub(crate) entries: Vec<LayerEntry>,
+    #[cfg(test)]
+    pub(crate) held: crate::live_bytes::Held,
 }
 
 /// blake3 over exactly the fields that shape a light's patch shading: its
@@ -229,6 +253,8 @@ impl SparseLayer {
             return None;
         }
         let mut entries = Vec::with_capacity(count);
+        #[cfg(test)]
+        let held = crate::live_bytes::hold_vec("patch layers", &entries);
         for record in body.as_chunks::<ENTRY_BYTES>().0 {
             let patch = u32::from_le_bytes(record[..4].try_into().unwrap());
             let side = match record[4] {
@@ -252,7 +278,11 @@ impl SparseLayer {
                 radiance,
             });
         }
-        Some(Self { entries })
+        Some(Self {
+            entries,
+            #[cfg(test)]
+            held,
+        })
     }
 }
 
@@ -278,11 +308,19 @@ pub(crate) fn shade_light_layer(
 ) -> SparseLayer {
     let early_out = ProbeEarlyOut::for_probe_point(embedded);
     let trace = |from, to| segment_clear(ctx, from, to);
-    let chunks: Vec<Vec<LayerEntry>> = in_reach
+    #[cfg(test)]
+    let _chunks_held = crate::live_bytes::hold(
+        "patch layer chunk scratch",
+        (layer_progress_units(in_reach.len()) * size_of::<ChunkEntries>()) as u64,
+    );
+    let chunks: Vec<ChunkEntries> = in_reach
         .par_chunks(PATCHES_PER_CHUNK)
         .map(|slice| {
             let _permit = control.governor().enter();
-            let mut entries = Vec::new();
+            // At most both sides of every patch: exact, so no growth.
+            let mut entries = Vec::with_capacity(Side::BOTH.len() * slice.len());
+            #[cfg(test)]
+            let held = crate::live_bytes::hold_vec("patch layer chunk scratch", &entries);
             for &index in slice {
                 #[cfg(test)]
                 crate::bake_counters::bump(|counts| counts.patch_light_evaluations += 1);
@@ -319,13 +357,30 @@ pub(crate) fn shade_light_layer(
                 }
             }
             control.advance(1);
-            entries
+            ChunkEntries {
+                entries,
+                #[cfg(test)]
+                _held: held,
+            }
         })
         .collect();
     // Exact, so a layer holds no growth slack beside its priced entries.
-    let mut entries = Vec::with_capacity(chunks.iter().map(Vec::len).sum());
+    let mut entries = Vec::with_capacity(chunks.iter().map(|chunk| chunk.entries.len()).sum());
+    #[cfg(test)]
+    let held = crate::live_bytes::hold_vec("patch layers", &entries);
     for chunk in chunks {
-        entries.extend(chunk);
+        entries.extend(chunk.entries);
     }
-    SparseLayer { entries }
+    SparseLayer {
+        entries,
+        #[cfg(test)]
+        held,
+    }
+}
+
+/// One work item's entries, waiting for the layer to take them.
+struct ChunkEntries {
+    entries: Vec<LayerEntry>,
+    #[cfg(test)]
+    _held: crate::live_bytes::Held,
 }

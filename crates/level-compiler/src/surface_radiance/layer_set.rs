@@ -35,6 +35,8 @@ pub(crate) struct PlannedLayer {
 /// and flag share one layer. A light whose reach holds no patch has none.
 pub(crate) struct LayerPlan {
     pub(crate) layers: Vec<PlannedLayer>,
+    #[cfg(test)]
+    _held: crate::live_bytes::Held,
 }
 
 impl LayerPlan {
@@ -63,8 +65,12 @@ impl LayerPlan {
                 occurrences: 1,
             })
             .collect();
+        #[cfg(test)]
+        let _occurrences = crate::live_bytes::hold_vec("per-light metadata", &occurrences);
         occurrences.sort_by_key(|planned| (planned.digest, planned.embedded));
         let mut layers: Vec<PlannedLayer> = Vec::with_capacity(occurrences.len());
+        #[cfg(test)]
+        let _held = crate::live_bytes::hold_vec("per-light metadata", &layers);
         for planned in occurrences {
             match layers.last_mut() {
                 Some(last)
@@ -76,7 +82,11 @@ impl LayerPlan {
                 _ => layers.push(planned),
             }
         }
-        Self { layers }
+        Self {
+            layers,
+            #[cfg(test)]
+            _held,
+        }
     }
 
     /// Progress units shading every layer advances: what a fully cold bake
@@ -102,6 +112,8 @@ impl LayerCache<'_> {
         note_cache_io();
         let key = self.keys.key(planned.digest, planned.embedded);
         let layer = self.cache.get(&key).and_then(|bytes| {
+            #[cfg(test)]
+            let _payload = crate::live_bytes::hold_vec("patch layer cache payload", &bytes);
             let layer = SparseLayer::from_bytes(&bytes, patch_count);
             if layer.is_none() {
                 log::warn!("[cache] corrupt sh_patch_layer entry, re-shading");
@@ -120,6 +132,11 @@ impl LayerCache<'_> {
     fn store(&self, planned: &PlannedLayer, layer: &SparseLayer, patch_count: usize) {
         note_cache_io();
         let key = self.keys.key(planned.digest, planned.embedded);
+        #[cfg(test)]
+        let _stream = crate::live_bytes::hold(
+            "patch layer cache stream buffer",
+            StageCache::stream_buffer_bytes(layer.byte_len() as u64),
+        );
         self.cache
             .put_streamed(&key, layer.byte_len() as u64, |out| {
                 layer.write_to(patch_count, out)
@@ -170,8 +187,16 @@ pub(crate) fn resolve_layers(
             let in_reach = reach_index
                 .get_or_init(|| PatchReachIndex::new(patches.patches()))
                 .in_reach(light);
-            // AC 31: a layer shades exactly the reach the gate priced.
-            debug_assert_eq!(in_reach.len() as u64, planned.reach, "the gate's reach");
+            #[cfg(test)]
+            let in_reach_held = crate::live_bytes::hold_vec("in-reach lists", &in_reach);
+            // AC 31: a layer shades exactly the patches the gate priced in
+            // its reach, so the gate's patch set is the set the bake shades.
+            #[cfg(any(test, debug_assertions))]
+            assert_eq!(
+                in_reach.len() as u64,
+                planned.reach,
+                "the bake shades the patches the SH base gate priced"
+            );
             let layer = shade_light_layer(
                 ctx,
                 patches,
@@ -182,6 +207,8 @@ pub(crate) fn resolve_layers(
                 control,
             );
             drop(in_reach);
+            #[cfg(test)]
+            drop(in_reach_held);
             #[cfg(test)]
             crate::bake_counters::bump(|counts| counts.layers_shaded += 1);
             if let Some(cache) = cache {

@@ -792,6 +792,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         let (handoff, _) = crate::surface_radiance::plan_sh_base(
             &geometry,
             &static_refs,
+            0,
             sh_config.probe_spacing,
             crate::surface_radiance::DEFAULT_BOUNCE_FILL,
             u64::MAX,

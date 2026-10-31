@@ -1,4 +1,4 @@
-// Test-only bake cost counters: per-thread tallies summed over a dedicated pool.
+// Test-only bake cost counters and gather-direction records, per thread over a dedicated pool.
 // See: context/lib/testing_guide.md §3 (Resource bounds)
 
 use std::cell::Cell;
@@ -103,4 +103,54 @@ pub(crate) fn counted<R: Send>(threads: usize, work: impl FnOnce() -> R + Send) 
         .into_iter()
         .fold(BakeCounts::default(), Add::add);
     (result, counts)
+}
+
+/// Which gather traced a recorded direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Gather {
+    /// The SH probe gather; the index is the probe's.
+    Probe,
+    /// A later-bounce patch gather; the index is the patch's seed id.
+    Patch,
+}
+
+/// One traced gather ray: the gather, its probe or patch, the ray's index in
+/// the direction set, and the world direction's bits.
+pub(crate) type TracedDirection = (Gather, u64, u32, [u32; 3]);
+
+thread_local! {
+    static DIRECTIONS: std::cell::RefCell<Option<Vec<TracedDirection>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record one gather ray on this thread, when [`directions_traced`] runs it.
+pub(crate) fn record_direction(gather: Gather, index: u64, ray: u32, dir: glam::Vec3) {
+    DIRECTIONS.with(|directions| {
+        if let Some(directions) = directions.borrow_mut().as_mut() {
+            directions.push((gather, index, ray, dir.to_array().map(f32::to_bits)));
+        }
+    });
+}
+
+/// Run `work` on a fresh pool of `threads` workers and return every gather
+/// direction it traced, sorted, with repeats (a later bounce re-traces its
+/// patch's set) kept.
+pub(crate) fn directions_traced<R: Send>(
+    threads: usize,
+    work: impl FnOnce() -> R + Send,
+) -> (R, Vec<TracedDirection>) {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("recording pool");
+    pool.broadcast(|_| DIRECTIONS.with(|directions| *directions.borrow_mut() = Some(Vec::new())));
+    let result = pool.install(work);
+    let mut traced: Vec<TracedDirection> = pool
+        .broadcast(|_| DIRECTIONS.with(|directions| directions.borrow_mut().take()))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .collect();
+    traced.sort_unstable();
+    (result, traced)
 }

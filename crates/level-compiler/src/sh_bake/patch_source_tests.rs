@@ -82,6 +82,7 @@ fn the_sh_base_bake_leaves_depth_moments_byte_identical_to_the_one_sample_bake()
         let (handoff, _) = crate::surface_radiance::plan_sh_base(
             &geometry,
             &light_refs,
+            0,
             config.probe_spacing,
             1.0,
             u64::MAX,
@@ -254,9 +255,15 @@ fn the_cold_sh_base_bake_is_byte_identical_at_one_worker_and_many() {
             .build()
             .unwrap();
         pool.install(|| {
-            let (handoff, _) =
-                crate::surface_radiance::plan_sh_base(&geometry, &light_refs, 0.5, 1.0, u64::MAX)
-                    .unwrap();
+            let (handoff, _) = crate::surface_radiance::plan_sh_base(
+                &geometry,
+                &light_refs,
+                0,
+                0.5,
+                1.0,
+                u64::MAX,
+            )
+            .unwrap();
             crate::surface_radiance::bake_sh_base(
                 &inputs,
                 &config,

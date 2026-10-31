@@ -1,8 +1,10 @@
 //! The SH base (id 34) through the real compiler CLI: a warm build bakes the
 //! bytes a cold build of the same map bakes, across a sequence of edits over
-//! one cache directory; a `--release` build caches nothing; an invalid
-//! `_bounce_fill` warns once even when the gathered volume hits; and no warm
-//! build, help text or context doc calls warm indirect light approximate.
+//! one cache directory; a `--release` build caches nothing; a cold build
+//! ignores a populated cache directory; a data script flipping a light to
+//! animated leaves every other layer cached; an invalid `_bounce_fill` warns
+//! once even when the gathered volume hits; and no warm build, help text or
+//! context doc calls warm indirect light approximate.
 //! See: context/lib/build_pipeline.md §Build Cache
 
 use std::io::Cursor;
@@ -10,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 const WALL: &str = "test/sh_base_wall";
@@ -64,6 +67,7 @@ struct Light {
     colour: Option<&'static str>,
     style: Option<u32>,
     phase: Option<&'static str>,
+    tags: Option<&'static str>,
 }
 
 impl Light {
@@ -75,6 +79,7 @@ impl Light {
             colour: None,
             style: None,
             phase: None,
+            tags: None,
         }
     }
 
@@ -96,6 +101,9 @@ impl Light {
         if let Some(phase) = self.phase {
             lines.push(format!("\"_phase\" \"{phase}\""));
         }
+        if let Some(tags) = self.tags {
+            lines.push(format!("\"_tags\" \"{tags}\""));
+        }
         format!("{{\n{}\n}}", lines.join("\n"))
     }
 }
@@ -103,10 +111,12 @@ impl Light {
 /// A sealed corridor 1920 × 128 × 128 units (48.8 m long). The light at its
 /// west end reaches 4 m; probes in its east third, past 32 m, stand farther
 /// from it than that range plus the retired grouped bake's 16 m reach
-/// cutoff, even counting a whole 4-probe group (16 m at 4 m spacing) of
-/// slack, so that bake dropped the light there. They gather the light's
-/// bounce all the same: later bounces carry it down the corridor
-/// (`surface_radiance::bounce_tests`, the same corridor in metres).
+/// cutoff, even counting a whole 4-probe group of slack, so that bake
+/// dropped the light there. They gather the light's bounce all the same:
+/// later bounces carry it down the corridor (`surface_radiance::bounce_tests`,
+/// the same corridor in metres). Builds place probes 1 m apart: at 4 m every
+/// probe would stand in the floor or ceiling brush, and id 34 would store no
+/// tile to compare.
 #[derive(Clone)]
 struct Corridor {
     lights: Vec<Light>,
@@ -178,6 +188,12 @@ struct Built {
 }
 
 impl Built {
+    /// The cluster SH payloads (id 50): where the packed SH base stores the
+    /// tiles id 34's base-density pass keeps out of id 34 itself.
+    fn sh_payloads(&self) -> Vec<u8> {
+        section(&self.prl, SectionId::ClusterShPayloads)
+    }
+
     fn count(&self, needle: &str) -> usize {
         self.log.matches(needle).count()
     }
@@ -215,7 +231,7 @@ fn build(
         .args([
             "--no-tui",
             "--sh-probe-spacing",
-            "4",
+            "1",
             "--lightmap-density",
             "0.25",
             "--soft-shadow-samples",
@@ -267,6 +283,10 @@ fn warm_equals_cold(
         "{step}: warm id 34 differs from a cold bake of the same map"
     );
     assert!(
+        warm.sh_payloads() == cold.sh_payloads(),
+        "{step}: warm stored SH base (id 50) differs from a cold bake of the same map"
+    );
+    assert!(
         !warm.log.contains(RETIRED_WARNING),
         "{step}: a warm build still calls indirect light approximate:\n{}",
         warm.log
@@ -286,6 +306,14 @@ fn warm_id_34_equals_cold_after_every_edit_over_one_cache() {
     let mut corridor = Corridor::new();
     let base = warm_equals_cold(&temp, &corridor, "base", cache, &[]);
     assert_eq!(base.count("[cache] sh_base_volume miss"), 1);
+    let stored: u32 = base
+        .log
+        .split("stored tiles ")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .and_then(|count| count.parse().ok())
+        .expect("the base-density summary names its stored tiles");
+    assert!(stored > 0, "the corridor stores SH tiles to compare");
 
     corridor.lights[1].brightness = 450;
     let a = corridor.clone();
@@ -422,6 +450,173 @@ fn lightmap_density_and_scale_region_edits_leave_id_34_and_its_cache_alone() {
             edited_warm.count("[cache] sh_patch_layer miss"),
             0,
             "{edit}"
+        );
+    }
+}
+
+/// Every entry file in the cache directory `dir`, by name.
+fn cache_entries(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("read cache dir")
+        .map(|entry| entry.expect("cache dir entry").path())
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, std::fs::read(&path).expect("read cache entry"))
+        })
+        .collect()
+}
+
+/// Cache-entry header bytes ahead of a payload: format marker, length and
+/// blake3 digest (`cache.rs`).
+const ENTRY_HEADER_BYTES: usize = 4 + 8 + 32;
+
+/// Whether a cache entry's payload is an SH patch layer (`SRPL`).
+fn is_patch_layer(entry: &[u8]) -> bool {
+    entry.get(ENTRY_HEADER_BYTES..ENTRY_HEADER_BYTES + 4) == Some(b"SRPL")
+}
+
+/// The animated slots id 34 describes.
+fn animated_slots(built: &Built) -> usize {
+    OctahedralShVolumeSection::from_bytes(&built.id_34)
+        .expect("id 34 decodes")
+        .animation_descriptors
+        .len()
+}
+
+// AC 22: a cold build (`--no-cache`, and `--release`) beside a populated
+// cache directory reads none of it. The directory is poisoned: the
+// gathered-volume entry a fill-1 build keys holds a fill-0 build's valid
+// volume, which a warm build serves (the control). The cold builds bake the
+// fill-1 bytes, log no SH cache line and leave every entry as it was.
+#[test]
+fn a_cold_build_ignores_a_populated_poisoned_cache_directory() {
+    let temp = TempBuildDir::new("poisoned");
+    let cache = temp.cache();
+    let full = Corridor::new();
+    let mut none = Corridor::new();
+    none.worldspawn.push(("_bounce_fill", "0"));
+    let reference = build(&temp, &full, "reference", None, &[]);
+    let unfilled = build(&temp, &none, "unfilled", None, &[]);
+    assert!(
+        reference.sh_payloads() != unfilled.sh_payloads(),
+        "the fill moves the stored SH base"
+    );
+
+    build(&temp, &full, "warm-full", Some(&cache), &[]);
+    let before = cache_entries(&cache);
+    build(&temp, &none, "warm-none", Some(&cache), &[]);
+    let after = cache_entries(&cache);
+    let added: Vec<&String> = after
+        .keys()
+        .filter(|name| !before.contains_key(*name))
+        .filter(|name| !is_patch_layer(&after[*name]))
+        .collect();
+    // Layers do not key on the fill, so the fill-0 build adds its volume and
+    // whatever else it keys apart; exactly one of those is an SH volume.
+    let volume_entry = |entries: &std::collections::BTreeMap<String, Vec<u8>>, name: &str| {
+        OctahedralShVolumeSection::from_bytes(&entries[name][ENTRY_HEADER_BYTES..]).is_ok()
+    };
+    let new_volumes: Vec<&String> = added
+        .into_iter()
+        .filter(|name| volume_entry(&after, name))
+        .collect();
+    let old_volumes: Vec<&String> = before
+        .keys()
+        .filter(|name| !is_patch_layer(&before[*name]) && volume_entry(&before, name))
+        .collect();
+    assert_eq!((new_volumes.len(), old_volumes.len()), (1, 1));
+    std::fs::write(cache.join(old_volumes[0]), &after[new_volumes[0]]).expect("poison");
+
+    let control = build(&temp, &full, "control", Some(&cache), &[]);
+    assert_eq!(control.count("[cache] sh_base_volume hit"), 1);
+    assert!(
+        control.id_34 == unfilled.id_34 && control.sh_payloads() == unfilled.sh_payloads(),
+        "a warm build serves the poisoned volume"
+    );
+
+    let poisoned = cache_entries(&cache);
+    let cache_arg = cache.to_str().unwrap();
+    for (mode, cache_dir, flags) in [
+        ("--no-cache", Some(cache.as_path()), &["--no-cache"][..]),
+        ("--release", None, &["--cache-dir", cache_arg][..]),
+    ] {
+        let cold = build(&temp, &full, &format!("cold{mode}"), cache_dir, flags);
+        assert!(
+            cold.id_34 == reference.id_34 && cold.sh_payloads() == reference.sh_payloads(),
+            "{mode}: the SH base read the cache"
+        );
+        assert_eq!(cold.count("[cache] sh_"), 0, "{mode}:\n{}", cold.log);
+        assert!(
+            cache_entries(&cache) == poisoned,
+            "{mode} touched the cache"
+        );
+    }
+}
+
+/// A data script that animates every light tagged `flip` at level load:
+/// a `setLightAnimation` step, so the bake reserves an animated slot for it.
+const FLIP_SCRIPT: &str = r#"import { defineReaction, getMapEntities } from "postretro";
+
+export function setupLevel(_ctx: unknown) {
+  const lights = getMapEntities("light", { tag: "flip" });
+  return {
+    reactions: [
+      defineReaction("levelLoad", {
+        sequence: lights.flatMap((light) =>
+          light.pulse({ min: 0.2, max: 1.0, periodMs: 1000 }),
+        ),
+      }),
+    ],
+  };
+}
+"#;
+
+// AC 11, research P2 and P22: a static light a map data script flips to
+// animated (a `setLightAnimation` step, derived through the light-membership
+// manifest) leaves every other static light's layer served from cache, and
+// each served layer equals the layer a cold bake of the flipped map shades,
+// byte for byte. Warm id 34 equals cold. Needs `scripts-build`, which
+// `prl-build` builds beside itself when it is missing or stale.
+#[test]
+fn a_light_a_data_script_flips_to_animated_leaves_every_other_layer_cached() {
+    let temp = TempBuildDir::new("flip");
+    std::fs::write(temp.0.join("maps").join("flip.ts"), FLIP_SCRIPT).expect("write script");
+    let mut corridor = Corridor::new();
+    let mut flipped = Light::at([1200, 64, 64], 192);
+    flipped.tags = Some("flip");
+    corridor.lights.insert(1, flipped);
+    let cache = temp.cache();
+
+    let all_static = build(&temp, &corridor, "static", Some(&cache), &[]);
+    assert_eq!(all_static.count("[cache] sh_patch_layer miss"), 3);
+    assert_eq!(animated_slots(&all_static), 0);
+    let written = cache_entries(&cache);
+
+    corridor.worldspawn.push(("data_script", "flip.ts"));
+    let warm = warm_equals_cold(&temp, &corridor, "scripted", &cache, &[]);
+    assert_eq!(
+        animated_slots(&warm),
+        1,
+        "the script flips the tagged light"
+    );
+    assert_eq!(warm.count("[cache] sh_patch_layer miss"), 0, "{}", warm.log);
+    assert_eq!(warm.count("[cache] sh_patch_layer hit"), 2);
+    assert_eq!(warm.count("[cache] sh_base_volume miss"), 1);
+
+    // A warm build into an empty directory shades every layer the flipped
+    // map needs: each equals the entry the first build wrote.
+    let fresh_dir = temp.0.join("fresh-cache");
+    build(&temp, &corridor, "fresh", Some(&fresh_dir), &[]);
+    let fresh: Vec<(String, Vec<u8>)> = cache_entries(&fresh_dir)
+        .into_iter()
+        .filter(|(_, bytes)| is_patch_layer(bytes))
+        .collect();
+    assert_eq!(fresh.len(), 2);
+    for (name, bytes) in fresh {
+        assert!(
+            written.get(&name) == Some(&bytes),
+            "layer {name} differs from its cold shading"
         );
     }
 }

@@ -24,6 +24,8 @@ pub(crate) use light_eval::{
 pub(crate) use probe::bake_probe;
 pub(crate) use probe::{bake_probe_direct_rgb, bake_probe_indirect_rgb};
 pub use section::log_stats;
+#[cfg(test)]
+pub(crate) use section::section_heap_bytes;
 pub(crate) use section::{
     compact_section_from_dense_atlas, encode_sh_volume_section_bc6h, f16_bits_to_f32,
     sh_atlas_array_layout,
@@ -32,7 +34,7 @@ pub(crate) use sh_math::pack_octahedral_irradiance_tile;
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 pub(crate) use animation::animation_descriptor_for_light;
-use probe::bake_probe_with_source;
+use probe::{bake_probe_with_source, probe_gather_directions};
 use sh_math::pack_octahedral_irradiance_atlas;
 
 use std::collections::HashSet;
@@ -271,12 +273,26 @@ pub(crate) fn bake_sh_volume_over(
 
     let static_lights: Vec<&MapLight> = static_light_refs(inputs);
     let (animation_descriptors, slot_for_map_light) = animation_tables(inputs);
+    // One fixed direction set for every probe, made once.
+    let directions = probe_gather_directions();
+    #[cfg(test)]
+    let _held = [
+        crate::live_bytes::hold_vec("probe gather directions", &directions),
+        crate::live_bytes::hold_vec("per-light metadata", &static_lights),
+        crate::live_bytes::hold(
+            "id-34 section",
+            ((animation_descriptors.capacity() * size_of::<AnimationDescriptor>())
+                + slot_for_map_light.capacity() * size_of::<u32>()) as u64,
+        ),
+        crate::live_bytes::hold("dense SH volume", (total * size_of::<BakedProbe>()) as u64),
+    ];
 
     let baked_probes: Vec<BakedProbe> = (0..total)
         .into_par_iter()
         .map(|i| {
             let _permit = control.governor().enter();
             let probe = bake_probe_with_source(
+                &directions,
                 inputs,
                 vec3_from(layout.probe_positions[i]),
                 &static_lights,
@@ -292,6 +308,8 @@ pub(crate) fn bake_sh_volume_over(
         })
         .collect();
     let base_probes: Vec<OctahedralShProbe> = baked_probes.iter().map(|p| p.metadata).collect();
+    #[cfg(test)]
+    let _probes_held = crate::live_bytes::hold_vec("id-34 section", &base_probes);
     let atlas_layout = sh_atlas_array_layout(dims, DEFAULT_IRRADIANCE_TILE_DIMENSION)
         .unwrap_or_else(|e| panic!("{e}"));
     let atlas_texels = pack_octahedral_irradiance_atlas(
@@ -301,6 +319,8 @@ pub(crate) fn bake_sh_volume_over(
         DEFAULT_IRRADIANCE_TILE_BORDER,
         atlas_layout,
     );
+    #[cfg(test)]
+    let _atlas_held = crate::live_bytes::hold_vec("dense SH volume", &atlas_texels);
 
     let section = OctahedralShVolumeSection {
         grid_origin: [world_min.x as f32, world_min.y as f32, world_min.z as f32],
@@ -361,14 +381,26 @@ pub(crate) fn fold_gather_constants(hasher: &mut blake3::Hasher) {
 
 /// Host bytes the whole-volume bake of a `dims` grid holds, by
 /// representation: what the SH base working-set gate prices before the bake.
+/// None includes the animation tables, which follow the animated lights
+/// ([`animation_table_bytes`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ShVolumeBytes {
+    /// The probe layout, every probe's position and validity: resident from
+    /// before the gather to the end of the stage.
+    pub(crate) layout: u64,
     /// Every probe's baked coefficients and metadata plus the dense atlas
-    /// they pack into: co-resident while the bake compacts the atlas.
+    /// they pack into, one tile in flight and the gather's shared direction
+    /// set: co-resident while the bake compacts the atlas.
     pub(crate) dense: u64,
-    /// One encoded or decoded copy of the section the bake returns: probe
-    /// metadata plus an atlas no larger than the dense one.
+    /// One section the bake returns: probe metadata plus an atlas no larger
+    /// than the dense one.
     pub(crate) section: u64,
+    /// That atlas bound alone. Compaction holds the compact atlas twice, as
+    /// texels and as the section's bytes.
+    pub(crate) atlas: u64,
+    /// One serialized section without animation tables: the build-cache
+    /// entry's payload.
+    pub(crate) encoded: u64,
 }
 
 /// [`ShVolumeBytes`] for a `dims` grid, or `None` when a product overflows.
@@ -380,8 +412,11 @@ pub(crate) fn sh_volume_bytes(dims: [u32; 3]) -> Option<ShVolumeBytes> {
         .checked_mul(u64::from(dims[2]))?;
     if probes == 0 {
         return Some(ShVolumeBytes {
+            layout: 0,
             dense: 0,
             section: 0,
+            atlas: 0,
+            encoded: 0,
         });
     }
     let tile_texels = u64::from(DEFAULT_IRRADIANCE_TILE_DIMENSION).pow(2);
@@ -391,14 +426,54 @@ pub(crate) fn sh_volume_bytes(dims: [u32; 3]) -> Option<ShVolumeBytes> {
             .checked_mul(u64::from(layout.atlas_height))?,
         Err(_) => probes.checked_mul(tile_texels)?,
     };
-    let atlas = atlas_texels.checked_mul(size_of::<OctahedralAtlasTexel>() as u64)?;
+    let texel = size_of::<OctahedralAtlasTexel>() as u64;
+    let atlas = atlas_texels.checked_mul(texel)?;
+    let layout = probes.checked_mul((size_of::<glam::DVec3>() + size_of::<u8>()) as u64)?;
+    // One tile in flight while the atlas packs: its interior and its
+    // bordered texels.
+    let tile_scratch = 2 * tile_texels * texel;
+    let directions = u64::from(RAYS_PER_PROBE) * size_of::<glam::Vec3>() as u64;
     let dense = probes
         .checked_mul(size_of::<BakedProbe>() as u64)?
-        .checked_add(atlas)?;
+        .checked_add(atlas)?
+        .checked_add(tile_scratch + directions)?;
     let section = probes
         .checked_mul(size_of::<OctahedralShProbe>() as u64)?
         .checked_add(atlas)?;
-    Some(ShVolumeBytes { dense, section })
+    // The header, one record per probe, the atlas, and the two empty
+    // tables' counts.
+    let encoded = probes
+        .checked_mul(u64::from(OCTAHEDRAL_PROBE_STRIDE))?
+        .checked_add(atlas)?
+        .checked_add((OctahedralShVolumeSection::HEADER_SIZE + 2 * size_of::<u32>()) as u64)?;
+    Some(ShVolumeBytes {
+        layout,
+        dense,
+        section,
+        atlas,
+        encoded,
+    })
+}
+
+/// Host bytes of id 34's animation tables over `animated` among
+/// `total_light_count` map lights: what [`animation_tables`] builds, by
+/// capacity. Traces nothing.
+pub(crate) fn animation_table_bytes(
+    animated: &AnimatedBakedLights<'_>,
+    total_light_count: usize,
+) -> u64 {
+    let descriptors: usize = animated
+        .entries()
+        .iter()
+        .map(|entry| {
+            let descriptor = animation_descriptor_for_light(entry.light);
+            size_of::<AnimationDescriptor>()
+                + descriptor.brightness.capacity() * size_of::<f32>()
+                + (descriptor.color.capacity() + descriptor.direction.capacity())
+                    * size_of::<[f32; 3]>()
+        })
+        .sum();
+    (descriptors + total_light_count * size_of::<u32>()) as u64
 }
 
 #[cfg(test)]

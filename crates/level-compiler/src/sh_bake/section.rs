@@ -102,6 +102,8 @@ pub(crate) fn compact_section_from_dense_atlas(
         * compact_layout.atlas_width as usize
         * compact_layout.atlas_height as usize;
     let mut compact_atlas = vec![OctahedralAtlasTexel::default(); compact_texel_count];
+    #[cfg(test)]
+    let _compact_held = crate::live_bytes::hold_vec("id-34 section", &compact_atlas);
     let dense_width = section.atlas_dimensions[0] as usize;
     let dense_layer_texels = dense_width * section.atlas_dimensions[1] as usize;
     let compact_width = compact_layout.atlas_width as usize;
@@ -154,7 +156,29 @@ pub(crate) fn compact_section_from_dense_atlas(
     section.layer_count = compact_layout.layer_count;
     section.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
     section.compact_atlas = atlas_texels_to_bytes(&compact_atlas);
+    #[cfg(test)]
+    let _bytes_held = crate::live_bytes::hold_vec("id-34 section", &section.compact_atlas);
     section
+}
+
+/// Host bytes `section` holds, by capacity: its probes, atlas and
+/// animation tables. For the test ledger.
+#[cfg(test)]
+pub(crate) fn section_heap_bytes(section: &OctahedralShVolumeSection) -> u64 {
+    use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShProbe};
+    let descriptors: usize = section
+        .animation_descriptors
+        .iter()
+        .map(|d| {
+            d.brightness.capacity() * size_of::<f32>()
+                + (d.color.capacity() + d.direction.capacity()) * size_of::<[f32; 3]>()
+        })
+        .sum();
+    (section.probes.capacity() * size_of::<OctahedralShProbe>()
+        + section.compact_atlas.capacity()
+        + section.animation_descriptors.capacity() * size_of::<AnimationDescriptor>()
+        + descriptors
+        + section.slot_for_map_light.capacity() * size_of::<u32>()) as u64
 }
 
 /// Re-encode the packed, lossless base atlas for its at-rest representation.

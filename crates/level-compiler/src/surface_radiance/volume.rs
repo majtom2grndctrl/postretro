@@ -92,9 +92,20 @@ impl VolumeCache<'_> {
     pub(crate) fn load(&self, layout: &ProbeGridLayout) -> Option<OctahedralShVolumeSection> {
         note_cache_io();
         let section = self.cache.get(&self.key).and_then(|bytes| {
+            #[cfg(test)]
+            let _payload = crate::live_bytes::hold_vec("id-34 cache payload", &bytes);
             let section = OctahedralShVolumeSection::from_bytes(&bytes)
                 .ok()
                 .filter(|section| fits(section, layout));
+            // The decoded copy beside the raw payload; the stage holds it
+            // once it returns.
+            #[cfg(test)]
+            let _decoded = section.as_ref().map(|section| {
+                crate::live_bytes::hold(
+                    "id-34 section",
+                    crate::sh_bake::section_heap_bytes(section),
+                )
+            });
             if section.is_none() {
                 log::warn!("[cache] corrupt sh_base_volume entry, re-gathering");
             }
@@ -115,7 +126,11 @@ impl VolumeCache<'_> {
         let descriptors = std::mem::take(&mut section.animation_descriptors);
         let slots = std::mem::take(&mut section.slot_for_map_light);
         match section.try_to_bytes() {
-            Ok(bytes) => self.cache.put(&self.key, &bytes),
+            Ok(bytes) => {
+                #[cfg(test)]
+                let _encoded = crate::live_bytes::hold_vec("id-34 encoded copy", &bytes);
+                self.cache.put(&self.key, &bytes);
+            }
             Err(error) => log::warn!("[cache] sh_base_volume not cached: {error}"),
         }
         section.animation_descriptors = descriptors;

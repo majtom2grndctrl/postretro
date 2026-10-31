@@ -653,13 +653,24 @@ impl StageCache {
         }
     }
 
+    /// The write buffer [`Self::put_streamed`] holds for a `payload_len`
+    /// payload: never larger than the entry it writes, so a small entry
+    /// holds no more than itself.
+    pub(crate) fn stream_buffer_bytes(payload_len: u64) -> u64 {
+        payload_len
+            .saturating_add(HEADER_BYTES as u64)
+            .min(STREAM_BUFFER_BYTES as u64)
+    }
+
     fn write_streamed_entry(
         tmp_path: &Path,
         payload_len: u64,
         write_payload: impl FnOnce(&mut dyn Write) -> io::Result<()>,
     ) -> io::Result<()> {
-        let mut buffered =
-            BufWriter::with_capacity(STREAM_BUFFER_BYTES, fs::File::create(tmp_path)?);
+        let mut buffered = BufWriter::with_capacity(
+            Self::stream_buffer_bytes(payload_len) as usize,
+            fs::File::create(tmp_path)?,
+        );
         // The hash is patched in once the payload has streamed through.
         buffered.write_all(&entry_header(
             payload_len,

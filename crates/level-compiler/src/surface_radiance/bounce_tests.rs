@@ -56,7 +56,7 @@ fn oriented(corners: [[f32; 3]; 4], positive: bool) -> Vec<Vec3> {
 }
 
 /// The six inward faces of the box `min..max`.
-fn inward_box(min: [f32; 3], max: [f32; 3]) -> Vec<Vec<Vec3>> {
+pub(super) fn inward_box(min: [f32; 3], max: [f32; 3]) -> Vec<Vec<Vec3>> {
     let (x, y, z) = ([min[0], max[0]], [min[1], max[1]], [min[2], max[2]]);
     vec![
         y_quad(min[1], x, z, true),
@@ -75,7 +75,7 @@ const HEIGHT: [f32; 2] = [0.0, 3.0];
 /// partition leaves a gap at its north end (z 3..4), the second at its
 /// south end (z 0..1), so room B sees the corridor but nothing of room A.
 /// Faces split where the partitions meet them, as brush sides do.
-fn two_rooms() -> GeometryResult {
+pub(super) fn two_rooms() -> GeometryResult {
     let mut faces = Vec::new();
     for (x, z) in [
         ([0.0, 5.5], [0.0, 4.0]),
@@ -107,7 +107,7 @@ fn two_rooms() -> GeometryResult {
 }
 
 /// Room A's one light, whose range stops short of the first partition.
-fn room_a_light() -> MapLight {
+pub(super) fn room_a_light() -> MapLight {
     point([3.0, 1.5, 3.2], 0.1, 2.5)
 }
 
@@ -246,7 +246,7 @@ fn a_probe_seeing_only_faces_beyond_every_lights_reach_reads_later_bounces_alone
 }
 
 /// A 20 × 20 m floor open to the sky, with a low kerb standing on it.
-fn open_floor() -> GeometryResult {
+pub(super) fn open_floor() -> GeometryResult {
     let (x, z, y) = ([-4.0, -2.0], [-1.0, -0.5], [0.0, 0.5]);
     polygon_geometry(&[
         y_quad(0.0, [-10.0, 10.0], [-10.0, 10.0], true),

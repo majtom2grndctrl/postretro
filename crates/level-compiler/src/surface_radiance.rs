@@ -41,6 +41,8 @@ mod bounce_tests;
 #[cfg(test)]
 mod cost_tests;
 #[cfg(test)]
+mod determinism_tests;
+#[cfg(test)]
 mod layer_cache_tests;
 #[cfg(test)]
 mod pipeline_tests;
@@ -50,3 +52,5 @@ mod test_scene;
 mod tests;
 #[cfg(test)]
 mod volume_cache_tests;
+#[cfg(test)]
+mod working_set_tests;

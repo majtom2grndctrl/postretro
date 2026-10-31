@@ -126,6 +126,8 @@ pub(crate) struct PatchSet {
     /// Exclusive end of each face's index range, ascending: a triangle's
     /// index offset names its face by binary search.
     face_index_ends: Vec<u32>,
+    #[cfg(test)]
+    _held: crate::live_bytes::Held,
 }
 
 impl PatchSet {
@@ -155,6 +157,9 @@ impl PatchSet {
                     })
                 })
                 .collect();
+            #[cfg(test)]
+            let _triangles_held =
+                crate::live_bytes::hold_vec("patch set face triangles", &triangles);
             let frame = face_normal(&triangles).map(FaceFrame::new);
             frames.push(frame);
             if let Some(frame) = frame {
@@ -171,14 +176,25 @@ impl PatchSet {
         }
         debug_assert!(face_index_ends.windows(2).all(|pair| pair[0] <= pair[1]));
         // Resident through the SH base stage and priced by capacity.
+        #[cfg(test)]
+        let grown = crate::live_bytes::hold_vec("patch set before shrinking", &patches);
         patches.shrink_to_fit();
-        Self {
+        let set = Self {
             size,
             patches,
             face_patches,
             frames,
             face_index_ends,
-        }
+            #[cfg(test)]
+            _held: Default::default(),
+        };
+        #[cfg(test)]
+        let set = {
+            let held = crate::live_bytes::hold("patch set", set.heap_bytes());
+            drop(grown);
+            Self { _held: held, ..set }
+        };
+        set
     }
 
     pub(crate) fn patches(&self) -> &[Patch] {
@@ -195,6 +211,24 @@ impl PatchSet {
             + self.face_patches.capacity() * size_of::<u32>()
             + self.frames.capacity() * size_of::<Option<FaceFrame>>()
             + self.face_index_ends.capacity() * size_of::<u32>()) as u64
+    }
+
+    /// The most [`Self::build`] held over `geo` by capacity, or `None` on
+    /// overflow: the finished set, the patch vector's growth before it
+    /// shrinks (at most twice its length, or four), and the largest face's
+    /// triangles. A face's cell map is not counted.
+    pub(crate) fn build_peak_bytes(&self, geo: &GeometryResult) -> Option<u64> {
+        let grown = (2 * self.patches.len()).max(4) as u64;
+        let triangles = geo
+            .face_index_ranges
+            .iter()
+            .map(|range| u64::from(range.index_count / 3))
+            .max()
+            .unwrap_or(0);
+        grown
+            .checked_mul(size_of::<Patch>() as u64)?
+            .checked_add(triangles.checked_mul(size_of::<[DVec3; 3]>() as u64)?)?
+            .checked_add(self.heap_bytes())
     }
 
     /// Face `face`'s patches, ascending by cell.

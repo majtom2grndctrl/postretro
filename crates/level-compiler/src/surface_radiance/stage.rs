@@ -73,6 +73,15 @@ pub(crate) fn bake_sh_base(
     let lights = static_light_refs(ctx);
     let plan = LayerPlan::new(&lights, &light_reach, embedded);
     let layout = probe_grid_layout(ctx, config);
+    #[cfg(test)]
+    let _held = [
+        crate::live_bytes::hold_vec("per-light metadata", &lights),
+        crate::live_bytes::hold_vec("per-light metadata", &light_reach),
+        crate::live_bytes::hold_vec("probe layout", &layout.probe_positions),
+        crate::live_bytes::hold_vec("probe layout", &layout.validity),
+    ];
+    #[cfg(test)]
+    crate::live_bytes::phase("plan and probe layout");
     let shading_units = plan.progress_units();
     let bounce_units = later_bounce_progress_units(patches.len(), bounce_fill);
     let total_units = shading_units + bounce_units + layout.total_probes();
@@ -96,6 +105,13 @@ pub(crate) fn bake_sh_base(
                 .mark_used(&layers.keys.key(planned.digest, planned.embedded));
         }
         (section.animation_descriptors, section.slot_for_map_light) = animation_tables(ctx);
+        #[cfg(test)]
+        let _section = crate::live_bytes::hold(
+            "id-34 section",
+            crate::sh_bake::section_heap_bytes(&section),
+        );
+        #[cfg(test)]
+        crate::live_bytes::phase("volume load");
         control.advance(total_units);
         return section;
     }
@@ -108,7 +124,11 @@ pub(crate) fn bake_sh_base(
         caches.as_ref().map(|(layers, _)| layers),
         control,
     );
+    #[cfg(test)]
+    crate::live_bytes::phase("layers");
     let mut radiance = PatchRadiance::sum(patches.len(), &plan, &layers);
+    #[cfg(test)]
+    crate::live_bytes::phase("sum");
     drop(layers);
     add_later_bounces(
         &ctx.ray_ctx(),
@@ -117,6 +137,8 @@ pub(crate) fn bake_sh_base(
         bounce_fill,
         control,
     );
+    #[cfg(test)]
+    crate::live_bytes::phase("later bounces");
     let patch_cache = PatchCache { patches, radiance };
     let mut section = {
         let gather = PatchGather::new(
@@ -126,10 +148,19 @@ pub(crate) fn bake_sh_base(
         );
         bake_sh_volume_over(ctx, &layout, control, RadianceSource::Patches(&gather))
     };
+    #[cfg(test)]
+    let _section = crate::live_bytes::hold(
+        "id-34 section",
+        crate::sh_bake::section_heap_bytes(&section),
+    );
+    #[cfg(test)]
+    crate::live_bytes::phase("probe gather");
     drop(patch_cache);
     if let Some((_, volume)) = &caches {
         volume.store(&mut section);
     }
+    #[cfg(test)]
+    crate::live_bytes::phase("volume store");
     section
 }
 

@@ -1175,6 +1175,20 @@ fn sdf(mut light: MapLight) -> MapLight {
     light
 }
 
+/// AC 3's bounce fixture: the floor and wall, a point light and an
+/// `sdf`-shadowed light whose emitter spheres both reach into the wall.
+pub(crate) fn embedded_bounce_fixture() -> (GeometryResult, Vec<MapLight>) {
+    let shadowed = sdf(point_light([
+        f64::from(WALL_FACE_X) - 0.2,
+        LIGHT_HEIGHT,
+        -0.9,
+    ]));
+    (
+        Fixture::new(false).geometry,
+        vec![beside_wall(0.2), shadowed],
+    )
+}
+
 // AC 3, research P10: a flagged point light and a flagged `sdf`-shadowed
 // light shade their bounce patches at the full lattice's visibility, the
 // no-early-out reference written out here; the probe-point set still flags
@@ -1189,13 +1203,8 @@ fn flagged_point_and_sdf_lights_shade_their_patches_at_full_set_visibility() {
     use crate::surface_radiance::{PatchSet, Side, shade_light_layer};
 
     let fixture = Fixture::new(false);
-    let point = beside_wall(0.2);
-    let shadowed = sdf(point_light([
-        f64::from(WALL_FACE_X) - 0.2,
-        LIGHT_HEIGHT,
-        -0.9,
-    ]));
-    let lights = vec![point.clone(), shadowed];
+    let (_, lights) = embedded_bounce_fixture();
+    let point = lights[0].clone();
     let control = BakeControl::unrestricted();
     let classify = |lights: &[MapLight]| {
         let static_lights = StaticBakedLights::from_lights(lights);

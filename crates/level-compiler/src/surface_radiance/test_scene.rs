@@ -23,7 +23,9 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 use crate::partition::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
-use crate::sh_bake::{ShBakeCtx, ShConfig, probe_grid_layout, static_light_refs};
+use crate::sh_bake::{
+    ShBakeCtx, ShConfig, animation_table_bytes, probe_grid_layout, static_light_refs,
+};
 use crate::surface_materials::stats::BounceMaterials;
 use crate::texel_footprint::{EmbeddedEmitters, NO_EMBEDDED_EMITTERS};
 
@@ -152,6 +154,15 @@ impl Scene {
         }
     }
 
+    /// A real map's geometry with its own tree and exterior leaves, so its
+    /// probe validity is the compiler's.
+    pub(super) fn of_fixture(fixture: crate::fixture_pipeline::FixturePipeline) -> Self {
+        let mut scene = Self::of(fixture.geometry);
+        scene.tree = fixture.tree;
+        scene.exterior = fixture.exterior_leaves;
+        scene
+    }
+
     /// This scene with the half-space `x ≥ x_min` solid: its probes turn
     /// invalid while every face, and so the geometry, stays as it was, as a
     /// brush edit that moves only leaf solidity would leave it.
@@ -215,8 +226,15 @@ impl Scene {
     ) -> OctahedralShVolumeSection {
         self.with_ctx(lights, |ctx| {
             let refs = static_light_refs(ctx);
-            let (handoff, _) = super::plan_sh_base(&self.geometry, &refs, spacing, fill, u64::MAX)
-                .expect("priced");
+            let (handoff, _) = super::plan_sh_base(
+                &self.geometry,
+                &refs,
+                animation_table_bytes(ctx.animated_lights, ctx.total_light_count),
+                spacing,
+                fill,
+                u64::MAX,
+            )
+            .expect("priced");
             super::bake_sh_base(
                 ctx,
                 &ShConfig {
@@ -315,9 +333,21 @@ impl Scene {
     /// The key of the gathered volume a bake of `lights` at `spacing` and
     /// `fill`, with no flagged light, reads and writes.
     pub(super) fn volume_key_at(&self, lights: &[MapLight], spacing: f32, fill: f32) -> CacheKey {
+        self.volume_key_with(lights, spacing, fill, &NO_EMBEDDED_EMITTERS)
+    }
+
+    /// The gathered volume's key for a bake of `lights` at `spacing` and
+    /// `fill` with the bounce flags `embedded`.
+    pub(super) fn volume_key_with(
+        &self,
+        lights: &[MapLight],
+        spacing: f32,
+        fill: f32,
+        embedded: &EmbeddedEmitters,
+    ) -> CacheKey {
         let reach = self.reach(lights);
         self.with_ctx(lights, |ctx| {
-            let plan = LayerPlan::new(&static_light_refs(ctx), &reach, &NO_EMBEDDED_EMITTERS);
+            let plan = LayerPlan::new(&static_light_refs(ctx), &reach, embedded);
             let layout = probe_grid_layout(
                 ctx,
                 &ShConfig {

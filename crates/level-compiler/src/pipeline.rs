@@ -786,6 +786,7 @@ fn run_after_parsing(
             .iter()
             .map(|entry| entry.light)
             .collect::<Vec<_>>(),
+        sh_bake::animation_table_bytes(&animated_baked_lights, map_data.lights.len()),
         sh_config.probe_spacing,
         map_data.bounce_fill,
         args.working_set_max_bytes,

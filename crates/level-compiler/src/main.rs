@@ -89,6 +89,8 @@ mod cache_cross_bake_tests;
 mod cache_prune_tests;
 #[cfg(test)]
 mod embedded_emitter_probe_tests;
+#[cfg(test)]
+mod live_bytes;
 
 use std::collections::HashSet;
 use std::fmt::Display;

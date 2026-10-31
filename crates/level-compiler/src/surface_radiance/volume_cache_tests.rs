@@ -65,7 +65,7 @@ fn irradiance_is_zero(section: &OctahedralShVolumeSection) -> bool {
 }
 
 /// The room with one tinted texture on every face, at `saturation`.
-fn coloured(mean: [u8; 3], saturation: f32) -> Scene {
+pub(super) fn coloured(mean: [u8; 3], saturation: f32) -> Scene {
     Scene::new().with_materials(
         BounceMaterials::new(vec![MaterialStats::with_snapped_mean(mean)], saturation).unwrap(),
     )
@@ -73,7 +73,7 @@ fn coloured(mean: [u8; 3], saturation: f32) -> Scene {
 
 /// The room with the annex floor lifted 1 cm: a geometry edit no light's
 /// reach count notices.
-fn lifted_annex() -> Scene {
+pub(super) fn lifted_annex() -> Scene {
     let base = Scene::new();
     let mut geometry = base.geometry.clone();
     let annex = *geometry.face_index_ranges.last().unwrap();

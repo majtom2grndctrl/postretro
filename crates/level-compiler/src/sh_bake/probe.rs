@@ -121,16 +121,15 @@ pub(crate) fn bake_probe_direct_rgb(
     acc
 }
 
-/// SH-volume-path twin of `bake_probe_indirect_rgb` that also accumulates the
-/// per-probe depth moments `Σd` / `Σd²` over the same 256-direction loop. The
-/// shared per-ray sampler keeps the bounce math identical across both paths;
-/// the ray-accumulation loop is duplicated so the delta path stays moment-free.
-/// Sky-miss rays contribute `far_sentinel` to both sums (via
-/// `sample_radiance_rgb`), so all `RAYS_PER_PROBE` rays accumulate and the
-/// caller's division by the constant is exact. Accumulation is a sequential sum
-/// over the fixed direction list so the bake stays byte-identical across runs.
-/// `source` picks only where a hit's radiance comes from; the directions and
-/// the hits, so the moments, are the same either way.
+/// The probe gather's fixed direction set: one Fibonacci sphere of
+/// `RAYS_PER_PROBE` rotated by a constant, the same for every probe, light
+/// set, fill and radiance source. Nothing but those two constants enters it.
+pub(super) fn probe_gather_directions() -> Vec<Vec3> {
+    sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET)
+}
+
+/// [`bake_probe_rgb_along`] over [`probe_gather_directions`], made per call.
+#[cfg(test)]
 pub(super) fn bake_probe_rgb_with_moments(
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
@@ -140,13 +139,55 @@ pub(super) fn bake_probe_rgb_with_moments(
     probe_index: u64,
     source: RadianceSource<'_>,
 ) -> ([f32; 27], f32, f32) {
+    bake_probe_rgb_along(
+        &probe_gather_directions(),
+        inputs,
+        probe_pos,
+        static_lights,
+        light_global_indices,
+        far_sentinel,
+        probe_index,
+        source,
+    )
+}
+
+/// SH-volume-path twin of `bake_probe_indirect_rgb` that also accumulates the
+/// per-probe depth moments `Σd` / `Σd²` over the same 256-direction loop. The
+/// shared per-ray sampler keeps the bounce math identical across both paths;
+/// the ray-accumulation loop is duplicated so the delta path stays moment-free.
+/// Sky-miss rays contribute `far_sentinel` to both sums (via
+/// `sample_radiance_rgb`), so all `RAYS_PER_PROBE` rays accumulate and the
+/// caller's division by the constant is exact. Accumulation is a sequential sum
+/// over the fixed direction list so the bake stays byte-identical across runs.
+/// `source` picks only where a hit's radiance comes from; the directions and
+/// the hits, so the moments, are the same either way. `directions` is
+/// [`probe_gather_directions`], made once per volume bake.
+// The probe's inputs plus its shared direction set; see `sample_radiance_rgb`.
+#[allow(clippy::too_many_arguments)]
+fn bake_probe_rgb_along(
+    directions: &[Vec3],
+    inputs: &ShBakeCtx<'_>,
+    probe_pos: Vec3,
+    static_lights: &[&MapLight],
+    light_global_indices: Option<&[u64]>,
+    far_sentinel: f32,
+    probe_index: u64,
+    source: RadianceSource<'_>,
+) -> ([f32; 27], f32, f32) {
+    debug_assert_eq!(directions.len(), RAYS_PER_PROBE as usize);
     let ctx = inputs.ray_ctx();
-    let directions = sphere_directions(RAYS_PER_PROBE, SAMPLING_LATTICE_OFFSET);
     let mc_weight = (4.0 * std::f32::consts::PI) / RAYS_PER_PROBE as f32;
     let mut acc = [0f32; 27];
     let mut sum_d = 0.0f32;
     let mut sum_d2 = 0.0f32;
     for (ray_index, dir) in directions.iter().enumerate() {
+        #[cfg(test)]
+        crate::bake_counters::record_direction(
+            crate::bake_counters::Gather::Probe,
+            probe_index,
+            ray_index as u32,
+            *dir,
+        );
         let (radiance, distance) = match source {
             RadianceSource::Lights(visibility) => sample_radiance_rgb(
                 &ctx,
@@ -193,6 +234,7 @@ pub(crate) fn bake_probe(
     probe_index: u64,
 ) -> BakedProbe {
     bake_probe_with_source(
+        &probe_gather_directions(),
         inputs,
         probe_pos,
         static_lights,
@@ -204,10 +246,12 @@ pub(crate) fn bake_probe(
     )
 }
 
-/// [`bake_probe`] with the gather hits' radiance source chosen.
+/// [`bake_probe`] with the gather hits' radiance source chosen, along
+/// `directions` ([`probe_gather_directions`]).
 // `bake_probe`'s inputs plus the radiance source; see `sample_radiance_rgb`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn bake_probe_with_source(
+    directions: &[Vec3],
     inputs: &ShBakeCtx<'_>,
     probe_pos: Vec3,
     static_lights: &[&MapLight],
@@ -220,7 +264,8 @@ pub(super) fn bake_probe_with_source(
     if !valid {
         return BakedProbe::default();
     }
-    let (coefficients, sum_d, sum_d2) = bake_probe_rgb_with_moments(
+    let (coefficients, sum_d, sum_d2) = bake_probe_rgb_along(
+        directions,
         inputs,
         probe_pos,
         static_lights,

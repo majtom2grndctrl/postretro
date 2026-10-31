@@ -69,6 +69,17 @@ pub(super) fn pack_octahedral_irradiance_atlas(
     if total == 0 {
         return atlas;
     }
+    // The atlas, plus one tile in flight at a time: its interior and its
+    // bordered texels. The caller holds the atlas once it returns.
+    #[cfg(test)]
+    let _held = [
+        crate::live_bytes::hold_vec("dense SH volume", &atlas),
+        crate::live_bytes::hold(
+            "dense SH volume",
+            (2 * (tile_dimension * tile_dimension) as usize * size_of::<OctahedralAtlasTexel>())
+                as u64,
+        ),
+    ];
 
     for (probe_index, probe) in probes.iter().enumerate() {
         let [layer, tile_x, tile_y] = irradiance_array_tile_location(

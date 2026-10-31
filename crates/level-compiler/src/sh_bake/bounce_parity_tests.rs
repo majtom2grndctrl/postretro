@@ -994,6 +994,7 @@ fn bounce_parity_on_real_maps() {
             let (handoff, projection) = crate::surface_radiance::plan_sh_base(
                 &fx.geometry,
                 &light_refs,
+                0,
                 config.probe_spacing,
                 0.0,
                 u64::MAX,

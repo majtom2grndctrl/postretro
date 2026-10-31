@@ -12,6 +12,12 @@ use crate::sh_bake::light_reaches_point;
 /// light visits only the buckets its range's bounding box overlaps.
 const BUCKET_SIZE_M: f64 = 4.0;
 
+/// Host bytes a [`PatchReachIndex`] holds per patch at its peak, while it
+/// builds: the keyed scratch beside the buckets (at most one per patch) and
+/// the patch order.
+pub(crate) const REACH_INDEX_BYTES_PER_PATCH: u64 =
+    (size_of::<([i32; 3], u32)>() + size_of::<([i32; 3], u32, u32)>() + size_of::<u32>()) as u64;
+
 /// Patch centroids bucketed on a uniform grid, buckets sorted by cell, so a
 /// light's reach query visits the buckets near it rather than every patch.
 pub(crate) struct PatchReachIndex<'a> {
@@ -20,27 +26,48 @@ pub(crate) struct PatchReachIndex<'a> {
     buckets: Vec<([i32; 3], u32, u32)>,
     /// Patch indices grouped by bucket.
     order: Vec<u32>,
+    #[cfg(test)]
+    _held: crate::live_bytes::Held,
 }
 
 impl<'a> PatchReachIndex<'a> {
+    /// Every allocation is exact, so the index and its build scratch hold
+    /// at most [`REACH_INDEX_BYTES_PER_PATCH`] per patch.
     pub(crate) fn new(patches: &'a [Patch]) -> Self {
         let mut keyed: Vec<([i32; 3], u32)> = patches
             .iter()
             .enumerate()
             .map(|(index, patch)| (bucket_of(patch.centroid.as_dvec3()), index as u32))
             .collect();
+        #[cfg(test)]
+        let keyed_held = crate::live_bytes::hold_vec("reach index build", &keyed);
         keyed.sort_unstable();
-        let mut buckets: Vec<([i32; 3], u32, u32)> = Vec::new();
+        let cells = keyed.chunk_by(|a, b| a.0 == b.0).count();
+        let mut buckets: Vec<([i32; 3], u32, u32)> = Vec::with_capacity(cells);
         for (at, &(cell, _)) in keyed.iter().enumerate() {
             match buckets.last_mut() {
                 Some((last, _, end)) if *last == cell => *end = at as u32 + 1,
                 _ => buckets.push((cell, at as u32, at as u32 + 1)),
             }
         }
+        let mut order = Vec::with_capacity(keyed.len());
+        order.extend(keyed.iter().map(|&(_, index)| index));
+        #[cfg(test)]
+        let _held = {
+            let held = crate::live_bytes::hold(
+                "reach index",
+                (buckets.capacity() * size_of::<([i32; 3], u32, u32)>()
+                    + order.capacity() * size_of::<u32>()) as u64,
+            );
+            drop(keyed_held);
+            held
+        };
         Self {
             patches,
             buckets,
-            order: keyed.into_iter().map(|(_, index)| index).collect(),
+            order,
+            #[cfg(test)]
+            _held,
         }
     }
 
@@ -55,8 +82,9 @@ impl<'a> PatchReachIndex<'a> {
 
     /// The patches [`Self::count_in_reach`] counts, ascending by index: the
     /// only patches a layer shades.
+    /// Exact: counted first, so the list holds no growth slack.
     pub(crate) fn in_reach(&self, light: &MapLight) -> Vec<u32> {
-        let mut patches = Vec::new();
+        let mut patches = Vec::with_capacity(self.count_in_reach(light) as usize);
         self.for_each_in_reach(light, |index| patches.push(index));
         patches.sort_unstable();
         patches

@@ -235,6 +235,7 @@ pub(crate) fn test_app() -> App {
         level_timings: StartupTimings::new(),
         active_level_tags: Vec::new(),
         active_level_source: None,
+        last_relevel: None,
         level_load: None,
         level_loads: Default::default(),
         stage_retirements: Default::default(),

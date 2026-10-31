@@ -1,14 +1,13 @@
-// PNG-derived material dependencies at the real SH group and delta cache boundaries.
+// PNG-derived material dependencies at the real SH base layer, volume and delta cache boundaries.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use super::*;
+use crate::bake_content_keys::{bounce_material_hash, geometry_content_hash};
 use crate::cache::{CacheKey, StageCache};
 use crate::delta_sh_bake::{INDIRECT_DELTA_SH_STAGE_ID, INDIRECT_DELTA_SH_STAGE_VERSION};
 use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
-use crate::sh_group::{
-    SH_GROUP_DIM, SH_GROUP_STAGE_VERSION, bounce_material_hash, geometry_content_hash,
-    group_cache_key, partition_groups,
-};
+use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, LayerKeys, LayerPlan, LightDigest, volume_key};
+use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
 fn paint(room: &Room, name: &str, rgba: [u8; 4]) {
     let path = room.dir.path().join("textures").join(format!("{name}.png"));
@@ -22,15 +21,16 @@ fn paint(room: &Room, name: &str, rgba: [u8; 4]) {
         .unwrap();
 }
 
-/// Two real group keys and two real delta-entry keys. This intentionally small
-/// layout exercises spatially distinct entries without baking a second volume.
+/// The static light's patch-layer key, the gathered id-34 volume's key and
+/// two real delta-entry keys. This intentionally small layout exercises
+/// spatially distinct entries without baking a second volume.
 fn keys(
     room: &Room,
     geometry: &GeometryResult,
     materials: Option<&BounceMaterials>,
     delta_version: u32,
 ) -> Vec<CacheKey> {
-    let dims = [SH_GROUP_DIM + 1, 1, 1];
+    let dims = [5, 1, 1];
     let layout = ProbeGridLayout {
         world_min: DVec3::ZERO,
         dims,
@@ -43,21 +43,12 @@ fn keys(
     };
     let geometry_hash = geometry_content_hash(geometry);
     let hash = bounce_material_hash(materials, geometry);
-    let reaching = [(0, room.static_light())];
-    let mut keys: Vec<_> = partition_groups(dims)
-        .iter()
-        .map(|group| {
-            group_cache_key(
-                group,
-                &reaching,
-                &layout,
-                1.0,
-                &geometry_hash,
-                hash.as_ref(),
-            )
-        })
-        .collect();
-    assert_eq!(keys.len(), 2, "test layout must cover two distinct groups");
+    let layer_keys = LayerKeys::new(geometry, materials);
+    let plan = LayerPlan::new(&[room.static_light()], &[1], &NO_EMBEDDED_EMITTERS);
+    let mut keys = vec![
+        layer_keys.key(LightDigest::of(room.static_light()), false),
+        volume_key(&layer_keys, &plan, &layout, 1.0, DEFAULT_BOUNCE_FILL),
+    ];
     let animated = room
         .pipeline
         .lights
@@ -230,20 +221,18 @@ fn every_bvh_texture_mean_rekeys_both_stages_but_unused_names_and_empty_faces_do
 }
 
 #[test]
-fn pre_colour_delta_epoch_misses_and_material_dependency_changes_group_keys() {
+fn pre_colour_delta_epoch_misses_and_material_dependency_changes_sh_keys() {
     let room = Room::new();
     let materials = room.materials(1.0);
-    // These epochs are the actual pre-colour production constants captured by
-    // the baseline; both current stages must have advanced beyond them.
-    for (current, baseline) in [
-        (SH_GROUP_STAGE_VERSION, 3),
-        (INDIRECT_DELTA_SH_STAGE_VERSION, 4),
-    ] {
+    // The pre-colour indirect delta epoch captured by the baseline; the
+    // current stage must have advanced beyond it. The SH base's stages are
+    // newer than colour and never had a colour-blind epoch.
+    const {
         assert!(
-            current > baseline,
-            "colour-aware baker must reject pre-colour epoch {baseline}"
-        );
-    }
+            INDIRECT_DELTA_SH_STAGE_VERSION > 4,
+            "colour-aware baker must reject pre-colour epoch 4"
+        )
+    };
     let current = current_keys(&room, &materials);
     let without_materials = keys(
         &room,
@@ -254,7 +243,7 @@ fn pre_colour_delta_epoch_misses_and_material_dependency_changes_group_keys() {
     every_key_changes(&current, &without_materials);
     let old_delta_epoch = keys(&room, &room.pipeline.geometry, Some(&materials), 4);
     let cache = StageCache::new(room.dir.path().join("epoch-cache")).unwrap();
-    // Group version is fixed by its production builder; delta exposes the
+    // The SH base keys fix their epochs in their builders; delta exposes the
     // stage epoch as a real input, so exercise its old on-disk entry directly.
     for key in &old_delta_epoch[2..] {
         cache.put(key, b"pre-colour epoch");

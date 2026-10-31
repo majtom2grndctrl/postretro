@@ -162,7 +162,7 @@ local socket access before diagnosing gameplay or transport behavior.
 
 Some suites are expensive and must not be run reflexively:
 
-- `postretro-level-compiler`'s cold-bake coverage is `#[ignore]`-gated, so a bare `cargo test -p postretro-level-compiler` is cheap. Select the relevant target or filter for an on-demand run, for example `cargo test -p postretro-level-compiler --test animated_weight_maps_fixtures -- --ignored`. The measured cold-bake gate set took **~5–7 min** (two runs: 315s, 401s), and it is lopsided. The three SH/lightmap determinism gates in the **bin** target (`sh_group`, `lightmap_layer`) are ~80% of it — each loops `GATE_FIXTURES` (`fixture_pipeline.rs`) baking every fixture twice, grouped vs monolithic. The `tests/` integration suite, which shells out to `prl-build` for `--no-cache` bakes, is under a minute of the total.
+- `postretro-level-compiler`'s cold-bake coverage is `#[ignore]`-gated, so a bare `cargo test -p postretro-level-compiler` is cheap. Select the relevant target or filter for an on-demand run, for example `cargo test -p postretro-level-compiler --test animated_weight_maps_fixtures -- --ignored`. The cold-bake gates in the **bin** target are the slow part, and two loop `GATE_FIXTURES` (`fixture_pipeline.rs`): the lightmap determinism gate (`lightmap_layer`), which bakes every fixture twice, and `layer_budget_sections_match_pre_change_cold_and_warm` (`lightmap_stage/tests/budget_regression.rs`), which runs a fused bake cold and warm per fixture. The `tests/` integration suite, which shells out to `prl-build` for `--no-cache` bakes, is under a minute of the total.
 - Compiling the large maps (`stress-warren*`, `campaign-test`) is slow. Routine, non-`#[ignore]` tests use only small, focused fixtures — synthetic in-memory structures or tiny purpose-built fixture maps. Heavy-map harnesses are `#[ignore]`-gated, on-demand only.
 
 A blanket `--ignored` also selects manual measurements and historical comparisons.
@@ -173,7 +173,7 @@ from its named baseline commit. Old-compiler oracle and reseeding helpers can re
 without comparing anything when their opt-in variables are absent; a green result
 alone does not prove those comparisons ran.
 
-**Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake probes twice and weight large volumes far more heavily.
+**Keep `GATE_FIXTURES` cheap, and profile before adding to it.** Bake cost tracks probe and texel counts, not `.map` file size. One large fixture can dwarf the rest of the list combined — dropping `occlusion-test` cut the gates 7× (1812s → 260s) while the animated-weight-map fixtures are sub-second each. A full-compile timing is a poor proxy for a gate's share, because the gates bake every fixture twice and weight large texel counts far more heavily.
 
 **Default verification while iterating.** Run `cargo check` plus targeted tests for the touched crate or module: `cargo test -p <crate> <name_filter>`. Narrow to one target to skip the `tests/` suite: `--lib` for a library crate, `--bin <name>` for a binary. Run full `cargo test` once, as the final coordinator gate after integration, review, and fixes.
 

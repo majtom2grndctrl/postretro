@@ -262,6 +262,9 @@ struct Run<'a> {
     pool_edge: Option<u32>,
     /// Rewrites the cached entry before the stage reads it.
     corrupt: Option<Corrupt>,
+    /// The probe-point bakes' emitter flags, keyed by animated position;
+    /// `None` flags no light.
+    probes: Option<&'a EmbeddedEmitters>,
 }
 
 impl Default for Run<'_> {
@@ -274,6 +277,7 @@ impl Default for Run<'_> {
             samples: 4,
             pool_edge: None,
             corrupt: None,
+            probes: None,
         }
     }
 }
@@ -367,6 +371,8 @@ fn compile(mut geometry: GeometryResult, lights: &[MapLight], run: Run) -> Compi
         &control,
         &animated_lights,
         &labels,
+        run.probes
+            .unwrap_or(&crate::texel_footprint::NO_EMBEDDED_EMITTERS),
     )
     .expect("a stepped bake still compiles");
     let records = logs.records();
@@ -921,4 +927,72 @@ fn an_embedded_animated_emitter_warns_once_per_compile_cold_or_warm() {
         "{:?}",
         emitter_warnings(&off)
     );
+}
+
+// The stage warns each animated light its own emitter test or the probe-point
+// bakes' test flags, once, cold or on a cache hit, naming the bakes each flag
+// reaches. Both sets are keyed by position in the animated list and warn under
+// the source label: the static light ahead of both animated lights shifts the
+// two apart. Position 0 is embedded in the wall, so both tests flag it and
+// the stage's own fraction wins; position 1 stands clear, so only the probe
+// flag, standing in for a verdict a face cut split, warns for it.
+#[test]
+fn the_stage_warns_its_own_and_the_probe_flags_once_per_light() {
+    let mut clear = animated([1.0, 3.0, 1.0], 6.0);
+    clear.light_size = DEFAULT_LIGHT_SIZE;
+    let lights = vec![placing_light(), embedded_animated(), clear];
+    let probes = EmbeddedEmitters::from_flags([(0, 0.5), (1, 0.25)]);
+    let dir = fresh_cache_dir("embedded_emitter_probes");
+    let cache = StageCache::new(&dir).expect("create probe-merge cache");
+    let warm = || {
+        compile(
+            walled_floor_geometry(),
+            &lights,
+            Run {
+                cache: Some(&cache),
+                probes: Some(&probes),
+                ..Run::default()
+            },
+        )
+    };
+
+    let cold = warm();
+    assert_eq!(
+        cold.logged(Level::Info, "[cache] animated_lm_weight_maps miss"),
+        1
+    );
+    let hit = warm();
+    assert_eq!(
+        hit.logged(Level::Info, "[cache] animated_lm_weight_maps hit"),
+        1
+    );
+    assert_eq!(hit.section, cold.section);
+    for (build, compiled) in [("cold", &cold), ("hit", &hit)] {
+        let warnings = emitter_warnings(compiled);
+        assert_eq!(warnings.len(), 2, "{build}: {warnings:?}");
+        assert!(
+            warnings[0].contains("animated light entity 11 'light':")
+                && !warnings[0].contains("50.0%")
+                && warnings[0].contains(
+                    "makes its lit weight-map texels and the SH and billboard probes it lights \
+                     trace"
+                ),
+            "{build}: the embedded light warns once, with the stage's own fraction: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[1].contains("animated light entity 12 'light': 25.0%")
+                && warnings[1].contains("makes the SH and billboard probes it lights trace")
+                && !warnings[1].contains("weight-map"),
+            "{build}: the probe-only flag warns under its source label: {}",
+            warnings[1]
+        );
+    }
+    assert_eq!(
+        emitter_warnings(&hit),
+        emitter_warnings(&cold),
+        "a hit warns as cold did"
+    );
+    drop(cache);
+    let _ = std::fs::remove_dir_all(&dir);
 }

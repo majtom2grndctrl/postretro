@@ -66,8 +66,8 @@ mod control;
 pub use control::{
     ClientControlMessage, ClosingCause, ConnectClaim, DISPLAY_NAME_MAX_BYTES, DivergenceReason,
     HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES, ParityDeclaration, PlayerClaimId,
-    ProtocolVersion, RosterEntry, ServerControlMessage, SessionId, SessionRosterMessage,
-    decode_connect_claim, encode_connect_claim,
+    ProtocolVersion, RevealedLevel, RosterEntry, ServerControlMessage, SessionId,
+    SessionRosterMessage, decode_connect_claim, encode_connect_claim,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 

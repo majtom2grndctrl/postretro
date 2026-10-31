@@ -36,6 +36,9 @@
     // Smaller values retain more L0 data; larger values permit coarser stored
     // probe bricks. Invalid values use the compiler default (1.0).
     _sh_density_fidelity(float) : "Base SH probe-density fidelity multiplier (default 1.0; smaller = finer)" : ""
+    // Weights light bounced more than once in the baked indirect lighting.
+    // Values outside 0..1, or not a number, warn and use the default.
+    _bounce_fill(float) : "Bounced fill light, 0..1 (default 1.0; 0 = single bounce, 1 = full physical fill)" : ""
     // Compiler-owned thresholds for selecting baked static lights that may cast
     // runtime shadows onto moving entities. These tune the heuristic per map;
     // individual lights do not carry an opt-in/opt-out KVP.

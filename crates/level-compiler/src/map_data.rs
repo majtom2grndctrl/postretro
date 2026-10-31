@@ -761,6 +761,11 @@ pub struct MapData {
     /// it with `--sh-density-fidelity` and the default multiplier at bake time.
     /// This is compiler-only authoring metadata and is not emitted to the PRL.
     pub sh_density_fidelity: Option<f32>,
+    /// Worldspawn `_bounce_fill` ∈ [0, 1]: the weight of the SH base's later
+    /// bounces (0 single bounce, 1 full physical fill). Resolved at parse:
+    /// absent or invalid (warned there) bakes `DEFAULT_BOUNCE_FILL`. No
+    /// compiler flag overrides it; compiler-only, never emitted to the PRL.
+    pub bounce_fill: f32,
     /// Resolved navigation-bake agent and grid parameters. Each field is taken
     /// from its `nav_*` worldspawn KVP when authored and valid, else the engine
     /// default in [`NavParams::default`]. These ride the map-data struct into

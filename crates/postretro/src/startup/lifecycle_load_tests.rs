@@ -1297,7 +1297,7 @@ fn same_frame_transport_relevel_handled_after_commit() {
         std::thread::sleep(Duration::from_millis(1));
     }
     app.level_loads.test.on_transport_poll = Some(Box::new(|app| {
-        app.follow_relevel_catalog("relevel".to_string());
+        app.follow_relevel_catalog("relevel".to_string(), 1);
     }));
     assert_eq!(frame(&mut app, &exit), Some(LoadingFrame::Ended));
     assert_eq!(app.boot_state, BootState::Settling, "the load committed");

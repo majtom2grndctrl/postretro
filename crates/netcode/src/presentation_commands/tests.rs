@@ -70,7 +70,10 @@ impl Session {
             client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
             client.set_mod_digest(Some(FINGERPRINT));
             client.set_level_parity(Some(("test-level".to_string(), FINGERPRINT)));
-            client.set_revealed_level(Some("test-level".to_string()));
+            client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+                "test-level",
+                None,
+            )));
             server.add_relay_connection(client_id, None);
             client.set_connected();
             seats

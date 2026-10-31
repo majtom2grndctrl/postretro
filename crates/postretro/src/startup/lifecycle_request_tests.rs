@@ -611,10 +611,15 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
         .replace_maps(vec![catalog_map("e1m1", "maps/e1m1.prl", "Entryway", &[])]);
 
     app.active_level_source = Some(LevelSource::Catalog("e1m1".to_string()));
-    app.follow_relevel_catalog("e1m1".to_string());
+    app.follow_relevel_catalog("e1m1".to_string(), 1);
     assert!(
         app.level_requests.is_empty(),
         "a relevel naming the active catalog map must not restart it"
+    );
+    app.follow_relevel_catalog("e1m1".to_string(), 1);
+    assert!(
+        app.level_requests.is_empty(),
+        "a duplicate of the followed life must not restart the active map"
     );
 
     app.active_level_source = None;
@@ -629,15 +634,17 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
             loading_tree: Vec::new(),
         },
     });
-    app.follow_relevel_catalog("e1m1".to_string());
+    // Even a new life: the in-flight load installs a fresh one.
+    app.follow_relevel_catalog("e1m1".to_string(), 2);
     assert!(
         app.level_requests.is_empty(),
         "a relevel naming the in-flight catalog map must not restart it"
     );
 
     app.level_load = None;
-    app.follow_relevel_catalog("e1m1".to_string());
-    app.follow_relevel_catalog("e1m1".to_string());
+    app.follow_relevel_catalog("e1m1".to_string(), 3);
+    app.follow_relevel_catalog("e1m1".to_string(), 3);
+    app.follow_relevel_catalog("e1m1".to_string(), 4);
     assert_eq!(
         app.level_requests,
         VecDeque::from([LevelRequest::Load(LevelSource::Catalog("e1m1".to_string()))]),
@@ -649,7 +656,7 @@ fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
 fn unknown_relevel_catalog_warns_and_does_not_queue_a_load() {
     let mut app = test_app();
     let logs = crate::scripting::reactions::log_capture::capture(|| {
-        app.follow_relevel_catalog("missing-map".to_string());
+        app.follow_relevel_catalog("missing-map".to_string(), 1);
     });
 
     assert!(

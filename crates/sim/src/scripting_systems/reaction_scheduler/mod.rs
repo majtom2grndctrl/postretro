@@ -591,6 +591,13 @@ impl ReactionScheduler {
     pub fn pending_len(&self) -> usize {
         self.state.borrow().instances.len()
     }
+
+    /// The host tick a client fixed as this level's join (test observability);
+    /// `None` until the level's first host reading, and after a clock reset.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn join_host_tick(&self) -> Option<u64> {
+        self.state.borrow().join_host_tick
+    }
 }
 
 /// Clears the scheduler's `current_origin` when one residual's drain

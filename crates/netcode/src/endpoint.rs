@@ -666,13 +666,16 @@ impl NetEndpoint {
         }
     }
 
-    /// Publish the level identity this peer has revealed, or `None` to retract
+    /// Publish the level install this peer has revealed, or `None` to retract
     /// it at unload and suspend. A host records its own reveal; a client
     /// declares its reveal to the host. A slot participates only once both
-    /// peers have revealed the host's installed level.
-    pub fn set_revealed_level(&mut self, level: Option<String>) {
+    /// peers have revealed the host's installed level. A host's own reveal is
+    /// always of its current install, so it keeps only the identity.
+    pub fn set_revealed_level(&mut self, level: Option<postretro_net::wire::RevealedLevel>) {
         match self {
-            Self::Host { server, .. } => server.set_revealed_level(level),
+            Self::Host { server, .. } => {
+                server.set_revealed_level(level.map(|revealed| revealed.identity));
+            }
             Self::Client { client, .. } => client.set_revealed_level(level),
         }
     }

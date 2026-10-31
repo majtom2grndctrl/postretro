@@ -48,6 +48,9 @@ mod lifecycle_reaction_rebuild_tests;
 #[cfg(test)]
 #[path = "lifecycle_request_tests.rs"]
 mod lifecycle_request_tests;
+#[cfg(test)]
+#[path = "lifecycle_relevel_tests.rs"]
+mod lifecycle_relevel_tests;
 #[path = "lifecycle_spawn_residency.rs"]
 mod lifecycle_spawn_residency;
 #[path = "lifecycle_spawners.rs"]

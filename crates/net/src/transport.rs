@@ -17,7 +17,7 @@ use renet_netcode::{
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
     self, ClientControlMessage, ConnectClaim, JoinSeedValue, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, ParticipationFrame, ServerControlFrame, ServerControlMessage,
+    ParityDeclaration, ParticipationFrame, RevealedLevel, ServerControlFrame, ServerControlMessage,
     ServerPresentationMessage,
 };
 
@@ -138,11 +138,13 @@ pub struct NetServer {
     transport: NetcodeServerTransport,
     slots: SlotTable,
     parity_declarations: HashMap<ClientId, ParityDeclaration>,
-    /// The level identity each slot last declared revealed. Absent means not
-    /// revealed. Only the client's own declaration or `close_slot` changes it:
-    /// parity changes and host level changes leave it in place, so a demoted
-    /// slot re-promotes without a fresh reveal once the other terms hold.
-    revealed_declarations: HashMap<ClientId, String>,
+    /// The level install (identity and host level life) each slot last
+    /// declared revealed. Absent means not revealed. Only the client's own
+    /// declaration or `close_slot` changes it: parity changes and host level
+    /// changes leave it in place, so a demoted slot re-promotes without a
+    /// fresh reveal once the other terms hold, unless a catalog reinstall
+    /// moved the host's life past it.
+    revealed_declarations: HashMap<ClientId, RevealedLevel>,
     connect_claims: HashMap<ClientId, ConnectClaim>,
     pending_lifecycle: Vec<SlotEvent>,
     /// Live slots that closed since the previous poll. Reported to the engine
@@ -161,7 +163,12 @@ pub struct NetServer {
     /// Cleared by the engine at unload and suspend, so a reinstall of the same
     /// level holds every slot until the host's new reveal.
     revealed_level: Option<String>,
-    relevel_catalog_id: Option<String>,
+    /// The installed catalog level clients should follow, with the level life
+    /// its install allocated. `None` off a catalog level.
+    relevel: Option<(String, u64)>,
+    /// Monotonic per host endpoint: every catalog install takes the next one,
+    /// so a same-map restart names a life its clients have not followed.
+    next_level_life: u64,
     // Retained only for the Phase-2 compatibility setter below.
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
     /// Relay between the public socket and the transport's internal one, set
@@ -207,7 +214,8 @@ impl NetServer {
             mod_digest: None,
             level_parity: None,
             revealed_level: None,
-            relevel_catalog_id: None,
+            relevel: None,
+            next_level_life: 1,
             legacy_kinematic_static_fingerprint: kinematic_static_fingerprint,
             #[cfg(feature = "dev-tools")]
             lag_proxy: None,
@@ -252,17 +260,26 @@ impl NetServer {
         self.revealed_level.as_deref()
     }
 
-    /// Install the catalog id clients should follow. This is intentionally
-    /// separate from level parity: the net crate cannot distinguish a catalog
-    /// id from a raw-path fallback inside that opaque identity string.
+    /// Install the catalog id clients should follow, or `None` at unload and
+    /// suspend. This is intentionally separate from level parity: the net
+    /// crate cannot distinguish a catalog id from a raw-path fallback inside
+    /// that opaque identity string. Each install allocates a new level life,
+    /// a reinstall of the same id included, so a client reinstalls on a host
+    /// restart rather than mistaking it for a duplicate. The life is a
+    /// participation input, so either edge re-evaluates every slot.
     pub fn set_relevel_catalog_id(&mut self, catalog_id: Option<String>) {
-        self.relevel_catalog_id = catalog_id;
-        let Some(catalog_id) = self.relevel_catalog_id.clone() else {
-            return;
-        };
-        for client_id in self.relevel_recipients() {
-            self.send_relevel(client_id, &catalog_id);
+        match catalog_id {
+            None => self.relevel = None,
+            Some(catalog_id) => {
+                let level_life = self.next_level_life;
+                self.next_level_life += 1;
+                self.relevel = Some((catalog_id.clone(), level_life));
+                for client_id in self.relevel_recipients() {
+                    self.send_relevel(client_id, &catalog_id, level_life);
+                }
+            }
         }
+        let _ = self.reevaluate_parity(None);
     }
 
     /// Phase-2 compatibility shim. Its old close-on-change behavior is preserved;
@@ -436,8 +453,8 @@ impl NetServer {
                         let _ = self.slots.admit(client_id);
                         outcomes.push(HandshakeOutcome::Admitted { client_id });
                         declaration_moved = self.parity_declarations.contains_key(&client_id);
-                        if let Some(catalog_id) = self.relevel_catalog_id.clone() {
-                            self.send_relevel(client_id, &catalog_id);
+                        if let Some((catalog_id, level_life)) = self.relevel.clone() {
+                            self.send_relevel(client_id, &catalog_id, level_life);
                         }
                         if self.mod_digest.is_none() {
                             break;
@@ -539,10 +556,13 @@ impl NetServer {
             .collect()
     }
 
-    fn send_relevel(&mut self, client_id: ClientId, catalog_id: &str) {
+    fn send_relevel(&mut self, client_id: ClientId, catalog_id: &str, level_life: u64) {
         self.send_control(
             client_id,
-            wire::encode(&ServerControlMessage::Relevel(catalog_id.to_owned())),
+            wire::encode(&ServerControlMessage::Relevel {
+                catalog_id: catalog_id.to_owned(),
+                level_life,
+            }),
         );
     }
 
@@ -562,9 +582,8 @@ impl NetServer {
                 self.level_parity.as_ref(),
                 self.parity_declarations.get(&client_id),
                 self.revealed_level.as_deref(),
-                self.revealed_declarations
-                    .get(&client_id)
-                    .map(String::as_str),
+                self.relevel.as_ref().map(|(_, level_life)| *level_life),
+                self.revealed_declarations.get(&client_id),
             );
             match cause {
                 None => {
@@ -898,12 +917,18 @@ impl NetServer {
 /// Content parity is checked first, then the revealed term, so both revealed
 /// causes rank below every content cause. Check order is the published
 /// holding-diagnostic precedence.
+///
+/// The revealed term names an install, not only a map: on a catalog level
+/// (`installed_life` is `Some`) the client must have revealed that life. A
+/// same-map restart keeps identity and digest, so without the life a client's
+/// reveal of the previous install would promote it into the new one.
 fn participation_cause(
     installed_mod_digest: Option<[u8; 32]>,
     installed_level: Option<&(String, [u8; 32])>,
     declaration: Option<&ParityDeclaration>,
     host_revealed: Option<&str>,
-    client_revealed: Option<&str>,
+    installed_life: Option<u64>,
+    client_revealed: Option<&RevealedLevel>,
 ) -> Option<HoldingCause> {
     if let Some(cause) = parity_cause(installed_mod_digest, installed_level, declaration) {
         return Some(cause);
@@ -917,7 +942,11 @@ fn participation_cause(
             identity: identity.clone(),
         });
     }
-    if client_revealed != Some(identity.as_str()) {
+    let client_revealed_install = client_revealed.is_some_and(|revealed| {
+        revealed.identity == *identity
+            && installed_life.is_none_or(|life| revealed.level_life == Some(life))
+    });
+    if !client_revealed_install {
         return Some(HoldingCause::ClientNotRevealed {
             identity: identity.clone(),
         });
@@ -1005,7 +1034,7 @@ pub struct NetClient {
     mod_identity: Option<(String, String)>,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
-    revealed_level: Option<String>,
+    revealed_level: Option<RevealedLevel>,
     active_participation_epoch: Option<u64>,
     retired_participation_epoch: Option<u64>,
     legacy_kinematic_static_fingerprint: Option<[u8; 32]>,
@@ -1095,14 +1124,19 @@ impl NetClient {
         }
     }
 
-    /// Declare the level identity this client has revealed (finished settling),
+    /// Declare the level install this client has revealed (finished settling),
     /// or `None` at unload and suspend. Independent of parity: a mod-digest or
     /// level change re-declares parity but leaves this declaration as set.
-    pub fn set_revealed_level(&mut self, level: Option<String>) {
+    pub fn set_revealed_level(&mut self, level: Option<RevealedLevel>) {
         if self.revealed_level != level {
             self.revealed_level = level;
             self.revealed_sent = false;
         }
+    }
+
+    /// The level install this client currently declares revealed, if any.
+    pub fn revealed_level(&self) -> Option<&RevealedLevel> {
+        self.revealed_level.as_ref()
     }
 
     /// Replace the values to carry with the next content-parity declaration.
@@ -1815,7 +1849,7 @@ mod tests {
         client.set_mod_identity("postretro.test".to_string(), "1".to_string());
         client.set_mod_digest(Some([7; 32]));
         client.set_level_parity(Some(("test-level".to_string(), [9; 32])));
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         client.update_connections(Duration::from_millis(16));
         for packet in client.packets_to_send() {
             server.process_packet_from(&packet, client_id);
@@ -2542,14 +2576,14 @@ mod tests {
 
     // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
     // peer predates the ghost-link record. A wire-34 peer lacks the switch
-    // declaration kind, and a wire-35 peer the snapshot's host level tick.
-    // The admission gate refuses each declaration with a typed cause and
-    // admits a PRLC / 36 one.
+    // declaration kind, a wire-35 peer the snapshot's host level tick, and a
+    // wire-36 peer the host level life on `Relevel` and `Revealed`. The admission gate refuses
+    // each declaration with a typed cause and admits a PRLC / 37 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_to_35_and_admits_prlc_36() {
+    fn admission_refuses_prlb_or_wire_32_to_36_and_admits_prlc_37() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C43,
-            wire_version: 36,
+            wire_version: 37,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -2584,6 +2618,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 35,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 36,
                     ..current
                 },
                 false,
@@ -2984,7 +3025,10 @@ mod tests {
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(
             client.drain_control(),
-            vec![ServerControlMessage::Relevel("e1m1".to_string())],
+            vec![ServerControlMessage::Relevel {
+                catalog_id: "e1m1".to_string(),
+                level_life: 1,
+            }],
             "a client admitted after the host installed a catalog level must be told the current map"
         );
     }
@@ -3008,8 +3052,80 @@ mod tests {
         relay_server_to_client(&mut server, &mut client);
         assert_eq!(
             client.drain_control(),
-            vec![ServerControlMessage::Relevel("e1m2".to_string())],
+            vec![ServerControlMessage::Relevel {
+                catalog_id: "e1m2".to_string(),
+                level_life: 1,
+            }],
             "a catalog install must announce the next map to admitted clients"
+        );
+    }
+
+    // A host restart reinstalls the same catalog id. It must reach the client
+    // as a new level life, or the client cannot tell it from a duplicate and
+    // keeps the previous life's level state. Unload names no life, and a late
+    // joiner is told the life currently installed.
+    #[test]
+    fn same_map_reinstall_announces_a_new_level_life() {
+        let (mut server, mut client) = relay_pair();
+        server.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        client.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        relay_client_to_server(&mut client, &mut server);
+        assert!(matches!(
+            server.poll_handshakes().handshakes.as_slice(),
+            [HandshakeOutcome::Admitted {
+                client_id: RELAY_CLIENT_ID
+            }]
+        ));
+
+        server.set_relevel_catalog_id(Some("e1m1".to_string()));
+        server.set_relevel_catalog_id(None);
+        server.set_relevel_catalog_id(Some("e1m1".to_string()));
+        relay_server_to_client(&mut server, &mut client);
+        assert_eq!(
+            client.drain_control(),
+            vec![
+                ServerControlMessage::Relevel {
+                    catalog_id: "e1m1".to_string(),
+                    level_life: 1,
+                },
+                ServerControlMessage::Relevel {
+                    catalog_id: "e1m1".to_string(),
+                    level_life: 2,
+                },
+            ],
+            "the restart names the same map under a new life; unload sends nothing"
+        );
+
+        const LATE_CLIENT_ID: ClientId = RELAY_CLIENT_ID + 1;
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind late client socket");
+        let server_addr = socket.local_addr().expect("late client address");
+        let mut late = NetClient::new(
+            socket,
+            server_addr,
+            LATE_CLIENT_ID,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .expect("construct late client");
+        server.add_relay_connection(LATE_CLIENT_ID, None);
+        late.set_connected();
+        late.set_mod_identity("postretro.test".to_string(), "1".to_string());
+        late.update_connections(Duration::from_millis(16));
+        for packet in late.packets_to_send() {
+            server.process_packet_from(&packet, LATE_CLIENT_ID);
+        }
+        let _ = server.poll_handshakes();
+        for packet in server.packets_to_send(LATE_CLIENT_ID) {
+            late.process_packet(&packet);
+        }
+        assert_eq!(
+            late.drain_control(),
+            vec![ServerControlMessage::Relevel {
+                catalog_id: "e1m1".to_string(),
+                level_life: 2,
+            }],
+            "a joiner admitted after the restart is told its life"
         );
     }
 
@@ -3194,12 +3310,20 @@ mod tests {
                 Some(&installed),
                 Some(&divergent),
                 None,
+                None,
                 None
             ),
             Some(HoldingCause::LevelDigest { .. })
         ));
         assert_eq!(
-            participation_cause(Some([7; 32]), Some(&installed), Some(&matching), None, None),
+            participation_cause(
+                Some([7; 32]),
+                Some(&installed),
+                Some(&matching),
+                None,
+                None,
+                None
+            ),
             Some(host_not_revealed()),
             "the host term is checked before the client term"
         );
@@ -3209,7 +3333,8 @@ mod tests {
                 Some(&installed),
                 Some(&matching),
                 Some("test-level"),
-                Some("other-level"),
+                None,
+                Some(&RevealedLevel::new("other-level", None)),
             ),
             Some(client_not_revealed())
         );
@@ -3219,10 +3344,45 @@ mod tests {
                 Some(&installed),
                 Some(&matching),
                 Some("test-level"),
-                Some("test-level"),
+                None,
+                Some(&RevealedLevel::new("test-level", None)),
             ),
             None
         );
+    }
+
+    // The revealed term names an install. On a catalog level only a reveal of
+    // the installed life counts; an uncatalogued level has no life to compare.
+    #[test]
+    fn participation_cause_requires_the_installed_life_on_a_catalog_level() {
+        let installed = ("test-level".to_string(), [9; 32]);
+        let matching = ParityDeclaration {
+            mod_digest: [7; 32],
+            level: Some(installed.clone()),
+        };
+        let cause = |installed_life, revealed: Option<u64>| {
+            participation_cause(
+                Some([7; 32]),
+                Some(&installed),
+                Some(&matching),
+                Some("test-level"),
+                installed_life,
+                Some(&RevealedLevel::new("test-level", revealed)),
+            )
+        };
+        assert_eq!(cause(Some(2), Some(2)), None);
+        assert_eq!(
+            cause(Some(2), Some(1)),
+            Some(client_not_revealed()),
+            "a reveal of the previous life never promotes into a restart"
+        );
+        assert_eq!(
+            cause(Some(2), None),
+            Some(client_not_revealed()),
+            "a reveal that names no life waits for the client to adopt one"
+        );
+        assert_eq!(cause(None, Some(1)), None, "uncatalogued: identity only");
+        assert_eq!(cause(None, None), None);
     }
 
     // parity publishes at install, so a content-divergent client learns
@@ -3285,7 +3445,7 @@ mod tests {
         );
         assert!(!client.is_participating(), "no epoch marker while held");
 
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         let promoted = server.poll_handshakes();
         assert_eq!(
@@ -3327,7 +3487,7 @@ mod tests {
     #[test]
     fn host_reveal_promotes_revealed_matched_client() {
         let (mut server, mut client) = settling_relay_pair();
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         let held = server.poll_handshakes();
         assert!(matches!(
@@ -3347,6 +3507,82 @@ mod tests {
         );
     }
 
+    // Regression: a same-map restart keeps identity and digest, so the
+    // client's reveal of the previous install promoted it into the new one
+    // before the client had reinstalled.
+    #[test]
+    fn same_map_restart_holds_a_client_until_it_reveals_the_new_life() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        server.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", Some(1))));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            1
+        );
+
+        // Host restart: unload, reinstall the same map, settle and reveal,
+        // all before the client's retraction arrives.
+        server.set_level_parity(None);
+        server.set_relevel_catalog_id(None);
+        server.set_revealed_level(None);
+        server.set_level_parity(Some(("test-level".to_string(), [9; 32])));
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        server.set_revealed_level(Some("test-level".to_string()));
+        let restart = server.poll_handshakes();
+        assert_eq!(
+            participating_entries(&restart.lifecycle),
+            0,
+            "the previous life's reveal never promotes: {:?}",
+            restart.lifecycle
+        );
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+        assert_eq!(
+            server.holding_diagnostics.get(&RELAY_CLIENT_ID),
+            Some(&client_not_revealed())
+        );
+
+        // The client retracts at unload, reinstalls, and reveals life 2.
+        client.set_revealed_level(None);
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            0
+        );
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", Some(2))));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            server.poll_handshakes().lifecycle,
+            vec![SlotEvent::Participating {
+                client_id: RELAY_CLIENT_ID
+            }]
+        );
+    }
+
+    // A new level life is a participation input on its own: a participating
+    // slot whose reveal names the previous life leaves participation even if
+    // no other term moved (no unload between the two installs).
+    #[test]
+    fn a_new_level_life_demotes_a_slot_revealed_on_the_previous_one() {
+        let (mut server, mut client) = settling_relay_pair();
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        server.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", Some(1))));
+        relay_client_to_server(&mut client, &mut server);
+        assert_eq!(
+            participating_entries(&server.poll_handshakes().lifecycle),
+            1
+        );
+
+        server.set_relevel_catalog_id(Some("test-level".to_string()));
+        assert!(!server.is_participating(RELAY_CLIENT_ID));
+        assert_eq!(
+            server.holding_diagnostics.get(&RELAY_CLIENT_ID),
+            Some(&client_not_revealed())
+        );
+    }
+
     // a reveal declared while parity mismatched is retained and promotes
     // the moment parity matches, with no second declaration.
     #[test]
@@ -3354,7 +3590,7 @@ mod tests {
         let (mut server, mut client) = settling_relay_pair();
         server.set_revealed_level(Some("test-level".to_string()));
         client.set_level_parity(Some(("test-level".to_string(), [8; 32])));
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         assert!(matches!(
             server.poll_handshakes().handshakes.as_slice(),
@@ -3422,9 +3658,10 @@ mod tests {
         for _ in 0..4 {
             client.client.send_message(
                 Channel::Control,
-                wire::encode(&ClientControlMessage::Revealed(Some(
-                    "test-level".to_string(),
-                ))),
+                wire::encode(&ClientControlMessage::Revealed(Some(RevealedLevel::new(
+                    "test-level",
+                    None,
+                )))),
             );
         }
         relay_client_to_server(&mut client, &mut server);
@@ -3437,7 +3674,7 @@ mod tests {
 
         let (mut server, mut client) = settling_relay_pair();
         server.set_revealed_level(Some("test-level".to_string()));
-        client.set_revealed_level(Some("other-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("other-level", None)));
         relay_client_to_server(&mut client, &mut server);
         let poll = server.poll_handshakes();
         assert_eq!(participating_entries(&poll.lifecycle), 0);
@@ -3475,7 +3712,7 @@ mod tests {
         );
         assert!(!server.is_participating(RELAY_CLIENT_ID));
 
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         assert_eq!(
             server.poll_handshakes().lifecycle,
@@ -3491,7 +3728,7 @@ mod tests {
     #[test]
     fn host_unrevealed_holds_revealed_client() {
         let (mut server, mut client) = settling_relay_pair();
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         for _ in 0..(12 * 60) {
             relay_client_to_server(&mut client, &mut server);
             assert_eq!(
@@ -3586,11 +3823,11 @@ mod tests {
                 server.set_revealed_level(Some("test-level".to_string()));
                 lifecycle.extend(server.poll_handshakes().lifecycle);
                 assert_eq!(participating_entries(&lifecycle), 0);
-                client.set_revealed_level(Some("test-level".to_string()));
+                client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
                 relay_client_to_server(&mut client, &mut server);
                 lifecycle.extend(server.poll_handshakes().lifecycle);
             } else {
-                client.set_revealed_level(Some("test-level".to_string()));
+                client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
                 relay_client_to_server(&mut client, &mut server);
                 lifecycle.extend(server.poll_handshakes().lifecycle);
                 assert_eq!(participating_entries(&lifecycle), 0);
@@ -3633,7 +3870,7 @@ mod tests {
     #[test]
     fn disconnect_clears_revealed_record() {
         let (mut server, mut client) = settling_relay_pair();
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         let _ = server.poll_handshakes();
         assert!(server.revealed_declarations.contains_key(&RELAY_CLIENT_ID));
@@ -3679,7 +3916,7 @@ mod tests {
         assert_eq!(participating_entries(&held.lifecycle), 0);
         assert_eq!(server.slot_state(REJOIN_ID), Some(SlotState::Admitted));
 
-        rejoin.set_revealed_level(Some("test-level".to_string()));
+        rejoin.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         flush(&mut rejoin, &mut server);
         assert_eq!(
             server.poll_handshakes().lifecycle,
@@ -3723,7 +3960,7 @@ mod tests {
         assert!(!client.is_participating(), "the hold retires the epoch");
 
         // The host half demotes the same way.
-        client.set_revealed_level(Some("test-level".to_string()));
+        client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
         relay_client_to_server(&mut client, &mut server);
         assert_eq!(
             participating_entries(&server.poll_handshakes().lifecycle),
@@ -3830,9 +4067,10 @@ mod tests {
                 model.client_revealed = value;
                 match value {
                     Some(identity) => {
-                        server
-                            .revealed_declarations
-                            .insert(RELAY_CLIENT_ID, level_identity(identity));
+                        server.revealed_declarations.insert(
+                            RELAY_CLIENT_ID,
+                            RevealedLevel::new(level_identity(identity), None),
+                        );
                     }
                     None => {
                         server.revealed_declarations.remove(&RELAY_CLIENT_ID);

@@ -54,9 +54,9 @@ impl BuildMode {
     fn guidance(self) -> &'static str {
         match self {
             Self::IncrementalBuild => {
-                "Warm cache + approximate grouped indirect SH (fast, not shippable)."
+                "Warm cache: reuses unchanged bakes, same lighting (fast, not shippable)."
             }
-            Self::Production => "Exact whole-volume SH + monolithic lightmap (slow, shippable).",
+            Self::Production => "Every stage baked, no cache read or written (slow, shippable).",
         }
     }
 }
@@ -891,7 +891,7 @@ mod tests {
         assert!(text.contains("Default 0.025 m/texel; smaller = finer / slower."));
         assert!(!text.contains("Default 1 m; smaller = denser SH / slower."));
         assert!(!text.contains("softer penumbra"));
-        assert!(!text.contains("Warm cache + approximate"));
+        assert!(!text.contains("Warm cache: reuses"));
         assert!(!text.contains("SDF voxel size"));
     }
 

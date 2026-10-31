@@ -22,9 +22,10 @@ fn wireframe_draws_leaf(
 }
 
 impl Renderer {
-    /// Depth pre-pass (writes the scene depth buffer for the forward Equal test)
-    /// followed by the half-res SDF shadow dispatch. Both run before `scene_color`
-    /// is bound and before the forward pass that consumes them.
+    /// Depth pre-pass (writes the scene depth buffer, static world then movers,
+    /// for the forward and mover `Equal` tests) followed by the half-res SDF
+    /// shadow dispatch. Both run before `scene_color` is bound and before the
+    /// forward pass that consumes them.
     pub(super) fn record_depth_and_sdf_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -70,6 +71,16 @@ impl Renderer {
                 if let Some(cull) = &level.compute_cull {
                     cull.draw_indirect(&mut depth_pass, None); // None = no texture bind (group 0 only)
                 }
+            }
+
+            // Movers after the static world, from the same list the Kinematic
+            // Brush Pass shades `Equal` against: world hidden behind a mover
+            // then fails the forward pass's `Equal`, and each mover pixel
+            // shades once.
+            if full.kinematic_brush.has_draws(&level.kinematic) {
+                depth_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+                full.kinematic_brush
+                    .record_depth(&mut depth_pass, &level.kinematic, MoverView::Main);
             }
         }
 

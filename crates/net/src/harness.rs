@@ -531,7 +531,7 @@ pub fn reveal_both(
     identity: &str,
 ) {
     server.set_revealed_level(Some(identity.to_owned()));
-    client.set_revealed_level(Some(identity.to_owned()));
+    client.set_revealed_level(Some(crate::wire::RevealedLevel::new(identity, None)));
 }
 
 #[cfg(test)]

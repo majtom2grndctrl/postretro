@@ -18,8 +18,10 @@ use crate::map_data::{LightType, MapLight, ShadowType};
 /// go unseen; [`EMBEDDED_EMITTER_MIN_DIRECTIONS`] sets the share that flags.
 ///
 /// Changing this, or the segment's `RAY_EPSILON` lead, changes the verdict,
-/// which no cache key holds: bump both `LAYER_FORMAT_VERSION` and the
-/// weight-map `STAGE_VERSION`.
+/// which the lightmap layer and weight-map keys do not hold: bump
+/// `LAYER_FORMAT_VERSION` and the weight-map `STAGE_VERSION`. The cached
+/// probe-point stages (direct SH, both billboard scatters) key the flagged
+/// set ([`EmbeddedEmitters::hash_keys`]), so they re-key on their own.
 pub(crate) const EMBEDDED_EMITTER_DIRECTIONS: u32 = 512;
 
 /// Embedded directions a light needs before it is flagged: 8 of
@@ -29,10 +31,12 @@ pub(crate) const EMBEDDED_EMITTER_DIRECTIONS: u32 = 512;
 /// the probe early-out, which stores open texels about half a sample bright
 /// at most, under the bake's own sampling step. The share is fixed rather
 /// than derived from the bake's sample count, so the flag stays a function of
-/// the light and its keyed geometry alone and no cache key holds it.
+/// the light and its keyed geometry alone, and the lightmap layer and
+/// weight-map keys need not hold it.
 ///
-/// Changing this changes which lights are flagged, which no cache key holds:
-/// bump both `LAYER_FORMAT_VERSION` and the weight-map `STAGE_VERSION`.
+/// Changing this changes which lights are flagged, which those keys do not
+/// hold: bump `LAYER_FORMAT_VERSION` and the weight-map `STAGE_VERSION`. The
+/// cached probe-point stages key the flagged set and re-key on their own.
 pub(crate) const EMBEDDED_EMITTER_MIN_DIRECTIONS: u32 = 8;
 
 /// [`EMBEDDED_EMITTER_MIN_DIRECTIONS`] as a fraction: a light is flagged
@@ -54,7 +58,9 @@ pub(crate) const EMBEDDED_EMITTER_MIN_FRACTION: f32 =
 /// seen from the texel, so a cap facing the texel along the light direction
 /// escapes them all and the probe early-out would store 1.0. A light this
 /// returns at least [`EMBEDDED_EMITTER_MIN_FRACTION`] for is flagged: its
-/// texels skip the all-clear early-out ([`super::TexelSampler::new`]).
+/// texels skip the all-clear early-out ([`super::TexelSampler::new`]), and
+/// the probe-point bakes trace its full set at every probe
+/// ([`super::ProbeEarlyOut::for_probe_point`]).
 ///
 /// Each segment starts `RAY_EPSILON` behind the centre, so a face through
 /// the centre itself, where an author snapped the light onto a wall, is
@@ -65,6 +71,7 @@ pub(crate) const EMBEDDED_EMITTER_MIN_FRACTION: f32 =
 /// buried-light test keeps (`buried_lights.rs`), is still flagged, but counts
 /// only the directions whose lead starts in front of the face, so its
 /// fraction reads low.
+#[cfg(test)]
 pub(crate) fn embedded_emitter_fraction(
     light: &MapLight,
     bvh: &Bvh<f32, 3>,
@@ -74,6 +81,17 @@ pub(crate) fn embedded_emitter_fraction(
     if !has_emitter_sphere(light) {
         return 0.0;
     }
+    sphere_fraction(light, bvh, primitives, geometry)
+}
+
+/// [`embedded_emitter_fraction`] for a light already known to have a
+/// sphere to trace.
+fn sphere_fraction(
+    light: &MapLight,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+) -> f32 {
     let embedded = (0..EMBEDDED_EMITTER_DIRECTIONS)
         .filter(|&index| direction_embedded(light, index, bvh, primitives, geometry))
         .count();
@@ -130,11 +148,17 @@ fn direction_embedded(
 
 /// Whether the emitter test has a sphere to trace: a point or spot light of
 /// finite, non-zero size that bakes texels.
-fn has_emitter_sphere(light: &MapLight) -> bool {
+pub(crate) fn has_emitter_sphere(light: &MapLight) -> bool {
+    has_bounce_emitter_sphere(light) && light.shadow_type != ShadowType::Sdf
+}
+
+/// Whether the bounce family's emitter test has a sphere to trace: a point
+/// or spot light of finite, non-zero size, `sdf`-shadowed included, since
+/// every static light bounces.
+fn has_bounce_emitter_sphere(light: &MapLight) -> bool {
     matches!(light.light_type, LightType::Point | LightType::Spot)
         && light.light_size > 0.0
         && light.light_size.is_finite()
-        && light.shadow_type != ShadowType::Sdf
 }
 
 /// The lights of one bake whose emitter sphere reaches into geometry by at
@@ -164,9 +188,47 @@ impl EmbeddedEmitters {
         geometry: &GeometryResult,
         control: &BakeControl,
     ) -> Self {
+        Self::classify_where(
+            lights,
+            has_emitter_sphere,
+            bvh,
+            primitives,
+            geometry,
+            control,
+        )
+    }
+
+    /// [`Self::classify`] for the bounce family (the surface radiance
+    /// cache's patch direct and its parity reference): every point or spot
+    /// light with an emitter sphere is tested, `sdf`-shadowed included.
+    pub(crate) fn classify_bounce<'l>(
+        lights: impl IntoIterator<Item = (usize, &'l MapLight)>,
+        bvh: &Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        control: &BakeControl,
+    ) -> Self {
+        Self::classify_where(
+            lights,
+            has_bounce_emitter_sphere,
+            bvh,
+            primitives,
+            geometry,
+            control,
+        )
+    }
+
+    fn classify_where<'l>(
+        lights: impl IntoIterator<Item = (usize, &'l MapLight)>,
+        has_sphere: fn(&MapLight) -> bool,
+        bvh: &Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        geometry: &GeometryResult,
+        control: &BakeControl,
+    ) -> Self {
         let lights: Vec<(usize, &MapLight)> = lights
             .into_iter()
-            .filter(|&(_, light)| has_emitter_sphere(light))
+            .filter(|&(_, light)| has_sphere(light))
             .collect();
         // Strictly: a duplicate key would leave `fraction`'s binary search
         // free to find either entry.
@@ -176,7 +238,7 @@ impl EmbeddedEmitters {
             .par_iter()
             .map(|&(_, light)| {
                 let _permit = control.governor().enter();
-                embedded_emitter_fraction(light, bvh, primitives, geometry)
+                sphere_fraction(light, bvh, primitives, geometry)
             })
             .collect();
         Self {
@@ -193,6 +255,31 @@ impl EmbeddedEmitters {
         flags(self.fraction(key))
     }
 
+    /// The flags of the keys `keep` admits, each with its fraction, in key
+    /// order: a narrower family's set read from a wider family's, so a light
+    /// both families test is traced once
+    /// ([`crate::direct_sh_bake::probe_point_emitters`]).
+    pub(crate) fn filtered(&self, keep: impl Fn(usize) -> bool) -> Self {
+        Self {
+            embedded: self
+                .embedded
+                .iter()
+                .copied()
+                .filter(|&(key, _)| keep(key))
+                .collect(),
+        }
+    }
+
+    /// Fold the flagged keys, ascending, into a stage cache key: for a stage
+    /// whose flags are tested only with the penumbra floor on, so the keyed
+    /// lights and geometry alone do not fix them.
+    pub(crate) fn hash_keys(&self, hasher: &mut blake3::Hasher) {
+        hasher.update(&(self.embedded.len() as u64).to_le_bytes());
+        for &(key, _) in &self.embedded {
+            hasher.update(&(key as u64).to_le_bytes());
+        }
+    }
+
     /// The light's embedded fraction; zero for an unflagged or unknown key,
     /// including a light embedded by less than the threshold.
     pub(crate) fn fraction(&self, key: usize) -> f32 {
@@ -201,30 +288,130 @@ impl EmbeddedEmitters {
             .map_or(0.0, |at| self.embedded[at].1)
     }
 
-    /// Warn once per flagged light, in key order, naming it by `label`
-    /// (`light_source_labels`, which give entity index, classname and
-    /// authored origin) and `kind`, as the texel-step warnings do. The stage
-    /// that owns the light calls this on its caller thread every compile,
-    /// cold or warm: the test runs whether or not a cache serves the bake,
+    /// The same flags under new keys: `key` maps each old key to its new
+    /// one, e.g. a position in a stage's light list to the light's source
+    /// index. Distinct old keys must map to distinct new ones.
+    pub(crate) fn rekeyed(&self, key: impl Fn(usize) -> usize) -> Self {
+        let mut embedded: Vec<(usize, f32)> = self
+            .embedded
+            .iter()
+            .map(|&(old, fraction)| (key(old), fraction))
+            .collect();
+        embedded.sort_by_key(|&(key, _)| key);
+        debug_assert!(embedded.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        Self { embedded }
+    }
+
+    /// A set of the given `(key, fraction)` flags, for tests that need a
+    /// verdict no fixture geometry produces.
+    #[cfg(test)]
+    pub(crate) fn from_flags(flags: impl IntoIterator<Item = (usize, f32)>) -> Self {
+        let mut embedded: Vec<(usize, f32)> = flags.into_iter().collect();
+        embedded.sort_by_key(|&(key, _)| key);
+        Self { embedded }
+    }
+
+    /// Warn once per light either set flags, in key order, naming it by
+    /// `label` (`light_source_labels`, which give entity index, classname and
+    /// authored origin) and `kind`, as the texel-step warnings do. `texels` is
+    /// a texel stage's own test, on the geometry it bakes (cut faces
+    /// included); `probes` is the probe-point bakes' test, on the pre-cut
+    /// geometry; both are keyed alike. The two agree except where a face cut
+    /// passes through a light's sphere, so a light either flags warns once,
+    /// and the text names the bakes that trace its full set. The fraction is
+    /// the texel test's when it flags the light, else the probe test's.
+    ///
+    /// Called on the caller thread every compile, cold or warm, by the stage
+    /// that owns the light's texels, or by the pipeline when that stage has
+    /// nothing to bake: both tests run whether or not a cache serves a bake,
     /// so the warning never depends on a memo.
-    pub(crate) fn warn<'l>(
-        &self,
+    pub(crate) fn warn<'a, 's>(
         kind: &str,
-        light: impl Fn(usize) -> Option<&'l MapLight>,
-        label: impl Fn(usize) -> Option<&'l str>,
+        texels: &Self,
+        probes: &Self,
+        light: impl Fn(usize) -> Option<&'a MapLight>,
+        label: impl Fn(usize) -> Option<&'s str>,
     ) {
-        for &(key, fraction) in &self.embedded {
-            let name = label(key).map_or_else(|| format!("#{key}"), str::to_owned);
-            let size = light(key).map_or(0.0, |light| light.light_size);
-            log::warn!(
-                "[Lightmap] emitter inside geometry: {kind} light {name}: {:.1}% of its \
-                 {size:.3} m emitter sphere lies inside or behind a surface, which dims the \
-                 light by about that much and makes its lit lightmap texels trace every \
-                 shadow sample. Move the light off the surface or shrink `_light_size`.",
-                fraction * 100.0,
+        let (texels, probes) = (&texels.embedded, &probes.embedded);
+        let (mut t, mut p) = (0, 0);
+        while t < texels.len() || p < probes.len() {
+            let next_texel = texels.get(t).map(|&(key, _)| key);
+            let next_probe = probes.get(p).map(|&(key, _)| key);
+            let key = next_texel
+                .into_iter()
+                .chain(next_probe)
+                .min()
+                .expect("a set has a flag left");
+            let (in_texels, in_probes) = (next_texel == Some(key), next_probe == Some(key));
+            let fraction = if in_texels { texels[t].1 } else { probes[p].1 };
+            t += usize::from(in_texels);
+            p += usize::from(in_probes);
+            // The animated stage's texels are weight-map texels.
+            let texel_kind = if kind == "animated" {
+                "weight-map"
+            } else {
+                "lightmap"
+            };
+            let reach = match (in_texels, in_probes) {
+                (true, true) => {
+                    format!("its lit {texel_kind} texels and the SH and billboard probes it lights")
+                }
+                (true, false) => format!("its lit {texel_kind} texels"),
+                (false, _) => "the SH and billboard probes it lights".to_owned(),
+            };
+            warn_one(kind, key, fraction, &reach, &light, &label);
+        }
+    }
+
+    /// Warn once per light `bounce` flags and `probes` does not, in key
+    /// order, naming the SH bounce bake: the bounce family tests
+    /// `sdf`-shadowed lights, which no texel or probe-point stage tests, so
+    /// no other warning names them. A light both flag keeps the probe-point
+    /// line [`Self::warn`] gives it. Both sets are keyed alike; `light` and
+    /// `label` resolve those keys, as for [`Self::warn`]. Called on the
+    /// caller thread every compile, cold or warm.
+    pub(crate) fn warn_bounce_only<'a, 's>(
+        kind: &str,
+        bounce: &Self,
+        probes: &Self,
+        light: impl Fn(usize) -> Option<&'a MapLight>,
+        label: impl Fn(usize) -> Option<&'s str>,
+    ) {
+        for &(key, fraction) in &bounce.embedded {
+            if probes.is_embedded(key) {
+                continue;
+            }
+            warn_one(
+                kind,
+                key,
+                fraction,
+                "the SH bounce patches it lights",
+                &light,
+                &label,
             );
         }
     }
+}
+
+/// One emitter-inside-geometry warning, naming the bakes (`reach`) that
+/// trace the light's full set.
+fn warn_one<'a, 's>(
+    kind: &str,
+    key: usize,
+    fraction: f32,
+    reach: &str,
+    light: &impl Fn(usize) -> Option<&'a MapLight>,
+    label: &impl Fn(usize) -> Option<&'s str>,
+) {
+    let name = label(key).map_or_else(|| format!("#{key}"), str::to_owned);
+    let size = light(key).map_or(0.0, |light| light.light_size);
+    log::warn!(
+        "[Lightmap] emitter inside geometry: {kind} light {name}: {:.1}% of its \
+         {size:.3} m emitter sphere lies inside or behind a surface, which dims the \
+         light by about that much and makes {reach} trace every shadow sample. Move the \
+         light off the surface or shrink `_light_size`.",
+        fraction * 100.0,
+    );
 }
 
 #[cfg(test)]

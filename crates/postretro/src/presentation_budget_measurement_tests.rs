@@ -59,7 +59,10 @@ fn participating_transport() -> (NetServer, NetClient) {
     client.set_mod_identity("budget.test".into(), "1.0.0".into());
     client.set_mod_digest(Some(fingerprint));
     client.set_level_parity(Some(("stress-budget".into(), fingerprint)));
-    client.set_revealed_level(Some("stress-budget".into()));
+    client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+        "stress-budget",
+        None,
+    )));
     server.add_relay_connection(CLIENT, None);
     client.set_connected();
     for _ in 0..128 {

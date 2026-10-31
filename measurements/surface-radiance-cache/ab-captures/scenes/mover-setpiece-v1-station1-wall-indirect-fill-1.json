@@ -1,0 +1,19 @@
+{
+ "map": "content/dev/maps/ab-mover-setpiece-fill-1.prl",
+ "camera": {
+  "position": [
+   -18.288,
+   1.626,
+   -9.347
+  ],
+  "yaw_deg": 90.0,
+  "pitch_deg": 0.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/raw/mover-setpiece-v1-station1-wall-indirect-fill-1.png",
+ "light_term_mask": 2
+}

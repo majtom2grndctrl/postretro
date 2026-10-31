@@ -320,7 +320,13 @@ fn the_warning_names_each_embedded_light_with_its_fraction() {
     ];
 
     let capture = LogCapture::start();
-    set.warn("static", |i| lights.get(i), |i| labels.get(i).copied());
+    EmbeddedEmitters::warn(
+        "static",
+        &set,
+        &EmbeddedEmitters::default(),
+        |i| lights.get(i),
+        |i| labels.get(i).copied(),
+    );
     let warnings: Vec<String> = capture
         .records()
         .iter()
@@ -347,6 +353,82 @@ fn the_warning_names_each_embedded_light_with_its_fraction() {
             warnings[0]
         );
     }
+}
+
+/// A light the texel test and the probe test both flag warns once, naming
+/// both bake families and the texel test's fraction; a light only one test
+/// flags (a face cut through its sphere splits the verdicts) warns once,
+/// naming only the bakes that trace its full set.
+#[test]
+fn a_light_either_test_flags_warns_once_naming_the_bakes_it_reaches() {
+    let texels = EmbeddedEmitters::from_flags([(4, 0.5), (1, 0.25)]);
+    let probes = EmbeddedEmitters::from_flags([(1, 0.125), (3, 0.375)]);
+
+    let capture = LogCapture::start();
+    EmbeddedEmitters::warn("static", &texels, &probes, |_| None, |_| None);
+    let warnings: Vec<String> = capture
+        .records()
+        .iter()
+        .filter(|record| record.level == log::Level::Warn)
+        .map(|record| record.message.clone())
+        .collect();
+
+    assert_eq!(
+        warnings.len(),
+        3,
+        "one warning per flagged light: {warnings:?}"
+    );
+    for (warning, (name, reach)) in warnings.iter().zip([
+        (
+            "static light #1: 25.0%",
+            "makes its lit lightmap texels and the SH and billboard probes it lights trace",
+        ),
+        (
+            "static light #3: 37.5%",
+            "makes the SH and billboard probes it lights trace",
+        ),
+        (
+            "static light #4: 50.0%",
+            "makes its lit lightmap texels trace",
+        ),
+    ]) {
+        assert!(
+            warning.contains(name) && warning.contains(reach),
+            "{warning}"
+        );
+    }
+}
+
+/// An animated light's texels are weight-map texels, not lightmap texels.
+#[test]
+fn an_animated_light_names_its_weight_map_texels() {
+    let texels = EmbeddedEmitters::from_flags([(0, 0.5), (1, 0.25)]);
+    let probes = EmbeddedEmitters::from_flags([(1, 0.25)]);
+
+    let capture = LogCapture::start();
+    EmbeddedEmitters::warn("animated", &texels, &probes, |_| None, |_| None);
+    let warnings: Vec<String> = capture
+        .records()
+        .iter()
+        .filter(|record| record.level == log::Level::Warn)
+        .map(|record| record.message.clone())
+        .collect();
+
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("animated light #0: 50.0%")
+            && warnings[0].contains("makes its lit weight-map texels trace")
+            && !warnings[0].contains("lightmap texels"),
+        "{}",
+        warnings[0]
+    );
+    assert!(
+        warnings[1].contains(
+            "makes its lit weight-map texels and the SH and billboard probes it lights trace"
+        ) && !warnings[1].contains("lightmap texels"),
+        "{}",
+        warnings[1]
+    );
 }
 
 /// The flag callers read without the fraction stops at the threshold's
@@ -457,11 +539,57 @@ fn the_embedded_flag_is_exactly_a_fraction_at_the_threshold() {
 
     // Only flagged lights warn.
     let capture = LogCapture::start();
-    set.warn("static", |key| lights.get(key), |_| None);
+    EmbeddedEmitters::warn(
+        "static",
+        &set,
+        &EmbeddedEmitters::default(),
+        |key| lights.get(key),
+        |_| None,
+    );
     let warnings = capture
         .records()
         .iter()
         .filter(|record| record.level == log::Level::Warn)
         .count();
     assert_eq!(warnings, flagged);
+}
+
+#[test]
+fn the_bounce_family_flags_sdf_shadowed_spheres_the_probe_set_skips() {
+    let fixture = walled_floor();
+    let lightmapped = beside_wall(0.1);
+    let mut sdf = beside_wall(0.1);
+    sdf.shadow_type = ShadowType::Sdf;
+    let mut hard_sdf = sdf.clone();
+    hard_sdf.light_size = 0.0;
+    let clear_sdf = {
+        let mut light = beside_wall(0.3);
+        light.shadow_type = ShadowType::Sdf;
+        light
+    };
+    let lights = [&lightmapped, &sdf, &hard_sdf, &clear_sdf];
+    let control = BakeControl::unrestricted();
+    let classify = |bounce: bool| {
+        let keyed = lights.iter().enumerate().map(|(key, &light)| (key, light));
+        let (bvh, primitives, geometry) = (&fixture.bvh, &fixture.primitives, &fixture.geometry);
+        if bounce {
+            EmbeddedEmitters::classify_bounce(keyed, bvh, primitives, geometry, &control)
+        } else {
+            EmbeddedEmitters::classify(keyed, bvh, primitives, geometry, &control)
+        }
+    };
+    let probe = classify(false);
+    let bounce = classify(true);
+    assert!(probe.is_embedded(0) && bounce.is_embedded(0));
+    assert!(
+        !probe.is_embedded(1) && bounce.is_embedded(1),
+        "the sdf-shadowed light bounces, so the bounce family tests its sphere"
+    );
+    assert_eq!(
+        bounce.fraction(1),
+        bounce.fraction(0),
+        "an sdf light's sphere reads as a lightmapped one's"
+    );
+    assert!(!bounce.is_embedded(2), "a hard light has no sphere");
+    assert!(!bounce.is_embedded(3), "a clear sphere is not flagged");
 }

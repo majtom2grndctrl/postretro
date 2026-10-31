@@ -233,7 +233,10 @@ fn append_tick_weapon_script_events(
 fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     for control in controls {
         match control {
-            ServerControlMessage::Relevel(catalog_id) => app.follow_relevel_catalog(catalog_id),
+            ServerControlMessage::Relevel {
+                catalog_id,
+                level_life,
+            } => app.follow_relevel_catalog(catalog_id, level_life),
             // The client arm owns the next-step hint: `DivergenceReason`'s
             // `Display` also feeds the host's rejection log. `--mod` names a
             // folder under `content/`, which can differ from the declared id.
@@ -1156,6 +1159,14 @@ pub(crate) struct App {
     /// The level load in flight, if any: its generation, whether its stages
     /// were dispatched, and its progress. See: `startup::level_loads`.
     level_loads: startup::level_loads::LevelLoads,
+
+    /// A connected client's last `Relevel` naming a known catalog id: the id
+    /// and the host level life. A later life naming the active map reinstalls
+    /// it; the same life again changes nothing. The reveal declares this life
+    /// when its id is the revealed map. Recorded even when the boot-load guard
+    /// drops the request. `None` until the first such relevel; the session's
+    /// one endpoint never reconnects, so nothing resets it.
+    last_relevel: Option<(String, u64)>,
 
     /// Every stage still winding down: cancelled or ended loads' stages and
     /// the upload threads of renderers torn down at suspend. One list, polled

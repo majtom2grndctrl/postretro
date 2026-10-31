@@ -1,0 +1,9 @@
+{
+ "A": {
+  "sh_bake_s": 4.2,
+  "t_sh_start": 3.28,
+  "t_sh_end": 7.48,
+  "patch_plateau_s": 3.02,
+  "rest_s (later bounces + gather)": 1.18
+ }
+}

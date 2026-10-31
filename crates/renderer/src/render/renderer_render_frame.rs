@@ -600,8 +600,10 @@ impl Renderer {
 
         // Kinematic brush movers: local-space PRL brush payloads drawn as
         // dynamic objects after opaque world geometry and before skinned meshes.
-        // They write depth and use the mesh dynamic-object lighting bindings
-        // (baked SH indirect/static direct + runtime dynamic direct).
+        // Their depth is already in the pre-pass, so they test `Equal` with
+        // the depth attachment read-only, as the world forward pass does.
+        // They use the mesh dynamic-object lighting bindings (baked SH
+        // indirect/static direct + runtime dynamic direct).
         if render_world
             && self
                 .full()
@@ -631,6 +633,11 @@ impl Renderer {
                     full.frame_indirect_scale,
                 );
             }
+            let kinematic_ts = self
+                .full()
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_KINEMATIC_BRUSH));
             let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Kinematic Brush Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -644,13 +651,10 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.full().depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: None,
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: kinematic_ts,
                 ..Default::default()
             });
             mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
@@ -659,6 +663,7 @@ impl Renderer {
                 &mut mover_pass,
                 &self.level().kinematic,
                 &self.level().gpu_textures,
+                MoverView::Main,
             );
         }
 

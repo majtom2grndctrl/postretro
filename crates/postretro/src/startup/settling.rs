@@ -218,8 +218,8 @@ impl App {
     /// frame, so a mouse delta or press from that gap neither turns the pose
     /// the reveal frame presents nor reaches its first tick. The frame loop
     /// applies no look on the reveal frame, so a held stick does not turn it
-    /// either.
-    fn reveal_if_released(&mut self) -> bool {
+    /// either. Tests reveal a committed level through it.
+    pub(in crate::startup) fn reveal_if_released(&mut self) -> bool {
         let Some(release) = self.settle.as_ref().and_then(|settle| settle.release) else {
             return false;
         };

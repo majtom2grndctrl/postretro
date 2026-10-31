@@ -191,7 +191,9 @@ impl App {
     /// flight drains nothing: its refusal happened at enqueue (pin P8). In
     /// the loading-screen order the installed level unloads before the new
     /// load starts, and the load only queues; its stages dispatch once
-    /// nothing older still runs (pin P12).
+    /// nothing older still runs (pin P12). Any request that resolves
+    /// supersedes a load beside the running level: it is cancelled first,
+    /// then the request takes its ordinary path.
     pub(in crate::startup) fn drain_level_requests(&mut self) {
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
@@ -203,6 +205,7 @@ impl App {
                     let Some(load) = self.resolve_level_source(source) else {
                         continue;
                     };
+                    self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
@@ -210,6 +213,7 @@ impl App {
                     return;
                 }
                 LevelRequest::Unload => {
+                    self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();
                     if self.level_is_installed_state() {
                         self.unload_level();

@@ -6,10 +6,10 @@ use postretro_renderer::UploadRetirement;
 use crate::App;
 use crate::level_load::LoadRetirement;
 
-/// Every retiring stage the App owns. A load beside a running level (task
-/// 12's) retires here too, so one poll covers Loading, Settling, Running and
-/// Frontend frames alike, and Booting and Splash frames before a resumed
-/// renderer exists.
+/// Every retiring stage the App owns. A load beside a running level retires
+/// here too, so one poll covers Loading, Settling, Running and Frontend
+/// frames alike, and Booting and Splash frames before a resumed renderer
+/// exists.
 #[derive(Debug, Default)]
 pub(crate) struct StageRetirements {
     entries: Vec<Retiring>,

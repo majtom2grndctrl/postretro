@@ -2,6 +2,8 @@
 //! `lifecycle_*` siblings that install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
+#[path = "lifecycle_beside.rs"]
+mod lifecycle_beside;
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
 #[path = "lifecycle_commit.rs"]
@@ -218,8 +220,14 @@ impl App {
     /// (a stage, the upload, an uncaptured wgpu error, the commit's checks,
     /// or the main-thread oracle's install): the load's stages stop and
     /// retire, so nothing reports twice, then a CLI boot load exits non-zero
-    /// and a runtime load enters Frontend.
+    /// and a runtime load enters Frontend. A load beside a running level
+    /// takes the route's beside half instead: reported once, its stages
+    /// retiring, and the running level left Running (pin P31).
     fn finish_level_failure(&mut self, reason: String, event_loop: &impl LoopExit) {
+        if self.level_loads.beside_active() {
+            self.finish_beside_level_failure(&reason);
+            return;
+        }
         self.retire_active_level_load();
         self.level_load = None;
         self.end_loading_screen();

@@ -1698,6 +1698,7 @@ fn load_progress_spans_every_phase() {
 fn suspend_clears_model_cache_and_drops_ready_bundle() {
     let test = "suspend_clears_model_cache_and_drops_ready_bundle";
     let case = CommitCase::textured_with_model();
+    let capture = LogCapture::start();
     let Some(mut app) = gpu_app(test, &case) else {
         return;
     };
@@ -1710,11 +1711,33 @@ fn suspend_clears_model_cache_and_drops_ready_bundle() {
     // retirement list, and the wait below polls no frames.
     retire_all(&mut app);
     // A second load of the same map, ready and uncommitted: a cache hit.
+    // Drained (which dispatches it) but never stepped: an all-hit load on
+    // this small fixture can be ready on its dispatch frame, and a Loading
+    // step would then commit it before the suspend.
     request_path(&mut app, &case.map);
-    frame(&mut app, &exit);
+    app.drain_level_requests();
+    assert!(
+        app.level_loads.staged().is_some(),
+        "the second load dispatched on its drain"
+    );
     let deadline = Instant::now() + APP_LOAD_TIMEOUT;
     while !stages_ready(&app) {
-        assert!(Instant::now() < deadline, "the second load never got ready");
+        // This wait polls no frame (a frame would commit the bundle), so a
+        // load that failed would never report: name its state instead.
+        assert!(
+            Instant::now() < deadline,
+            "the second load never got ready: state {:?}, load {:?}, retiring {:?}, prep {:?}, upload parts {:?}, loader errors {:?}",
+            app.boot_state,
+            app.level_loads,
+            app.stage_retirements,
+            app.level_loads
+                .staged()
+                .map(|stages| stages.probe().state()),
+            app.level_loads
+                .staged()
+                .map(|stages| stages.probe().upload_parts_done()),
+            loader_errors(&capture)
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     app.suspend_platform();
@@ -2038,3 +2061,6 @@ fn level_worker_spawns_only_from_tests() {
         "production callers of the worker: {callers:?}"
     );
 }
+
+#[path = "lifecycle_beside_tests.rs"]
+mod beside;

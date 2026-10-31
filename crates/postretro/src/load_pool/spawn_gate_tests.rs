@@ -26,6 +26,8 @@ const LOAD_STAGE_MODULES: &[&str] = &[
     "session/level_streaming/level_data.rs",
     "startup/level_loads.rs",
     "startup/lifecycle.rs",
+    "startup/lifecycle_beside.rs",
+    "startup/lifecycle_beside_tests.rs",
     "startup/lifecycle_boot_state.rs",
     "startup/lifecycle_commit.rs",
     "startup/lifecycle_finish.rs",

@@ -146,7 +146,8 @@ impl App {
     pub(crate) fn dispatched_level_tiers(&self) -> Option<LevelTiers> {
         match &self.level_loads.active()?.phase {
             crate::startup::level_loads::ActivePhase::Staged(stages) => Some(stages.tiers),
-            crate::startup::level_loads::ActivePhase::Queued => None,
+            crate::startup::level_loads::ActivePhase::Queued
+            | crate::startup::level_loads::ActivePhase::Ready(_) => None,
         }
     }
 }

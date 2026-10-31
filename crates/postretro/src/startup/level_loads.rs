@@ -1,12 +1,13 @@
-// The level load in flight: its generation, whether its stages run yet, and the whole load's progress counter.
-// See: context/lib/boot_sequence.md §1, §4 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation, Progress covers the whole load)
+// The level load in flight: its generation, its commit order (loading screen or beside a running level), whether its stages run yet, and the whole load's progress counter.
+// See: context/lib/boot_sequence.md §1, §4 · context/plans/in-progress/level-load-pipeline/index.md (One pipeline, two commit orders, Cancellation, Progress covers the whole load)
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use postretro_level_loader::LevelLoadProgress;
 
-use crate::level_load::{LevelLoadFailure, LevelLoadStages};
+use crate::level_load::{LevelBundle, LevelLoadFailure, LevelLoadStages};
+use crate::startup::InFlightLevelLoad;
 
 /// The App's level-load state machine. At most one load is active; a
 /// cancelled or superseded load leaves only its retirement, which the App's
@@ -24,6 +25,12 @@ use crate::level_load::{LevelLoadFailure, LevelLoadStages};
 /// 3. It ends exactly once: committed on the frame its bundle is ready,
 ///    failed through `finish_level_failure`, or cancelled (superseded, a
 ///    queued unload, suspend), which reports nothing (pin P20).
+///
+/// A load's [`LoadOrder`] says which commit order it runs in. A load beside
+/// a running level ([`LoadOrder::Beside`]) shares every step above, but its
+/// Running frames poll it, a ready bundle waits in [`ActivePhase::Ready`]
+/// until its caller commits it, and a failure leaves the running level
+/// Running.
 #[derive(Default)]
 pub(crate) struct LevelLoads {
     /// The last generation handed out; each load takes the next.
@@ -54,6 +61,7 @@ pub(crate) struct ActiveLevelLoad {
     /// The whole load's counter: parse, prep and upload credit it from their
     /// threads, Settling from the main thread. The loading screen reads it.
     pub(crate) progress: Arc<LevelLoadProgress>,
+    pub(crate) order: LoadOrder,
     pub(crate) phase: ActivePhase,
     /// The renderer's uncaptured-error capture is armed for this load.
     pub(crate) error_capture_armed: bool,
@@ -64,10 +72,34 @@ impl std::fmt::Debug for ActiveLevelLoad {
         f.debug_struct("ActiveLevelLoad")
             .field("generation", &self.generation)
             .field("map_path", &self.map_path)
+            .field("order", &self.order)
             .field("phase", &self.phase)
             .field("error_capture_armed", &self.error_capture_armed)
             .finish_non_exhaustive()
     }
+}
+
+impl ActiveLevelLoad {
+    /// The load runs beside a running level.
+    pub(crate) fn is_beside(&self) -> bool {
+        matches!(self.order, LoadOrder::Beside(_))
+    }
+}
+
+/// Which of the pipeline's two commit orders a load runs in.
+#[derive(Debug)]
+pub(crate) enum LoadOrder {
+    /// The loading-screen order: the installed level unloaded first, the
+    /// loading screen up, the bundle committed on the Loading frame it is
+    /// ready.
+    LoadingScreen,
+    /// Beside a running level (a test and dev surface; hub U3 owns the
+    /// swap): no unload, no loading screen, no `loading.progress` credit,
+    /// and the uncaptured-error capture stays disarmed. The request's
+    /// metadata waits here until the commit installs it.
+    // Reached from tests only: no production verb starts one yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Beside(Box<InFlightLevelLoad>),
 }
 
 /// Whether the active load's stages run yet.
@@ -76,6 +108,10 @@ pub(crate) enum ActivePhase {
     Queued,
     /// Dispatched: prep on the pool, the set build on the upload thread.
     Staged(Box<LevelLoadStages>),
+    /// A load beside a running level whose bundle is ready, its stages
+    /// handed to retirement: held, its set resident and unpublished, until
+    /// its caller commits it. A cancel releases the set.
+    Ready(Box<LevelBundle>),
 }
 
 impl std::fmt::Debug for ActivePhase {
@@ -83,15 +119,46 @@ impl std::fmt::Debug for ActivePhase {
         match self {
             ActivePhase::Queued => f.write_str("Queued"),
             ActivePhase::Staged(stages) => f.debug_tuple("Staged").field(stages).finish(),
+            ActivePhase::Ready(bundle) => f.debug_tuple("Ready").field(&bundle.set).finish(),
         }
     }
 }
 
 impl LevelLoads {
-    /// Make a queued load for `map_path` the active one, under the next
-    /// generation. The caller has already cancelled any active load.
+    /// Make a queued loading-screen load for `map_path` the active one,
+    /// under the next generation. The caller has already cancelled any
+    /// active load.
     pub(crate) fn start(
         &mut self,
+        map_path: PathBuf,
+        content_root: PathBuf,
+        progress: Arc<LevelLoadProgress>,
+    ) -> u64 {
+        self.start_in(LoadOrder::LoadingScreen, map_path, content_root, progress)
+    }
+
+    /// Make a queued load of `load` beside the running level the active
+    /// one, under the next generation. `progress` is the load's own counter,
+    /// which its stages credit and nothing reads into `loading.progress`.
+    /// The caller has already cancelled any active load.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn start_beside(
+        &mut self,
+        load: InFlightLevelLoad,
+        progress: Arc<LevelLoadProgress>,
+    ) -> u64 {
+        let (map_path, content_root) = (load.map_path.clone(), load.content_root.clone());
+        self.start_in(
+            LoadOrder::Beside(Box::new(load)),
+            map_path,
+            content_root,
+            progress,
+        )
+    }
+
+    fn start_in(
+        &mut self,
+        order: LoadOrder,
         map_path: PathBuf,
         content_root: PathBuf,
         progress: Arc<LevelLoadProgress>,
@@ -103,6 +170,7 @@ impl LevelLoads {
             map_path,
             content_root,
             progress,
+            order,
             phase: ActivePhase::Queued,
             error_capture_armed: false,
         });
@@ -127,7 +195,7 @@ impl LevelLoads {
     pub(crate) fn staged(&self) -> Option<&LevelLoadStages> {
         match &self.active.as_ref()?.phase {
             ActivePhase::Staged(stages) => Some(stages),
-            ActivePhase::Queued => None,
+            ActivePhase::Queued | ActivePhase::Ready(_) => None,
         }
     }
 
@@ -138,6 +206,20 @@ impl LevelLoads {
             self.active.as_ref().map(|active| &active.phase),
             Some(ActivePhase::Staged(_))
         )
+    }
+
+    /// The active load runs beside a running level.
+    pub(crate) fn beside_active(&self) -> bool {
+        self.active.as_ref().is_some_and(ActiveLevelLoad::is_beside)
+    }
+
+    /// The bundle a load beside a running level holds, once ready.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn held_bundle(&self) -> Option<&LevelBundle> {
+        match &self.active.as_ref()?.phase {
+            ActivePhase::Ready(bundle) => Some(bundle),
+            ActivePhase::Queued | ActivePhase::Staged(_) => None,
+        }
     }
 }
 

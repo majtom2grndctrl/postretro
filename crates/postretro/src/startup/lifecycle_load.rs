@@ -6,8 +6,8 @@
 //! See: context/lib/boot_sequence.md §1 (Loading screen), §4 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation, One failure per load, Settings and scene extent, dispatch to commit) · research.md §9 (P1–P8, P10, P12, P20, P22, P24)
 
 use super::*;
-use crate::level_load::{LevelBundle, LevelLoadFailure};
-use crate::startup::level_loads::ActivePhase;
+use crate::level_load::{BundleSet, LevelBundle, LevelCommitReport, LevelLoadFailure};
+use crate::startup::level_loads::{ActivePhase, LoadOrder};
 use crate::startup::loading_screen::LoadingStep;
 
 /// What one Loading frame left to its caller.
@@ -49,7 +49,8 @@ impl App {
     /// never dispatches against a renderer that is not full-ready: it stays
     /// queued, doing no stage work (pin P12), so every production bundle
     /// carries a resident set. The tiers are read here, at dispatch (pin
-    /// P21). Never waits.
+    /// P21). A load beside a running level dispatches by the same rules.
+    /// Never waits.
     pub(in crate::startup) fn try_dispatch_level_load(&mut self) {
         let Some(active) = self.level_loads.active() else {
             return;
@@ -73,6 +74,7 @@ impl App {
             active.content_root.clone(),
             std::sync::Arc::clone(&active.progress),
         );
+        let loading_screen_order = matches!(active.order, LoadOrder::LoadingScreen);
         let group = match self.load_pool.get_or_build() {
             Ok(pool) => pool.group(),
             Err(error) => {
@@ -86,8 +88,11 @@ impl App {
         // While this load is uncommitted and no level runs, an uncaptured
         // wgpu error is this load's failure, not wgpu's panic: armed before
         // any of its stages starts, under its generation, so an error held
-        // for a cancelled load never reaches a later one.
-        let capture = !self.level_is_installed_state();
+        // for a cancelled load never reaches a later one. Beside a running
+        // level an uncaptured error cannot be told from the running level's
+        // own, so the capture stays disarmed and wgpu's default holds; the
+        // errors the upload thread's scopes catch still fail the load.
+        let capture = loading_screen_order && !self.level_is_installed_state();
         if capture && let Some(renderer) = self.renderer.as_ref() {
             renderer.arm_load_error_capture(generation);
         }
@@ -199,9 +204,13 @@ impl App {
         }
     }
 
-    /// Commit a ready bundle. A commit check that fails takes the one
-    /// failure route; nothing else here can fail.
-    fn commit_ready_level_bundle(&mut self, bundle: LevelBundle, event_loop: &impl LoopExit) {
+    /// Commit a ready bundle; its report, or `None` when a commit check
+    /// failed and took the one failure route. Nothing else here can fail.
+    pub(in crate::startup) fn commit_ready_level_bundle(
+        &mut self,
+        bundle: LevelBundle,
+        event_loop: &impl LoopExit,
+    ) -> Option<LevelCommitReport> {
         // The stages ran inside the interval `bundle_ready` measures, so
         // they attach to it rather than join line C's sum.
         let inside = std::iter::once(("prl_parse", bundle.timings.parse))
@@ -222,8 +231,12 @@ impl App {
                         "[Loader] the level commit created GPU objects outside its counted fallbacks: {uncounted:?}"
                     );
                 }
+                Some(report)
             }
-            Err(failure) => self.finish_level_failure(failure.to_string(), event_loop),
+            Err(failure) => {
+                self.finish_level_failure(failure.to_string(), event_loop);
+                None
+            }
         }
     }
 
@@ -231,7 +244,9 @@ impl App {
     /// stages (a cancelled load's errors, the cancel included, reach no
     /// failure path, pin P20), hand them to the retirement list, and disarm
     /// the uncaptured-error capture. Also how a load whose outcome was taken
-    /// hands back its stages. Returns whether a load was active.
+    /// hands back its stages. A load beside a running level holding a ready
+    /// bundle releases the bundle's set; its stages already retire. Returns
+    /// whether a load was active.
     pub(in crate::startup) fn cancel_active_level_load(&mut self) -> bool {
         let Some(active) = self.level_loads.take_active() else {
             return false;
@@ -241,10 +256,22 @@ impl App {
         {
             renderer.disarm_load_error_capture();
         }
-        if let ActivePhase::Staged(stages) = active.phase {
-            let retirement = stages.cancel(self.renderer.as_mut());
-            self.stage_retirements
-                .push_load(active.generation, retirement);
+        match active.phase {
+            ActivePhase::Queued => {}
+            ActivePhase::Staged(stages) => {
+                let retirement = stages.cancel(self.renderer.as_mut());
+                self.stage_retirements
+                    .push_load(active.generation, retirement);
+            }
+            ActivePhase::Ready(bundle) => {
+                // Nothing commits: the bundle's set goes with it, and the
+                // model entries it would have offered drop uncommitted.
+                if let (BundleSet::Resident(id), Some(renderer)) =
+                    (&bundle.set, self.renderer.as_mut())
+                {
+                    renderer.release_level_set(*id);
+                }
+            }
         }
         self.level_loads.pending_dispatch_failure = None;
         true

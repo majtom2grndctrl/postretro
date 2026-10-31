@@ -131,6 +131,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         return;
     }
 
+    // A Running frame: a load beside this level is polled once, never
+    // waited on. Its stages draw nothing here, a ready bundle is held for
+    // its caller, and a failure leaves this level Running.
+    app.poll_beside_level_load(event_loop);
+
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
     // Registry, layer, or host-tuning changes from earlier frames

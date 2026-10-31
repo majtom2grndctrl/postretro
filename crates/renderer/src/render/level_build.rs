@@ -1110,6 +1110,19 @@ impl Renderer {
             .and_then(|full| full.level.as_ref())
             .map(level_resource_summary)
     }
+
+    /// The [`level_resource_summary`] of set `id`, active or resident and
+    /// unpublished: an app-side test compares a set built beside a running
+    /// level with one built under other conditions, before either commits.
+    /// `None` for an unknown key.
+    pub fn level_set_resource_summary(&self, id: LevelSetId) -> Option<String> {
+        let full = self.full.as_ref()?;
+        full.level
+            .iter()
+            .chain(&full.resident_levels)
+            .find(|level| level.id == id)
+            .map(level_resource_summary)
+    }
 }
 
 #[cfg(test)]

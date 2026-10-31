@@ -20,8 +20,19 @@ Read at e3b0772, 2026-10-30/31.
 
 | Map | Cells | Lights | Source |
 |---|---|---|---|
-| stress-warren-hallway-inspection | 10021 (interior 3268, drawable 3184) | 345 | `plans/done/occluder-first-partition/measurement/9k/cap26/.../structure.out` |
-| campaign-test | 879 (interior 165, drawable 155) | 34 | same series |
+| stress-warren-hallway-inspection | 10021 (interior 3268, drawable 3184) | 345 | `context/plans/done/occluder-first-partition/measurement/9k/cap26/stress-warren-hallway-inspection/structure.out` |
+| campaign-test | 879 (interior 165, drawable 155) | 34 | `context/plans/done/occluder-first-partition/measurement/9k/cap26/campaign-test/structure.out` |
+
+## Pins
+
+| id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Sliding wall's open terminus fills a pocket whose faces the bake lit through the opening | The bake lights pocket texels with the wall absent; posed open, the wall covers their lifted centres; posed closed, their segments cross the wall | Covered texels count at the open terminus and are gated closed too, so they are shared |
+| P2 | Movers present, no static lightmap lights, or only SDF-shadow ones | The fused walk returns before any partition consumer runs | The summary still prints, movers count as analysed, zero gated rows |
+| P3 | Warm build after a mover-only edit | The lightmap-section and ShadowmaskAtlas memos hit inside the lightmap stage and skip reading partitions; the gating memo key changed | Static gating misses its memo and reads each needed partition from the per-light layer cache once, tracing no visibility; the report equals the cold report |
+| P4 | Static and animated lights in one report | Static gating finishes inside the walk; animated gating after `AnimatedWeightMaps` | Lines sort by one light order across both tiers, never by arrival or worker |
+| P5 | Last waypoint coincides with waypoint 0 (three or more waypoints; parse rejects only consecutive duplicates) | Both termini pose identically | Gated sets equal: all shared, differing-only estimate 0 B |
+| P6 | Light inside a posed brush at one terminus only | Termini evaluated independently, inside-test per terminus | Flagged on that terminus's row only; texels lit and ungated at the other terminus are differing |
 
 ## Report totals
 

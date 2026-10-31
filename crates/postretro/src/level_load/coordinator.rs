@@ -258,7 +258,7 @@ impl PrepShared {
             // leave the prep waiting forever.
             let mut state = self.lock();
             state.sounds = Some(None);
-            self.credit(&mut state, PrepKind::Sounds);
+            self.finish_kind(&mut state, PrepKind::Sounds);
         }
         let shared = Arc::clone(self);
         let handle = self.spawner.spawn(Priority::Load, move |token| {
@@ -324,7 +324,7 @@ impl PrepShared {
                 if sh_manifest.manifest.is_none() {
                     // An empty kind: nothing to plan, credited at once.
                     state.sh_residency = Some(None);
-                    self.credit(state, PrepKind::ShResidency);
+                    self.finish_kind(state, PrepKind::ShResidency);
                 }
                 state.sh_manifest = Some(sh_manifest);
             }
@@ -449,7 +449,7 @@ impl PrepShared {
             Ok(product) => {
                 state.timings.push((kind, elapsed));
                 if state.store(product) {
-                    self.credit(&mut state, kind);
+                    self.finish_kind(&mut state, kind);
                 }
                 self.advance(&mut state);
             }
@@ -457,7 +457,7 @@ impl PrepShared {
     }
 
     /// Mark `kind` finished, once, and credit it to prep's progress.
-    fn credit(&self, state: &mut PrepState, kind: PrepKind) {
+    fn finish_kind(&self, state: &mut PrepState, kind: PrepKind) {
         if state.finished.insert(kind) {
             self.prep_progress.advance(1);
         }
@@ -635,7 +635,7 @@ impl PrepShared {
     /// credits the kind at once.
     fn spawn_model_parses(self: &Arc<Self>, state: &mut PrepState, handles: Vec<String>) {
         if handles.is_empty() {
-            self.credit(state, PrepKind::ModelParse);
+            self.finish_kind(state, PrepKind::ModelParse);
             return;
         }
         // Every model of the load keys at the dispatch tier.

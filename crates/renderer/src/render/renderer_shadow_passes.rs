@@ -79,8 +79,11 @@ impl Renderer {
             // shades once.
             if full.kinematic_brush.has_draws(&level.kinematic) {
                 depth_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
-                full.kinematic_brush
-                    .record_depth(&mut depth_pass, &level.kinematic, MoverView::Main);
+                full.kinematic_brush.record_depth(
+                    &mut depth_pass,
+                    &level.kinematic,
+                    MoverView::Main,
+                );
             }
         }
 

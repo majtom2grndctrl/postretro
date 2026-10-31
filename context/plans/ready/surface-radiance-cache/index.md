@@ -20,7 +20,7 @@ Owner request: multi-bounce indirect light, and SH bake cost that does not grow 
 - **Lifetime.** Built after Geometry on pre-cut faces, freed when the SH base stage ends, before the delta SH stage; no face identity crosses the atlas cut. Bake-only: no format, runtime or shader change.
 - **Bounded.** Patches exist only on static world faces after exterior culling. The SH base stage joins working-set accounting with the cache as its first charge, priced before any ray or texture read; overage is a named error, never automatic coarsening (`build_pipeline.md` §Compiler pipeline, working-set gate; lifetime per `development_guide.md` §1.4).
 - **Deterministic.** Cold bytes are independent of worker count, arrival order and cache state.
-- **Proof is the slope.** No measurement of today's maps gates the build.
+- **No sizing gate.** Levels will outgrow today's maps, so the Cost rows and the light-count sweep prove the scaling; no measurement of today's maps gates the build.
 - **Non-goal: emissive bounce.** It reverses the rule that emissive surfaces light nothing (`resource_management.md` §4.5); a separate owner ruling.
 - **Non-goal: texture-level bounce multiplier.** Designers from other radiosity tools expect one; the surface-lights brief decides it with its per-texture properties. Additive later, since keys already fold bounce materials.
 

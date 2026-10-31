@@ -15,7 +15,7 @@ Owner request: multi-bounce indirect light, and SH bake cost that does not grow 
 - **Multi-bounce is in scope (owner), a look change judged by A/B.** Later bounces gather patch to patch over a fixed bounce count. A `worldspawn` key `_bounce_fill` ∈ [0, 1] weights them: shipped bounce = bounce one + fill × later bounces. `0` is single bounce, `1` physical fill; the A/B picks the default. Invalid values fall back to the default with a warning. FGD and `docs/level_design.md` carry it; no compiler flag (`index.md` §2). This reverses `done/coloured-sh-bounce`'s no-knob ruling for later bounces only.
 - **Warm locality kept (owner).** Editing one light re-bakes only that light's bounce-one patch layer and the SH groups that reach it. Warm builds bake bounce one only, so they stay local and dimmer-or-equal to cold (`done/incremental-bake-per-element/`); later bounces and `_bounce_fill` reach only cold and release bakes.
 - **Keys follow content, not list position.** Patch layers key on the light's content, positions and bounce materials, the inputs SH group keys already fold. Seeds derive from patch ids and the keyed light's digest, as id 27 already seeds, so inserting or reordering lights never changes a cached layer's bytes.
-- **IP guard (owner).** Gather rays stay uniform or cosine, never aimed by a prior result (ARM '177). Only summed bounce ships. The cache never reaches PRL (`ip-check.md` Piece 6).
+- **IP guard (owner).** Gather rays stay uniform or cosine, never aimed by a prior result (ARM '177). Id 34 ships only summed bounce; nothing per light reaches a texel or patch in PRL. The cache never reaches PRL (`ip-check.md` Piece 6).
 - **Lifetime.** The cache is built after Geometry on pre-cut faces and freed when the SH base bake ends, before atlas preparation; no face identity crosses the cut (`build_pipeline.md` §Compiler pipeline). Bake-only: no format, runtime or shader change.
 - **Bounded.** Patches exist only on static world faces after exterior culling. The SH base stage joins working-set accounting, with the cache its first charge; overage is a named error raised before any patch is shaded, never automatic coarsening (`development_guide.md` §1.4).
 - **Deterministic.** Cold bytes are independent of worker count, arrival order and cache state.
@@ -76,10 +76,10 @@ Bounds:
 
 ## Path
 
-- Shape: per-light sparse patch layers for bounce one, over the patches in each light's reach. Cold sums static layers; warm groups sum their reaching lights (`research.md` §Warm-locality shape). The animated follow-up reads unit layers from the same structure. Rival: one summed layer, which re-keys every group on any light edit.
+- Shape: per-light sparse patch layers for bounce one, over the patches in each light's reach. Cold sums static layers; warm groups sum their reaching lights (`research.md` §Warm-locality shape). Layers store unit transport, scaled by colour × intensity when summed, so a colour or intensity edit re-bakes no layer and the animated follow-up shares them; it extends the cache's lifetime through the delta bake. Rival: one summed layer, which re-keys every group on any light edit.
 - Later bounces gather over the summed bounce-one layer, cold only, so they key globally without breaking warm locality.
 - First slice: single-bounce cache feeding id 34 on `campaign-test`, with the parity row. It falsifies the riskiest assumption, that patch discretisation stays inside the BC6H bound.
-- Seams: `sh_bake.rs` `sample_radiance_rgb` and `closest_hit_in_leaf` (hit → face → patch), `bake_probe_indirect_rgb`, `sh_group.rs` `group_cache_key`, `pipeline.rs` `run_after_parsing`; working-set precedent `delta_working_set.rs`.
+- Seams: `sh_bake.rs` `sample_radiance_rgb` and `closest_hit_in_leaf` (hit → face → patch), `bake_probe_indirect_rgb`, `sh_group.rs` `group_cache_key`, `pipeline.rs` `run_after_parsing`; working-set precedent `pipeline/delta_working_set.rs`.
 - `sh_bake.rs` is large; split before extending if it passes ~800 lines.
 - Measurement runs follow `measurements/bake-performance/measure-hallway.ps1 -Cold`; the owner launches the full-hallway run.
 

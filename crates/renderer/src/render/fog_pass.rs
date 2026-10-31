@@ -114,6 +114,27 @@ pub struct FogPass {
     /// frame. Updated per-frame by `repack_active`. Shader loops against this
     /// count; trailing buffer slots are stale-but-safe.
     pub active_count: u32,
+    /// Reusable scratch buffer for the per-frame dense repack — capacity
+    /// retained between frames to avoid per-frame allocation.
+    repack_scratch: Vec<FogVolume>,
+    /// Reusable scratch buffer for per-frame `fog_planes` upload bytes —
+    /// fixed capacity (`FOG_PLANES_BUFFER_CAPACITY` planes × 16 bytes), no
+    /// dynamic growth.
+    planes_scratch: Vec<[f32; 4]>,
+    /// Most recent spot light count for dynamic beams.
+    pub spot_count: u32,
+    /// Most recent point-light count. Packed into `FogParams.point_count` so
+    /// the shader bounds its inner loop against the live count rather than
+    /// `arrayLength(&fog_points)` (which would replay stale records when a
+    /// frame uploads zero point lights).
+    pub point_count: u32,
+}
+
+/// One level's canonical fog volumes, their bounding planes, live mask and
+/// hysteresis timestamps. Lives in the level's resource set; the pass keeps
+/// its fixed-size buffers, scatter target and per-frame repack scratch.
+#[derive(Default)]
+pub(crate) struct FogLevelState {
     /// Canonical fog-volume list in source order (one entry per
     /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
     /// Re-packed per-frame by `repack_active`. Empty when no level is loaded
@@ -131,18 +152,11 @@ pub struct FogPass {
     /// upload. ANDed with the visible-cell-derived mask to produce the
     /// per-frame `active_mask`.
     live_mask: u32,
-    /// Reusable scratch buffer for the per-frame dense repack — capacity
-    /// retained between frames to avoid per-frame allocation.
-    repack_scratch: Vec<FogVolume>,
     /// Canonical bounding planes parallel to `canonical_volumes` (one entry per
     /// canonical slot; empty inner vec for semantic / zero-plane volumes). The
     /// dense repack patches `plane_offset` per `FogVolume` and accumulates
     /// these into `planes_scratch` for upload.
     canonical_planes: Vec<Vec<[f32; 4]>>,
-    /// Reusable scratch buffer for per-frame `fog_planes` upload bytes —
-    /// fixed capacity (`FOG_PLANES_BUFFER_CAPACITY` planes × 16 bytes), no
-    /// dynamic growth.
-    planes_scratch: Vec<[f32; 4]>,
     /// Wall-clock time (seconds) at which each canonical slot was last seen
     /// in `cell_mask & live_mask`. Parallel to `canonical_volumes`; slots
     /// never observed sit at `f64::NEG_INFINITY` so the hysteresis comparison
@@ -151,13 +165,111 @@ pub struct FogPass {
     /// on level load via `clear_for_level_load` so volumes from the previous
     /// level don't leak forward.
     last_active_time: Vec<f64>,
-    /// Most recent spot light count for dynamic beams.
-    pub spot_count: u32,
-    /// Most recent point-light count. Packed into `FogParams.point_count` so
-    /// the shader bounds its inner loop against the live count rather than
-    /// `arrayLength(&fog_points)` (which would replay stale records when a
-    /// frame uploads zero point lights).
-    pub point_count: u32,
+}
+
+impl FogLevelState {
+    /// Replace the canonical fog-volume list. The list is the per-frame
+    /// `FogVolume` records emitted in original PRL record order — `live_mask`
+    /// indicates which slots have density > 0 and are eligible for upload.
+    /// The buffer is *not* written here; `repack_active` does the dense
+    /// repack-and-upload once the per-frame visible-cell mask is known.
+    /// Truncates at `MAX_FOG_VOLUMES` with a warning.
+    pub fn set_canonical_volumes(
+        &mut self,
+        volumes: &[FogVolume],
+        planes: &[Vec<[f32; 4]>],
+        live_mask: u32,
+    ) {
+        let count = volumes.len().min(MAX_FOG_VOLUMES);
+        if volumes.len() > MAX_FOG_VOLUMES {
+            log::warn!(
+                "[FogPass] {} volumes exceeded MAX_FOG_VOLUMES={} — extras dropped",
+                volumes.len(),
+                MAX_FOG_VOLUMES
+            );
+        }
+        self.canonical_volumes.clear();
+        // Inflate each volume's AABB by AABB_EPSILON per axis on the way in.
+        // See the `canonical_volumes` field comment for why. `center`,
+        // `half_diag`, and `inv_half_ext` are derived offline by the bridge
+        // and intentionally left untouched — the radial / ellipsoid fade math
+        // uses the un-inflated extents, while the AABB-membership test the
+        // visibility pass keys off of sees the inflated bounds.
+        self.canonical_volumes.reserve(count);
+        for v in &volumes[..count] {
+            let mut inflated = *v;
+            inflated.min[0] -= AABB_EPSILON;
+            inflated.min[1] -= AABB_EPSILON;
+            inflated.min[2] -= AABB_EPSILON;
+            inflated.max_v[0] += AABB_EPSILON;
+            inflated.max_v[1] += AABB_EPSILON;
+            inflated.max_v[2] += AABB_EPSILON;
+            self.canonical_volumes.push(inflated);
+        }
+        self.canonical_planes.clear();
+        // The bridge guarantees `planes.len() == volumes.len()`, but defend
+        // against truncation by zipping over the kept canonical slots.
+        self.canonical_planes
+            .extend(planes.iter().take(count).cloned());
+        // Pad with empty plane lists if the caller passed fewer planes than
+        // volumes — keeps `canonical_planes` and `canonical_volumes` indexed
+        // in lockstep so a malformed input degrades to AABB-only volumes.
+        // The bridge contracts that `planes.len() == volumes.len()`; if we hit
+        // this path, a primitive (plane-bounded) brush volume is silently
+        // demoted to AABB-only. Surface that loudly so the upstream desync is
+        // diagnosable rather than hidden as visual fog drift.
+        if self.canonical_planes.len() < count {
+            log::error!(
+                "[FogPass] canonical plane list shorter than volume list ({} planes for {} volumes) — primitive volumes will degrade to AABB-only; check FogVolumeBridge",
+                self.canonical_planes.len(),
+                count,
+            );
+            while self.canonical_planes.len() < count {
+                self.canonical_planes.push(Vec::new());
+            }
+        }
+        // Mask off any bits past `count` so a truncated canonical list cannot
+        // leave a dangling live bit. This is belt-and-suspenders against
+        // `compute_fog_cell_mask`'s `all_slots_mask`: the two operate on
+        // different inputs (this caps `live_mask` at upload time;
+        // `all_slots_mask` caps the per-frame visibility-derived `cell_mask`),
+        // and we want reserved bits (16..=31) of a forward-compatible PRL
+        // stripped regardless of which call site sees them first.
+        //
+        // `count` is bounded by `MAX_FOG_VOLUMES = 16` via the `.min` above,
+        // so the shift is always well-defined; the assert documents and
+        // enforces that invariant.
+        debug_assert!(
+            count <= MAX_FOG_VOLUMES,
+            "count {count} exceeds MAX_FOG_VOLUMES ({MAX_FOG_VOLUMES}); .min cap broken"
+        );
+        let count_mask = (1u32 << count).wrapping_sub(1);
+        self.live_mask = live_mask & count_mask;
+        // Preserve hysteresis timestamps across frames — `set_canonical_volumes`
+        // is called every frame from `upload_fog_volumes`, so wiping the vec
+        // here would defeat the sticky window. Grow with NEG_INFINITY for newly
+        // added slots; shrink without clearing existing entries. Full reset on
+        // level load is the caller's responsibility via `clear_for_level_load`.
+        let new_len = self.canonical_volumes.len();
+        if self.last_active_time.len() < new_len {
+            self.last_active_time.resize(new_len, f64::NEG_INFINITY);
+        } else {
+            self.last_active_time.truncate(new_len);
+        }
+    }
+
+    /// Reset hysteresis state for a fresh level. Drops all stored last-active
+    /// timestamps to `NEG_INFINITY` so the first frame after load cannot
+    /// activate a stale volume via the sticky window.
+    pub fn clear_for_level_load(&mut self) {
+        self.last_active_time.fill(f64::NEG_INFINITY);
+    }
+
+    /// Number of canonical fog-volume slots currently loaded. Used by callers
+    /// to derive the `DrawAll` cell-mask (`(1 << canonical_count) - 1`).
+    pub fn canonical_volume_count(&self) -> u32 {
+        self.canonical_volumes.len() as u32
+    }
 }
 
 impl FogPass {
@@ -464,12 +576,8 @@ impl FogPass {
             scatter_dims,
             bind_group,
             active_count: 0,
-            canonical_volumes: Vec::new(),
-            live_mask: 0,
             repack_scratch: Vec::new(),
-            canonical_planes: Vec::new(),
             planes_scratch: Vec::with_capacity(FOG_PLANES_BUFFER_CAPACITY),
-            last_active_time: Vec::new(),
             spot_count: 0,
             point_count: 0,
         }
@@ -538,103 +646,6 @@ impl FogPass {
         self.resize(device, scene_width, scene_height, depth_view);
     }
 
-    /// Replace the canonical fog-volume list. The list is the per-frame
-    /// `FogVolume` records emitted in original PRL record order — `live_mask`
-    /// indicates which slots have density > 0 and are eligible for upload.
-    /// The buffer is *not* written here; `repack_active` does the dense
-    /// repack-and-upload once the per-frame visible-cell mask is known.
-    /// Truncates at `MAX_FOG_VOLUMES` with a warning.
-    pub fn set_canonical_volumes(
-        &mut self,
-        volumes: &[FogVolume],
-        planes: &[Vec<[f32; 4]>],
-        live_mask: u32,
-    ) {
-        let count = volumes.len().min(MAX_FOG_VOLUMES);
-        if volumes.len() > MAX_FOG_VOLUMES {
-            log::warn!(
-                "[FogPass] {} volumes exceeded MAX_FOG_VOLUMES={} — extras dropped",
-                volumes.len(),
-                MAX_FOG_VOLUMES
-            );
-        }
-        self.canonical_volumes.clear();
-        // Inflate each volume's AABB by AABB_EPSILON per axis on the way in.
-        // See the `canonical_volumes` field comment for why. `center`,
-        // `half_diag`, and `inv_half_ext` are derived offline by the bridge
-        // and intentionally left untouched — the radial / ellipsoid fade math
-        // uses the un-inflated extents, while the AABB-membership test the
-        // visibility pass keys off of sees the inflated bounds.
-        self.canonical_volumes.reserve(count);
-        for v in &volumes[..count] {
-            let mut inflated = *v;
-            inflated.min[0] -= AABB_EPSILON;
-            inflated.min[1] -= AABB_EPSILON;
-            inflated.min[2] -= AABB_EPSILON;
-            inflated.max_v[0] += AABB_EPSILON;
-            inflated.max_v[1] += AABB_EPSILON;
-            inflated.max_v[2] += AABB_EPSILON;
-            self.canonical_volumes.push(inflated);
-        }
-        self.canonical_planes.clear();
-        // The bridge guarantees `planes.len() == volumes.len()`, but defend
-        // against truncation by zipping over the kept canonical slots.
-        self.canonical_planes
-            .extend(planes.iter().take(count).cloned());
-        // Pad with empty plane lists if the caller passed fewer planes than
-        // volumes — keeps `canonical_planes` and `canonical_volumes` indexed
-        // in lockstep so a malformed input degrades to AABB-only volumes.
-        // The bridge contracts that `planes.len() == volumes.len()`; if we hit
-        // this path, a primitive (plane-bounded) brush volume is silently
-        // demoted to AABB-only. Surface that loudly so the upstream desync is
-        // diagnosable rather than hidden as visual fog drift.
-        if self.canonical_planes.len() < count {
-            log::error!(
-                "[FogPass] canonical plane list shorter than volume list ({} planes for {} volumes) — primitive volumes will degrade to AABB-only; check FogVolumeBridge",
-                self.canonical_planes.len(),
-                count,
-            );
-            while self.canonical_planes.len() < count {
-                self.canonical_planes.push(Vec::new());
-            }
-        }
-        // Mask off any bits past `count` so a truncated canonical list cannot
-        // leave a dangling live bit. This is belt-and-suspenders against
-        // `compute_fog_cell_mask`'s `all_slots_mask`: the two operate on
-        // different inputs (this caps `live_mask` at upload time;
-        // `all_slots_mask` caps the per-frame visibility-derived `cell_mask`),
-        // and we want reserved bits (16..=31) of a forward-compatible PRL
-        // stripped regardless of which call site sees them first.
-        //
-        // `count` is bounded by `MAX_FOG_VOLUMES = 16` via the `.min` above,
-        // so the shift is always well-defined; the assert documents and
-        // enforces that invariant.
-        debug_assert!(
-            count <= MAX_FOG_VOLUMES,
-            "count {count} exceeds MAX_FOG_VOLUMES ({MAX_FOG_VOLUMES}); .min cap broken"
-        );
-        let count_mask = (1u32 << count).wrapping_sub(1);
-        self.live_mask = live_mask & count_mask;
-        // Preserve hysteresis timestamps across frames — `set_canonical_volumes`
-        // is called every frame from `upload_fog_volumes`, so wiping the vec
-        // here would defeat the sticky window. Grow with NEG_INFINITY for newly
-        // added slots; shrink without clearing existing entries. Full reset on
-        // level load is the caller's responsibility via `clear_for_level_load`.
-        let new_len = self.canonical_volumes.len();
-        if self.last_active_time.len() < new_len {
-            self.last_active_time.resize(new_len, f64::NEG_INFINITY);
-        } else {
-            self.last_active_time.truncate(new_len);
-        }
-    }
-
-    /// Reset hysteresis state for a fresh level. Drops all stored last-active
-    /// timestamps to `NEG_INFINITY` so the first frame after load cannot
-    /// activate a stale volume via the sticky window.
-    pub fn clear_for_level_load(&mut self) {
-        self.last_active_time.fill(f64::NEG_INFINITY);
-    }
-
     /// Compute the per-frame `active_mask` as `(cell_mask & live_mask) |
     /// sticky`, where `sticky` is the set of live slots last seen within
     /// `FOG_HYSTERESIS_SECONDS`, dense-pack the surviving canonical slots into
@@ -644,13 +655,14 @@ impl FogPass {
     /// allocation occurs on the steady-state per-frame path.
     pub fn repack_active(
         &mut self,
+        level: &mut FogLevelState,
         queue: &crate::render::uploads::UploadQueue,
         cell_mask: u32,
         now_seconds: f64,
     ) {
         let active_mask = compute_active_mask_with_hysteresis(
-            &mut self.last_active_time,
-            self.live_mask,
+            &mut level.last_active_time,
+            level.live_mask,
             cell_mask,
             now_seconds,
             FOG_HYSTERESIS_SECONDS,
@@ -665,11 +677,11 @@ impl FogPass {
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            if let Some(v) = self.canonical_volumes.get(i) {
+            if let Some(v) = level.canonical_volumes.get(i) {
                 let mut packed = *v;
                 let plane_offset = self.planes_scratch.len() as u32;
                 packed.plane_offset = plane_offset;
-                if let Some(planes) = self.canonical_planes.get(i) {
+                if let Some(planes) = level.canonical_planes.get(i) {
                     // Trust the bridge's plane_count but clamp against the
                     // canonical plane list to defend against drift; on truncation
                     // we must also correct the GPU-bound count so the shader
@@ -706,12 +718,6 @@ impl FogPass {
         // frame. Safe: the shader loops `0..active_count` and gates plane reads
         // on `plane_count > 0u`, so stale slots / stale plane bytes are never
         // observed.
-    }
-
-    /// Number of canonical fog-volume slots currently loaded. Used by callers
-    /// to derive the `DrawAll` cell-mask (`(1 << canonical_count) - 1`).
-    pub fn canonical_volume_count(&self) -> u32 {
-        self.canonical_volumes.len() as u32
     }
 
     /// Upload the per-frame fog params (inv view-proj, camera pos, step size).
@@ -773,6 +779,14 @@ impl FogPass {
             queue.write_buffer(&self.spots_buffer, 0, bytes);
         }
         self.spot_count = capped as u32;
+    }
+
+    /// Zero the per-frame volume, spot and point counts a released level
+    /// left, so no frame reads its records. CPU-only.
+    pub fn clear_frame_counts(&mut self) {
+        self.active_count = 0;
+        self.spot_count = 0;
+        self.point_count = 0;
     }
 
     /// Current low-res scatter target dimensions.

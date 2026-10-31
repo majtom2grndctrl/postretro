@@ -492,7 +492,20 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let Some(state) = full.sh_streaming.as_mut() else {
+        let Some((state, level)) = full.level.as_mut().and_then(|level| {
+            let super::LevelResourceSet {
+                sh_streaming,
+                sh_volume_resources,
+                promoted_static_weight_buffer,
+                ..
+            } = level;
+            sh_streaming.as_mut().map(|state| {
+                (
+                    state,
+                    (sh_volume_resources, &*promoted_static_weight_buffer),
+                )
+            })
+        }) else {
             return Ok(ShDrainOutcome {
                 dropped: batch
                     .ready
@@ -502,17 +515,13 @@ impl Renderer {
                 ..ShDrainOutcome::default()
             });
         };
-        state.drain(
-            device,
-            queue,
-            &mut full.sh_volume_resources,
-            &full.promoted_static_weight_buffer,
-            batch,
-        )
+        state.drain(device, queue, level.0, level.1, batch)
     }
 
     pub fn sh_residency_snapshot(&self) -> Option<ShResidencySnapshot> {
         self.full()
+            .level
+            .as_ref()?
             .sh_streaming
             .as_ref()
             .map(ShResidencyState::snapshot)

@@ -214,8 +214,13 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        // Ghost bounds resolve through the active level's mover geometry.
+        let Some(level) = full.level.as_ref() else {
+            full.kinematic_ghost.clear();
+            return;
+        };
         full.kinematic_ghost
-            .upload(device, queue, instances, &full.kinematic_brush);
+            .upload(device, queue, instances, &level.kinematic);
     }
 
     /// Replace this frame's projectile billboard ghosts, as `(collection,
@@ -262,9 +267,16 @@ impl Renderer {
         full.kinematic_mover_shadow_draws.clear();
         full.kinematic_mover_shadow_draws
             .extend_from_slice(shadow_instances);
+        // Mover ids resolve through the active level's geometry; with none
+        // installed no mover draws.
+        let Some(level) = full.level.as_ref() else {
+            full.kinematic_brush.clear_frame_draws();
+            return;
+        };
         full.kinematic_brush.upload_instances(
             device,
             queue,
+            &level.kinematic,
             &full.kinematic_mover_draws,
             &full.kinematic_mover_shadow_draws,
         );
@@ -371,10 +383,16 @@ impl Renderer {
     /// to `[0,1]` using the diffuse-texture dimensions just installed by
     /// `install_textures`. Runs on the main thread between `install_textures`
     /// and `install_level_geometry`. Reads `texture.width()`/`height()` off
-    /// the wgpu textures owned by `self.loaded_textures` so the dimensions
-    /// always match the actual upload.
+    /// the wgpu textures `install_textures` staged (else the active level's)
+    /// so the dimensions always match the actual upload.
     pub fn normalize_world_uvs(&self, world: &mut postretro_level_loader::LevelWorld) {
-        let texture_dimensions = loaded_texture_dimensions(&self.full().loaded_textures);
+        let full = self.full();
+        let loaded: &[LoadedTexture] = match (&full.pending_textures, &full.level) {
+            (Some(pending), _) => &pending.loaded_textures,
+            (None, Some(level)) => &level.loaded_textures,
+            (None, None) => &[],
+        };
+        let texture_dimensions = loaded_texture_dimensions(loaded);
         normalize_static_world_uvs(
             &mut world.vertices,
             &world.indices,

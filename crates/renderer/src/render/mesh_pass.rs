@@ -133,19 +133,9 @@ pub struct MeshPass {
     /// be rebuilt on buffer reallocation (level load).
     light_bind_group_layout: wgpu::BindGroupLayout,
 
-    /// Group 2 bind group. `None` until the renderer first calls
-    /// [`MeshPass::rebuild_light_bind_group`] with the runtime light buffers, and
-    /// rebuilt whenever those buffers are reallocated (level load). The forward
-    /// mesh draw sets it at group 2; b0–b3 alias renderer-owned buffers, b4 is
-    /// [`MeshPass::light_params_buffer`].
-    light_bind_group: Option<wgpu::BindGroup>,
-
-    /// Group 2 for the planar mirror's draws: the same bindings over the
-    /// mirror's light records, which alone carry the shadow slots of lights
-    /// only the mirror reaches (`rendering_pipeline.md` §7.3a, Pool rank).
-    /// Built beside [`Self::light_bind_group`].
-    mirror_light_bind_group: Option<wgpu::BindGroup>,
-
+    // The group-2 bind groups themselves (main view and planar mirror) are
+    // level resources: [`MeshPass::light_bind_groups`] builds them over one
+    // load's light buffers into that load's `LevelResourceSet`.
     /// Whether this frame's mirror draws read the mirror's light records:
     /// set by slot assignment each frame, true only while a mirror-only light
     /// holds a shadow slot.

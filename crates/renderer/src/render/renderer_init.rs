@@ -265,7 +265,6 @@ impl Renderer {
             cube_array_supported,
             bloom_render_profile,
             spot_shadow_map_resolution,
-            surface_depth_quality,
             pipeline_build_gate,
         )?;
         Ok(Self {
@@ -333,7 +332,6 @@ impl Renderer {
             self.cube_array_supported,
             self.bloom_render_profile,
             self.spot_shadow_map_resolution,
-            self.surface_depth_quality,
             None,
         )?;
         self.full = Some(Box::new(full));
@@ -347,10 +345,11 @@ impl Renderer {
         // kept default tier keeps its march; any other resets it to its own.
         let quality = self.reflection_quality;
         let Self { device, full, .. } = self;
+        // A freshly built full renderer holds no level set, so no fluid.
         full.as_mut()
             .expect("full renderer was just built")
             .fluid_surface
-            .set_reflection_quality(device, quality);
+            .set_reflection_quality(None, device, quality);
         self.queue.enable();
         self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");

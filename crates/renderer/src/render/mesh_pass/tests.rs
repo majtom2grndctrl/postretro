@@ -408,9 +408,11 @@ fn skinned_mesh_b0_three_region_contract_is_documented() {
     let rust_src = include_str!("lighting.rs");
     let documented_contract = rust_src
         .split_once("/// b0 uses three semantic intervals:")
-        .and_then(|(_, after_heading)| after_heading.split_once("pub fn rebuild_light_bind_group"))
+        .and_then(|(_, after_heading)| {
+            after_heading.split_once("pub(in crate::render) fn light_bind_groups")
+        })
         .map(|(contract, _)| contract)
-        .expect("rebuild_light_bind_group interval documentation must remain present");
+        .expect("light_bind_groups interval documentation must remain present");
     for interval in [
         "- `[0, dynamic_light_count)`: dynamic prefix from `filter_dynamic_lights`;",
         "- `[dynamic_light_count, scripted_light_count)`: raw animated-baked tail;",

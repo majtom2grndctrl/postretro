@@ -15,6 +15,9 @@ impl Renderer {
     ) -> Vec<postretro_render_cpu::fog_volume::FogSpotLight> {
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
         let full = self.full();
+        let Some(level) = full.level.as_ref() else {
+            return Vec::new();
+        };
         let slot_assignment = &full.spot_shadow_pool.slot_assignment;
         if slot_assignment.is_empty() {
             return Vec::new();
@@ -23,38 +26,38 @@ impl Renderer {
         // each per-slot brightness read is O(1) instead of scanning
         // `level_light_source_indices`.
         let level_light_index_lookup =
-            build_level_light_index_lookup(&full.level_light_source_indices);
+            build_level_light_index_lookup(&level.level_light_source_indices);
         let mut out = Vec::new();
         for (light_idx, &slot) in slot_assignment.iter().enumerate() {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
             if shadow_candidate_is_promoted_baked(
-                &full.shadow_candidate_selection_indices,
-                &full.shadow_candidate_animated_baked_indices,
+                &level.shadow_candidate_selection_indices,
+                &level.shadow_candidate_animated_baked_indices,
                 light_idx,
             ) {
                 continue;
             }
             // Fog is main-view only: a light the planar mirror alone holds a
             // slot for stays out, as an unslotted spot does.
-            if full.mirror_lighting.is_mirror_only(light_idx) {
+            if level.mirror_lighting.is_mirror_only(light_idx) {
                 continue;
             }
-            let Some(light) = full.shadow_candidate_lights.get(light_idx) else {
+            let Some(light) = level.shadow_candidate_lights.get(light_idx) else {
                 continue;
             };
             if !matches!(light.light_type, postretro_level_loader::LightType::Spot) {
                 continue;
             }
-            let multiplier = full
+            let multiplier = level
                 .shadow_candidate_source_indices
                 .get(light_idx)
                 .and_then(|&source_index| {
                     level_brightness_for_candidate_indexed(
                         &level_light_index_lookup,
                         source_index,
-                        &full.light_effective_brightness,
+                        &level.light_effective_brightness,
                     )
                 })
                 .unwrap_or(1.0);
@@ -68,7 +71,7 @@ impl Renderer {
                 light.origin[1] as f32,
                 light.origin[2] as f32,
             );
-            if !sphere_intersects_any_fog_aabb(center, light.falloff_range, &full.active_fog_aabbs)
+            if !sphere_intersects_any_fog_aabb(center, light.falloff_range, &level.active_fog_aabbs)
             {
                 continue;
             }
@@ -98,25 +101,27 @@ impl Renderer {
     /// Empty input clears the list → `FogPass::active` returns false.
     pub fn upload_fog_volumes(&mut self, bytes: &[u8], planes: &[Vec<[f32; 4]>], live_mask: u32) {
         let stride = std::mem::size_of::<postretro_render_cpu::fog_volume::FogVolume>();
+        // Fog volumes are the active level's; with none installed there is
+        // no canonical list to replace.
+        let Some(level) = self.full_mut().level.as_mut() else {
+            return;
+        };
         if bytes.is_empty() {
-            self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
+            level.fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         if !bytes.len().is_multiple_of(stride) {
             log::warn!(
-                "[Renderer] upload_fog_volumes: byte length {} is not a multiple of \
-                 FogVolume stride {}; skipping.",
+                "[Renderer] upload_fog_volumes: byte length {} is not a multiple of                  FogVolume stride {}; skipping.",
                 bytes.len(),
                 stride,
             );
             // Zero the canonical list — otherwise stale volumes from the previous frame persist.
-            self.full_mut().fog.set_canonical_volumes(&[], &[], 0);
+            level.fog.set_canonical_volumes(&[], &[], 0);
             return;
         }
         let volumes: &[postretro_render_cpu::fog_volume::FogVolume] = bytemuck::cast_slice(bytes);
-        self.full_mut()
-            .fog
-            .set_canonical_volumes(volumes, planes, live_mask);
+        level.fog.set_canonical_volumes(volumes, planes, live_mask);
     }
 
     /// Installs per-cell fog visibility masks for a freshly loaded level and
@@ -132,8 +137,11 @@ impl Renderer {
     /// a different seam that preserves hysteresis state.
     pub fn install_fog_cell_masks_for_level(&mut self, masks: Option<Vec<u32>>) {
         let full = self.full_mut();
-        full.fog_cell_masks = masks;
-        full.fog.clear_for_level_load();
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
+        level.fog_cell_masks = masks;
+        level.fog.clear_for_level_load();
     }
 
     /// Must be called after bridge AABB cache is populated and before `collect_fog_spot_lights`.
@@ -141,8 +149,11 @@ impl Renderer {
     /// Empty slice clears the cache so spots aren't kept against a volume that turned off.
     pub fn set_fog_aabbs(&mut self, aabbs: &[(Vec3, Vec3)]) {
         let full = self.full_mut();
-        full.active_fog_aabbs.clear();
-        full.active_fog_aabbs.extend_from_slice(aabbs);
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
+        level.active_fog_aabbs.clear();
+        level.active_fog_aabbs.extend_from_slice(aabbs);
     }
 
     /// Bytes: tightly packed `[FogPointLight]`. Empty input zeroes `point_count`.

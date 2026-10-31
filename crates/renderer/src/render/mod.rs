@@ -111,6 +111,9 @@ mod geometry_ranges;
 mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
+mod level_resource_set;
+#[cfg(test)]
+mod level_resource_set_tests;
 mod material_plan;
 mod pipeline_layout;
 mod renderer_capture;
@@ -203,6 +206,7 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures};
 pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,

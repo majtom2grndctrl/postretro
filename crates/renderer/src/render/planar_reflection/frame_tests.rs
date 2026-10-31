@@ -367,9 +367,9 @@ fn planar_gpu_mirror_shows_this_frames_object() {
     };
     let device = renderer.device.clone();
     renderer
-        .full_mut()
-        .kinematic_brush
-        .install_geometry(&device, Some(&mover_geometry()), 1);
+        .level_mut()
+        .kinematic
+        .replace_geometry(&device, &mover_geometry(), 1);
     let view = fixture::base_view();
     select(&mut renderer, view, 0.0);
     let poses = [-1.3_f32, 1.2];

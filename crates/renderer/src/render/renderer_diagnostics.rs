@@ -239,7 +239,10 @@ impl Renderer {
     /// controls or a disabled-state label.
     #[cfg(feature = "dev-tools")]
     pub fn has_sh_volume(&self) -> bool {
-        self.full().sh_volume_resources.present || self.full().sh_streaming.is_some()
+        self.full()
+            .level
+            .as_ref()
+            .is_some_and(|level| level.sh_volume_resources.present || level.sh_streaming.is_some())
     }
 
     /// `true` while a streamed SH residency session is active. Gates
@@ -247,7 +250,10 @@ impl Renderer {
     /// renderer's own residency mirrors and has no meaning without one.
     #[cfg(feature = "dev-tools")]
     pub fn sh_streaming_active(&self) -> bool {
-        self.full().sh_streaming.is_some()
+        self.full()
+            .level
+            .as_ref()
+            .is_some_and(|level| level.sh_streaming.is_some())
     }
 
     /// `true` when the loaded map carries a baked SDF static-occluder atlas.
@@ -257,7 +263,10 @@ impl Renderer {
     /// cleanly to `main`-equivalent lighting.
     #[allow(dead_code)]
     pub fn has_sdf_atlas(&self) -> bool {
-        self.full().sdf_atlas_resources.present
+        self.full()
+            .level
+            .as_ref()
+            .is_some_and(|level| level.sdf_atlas_resources.present)
     }
 
     /// Lightmap bake mode, recorded from the id-22 header. The compiler
@@ -266,14 +275,23 @@ impl Renderer {
     /// static term, so it renders as the baked irradiance with no shadow
     /// term. A public diagnostic accessor; the forward pass does not consume it.
     pub fn lightmap_mode(&self) -> postretro_level_loader::LightmapMode {
-        self.full().lightmap_mode
+        // `Shadowed` when no level is installed.
+        self.full()
+            .level
+            .as_ref()
+            .map_or(postretro_level_loader::LightmapMode::Shadowed, |level| {
+                level.lightmap_mode
+            })
     }
 
     /// Per-animated-light delta-volume metadata for the SH diagnostic overlay.
     /// Empty when the map has no delta SH volumes.
     #[cfg(feature = "dev-tools")]
     pub fn sh_delta_volumes(&self) -> &[sh_volume::DeltaVolumeMeta] {
-        &self.full().sh_delta_volumes_meta
+        self.full()
+            .level
+            .as_ref()
+            .map_or(&[], |level| level.sh_delta_volumes_meta.as_slice())
     }
 
     /// Emits SH diagnostic line segments into the renderer's per-frame debug-line
@@ -299,12 +317,15 @@ impl Renderer {
         // Drive the live atlas readback only while the irradiance overlay is
         // actually drawn — every other frame it costs nothing.
         let full = self.full_mut();
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let want_live_irradiance = state.show_markers
             && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
             && state.cell_radius > 0.0
-            && full.sh_volume_resources.present;
-        full.sh_probe_readback.set_wanted(want_live_irradiance);
-        if let Some(streaming) = full.sh_streaming.as_mut() {
+            && level.sh_volume_resources.present;
+        level.sh_probe_readback.set_wanted(want_live_irradiance);
+        if let Some(streaming) = level.sh_streaming.as_mut() {
             streaming.set_probe_overlay(
                 state.show_markers
                     && state.marker_mode == sh_diagnostics::MarkerMode::Irradiance
@@ -316,9 +337,9 @@ impl Renderer {
 
         sh_diagnostics::emit(
             state,
-            &full.sh_volume_resources,
-            full.sh_streaming.as_ref(),
-            &full.sh_delta_volumes_meta,
+            &level.sh_volume_resources,
+            level.sh_streaming.as_ref(),
+            &level.sh_delta_volumes_meta,
             camera_pos,
             world,
             visible_cell_mask,
@@ -595,10 +616,13 @@ impl Renderer {
     #[allow(dead_code)]
     pub fn bvh_overlay_leaf_indices(&self, visible_cells: Option<&[bool]>) -> Vec<usize> {
         let full = self.full();
+        let Some(level) = full.level.as_ref() else {
+            return Vec::new();
+        };
         if !full.bvh_overlay.visible {
             return Vec::new();
         }
-        select_bvh_overlay_leaf_indices(&full.bvh_leaves, full.bvh_overlay.budget, visible_cells)
+        select_bvh_overlay_leaf_indices(&level.bvh_leaves, full.bvh_overlay.budget, visible_cells)
     }
 
     /// Emit compiled BVH leaf AABBs into the per-frame debug-line buffer.
@@ -609,8 +633,11 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_bvh_overlay_diagnostics(&mut self, visible_cells: Option<&[bool]>) {
         let full = self.full_mut();
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         emit_bvh_overlay(
-            &full.bvh_leaves,
+            &level.bvh_leaves,
             full.bvh_overlay,
             visible_cells,
             &mut full.debug_lines,

@@ -3,9 +3,8 @@
 // See: context/lib/rendering_pipeline.md
 
 use super::install_pipelines::{self, PipelineBuildGate};
-use super::renderer_types::{FullRenderer, PromotedBakedLightState};
+use super::renderer_types::FullRenderer;
 use super::*;
-use crate::render::gpu_create::GpuCreate;
 
 /// Full-phase construction: builds every steady-state pipeline/pass/resource from
 /// boot state alone (no level loaded — `geometry = None` throughout). Factored out
@@ -21,59 +20,15 @@ pub(crate) fn build_full_renderer(
     cube_array_supported: bool,
     bloom_render_profile: BloomRenderProfile,
     spot_shadow_map_resolution: u32,
-    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
     pipeline_build_gate: Option<PipelineBuildGate>,
 ) -> Result<FullRenderer> {
-    // Dummy buffers until `install_level_geometry` replaces them.
-    let geometry: Option<&LevelGeometry> = None;
     // Every scene target builds at the committed scene extent, so a full init
     // after surface recreation or a saved render resolution needs no rebuild.
     let scene = extents.scene;
 
-    let has_geometry = geometry.is_some_and(|g| !g.vertices.is_empty() && !g.indices.is_empty());
-
-    let WorldVertexBuffers {
-        vertex_buffer,
-        spec_owner_buffer,
-        index_buffer,
-        index_count,
-        wireframe_index_buffer,
-        wireframe_index_count,
-    } = build_world_vertex_buffers(device, geometry);
-
     let view_proj = build_default_view_projection(scene.aspect());
-    let full_lights = geometry.map(|g| g.lights).unwrap_or(&[]);
-    let full_influences = geometry.map(|g| g.light_influences).unwrap_or(&[]);
-    let filtered_level_lights = filter_dynamic_lights(full_lights, full_influences);
-    let level_lights = filtered_level_lights.lights;
-    let dynamic_influences = filtered_level_lights.influences;
-    let level_light_source_indices = filtered_level_lights.source_indices;
-    let entity_shadow_indices = geometry.map(|g| g.entity_shadow_lights).unwrap_or(&[]);
-    let (animated_baked_descriptor_indices, animated_baked_affinity_lights) =
-        geometry.map_or((&[][..], &[][..]), LevelGeometry::animated_baked_roster);
-    let animated_baked_candidates = animated_baked_shadow_candidates_with_direct_delta(
-        full_lights,
-        full_influences,
-        animated_baked_descriptor_indices,
-        animated_baked_affinity_lights,
-    );
-    let selected_static = filter_selected_static_entity_shadow_lights(
-        full_lights,
-        full_influences,
-        entity_shadow_indices,
-    );
-    let filtered_shadow_candidates = filter_entity_shadow_candidates_with_selection(
-        full_lights,
-        full_influences,
-        entity_shadow_indices,
-        &animated_baked_candidates,
-    );
-    let shadow_candidate_lights = filtered_shadow_candidates.lights;
-    let shadow_candidate_influences = filtered_shadow_candidates.influences;
-    let shadow_candidate_source_indices = filtered_shadow_candidates.source_indices;
-    let shadow_candidate_selection_indices = filtered_shadow_candidates.selection_indices;
-    let shadow_candidate_animated_baked_indices = filtered_shadow_candidates.animated_baked_indices;
-    let light_count = level_lights.len() as u32;
+    // No level: every level resource belongs to the first install's set.
+    let light_count = 0;
     let ambient_floor = DEFAULT_AMBIENT_FLOOR;
     let sh_fast_env = std::env::var("POSTRETRO_SH_FAST").ok();
     let probe_occlusion_enabled =
@@ -88,16 +43,6 @@ pub(crate) fn build_full_renderer(
         lighting_bind_group_layout,
     } = build_uniform_bind_groups(device, &uniform_data);
 
-    for (idx, light) in level_lights.iter().enumerate() {
-        if light.is_dynamic && light.light_type == postretro_level_loader::LightType::Directional {
-            log::warn!(
-                "[Renderer] Dynamic directional light (light_sun) at index {} found — not supported. \
-                     Will render unshadowed (diffuse + specular only).",
-                idx
-            );
-        }
-    }
-
     // BGL owned here so forward pipeline layout and shadow pool bind group share it.
     // The BGL carries bindings 3 (SDF shadow factor) and 4 (scene depth) — both
     // owned outside the pool. Binding 5 (point-light cube-array depth) is present
@@ -107,36 +52,6 @@ pub(crate) fn build_full_renderer(
     // bind group can reference those targets directly at construction.
     let spot_shadow_bgl = SpotShadowPool::bind_group_layout(device, cube_array_supported);
 
-    let LightingResources {
-        lights_buffer,
-        influence_buffer,
-        spec_lights_buffer,
-        chunk_grid_info_buffer,
-        chunk_grid_offsets_buffer,
-        chunk_grid_indices_buffer,
-        lighting_bind_group,
-    } = build_lighting_bind_group(
-        device,
-        &lighting_bind_group_layout,
-        &level_lights,
-        &dynamic_influences,
-        geometry,
-    );
-    // The planar mirror's copy of the light records and its forward group 2,
-    // over the same influence, spec-light and chunk-grid buffers.
-    let mirror_lighting = renderer_mirror_lights::MirrorLighting::new(
-        device,
-        &lighting_bind_group_layout,
-        &lights_buffer,
-        &renderer_mirror_lights::SharedLightingBuffers {
-            influence: &influence_buffer,
-            spec_lights: &spec_lights_buffer,
-            chunk_grid_info: &chunk_grid_info_buffer,
-            chunk_grid_offsets: &chunk_grid_offsets_buffer,
-            chunk_grid_indices: &chunk_grid_indices_buffer,
-        },
-    );
-
     // Sampler pool seeded with the placeholder's mip count of `1`. The
     // pool grows in `install_textures` once `LoadedTexture::mip_count`
     // values arrive from the .prm sidecars. Placeholders always pick up
@@ -145,29 +60,6 @@ pub(crate) fn build_full_renderer(
     mip_count_aniso_samplers.insert(1, create_mip_aniso_sampler(device, 1));
     let mut mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler> = HashMap::new();
     mip_count_character_model_samplers.insert(1, create_mip_character_model_sampler(device, 1));
-
-    // Construct an initial placeholder bind group so the world pipeline
-    // has a bind group bound even before a level loads. Replaced wholesale
-    // by `install_textures` when a `.prl` payload arrives.
-    let (loaded_textures, gpu_textures) = build_placeholder_textures(
-        device,
-        queue,
-        &texture_bind_group_layout,
-        &mip_count_aniso_samplers,
-        surface_depth_quality,
-    );
-
-    let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> =
-        geometry.map(|g| g.bvh.leaves.clone()).unwrap_or_default();
-    let cell_draw_index: Option<postretro_level_loader::CellDrawIndex> =
-        geometry.and_then(|g| g.cell_draw_index.cloned());
-    // No level, no cull: the BVH cull and its candidate path are install-time
-    // families, built over the renderer's install pipelines by the first
-    // level install.
-    let compute_cull: Option<ComputeCullPipeline> = None;
-    let candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline> = None;
-    let shadow_world =
-        super::shadow_world_draws::ShadowWorldDraws::install(geometry.map(|g| g.bvh), index_count);
 
     let (_depth_texture, depth_view) = create_depth_texture(device, scene.width, scene.height);
     let ghost_depth = ghost_depth::GhostDepthTarget::new(device, scene.width, scene.height);
@@ -183,32 +75,23 @@ pub(crate) fn build_full_renderer(
         bloom_render_profile,
     );
 
-    let scripted_light_capacity = scripted_light_capacity(
-        full_lights.len(),
-        level_lights.len(),
-        animated_baked_descriptor_indices,
-    );
+    // The no-level SH volume exists only for its bind-group layouts, which
+    // the pipelines below and every level's SH volume share.
+    let scripted_light_capacity = scripted_light_capacity(0, 0, &[]);
     let mut sh_allocation_ledger = sh_residency::ShAllocationLedger::new();
     let sh_volume_resources = ShVolumeResources::new(
         device,
         queue,
         ShVolumeSections {
-            sh: geometry.and_then(|g| g.sh_volume),
-            stream_base_present: geometry
-                .is_some_and(|g| matches!(&g.sh_storage, LevelGeometryShStorage::Streaming(_))),
-            stream_animation_descriptors: geometry.and_then(|g| match &g.sh_storage {
-                LevelGeometryShStorage::Legacy => None,
-                LevelGeometryShStorage::Streaming(manifest) => {
-                    Some(manifest.base().animation_descriptors.as_slice())
-                }
-            }),
-            indirect_delta_present: geometry.and_then(|g| g.delta_sh_volumes).is_some(),
-            direct: geometry.and_then(|g| g.direct_sh_volume),
-            direct_delta: geometry.and_then(|g| g.direct_sh_delta_volumes),
-            animated_direct_delta: geometry.and_then(|g| g.animated_direct_sh_delta_volumes),
-            billboard_direct_scatter: geometry.and_then(|g| g.billboard_direct_scatter_volume),
-            animated_billboard_direct_scatter_delta: geometry
-                .and_then(|g| g.animated_billboard_direct_scatter_delta_volumes),
+            sh: None,
+            stream_base_present: false,
+            stream_animation_descriptors: None,
+            indirect_delta_present: false,
+            direct: None,
+            direct_delta: None,
+            animated_direct_delta: None,
+            billboard_direct_scatter: None,
+            animated_billboard_direct_scatter_delta: None,
         },
         // Runtime-spawned lights append after the full-authored prefix.
         scripted_light_capacity,
@@ -216,97 +99,21 @@ pub(crate) fn build_full_renderer(
         &mut sh_allocation_ledger,
     );
 
-    let sdf_atlas_resources =
-        SdfAtlasResources::new(device, queue, geometry.and_then(|g| g.sdf_atlas));
-    let lightmap_mode = geometry
-        .map(|g| g.lightmap_mode)
-        .unwrap_or(postretro_level_loader::LightmapMode::Shadowed);
+    // The no-level SDF atlas exists only for its bind-group layout.
+    let sdf_atlas_resources = SdfAtlasResources::new(device, queue, None);
 
-    // SH compose keeps its pipeline, not its instance: the no-level renderer
-    // holds the disabled form, and each level install binds the pipeline the
-    // upload thread built.
-    let sh_compose = ShComposeResources::disabled();
-
-    #[cfg(feature = "dev-tools")]
-    let sh_delta_volumes_meta =
-        collect_delta_volume_meta(geometry.and_then(|g| g.delta_sh_volumes));
-
-    #[cfg(feature = "dev-tools")]
-    let sh_probe_readback = sh_diagnostics::ShProbeReadback::new(
-        device,
-        sh_volume_resources.grid_dimensions,
-        sh_volume_resources.atlas_dimensions,
-        sh_volume_resources.tile_dimension,
-        sh_volume_resources.tile_border,
-        sh_volume_resources.atlas_tiles_per_row,
-        sh_volume_resources.tiles_per_layer,
-        sh_volume_resources.atlas_layer_count,
-        &sh_volume_resources.probe_indirection_words,
-    );
-
-    let animated_lm_debug = animated_lightmap::AnimatedLmDebugConfig::from_env();
-    // Full init never carries a level's payloads (`install_level_geometry`
-    // plans the pool and uploads them), so it binds the placeholder pool and
-    // the non-dispatching dummy atlas, which needs no pipeline. Level install
-    // replaces both.
-    let static_pool = crate::lighting::lightmap::StaticPool::Absent;
-    let animated_lightmap = animated_lightmap::AnimatedLightmapResources::dummy(
-        device,
-        &sh_volume_resources.animation,
-        animated_lm_debug,
-    );
-    let animated_block_table = crate::lighting::lightmap::animated_block_table_bytes(
-        animated_lightmap::installed_block_table_section(
-            animated_lightmap.is_active(),
-            geometry.and_then(|g| g.animated_light_weight_maps),
-        ),
-    );
-
-    // Group 4: placeholder lightmap pool + animated atlas (real or 1×1 zero
-    // dummy).
-    // Group 6: the vertex block table.
+    // Group 4: the lightmap pool + animated atlas; group 6: the vertex block
+    // table. Layouts only: every level's set builds its own groups.
     let lightmap_bind_group_layout = crate::lighting::lightmap::bind_group_layout(device);
     let block_table_bind_group_layout =
         crate::lighting::lightmap::block_table_bind_group_layout(device);
-    let lightmap_resources = LightmapResources::new(
-        device,
-        queue,
-        None,
-        None,
-        &static_pool,
-        postretro_level_loader::GpuLightingPayloads::default(),
-        &lightmap_bind_group_layout,
-        &block_table_bind_group_layout,
-        &animated_lightmap.forward_view,
-        &animated_lightmap.direction_forward_view,
-        &animated_block_table,
-        0,
-    );
-    let shadowmask_present = lightmap_resources.shadowmask_present;
-    let lightmap_residency_report = LightmapResidencyReport::new(
-        lightmap_resources.residency.clone(),
-        animated_lightmap.residency_rows(),
-    );
 
-    // SDF half-res shadow pass (Task 4). Always allocated — dispatch is
-    // gated on `sdf_atlas_resources.present`. Owns the half-res factor
-    // target and its own group-1 bind group.
-    let sdf_shadow_sh_grid = build_sdf_shadow_sh_grid(
-        geometry.and_then(|g| g.sh_volume),
-        sh_volume_resources.present,
-    );
+    // SDF half-res shadow pass (Task 4). Always allocated: it owns the
+    // half-res factor target the shadow pool's group 5 binds. Its per-level
+    // groups live in each level's set; dispatch needs one.
     let sdf_shadow_pass = SdfShadowPass::new(
         device,
         &sdf_atlas_resources.bind_group_layout,
-        &depth_view,
-        sh_volume_resources.make_depth_moment_view(),
-        sdf_shadow::SdfShadowLightBuffers {
-            spec_lights: &spec_lights_buffer,
-            chunk_grid_info: &chunk_grid_info_buffer,
-            chunk_offsets: &chunk_grid_offsets_buffer,
-            chunk_indices: &chunk_grid_indices_buffer,
-        },
-        sdf_shadow_sh_grid,
         scene.width,
         scene.height,
     );
@@ -338,15 +145,12 @@ pub(crate) fn build_full_renderer(
     // fixed-projection promoted cache. Construction precedes mesh/kinematic
     // bind-group wiring so their sampleable cache bindings are valid even for
     // an animated-only map.
-    let promoted_depth_cache = (!entity_shadow_indices.is_empty()
-        || !animated_baked_candidates.is_empty())
-    .then(|| PromotedDepthCache::new(device, cube_array_supported, spot_shadow_map_resolution));
+    // No level, no promotion candidate: the first install allocates the
+    // promoted cache when its level has a source.
+    let promoted_depth_cache: Option<PromotedDepthCache> = None;
     let dynamic_depth_cache = DynamicDepthCacheGpu::new(
         device,
-        dynamic_depth_cache::DynamicCacheAllocation::for_lights(
-            &shadow_candidate_lights,
-            cube_array_supported,
-        ),
+        dynamic_depth_cache::DynamicCacheAllocation::for_lights(&[], cube_array_supported),
         spot_shadow_map_resolution,
     );
     {
@@ -419,7 +223,7 @@ pub(crate) fn build_full_renderer(
     // an un-sampled run renders in bind pose. Each frame `plan_and_upload`
     // samples every instance's clip into its palette run before the shadow
     // depth loop; `record_draws` then records the forward draw.
-    let mut mesh_pass = mesh_pass::MeshPass::new(
+    let mesh_pass = mesh_pass::MeshPass::new(
         device,
         DEPTH_FORMAT,
         // The depth-only skinned pipeline writes the shadow-map depth format
@@ -438,41 +242,9 @@ pub(crate) fn build_full_renderer(
         cube_array_supported,
     );
     mesh_pass.upload_identity_palette(queue);
-    // Build the mesh group-2 dynamic-direct light bind group over the SAME
-    // runtime buffers the forward `lighting_bind_group` binds: the
-    // `is_dynamic`-filtered `lights_buffer` (b0), the influence-volume buffer
-    // (b1), and forward's scripted-descriptor (b2) / anim-sample (b3) buffers.
-    // Rebuilt on level load wherever those buffers reallocate (see
-    // `set_geometry`).
-    // b5–b8 initially bind the SAME pool-owned shadow resources forward uses at
-    // group 5: the spot pool's D2-array depth view (b5), comparison sampler
-    // (b6), and light-space-matrices buffer (b7), plus the cube pool's
-    // `CubeArray` sampling view (b8 — `Some` iff `cube_array_supported`, the
-    // `Some`-iff-layout invariant). A later level install rebinds these entries
-    // when it replaces the spot pool for a pending quality change.
-    let promoted_spot_cache = promoted_depth_cache
-        .as_ref()
-        .map(PromotedDepthCache::spot_sampled_view)
-        .unwrap_or(&spot_shadow_pool.array_view);
-    let promoted_cube_cache = promoted_depth_cache
-        .as_ref()
-        .and_then(PromotedDepthCache::cube_sampled_view)
-        .or_else(|| cube_shadow_pool.as_ref().map(|pool| &pool.sampling_view));
-    mesh_pass.rebuild_light_bind_group(
-        device,
-        &lights_buffer,
-        mirror_lighting.lights_buffer(),
-        &influence_buffer,
-        &sh_volume_resources.scripted_light_descriptors,
-        &sh_volume_resources.animation.anim_samples,
-        &spot_shadow_pool.array_view,
-        &spot_shadow_pool.compare_sampler,
-        &spot_shadow_pool.matrices_buffer,
-        cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
-        promoted_spot_cache,
-        promoted_cube_cache,
-    );
-    let mut kinematic_brush = kinematic_brush::KinematicBrushPass::new(
+    // The mesh and mover group-2 light bind groups are level resources: each
+    // install builds them over its own light buffers into its set.
+    let kinematic_brush = kinematic_brush::KinematicBrushPass::new(
         device,
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
@@ -493,20 +265,6 @@ pub(crate) fn build_full_renderer(
         DEPTH_FORMAT,
         &uniform_bind_group_layout,
         &smoke_pass,
-    );
-    kinematic_brush.rebuild_light_bind_group(
-        device,
-        &lights_buffer,
-        mirror_lighting.lights_buffer(),
-        &influence_buffer,
-        &sh_volume_resources.scripted_light_descriptors,
-        &sh_volume_resources.animation.anim_samples,
-        &spot_shadow_pool.array_view,
-        &spot_shadow_pool.compare_sampler,
-        &spot_shadow_pool.matrices_buffer,
-        cube_shadow_pool.as_ref().map(|p| &p.sampling_view),
-        promoted_spot_cache,
-        promoted_cube_cache,
     );
     // Fluid surfaces share the camera, world-material, lighting and SH
     // layouts; their scene inputs (group 5) and the reflection pass's
@@ -553,35 +311,12 @@ pub(crate) fn build_full_renderer(
         &spot_shadow_bgl,
         cube_array_supported,
     );
-    if has_geometry {
-        log::info!(
-            "[Renderer] Textured pipeline ready: {} indices, {} textures, bvh_leaves={}",
-            index_count,
-            gpu_textures.len(),
-            bvh_leaves.len(),
-        );
-        log::info!(
-            "[Renderer] Wireframe overlay pipeline ready: {} line indices",
-            wireframe_index_count,
-        );
-    } else {
-        log::info!("[Renderer] Pipeline ready (no geometry loaded)");
-    }
+    log::info!("[Renderer] Pipeline ready (no geometry loaded)");
 
     #[cfg(feature = "dev-tools")]
     let debug_lines =
         debug_lines::DebugLineRenderer::new(device, DEPTH_FORMAT, 1, &uniform_bind_group_layout);
 
-    let promoted_static_weight_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-        label: Some("Promoted Static Light Weights"),
-        size: (entity_shadow_indices.len().max(1) * 4) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    // With no level, both compose families take their disabled forms, which
-    // need no pipeline.
-    let direct_sh_compose = DirectShComposeResources::disabled();
-    let billboard_direct_scatter_compose = BillboardDirectScatterComposeResources::disabled();
     // Full initialization builds only no-level bindings. Keep its accounting
     // local; `install_level_geometry` publishes the report for a real level.
     let _bootstrap_sh_residency = sh_allocation_ledger.finish();
@@ -600,19 +335,11 @@ pub(crate) fn build_full_renderer(
         pipeline,
         depth_prepass_pipeline,
         frame_timing,
-        vertex_buffer,
-        spec_owner_buffer,
-        index_buffer,
-        index_count,
+        level: None,
+        pending_textures: None,
+        lightmap_generation_floor: 0,
         uniform_buffer,
         uniform_bind_group,
-        lighting_bind_group,
-        mirror_lighting,
-        influence_buffer,
-        dynamic_light_capacity: level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE,
-        light_count,
-        animated_baked_light_count: animated_baked_descriptor_indices.len(),
-        total_light_count: light_count,
         mesh_dynamic_time: 0.0,
         frame_light_term_mask: LightTermMask::ALL,
         frame_indirect_scale: DEFAULT_INDIRECT_SCALE,
@@ -623,53 +350,11 @@ pub(crate) fn build_full_renderer(
         indirect_scale: DEFAULT_INDIRECT_SCALE,
         dynamic_direct_scale: DEFAULT_DYNAMIC_DIRECT_SCALE,
         probe_occlusion_enabled,
-        sh_volume_resources,
-        sh_residency_report: None,
-        lightmap_residency_report,
-        sh_streaming: None,
-        sdf_atlas_resources,
         sdf_shadow_pass,
-        lightmap_mode,
-        #[cfg(feature = "dev-tools")]
-        sh_delta_volumes_meta,
-        #[cfg(feature = "dev-tools")]
-        sh_probe_readback,
         #[cfg(feature = "dev-tools")]
         freeze_time: false,
         #[cfg(feature = "dev-tools")]
         frozen_time: 0.0,
-        sh_compose,
-        direct_sh_compose,
-        billboard_direct_scatter_compose,
-        lightmap_resources,
-        animated_lightmap,
-        lights_buffer,
-        last_lights_upload: Vec::new(),
-        authored_animated_tail: Vec::new(),
-        last_influence_upload: Vec::new(),
-        lights_pack_scratch: Vec::new(),
-        influence_pack_scratch: Vec::new(),
-        level_lights,
-        level_light_source_indices,
-        level_light_influences: dynamic_influences,
-        entity_shadow_lights: selected_static.lights,
-        entity_shadow_light_influences: selected_static.influences,
-        entity_shadow_light_source_indices: selected_static.source_indices,
-        entity_shadow_spec_light_indices: shadowmask::build_selection_spec_light_indices(
-            full_lights,
-            entity_shadow_indices,
-        ),
-        shadowmask_present,
-        forward_shadowmask_metadata_scratch: Vec::new(),
-        shadow_candidate_lights,
-        shadow_candidate_source_indices,
-        shadow_candidate_selection_indices,
-        shadow_candidate_animated_baked_indices,
-        shadow_candidate_influences,
-        light_effective_brightness: Vec::new(),
-        // Fail closed until the bridge supplies the current section-45 window
-        // maxima; raw roster length preserves holes in AnimatedBakedLights.
-        animated_light_window_brightness: vec![0.0; animated_baked_descriptor_indices.len()],
         last_camera_position: Vec3::ZERO,
         last_view_proj: Mat4::IDENTITY,
         spot_shadow_pool,
@@ -679,24 +364,6 @@ pub(crate) fn build_full_renderer(
         fluid_surface,
         planar_reflection,
         rigid_occluder_depth,
-        promoted_static_states: vec![
-            PromotedBakedLightState::default();
-            entity_shadow_indices.len()
-        ],
-        // Raw section-45 length, not compact candidate count: an unavailable
-        // bake-only MapLight leaves a hole but later candidates keep their
-        // AnimatedBakedLights index for the promotion weight and depth cache.
-        promoted_animated_states: vec![
-            PromotedBakedLightState::default();
-            animated_baked_descriptor_indices.len()
-        ],
-        promoted_baked_records: Vec::new(),
-        promoted_baked_cache_layers: Vec::new(),
-        promoted_static_weights: vec![0.0; entity_shadow_indices.len()],
-        promoted_static_weight_buffer,
-        promoted_static_weight_scratch: Vec::new(),
-        promoted_baked_last_update_time: None,
-        promotions_start_whole: false,
         promoted_depth_cache,
         promoted_depth_cache_missing_layer_warned: false,
         promoted_depth_cache_frame_plan: PromotedDepthCacheFramePlan::default(),
@@ -722,16 +389,8 @@ pub(crate) fn build_full_renderer(
         ghost_order: ghost_order::GhostDrawOrder::default(),
         screen_effects,
         bloom,
-        gpu_textures,
-        bvh_leaves,
-        cell_draw_index,
-        compute_cull,
-        candidate_cull,
-        shadow_world,
         wireframe_cull_status_pipeline,
         wireframe_visible_pipeline,
-        wireframe_index_buffer,
-        wireframe_index_count,
         wireframe_cull_status_bgl: wireframe_cull_status_layout,
         world_wireframe_mode: WorldWireframeMode::Off,
         wireframe_enabled: false,
@@ -758,12 +417,10 @@ pub(crate) fn build_full_renderer(
             .as_deref()
             == Some("1"),
         vsync_enabled: true,
-        has_geometry,
         debug_frame: 0,
         debug_prev_bitmask: (u32::MAX, u32::MAX),
         debug_prev_vp_hash: u32::MAX,
         debug_prev_visible: ("init", usize::MAX),
-        candidate_cull_oor_logged: false,
         camera_cull_diagnostics: crate::render::CameraCullDiagnostics::default(),
         spatial_diagnostics: crate::render::SpatialDiagnostics::default(),
         bvh_cull_diagnostics: None,
@@ -787,14 +444,10 @@ pub(crate) fn build_full_renderer(
         ui_theme: ui::theme::UiTheme::engine_default(),
         ui_theme_generation: 0,
         fog,
-        fog_cell_masks: None,
-        active_fog_aabbs: Vec::new(),
         texture_bind_group_layout,
         lighting_bind_group_layout,
         mip_count_aniso_samplers,
         mip_count_character_model_samplers,
-        loaded_textures,
-        stored_texture_materials: Vec::new(),
         upload_thread,
         install_pipelines,
         #[cfg(feature = "dev-tools")]

@@ -15,7 +15,9 @@ pub struct UploadedWorldTextures {
 }
 
 impl Renderer {
-    /// Rebuilds all material bind groups from baked `.prm` mip sidecars.
+    /// Builds one load's material bind groups from baked `.prm` mip sidecars
+    /// and stages them for the next `install_level_geometry`, which takes
+    /// them into the level set it publishes.
     /// `texture_materials` must be parallel to `texture_names`; entries beyond
     /// its length fall back to `Material::Default`. Caller drives the order:
     /// `install_textures` runs before `install_level_geometry` because the
@@ -112,9 +114,10 @@ impl Renderer {
     }
 }
 
-/// Publishes `loaded` as the level's materials: one sampler per new mip count,
-/// one bind group per texture, or the placeholder slot when the level has none.
-/// `before_bind_groups` is the install time already spent, for the log line.
+/// Stages `loaded` as the next level's materials: one sampler per new mip
+/// count, one bind group per texture, or the placeholder slot when the level
+/// has none. `before_bind_groups` is the install time already spent, for the
+/// log line.
 #[allow(clippy::too_many_arguments)]
 fn bind_loaded_textures(
     device: &wgpu::Device,
@@ -128,10 +131,6 @@ fn bind_loaded_textures(
 ) {
     let bind_groups_started = std::time::Instant::now();
     let total = || before_bind_groups + bind_groups_started.elapsed();
-
-    // Cache materials so `install_level_geometry` can also recompute the
-    // per-leaf material lookup without re-deriving them.
-    full.stored_texture_materials = texture_materials.to_vec();
 
     // Sampler pool grows monotonically: every distinct `mip_count` seen in
     // this batch needs a sampler with matching `lod_max_clamp`. The `1`
@@ -168,31 +167,50 @@ fn bind_loaded_textures(
     if gpu_textures.is_empty() {
         // No textures referenced by the level — keep the placeholder slot
         // so the world pipeline still has a bind group bound.
-        let placeholder = placeholder_loaded_texture(device, queue);
-        let aniso_sampler = full
-            .mip_count_aniso_samplers
-            .get(&1)
-            .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
-        let binding = build_material_bind_group(
-            device,
-            &full.texture_bind_group_layout,
-            &placeholder,
-            aniso_sampler,
-            postretro_render_data::material::Material::Default,
-            surface_depth_quality,
-            "Placeholder Material",
-        );
-        full.loaded_textures = vec![placeholder];
-        full.gpu_textures = vec![binding.into()];
+        let mut textures = placeholder_level_textures(device, queue, full, surface_depth_quality);
+        textures.stored_texture_materials = texture_materials.to_vec();
+        full.pending_textures = Some(textures);
         log::info!("[Renderer] Textures installed: 1 (placeholder fallback)");
         log_texture_install_timing(load_timing, bind_groups_started.elapsed(), total());
         return;
     }
 
-    full.loaded_textures = loaded;
-    full.gpu_textures = gpu_textures;
-    log::info!("[Renderer] Textures installed: {}", full.gpu_textures.len());
+    log::info!("[Renderer] Textures installed: {}", gpu_textures.len());
+    full.pending_textures = Some(LevelTextures {
+        loaded_textures: loaded,
+        gpu_textures,
+        stored_texture_materials: texture_materials.to_vec(),
+    });
     log_texture_install_timing(load_timing, bind_groups_started.elapsed(), total());
+}
+
+/// One placeholder material slot, for a level that references no texture or
+/// a geometry install with no staged or kept materials.
+pub(super) fn placeholder_level_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    full: &FullRenderer,
+    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
+) -> LevelTextures {
+    let placeholder = placeholder_loaded_texture(device, queue);
+    let aniso_sampler = full
+        .mip_count_aniso_samplers
+        .get(&1)
+        .expect("mip_count 1 aniso sampler is seeded at Renderer::new");
+    let binding = build_material_bind_group(
+        device,
+        &full.texture_bind_group_layout,
+        &placeholder,
+        aniso_sampler,
+        postretro_render_data::material::Material::Default,
+        surface_depth_quality,
+        "Placeholder Material",
+    );
+    LevelTextures {
+        loaded_textures: vec![placeholder],
+        gpu_textures: vec![binding.into()],
+        stored_texture_materials: Vec::new(),
+    }
 }
 
 /// Log-only phase split of the `texture_upload` stage, in the renderer's own

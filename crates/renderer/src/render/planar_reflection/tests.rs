@@ -749,7 +749,7 @@ fn planar_pass_records_between_the_ghost_pass_and_the_fluid_gate() {
         .find("self.record_planar_reflection_pass(")
         .expect("planar pass");
     let gate = frame
-        .find("if render_world && self.full().fluid_surface.has_draws()")
+        .find("if render_world && self.full().fluid_surface.has_draws(self.fluid_surfaces())")
         .expect("fluid gate");
     assert!(ghost < planar && planar < gate, "{ghost} {planar} {gate}");
     assert_eq!(

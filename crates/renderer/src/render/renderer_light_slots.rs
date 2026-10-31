@@ -7,9 +7,9 @@ use super::renderer_mirror_lights::{
     AdmissionTags, clear_mirror_only_promoted_slots, pool_occupancy, update_held_as_mirror_only,
 };
 use super::renderer_types::{
-    FullRenderer, MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT,
-    PromotedBakedLightRecord, PromotedBakedLightSource, PromotedBakedLightState,
-    PromotedShadowPoolKind, animated_baked_promotion_weight,
+    MAX_ANIMATED_BAKED_LIGHTS, MAX_PROMOTED_CUBE, MAX_PROMOTED_SPOT, PromotedBakedLightRecord,
+    PromotedBakedLightSource, PromotedBakedLightState, PromotedShadowPoolKind,
+    animated_baked_promotion_weight,
 };
 use super::*;
 use postretro_render_cpu::frame_uniforms::TOTAL_LIGHT_COUNT_OFFSET;
@@ -24,8 +24,8 @@ const DEMOTE_SECONDS: f32 = 0.3;
 /// Dynamic-tier records occupy the world-forward prefix. Every raw
 /// `AnimatedBakedLights` entry then owns a mover-only forward tail record;
 /// selected-static promotion records append after that tail.
-fn forward_light_count(full: &FullRenderer) -> u32 {
-    full.light_count + full.animated_baked_light_count as u32
+fn forward_light_count(level: &LevelResourceSet) -> u32 {
+    level.light_count + level.animated_baked_light_count as u32
 }
 
 /// Only selected-static cache records append a new forward GpuLight. Animated
@@ -161,8 +161,8 @@ impl Renderer {
     /// The next light-slot update is a level's reveal frame: lights promoted
     /// on it start at full weight instead of crossfading in.
     pub fn start_next_promotions_whole(&mut self) {
-        if let Some(full) = self.full.as_mut() {
-            full.promotions_start_whole = true;
+        if let Some(level) = self.full.as_mut().and_then(|full| full.level.as_mut()) {
+            level.promotions_start_whole = true;
         }
     }
 
@@ -237,21 +237,39 @@ impl Renderer {
         // would keep its depth passes running against slots no light samples.
         // Cached dynamic slots normally clear and redraw live entity occluders;
         // static world depth renders only when their cache key is cold.
-        if self.full().shadow_candidate_lights.is_empty() {
-            let Self { queue, full, .. } = self;
-            let full = full
-                .as_mut()
-                .expect("renderer full-init must complete before full-ready paths run");
+        if self.full().level.is_none() {
+            // No level, no candidate: clear both pools' occupancy as an
+            // empty candidate set would, and touch no level state.
+            let full = self.full_mut();
             full.spot_shadow_pool.clear_occupancy();
             if let Some(pool) = &mut full.cube_shadow_pool {
                 pool.clear_occupancy();
             }
-            full.promoted_baked_records.clear();
-            full.promoted_baked_cache_layers.clear();
-            full.promoted_static_weights.fill(0.0);
-            full.promoted_static_states
+            full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
+            full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
+            return Ok(());
+        }
+        if self.level().shadow_candidate_lights.is_empty() {
+            let Self { queue, full, .. } = self;
+            let full = full
+                .as_mut()
+                .expect("renderer full-init must complete before full-ready paths run");
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
+            full.spot_shadow_pool.clear_occupancy();
+            if let Some(pool) = &mut full.cube_shadow_pool {
+                pool.clear_occupancy();
+            }
+            level.promoted_baked_records.clear();
+            level.promoted_baked_cache_layers.clear();
+            level.promoted_static_weights.fill(0.0);
+            level
+                .promoted_static_states
                 .fill(PromotedBakedLightState::default());
-            full.promoted_animated_states
+            level
+                .promoted_animated_states
                 .fill(PromotedBakedLightState::default());
             // A level with no surviving candidates must not retain a
             // static-world cache layer from its prior animated receiver.
@@ -259,35 +277,35 @@ impl Renderer {
                 cache.reset_level();
             }
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
-            full.total_light_count = forward_light_count(full);
+            level.total_light_count = forward_light_count(level);
             // The raw section-45 tail survives even when none of its rows is a
             // promotion candidate. Rebuild it after zeroing state so authored
             // RGB from the bridge cannot remain live with `w == 0`.
-            let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
-            build_count_split_light_upload(full, &[], &[], &mut scratch);
-            if scratch != full.last_lights_upload {
-                queue.write_buffer(&full.lights_buffer, 0, &scratch);
-                full.last_lights_upload.clear();
-                full.last_lights_upload.extend_from_slice(&scratch);
+            let mut scratch = std::mem::take(&mut level.lights_pack_scratch);
+            build_count_split_light_upload(level, &[], &[], &mut scratch);
+            if scratch != level.last_lights_upload {
+                queue.write_buffer(&level.lights_buffer, 0, &scratch);
+                level.last_lights_upload.clear();
+                level.last_lights_upload.extend_from_slice(&scratch);
             }
-            full.lights_pack_scratch = scratch;
+            level.lights_pack_scratch = scratch;
             queue.write_buffer(
                 &full.uniform_buffer,
                 TOTAL_LIGHT_COUNT_OFFSET,
-                &full.total_light_count.to_ne_bytes(),
+                &level.total_light_count.to_ne_bytes(),
             );
             full.dynamic_depth_cache.state.reset_level();
             full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
             // No candidate, no mirror-only light: the mirror reads the main
             // view's records, and the frame's reach is spent.
-            full.mirror_lighting.clear_reach();
-            full.mirror_lighting.clear_frame();
-            full.mirror_lighting.report(now_seconds);
+            level.mirror_lighting.clear_reach();
+            level.mirror_lighting.clear_frame();
+            level.mirror_lighting.report(now_seconds);
             full.mesh_pass.set_mirror_light_records(false);
             full.kinematic_brush.set_mirror_light_records(false);
             apply_capture_animated_promotion_weights(
-                &mut full.promoted_animated_states,
-                &mut full.promoted_baked_records,
+                &mut level.promoted_animated_states,
+                &mut level.promoted_baked_records,
                 capture_animated_promotion_weights,
             )?;
             return Ok(());
@@ -314,11 +332,11 @@ impl Renderer {
         // means no mirror; on the main view's empty sentinel every light is
         // main-view already.
         const BRIGHTNESS_SUPPRESSION_THRESHOLD: f32 = 0.01;
-        let candidate_count = self.full().shadow_candidate_lights.len();
+        let candidate_count = self.level().shadow_candidate_lights.len();
         let mut visible_lights = vec![false; candidate_count];
-        let mirror_reach = self.full_mut().mirror_lighting.take_reach();
+        let mirror_reach = self.level_mut().mirror_lighting.take_reach();
         let mirror_present = !mirror_reach.is_empty();
-        let mut mirror_only_lights = std::mem::take(&mut self.full_mut().mirror_lighting.tags);
+        let mut mirror_only_lights = std::mem::take(&mut self.level_mut().mirror_lighting.tags);
         mirror_only_lights.clear();
         mirror_only_lights.resize(candidate_count, false);
         // Distinct from the brightness/visibility gate: a receiver despawn
@@ -327,35 +345,43 @@ impl Renderer {
         let mut promoted_baked_has_shadow_receiver = vec![false; candidate_count];
         {
             let full = self.full_mut();
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
             // Fixed within the frame — build the source→level reverse lookup once
             // so each candidate's brightness read is O(1) instead of scanning
             // `level_light_source_indices`.
             let level_light_index_lookup =
-                build_level_light_index_lookup(&full.level_light_source_indices);
+                build_level_light_index_lookup(&level.level_light_source_indices);
             // The bridge has already uploaded this frame's dynamic prefix.
             // Refresh shadow projections and reachability from those exact
             // records before ranking; promoted baked candidates stay authored.
-            for (i, light) in full.shadow_candidate_lights.iter_mut().enumerate() {
+            for (i, light) in level.shadow_candidate_lights.iter_mut().enumerate() {
                 if shadow_candidate_is_promoted_baked(
-                    &full.shadow_candidate_selection_indices,
-                    &full.shadow_candidate_animated_baked_indices,
+                    &level.shadow_candidate_selection_indices,
+                    &level.shadow_candidate_animated_baked_indices,
                     i,
                 ) {
                     continue;
                 }
-                let source = full.shadow_candidate_source_indices[i];
+                let source = level.shadow_candidate_source_indices[i];
                 let Some(level_index) = level_light_index_lookup.get(source).copied().flatten()
                 else {
                     continue;
                 };
                 let offset = level_index * GPU_LIGHT_SIZE;
-                if let Some(record) = full.last_lights_upload.get(offset..offset + GPU_LIGHT_SIZE) {
+                if let Some(record) = level
+                    .last_lights_upload
+                    .get(offset..offset + GPU_LIGHT_SIZE)
+                {
                     refresh_shadow_candidate_from_upload(light, record);
                 }
                 let influence_offset = level_index * LIGHT_INFLUENCE_SIZE;
                 if let (Some(influence), Some(record)) = (
-                    full.shadow_candidate_influences.get_mut(i),
-                    full.last_influence_upload
+                    level.shadow_candidate_influences.get_mut(i),
+                    level
+                        .last_influence_upload
                         .get(influence_offset..influence_offset + LIGHT_INFLUENCE_SIZE),
                 ) {
                     influence.center = Vec3::new(
@@ -366,8 +392,8 @@ impl Renderer {
                     influence.radius = read_light_float(record, 12);
                 }
             }
-            for (i, light) in full.shadow_candidate_lights.iter().enumerate() {
-                if full
+            for (i, light) in level.shadow_candidate_lights.iter().enumerate() {
+                if level
                     .shadow_candidate_animated_baked_indices
                     .get(i)
                     .and_then(|index| *index)
@@ -379,19 +405,19 @@ impl Renderer {
                     continue;
                 }
                 let is_promoted_baked = shadow_candidate_is_promoted_baked(
-                    &full.shadow_candidate_selection_indices,
-                    &full.shadow_candidate_animated_baked_indices,
+                    &level.shadow_candidate_selection_indices,
+                    &level.shadow_candidate_animated_baked_indices,
                     i,
                 );
                 if is_promoted_baked {
                     let has_shadow_mesh = selected_static_light_has_shadow_entity(
                         light,
-                        full.shadow_candidate_influences.get(i),
+                        level.shadow_candidate_influences.get(i),
                         promotion_mesh_frame_plan,
                     );
                     let has_shadow_mover = selected_static_light_has_mover_occluder(
                         light,
-                        full.shadow_candidate_influences.get(i),
+                        level.shadow_candidate_influences.get(i),
                         &full.mover_occluder_aabbs,
                     );
                     promoted_baked_has_shadow_receiver[i] = has_shadow_mesh || has_shadow_mover;
@@ -401,14 +427,14 @@ impl Renderer {
                 }
                 let reaches_view = shadow_candidate_reaches_visible_cell(
                     light,
-                    full.shadow_candidate_influences.get(i),
+                    level.shadow_candidate_influences.get(i),
                     reachable_cell_aabbs,
                 );
                 let reaches_mirror_only = !reaches_view
                     && mirror_present
                     && shadow_candidate_reaches_visible_cell(
                         light,
-                        full.shadow_candidate_influences.get(i),
+                        level.shadow_candidate_influences.get(i),
                         &mirror_reach,
                     );
                 if !reaches_view && !reaches_mirror_only {
@@ -419,8 +445,8 @@ impl Renderer {
                 // to a dynamic-tier default of 1.0: it has no `level_lights`
                 // entry, and its window max is the actual promotion signal.
                 let b = candidate_gate_brightness(
-                    &full.shadow_candidate_source_indices,
-                    &full.shadow_candidate_animated_baked_indices,
+                    &level.shadow_candidate_source_indices,
+                    &level.shadow_candidate_animated_baked_indices,
                     i,
                     &level_light_index_lookup,
                     effective_brightness,
@@ -433,9 +459,9 @@ impl Renderer {
                 mirror_only_lights[i] = reaches_mirror_only;
             }
         }
-        self.full_mut().mirror_lighting.return_reach(mirror_reach);
+        self.level_mut().mirror_lighting.return_reach(mirror_reach);
         // Last frame's mirror-only seats: the incumbency rank input.
-        let mut held_mirror_only = std::mem::take(&mut self.full_mut().mirror_lighting.held);
+        let mut held_mirror_only = std::mem::take(&mut self.level_mut().mirror_lighting.held);
         let admission = AdmissionTags {
             mirror_present,
             mirror_only: &mirror_only_lights,
@@ -444,26 +470,38 @@ impl Renderer {
 
         let frame_dt = {
             let full = self.full_mut();
-            let previous = full.promoted_baked_last_update_time.replace(now_seconds);
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
+            let previous = level.promoted_baked_last_update_time.replace(now_seconds);
             promotion_frame_dt(
                 previous.map(|t| (now_seconds - t).clamp(0.0, 0.25) as f32),
-                std::mem::take(&mut full.promotions_start_whole),
+                std::mem::take(&mut level.promotions_start_whole),
             )
         };
         let promotion_candidate_lookup = {
             let full = self.full();
+            let level = full
+                .level
+                .as_ref()
+                .expect("a level-gated renderer path requires an active level set");
             build_promotion_candidate_lookup(
-                &full.shadow_candidate_selection_indices,
-                &full.shadow_candidate_animated_baked_indices,
-                full.promoted_static_states.len(),
-                full.promoted_animated_states.len(),
+                &level.shadow_candidate_selection_indices,
+                &level.shadow_candidate_animated_baked_indices,
+                level.promoted_static_states.len(),
+                level.promoted_animated_states.len(),
             )
         };
         {
             let full = self.full_mut();
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
             release_promoted_baked_incumbents_before_ranking(
-                &mut full.promoted_static_states,
-                &mut full.promoted_animated_states,
+                &mut level.promoted_static_states,
+                &mut level.promoted_animated_states,
                 &promotion_candidate_lookup,
                 &visible_lights,
                 &promoted_baked_has_shadow_receiver,
@@ -472,7 +510,12 @@ impl Renderer {
         }
 
         let mut slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
-            ShadowRankingState::of(self.full(), PromotedShadowPoolKind::Spot),
+            ShadowRankingState::of(
+                &self.full().spot_shadow_pool,
+                self.full().cube_shadow_pool.as_ref(),
+                self.level(),
+                PromotedShadowPoolKind::Spot,
+            ),
             ShadowPoolSlotAssignmentInputs {
                 pool_kind: PromotedShadowPoolKind::Spot,
                 camera_position,
@@ -510,18 +553,22 @@ impl Renderer {
         );
         {
             let full = self.full();
+            let level = full
+                .level
+                .as_ref()
+                .expect("a level-gated renderer path requires an active level set");
             clear_zero_weight_promoted_assignments(
-                &full.shadow_candidate_selection_indices,
-                &full.promoted_static_weights,
-                &full.shadow_candidate_animated_baked_indices,
-                &full.promoted_animated_states,
+                &level.shadow_candidate_selection_indices,
+                &level.promoted_static_weights,
+                &level.shadow_candidate_animated_baked_indices,
+                &level.promoted_animated_states,
                 &mut slot_assignment,
             );
             clear_zero_weight_promoted_assignments(
-                &full.shadow_candidate_selection_indices,
-                &full.promoted_static_weights,
-                &full.shadow_candidate_animated_baked_indices,
-                &full.promoted_animated_states,
+                &level.shadow_candidate_selection_indices,
+                &level.promoted_static_weights,
+                &level.shadow_candidate_animated_baked_indices,
+                &level.promoted_animated_states,
                 &mut cube_slot_assignment,
             );
         }
@@ -536,13 +583,17 @@ impl Renderer {
         let mirror_view_differs = held_mirror_only.iter().any(|&held| held);
         {
             let full = self.full_mut();
-            full.mirror_lighting.tags = mirror_only_lights;
-            full.mirror_lighting.held = held_mirror_only;
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
+            level.mirror_lighting.tags = mirror_only_lights;
+            level.mirror_lighting.held = held_mirror_only;
             let spot = pool_occupancy(
                 &slot_assignment,
                 crate::lighting::spot_shadow::SHADOW_POOL_SIZE,
-                full,
-                &full.mirror_lighting.held,
+                level,
+                &level.mirror_lighting.held,
             );
             let cube = pool_occupancy(
                 &cube_slot_assignment,
@@ -551,11 +602,11 @@ impl Renderer {
                 } else {
                     0
                 },
-                full,
-                &full.mirror_lighting.held,
+                level,
+                &level.mirror_lighting.held,
             );
-            full.mirror_lighting.set_pool_occupancy(spot, cube);
-            full.mirror_lighting.report(now_seconds);
+            level.mirror_lighting.set_pool_occupancy(spot, cube);
+            level.mirror_lighting.report(now_seconds);
             full.mesh_pass.set_mirror_light_records(mirror_view_differs);
             full.kinematic_brush
                 .set_mirror_light_records(mirror_view_differs);
@@ -567,9 +618,13 @@ impl Renderer {
             // Ranking and cache/slot lifecycles retain their natural result;
             // windowed frames always supply an empty override slice.
             let full = self.full_mut();
+            let level = full
+                .level
+                .as_mut()
+                .expect("a level-gated renderer path requires an active level set");
             apply_capture_animated_promotion_weights(
-                &mut full.promoted_animated_states,
-                &mut full.promoted_baked_records,
+                &mut level.promoted_animated_states,
+                &mut level.promoted_baked_records,
                 capture_animated_promotion_weights,
             )?;
         }
@@ -611,9 +666,13 @@ impl Renderer {
         let mut level_cube_slots = Vec::new();
         {
             let full = self.full();
-            let held = &full.mirror_lighting.held;
-            fill_level_slots(full, &slot_assignment, held, &mut level_slots);
-            fill_level_slots(full, &cube_slot_assignment, held, &mut level_cube_slots);
+            let level = full
+                .level
+                .as_ref()
+                .expect("a level-gated renderer path requires an active level set");
+            let held = &level.mirror_lighting.held;
+            fill_level_slots(level, &slot_assignment, held, &mut level_slots);
+            fill_level_slots(level, &cube_slot_assignment, held, &mut level_cube_slots);
         }
 
         // Patch the per-light spot AND cube shadow-slot fields onto the CPU
@@ -630,35 +689,40 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let mut scratch = std::mem::take(&mut full.lights_pack_scratch);
+        let level = full
+            .level
+            .as_mut()
+            .expect("a level-gated renderer path requires an active level set");
+        let mut scratch = std::mem::take(&mut level.lights_pack_scratch);
         if mirror_view_differs {
             // Built before the main upload: both start from the same base.
-            let mut mirror = std::mem::take(&mut full.mirror_lighting.scratch);
-            let mut mirror_spot = std::mem::take(&mut full.mirror_lighting.spot_level_slots);
-            let mut mirror_cube = std::mem::take(&mut full.mirror_lighting.cube_level_slots);
-            fill_level_slots(full, &slot_assignment, &[], &mut mirror_spot);
-            fill_level_slots(full, &cube_slot_assignment, &[], &mut mirror_cube);
-            build_count_split_light_upload(full, &mirror_spot, &mirror_cube, &mut mirror);
-            full.mirror_lighting.scratch = mirror;
-            full.mirror_lighting.spot_level_slots = mirror_spot;
-            full.mirror_lighting.cube_level_slots = mirror_cube;
+            let mut mirror = std::mem::take(&mut level.mirror_lighting.scratch);
+            let mut mirror_spot = std::mem::take(&mut level.mirror_lighting.spot_level_slots);
+            let mut mirror_cube = std::mem::take(&mut level.mirror_lighting.cube_level_slots);
+            fill_level_slots(level, &slot_assignment, &[], &mut mirror_spot);
+            fill_level_slots(level, &cube_slot_assignment, &[], &mut mirror_cube);
+            build_count_split_light_upload(level, &mirror_spot, &mirror_cube, &mut mirror);
+            level.mirror_lighting.scratch = mirror;
+            level.mirror_lighting.spot_level_slots = mirror_spot;
+            level.mirror_lighting.cube_level_slots = mirror_cube;
         }
-        build_count_split_light_upload(full, &level_slots, &level_cube_slots, &mut scratch);
+        build_count_split_light_upload(level, &level_slots, &level_cube_slots, &mut scratch);
         if mirror_view_differs {
             clear_mirror_only_promoted_slots(
                 &mut scratch,
-                full,
+                level,
                 &promotion_candidate_lookup,
-                &full.mirror_lighting.held,
+                &level.mirror_lighting.held,
             );
         }
-        if scratch != full.last_lights_upload {
-            queue.write_buffer(&full.lights_buffer, 0, &scratch);
-            full.last_lights_upload.clear();
-            full.last_lights_upload.extend_from_slice(&scratch);
+        if scratch != level.last_lights_upload {
+            queue.write_buffer(&level.lights_buffer, 0, &scratch);
+            level.last_lights_upload.clear();
+            level.last_lights_upload.extend_from_slice(&scratch);
         }
-        full.lights_pack_scratch = scratch;
-        full.mirror_lighting
+        level.lights_pack_scratch = scratch;
+        level
+            .mirror_lighting
             .finish_light_records(queue, mirror_view_differs);
 
         // The bridge owns the complete dynamic prefix plus one raw section-45
@@ -669,26 +733,26 @@ impl Renderer {
         // The `entity_shadow_light_influences` vector is raw-length N and
         // index-parallel to the selection index, so `[selection_index]` is a
         // direct aligned lookup for every promoted record.
-        if !full.promoted_baked_records.is_empty() {
+        if !level.promoted_baked_records.is_empty() {
             debug_assert_eq!(
-                full.entity_shadow_light_influences.len(),
-                full.promoted_static_states.len(),
+                level.entity_shadow_light_influences.len(),
+                level.promoted_static_states.len(),
                 "selected-static influence vector must be raw-length N, index-parallel to selection index",
             );
-            let mut influence_bytes = std::mem::take(&mut full.influence_pack_scratch);
+            let mut influence_bytes = std::mem::take(&mut level.influence_pack_scratch);
             influence_bytes.clear();
-            let dynamic_bytes = full.light_count as usize * 16;
+            let dynamic_bytes = level.light_count as usize * 16;
             let forward_prefix_bytes =
-                dynamic_bytes + full.animated_baked_light_count * LIGHT_INFLUENCE_SIZE;
-            if full.last_influence_upload.len() >= forward_prefix_bytes {
+                dynamic_bytes + level.animated_baked_light_count * LIGHT_INFLUENCE_SIZE;
+            if level.last_influence_upload.len() >= forward_prefix_bytes {
                 influence_bytes
-                    .extend_from_slice(&full.last_influence_upload[..forward_prefix_bytes]);
+                    .extend_from_slice(&level.last_influence_upload[..forward_prefix_bytes]);
             } else {
-                influence::pack_influence_into(&mut influence_bytes, &full.level_light_influences);
+                influence::pack_influence_into(&mut influence_bytes, &level.level_light_influences);
                 influence_bytes.resize(dynamic_bytes, 0);
                 influence_bytes.resize(forward_prefix_bytes, 0);
             }
-            for record in full
+            for record in level
                 .promoted_baked_records
                 .iter()
                 .filter(|record| record.source.selected_static_index().is_some())
@@ -697,30 +761,30 @@ impl Renderer {
                     .source
                     .selected_static_index()
                     .expect("selected-static record filter");
-                let influence = &full.entity_shadow_light_influences[selection_index];
+                let influence = &level.entity_shadow_light_influences[selection_index];
                 influence::pack_influence_into(
                     &mut influence_bytes,
                     std::slice::from_ref(influence),
                 );
             }
             shadowmask::pack_forward_shadowmask_metadata(
-                full.animated_baked_light_count,
-                &full.promoted_baked_records,
-                &full.promoted_baked_cache_layers,
-                &full.entity_shadow_spec_light_indices,
-                &mut full.forward_shadowmask_metadata_scratch,
+                level.animated_baked_light_count,
+                &level.promoted_baked_records,
+                &level.promoted_baked_cache_layers,
+                &level.entity_shadow_spec_light_indices,
+                &mut level.forward_shadowmask_metadata_scratch,
             );
-            influence_bytes.extend_from_slice(&full.forward_shadowmask_metadata_scratch);
+            influence_bytes.extend_from_slice(&level.forward_shadowmask_metadata_scratch);
             if influence_bytes.is_empty() {
                 influence_bytes.resize(16, 0);
             }
-            queue.write_buffer(&full.influence_buffer, 0, &influence_bytes);
-            full.influence_pack_scratch = influence_bytes;
+            queue.write_buffer(&level.influence_buffer, 0, &influence_bytes);
+            level.influence_pack_scratch = influence_bytes;
         }
         queue.write_buffer(
             &full.uniform_buffer,
             TOTAL_LIGHT_COUNT_OFFSET,
-            &full.total_light_count.to_ne_bytes(),
+            &level.total_light_count.to_ne_bytes(),
         );
 
         // Upload slot matrices to both fragment-side storage (group 5 binding 2)
@@ -743,7 +807,7 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let candidate = &full.shadow_candidate_lights[light_idx];
+            let candidate = &level.shadow_candidate_lights[light_idx];
             let m = postretro_lighting::light_space_matrix(candidate);
             // Stash the SAME light-space matrix uploaded to bind-group-5 below —
             // the shadow-depth render loop reads it to build this slot's cone
@@ -754,8 +818,8 @@ impl Renderer {
             // this is set; an ineligible (e.g. toggle-off dynamic) slot keeps its
             // world shadow but draws none.
             let promoted_baked = shadow_candidate_is_promoted_baked(
-                &full.shadow_candidate_selection_indices,
-                &full.shadow_candidate_animated_baked_indices,
+                &level.shadow_candidate_selection_indices,
+                &level.shadow_candidate_animated_baked_indices,
                 light_idx,
             );
             full.spot_shadow_pool.slot_entity_eligible[slot as usize] =
@@ -790,15 +854,15 @@ impl Renderer {
         // Main-view slots feed the cache first: it hands out free layers in
         // input order, so a light only the mirror holds never takes a free
         // layer ahead of a main-view light. Order picks layers, never pixels.
-        let held = &full.mirror_lighting.held;
+        let held = &level.mirror_lighting.held;
         let mirror_held =
             |candidate_index: usize| held.get(candidate_index).copied().unwrap_or(false);
         let cache_input = |candidate_index: usize, slot: u32, mirror_pass: bool| {
             slot != NO_SHADOW_SLOT
                 && mirror_held(candidate_index) == mirror_pass
                 && !shadow_candidate_is_promoted_baked(
-                    &full.shadow_candidate_selection_indices,
-                    &full.shadow_candidate_animated_baked_indices,
+                    &level.shadow_candidate_selection_indices,
+                    &level.shadow_candidate_animated_baked_indices,
                     candidate_index,
                 )
         };
@@ -813,7 +877,7 @@ impl Renderer {
                 if let Some(matrix) = full.spot_shadow_pool.slot_cone_matrices[slot as usize] {
                     spot_inputs[spot_count] = (
                         slot,
-                        full.shadow_candidate_source_indices[candidate_index],
+                        level.shadow_candidate_source_indices[candidate_index],
                         matrix,
                     );
                     spot_count += 1;
@@ -843,7 +907,7 @@ impl Renderer {
                     if complete {
                         cube_inputs[cube_count] = (
                             slot,
-                            full.shadow_candidate_source_indices[candidate_index],
+                            level.shadow_candidate_source_indices[candidate_index],
                             matrices,
                         );
                         cube_count += 1;
@@ -957,8 +1021,8 @@ impl Renderer {
         // Fixed within the frame — build the source→level reverse lookup once so
         // the per-light brightness read is O(1).
         let level_light_index_lookup =
-            build_level_light_index_lookup(&self.full().level_light_source_indices);
-        for (i, light) in self.full().shadow_candidate_lights.iter().enumerate() {
+            build_level_light_index_lookup(&self.level().level_light_source_indices);
+        for (i, light) in self.level().shadow_candidate_lights.iter().enumerate() {
             // Legacy own-cell-PVS membership (no longer the gate; kept so a reader
             // can SEE it diverge from `reach` — the whole point of the fix).
             let cell_ok = if light.cell_index == ALPHA_LIGHT_LEAF_UNASSIGNED {
@@ -976,12 +1040,12 @@ impl Renderer {
             // `NONE:no_reach_to_view`.
             let reach = shadow_candidate_reaches_visible_cell(
                 light,
-                self.full().shadow_candidate_influences.get(i),
+                self.level().shadow_candidate_influences.get(i),
                 reachable_cell_aabbs,
             );
             let bright = candidate_gate_brightness(
-                &self.full().shadow_candidate_source_indices,
-                &self.full().shadow_candidate_animated_baked_indices,
+                &self.level().shadow_candidate_source_indices,
+                &self.level().shadow_candidate_animated_baked_indices,
                 i,
                 &level_light_index_lookup,
                 effective_brightness,
@@ -1040,8 +1104,8 @@ impl Renderer {
                             cube_occupancy |= 1u128 << cslot;
                         }
                         let promoted_baked = shadow_candidate_is_promoted_baked(
-                            &self.full().shadow_candidate_selection_indices,
-                            &self.full().shadow_candidate_animated_baked_indices,
+                            &self.level().shadow_candidate_selection_indices,
+                            &self.level().shadow_candidate_animated_baked_indices,
                             i,
                         );
                         let ent_ok =
@@ -1129,7 +1193,7 @@ impl Renderer {
             0
         };
         let admission =
-            super::renderer_mirror_lights::describe(&self.full().mirror_lighting.occupancy());
+            super::renderer_mirror_lights::describe(&self.level().mirror_lighting.occupancy());
         log::info!(
             "[shadow_dbg f={f}{}] cam: pitch={:.1}deg fwd({:.2},{:.2},{:.2}) eye({:.0},{:.0},{:.0}) cell={cell_str} vis_cells={vis_cells} | pools: spot={spot_used}/{} cube={cube_used}/{cube_pool_size} elig_spot={elig_spot} elig_cube={elig_cube} spot_overflow={spot_overflow} cube_overflow={cube_overflow} | casters: forward={forward_visible} non_forward={non_forward} total={} | occupied_spot_slots={} occupied_cube_slots={} | admission: {admission} | lights[{}]: {}",
             if changed { " CHANGED" } else { " (hb)" },
@@ -1183,13 +1247,22 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let level = full
+            .level
+            .as_mut()
+            .expect("a level-gated renderer path requires an active level set");
 
         if full.cube_shadow_pool.is_none() {
             return Vec::new();
         }
 
         let slot_assignment = assign_shadow_pool_slots_with_promoted_baked(
-            ShadowRankingState::of(full, PromotedShadowPoolKind::Cube),
+            ShadowRankingState::of(
+                &full.spot_shadow_pool,
+                full.cube_shadow_pool.as_ref(),
+                level,
+                PromotedShadowPoolKind::Cube,
+            ),
             ShadowPoolSlotAssignmentInputs {
                 pool_kind: PromotedShadowPoolKind::Cube,
                 camera_position,
@@ -1222,7 +1295,7 @@ impl Renderer {
             if slot == crate::lighting::spot_shadow::NO_SHADOW_SLOT {
                 continue;
             }
-            let candidate = &full.shadow_candidate_lights[light_idx];
+            let candidate = &level.shadow_candidate_lights[light_idx];
             // EVERY ranked slot gets face matrices: the depth loop clears each
             // occupied face to the far plane and gives it world depth every
             // frame — drawn from its reach, or copied from a warm cache layer —
@@ -1231,8 +1304,8 @@ impl Renderer {
             // occluders are additionally drawn into the faces — the same
             // occluder split as the spot path.
             let promoted_baked = shadow_candidate_is_promoted_baked(
-                &full.shadow_candidate_selection_indices,
-                &full.shadow_candidate_animated_baked_indices,
+                &level.shadow_candidate_selection_indices,
+                &level.shadow_candidate_animated_baked_indices,
                 light_idx,
             );
             pool.slot_entity_eligible[slot as usize] =
@@ -1272,23 +1345,28 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let level = full
+            .level
+            .as_mut()
+            .expect("a level-gated renderer path requires an active level set");
 
-        full.promoted_baked_records.clear();
-        if full.promoted_static_weights.len() != full.promoted_static_states.len() {
-            full.promoted_static_weights
-                .resize(full.promoted_static_states.len(), 0.0);
+        level.promoted_baked_records.clear();
+        if level.promoted_static_weights.len() != level.promoted_static_states.len() {
+            level
+                .promoted_static_weights
+                .resize(level.promoted_static_states.len(), 0.0);
         }
         // The selected-static vectors are raw-length N and index-parallel to the
         // selection index, so every `[selection_index]` below is a direct aligned
         // lookup into the same N-length space the weight buffer and baked delta
         // `affinity_lights` use.
         debug_assert_eq!(
-            full.entity_shadow_light_source_indices.len(),
-            full.promoted_static_states.len(),
+            level.entity_shadow_light_source_indices.len(),
+            level.promoted_static_states.len(),
             "selected-static source-index vector must be raw-length N, index-parallel to selection index",
         );
 
-        for (selection_index, state) in full.promoted_static_states.iter_mut().enumerate() {
+        for (selection_index, state) in level.promoted_static_states.iter_mut().enumerate() {
             let candidate_index = promotion_candidate_lookup
                 .selected_static
                 .get(selection_index)
@@ -1315,7 +1393,7 @@ impl Renderer {
             });
 
             let assigned = assigned.map(|(pool_kind, slot, candidate_index)| {
-                let score = full
+                let score = level
                     .shadow_candidate_lights
                     .get(candidate_index)
                     .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
@@ -1331,8 +1409,8 @@ impl Renderer {
             if state.weight > 0.0
                 && let Some(pool_kind) = state.pool_kind
             {
-                let global_light_index = full.entity_shadow_light_source_indices[selection_index];
-                full.promoted_baked_records.push(PromotedBakedLightRecord {
+                let global_light_index = level.entity_shadow_light_source_indices[selection_index];
+                level.promoted_baked_records.push(PromotedBakedLightRecord {
                     global_light_index: global_light_index as u32,
                     pool_kind,
                     slot: state.slot,
@@ -1343,14 +1421,14 @@ impl Renderer {
                 });
             }
 
-            full.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
+            level.promoted_static_weights[selection_index] = state.weight.clamp(0.0, 1.0);
         }
 
         // Section-45 animated lights own an equally-shaped ramp state, but in
         // their independent `AnimatedBakedLights` namespace. The forward and
         // compose paths consume this state; the lookahead and sticky window
         // keep a short dark strobe from churning a shared-pool slot every frame.
-        for (animated_index, state) in full.promoted_animated_states.iter_mut().enumerate() {
+        for (animated_index, state) in level.promoted_animated_states.iter_mut().enumerate() {
             if animated_index >= MAX_ANIMATED_BAKED_LIGHTS {
                 *state = PromotedBakedLightState::default();
                 continue;
@@ -1392,7 +1470,7 @@ impl Renderer {
             });
 
             let assigned = assigned.map(|(pool_kind, slot, candidate_index)| {
-                let score = full
+                let score = level
                     .shadow_candidate_lights
                     .get(candidate_index)
                     .map(|light| candidate_slot_score(light, camera_position, camera_near_clip))
@@ -1416,9 +1494,9 @@ impl Renderer {
             if state.weight > 0.0
                 && let (Some(pool_kind), Some(candidate_index)) = (state.pool_kind, candidate_index)
                 && let Some(&global_light_index) =
-                    full.shadow_candidate_source_indices.get(candidate_index)
+                    level.shadow_candidate_source_indices.get(candidate_index)
             {
-                full.promoted_baked_records.push(PromotedBakedLightRecord {
+                level.promoted_baked_records.push(PromotedBakedLightRecord {
                     global_light_index: global_light_index as u32,
                     pool_kind,
                     slot: state.slot,
@@ -1430,16 +1508,16 @@ impl Renderer {
             }
         }
 
-        let record_count_before_cache_layers = full.promoted_baked_records.len();
+        let record_count_before_cache_layers = level.promoted_baked_records.len();
         if let Some(cache) = &mut full.promoted_depth_cache {
-            let mut plan = cache.plan_frame(&full.promoted_baked_records);
-            full.promoted_baked_cache_layers = apply_promoted_cache_layers(
-                &mut full.promoted_baked_records,
-                &mut full.promoted_static_weights,
-                &mut full.promoted_animated_states,
+            let mut plan = cache.plan_frame(&level.promoted_baked_records);
+            level.promoted_baked_cache_layers = apply_promoted_cache_layers(
+                &mut level.promoted_baked_records,
+                &mut level.promoted_static_weights,
+                &mut level.promoted_animated_states,
                 &mut plan,
             );
-            if full.promoted_baked_records.len() != record_count_before_cache_layers
+            if level.promoted_baked_records.len() != record_count_before_cache_layers
                 && !full.promoted_depth_cache_missing_layer_warned
             {
                 log::warn!(
@@ -1453,35 +1531,38 @@ impl Renderer {
             full.promoted_depth_cache_frame_plan = plan;
         } else {
             assert!(
-                full.promoted_baked_records.is_empty(),
+                level.promoted_baked_records.is_empty(),
                 "promoted records require a promoted depth cache"
             );
-            full.promoted_baked_cache_layers.clear();
+            level.promoted_baked_cache_layers.clear();
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
             full.promoted_entity_occluders_submitted = 0;
         }
 
-        full.promoted_static_weight_scratch.clear();
-        full.promoted_static_weight_scratch
-            .reserve(full.promoted_static_weights.len().max(1).saturating_mul(4));
-        if full.promoted_static_weights.is_empty() {
-            full.promoted_static_weight_scratch
+        level.promoted_static_weight_scratch.clear();
+        level
+            .promoted_static_weight_scratch
+            .reserve(level.promoted_static_weights.len().max(1).saturating_mul(4));
+        if level.promoted_static_weights.is_empty() {
+            level
+                .promoted_static_weight_scratch
                 .extend_from_slice(&0.0f32.to_ne_bytes());
         } else {
-            for &weight in &full.promoted_static_weights {
-                full.promoted_static_weight_scratch
+            for &weight in &level.promoted_static_weights {
+                level
+                    .promoted_static_weight_scratch
                     .extend_from_slice(&weight.clamp(0.0, 1.0).to_ne_bytes());
             }
         }
         queue.write_buffer(
-            &full.promoted_static_weight_buffer,
+            &level.promoted_static_weight_buffer,
             0,
-            &full.promoted_static_weight_scratch,
+            &level.promoted_static_weight_scratch,
         );
-        full.total_light_count = forward_light_count(full)
-            + selected_static_record_count(&full.promoted_baked_records) as u32;
+        level.total_light_count = forward_light_count(level)
+            + selected_static_record_count(&level.promoted_baked_records) as u32;
     }
 }
 
@@ -1675,21 +1756,24 @@ struct ShadowRankingState<'a> {
 }
 
 impl<'a> ShadowRankingState<'a> {
-    fn of(full: &'a FullRenderer, pool_kind: PromotedShadowPoolKind) -> Self {
+    fn of(
+        spot_shadow_pool: &'a SpotShadowPool,
+        cube_shadow_pool: Option<&'a crate::lighting::cube_shadow::CubeShadowPool>,
+        level: &'a LevelResourceSet,
+        pool_kind: PromotedShadowPoolKind,
+    ) -> Self {
         let prior_assignment = match pool_kind {
-            PromotedShadowPoolKind::Spot => full.spot_shadow_pool.slot_assignment.as_slice(),
-            PromotedShadowPoolKind::Cube => full
-                .cube_shadow_pool
-                .as_ref()
+            PromotedShadowPoolKind::Spot => spot_shadow_pool.slot_assignment.as_slice(),
+            PromotedShadowPoolKind::Cube => cube_shadow_pool
                 .map(|pool| pool.slot_assignment.as_slice())
                 .unwrap_or(&[]),
         };
         Self {
-            candidate_lights: &full.shadow_candidate_lights,
-            selection_indices: &full.shadow_candidate_selection_indices,
-            animated_baked_indices: &full.shadow_candidate_animated_baked_indices,
-            promoted_static_states: &full.promoted_static_states,
-            promoted_animated_states: &full.promoted_animated_states,
+            candidate_lights: &level.shadow_candidate_lights,
+            selection_indices: &level.shadow_candidate_selection_indices,
+            animated_baked_indices: &level.shadow_candidate_animated_baked_indices,
+            promoted_static_states: &level.promoted_static_states,
+            promoted_animated_states: &level.promoted_animated_states,
             prior_assignment,
         }
     }
@@ -2083,17 +2167,22 @@ fn static_light_influence_intersects_aabb(
 /// One candidate-indexed assignment in `level_lights` space, written into a
 /// reused buffer; candidates `skipped` marks keep no slot. An empty
 /// assignment (a disabled pool) leaves every level light unslotted.
-fn fill_level_slots(full: &FullRenderer, assignment: &[u32], skipped: &[bool], out: &mut Vec<u32>) {
+fn fill_level_slots(
+    level: &LevelResourceSet,
+    assignment: &[u32],
+    skipped: &[bool],
+    out: &mut Vec<u32>,
+) {
     if assignment.is_empty() {
         out.clear();
         out.resize(
-            full.level_lights.len(),
+            level.level_lights.len(),
             crate::lighting::spot_shadow::NO_SHADOW_SLOT,
         );
     } else {
         fill_level_light_slots(
-            &full.level_light_source_indices,
-            &full.shadow_candidate_source_indices,
+            &level.level_light_source_indices,
+            &level.shadow_candidate_source_indices,
             assignment,
             skipped,
             out,
@@ -2102,21 +2191,21 @@ fn fill_level_slots(full: &FullRenderer, assignment: &[u32], skipped: &[bool], o
 }
 
 fn build_count_split_light_upload(
-    full: &FullRenderer,
+    level: &LevelResourceSet,
     level_spot_slots: &[u32],
     level_cube_slots: &[u32],
     bytes: &mut Vec<u8>,
 ) {
     bytes.clear();
-    let dynamic_bytes = full.light_count as usize * postretro_lighting::GPU_LIGHT_SIZE;
-    let animated_tail_bytes = full.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE;
+    let dynamic_bytes = level.light_count as usize * postretro_lighting::GPU_LIGHT_SIZE;
+    let animated_tail_bytes = level.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE;
     let forward_prefix_bytes = dynamic_bytes + animated_tail_bytes;
-    if full.last_lights_upload.len() >= forward_prefix_bytes && forward_prefix_bytes > 0 {
-        bytes.extend_from_slice(&full.last_lights_upload[..forward_prefix_bytes]);
+    if level.last_lights_upload.len() >= forward_prefix_bytes && forward_prefix_bytes > 0 {
+        bytes.extend_from_slice(&level.last_lights_upload[..forward_prefix_bytes]);
         postretro_lighting::patch_shadow_slots(bytes, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
-    } else if !full.level_lights.is_empty() {
-        pack_lights_with_slots_into(bytes, &full.level_lights, level_spot_slots);
+    } else if !level.level_lights.is_empty() {
+        pack_lights_with_slots_into(bytes, &level.level_lights, level_spot_slots);
         postretro_lighting::patch_cube_slots(bytes, level_cube_slots);
         bytes.resize(dynamic_bytes, 0);
     }
@@ -2131,13 +2220,13 @@ fn build_count_split_light_upload(
     }
     restore_authored_animated_tail(
         &mut bytes[dynamic_bytes..forward_prefix_bytes],
-        &full.authored_animated_tail,
+        &level.authored_animated_tail,
     );
     patch_animated_promotion_tail_records(
         bytes,
-        full.light_count as usize,
-        full.animated_baked_light_count,
-        &full.promoted_animated_states,
+        level.light_count as usize,
+        level.animated_baked_light_count,
+        &level.promoted_animated_states,
     );
 
     // `entity_shadow_lights` is raw-length N and index-parallel to the selection
@@ -2146,11 +2235,11 @@ fn build_count_split_light_upload(
     // appends stays in lock-step with the influence tail packed in
     // `update_dynamic_light_slots` (both key on the same selection index).
     debug_assert_eq!(
-        full.entity_shadow_lights.len(),
-        full.promoted_static_states.len(),
+        level.entity_shadow_lights.len(),
+        level.promoted_static_states.len(),
         "selected-static light vector must be raw-length N, index-parallel to selection index",
     );
-    for record in full
+    for record in level
         .promoted_baked_records
         .iter()
         .filter(|record| record.source.selected_static_index().is_some())
@@ -2159,7 +2248,7 @@ fn build_count_split_light_upload(
             .source
             .selected_static_index()
             .expect("selected-static record filter");
-        let light = &full.entity_shadow_lights[selection_index];
+        let light = &level.entity_shadow_lights[selection_index];
         let mut weighted = light.clone();
         weighted.intensity *= record.weight.clamp(0.0, 1.0);
         let spot_slot = match record.pool_kind {

@@ -810,8 +810,8 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
     let reflection_gate = code_only(&frame[skinned..reflection]);
     assert!(
         reflection_gate.ends_with(
-            "ifself.full().fluid_surface.has_reflecting_draws(frame_light_term_mask,\
-             frame_reflection_quality){"
+            "ifself.full().fluid_surface.has_reflecting_draws(self.fluid_surfaces(),\
+             frame_light_term_mask,frame_reflection_quality,){"
         ),
         "{reflection_gate}"
     );
@@ -822,7 +822,10 @@ fn fluid_pass_records_between_skinned_meshes_and_billboards_on_its_own_gate() {
         .rfind("if render_world")
         .expect("fluid pass gate");
     let gate = &frame[gate_start..gate_start + frame[gate_start..].find('{').unwrap()];
-    assert!(gate.contains("fluid_surface.has_draws()"), "{gate}");
+    assert!(
+        gate.contains("fluid_surface.has_draws(self.fluid_surfaces())"),
+        "{gate}"
+    );
     assert!(!gate.contains("has_any_sheet"), "{gate}");
     assert!(!gate.contains("particle_collections"), "{gate}");
 }
@@ -2878,7 +2881,7 @@ fn fluid_reflection_reads_descriptors_from_the_shared_group_3_binding_11() {
     // sits in.
     assert!(
         code_only(fluid_pass_block())
-            .contains("fluid_pass.set_bind_group(3,self.full().sh_bind_group(),&[]);")
+            .contains("fluid_pass.set_bind_group(3,self.level().sh_bind_group(),&[]);")
     );
 }
 
@@ -2950,7 +2953,10 @@ fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
     // Both scene recorders reach the fluid pass through `record_scene_passes`.
     let render = include_str!("renderer_render_frame.rs");
     let scene = code_only(wgsl_fn(render, "record_scene_passes"));
-    assert!(scene.contains("ifrender_world&&self.full().fluid_surface.has_draws()"));
+    assert!(
+        scene
+            .contains("ifrender_world&&self.full().fluid_surface.has_draws(self.fluid_surfaces())")
+    );
     assert!(
         code_only(wgsl_fn(render, "render_frame_indirect")).contains("self.record_scene_passes(")
     );
@@ -3007,7 +3013,7 @@ fn the_frames_one_descriptor_flush_precedes_the_fluid_pass() {
 fn fluid_pass_block() -> &'static str {
     let frame = include_str!("renderer_render_frame.rs");
     let start = frame
-        .find("if render_world && self.full().fluid_surface.has_draws()")
+        .find("if render_world && self.full().fluid_surface.has_draws(self.fluid_surfaces())")
         .expect("fluid pass gate");
     let end = start
         + frame[start..]
@@ -3037,7 +3043,7 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
     assert!(!frame.contains("self.reflection_quality,"));
     let record = frame
         .find(
-            "fluid_surface.record_draws(&mutfluid_pass,&self.full().gpu_textures,\
+            "fluid_surface.record_draws(&mutfluid_pass,self.fluid_surfaces(),&self.level().gpu_textures,\
              frame_light_term_mask,frame_reflection_quality,);",
         )
         .expect("the fluid pass records with the frame's mask and tier");
@@ -3045,8 +3051,8 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
     // The reflection pass takes its gate and its draws by the same snapshot.
     let gate = frame
         .find(
-            "fluid_surface.has_reflecting_draws(frame_light_term_mask,\
-             frame_reflection_quality)",
+            "fluid_surface.has_reflecting_draws(self.fluid_surfaces(),frame_light_term_mask,\
+             frame_reflection_quality,)",
         )
         .expect("the reflection gate reads the frame's mask and tier");
     let reflection = frame
@@ -3062,7 +3068,7 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
     let reflection_source = include_str!("fluid_surface/reflection_pass.rs");
     let pass = code_only(reflection_source);
     assert!(pass.contains(
-        "fluid.record_reflection_draws(&mutpass,&full.gpu_textures,light_term_mask,quality);"
+        "fluid.record_reflection_draws(&mutpass,level.fluid_surfaces.as_ref(),&level.gpu_textures,light_term_mask,quality,);"
     ));
     assert!(pass.contains(
         "for(slot,variant)ininstalled.slots.frame_draws(light_term_mask.bits(),quality){\
@@ -3076,8 +3082,9 @@ fn fluid_pass_picks_variants_by_the_frames_group_0_mask() {
     // Low takes the reflecting variant but records no pass.
     assert!(
         reflecting.starts_with(
-            "fnhas_reflecting_draws(&self,light_term_mask:LightTermMask,\
-             quality:FluidReflectionQuality,)->bool{quality.runs_screen_space()&&"
+            "fnhas_reflecting_draws(&self,installed:Option<&InstalledFluidSurfaces>,\
+             light_term_mask:LightTermMask,quality:FluidReflectionQuality,)->bool{\
+             quality.runs_screen_space()&&"
         ),
         "{reflecting}"
     );
@@ -3180,14 +3187,17 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         "fnupload_scene_inputs(&mutself,queue:&crate::render::uploads::UploadQueue){\
          self.scene_inputs.upload(queue);self.upload_reflection_inputs(queue);}"
     );
-    // Group 5's own module builds its bind group in `new` and `rebuild` only.
+    // Group 5's own module builds its bind groups in `new`, `rebuild` and
+    // the scene-target `rebuild_scene` only; a release binds the prebuilt
+    // placeholder group and builds none.
     let inputs = include_str!("fluid_scene_inputs.rs");
     assert_eq!(
         code_only(inputs).matches("device.new_bind_group(").count(),
         1
     );
-    assert_eq!(code_only(inputs).matches("=create_bind_group(").count(), 2);
-    for builder in ["new", "rebuild"] {
+    assert_eq!(code_only(inputs).matches("=create_bind_group(").count(), 3);
+    assert!(!code_only(wgsl_fn(inputs, "bind_placeholder")).contains("create_bind_group"));
+    for builder in ["new", "rebuild", "rebuild_scene"] {
         assert!(code_only(wgsl_fn(inputs, builder)).contains("create_bind_group(device,"));
     }
     for per_frame in [
@@ -3202,15 +3212,31 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     }
 
     // Exactly two callers rebuild group 5: the scene-target follow-up and a
-    // reflection target change.
+    // reflection target change. A release binds the prebuilt placeholder.
     let pass_code = format!("{}{}", code_only(source), code_only(reflection_source));
-    assert_eq!(pass_code.matches("self.scene_inputs.rebuild(").count(), 2);
+    assert_eq!(pass_code.matches("self.scene_inputs.rebuild(").count(), 1);
+    assert_eq!(
+        pass_code
+            .matches("self.scene_inputs.rebuild_scene(")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pass_code
+            .matches("self.scene_inputs.bind_placeholder(")
+            .count(),
+        1
+    );
     let follow = code_only(wgsl_fn(reflection_source, "rebuild_scene_inputs"));
     let target_first = follow
         .find("letsuperseded=self.reflection.resize(device,scene_depth,scene_color);")
         .expect("the target follows the scene first");
     let group_5 = follow
-        .find("self.scene_inputs.rebuild(device,scene_depth,self.reflection.bound_view());")
+        .find(
+            "self.scene_inputs.rebuild_scene(device,scene_depth,\
+             self.reflection.target.as_ref().map(|target|&target.view),\
+             &self.reflection.placeholder_view,);",
+        )
         .expect("group 5 over the new depth and target");
     let superseded_dropped = follow
         .find("drop(superseded);")
@@ -3286,26 +3312,31 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     // fraction override re-key it.
     assert_eq!(pass_code.matches(".set_reflection_target(").count(), 4);
     assert!(
-        code_only(wgsl_fn(reflection_source, "set_reflection_target_fraction"))
-            .contains("self.set_reflection_target(device,self.wanted_reflection_target());")
+        code_only(wgsl_fn(reflection_source, "set_reflection_target_fraction")).contains(
+            "self.set_reflection_target(device,self.wanted_reflection_target(installed));"
+        )
     );
     let install = code_only(wgsl_fn(source, "install"));
     assert!(install.starts_with(
         "fninstall(&mutself,device:&wgpu::Device,queue:&crate::render::uploads::UploadQueue,"
     ));
-    assert!(install.contains("self.clear(device);"));
+    assert!(install.contains("self.clear_level_targets(device);"));
+    assert!(install.ends_with(
+        "self.set_reflection_target(device,self.wanted_reflection_target(Some(&installed)));\
+         Some(installed)}"
+    ));
+    // The fluid geometry drops with its level's set; the pass drops only the
+    // reflection target and planar layer keyed to it.
     assert!(
-        install.ends_with("self.set_reflection_target(device,self.wanted_reflection_target());}")
-    );
-    assert!(
-        code_only(wgsl_fn(source, "clear"))
-            .contains("self.installed=None;self.set_reflection_target(device,None);")
+        code_only(wgsl_fn(source, "clear_level_targets"))
+            .contains("self.set_reflection_target(device,None);")
     );
     assert_eq!(
         code_only(wgsl_fn(reflection_source, "set_reflection_quality")),
-        "fnset_reflection_quality(&mutself,device:&wgpu::Device,quality:FluidReflectionQuality,){\
+        "fnset_reflection_quality(&mutself,installed:Option<&InstalledFluidSurfaces>,\
+         device:&wgpu::Device,quality:FluidReflectionQuality,){\
          ifself.reflection.quality==quality{return;}self.reflection.apply_preset(quality);\
-         self.set_reflection_target(device,self.wanted_reflection_target());}",
+         self.set_reflection_target(device,self.wanted_reflection_target(installed));}",
         "the tier it already holds builds nothing (P5)"
     );
     // The wanted target is keyed to probe binding and the tier alone, never
@@ -3353,7 +3384,8 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         "{setter}"
     );
     assert!(setter.contains(
-        "ifletSome(full)=full.as_mut(){full.fluid_surface.set_reflection_quality(device,quality);}"
+        "ifletSome(full)=full.as_mut(){full.fluid_surface.set_reflection_quality(\
+         full.level.as_ref().and_then(|level|level.fluid_surfaces.as_ref()),device,quality,);}"
     ));
     let init = code_only(include_str!("renderer_init.rs"));
     let full_init = code_only(wgsl_fn(
@@ -3363,7 +3395,7 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
     assert!(
         full_init.find("letfull=build_full_renderer(").unwrap()
             < full_init
-                .find(".fluid_surface.set_reflection_quality(device,quality);")
+                .find(".fluid_surface.set_reflection_quality(None,device,quality);")
                 .expect("full init hands the pass the kept tier"),
         "{full_init}"
     );
@@ -3413,7 +3445,10 @@ fn fluid_scene_inputs_are_built_at_init_and_rebuilt_only_with_the_scene_targets(
         .concat(),
     );
     assert!(!resources.contains("rebuild_scene_inputs"));
-    assert!(resources.contains("full.fluid_surface.clear(device);"));
+    assert!(resources.contains("full.fluid_surface.clear_level_targets(device);"));
+    // Release drops the target over the prebuilt placeholder group, building
+    // nothing.
+    assert!(resources.contains("full.fluid_surface.release_level_targets();"));
 
     // Full init builds it over the scene depth and the placeholder, level or
     // not, beside the reflection pipeline.
@@ -3780,8 +3815,8 @@ fn the_fluid_grid_takes_the_lattice_the_sh_sampler_reads() {
         sh_sampler_lattice(None, Some(([0.0; 3], [0.0, 1.0, 1.0]))),
         None
     );
-    // The renderer offers the legacy mirrors only while a section is bound.
-    let types = code_only(include_str!("renderer_types/full_renderer.rs"));
+    // The level set offers the legacy mirrors only while a section is bound.
+    let types = code_only(include_str!("level_resource_set.rs"));
     assert!(types.contains(
         "self.sh_volume_resources.present.then_some((self.sh_volume_resources.grid_origin,\
          self.sh_volume_resources.cell_size,)),"
@@ -4290,7 +4325,7 @@ fn raising_the_reflection_tier_compiles_nothing() {
     assert!(
         pass_setter.contains(
             "self.reflection.apply_preset(quality);\
-             self.set_reflection_target(device,self.wanted_reflection_target());"
+             self.set_reflection_target(device,self.wanted_reflection_target(installed));"
         ),
         "{pass_setter}"
     );

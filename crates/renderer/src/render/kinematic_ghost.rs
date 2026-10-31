@@ -10,7 +10,7 @@ use postretro_render_cpu::ghost_instance::{
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 
 use super::ghost_pipeline::{GhostDrawStep, GhostPipelines};
-use super::kinematic_brush::KinematicBrushPass;
+use super::kinematic_brush::KinematicLevelState;
 use super::kinematic_ghost_shape::{MoverGhostBounds, MoverGhostShape};
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
 
@@ -174,7 +174,7 @@ impl KinematicGhostPass {
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
         instances: &[KinematicGhostInstance],
-        brush: &KinematicBrushPass,
+        brush: &KinematicLevelState,
     ) {
         self.draws.clear();
         self.instance_bytes.clear();
@@ -222,7 +222,7 @@ impl KinematicGhostPass {
     /// bounds, and its mover's triangles as `brush` keeps them.
     pub(super) fn draw_shapes<'a>(
         &'a self,
-        brush: &'a KinematicBrushPass,
+        brush: &'a KinematicLevelState,
     ) -> impl Iterator<Item = MoverGhostShape<'a>> + 'a {
         self.draws.iter().map(move |draw| {
             MoverGhostShape::new(draw.bounds, brush.mover_triangles(draw.mover_id))
@@ -237,7 +237,7 @@ impl KinematicGhostPass {
     pub(super) fn record_ghost(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
-        brush: &KinematicBrushPass,
+        brush: &KinematicLevelState,
         materials: &[GpuTexture],
         draw: u32,
         mode: GhostTransparency,

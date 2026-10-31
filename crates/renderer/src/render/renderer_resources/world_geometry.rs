@@ -3,17 +3,34 @@
 // See: context/lib/rendering_pipeline.md §5
 
 use super::super::install_pipelines::InstallPipelines;
-use super::super::renderer_types::FullRenderer;
 use super::*;
 use crate::render::gpu_create::GpuCreate;
 
+/// One level's world draw buffers.
+pub(super) struct WorldBuffers {
+    pub(super) vertex_buffer: wgpu::Buffer,
+    pub(super) spec_owner_buffer: wgpu::Buffer,
+    pub(super) index_buffer: wgpu::Buffer,
+    pub(super) index_count: u32,
+    pub(super) wireframe_index_buffer: wgpu::Buffer,
+    pub(super) wireframe_index_count: u32,
+    /// Whether the level has any geometry.
+    pub(super) has_geometry: bool,
+}
+
+/// One level's BVH leaves and the cull owners over its index buffer.
+pub(super) struct WorldCull {
+    pub(super) bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,
+    pub(super) cell_draw_index: Option<postretro_level_loader::CellDrawIndex>,
+    pub(super) compute_cull: Option<ComputeCullPipeline>,
+    pub(super) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
+}
+
 /// Upload the level's vertex, spec-owner, index and wireframe buffers.
-/// Returns whether the level has any geometry.
 pub(super) fn install_world_buffers(
     device: &wgpu::Device,
-    full: &mut FullRenderer,
     geometry: &LevelGeometry<'_>,
-) -> bool {
+) -> WorldBuffers {
     let has_geometry = !geometry.vertices.is_empty() && !geometry.indices.is_empty();
 
     // --- Vertex / index buffers ---
@@ -31,7 +48,7 @@ pub(super) fn install_world_buffers(
             0u32,
         )
     };
-    full.vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Vertex Buffer"),
         contents: &vertex_data,
         usage: wgpu::BufferUsages::VERTEX,
@@ -39,7 +56,7 @@ pub(super) fn install_world_buffers(
     // The forward pass's owner stream, written once here and never per frame.
     let spec_owner_data =
         cast_spec_owners_to_bytes(geometry.vertex_spec_owners, geometry.vertices.len());
-    full.spec_owner_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let spec_owner_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Spec Owner Buffer"),
         contents: &spec_owner_data,
         usage: wgpu::BufferUsages::VERTEX,
@@ -47,12 +64,11 @@ pub(super) fn install_world_buffers(
     // Indirect slots copy only these checked leaves' baked ranges, and all
     // world indirect passes bind this complete array. Recreate every cull
     // owner below before drawing; no slot may survive an index-buffer swap.
-    full.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Index Buffer"),
         contents: &index_data,
         usage: wgpu::BufferUsages::INDEX,
     });
-    full.index_count = index_count;
 
     // --- Wireframe index buffer ---
     let (wireframe_index_data, wireframe_index_count) = if has_geometry {
@@ -62,33 +78,34 @@ pub(super) fn install_world_buffers(
     } else {
         (vec![0u8; 4], 0u32)
     };
-    full.wireframe_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let wireframe_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Wireframe Line Index Buffer"),
         contents: &wireframe_index_data,
         usage: wgpu::BufferUsages::INDEX,
     });
-    full.wireframe_index_count = wireframe_index_count;
-
-    has_geometry
+    WorldBuffers {
+        vertex_buffer,
+        spec_owner_buffer,
+        index_buffer,
+        index_count,
+        wireframe_index_buffer,
+        wireframe_index_count,
+        has_geometry,
+    }
 }
 
 pub(super) fn install_bvh_and_cull(
     device: &wgpu::Device,
-    full: &mut FullRenderer,
     pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,
     has_multi_draw_indirect: bool,
-) {
+) -> WorldCull {
     // --- BVH + compute cull ---
-    full.bvh_leaves = bvh_leaves;
-    // Per-cell draw index for the candidate-cull path. Cloned alongside the
-    // BVH leaves; the empty-geometry install path clears it to `None`, so
-    // `release_level_resources` drops it for free.
-    full.cell_draw_index = geometry.cell_draw_index.cloned();
-    // Reset per-level so a corrupt index on a later level still warns once.
-    full.candidate_cull_oor_logged = false;
-    full.compute_cull = if !full.bvh_leaves.is_empty() {
+    // Per-cell draw index for the candidate-cull path, cloned alongside the
+    // BVH leaves.
+    let cell_draw_index = geometry.cell_draw_index.cloned();
+    let compute_cull = if !bvh_leaves.is_empty() {
         Some(ComputeCullPipeline::new(
             device,
             &pipelines.compute_cull,
@@ -99,13 +116,18 @@ pub(super) fn install_bvh_and_cull(
         None
     };
     // Rebuild the candidate-cull path in lockstep with `compute_cull`, sized
-    // to the freshly-installed leaf count. Empty-geometry install → `None`,
-    // so `release_level_resources` drops it for free.
-    full.candidate_cull = full.compute_cull.as_ref().map(|c| {
+    // to the freshly-installed leaf count; an empty BVH builds neither.
+    let candidate_cull = compute_cull.as_ref().map(|c| {
         crate::candidate_cull::CandidateCullPipeline::new(
             device,
             &pipelines.candidate_cull,
             c.total_leaves(),
         )
     });
+    WorldCull {
+        bvh_leaves,
+        cell_draw_index,
+        compute_cull,
+        candidate_cull,
+    }
 }

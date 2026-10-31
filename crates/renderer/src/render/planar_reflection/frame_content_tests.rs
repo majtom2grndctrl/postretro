@@ -272,9 +272,9 @@ fn mesh_renderer() -> Option<(Renderer, View)> {
     )?;
     let device = renderer.device.clone();
     renderer
-        .full_mut()
-        .kinematic_brush
-        .install_geometry(&device, Some(&mover_geometry()), 1);
+        .level_mut()
+        .kinematic
+        .replace_geometry(&device, &mover_geometry(), 1);
     install_skinned_model(&mut renderer, SKINNED, &two_sided_quad());
     let view = fixture::base_view();
     select(&mut renderer, view, 0.0);
@@ -466,7 +466,9 @@ fn planar_mirror_sprites_record_on_the_frame_encoder() {
         );
     }
     let record = include_str!("record.rs");
-    assert!(record.contains("full.mesh_pass.record_mirror_draws(&mut skinned, plan);"));
+    assert!(record.contains(
+        "full.mesh_pass\n            .record_mirror_draws(&mut skinned, &level.mesh_lights, plan);"
+    ));
     assert!(record.contains("pass.sprites.record_draws(&mut sprites, &full.smoke_pass);"));
     for excluded in [
         "ghost_order",

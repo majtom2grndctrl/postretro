@@ -210,10 +210,11 @@ impl FluidSurfacePass {
     /// one. Both build from `PlanarCandidates::from_volumes`, and the app's
     /// reflecting volumes are a subset of every volume, so with the app
     /// driving this is the app's candidate exactly.
-    pub(in crate::render) fn has_planar_candidate(&self) -> bool {
-        self.installed
-            .as_ref()
-            .is_some_and(|installed| installed.planar_candidate)
+    pub(in crate::render) fn has_planar_candidate(
+        &self,
+        installed: Option<&InstalledFluidSurfaces>,
+    ) -> bool {
+        installed.is_some_and(|installed| installed.planar_candidate)
             && self.planar.app_candidate.unwrap_or(true)
     }
 
@@ -225,6 +226,14 @@ impl FluidSurfacePass {
     /// The planar layer's extent; `None` without one.
     pub(in crate::render) fn planar_layer_extent(&self) -> Option<(u32, u32)> {
         self.planar.layer.as_ref().map(|layer| layer.extent)
+    }
+
+    /// Drop the planar layer and its group 5 with no rebuild: a level
+    /// release frees them this way.
+    pub(in crate::render) fn release_planar_layer(&mut self) {
+        self.planar.layer = None;
+        self.planar.route = None;
+        self.planar.group = None;
     }
 
     /// Create, resize or release the planar layer to match `wanted`, and
@@ -417,11 +426,12 @@ impl FluidSurfacePass {
     /// `height`: the planar pass writes nothing without one.
     pub(in crate::render) fn has_planar_parts(
         &self,
+        installed: Option<&InstalledFluidSurfaces>,
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
         height: f32,
     ) -> bool {
-        self.installed.as_ref().is_some_and(|installed| {
+        installed.is_some_and(|installed| {
             installed
                 .slots
                 .frame_draws(light_term_mask.bits(), quality)
@@ -449,12 +459,13 @@ impl FluidSurfacePass {
     pub(in crate::render) fn record_planar_parts(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        installed: Option<&InstalledFluidSurfaces>,
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
         height: f32,
         materials: Option<(u32, &[GpuTexture])>,
     ) {
-        let Some(installed) = self.installed.as_ref() else {
+        let Some(installed) = installed else {
             return;
         };
         pass.set_vertex_buffer(0, installed.vertex_buffer.slice(..));

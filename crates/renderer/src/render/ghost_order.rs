@@ -8,7 +8,7 @@ use postretro_render_cpu::mesh_instances::{MeshFramePlan, MeshPaletteCacheKey, P
 
 use super::GpuTexture;
 use super::ghost_pipeline::{GhostDrawStep, SkinnedGhostSpan};
-use super::kinematic_brush::KinematicBrushPass;
+use super::kinematic_brush::KinematicLevelState;
 use super::kinematic_ghost::KinematicGhostPass;
 use super::kinematic_ghost_shape::{MoverGhostBounds, MoverGhostShape};
 use super::mesh_pass::MeshPass;
@@ -101,7 +101,7 @@ pub(super) struct GhostDrawSources<'a> {
     pub(super) mesh_pass: &'a MeshPass,
     pub(super) skinned: Option<&'a MeshFramePlan>,
     pub(super) movers: &'a KinematicGhostPass,
-    pub(super) brush: &'a KinematicBrushPass,
+    pub(super) brush: &'a KinematicLevelState,
     pub(super) materials: &'a [GpuTexture],
 }
 

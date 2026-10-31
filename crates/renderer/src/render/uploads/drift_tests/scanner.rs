@@ -697,7 +697,7 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         ("render/mesh_pass/frame_upload.rs", "MeshPass", "upload_identity_palette") => {
             Some("install")
         }
-        ("render/fluid_surface.rs", "FluidSurfacePass", "set_drift") => {
+        ("render/fluid_surface.rs", "InstalledFluidSurfaces", "set_drift") => {
             Some("install/commit/tuning refresh (drift re-resolve; never batched)")
         }
         ("lighting/lightmap/pool.rs", "", "upload_static_pool") => Some("install"),

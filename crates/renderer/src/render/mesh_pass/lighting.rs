@@ -88,7 +88,7 @@ pub(super) fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
 ///        without it the entry is omitted (and `render::strip_point_shadow_cube`
 ///        drops the matching shader declaration), exactly as forward's group-5 BGL
 ///        omits its binding 5. The cube view is passed `Some` to
-///        `rebuild_light_bind_group` iff this entry is present (the
+///        `light_bind_groups` iff this entry is present (the
 ///        `Some`-iff-layout invariant — a single unconditional BGL crashes on a
 ///        no-cube adapter).
 ///
@@ -170,7 +170,7 @@ pub(super) fn mesh_light_bind_group_layout_entries(
     // entry requires `DownlevelFlags::CUBE_ARRAY_TEXTURES`, so omitting it lets the
     // mesh pipeline build on adapters without the feature (the no-cube shader
     // variant strips the matching declaration). The cube view is supplied `Some`
-    // to `rebuild_light_bind_group` iff this entry is present.
+    // to `light_bind_groups` iff this entry is present.
     if cube_array_supported {
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: 8,
@@ -285,8 +285,8 @@ impl MeshPass {
     /// shadow-quality change, so rebuild this group against the current pool resources
     /// after each level install/reallocation, alongside the b0–b4 rebind.
     #[allow(clippy::too_many_arguments)]
-    pub fn rebuild_light_bind_group(
-        &mut self,
+    pub(in crate::render) fn light_bind_groups(
+        &self,
         device: &wgpu::Device,
         lights: &wgpu::Buffer,
         mirror_lights: &wgpu::Buffer,
@@ -299,7 +299,7 @@ impl MeshPass {
         point_shadow_cube: Option<&wgpu::TextureView>,
         promoted_spot_cache: &wgpu::TextureView,
         promoted_cube_cache: Option<&wgpu::TextureView>,
-    ) {
+    ) -> crate::render::LevelLightGroups {
         assert_eq!(
             point_shadow_cube.is_some(),
             self.cube_array_supported,
@@ -365,18 +365,19 @@ impl MeshPass {
                 resource: wgpu::BindingResource::TextureView(cube_view),
             });
         }
-        self.light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
+        let light = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Mesh Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,
-        }));
+        });
         // The mirror's group differs only in b0.
         entries[0].resource = mirror_lights.as_entire_binding();
-        self.mirror_light_bind_group = Some(device.new_bind_group(&wgpu::BindGroupDescriptor {
+        let mirror = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Skinned Mesh Mirror Light Bind Group (group 2)"),
             layout: &self.light_bind_group_layout,
             entries: &entries,
-        }));
+        });
+        crate::render::LevelLightGroups { light, mirror }
     }
 
     /// Whether this frame's mirror draws read the mirror's light records.

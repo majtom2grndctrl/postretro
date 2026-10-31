@@ -4,6 +4,7 @@
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
 use super::{MeshPass, UploadedModel};
+use crate::render::LevelLightGroups;
 
 impl MeshPass {
     /// Record the forward skinned-mesh draws from the already-uploaded buffers.
@@ -22,8 +23,15 @@ impl MeshPass {
     /// skip the color pass, batching contiguous visible runs so the common
     /// all-visible frame issues one draw per group/submesh. Instances only
     /// the planar mirror reaches never draw here.
-    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
-        self.record_draws_where(pass, plan, false, |instance| instance.forward_visible);
+    pub(in crate::render) fn record_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        lights: &LevelLightGroups,
+        plan: &MeshFramePlan,
+    ) {
+        self.record_draws_where(pass, lights, plan, false, |instance| {
+            instance.forward_visible
+        });
     }
 
     /// The planar mirror's skinned-mesh draws from the same uploaded buffers:
@@ -32,8 +40,13 @@ impl MeshPass {
     /// the mirror camera. Only the world plan reaches the mirror, so ghosts
     /// and the viewmodel never draw here. Group 2 carries the mirror's light
     /// records on a frame a mirror-only light holds a shadow slot.
-    pub fn record_mirror_draws(&self, pass: &mut wgpu::RenderPass<'_>, plan: &MeshFramePlan) {
-        self.record_draws_where(pass, plan, self.mirror_light_records, |instance| {
+    pub(in crate::render) fn record_mirror_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        lights: &LevelLightGroups,
+        plan: &MeshFramePlan,
+    ) {
+        self.record_draws_where(pass, lights, plan, self.mirror_light_records, |instance| {
             instance.mirror.drawn()
         });
     }
@@ -43,6 +56,7 @@ impl MeshPass {
     fn record_draws_where(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        lights: &LevelLightGroups,
         plan: &MeshFramePlan,
         mirror_light_records: bool,
         drawn: impl Fn(&postretro_render_cpu::mesh_instances::PlannedInstance) -> bool,
@@ -52,20 +66,9 @@ impl MeshPass {
         }
 
         pass.set_pipeline(&self.pipeline);
-        // Group 2 (runtime direct lighting): the runtime light buffers + the
-        // per-frame params uniform. Set once for the frame. The pipeline layout
-        // declares group 2, so the bind group MUST be present before any mesh
-        // draw — the renderer wires it (`rebuild_light_bind_group`) once geometry
-        // installs, and the draw path is skipped until a model is uploaded, so
-        // this is `Some` on every frame a mesh actually draws. The expect guards
-        // against a future caller reordering that wiring after the draw.
-        let light_bind_group = if mirror_light_records {
-            self.mirror_light_bind_group.as_ref()
-        } else {
-            self.light_bind_group.as_ref()
-        }
-        .expect("mesh group-2 light bind group must be built before recording mesh draws");
-        pass.set_bind_group(2, light_bind_group, &[]);
+        // Group 2 (runtime direct lighting): the active level's light buffers +
+        // the per-frame params uniform. Set once for the frame.
+        pass.set_bind_group(2, lights.select(mirror_light_records), &[]);
         // Group 3 (palette + instance SSBO) is shared across every group/submesh
         // this frame — set once. The shader selects each instance's run via
         // `@builtin(instance_index)` against the densely-packed SSBO.

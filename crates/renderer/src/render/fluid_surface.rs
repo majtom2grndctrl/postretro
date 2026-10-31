@@ -235,7 +235,7 @@ fn fluid_vertex_buffer_layouts() -> [Option<wgpu::VertexBufferLayout<'static>>; 
 }
 
 /// One installed level's fluid geometry and per-volume parameter buffer.
-struct InstalledFluidSurfaces {
+pub(crate) struct InstalledFluidSurfaces {
     vertex_buffer: wgpu::Buffer,
     /// Zeroed at install: a level draws still until drift resolves, and
     /// capture, which resolves none, always draws still.
@@ -302,7 +302,6 @@ pub(crate) struct FluidSurfacePass {
     reflection: reflection_pass::FluidReflectionPass,
     /// `None` until a level with drawable fluid surfaces installs: a level
     /// without them allocates nothing and never opens the pass.
-    installed: Option<InstalledFluidSurfaces>,
     /// The planar layer, its own group 5 and this frame's routed plane.
     planar: planar_routing::PlanarRouting,
 }
@@ -362,7 +361,6 @@ impl FluidSurfacePass {
             params_bind_group_layout,
             scene_inputs,
             reflection,
-            installed: None,
             planar: Default::default(),
         }
     }
@@ -396,11 +394,17 @@ impl FluidSurfacePass {
         &self.scene_inputs
     }
 
-    /// Drop the installed level's fluid geometry and its reflection target,
-    /// rebinding group 5 to the placeholder first. Level install and unload
-    /// both start here.
-    pub fn clear(&mut self, device: &wgpu::Device) {
-        self.installed = None;
+    /// Drop a released level's reflection target and planar layer, building
+    /// nothing: group 5 rebinds its prebuilt placeholder group.
+    pub fn release_level_targets(&mut self) {
+        self.release_reflection_target();
+        self.release_planar_layer();
+    }
+
+    /// Drop the previous level's reflection target and planar layer,
+    /// rebinding group 5 to the placeholder first. Every geometry install
+    /// starts here; the fluid geometry itself drops with its level's set.
+    pub fn clear_level_targets(&mut self, device: &wgpu::Device) {
         self.set_reflection_target(device, None);
         self.set_planar_layer(device, None, false);
     }
@@ -427,11 +431,11 @@ impl FluidSurfacePass {
         texture_dimensions: &[[u32; 2]],
         material_count: usize,
         lattice: Option<&FluidGridLattice>,
-    ) {
-        self.clear(device);
+    ) -> Option<InstalledFluidSurfaces> {
+        self.clear_level_targets(device);
         let mesh = pack_fluid_surfaces(volumes, texture_dimensions, material_count, lattice);
         if mesh.indices.is_empty() {
-            return;
+            return None;
         }
         let reflection_probes = installable_probe_section(reflection_probes);
         let (probe_index_buffer, has_probe_bound_face) = create_probe_index_buffer(
@@ -507,7 +511,7 @@ impl FluidSurfacePass {
             ),
         }
         let planar_parts = planar_routing::split_planar_ranges(&mesh, volumes, reflection_probes);
-        self.installed = Some(InstalledFluidSurfaces {
+        let installed = InstalledFluidSurfaces {
             vertex_buffer,
             drift_buffer,
             drift_rates: vec![[0.0; 2]; mesh.vertices.len()],
@@ -526,118 +530,17 @@ impl FluidSurfacePass {
             grid: mesh.grid,
             #[cfg(test)]
             param_uploads: 0,
-        });
+        };
         // Probe binding is fixed at install, so it and the kept tier alone
         // key the target: reflectivity, retuned live, only switches draw
         // variants.
-        self.set_reflection_target(device, self.wanted_reflection_target());
-    }
-
-    /// Replace every face's drift: `drifts` holds one world drift per surface
-    /// face of every installed volume, in record order. Only the drift buffer
-    /// is rewritten, so draws, slots and parameter rows carry over untouched.
-    pub fn set_drift(
-        &mut self,
-        queue: &crate::render::uploads::UploadQueue,
-        drifts: &[glam::Vec3],
-    ) {
-        let Some(installed) = self.installed.as_mut() else {
-            return;
-        };
-        if drifts.len() != installed.face_drift_maps.len() {
-            log::warn!(
-                "[Renderer] Fluid surface drift count {} does not match {} surface faces; \
-                 water holds still",
-                drifts.len(),
-                installed.face_drift_maps.len(),
-            );
-        }
-        fill_drift_rates(
-            &installed.face_drift_maps,
-            drifts,
-            &mut installed.drift_rates,
-        );
-        // Drift re-resolves at install, reload commit and fluid-table or
-        // tuning refreshes. Some of those points require an empty upload
-        // batch. Nothing ever batch-writes this buffer, so a direct write,
-        // which lands now, is safe at every one.
-        queue.direct_write_buffer(
-            &installed.drift_buffer,
-            0,
-            bytemuck::cast_slice(&installed.drift_rates),
-        );
-    }
-
-    /// The installed level's grid planes: `None` without a level, or for
-    /// one packed whole.
-    #[cfg(test)]
-    pub(crate) fn installed_grid(
-        &self,
-    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridPlanes> {
-        self.installed.as_ref().and_then(|installed| installed.grid)
-    }
-
-    /// Layers of the installed probe array: 1 for the dummy.
-    #[cfg(test)]
-    pub(crate) fn probe_array_layers(&self) -> Option<u32> {
-        self.probe_array_size()
-            .map(|size| size.depth_or_array_layers)
-    }
-
-    /// The installed probe array's tile width, height and layer count: 1×1
-    /// and one layer for the dummy.
-    #[cfg(test)]
-    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
-        self.installed
-            .as_ref()
-            .map(|installed| installed._probes.array_size())
-    }
-
-    /// The installed distance array's tile width, height and layer count:
-    /// 1×1 and one layer for the dummy.
-    #[cfg(test)]
-    pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
-        self.installed
-            .as_ref()
-            .map(|installed| installed._probes.distance_size())
-    }
-
-    /// Parameter-row uploads since install.
-    #[cfg(test)]
-    pub(crate) fn param_uploads(&self) -> Option<u32> {
-        self.installed
-            .as_ref()
-            .map(|installed| installed.param_uploads)
-    }
-
-    /// Replace this frame's draws, uploading only parameter rows that changed.
-    pub fn set_draws(
-        &mut self,
-        queue: &crate::render::uploads::UploadQueue,
-        draws: &[FluidSurfaceDraw],
-    ) {
-        let Some(installed) = self.installed.as_mut() else {
-            return;
-        };
-        installed.slots.set_draws(draws);
-        if let Some((range, rows)) = installed.slots.take_dirty() {
-            #[cfg(test)]
-            {
-                installed.param_uploads += 1;
-            }
-            queue.write_buffer(
-                &installed.params_buffer,
-                u64::from(range.start) * FLUID_PARAMS_STRIDE as u64,
-                bytemuck::cast_slice(rows),
-            );
-        }
+        self.set_reflection_target(device, self.wanted_reflection_target(Some(&installed)));
+        Some(installed)
     }
 
     /// The pass's own gate: any visible fluid surface this frame.
-    pub fn has_draws(&self) -> bool {
-        self.installed
-            .as_ref()
-            .is_some_and(|installed| installed.slots.has_draws())
+    pub fn has_draws(&self, installed: Option<&InstalledFluidSurfaces>) -> bool {
+        installed.is_some_and(|installed| installed.slots.has_draws())
     }
 
     /// Record this frame's draws. The caller binds groups 0, 2 and 3; this
@@ -651,11 +554,12 @@ impl FluidSurfacePass {
     pub fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        installed: Option<&InstalledFluidSurfaces>,
         materials: &[GpuTexture],
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
     ) {
-        let Some(installed) = self.installed.as_ref() else {
+        let Some(installed) = installed else {
             return;
         };
         if !installed.slots.has_draws() {
@@ -711,13 +615,116 @@ impl FluidSurfacePass {
     fn pipeline(&self, variant: FluidShaderVariant) -> &wgpu::RenderPipeline {
         &self.pipelines[variant as usize]
     }
+}
+
+impl InstalledFluidSurfaces {
+    /// Replace every face's drift: `drifts` holds one world drift per surface
+    /// face of every installed volume, in record order. Only the drift buffer
+    /// is rewritten, so draws, slots and parameter rows carry over untouched.
+    pub(crate) fn set_drift(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        drifts: &[glam::Vec3],
+    ) {
+        let installed = self;
+        if drifts.len() != installed.face_drift_maps.len() {
+            log::warn!(
+                "[Renderer] Fluid surface drift count {} does not match {} surface faces; \
+                 water holds still",
+                drifts.len(),
+                installed.face_drift_maps.len(),
+            );
+        }
+        fill_drift_rates(
+            &installed.face_drift_maps,
+            drifts,
+            &mut installed.drift_rates,
+        );
+        // Drift re-resolves at install, reload commit and fluid-table or
+        // tuning refreshes. Some of those points require an empty upload
+        // batch. Nothing ever batch-writes this buffer, so a direct write,
+        // which lands now, is safe at every one.
+        queue.direct_write_buffer(
+            &installed.drift_buffer,
+            0,
+            bytemuck::cast_slice(&installed.drift_rates),
+        );
+    }
+
+    /// Replace this frame's draws, uploading only parameter rows that changed.
+    pub(crate) fn set_draws(
+        &mut self,
+        queue: &crate::render::uploads::UploadQueue,
+        draws: &[FluidSurfaceDraw],
+    ) {
+        let installed = self;
+        installed.slots.set_draws(draws);
+        if let Some((range, rows)) = installed.slots.take_dirty() {
+            #[cfg(test)]
+            {
+                installed.param_uploads += 1;
+            }
+            queue.write_buffer(
+                &installed.params_buffer,
+                u64::from(range.start) * FLUID_PARAMS_STRIDE as u64,
+                bytemuck::cast_slice(rows),
+            );
+        }
+    }
+}
+
+/// Test view over the fluid pass and the active level's surfaces.
+#[cfg(test)]
+pub(crate) struct FluidTestView<'a> {
+    pub(crate) pass: &'a FluidSurfacePass,
+    pub(crate) installed: Option<&'a InstalledFluidSurfaces>,
+}
+
+#[cfg(test)]
+impl FluidTestView<'_> {
+    /// The pass's own gate: any visible fluid surface this frame.
+    pub(crate) fn has_draws(&self) -> bool {
+        self.pass.has_draws(self.installed)
+    }
+
+    /// The installed level's grid planes: `None` without a level, or for
+    /// one packed whole.
+    pub(crate) fn installed_grid(
+        &self,
+    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridPlanes> {
+        self.installed.and_then(|installed| installed.grid)
+    }
+
+    /// Layers of the installed probe array: 1 for the dummy.
+    pub(crate) fn probe_array_layers(&self) -> Option<u32> {
+        self.probe_array_size()
+            .map(|size| size.depth_or_array_layers)
+    }
+
+    /// The installed probe array's tile width, height and layer count: 1×1
+    /// and one layer for the dummy.
+    pub(crate) fn probe_array_size(&self) -> Option<wgpu::Extent3d> {
+        self.installed
+            .map(|installed| installed._probes.array_size())
+    }
+
+    /// The installed distance array's tile width, height and layer count:
+    /// 1×1 and one layer for the dummy.
+    pub(crate) fn probe_distance_size(&self) -> Option<wgpu::Extent3d> {
+        self.installed
+            .map(|installed| installed._probes.distance_size())
+    }
+
+    /// Parameter-row uploads since install.
+    pub(crate) fn param_uploads(&self) -> Option<u32> {
+        self.installed.map(|installed| installed.param_uploads)
+    }
 
     /// The variant each of this frame's draws takes at the kept tier, in draw
     /// order: what `record_draws` binds.
-    #[cfg(test)]
     pub(crate) fn frame_variants(&self, light_term_mask: LightTermMask) -> Vec<FluidShaderVariant> {
-        let quality = self.kept_reflection_quality();
-        self.installed.as_ref().map_or_else(Vec::new, |installed| {
+        let quality = self.pass.kept_reflection_quality();
+        self.installed.map_or_else(Vec::new, |installed| {
             installed
                 .slots
                 .frame_draws(light_term_mask.bits(), quality)
@@ -790,11 +797,14 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let texture_dimensions =
-            super::renderer_models::loaded_texture_dimensions(&full.loaded_textures);
-        let material_count = full.gpu_textures.len();
-        let lattice = full.sh_sampler_lattice();
-        full.fluid_surface.install(
+            super::renderer_models::loaded_texture_dimensions(&level.loaded_textures);
+        let material_count = level.gpu_textures.len();
+        let lattice = level.sh_sampler_lattice();
+        level.fluid_surfaces = full.fluid_surface.install(
             device,
             queue,
             volumes,
@@ -816,7 +826,13 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.fluid_surface.set_drift(queue, drifts);
+        if let Some(surfaces) = full
+            .level
+            .as_mut()
+            .and_then(|level| level.fluid_surfaces.as_mut())
+        {
+            surfaces.set_drift(queue, drifts);
+        }
     }
 
     /// This frame's visible fluid draws, far to near, from
@@ -827,7 +843,13 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        full.fluid_surface.set_draws(queue, draws);
+        if let Some(surfaces) = full
+            .level
+            .as_mut()
+            .and_then(|level| level.fluid_surfaces.as_mut())
+        {
+            surfaces.set_draws(queue, draws);
+        }
     }
 
     /// Store the frame's eye fog weight (0..1): 0 while the eye is inside any
@@ -881,7 +903,13 @@ impl Renderer {
         self.reflection_quality = quality;
         let Self { device, full, .. } = self;
         if let Some(full) = full.as_mut() {
-            full.fluid_surface.set_reflection_quality(device, quality);
+            full.fluid_surface.set_reflection_quality(
+                full.level
+                    .as_ref()
+                    .and_then(|level| level.fluid_surfaces.as_ref()),
+                device,
+                quality,
+            );
         }
         // The planar layer follows the tier: allocated at very high and ultra
         // on a level with a candidate plane, released below. Compiles nothing.
@@ -903,8 +931,13 @@ impl Renderer {
     pub fn set_reflection_target_fraction(&mut self, fraction: f32) -> bool {
         let Self { device, full, .. } = self;
         full.as_mut().is_some_and(|full| {
-            full.fluid_surface
-                .set_reflection_target_fraction(device, fraction)
+            full.fluid_surface.set_reflection_target_fraction(
+                full.level
+                    .as_ref()
+                    .and_then(|level| level.fluid_surfaces.as_ref()),
+                device,
+                fraction,
+            )
         })
     }
 

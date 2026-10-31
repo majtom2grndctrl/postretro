@@ -38,30 +38,23 @@ pub(super) fn rebuild_spot_shadow_pool_for_tier(
     }
 }
 
-/// Reset the promoted-light state and the promoted/dynamic depth caches for the
-/// level's shadow candidates, and reallocate the promoted static weights.
+/// One level's fresh promoted-light state and its static weight buffer.
+pub(super) struct PromotedLevelState {
+    pub(super) promoted_static_states: Vec<PromotedBakedLightState>,
+    pub(super) promoted_animated_states: Vec<PromotedBakedLightState>,
+    pub(super) animated_light_window_brightness: Vec<f32>,
+    pub(super) promoted_static_weights: Vec<f32>,
+    pub(super) promoted_static_weight_buffer: wgpu::Buffer,
+}
+
+/// Reset the promoted/dynamic depth caches for the level's shadow candidates,
+/// and build the level's promoted-light state and static weights.
 pub(super) fn reset_level_shadow_caches(
     device: &wgpu::Device,
     full: &mut FullRenderer,
     geometry: &LevelGeometry<'_>,
     selection: &LevelLightSelection<'_>,
-) {
-    full.promoted_static_states =
-        vec![PromotedBakedLightState::default(); geometry.entity_shadow_lights.len()];
-    // Preserve raw section-45 index space even when a roster row lacks a
-    // runtime MapLight candidate (for example, a bake-only entry).
-    full.promoted_animated_states =
-        vec![PromotedBakedLightState::default(); selection.animated_baked_descriptor_indices.len()];
-    // A level reload must not let the prior level's window maxima keep a
-    // newly-loaded animated candidate alive before its bridge update.
-    full.animated_light_window_brightness =
-        vec![0.0; selection.animated_baked_descriptor_indices.len()];
-    full.promoted_baked_records.clear();
-    full.promoted_baked_cache_layers.clear();
-    full.promoted_static_weights = vec![0.0; geometry.entity_shadow_lights.len()];
-    full.promoted_static_weight_scratch.clear();
-    full.promoted_baked_last_update_time = None;
-    full.promotions_start_whole = false;
+) -> PromotedLevelState {
     // Match the init-time policy: selected-static and section-45 animated
     // candidates share the fixed-projection cache. A level with neither
     // source frees it; either source allocates/reuses it and clears every
@@ -95,12 +88,31 @@ pub(super) fn reset_level_shadow_caches(
     full.dynamic_depth_cache_frame_plan = DynamicDepthCachePlan::default();
     full.dynamic_depth_cache_diagnostics = Default::default();
     full.promoted_entity_occluders_submitted = 0;
-    full.promoted_static_weight_buffer = device.new_buffer(&wgpu::BufferDescriptor {
-        label: Some("Promoted Static Light Weights"),
-        size: (geometry.entity_shadow_lights.len().max(1) * 4) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    PromotedLevelState {
+        promoted_static_states: vec![
+            PromotedBakedLightState::default();
+            geometry.entity_shadow_lights.len()
+        ],
+        // Preserve raw section-45 index space even when a roster row lacks a
+        // runtime MapLight candidate (for example, a bake-only entry).
+        promoted_animated_states: vec![
+            PromotedBakedLightState::default();
+            selection.animated_baked_descriptor_indices.len()
+        ],
+        // A level reload must not let the prior level's window maxima keep a
+        // newly-loaded animated candidate alive before its bridge update.
+        animated_light_window_brightness: vec![
+            0.0;
+            selection.animated_baked_descriptor_indices.len()
+        ],
+        promoted_static_weights: vec![0.0; geometry.entity_shadow_lights.len()],
+        promoted_static_weight_buffer: device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Promoted Static Light Weights"),
+            size: (geometry.entity_shadow_lights.len().max(1) * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }),
+    }
 }
 
 #[cfg(test)]

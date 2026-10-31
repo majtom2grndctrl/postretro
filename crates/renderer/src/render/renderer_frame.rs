@@ -192,6 +192,10 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("update_per_frame_uniforms requires full-ready renderer");
+        // No level: the world-less frame still uploads group 0, with the
+        // values the no-level placeholders held (no lights, no SDF atlas, no
+        // direct or scatter SH, no shadowmask).
+        let mut level = full.level.as_mut();
 
         #[cfg(not(feature = "dev-tools"))]
         let time = script_time;
@@ -217,7 +221,10 @@ impl Renderer {
         // K = 4 per-light slices. With the flag clear (legacy PRL / no atlas)
         // the forward skips the upsample and treats every light fully lit.
         let mut sdf_shadow_flags: u32 = 0;
-        if full.sdf_atlas_resources.present {
+        if level
+            .as_ref()
+            .is_some_and(|level| level.sdf_atlas_resources.present)
+        {
             sdf_shadow_flags |= SDF_SHADOW_FLAG_ATLAS_PRESENT;
         }
         // The diagnostics UI runs after this upload. Snapshot once so every
@@ -230,8 +237,8 @@ impl Renderer {
             view_proj,
             camera_position,
             ambient_floor: full.ambient_floor,
-            light_count: full.light_count,
-            total_light_count: full.total_light_count,
+            light_count: level.as_ref().map_or(0, |level| level.light_count),
+            total_light_count: level.as_ref().map_or(0, |level| level.total_light_count),
             time,
             light_term_mask: full.frame_light_term_mask,
             indirect_scale: full.frame_indirect_scale,
@@ -239,14 +246,23 @@ impl Renderer {
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,
             dynamic_direct_scale: full.dynamic_direct_scale,
-            has_scatter: full
-                .sh_volume_resources
-                .billboard_direct_scatter
-                .has_scatter,
-            has_direct: full.sh_volume_resources.direct.has_direct,
-            animated_baked_light_count: full.animated_baked_light_count as u32,
+            has_scatter: level.as_ref().map_or(
+                postretro_render_cpu::frame_uniforms::BillboardScatterMode::Unavailable,
+                |level| {
+                    level
+                        .sh_volume_resources
+                        .billboard_direct_scatter
+                        .has_scatter
+                },
+            ),
+            has_direct: level
+                .as_ref()
+                .is_some_and(|level| level.sh_volume_resources.direct.has_direct),
+            animated_baked_light_count: level
+                .as_ref()
+                .map_or(0, |level| level.animated_baked_light_count as u32),
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
-            static_spec_mask_present: full.shadowmask_present,
+            static_spec_mask_present: level.as_ref().is_some_and(|level| level.shadowmask_present),
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.planar_reflection.upload_camera(queue, &data);
@@ -263,12 +279,17 @@ impl Renderer {
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
         // a trimmed camera uniform (no group-0 tail), so its direct scale and
         // level-fixed `has_direct` flag reach it through this dedicated uniform.
-        full.sh_volume_resources
+        let Some(level) = level.as_mut() else {
+            return;
+        };
+        level
+            .sh_volume_resources
             .direct
             .write_dynamic_direct_params(queue, full.dynamic_direct_scale);
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).
-        full.sh_volume_resources
+        level
+            .sh_volume_resources
             .animation
             .upload_descriptors_if_dirty(queue);
     }

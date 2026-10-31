@@ -135,9 +135,15 @@ impl Renderer {
             full.screen_effects.scene_color_view(),
         );
         // The SDF shadow target is half the scene; the depth view also changed,
-        // so its pass bind group is rebuilt.
-        full.sdf_shadow_pass
-            .resize(device, &full.depth_view, width, height);
+        // so the active level's SDF group 1 is rebuilt over both.
+        full.sdf_shadow_pass.resize(device, width, height);
+        if let Some(level) = full.level.as_mut() {
+            full.sdf_shadow_pass.rebind_level_extent(
+                device,
+                &mut level.sdf_shadow,
+                &full.depth_view,
+            );
+        }
         // Group 5 references the SDF factor and scene depth, both just
         // recreated. The cube binding's presence is fixed for the renderer's
         // lifetime (`Some` pool iff CUBE_ARRAY_TEXTURES), so the BGL is rebuilt

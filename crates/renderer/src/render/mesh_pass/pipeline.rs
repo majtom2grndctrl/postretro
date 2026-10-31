@@ -356,7 +356,7 @@ impl MeshPass {
         // Group 2 binding 4 params uniform (`MeshLightParams`). Fixed-size, owned
         // here, written per frame; rebound by reference into every rebuilt group-2
         // bind group. The group-2 bind group itself is left `None` until the
-        // renderer calls `rebuild_light_bind_group` with the runtime light buffers
+        // renderer calls `light_bind_groups` with the runtime light buffers
         // (after geometry installs) — the draw path skips the mesh pass when no
         // model is uploaded, so no frame draws meshes before that wiring lands.
         let light_params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
@@ -376,8 +376,6 @@ impl MeshPass {
             viewmodel_uniform_buffer,
             viewmodel_uniform_bind_group,
             light_bind_group_layout,
-            light_bind_group: None,
-            mirror_light_bind_group: None,
             mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,

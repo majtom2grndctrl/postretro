@@ -303,9 +303,9 @@ fn install_movers(renderer: &mut Renderer) {
     };
     let device = renderer.device.clone();
     renderer
-        .full_mut()
-        .kinematic_brush
-        .install_geometry(&device, Some(&geometry), 1);
+        .level_mut()
+        .kinematic
+        .replace_geometry(&device, &geometry, 1);
 }
 
 fn unorm16(value: f32) -> u16 {
@@ -720,7 +720,7 @@ fn platform_and_pawn_expected(mode: GhostTransparency, column: u32, row: u32) ->
 /// The platform's ghost shape as the sort reads it: its uploaded bounds and
 /// triangles, placed at the origin.
 fn platform_shape(renderer: &Renderer) -> MoverGhostShape<'_> {
-    let brush = &renderer.full().kinematic_brush;
+    let brush = &renderer.level().kinematic;
     let bounds = brush.mover_bounds(PLATFORM).expect("the platform uploads");
     MoverGhostShape::new(
         MoverGhostBounds::new(Mat4::IDENTITY, bounds),

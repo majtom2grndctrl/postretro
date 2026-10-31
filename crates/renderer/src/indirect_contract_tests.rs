@@ -13,7 +13,7 @@ const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
 const INIT: &str = "render/renderer_init.rs";
 const PIPELINES: &str = "render/renderer_init_pipelines.rs";
-const WORLD_INDEX_UPLOAD: &str = "full.index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
+const WORLD_INDEX_UPLOAD: &str = "let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -46,16 +46,19 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             ("call", "ComputeCullPipeline::new") => {
                 is_owner(site, WORLD_GEOMETRY, "", "install_bvh_and_cull")
             }
-            ("call", "build_world_vertex_buffers") => {
-                is_owner(site, BOOT, "", "build_full_renderer")
-            }
+            // The boot renderer holds no level set, so it builds no world
+            // buffers: the install's buffer phase is the one index upload.
+            ("call", "build_world_vertex_buffers") => false,
             ("literal", "World Index Buffer") => {
                 is_owner(site, WORLD_GEOMETRY, "", "install_world_buffers")
-                    || is_owner(site, PIPELINES, "", "build_world_vertex_buffers")
             }
-            ("assign", "full.index_buffer") => {
-                is_owner(site, WORLD_GEOMETRY, "", "install_world_buffers")
-                    && format!("{};", site.text) == compact(WORLD_INDEX_UPLOAD)
+            // A set's index buffer is built once and moved into the set; no
+            // path reassigns it, so every cull owner addresses the array it
+            // was built over.
+            ("assign", name)
+                if name.ends_with("index_buffer") && site.path != "render/kinematic_brush.rs" =>
+            {
+                false
             }
             ("call", "draw_indirect_buckets") => is_owner(
                 site,
@@ -85,7 +88,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             ("method", "draw_indirect") => {
                 let whole = matches!(
                     site.index_binding.as_deref(),
-                    Some("full.index_buffer.slice(..)" | "self.full().index_buffer.slice(..)")
+                    Some("level.index_buffer.slice(..)" | "self.level().index_buffer.slice(..)")
                 );
                 let pipeline = matches!(
                     site.pipeline.as_deref(),
@@ -377,7 +380,7 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
         ("literal", "WGPU_VALIDATION_INDIRECT_CALL", 1),
-        ("assign", "full.index_buffer", 1),
+        ("literal", "World Index Buffer", 1),
     ] {
         assert_eq!(
             sites
@@ -456,16 +459,32 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
         &[
             "let (vertex_data, index_data, index_count) = if has_geometry { let count = geometry.indices.len() as u32; (cast_world_vertices_to_bytes(geometry.vertices), bytemuck_cast_slice_u32(geometry.indices), count,) } else { (vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], vec![0u8; 4], 0u32,) };",
             WORLD_INDEX_UPLOAD,
-            "full.index_count = index_count;",
+            "WorldBuffers { vertex_buffer, spec_owner_buffer, index_buffer, index_count,",
         ],
     );
     let cull = function(&functions, WORLD_GEOMETRY, "install_bvh_and_cull");
     require(
         cull,
         &[
-            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, &pipelines.compute_cull, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
-            "full.bvh_leaves = bvh_leaves;",
+            "let compute_cull = if !bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, &pipelines.compute_cull, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
+            "WorldCull { bvh_leaves, cell_draw_index, compute_cull, candidate_cull, }",
         ],
+    );
+    // The published set takes the buffer phase's index buffer and the cull
+    // phase's owners over it, from the one install call each.
+    require(
+        install,
+        &[
+            "index_buffer: world.index_buffer,",
+            "index_count: world.index_count,",
+            "bvh_leaves: cull.bvh_leaves,",
+            "compute_cull: cull.compute_cull,",
+            "candidate_cull: cull.candidate_cull,",
+        ],
+    );
+    assert_eq!(
+        install.matches("full.level=Some(LevelResourceSet{").count(),
+        1
     );
     require(
         function(
@@ -493,26 +512,13 @@ fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
                 .unwrap()
     );
     let boot = function(&functions, BOOT, "build_full_renderer");
-    // This explicit None makes the boot constructor closures unreachable. Only
-    // installation creates live args. Changing it must revisit load validation.
-    require(
-        boot,
-        &[
-            "let geometry: Option<&LevelGeometry> = None;",
-            "let compute_cull: Option<ComputeCullPipeline> = None;",
-            "} = build_world_vertex_buffers(device, geometry);",
-        ],
-    );
-    let buffers = function(&functions, PIPELINES, "build_world_vertex_buffers");
-    require(
-        buffers,
-        &[
-            "let count = geom.indices.len() as u32;",
-            "bytemuck_cast_slice_u32(geom.indices)",
-            "vec![0u8; 4], 0u32,",
-            "let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });",
-        ],
-    );
+    // The boot renderer starts with no level set, so it holds no index buffer
+    // and no cull owner. Only installation creates them. Changing it must
+    // revisit load validation.
+    require(boot, &["level: None,"]);
+    for absent in ["World Index Buffer", "ComputeCullPipeline", "index_buffer"] {
+        assert!(!boot.contains(absent), "boot builds {absent}");
+    }
     assert_eq!(
         function(
             &functions,
@@ -643,11 +649,15 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     assert!(
         rust_violations(&[Source::fixture(
             path,
-            &fixture("full.index_buffer.slice(..)")
+            &fixture("level.index_buffer.slice(..)")
         )])
         .is_empty()
     );
-    for binding in ["full.index_buffer.slice(4..)", "other_buffer.slice(..)"] {
+    for binding in [
+        "level.index_buffer.slice(4..)",
+        "full.index_buffer.slice(..)",
+        "other_buffer.slice(..)",
+    ] {
         assert!(!rust_violations(&[Source::fixture(path, &fixture(binding))]).is_empty());
     }
     // Shadow passes draw direct: a correctly bound camera draw issued from the
@@ -655,7 +665,7 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     assert!(
         !rust_violations(&[Source::fixture(
             "render/renderer_dynamic_shadow_passes.rs",
-            &fixture("full.index_buffer.slice(..)")
+            &fixture("level.index_buffer.slice(..)")
         )])
         .is_empty()
     );
@@ -670,18 +680,18 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
         format!(
             "impl Renderer {{ fn record_depth_and_sdf_passes() {{
                 pass.set_pipeline(&full.depth_prepass_pipeline);
-                pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 {nested}
                 cull.draw_indirect(&mut pass, None);
             }} }}"
         )
     };
     for nested in [
-        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
+        "{ pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
         "{ pass.set_pipeline(&other_pipeline); }",
-        "if changed { pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
+        "if changed { pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
         "{ let mut pass = encoder.begin_render_pass(&descriptor); cull.draw_indirect(&mut pass, None); }",
-        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
+        "{ pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
     ] {
         assert!(
             !rust_violations(&[Source::fixture(path, &fixture(nested))]).is_empty(),
@@ -690,7 +700,7 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
     }
     for nested in [
         "{ let mut pass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&other_pipeline); pass.set_index_buffer(other_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
-        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_indirect(&mut pass, None); }",
+        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_indirect(&mut pass, None); }",
         "{ let (mut pass, other) = pair; pass.set_pipeline(&other_pipeline); }",
     ] {
         assert!(

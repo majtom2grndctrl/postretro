@@ -245,6 +245,10 @@ fn frame(
         .frame
         .unwrap();
     let full = renderer.full();
+    let level = full
+        .level
+        .as_ref()
+        .expect("a level-gated renderer path requires an active level set");
     assert!(
         full.spot_shadow_pool
             .slot_cone_matrices
@@ -254,12 +258,13 @@ fn frame(
     );
     // Every BVH-level world draw is one walk; a no-BVH draw walks nothing.
     let expected_walks = if bvh {
-        full.shadow_world.trace.len()
+        level.shadow_world.trace.len()
     } else {
         0
     };
-    assert_eq!(full.shadow_world.walks as usize, expected_walks);
-    full.shadow_world
+    assert_eq!(level.shadow_world.walks as usize, expected_walks);
+    level
+        .shadow_world
         .trace
         .iter()
         .map(|entry| (entry.region, entry.ranges.clone()))

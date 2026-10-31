@@ -73,9 +73,6 @@ pub struct SdfShadowPass {
     /// Bind-group layout for group 2 (the static-light buffers the shared
     /// K-selection helper reads — spec_lights, chunk grid info/offsets/indices).
     light_bind_group_layout: wgpu::BindGroupLayout,
-    /// Group-2 bind group over the renderer's light buffers. Rebuilt on level
-    /// load (the light buffers are recreated then).
-    light_bind_group: wgpu::BindGroup,
     /// Half-res `Rgba8Unorm` shadow factor target. Cleared to (1,1,1,1) at
     /// allocation so the pass-skipped path is "fully lit".
     #[allow(dead_code)]
@@ -90,17 +87,24 @@ pub struct SdfShadowPass {
     half_res: (u32, u32),
     /// Per-frame `ShadowPassParams` uniform.
     params_buffer: wgpu::Buffer,
-    /// Bind group built once at construction / rebuilt on resize. References
-    /// `depth_view` (recreated by the renderer on resize, so the bind group must
-    /// be rebuilt too) and the depth-moment view (stable across resizes — only
-    /// rebuilt on level reload).
+    /// Live tuning knobs. Mutated by Task 7's sliders; uploaded each frame.
+    pub tuning: SdfShadowTuning,
+}
+
+/// One level's SDF shadow bindings: group 1 over the level's SH depth
+/// moments (and the renderer's depth view and shadow target, so a resize
+/// rebuilds it) and group 2 over the level's static-light buffers. Lives in
+/// the level's resource set; the pass keeps the pipeline and the target.
+pub(crate) struct SdfShadowLevelState {
+    /// Group 1. References `depth_view` (recreated on resize, so this is
+    /// rebuilt too) and the depth-moment view (stable across resizes).
     bind_group: wgpu::BindGroup,
+    /// Group 2 over the level's light buffers.
+    light_bind_group: wgpu::BindGroup,
     /// SH depth moment texture (`E[d]`, `E[d²]`) — open-space skip lookup.
     sh_depth_moments_view: wgpu::TextureView,
     /// SH grid metadata mirrored into the params uniform.
     sh_grid: SdfShadowShGrid,
-    /// Live tuning knobs. Mutated by Task 7's sliders; uploaded each frame.
-    pub tuning: SdfShadowTuning,
 }
 
 impl SdfShadowPass {
@@ -117,10 +121,6 @@ impl SdfShadowPass {
     pub fn new(
         device: &wgpu::Device,
         sdf_atlas_layout: &wgpu::BindGroupLayout,
-        depth_view: &wgpu::TextureView,
-        sh_depth_moments_view: wgpu::TextureView,
-        lights: SdfShadowLightBuffers,
-        sh_grid: SdfShadowShGrid,
         full_res_width: u32,
         full_res_height: u32,
     ) -> Self {
@@ -169,29 +169,15 @@ impl SdfShadowPass {
             mapped_at_creation: false,
         });
 
-        let bind_group = build_bind_group(
-            device,
-            &bind_group_layout,
-            &params_buffer,
-            depth_view,
-            &sh_depth_moments_view,
-            &shadow_storage_view,
-        );
-        let light_bind_group = build_light_bind_group(device, &light_bind_group_layout, lights);
-
         Self {
             pipeline,
             bind_group_layout,
             light_bind_group_layout,
-            light_bind_group,
             shadow_texture,
             shadow_view,
             shadow_storage_view,
             half_res,
             params_buffer,
-            bind_group,
-            sh_depth_moments_view,
-            sh_grid,
             tuning: SdfShadowTuning::default(),
         }
     }
@@ -249,55 +235,62 @@ impl SdfShadowPass {
         self.tuning.surface_bias = bias.max(0.0);
     }
 
-    /// Resize the half-res target on a scene-extent change. Rebuilds the bind group
-    /// because both the depth view and the shadow target view changed.
-    pub fn resize(
-        &mut self,
-        device: &wgpu::Device,
-        depth_view: &wgpu::TextureView,
-        full_res_width: u32,
-        full_res_height: u32,
-    ) {
+    /// Resize the half-res target on a scene-extent change. The active
+    /// level's group 1 binds the depth view and this target, so the caller
+    /// rebuilds it with [`Self::rebind_level_extent`].
+    pub fn resize(&mut self, device: &wgpu::Device, full_res_width: u32, full_res_height: u32) {
         self.half_res = compute_half_res(full_res_width, full_res_height);
         let (shadow_texture, shadow_view, shadow_storage_view) =
             create_shadow_target(device, self.half_res.0, self.half_res.1);
         self.shadow_texture = shadow_texture;
         self.shadow_view = shadow_view;
         self.shadow_storage_view = shadow_storage_view;
-        self.bind_group = build_bind_group(
+    }
+
+    /// Rebuild a level's group 1 over the current depth view and shadow
+    /// target after a scene-extent change.
+    pub(crate) fn rebind_level_extent(
+        &self,
+        device: &wgpu::Device,
+        level: &mut SdfShadowLevelState,
+        depth_view: &wgpu::TextureView,
+    ) {
+        level.bind_group = build_bind_group(
             device,
             &self.bind_group_layout,
             &self.params_buffer,
             depth_view,
-            &self.sh_depth_moments_view,
+            &level.sh_depth_moments_view,
             &self.shadow_storage_view,
         );
     }
 
-    /// Rebuild the views and light buffers the pass depends on after a level
-    /// load (SH section + the static-light buffers swap). The depth view is
-    /// unchanged by a level load (the renderer's scene depth view, rebuilt only when the scene extent changes),
-    /// so the caller passes the current one back in.
-    pub fn rebuild_for_level(
-        &mut self,
+    /// Build one level's bindings over its SH depth-moment view and
+    /// static-light buffers, and the renderer's current depth view.
+    pub(crate) fn level_state(
+        &self,
         device: &wgpu::Device,
         depth_view: &wgpu::TextureView,
         sh_depth_moments_view: wgpu::TextureView,
         lights: SdfShadowLightBuffers,
         sh_grid: SdfShadowShGrid,
-    ) {
-        self.sh_depth_moments_view = sh_depth_moments_view;
-        self.sh_grid = sh_grid;
-        self.bind_group = build_bind_group(
+    ) -> SdfShadowLevelState {
+        let bind_group = build_bind_group(
             device,
             &self.bind_group_layout,
             &self.params_buffer,
             depth_view,
-            &self.sh_depth_moments_view,
+            &sh_depth_moments_view,
             &self.shadow_storage_view,
         );
-        self.light_bind_group =
+        let light_bind_group =
             build_light_bind_group(device, &self.light_bind_group_layout, lights);
+        SdfShadowLevelState {
+            bind_group,
+            light_bind_group,
+            sh_depth_moments_view,
+            sh_grid,
+        }
     }
 
     /// Encode the per-frame dispatch. The caller has already determined the
@@ -305,10 +298,12 @@ impl SdfShadowPass {
     /// 6 will wire the off/visualize mode selector). When skipped, the shadow
     /// target retains its last contents — the forward pass is responsible for
     /// guarding the multiply on the mode flag.
+    #[allow(clippy::too_many_arguments)] // The pass's half and the level's half travel apart.
     pub fn dispatch(
         &self,
         queue: &crate::render::uploads::UploadQueue,
         encoder: &mut wgpu::CommandEncoder,
+        level: &SdfShadowLevelState,
         sdf_atlas: &SdfAtlasResources,
         frame: SdfShadowFrameInputs,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
@@ -318,7 +313,7 @@ impl SdfShadowPass {
         // floats. 0 = production path.
         debug_mode: u32,
     ) {
-        let bytes = pack_params_bytes(frame, self.half_res, self.tuning, self.sh_grid, debug_mode);
+        let bytes = pack_params_bytes(frame, self.half_res, self.tuning, level.sh_grid, debug_mode);
         queue.write_buffer(&self.params_buffer, 0, &bytes);
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -327,8 +322,8 @@ impl SdfShadowPass {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &sdf_atlas.bind_group, &[]);
-        pass.set_bind_group(1, &self.bind_group, &[]);
-        pass.set_bind_group(2, &self.light_bind_group, &[]);
+        pass.set_bind_group(1, &level.bind_group, &[]);
+        pass.set_bind_group(2, &level.light_bind_group, &[]);
         let groups_x = self.half_res.0.div_ceil(8).max(1);
         let groups_y = self.half_res.1.div_ceil(8).max(1);
         pass.dispatch_workgroups(groups_x, groups_y, 1);

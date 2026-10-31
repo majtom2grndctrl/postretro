@@ -14,7 +14,7 @@ fn frontend_surface_depth_uploads_flush_before_the_next_manifest_commit() {
         return;
     };
     assert!(
-        !renderer.full().gpu_textures.is_empty(),
+        !renderer.level().gpu_textures.is_empty(),
         "world-less renderer retains a placeholder material"
     );
     let mut font = postretro_ui::text::build_font_system();
@@ -27,7 +27,7 @@ fn frontend_surface_depth_uploads_flush_before_the_next_manifest_commit() {
         assert_eq!(renderer.surface_depth_quality(), quality);
         assert_eq!(
             renderer.queue.counts().writes - before.writes,
-            renderer.full().gpu_textures.len() as u64,
+            renderer.level().gpu_textures.len() as u64,
             "the actual option setter stages every retained material"
         );
         for templates in [true, false] {
@@ -104,7 +104,7 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         lighting,
     );
     assert!(
-        renderer.full().sdf_atlas_resources.present,
+        renderer.level().sdf_atlas_resources.present,
         "normal install must upload the valid SDF fixture"
     );
     assert!(
@@ -305,12 +305,16 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         let before = renderer.queue.counts();
         renderer.full_mut().mesh_draws[1].resample = false;
         let full = renderer.full();
-        let mut lights = postretro_lighting::pack_lights(&full.level_lights);
+        let level = full
+            .level
+            .as_ref()
+            .expect("a level-gated renderer path requires an active level set");
+        let mut lights = postretro_lighting::pack_lights(&level.level_lights);
         lights.resize(
-            lights.len() + full.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE,
+            lights.len() + level.animated_baked_light_count * postretro_lighting::GPU_LIGHT_SIZE,
             0,
         );
-        let record_count = full.level_lights.len() + full.animated_baked_light_count;
+        let record_count = level.level_lights.len() + level.animated_baked_light_count;
         let influence = vec![0u8; record_count * 16];
         let descriptors =
             vec![0u8; record_count * postretro_render_cpu::sh_volume::ANIMATION_DESCRIPTOR_SIZE];
@@ -319,8 +323,8 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
                 0u8;
                 record_count * postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT * 4
             ];
-        let brightness = vec![1.0; full.level_lights.len()];
-        let window_brightness = vec![1.0; full.animated_baked_light_count];
+        let brightness = vec![1.0; level.level_lights.len()];
+        let window_brightness = vec![1.0; level.animated_baked_light_count];
         assert!(renderer.upload_light_bridge_snapshot(
             &lights,
             &influence,
@@ -397,9 +401,13 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
             )
             .unwrap();
         assert!(
-            renderer.full().promoted_baked_records.iter().any(|record| {
-                record.source.selected_static_index() == Some(promotion_selection)
-            }),
+            renderer
+                .level()
+                .promoted_baked_records
+                .iter()
+                .any(|record| {
+                    record.source.selected_static_index() == Some(promotion_selection)
+                }),
             "frame {frame} must promote the authored light overlapping the world mesh"
         );
         renderer.submit_windowed_frame(encoder);
@@ -434,25 +442,25 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         (
             "renderer_lighting/light_bridge.rs",
             include_str!("../../renderer_lighting/light_bridge.rs"),
-            "&full.lights_buffer",
+            "&level.lights_buffer",
             0,
         ),
         (
             "renderer_lighting/light_bridge.rs",
             include_str!("../../renderer_lighting/light_bridge.rs"),
-            "&full.influence_buffer",
+            "&level.influence_buffer",
             0,
         ),
         (
             "renderer_lighting/light_bridge.rs",
             include_str!("../../renderer_lighting/light_bridge.rs"),
-            "&full.sh_volume_resources.scripted_light_descriptors",
+            "&level.sh_volume_resources.scripted_light_descriptors",
             0,
         ),
         (
             "renderer_lighting/light_bridge.rs",
             include_str!("../../renderer_lighting/light_bridge.rs"),
-            "&full.sh_volume_resources.animation.anim_samples",
+            "&level.sh_volume_resources.animation.anim_samples",
             0,
         ),
         (
@@ -506,19 +514,19 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
         (
             "renderer_light_slots.rs",
             include_str!("../../renderer_light_slots.rs"),
-            "&full.lights_buffer",
+            "&level.lights_buffer",
             1,
         ),
         (
             "renderer_light_slots.rs",
             include_str!("../../renderer_light_slots.rs"),
-            "&full.influence_buffer",
+            "&level.influence_buffer",
             0,
         ),
         (
             "renderer_light_slots.rs",
             include_str!("../../renderer_light_slots.rs"),
-            "&full.promoted_static_weight_buffer",
+            "&level.promoted_static_weight_buffer",
             0,
         ),
         (

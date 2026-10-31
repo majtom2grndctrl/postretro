@@ -5,7 +5,7 @@ use crate::render::gpu_create::GpuCreate;
 use glam::Vec4;
 use postretro_render_data::cone_frustum::{Aabb, aabb_intersects_frustum};
 
-use super::kinematic_brush::KinematicBrushPass;
+use super::kinematic_brush::{KinematicBrushPass, KinematicLevelState};
 
 const RIGID_OCCLUDER_DEPTH_SHADER_SOURCE: &str =
     include_str!("../shaders/rigid_occluder_depth.wgsl");
@@ -96,10 +96,12 @@ impl RigidOccluderDepthPass {
     /// The caller owns clearing/caching policy; this method only loads shared
     /// mover buffers and appends surviving depth draws. Returns those draws so
     /// shadow diagnostics count movers with skinned entity occluders.
+    #[allow(clippy::too_many_arguments)] // The mover pass's half and the level's half travel apart.
     pub(crate) fn record_kinematic_movers(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         kinematic_brush: &KinematicBrushPass,
+        kinematic_level: &KinematicLevelState,
         mover_aabbs: &[MoverOccluderAabb],
         light_space_bind_group: &wgpu::BindGroup,
         dynamic_offset: u32,
@@ -112,16 +114,16 @@ impl RigidOccluderDepthPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, light_space_bind_group, &[dynamic_offset]);
         pass.set_bind_group(1, kinematic_brush.instance_transform_bind_group(), &[]);
-        pass.set_vertex_buffer(0, kinematic_brush.shared_vertex_buffer().slice(..));
+        pass.set_vertex_buffer(0, kinematic_level.shared_vertex_buffer().slice(..));
         pass.set_index_buffer(
-            kinematic_brush.shared_index_buffer().slice(..),
+            kinematic_level.shared_index_buffer().slice(..),
             wgpu::IndexFormat::Uint32,
         );
 
         let mut submitted = 0;
         for mover in mover_occluders_in_cone(mover_aabbs, cone_planes) {
             let Some(mover_draw_index) =
-                kinematic_brush.mover_draw_index_for_mover_id(mover.mover_id)
+                kinematic_level.mover_draw_index_for_mover_id(mover.mover_id)
             else {
                 continue;
             };
@@ -130,7 +132,7 @@ impl RigidOccluderDepthPass {
             else {
                 continue;
             };
-            let Some(index_range) = kinematic_brush.mover_index_ranges().get(mover_draw_index)
+            let Some(index_range) = kinematic_level.mover_index_ranges().get(mover_draw_index)
             else {
                 continue;
             };

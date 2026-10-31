@@ -49,7 +49,11 @@ const ALL: VisibleCells = VisibleCells::DrawAll;
 
 pub(super) fn renderer() -> Option<Renderer> {
     match Renderer::new_offscreen(SIDE, SIDE) {
-        Ok(renderer) => Some(renderer),
+        Ok(mut renderer) => {
+            // The level the fluid installs into: no geometry, no lighting.
+            renderer.install_empty_level_for_test();
+            Some(renderer)
+        }
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
             eprintln!("[FluidSurfaceProof] skipped: no adapter ({error:#})");
             None
@@ -504,7 +508,7 @@ fn fluid_surface_blends_over_the_scene_at_its_surface_opacity() {
     // Unloading drops the geometry and closes the pass.
     renderer.release_level_resources();
     renderer.set_fluid_surface_draws(&[clear_draw(0, 1.0)]);
-    assert!(!renderer.full().fluid_surface.has_draws());
+    assert!(!renderer.fluid_test().has_draws());
 }
 
 // Each draw reads its own volume's opacity: the parameter row is addressed by
@@ -654,7 +658,7 @@ fn fluid_drift_re_resolve_keeps_draws_and_uploads_no_parameter_rows() {
     let draws = [clear_draw(0, 0.5)];
     renderer.set_fluid_surface_draws(&draws);
     let before = capture_mean_red(&mut renderer);
-    assert_eq!(renderer.full().fluid_surface.param_uploads(), Some(1));
+    assert_eq!(renderer.fluid_test().param_uploads(), Some(1));
 
     renderer.set_fluid_surface_drift(&[Vec3::new(3.0, 0.0, 0.0)]);
     renderer.set_fluid_surface_draws(&draws);
@@ -668,7 +672,7 @@ fn fluid_drift_re_resolve_keeps_draws_and_uploads_no_parameter_rows() {
         "the pool keeps its opacity across a re-resolve: {before} → {after} → {later}"
     );
     assert_eq!(
-        renderer.full().fluid_surface.param_uploads(),
+        renderer.fluid_test().param_uploads(),
         Some(1),
         "unchanged opacities upload no parameter rows"
     );
@@ -801,7 +805,9 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
     renderer.record_surface_size(64, 48);
     renderer.commit_extents().expect("both extents changed");
-    expected += 1;
+    // The live target's group and the prebuilt placeholder group a release
+    // rebinds.
+    expected += 2;
     let scene = renderer.scene_extent();
     assert_eq!(scene, Extent::new(32, 24));
     assert_eq!(
@@ -819,7 +825,8 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
     };
     renderer.set_fluid_surface_draws(&[look_draw(0, murk)]);
     let pixels = capture(&mut renderer);
-    expected += 1;
+    // The live target's group and the prebuilt placeholder group.
+    expected += 2;
     let scene = renderer.scene_extent();
     assert_eq!(scene, Extent::new(64, 48));
     assert_eq!(pixels.len(), (64 * 48 * 4) as usize);
@@ -841,11 +848,10 @@ fn fluid_scene_inputs_follow_the_scene_depth_across_resizes_with_and_without_a_l
 
     let target_builds = renderer.full().fluid_surface.reflection_target_builds();
     renderer.release_level_resources();
-    expected += 1;
     assert_eq!(
         scene_inputs_extent(&renderer),
         (scene, expected),
-        "unload rebinds group 5 to the placeholder"
+        "unload rebinds group 5 to its prebuilt placeholder group, building none"
     );
     assert_eq!(target(&renderer), None, "and releases the target");
     assert_eq!(
@@ -1069,12 +1075,12 @@ fn probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads
     };
 
     renderer.install_fluid_surfaces(std::slice::from_ref(&pool), None);
-    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(1));
+    assert_eq!(renderer.fluid_test().probe_array_layers(), Some(1));
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
     let today = capture_from(&mut renderer, GRAZING);
 
     renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
-    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), Some(2));
+    assert_eq!(renderer.fluid_test().probe_array_layers(), Some(2));
     renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
     let pixels = capture_from(&mut renderer, GRAZING);
     let face_probe = |column: u32| match column {
@@ -1140,7 +1146,7 @@ fn probe_bound_faces_read_their_own_probes_and_an_unbound_face_in_the_draw_reads
     );
 
     renderer.release_level_resources();
-    assert_eq!(renderer.full().fluid_surface.probe_array_layers(), None);
+    assert_eq!(renderer.fluid_test().probe_array_layers(), None);
 }
 
 // Two fluid pipelines, one frame. Three volumes draw in the order
@@ -1198,7 +1204,7 @@ fn a_draw_set_mixing_reflecting_and_reflection_free_volumes_draws_each_right() {
         renderer.install_fluid_surfaces(&volumes, Some(&section));
         renderer.set_fluid_surface_draws(&probed);
         let pixels = capture_from(&mut renderer, GRAZING);
-        let variants = renderer.full().fluid_surface.frame_variants(mask);
+        let variants = renderer.fluid_test().frame_variants(mask);
         let today_at = |column: u32, row: u32| {
             let at = ((row * SIDE + column) * 4) as usize;
             [today[at], today[at + 1], today[at + 2]]
@@ -1296,7 +1302,7 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     };
     // The probe array's and the distance array's (width, height, layers).
     let size = |renderer: &Renderer| {
-        let surface = &renderer.full().fluid_surface;
+        let surface = renderer.fluid_test();
         let extent = |size: wgpu::Extent3d| (size.width, size.height, size.depth_or_array_layers);
         let probes = surface.probe_array_size().map(extent);
         let distances = surface.probe_distance_size().map(extent);
@@ -1337,7 +1343,8 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     renderer.release_level_resources();
     assert_eq!(size(&renderer), None, "unload leaves no probe texture");
 
-    // Level B: fluid, no section 54.
+    // Level B: fluid, no section 54, in a fresh level set.
+    renderer.install_empty_level_for_test();
     let b_pixels = draw(&mut renderer, None);
     assert_eq!(size(&renderer), Some((1, 1, 1)), "B binds only the dummy");
     assert!(
@@ -1354,6 +1361,7 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     // texel. Every fragment of the quad lies at least 0.5 m (L1) from the
     // capture point, so h ≥ 4 · 0.5 − 1 = 1, far past the fade margin.
     renderer.release_level_resources();
+    renderer.install_empty_level_for_test();
     let a2 = with_uniform_distance(a.clone(), 0x4400);
     assert_eq!(f16_bits_to_f32(0x4400), 4.0);
     let a2_pixels = draw(&mut renderer, Some(&a2));
@@ -1372,6 +1380,7 @@ fn a_level_change_binds_only_the_new_levels_probes_and_unload_leaves_none() {
     // Level B2: its own blue layer 0 and a yellow layer 1; the face binds
     // probe 0.
     renderer.release_level_resources();
+    renderer.install_empty_level_for_test();
     let b2_tiles = [[0, 0, 0x3800], [0x3800, 0x3800, 0]];
     let b2 = uniform_probe_section(8, &[0, 1], &b2_tiles, &[(0, 0)]);
     let b2_pixels = draw(&mut renderer, Some(&b2));
@@ -1481,11 +1490,11 @@ fn a_probe_reads_darker_by_its_lights_share_when_its_descriptor_switches_off() {
         &probes(half, ReflectionProbeLightShare::UNUSED),
     );
 
-    let animation = &mut renderer.full_mut().sh_volume_resources.animation;
+    let animation = &mut renderer.level_mut().sh_volume_resources.animation;
     animation.write_record_for_test(0, &flat_descriptor([1.0; 3], true));
     let on = draw(&mut renderer, &probes(one, half_share));
 
-    let animation = &mut renderer.full_mut().sh_volume_resources.animation;
+    let animation = &mut renderer.level_mut().sh_volume_resources.animation;
     animation.write_record_for_test(0, &flat_descriptor([1.0; 3], false));
     let off = draw(&mut renderer, &probes(one, half_share));
 
@@ -2065,6 +2074,7 @@ fn the_reflection_target_exists_only_on_a_probe_bound_level_above_off() {
         renderer.release_level_resources();
         assert_placeholder_only(&renderer, &format!("{quality:?}, no level"));
         capture(&mut renderer);
+        renderer.install_empty_level_for_test();
         renderer.install_fluid_surfaces(&[], None);
         assert_placeholder_only(&renderer, &format!("{quality:?}, no fluid volumes"));
         capture(&mut renderer);
@@ -2101,10 +2111,14 @@ fn the_reflection_target_exists_only_on_a_probe_bound_level_above_off() {
     renderer.set_reflection_quality(FluidReflectionQuality::Medium);
     {
         let Renderer { device, full, .. } = &mut renderer;
-        full.as_mut()
-            .unwrap()
-            .fluid_surface
-            .set_reflection_quality(device, FluidReflectionQuality::Medium);
+        let full = full.as_mut().unwrap();
+        full.fluid_surface.set_reflection_quality(
+            full.level
+                .as_ref()
+                .and_then(|level| level.fluid_surfaces.as_ref()),
+            device,
+            FluidReflectionQuality::Medium,
+        );
     }
     assert_eq!(
         group_5(&renderer),
@@ -2145,10 +2159,7 @@ fn the_reflection_target_exists_only_on_a_probe_bound_level_above_off() {
         records + 1,
         "the next frame records no reflection pass"
     );
-    let variants = renderer
-        .full()
-        .fluid_surface
-        .frame_variants(LightTermMask::ALL);
+    let variants = renderer.fluid_test().frame_variants(LightTermMask::ALL);
     assert_eq!(variants, [FluidShaderVariant::ReflectionFree]);
     renderer.set_reflection_quality(FluidReflectionQuality::Off);
     assert_eq!(group_5(&renderer), built + 2);
@@ -2178,12 +2189,7 @@ fn the_low_tier_draws_the_reflecting_variant_over_the_placeholder_and_records_no
     let probes = one_probe_section();
     let draws = [look_draw(0, reflecting_look())];
     let group_5 = |renderer: &Renderer| scene_inputs_extent(renderer).1;
-    let variants = |renderer: &Renderer| {
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL)
-    };
+    let variants = |renderer: &Renderer| renderer.fluid_test().frame_variants(LightTermMask::ALL);
     renderer.set_reflection_quality(FluidReflectionQuality::High);
     renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
     renderer.set_fluid_surface_draws(&draws);
@@ -2259,6 +2265,7 @@ fn the_low_tier_draws_the_reflecting_variant_over_the_placeholder_and_records_no
     // A probe-bound level installed at low.
     renderer.set_reflection_quality(FluidReflectionQuality::Low);
     renderer.release_level_resources();
+    renderer.install_empty_level_for_test();
     let built = group_5(&renderer);
     renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
     assert_placeholder_only(&renderer, "a probe-bound install at low");
@@ -2325,17 +2332,18 @@ fn raising_the_tier_with_no_fluid_level_allocates_nothing_until_one_installs() {
     assert_placeholder_only(&renderer, "unload");
     assert_eq!(
         group_5(&renderer),
-        built + 2,
-        "unload rebinds the placeholder"
+        built + 1,
+        "unload rebinds the prebuilt placeholder group, building none"
     );
     // Level B, no fluid.
+    renderer.install_empty_level_for_test();
     renderer.install_fluid_surfaces(&[], None);
     assert_placeholder_only(&renderer, "level B, no fluid");
-    assert_eq!(group_5(&renderer), built + 2);
+    assert_eq!(group_5(&renderer), built + 1);
     // Level C, fluid with a probe-bound face.
     renderer.install_fluid_surfaces(&[full_screen_fluid()], Some(&probes));
     assert_eq!(reflection_target(&renderer), Some((SIDE / 2, SIDE / 2)));
-    assert_eq!(group_5(&renderer), built + 3);
+    assert_eq!(group_5(&renderer), built + 2);
     assert_eq!(
         reflection_target_builds(&renderer),
         2,
@@ -2370,6 +2378,8 @@ fn full_init_with_off_stored_allocates_only_the_placeholder_at_the_first_fluid_i
     };
     renderer.set_reflection_quality(FluidReflectionQuality::Off);
     renderer.finish_full_init().expect("full init rebuilds");
+    // The rebuilt renderer holds no level set; the fluid installs into one.
+    renderer.install_empty_level_for_test();
     assert_eq!(renderer.reflection_quality(), FluidReflectionQuality::Off);
     assert_eq!(
         renderer.full().fluid_surface.kept_reflection_quality(),
@@ -2521,10 +2531,7 @@ fn the_reflection_pass_records_once_per_reflecting_frame_and_never_at_off() {
     renderer.set_reflection_quality(FluidReflectionQuality::Low);
     frame(&mut renderer, "Low", 0);
     assert_eq!(
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL),
+        renderer.fluid_test().frame_variants(LightTermMask::ALL),
         [FluidShaderVariant::Reflecting],
         "Low draws the reflecting variant"
     );

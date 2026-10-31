@@ -156,17 +156,6 @@ impl ShComposeResources {
         self.bound.as_ref().map(|bound| &bound.pipeline)
     }
 
-    /// The no-level form: no pipeline, no bind group, no dispatch.
-    pub(crate) fn disabled() -> Self {
-        Self {
-            bound: None,
-            animation_descriptor_indices: Vec::new(),
-            pending_copy_through: false,
-            was_active: false,
-            last_composed_mask: LightTermMask::ALL,
-        }
-    }
-
     /// Bind the renderer's compose pipeline to this level's buffers. When `delta` is `None` or
     /// empty, all CSR offset ranges are empty (`start == end`), so the result is
     /// a pure base→total copy.

@@ -9,12 +9,16 @@ use super::{Renderer, Vec3};
 pub(super) fn promotion_receiver_pose(renderer: &Renderer) -> (usize, Vec3, Vec3) {
     use postretro_level_loader::{LightType, ShadowType};
     let full = renderer.full();
-    let (candidate, light) = full
+    let level = full
+        .level
+        .as_ref()
+        .expect("a level-gated renderer path requires an active level set");
+    let (candidate, light) = level
         .shadow_candidate_lights
         .iter()
         .enumerate()
         .filter(|(index, light)| {
-            full.shadow_candidate_selection_indices[*index].is_some()
+            level.shadow_candidate_selection_indices[*index].is_some()
                 && !light.is_dynamic
                 && light.shadow_type == ShadowType::StaticLightMap
                 && light.cell_index
@@ -22,7 +26,7 @@ pub(super) fn promotion_receiver_pose(renderer: &Renderer) -> (usize, Vec3, Vec3
                 && light.falloff_range > 0.0
                 && (light.light_type == LightType::Spot
                     || (light.light_type == LightType::Point && full.cube_shadow_pool.is_some()))
-                && full
+                && level
                     .shadow_candidate_influences
                     .get(*index)
                     .is_some_and(|influence| {
@@ -31,8 +35,8 @@ pub(super) fn promotion_receiver_pose(renderer: &Renderer) -> (usize, Vec3, Vec3
         })
         .min_by_key(|(_, light)| u8::from(light.light_type != LightType::Spot))
         .expect("campaign needs a selected static light with a supported depth pool");
-    let selection = full.shadow_candidate_selection_indices[candidate].unwrap();
-    let receiver = full.shadow_candidate_influences[candidate].center;
+    let selection = level.shadow_candidate_selection_indices[candidate].unwrap();
+    let receiver = level.shadow_candidate_influences[candidate].center;
     let eye = Vec3::from_array(light.origin.map(|coordinate| coordinate as f32))
         + Vec3::new(0.0, 0.125, 0.25);
     assert!(eye.is_finite() && eye.distance_squared(receiver) > 0.0);

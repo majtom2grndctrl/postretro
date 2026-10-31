@@ -91,11 +91,6 @@ pub(super) struct BillboardDirectScatterComposeResources {
 }
 
 impl BillboardDirectScatterComposeResources {
-    /// The no-dispatch form full init holds before any level.
-    pub(super) fn disabled() -> Self {
-        Self { pipeline: None }
-    }
-
     pub(super) fn new(
         device: &wgpu::Device,
         scatter: &BillboardDirectScatterResources,

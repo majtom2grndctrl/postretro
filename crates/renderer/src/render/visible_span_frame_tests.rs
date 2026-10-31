@@ -70,7 +70,7 @@ fn frame(
     expected: &[BucketRange],
     candidate: bool,
 ) -> Vec<IndirectDrawCommand> {
-    let before = renderer.full().compute_cull.as_ref().unwrap().range_builds;
+    let before = renderer.level().compute_cull.as_ref().unwrap().range_builds;
     let dispatches_before = candidate_dispatches(renderer);
     renderer
         .capture_measurement_frame_indirect(
@@ -99,7 +99,7 @@ fn frame(
         .unwrap()
         .frame
         .unwrap();
-    let cull = renderer.full().compute_cull.as_ref().unwrap();
+    let cull = renderer.level().compute_cull.as_ref().unwrap();
     assert_eq!(
         cull.range_builds,
         before + 1,
@@ -160,7 +160,7 @@ fn frame(
 
 fn candidate_dispatches(renderer: &Renderer) -> u32 {
     renderer
-        .full()
+        .level()
         .candidate_cull
         .as_ref()
         .map_or(0, |candidate| candidate.dispatches)
@@ -442,7 +442,7 @@ fn headless_level_reinstall_and_occupied_shadow_preserve_current_camera_ranges()
     // material binds, and the camera's range list is untouched (asserted by
     // `frame` above). Every leaf here shares one box, so the cone reaches all
     // of them; partial reach is proven in `shadow_world_frame_tests`.
-    let shadow = &renderer.full().shadow_world;
+    let shadow = &renderer.level().shadow_world;
     assert!(
         !shadow.trace.is_empty(),
         "real frame must record shadow world depth"

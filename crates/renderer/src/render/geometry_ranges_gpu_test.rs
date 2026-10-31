@@ -79,16 +79,16 @@ fn install_range_rejection_preserves_offscreen_renderer_state() {
     };
     validate_level_geometry_ranges(&bvh.leaves, indices.len()).unwrap();
     renderer.install_level_geometry(&valid, Default::default());
-    let index_buffer = renderer.full().index_buffer.clone();
-    let vertex_buffer = renderer.full().vertex_buffer.clone();
+    let index_buffer = renderer.level().index_buffer.clone();
+    let vertex_buffer = renderer.level().vertex_buffer.clone();
     let leaf_buffer = renderer
-        .full()
+        .level()
         .compute_cull
         .as_ref()
         .unwrap()
         .leaf_buffer()
         .clone();
-    let index_count = renderer.full().index_count;
+    let index_count = renderer.level().index_count;
     let before_uploads = renderer.queue.counts();
     bvh.leaves[0].index_offset = 3;
     let invalid = super::LevelGeometry {
@@ -103,14 +103,19 @@ fn install_range_rejection_preserves_offscreen_renderer_state() {
         renderer.install_level_geometry(&invalid, Default::default());
     }));
     assert!(rejected.is_err());
-    assert_eq!(renderer.full().index_buffer, index_buffer);
-    assert_eq!(renderer.full().vertex_buffer, vertex_buffer);
+    assert_eq!(renderer.level().index_buffer, index_buffer);
+    assert_eq!(renderer.level().vertex_buffer, vertex_buffer);
     assert_eq!(
-        *renderer.full().compute_cull.as_ref().unwrap().leaf_buffer(),
+        *renderer
+            .level()
+            .compute_cull
+            .as_ref()
+            .unwrap()
+            .leaf_buffer(),
         leaf_buffer
     );
-    assert_eq!(renderer.full().index_count, index_count);
-    assert_eq!(renderer.full().bvh_leaves[0].index_offset, 0);
+    assert_eq!(renderer.level().index_count, index_count);
+    assert_eq!(renderer.level().bvh_leaves[0].index_offset, 0);
     let after_uploads = renderer.queue.counts();
     assert_eq!(after_uploads.writes, before_uploads.writes);
     assert_eq!(after_uploads.direct_writes, before_uploads.direct_writes);

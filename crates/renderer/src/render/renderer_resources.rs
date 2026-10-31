@@ -1,5 +1,5 @@
-// Renderer level resources: sprite-collection registration, level release,
-// and the phased level-geometry install.
+// Renderer level resources: sprite-collection registration, level release
+// (drop the active set), and the phased install that builds and publishes it.
 // See: context/lib/resource_management.md
 
 mod lightmap_shadow;
@@ -62,82 +62,46 @@ impl Renderer {
         );
     }
 
-    /// Release all level-owned GPU resources while keeping the device, queue,
-    /// surface, UI, and window-facing state alive for the no-level Frontend.
-    /// Builds no pipeline: the empty install below binds the renderer's
-    /// install pipelines like any other.
+    /// Release the active level's renderer resources while keeping the
+    /// device, queue, surface, UI, and window-facing state alive for the
+    /// no-level Frontend: drops the active `LevelResourceSet` (and any
+    /// staged textures) and clears the per-frame inputs that index it.
+    /// Creates no GPU object; the renderer-wide floor keeps the dropped
+    /// set's lightmap generations.
     pub fn release_level_resources(&mut self) {
         self.queue.assert_empty("level unload");
-        let empty_keys = TextureCacheKeysSection::default();
-        let empty_texture_names: Vec<String> = Vec::new();
-        let empty_materials: Vec<Material> = Vec::new();
-        self.install_textures(
-            &empty_texture_names,
-            &empty_keys,
-            Path::new(""),
-            &empty_materials,
-        );
-
-        let empty_bvh = BvhTree {
-            nodes: Vec::new(),
-            leaves: Vec::new(),
-            root_node_index: 0,
-        };
-        let empty_geometry = LevelGeometry {
-            vertices: &[],
-            vertex_spec_owners: &[],
-            indices: &[],
-            bvh: &empty_bvh,
-            lights: &[],
-            light_influences: &[],
-            sh_volume: None,
-            sh_storage: LevelGeometryShStorage::Legacy,
-            lightmap: None,
-            lightmap_streaming: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            direct_sh_delta_volumes: None,
-            animated_direct_sh_delta_volumes: None,
-            billboard_direct_scatter_volume: None,
-            animated_billboard_direct_scatter_delta_volumes: None,
-            entity_shadow_lights: &[],
-            shadowmask_atlas: None,
-            sdf_atlas: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::default(),
-            cell_draw_index: None,
-            kinematic_geometry: None,
-            cells: &[],
-            texture_materials: &empty_materials,
-        };
-        self.install_level_geometry(&empty_geometry, Default::default());
-
-        self.full_mut().smoke_pass.clear_collections();
-        self.full_mut().billboard_ghost.clear();
-        self.full_mut().mesh_pass.release_level_resources();
-        self.full_mut().mesh_draws.clear();
-        self.full_mut().ghost_mesh_draws.clear();
         let full = self.full_mut();
+        if let Some(level) = full.level.take() {
+            full.retire_level_set(level);
+        }
+        full.pending_textures = None;
+
+        full.smoke_pass.clear_collections();
+        full.billboard_ghost.clear();
+        full.mesh_pass.release_level_resources();
+        full.mesh_draws.clear();
+        full.ghost_mesh_draws.clear();
+        full.kinematic_brush.clear_frame_draws();
+        full.kinematic_ghost.clear();
         clear_kinematic_mover_frame_state(
             &mut full.kinematic_mover_draws,
             &mut full.kinematic_mover_shadow_draws,
             &mut full.mover_occluder_aabbs,
         );
-        self.full_mut().bone_palette_scratch.clear();
-        self.full_mut().fog_cell_masks = None;
-        self.full_mut().active_fog_aabbs.clear();
-        self.upload_fog_volumes(&[], &[], 0);
-        self.upload_fog_points(&[]);
-        self.set_fog_pixel_scale(0);
+        full.bone_palette_scratch.clear();
+        full.fluid_surface.release_level_targets();
+        full.planar_reflection.clear_level();
+        full.fog.clear_frame_counts();
     }
 
-    /// Replaces dummy buffers with real geometry; rebuilds lighting, SH, lightmap, and cull pipeline.
-    /// Takes the level's GPU-only lightmap and shadowmask payloads by value and
-    /// drops them once their textures exist.
-    /// Call `validate_level_geometry_ranges` before the first install step;
-    /// release indirect draws rely on its checked leaf/index-buffer mapping.
+    /// Builds one level's renderer resources into a fresh `LevelResourceSet`
+    /// and publishes it as the active set, dropping the previous one. Takes
+    /// the materials `install_textures` staged (else keeps the previous
+    /// set's, else binds one placeholder), and the level's GPU-only lightmap
+    /// and shadowmask payloads by value, dropping them once their textures
+    /// exist. Call `validate_level_geometry_ranges` before the first install
+    /// step; release indirect draws rely on its checked leaf/index-buffer
+    /// mapping.
     /// See: context/lib/boot_sequence.md §3 (Level Install Order)
     pub fn install_level_geometry(
         &mut self,
@@ -148,6 +112,7 @@ impl Renderer {
             validate_level_geometry_ranges(&geometry.bvh.leaves, geometry.indices.len()).is_ok(),
             "level geometry must pass the indirect index-range check before installation"
         );
+        let surface_depth_quality = self.surface_depth_quality;
         let Self {
             device,
             queue,
@@ -165,74 +130,103 @@ impl Renderer {
         let pipelines = full.install_pipelines.wait_for_oracle();
         let mut install_marks = super::geometry_install_marks::GeometryInstallMarks::start();
 
-        // Drop the prior generation at the level boundary. Construction waits
-        // until the fresh shared SH resources below exist, because streamed
-        // group-3 bind groups retain those always-resident animation and
-        // billboard-scatter bindings.
         let streaming_manifest = match &geometry.sh_storage {
             LevelGeometryShStorage::Legacy => None,
             LevelGeometryShStorage::Streaming(manifest) => Some(*manifest),
         };
-        full.sh_streaming = None;
         let has_multi_draw_indirect = *has_multi_draw_indirect;
         let requested_spot_resolution = *spot_shadow_map_resolution;
 
+        // Drop the prior set at the level boundary, before this one's
+        // resources exist; its materials carry over when none were staged.
+        let previous_textures = full.level.take().map(|mut previous| {
+            let textures = previous.take_textures();
+            full.retire_level_set(previous);
+            textures
+        });
+        let textures = match full.pending_textures.take().or(previous_textures) {
+            Some(textures) => textures,
+            None => super::renderer_textures::placeholder_level_textures(
+                device,
+                queue.raw(),
+                full,
+                surface_depth_quality,
+            ),
+        };
+
         shadow_pools::rebuild_spot_shadow_pool_for_tier(device, full, requested_spot_resolution);
-        let has_geometry = world_geometry::install_world_buffers(device, full, geometry);
-        let selection = lights::install_level_lights(device, full, geometry);
+        let world = world_geometry::install_world_buffers(device, geometry);
+        let (lights, selection) = lights::install_level_lights(device, geometry);
         let level_light_count = selection.level_light_count;
         let animated_baked_descriptor_indices = selection.animated_baked_descriptor_indices;
-        shadow_pools::reset_level_shadow_caches(device, full, geometry, &selection);
-        let light_buffers = lights::install_lighting_bind_group(device, full, geometry, selection);
-        let sh_allocation_ledger = sh_family::install_sh_volume(
+        let promoted = shadow_pools::reset_level_shadow_caches(device, full, geometry, &selection);
+        let (lighting, light_buffers) = lights::install_lighting_bind_group(
+            device,
+            &full.lighting_bind_group_layout,
+            &lights,
+            geometry,
+            selection,
+        );
+        let sh = sh_family::install_sh_volume(
             device,
             queue,
-            full,
+            full.probe_occlusion_enabled,
             &pipelines,
             geometry,
             streaming_manifest,
             level_light_count,
             animated_baked_descriptor_indices,
+            &promoted.promoted_static_weight_buffer,
         );
-        lights::rebind_mesh_light_groups(device, full);
+        let (mesh_lights, kinematic_lights) = lights::rebind_mesh_light_groups(
+            device,
+            full,
+            &lights.lights_buffer,
+            lighting.mirror_lighting.lights_buffer(),
+            &lighting.influence_buffer,
+            &sh.sh_volume_resources,
+        );
 
         install_marks.mark("buffers_and_sh_streaming");
-        sh_family::install_compose_family(
+        let compose = sh_family::install_compose_family(
             device,
             queue,
-            full,
             &pipelines,
             geometry,
-            sh_allocation_ledger,
+            &sh.sh_volume_resources,
+            sh.sh_streaming.as_ref(),
+            &promoted.promoted_static_weight_buffer,
+            sh.ledger,
         );
         let (lightmap_plan, bvh_leaves) = lightmap_shadow::plan_lightmap_family(
             device,
-            full,
+            &sh.sh_volume_resources,
             &pipelines,
             geometry,
             &gpu_lighting_payloads,
         );
         install_marks.mark("sdf_atlas_and_compose");
-        lightmap_shadow::install_lightmap(
+        let lightmap = lightmap_shadow::install_lightmap(
             device,
             queue,
-            full,
             geometry,
             gpu_lighting_payloads,
             lightmap_plan,
+            full.lightmap_generation_floor,
         );
-        lightmap_shadow::rebind_sdf_shadow(
+        let sdf_shadow = lightmap_shadow::rebind_sdf_shadow(
             device,
             full,
             geometry,
             &light_buffers,
             streaming_manifest,
+            &sh.sh_volume_resources,
+            sh.sh_streaming.as_ref(),
         );
 
         install_marks.mark("lightmap_and_sdf_shadow");
-        world_geometry::install_bvh_and_cull(
+        let cull = world_geometry::install_bvh_and_cull(
             device,
-            full,
             &pipelines,
             geometry,
             bvh_leaves,
@@ -240,52 +234,139 @@ impl Renderer {
         );
 
         install_marks.mark("bvh_and_cull");
-        install_level_draw_state(device, full, geometry, has_geometry);
+        // Shadow reach follows the installed BVH: the first fill after install
+        // walks this level's tree, and no range from the previous level survives.
+        let shadow_world = super::shadow_world_draws::ShadowWorldDraws::install(
+            Some(geometry.bvh),
+            world.index_count,
+        );
+        let kinematic = kinematic_brush::KinematicLevelState::install(
+            device,
+            geometry.kinematic_geometry,
+            geometry.texture_materials.len(),
+            kinematic_lights,
+        );
+        reset_level_frame_state(device, full);
+
+        let has_geometry = world.has_geometry;
+        let LevelTextures {
+            loaded_textures,
+            gpu_textures,
+            stored_texture_materials: _,
+        } = textures;
+        full.level = Some(LevelResourceSet {
+            loaded_textures,
+            gpu_textures,
+            stored_texture_materials: geometry.texture_materials.to_vec(),
+            vertex_buffer: world.vertex_buffer,
+            spec_owner_buffer: world.spec_owner_buffer,
+            index_buffer: world.index_buffer,
+            index_count: world.index_count,
+            wireframe_index_buffer: world.wireframe_index_buffer,
+            wireframe_index_count: world.wireframe_index_count,
+            has_geometry,
+            bvh_leaves: cull.bvh_leaves,
+            cell_draw_index: cull.cell_draw_index,
+            compute_cull: cull.compute_cull,
+            candidate_cull: cull.candidate_cull,
+            candidate_cull_oor_logged: false,
+            shadow_world,
+            lights_buffer: lights.lights_buffer,
+            influence_buffer: lighting.influence_buffer,
+            lighting_bind_group: lighting.lighting_bind_group,
+            mirror_lighting: lighting.mirror_lighting,
+            dynamic_light_capacity: lights.dynamic_light_capacity,
+            light_count: lights.light_count,
+            animated_baked_light_count: lights.animated_baked_light_count,
+            total_light_count: lights.total_light_count,
+            level_lights: lights.level_lights,
+            level_light_source_indices: lights.level_light_source_indices,
+            level_light_influences: lighting.level_light_influences,
+            entity_shadow_lights: lights.entity_shadow_lights,
+            entity_shadow_light_influences: lights.entity_shadow_light_influences,
+            entity_shadow_light_source_indices: lights.entity_shadow_light_source_indices,
+            entity_shadow_spec_light_indices: lights.entity_shadow_spec_light_indices,
+            shadow_candidate_lights: lighting.shadow_candidate_lights,
+            shadow_candidate_source_indices: lighting.shadow_candidate_source_indices,
+            shadow_candidate_selection_indices: lighting.shadow_candidate_selection_indices,
+            shadow_candidate_animated_baked_indices: lighting
+                .shadow_candidate_animated_baked_indices,
+            shadow_candidate_influences: lighting.shadow_candidate_influences,
+            light_effective_brightness: Vec::new(),
+            animated_light_window_brightness: promoted.animated_light_window_brightness,
+            last_lights_upload: Vec::new(),
+            authored_animated_tail: Vec::new(),
+            last_influence_upload: Vec::new(),
+            lights_pack_scratch: Vec::new(),
+            influence_pack_scratch: Vec::new(),
+            shadowmask_present: lightmap.shadowmask_present,
+            forward_shadowmask_metadata_scratch: Vec::new(),
+            promoted_static_states: promoted.promoted_static_states,
+            promoted_animated_states: promoted.promoted_animated_states,
+            promoted_baked_records: Vec::new(),
+            promoted_baked_cache_layers: Vec::new(),
+            promoted_static_weights: promoted.promoted_static_weights,
+            promoted_static_weight_buffer: promoted.promoted_static_weight_buffer,
+            promoted_static_weight_scratch: Vec::new(),
+            promoted_baked_last_update_time: None,
+            promotions_start_whole: false,
+            sh_volume_resources: sh.sh_volume_resources,
+            sh_residency_report: compose.sh_residency_report,
+            lightmap_residency_report: lightmap.lightmap_residency_report,
+            sh_streaming: sh.sh_streaming,
+            sdf_atlas_resources: compose.sdf_atlas_resources,
+            lightmap_mode: compose.lightmap_mode,
+            #[cfg(feature = "dev-tools")]
+            sh_delta_volumes_meta: compose.sh_delta_volumes_meta,
+            #[cfg(feature = "dev-tools")]
+            sh_probe_readback: compose.sh_probe_readback,
+            sh_compose: compose.sh_compose,
+            direct_sh_compose: compose.direct_sh_compose,
+            billboard_direct_scatter_compose: compose.billboard_direct_scatter_compose,
+            lightmap_resources: lightmap.lightmap_resources,
+            animated_lightmap: lightmap.animated_lightmap,
+            sdf_shadow,
+            mesh_lights,
+            kinematic,
+            fluid_surfaces: None,
+            fog: Default::default(),
+            fog_cell_masks: None,
+            active_fog_aabbs: Vec::new(),
+        });
 
         install_marks.log(has_geometry);
         if has_geometry {
+            let level = full.level.as_ref().expect("the set was just published");
             log::info!(
                 "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
-                full.index_count,
-                full.bvh_leaves.len(),
+                level.index_count,
+                level.bvh_leaves.len(),
             );
         }
     }
 }
 
-/// Per-level draw-side state that follows the installed geometry: shadow
-/// reach, light upload scratch, materials, mover geometry, and the fluid and
-/// planar resets.
-fn install_level_draw_state(
-    device: &wgpu::Device,
-    full: &mut FullRenderer,
-    geometry: &LevelGeometry<'_>,
-    has_geometry: bool,
-) {
-    // Shadow reach follows the installed BVH: the first fill after install
-    // walks this level's tree, and no range from the previous level survives.
-    full.shadow_world =
-        super::shadow_world_draws::ShadowWorldDraws::install(Some(geometry.bvh), full.index_count);
+impl FullRenderer {
+    /// Drop a level set the renderer no longer draws, folding its lightmap
+    /// generations into the renderer-wide floor first. Creates nothing.
+    pub(in crate::render) fn retire_level_set(&mut self, level: LevelResourceSet) {
+        self.lightmap_generation_floor = self
+            .lightmap_generation_floor
+            .max(level.lightmap_resources.generation_high_water());
+        drop(level);
+    }
+}
 
-    full.has_geometry = has_geometry;
-    full.last_lights_upload.clear();
-    full.authored_animated_tail.clear();
-    full.last_influence_upload.clear();
-    full.lights_pack_scratch.clear();
-    full.influence_pack_scratch.clear();
-    full.light_effective_brightness.clear();
-    full.stored_texture_materials = geometry.texture_materials.to_vec();
-    full.kinematic_brush.install_geometry(
-        device,
-        geometry.kinematic_geometry,
-        geometry.texture_materials.len(),
-    );
+/// Per-frame draw state the previous level's ids index: mover draw lists and
+/// ghosts, and the fluid and planar targets keyed to its surfaces.
+fn reset_level_frame_state(device: &wgpu::Device, full: &mut FullRenderer) {
+    full.kinematic_brush.clear_frame_draws();
     // Mover ids are the new level's: drop the last frame's mover ghosts.
     full.kinematic_ghost.clear();
     // Fluid surfaces install after this through `install_fluid_surfaces`;
-    // every geometry install (unload included) drops the previous level's,
-    // its reflection target with them.
-    full.fluid_surface.clear(device);
+    // every geometry install drops the previous level's reflection target
+    // and planar layer, rebinding group 5 to the placeholder.
+    full.fluid_surface.clear_level_targets(device);
     full.planar_reflection.clear_level();
     clear_kinematic_mover_frame_state(
         &mut full.kinematic_mover_draws,

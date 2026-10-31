@@ -70,9 +70,15 @@ pub(in crate::render) fn write_prm(root: &Path, key: [u8; 32], slots: [Option<Pr
     .unwrap();
 }
 
-/// Every resource-shaping property of one installed material.
+/// Every resource-shaping property of the staged materials (else the active
+/// level's).
 fn summary(renderer: &Renderer) -> Vec<String> {
     let full = renderer.full();
+    let (loaded, bind_groups) = match (&full.pending_textures, &full.level) {
+        (Some(pending), _) => (&pending.loaded_textures, pending.gpu_textures.len()),
+        (None, Some(level)) => (&level.loaded_textures, level.gpu_textures.len()),
+        (None, None) => panic!("no staged or installed materials"),
+    };
     let describe = |texture: &wgpu::Texture| {
         format!(
             "{}x{} {:?} mips={}",
@@ -82,8 +88,7 @@ fn summary(renderer: &Renderer) -> Vec<String> {
             texture.mip_level_count()
         )
     };
-    let mut rows: Vec<String> = full
-        .loaded_textures
+    let mut rows: Vec<String> = loaded
         .iter()
         .map(|t| {
             format!(
@@ -97,7 +102,7 @@ fn summary(renderer: &Renderer) -> Vec<String> {
             )
         })
         .collect();
-    rows.push(format!("bind groups={}", full.gpu_textures.len()));
+    rows.push(format!("bind groups={bind_groups}"));
     rows
 }
 
@@ -365,7 +370,13 @@ fn off_main_world_texture_upload_matches_main_thread_install() {
 
     // The upload thread submitted its writes before handing the result back,
     // so this main-thread submit samples the uploaded bytes.
-    let diffuse = &renderer.full().loaded_textures[0].diffuse_view;
+    let diffuse = &renderer
+        .full()
+        .pending_textures
+        .as_ref()
+        .expect("the upload's materials are staged")
+        .loaded_textures[0]
+        .diffuse_view;
     assert_eq!(
         read_srgb_mip0(&renderer, diffuse, 4, 4),
         small_mip0,
@@ -407,7 +418,7 @@ fn off_main_world_texture_upload_matches_main_thread_install() {
         .frame
         .expect("capture records");
     let forward_binds: Vec<u32> = renderer
-        .full()
+        .level()
         .compute_cull
         .as_ref()
         .expect("a level with leaves builds the cull")

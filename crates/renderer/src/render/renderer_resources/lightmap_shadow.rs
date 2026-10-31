@@ -17,11 +17,19 @@ pub(super) struct LightmapFamilyPlan {
     animated_block_table: Vec<u8>,
 }
 
+/// One level's lightmap pool, animated atlas and their meter.
+pub(super) struct LevelLightmapFamily {
+    pub(super) lightmap_resources: LightmapResources,
+    pub(super) shadowmask_present: bool,
+    pub(super) lightmap_residency_report: LightmapResidencyReport,
+    pub(super) animated_lightmap: animated_lightmap::AnimatedLightmapResources,
+}
+
 /// Plan the static pool and build the animated atlas that keys on it. Also
 /// returns the BVH leaves the cull install takes.
 pub(super) fn plan_lightmap_family(
     device: &wgpu::Device,
-    full: &FullRenderer,
+    sh_volume_resources: &ShVolumeResources,
     pipelines: &InstallPipelines,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: &postretro_level_loader::GpuLightingPayloads,
@@ -60,7 +68,7 @@ pub(super) fn plan_lightmap_family(
             geometry.animated_light_weight_maps,
             geometry.animated_light_chunks,
             &bvh_leaves,
-            &full.sh_volume_resources.animation,
+            &sh_volume_resources.animation,
             &pipelines.animated_lightmap,
             static_pool.static_block_extents(),
             animated_lm_debug,
@@ -68,7 +76,7 @@ pub(super) fn plan_lightmap_family(
         || {
             animated_lightmap::AnimatedLightmapResources::dummy(
                 device,
-                &full.sh_volume_resources.animation,
+                &sh_volume_resources.animation,
                 animated_lm_debug,
             )
             .into_fallback()
@@ -99,11 +107,11 @@ pub(super) fn plan_lightmap_family(
 pub(super) fn install_lightmap(
     device: &wgpu::Device,
     queue: &UploadQueue,
-    full: &mut FullRenderer,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
     plan: LightmapFamilyPlan,
-) {
+    generation_floor: u64,
+) -> LevelLightmapFamily {
     let LightmapFamilyPlan {
         lightmap_bgl,
         block_table_bgl,
@@ -111,7 +119,7 @@ pub(super) fn install_lightmap(
         animated_lightmap,
         animated_block_table,
     } = plan;
-    full.lightmap_resources = LightmapResources::new(
+    let lightmap_resources = LightmapResources::new(
         device,
         queue.raw(),
         geometry.lightmap,
@@ -123,33 +131,38 @@ pub(super) fn install_lightmap(
         &animated_lightmap.forward_view,
         &animated_lightmap.direction_forward_view,
         &animated_block_table,
-        // A reload's first drain must not accept the previous level's
-        // generation; the old pool, table and any retiring generation
-        // drop with the resources this replaces.
-        full.lightmap_resources.generation_high_water(),
+        // A reload's first drain must not accept a previous level's
+        // generation: the set reserves from the renderer-wide floor.
+        generation_floor,
     );
-    full.shadowmask_present = full.lightmap_resources.shadowmask_present;
-    full.lightmap_residency_report = LightmapResidencyReport::new(
-        full.lightmap_resources.residency.clone(),
+    let lightmap_residency_report = LightmapResidencyReport::new(
+        lightmap_resources.residency.clone(),
         animated_lightmap.residency_rows(),
     );
-    log::info!("{}", full.lightmap_residency_report.log_line());
-    full.animated_lightmap = animated_lightmap;
+    log::info!("{}", lightmap_residency_report.log_line());
+    LevelLightmapFamily {
+        shadowmask_present: lightmap_resources.shadowmask_present,
+        lightmap_resources,
+        lightmap_residency_report,
+        animated_lightmap,
+    }
 }
 
 pub(super) fn rebind_sdf_shadow(
     device: &wgpu::Device,
-    full: &mut FullRenderer,
+    full: &FullRenderer,
     geometry: &LevelGeometry<'_>,
     light_buffers: &LevelLightBuffers,
     streaming_manifest: Option<&postretro_level_loader::ShStreamManifest>,
-) {
+    sh_volume_resources: &ShVolumeResources,
+    sh_streaming: Option<&sh_streaming::ShResidencyState>,
+) -> sdf_shadow::SdfShadowLevelState {
     // SDF half-res shadow pass — rebind to the freshly-loaded SH
     // depth-moment texture + static-light buffers. The pass itself is always
     // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
     // which `install_level_geometry` may have just flipped.
     let sdf_shadow_sh_grid = streaming_manifest
-        .filter(|_| full.sh_streaming.is_some())
+        .filter(|_| sh_streaming.is_some())
         .map(|manifest| {
             let base = manifest.base();
             build_sdf_shadow_sh_grid_from_metadata(
@@ -159,12 +172,15 @@ pub(super) fn rebind_sdf_shadow(
             )
         })
         .unwrap_or_else(|| {
-            build_sdf_shadow_sh_grid(geometry.sh_volume, full.sh_volume_resources.present)
+            build_sdf_shadow_sh_grid(geometry.sh_volume, sh_volume_resources.present)
         });
-    full.sdf_shadow_pass.rebuild_for_level(
+    let sh_depth_moment_view = sh_streaming
+        .and_then(sh_streaming::ShResidencyState::depth_moment_view)
+        .unwrap_or_else(|| sh_volume_resources.make_depth_moment_view());
+    full.sdf_shadow_pass.level_state(
         device,
         &full.depth_view,
-        full.sh_depth_moment_view(),
+        sh_depth_moment_view,
         sdf_shadow::SdfShadowLightBuffers {
             spec_lights: &light_buffers.spec_lights,
             chunk_grid_info: &light_buffers.chunk_grid_info,
@@ -172,5 +188,5 @@ pub(super) fn rebind_sdf_shadow(
             chunk_indices: &light_buffers.chunk_grid_indices,
         },
         sdf_shadow_sh_grid,
-    );
+    )
 }

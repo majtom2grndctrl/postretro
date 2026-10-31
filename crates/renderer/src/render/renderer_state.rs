@@ -51,18 +51,28 @@ impl Renderer {
         let Some(full) = full.as_mut() else {
             return;
         };
-        for gpu_texture in &full.gpu_textures {
+        // The active level's materials and any staged for the next install;
+        // with neither, there is nothing to rewrite.
+        let materials = full
+            .level
+            .iter()
+            .flat_map(|level| level.gpu_textures.iter())
+            .chain(
+                full.pending_textures
+                    .iter()
+                    .flat_map(|textures| textures.gpu_textures.iter()),
+            );
+        let mut rewritten = 0usize;
+        for gpu_texture in materials {
             rewrite_material_surface_depth(
                 queue,
                 &gpu_texture.uniform_buffer,
                 gpu_texture.uniform_plan,
                 quality,
             );
+            rewritten += 1;
         }
-        log::info!(
-            "[Renderer] Surface Depth quality: {quality:?} ({} materials)",
-            full.gpu_textures.len()
-        );
+        log::info!("[Renderer] Surface Depth quality: {quality:?} ({rewritten} materials)");
     }
 
     /// The Surface Depth setting currently applied to every installed material.
@@ -369,9 +379,13 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("set_probe_occlusion_enabled is a full-ready path");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         if full.probe_occlusion_enabled != enabled {
             full.probe_occlusion_enabled = enabled;
-            full.sh_volume_resources
+            level
+                .sh_volume_resources
                 .set_probe_occlusion_enabled(queue, enabled);
             log::info!("[Renderer] Probe Occlusion: {enabled}");
         }
@@ -533,6 +547,9 @@ impl Renderer {
 
     #[allow(dead_code)]
     pub fn has_compute_cull(&self) -> bool {
-        self.full().compute_cull.is_some()
+        self.full()
+            .level
+            .as_ref()
+            .is_some_and(|level| level.compute_cull.is_some())
     }
 }

@@ -1,5 +1,5 @@
 // The full-phase renderer: every steady-state pipeline, pass and resource,
-// with its SH binding seams.
+// and the slot for the active level's resource set.
 // See: context/lib/rendering_pipeline.md
 
 use super::*;
@@ -14,12 +14,6 @@ pub(in crate::render) struct FullRenderer {
     /// `Some` when `POSTRETRO_GPU_TIMING=1` AND the adapter supports both base
     /// and encoder-level timestamp queries; `None` → no timing writes.
     pub(in crate::render) frame_timing: Option<FrameTiming>,
-    pub(in crate::render) vertex_buffer: wgpu::Buffer,
-    /// The forward pipeline's second vertex buffer: one `Uint16x4` owner entry
-    /// per world vertex, written once at install.
-    pub(in crate::render) spec_owner_buffer: wgpu::Buffer,
-    pub(in crate::render) index_buffer: wgpu::Buffer,
-    pub(in crate::render) index_count: u32,
     pub(in crate::render) uniform_buffer: wgpu::Buffer,
     pub(in crate::render) uniform_bind_group: wgpu::BindGroup,
 
@@ -41,16 +35,18 @@ pub(in crate::render) struct FullRenderer {
     /// only in `lod_max_clamp` and entries persist across level reloads. Character
     /// material bind groups bind their matching sampler at group-1 binding 5.
     pub(in crate::render) mip_count_character_model_samplers: HashMap<u32, wgpu::Sampler>,
-    /// Engine-lifetime owners of the loaded textures and views referenced by
-    /// material bind groups. Replaced wholesale on every `install_textures`.
-    /// Bind groups borrow these handles; dropping the vec invalidates them,
-    /// so keep them resident for the level's lifetime.
-    #[allow(dead_code)]
-    pub(in crate::render) loaded_textures: Vec<LoadedTexture>,
-    /// Per-texture material properties derived from texture names. Set by
-    /// `install_level_geometry`; consumed by `install_textures` to populate
-    /// per-material shininess uniforms.
-    pub(in crate::render) stored_texture_materials: Vec<Material>,
+    /// The active level's resources: every buffer, texture, bind group and
+    /// per-level state one install builds. `None` with no level installed;
+    /// release drops it and creates nothing. See `level_resource_set.rs`.
+    pub(in crate::render) level: Option<LevelResourceSet>,
+    /// World materials `install_textures` staged for the next
+    /// `install_level_geometry`, which takes them into the set it publishes.
+    pub(in crate::render) pending_textures: Option<LevelTextures>,
+    /// Renderer-wide, add-only lightmap generation floor. Every set reserves
+    /// its first generation from it, and each retired set folds its high
+    /// water back in, so a reload's first drain never accepts a previous
+    /// level's generation.
+    pub(in crate::render) lightmap_generation_floor: u64,
     /// Off-main GPU creation for level loads. Lives as long as this full
     /// renderer, so a rebuilt one after suspend spawns its own.
     pub(in crate::render) upload_thread: super::upload_thread::UploadThread,
@@ -65,27 +61,6 @@ pub(in crate::render) struct FullRenderer {
     #[cfg(feature = "dev-tools")]
     pub(in crate::render) debug_ui_gpu: Option<debug_ui::DebugUiGpu>,
 
-    /// Always bound; maps with zero lights get a 1-element dummy buffer —
-    /// wgpu rejects zero-sized storage buffer bindings.
-    pub(in crate::render) lighting_bind_group: wgpu::BindGroup,
-    /// The planar mirror's light records and their bind group, the frame's
-    /// mirror light reach and its admission tags (`rendering_pipeline.md`
-    /// §7.3a, Pool rank).
-    pub(in crate::render) mirror_lighting: renderer_mirror_lights::MirrorLighting,
-    pub(in crate::render) influence_buffer: wgpu::Buffer,
-    /// Maximum dynamic-direct prefix accepted from the scripting bridge.
-    /// Promoted static records occupy a separate reserved tail.
-    pub(in crate::render) dynamic_light_capacity: usize,
-    pub(in crate::render) light_count: u32,
-    /// Raw `AnimatedBakedLights` roster length. Every row reserves a forward
-    /// record after the dynamic prefix, including holes and entries above the
-    /// fixed Pass-B compose-weight cap, so the per-row identity never compacts.
-    pub(in crate::render) animated_baked_light_count: usize,
-    /// Dynamic tier, raw animated-baked tail, then promoted static records.
-    /// World and billboards recover the static suffix from the packed tail
-    /// count in the stable frame-uniform ABI; mesh/kinematic receivers consume
-    /// the complete count through their dedicated params uniforms.
-    pub(in crate::render) total_light_count: u32,
     /// The frame's forward `Uniforms.time` value, cached by
     /// `update_per_frame_uniforms` so the skinned-mesh group-2 params uniform
     /// (`MeshLightParams.time`) is written from the SAME render-clock value the
@@ -120,48 +95,10 @@ pub(in crate::render) struct FullRenderer {
     /// flip it later. Uploaded through `ShGridInfo`.
     pub(in crate::render) probe_occlusion_enabled: bool,
 
-    /// Absent/disabled OctahedralShVolume → dummy 1×1 atlas resources;
-    /// `has_sh_volume == 0` skips indirect sampling.
-    pub(in crate::render) sh_volume_resources: ShVolumeResources,
-    /// Finished, plain-Rust accounting for the most recently installed level.
-    /// It is absent until `install_level_geometry` crosses the level boundary.
-    pub(in crate::render) sh_residency_report: Option<ShResidencyReport>,
-    /// Lightmap-family meter for the bound group-4 textures. Rebuilt by every
-    /// level install, so a level unload reports the placeholders.
-    pub(in crate::render) lightmap_residency_report: LightmapResidencyReport,
-    /// Streaming-only residency ownership. The legacy whole-level path keeps
-    /// this absent and continues using its existing resources unchanged.
-    pub(in crate::render) sh_streaming: Option<sh_streaming::ShResidencyState>,
-
-    /// Static-occluder SDF atlas + bind group. Owned by the renderer; the
-    /// bind-group layout is consumed only by the SDF shadow pass — NOT
-    /// bound by forward (forward gets only the shadow-factor texture in
-    /// group 5). `present` is false when no SDF section is in the PRL;
-    /// the shadow pass skips its dispatch in that case.
-    pub(in crate::render) sdf_atlas_resources: SdfAtlasResources,
     /// Half-resolution per-light SDF shadow pass. Always allocated.
     /// Dispatch is gated on `sdf_atlas_resources.present` and the active
     /// `SdfShadowMode`.
     pub(in crate::render) sdf_shadow_pass: SdfShadowPass,
-    /// Lightmap bake mode, recorded from the id-22 header; `Shadowed` when
-    /// no level is installed. The compiler writes only `Shadowed`
-    /// (visibility baked in). `Unshadowed` is not honoured: the forward pass
-    /// never multiplies SDF visibility into the static term, so it renders
-    /// as the baked irradiance with no shadow term. Surfaced by
-    /// `Renderer::lightmap_mode`.
-    pub(in crate::render) lightmap_mode: postretro_level_loader::LightmapMode,
-
-    /// CPU mirror of animated-light delta volume placements, one entry per
-    /// animated light. Empty when the map has no delta SH volumes. Sourced
-    /// at level load from the same `DeltaShVolumesSection` `sh_compose` consumes;
-    /// surfaced via `Renderer::sh_delta_volumes` for the SH diagnostic overlay.
-    #[cfg(feature = "dev-tools")]
-    pub(in crate::render) sh_delta_volumes_meta: Vec<sh_volume::DeltaVolumeMeta>,
-
-    /// Async readback of the composed SH atlas so irradiance probe markers
-    /// reflect live (base + animated-delta) lighting. Rebuilt per level load.
-    #[cfg(feature = "dev-tools")]
-    pub(in crate::render) sh_probe_readback: sh_diagnostics::ShProbeReadback,
 
     /// Dev-tools toggle: when set, `uniforms.time` is pinned to `frozen_time`,
     /// so all curve-driven animation (SH compose, animated lightmap, scripted
@@ -173,89 +110,6 @@ pub(in crate::render) struct FullRenderer {
     #[cfg(feature = "dev-tools")]
     pub(in crate::render) frozen_time: f32,
 
-    /// Composes base SH bands into the total bands consumers sample. Must run
-    /// before the depth pre-pass so the storage→sampled barrier resolves first.
-    pub(in crate::render) sh_compose: ShComposeResources,
-
-    /// Optional direct-SH compose pass. Disabled entirely when a level has no
-    /// selected static direct deltas; in that path the base direct atlas remains
-    /// bound and no composed direct texture exists.
-    pub(in crate::render) direct_sh_compose: DirectShComposeResources,
-    /// Optional section-48 compose. Static-only scatter binds its base directly,
-    /// while unavailable content keeps the billboard legacy path selected.
-    pub(in crate::render) billboard_direct_scatter_compose: BillboardDirectScatterComposeResources,
-
-    /// Absent Lightmap section → 1×1 white/neutral placeholder; no shader branch.
-    pub(in crate::render) lightmap_resources: LightmapResources,
-
-    pub(in crate::render) animated_lightmap: animated_lightmap::AnimatedLightmapResources,
-
-    #[allow(dead_code)]
-    pub(in crate::render) lights_buffer: wgpu::Buffer,
-    /// Last bytes uploaded to `lights_buffer`. Reused each frame to skip a
-    /// redundant `queue.write_buffer` when the packed bytes are unchanged.
-    pub(in crate::render) last_lights_upload: Vec<u8>,
-    /// The bridge's unweighted animated-baked tail records. Promotion scales
-    /// this copy by `w` each frame; `last_lights_upload` holds the weighted
-    /// result, so re-weighting that would compound `w` on frames without a
-    /// bridge upload.
-    pub(in crate::render) authored_animated_tail: Vec<u8>,
-    /// Cached dynamic influences plus the raw animated-baked tail, index-parallel
-    /// to `last_lights_upload`. Shadow-slot updates preserve both before appending
-    /// selected-static influences and shadowmask metadata.
-    pub(in crate::render) last_influence_upload: Vec<u8>,
-    /// Scratch buffer for the fallback full-repack path. Used only when
-    /// `last_lights_upload` is not yet sized to the current light set
-    /// (first frame or light-count change). The hot path patches
-    /// `last_lights_upload` in place via `patch_shadow_slots` — scratch
-    /// is not touched in that branch.
-    pub(in crate::render) lights_pack_scratch: Vec<u8>,
-    /// Scratch buffer for per-frame influence upload: dynamic influences, raw
-    /// animated-baked tail, selected-static influences, then shadowmask metadata.
-    /// Matches the count-split light buffer without render-hot-path allocation.
-    pub(in crate::render) influence_pack_scratch: Vec<u8>,
-    #[allow(dead_code)]
-    pub(in crate::render) level_lights: Vec<MapLight>,
-    /// Original full level-light index for each `level_lights` entry.
-    pub(in crate::render) level_light_source_indices: Vec<usize>,
-    pub(in crate::render) level_light_influences: Vec<LightInfluence>,
-    /// Selected static lights in `EntityShadowLights` order. Source indices are
-    /// global level-light indices.
-    pub(in crate::render) entity_shadow_lights: Vec<MapLight>,
-    pub(in crate::render) entity_shadow_light_influences: Vec<LightInfluence>,
-    pub(in crate::render) entity_shadow_light_source_indices: Vec<usize>,
-    pub(in crate::render) entity_shadow_spec_light_indices: Vec<u32>,
-    /// Load-fixed: the level's id-42 mask pool is bound
-    /// (`LightmapResources::shadowmask_present`). Uploaded as the frame
-    /// uniforms' mask-present bit.
-    pub(in crate::render) shadowmask_present: bool,
-    pub(in crate::render) forward_shadowmask_metadata_scratch: Vec<u8>,
-    /// Candidate set for the spot/cube shadow pools — sourced from the FULL level
-    /// light set filtered by `is_dynamic`. Dynamic-tier lights
-    /// (`light_dynamic`/`light_dynamic_spot`) are pool-eligible so dynamic
-    /// spotlights shadow static world occluders (pillars). The per-light
-    /// `casts_entity_shadows` toggle (FGD `_cast_entity_shadows`) gates only
-    /// whether moving-ENTITY occluders draw into the slot, not slot allocation.
-    pub(in crate::render) shadow_candidate_lights: Vec<MapLight>,
-    /// Original full level-light index for each `shadow_candidate_lights` entry.
-    pub(in crate::render) shadow_candidate_source_indices: Vec<usize>,
-    /// Selection index for a selected-static shadow candidate. Animated baked
-    /// candidates use `shadow_candidate_animated_baked_indices` instead.
-    pub(in crate::render) shadow_candidate_selection_indices: Vec<Option<usize>>,
-    /// `AnimatedBakedLights` index for a section-45 candidate. Kept separate
-    /// from both selected-static selection and `MapLight::animated_slot`.
-    pub(in crate::render) shadow_candidate_animated_baked_indices: Vec<Option<usize>>,
-    /// Candidate-indexed influence volumes paired with `shadow_candidate_lights`.
-    /// Missing/short PRL influence data is represented by an uncullable sentinel
-    /// so shadow eligibility follows the same degradation contract as forward
-    /// direct-light culling.
-    pub(in crate::render) shadow_candidate_influences: Vec<LightInfluence>,
-    /// Lights near zero are excluded from shadow slot ranking. Empty = no suppression.
-    pub(in crate::render) light_effective_brightness: Vec<f32>,
-    /// Forward-lookahead brightness maxima keyed by `AnimatedBakedLights`
-    /// index. Animated candidates must never read the dynamic-tier
-    /// `light_effective_brightness` index space.
-    pub(in crate::render) animated_light_window_brightness: Vec<f32>,
     /// Cached from `update_per_frame_uniforms` so the shadow pass can re-rank lights.
     pub(in crate::render) last_camera_position: Vec3,
     /// Cached camera `view_proj` from `update_per_frame_uniforms`; the shadow
@@ -278,21 +132,6 @@ pub(in crate::render) struct FullRenderer {
     /// built at full init at every tier.
     pub(in crate::render) planar_reflection: planar_reflection::PlanarReflectionPass,
     pub(in crate::render) rigid_occluder_depth: rigid_occluder_depth::RigidOccluderDepthPass,
-    pub(in crate::render) promoted_static_states: Vec<PromotedBakedLightState>,
-    /// Promotion ramp state keyed by `AnimatedBakedLights` index. Keeping this
-    /// state separate prevents collisions with `EntityShadowLights` indices.
-    pub(in crate::render) promoted_animated_states: Vec<PromotedBakedLightState>,
-    pub(in crate::render) promoted_baked_records: Vec<PromotedBakedLightRecord>,
-    /// Cache-layer metadata parallel to `promoted_baked_records`; packed into
-    /// the forward shadowmask metadata tail's `meta1.w` lane.
-    pub(in crate::render) promoted_baked_cache_layers: Vec<i32>,
-    pub(in crate::render) promoted_static_weights: Vec<f32>,
-    pub(in crate::render) promoted_static_weight_buffer: wgpu::Buffer,
-    pub(in crate::render) promoted_static_weight_scratch: Vec<u8>,
-    pub(in crate::render) promoted_baked_last_update_time: Option<f64>,
-    /// The next light-slot update is a level's reveal frame: a light promoted
-    /// on it starts at full weight, since an entry has nothing to fade from.
-    pub(in crate::render) promotions_start_whole: bool,
     /// `None` only when a map has neither selected-static nor section-45
     /// animated-baked promotion candidates. Either source can use the same
     /// static world-depth cache, so an animated-only map still allocates it.
@@ -347,36 +186,8 @@ pub(in crate::render) struct FullRenderer {
     /// composites before capture and presentation resolve.
     pub(in crate::render) bloom: BloomPass,
 
-    /// GPU textures indexed by texture index.
-    pub(in crate::render) gpu_textures: Vec<GpuTexture>,
-    pub(in crate::render) bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf>,
-    /// Per-cell BVH-leaf draw index (PRL section 37), cloned from the installed
-    /// `LevelGeometry`. `None` only when no level is installed, the installed
-    /// map has an empty BVH, or resources were released. Non-empty BVHs require
-    /// this index at load; missing or invalid data is a load error. Whole-BVH
-    /// tree-walk fallback is a per-frame runtime path for `DrawAll`,
-    /// solid/exterior/no-portals visibility, out-of-range gathered cell ids, or no candidate
-    /// cull pipeline.
-    pub(in crate::render) cell_draw_index: Option<postretro_level_loader::CellDrawIndex>,
-    /// `None` for maps with no BVH.
-    pub(in crate::render) compute_cull: Option<ComputeCullPipeline>,
-    /// Candidate-cull GPU path: gathers only visible cells' BVH
-    /// leaves (via the baked `cell_draw_index` CSR) and dispatches one
-    /// invocation per candidate leaf, writing the SAME global indirect/status
-    /// slots as `compute_cull`. Built in lockstep with `compute_cull`; used only
-    /// on candidate-eligible frames (valid index + `Culled` + `PrlPortal` or
-    /// `PortalStepLimitFallback`),
-    /// otherwise the whole-BVH tree walk runs. `None` for maps with no BVH.
-    pub(in crate::render) candidate_cull: Option<crate::candidate_cull::CandidateCullPipeline>,
-    /// CPU reach for shadow world depth: the installed level's reach index and
-    /// the walk scratch every spot slot and cube face reuses. Rebuilt by every
-    /// level install.
-    pub(in crate::render) shadow_world: super::shadow_world_draws::ShadowWorldDraws,
-
     pub(in crate::render) wireframe_cull_status_pipeline: wgpu::RenderPipeline,
     pub(in crate::render) wireframe_visible_pipeline: wgpu::RenderPipeline,
-    pub(in crate::render) wireframe_index_buffer: wgpu::Buffer,
-    pub(in crate::render) wireframe_index_count: u32,
     pub(in crate::render) wireframe_cull_status_bgl: wgpu::BindGroupLayout,
     pub(in crate::render) world_wireframe_mode: WorldWireframeMode,
     pub(in crate::render) wireframe_enabled: bool,
@@ -422,16 +233,10 @@ pub(in crate::render) struct FullRenderer {
     /// Toggled by Alt+Shift+V; `true` = AutoVsync, `false` = AutoNoVsync.
     pub(in crate::render) vsync_enabled: bool,
 
-    pub(in crate::render) has_geometry: bool,
-
     pub(in crate::render) debug_frame: u64,
     pub(in crate::render) debug_prev_bitmask: (u32, u32),
     pub(in crate::render) debug_prev_vp_hash: u32,
     pub(in crate::render) debug_prev_visible: (&'static str, usize),
-    /// One-shot guard so the candidate-cull out-of-range-cell warning logs once,
-    /// not every frame. Reset on each level install so a later level's corrupt
-    /// index still warns once.
-    pub(in crate::render) candidate_cull_oor_logged: bool,
     /// Camera-cull diagnostics for the current Spatial tab frame (candidate vs
     /// tree-walk path, candidate/total/submitted leaves). With `dev-tools`,
     /// refreshed before the debug UI reads it, then recomputed during pass
@@ -575,63 +380,6 @@ pub(in crate::render) struct FullRenderer {
     /// at least one fog volume uploaded; otherwise the dispatch + composite
     /// are skipped (see `FogPass::active`).
     pub(in crate::render) fog: FogPass,
-
-    /// Per-cell bitmask of overlapping fog volumes, loaded from PRL section 31
-    /// at level load. When `Some`, the fog pass ORs the masks of reachable
-    /// cells each frame to derive the active fog-volume set, culling volumes
-    /// not reachable from the camera.
-    pub(in crate::render) fog_cell_masks: Option<Vec<u32>>,
-
-    /// (min, max) AABBs of fog volumes that are active this frame. Refreshed
-    /// each frame via `set_fog_aabbs`; consumed by `collect_fog_spot_lights`
-    /// to drop dynamic spots whose influence sphere can't scatter into any
-    /// active volume. Empty list short-circuits to "pass everything" —
-    /// conservative because the fog pass itself is gated by `FogPass::active`.
-    pub(in crate::render) active_fog_aabbs: Vec<(Vec3, Vec3)>,
-}
-
-impl FullRenderer {
-    /// Stream mode swaps only the level-owned group-3 resources. Pipeline
-    /// layouts remain structurally identical, including billboard scatter's
-    /// whole-resident binding, so every consumer selects through this one seam.
-    pub(in crate::render) fn sh_bind_group(&self) -> &wgpu::BindGroup {
-        self.sh_streaming
-            .as_ref()
-            .and_then(sh_streaming::ShResidencyState::bind_group)
-            .unwrap_or(&self.sh_volume_resources.bind_group)
-    }
-
-    pub(in crate::render) fn sh_mesh_bind_group(&self) -> &wgpu::BindGroup {
-        self.sh_streaming
-            .as_ref()
-            .and_then(sh_streaming::ShResidencyState::mesh_bind_group)
-            .unwrap_or(&self.sh_volume_resources.mesh_bind_group)
-    }
-
-    /// The lattice group 3's SH sampler reads, for the fluid grid: the
-    /// streamed manifest base, else an installed section's. `None` while the
-    /// placeholder is bound (no section, or one the device refused) or the
-    /// lattice is unusable.
-    pub(in crate::render) fn sh_sampler_lattice(
-        &self,
-    ) -> Option<postretro_render_cpu::fluid_surface::FluidGridLattice> {
-        sh_sampler_lattice(
-            self.sh_streaming
-                .as_ref()
-                .map(sh_streaming::ShResidencyState::base_lattice),
-            self.sh_volume_resources.present.then_some((
-                self.sh_volume_resources.grid_origin,
-                self.sh_volume_resources.cell_size,
-            )),
-        )
-    }
-
-    pub(in crate::render) fn sh_depth_moment_view(&self) -> wgpu::TextureView {
-        self.sh_streaming
-            .as_ref()
-            .and_then(sh_streaming::ShResidencyState::depth_moment_view)
-            .unwrap_or_else(|| self.sh_volume_resources.make_depth_moment_view())
-    }
 }
 
 /// A streamed level's base lattice wins: its legacy resources still hold the

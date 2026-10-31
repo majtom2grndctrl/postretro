@@ -31,13 +31,11 @@ fn bridge_dynamic_prefix_count(
 
 /// Keep the bridge's authored animated-baked tail that follows the dynamic
 /// prefix, so each frame's promotion weight scales the same base.
-fn retain_authored_animated_tail(
-    full: &mut super::super::renderer_types::FullRenderer,
-    lights_bytes: &[u8],
-) {
-    let dynamic_bytes = full.light_count as usize * GPU_LIGHT_SIZE;
-    full.authored_animated_tail.clear();
-    full.authored_animated_tail
+fn retain_authored_animated_tail(level: &mut LevelResourceSet, lights_bytes: &[u8]) {
+    let dynamic_bytes = level.light_count as usize * GPU_LIGHT_SIZE;
+    level.authored_animated_tail.clear();
+    level
+        .authored_animated_tail
         .extend_from_slice(lights_bytes.get(dynamic_bytes..).unwrap_or_default());
 }
 
@@ -188,18 +186,19 @@ impl Renderer {
         self.full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run")
-            .sh_volume_resources
-            .animation
-            .animated_light_count()
+            .level
+            .as_ref()
+            .map_or(0, |level| {
+                level.sh_volume_resources.animation.animated_light_count()
+            })
     }
 
     /// Flushed to GPU on the next `update_per_frame_uniforms` call.
     #[allow(dead_code)]
     pub fn set_animated_light_active(&mut self, slot: usize, active: bool) {
-        self.full_mut()
-            .sh_volume_resources
-            .animation
-            .set_active(slot, active);
+        if let Some(level) = self.full_mut().level.as_mut() {
+            level.sh_volume_resources.animation.set_active(slot, active);
+        }
     }
 
     /// Overwrite the entire 48-byte animation descriptor at `slot` in the
@@ -213,10 +212,12 @@ impl Renderer {
         slot: u32,
         bytes: &[u8; sh_volume::ANIMATION_DESCRIPTOR_SIZE],
     ) {
-        self.full_mut()
-            .sh_volume_resources
-            .animation
-            .write_descriptor(slot as usize, bytes);
+        if let Some(level) = self.full_mut().level.as_mut() {
+            level
+                .sh_volume_resources
+                .animation
+                .write_descriptor(slot as usize, bytes);
+        }
     }
 
     /// Commit one coherent scripting-light snapshot. Every count and capacity
@@ -237,6 +238,9 @@ impl Renderer {
     ) -> bool {
         let validation = {
             let full = self.full();
+            let Some(level) = full.level.as_ref() else {
+                return false;
+            };
             validate_bridge_snapshot(
                 lights_bytes.len(),
                 influence_bytes.len(),
@@ -245,11 +249,11 @@ impl Renderer {
                 effective_brightness.len(),
                 animated_window_brightness.len(),
                 compose_descriptor_writes,
-                full.dynamic_light_capacity,
-                full.animated_baked_light_count,
-                full.sh_volume_resources.scripted_light_count as usize,
-                full.sh_volume_resources.scripted_sample_byte_offset / std::mem::size_of::<f32>(),
-                full.sh_volume_resources.animation.animated_light_count(),
+                level.dynamic_light_capacity,
+                level.animated_baked_light_count,
+                level.sh_volume_resources.scripted_light_count as usize,
+                level.sh_volume_resources.scripted_sample_byte_offset / std::mem::size_of::<f32>(),
+                level.sh_volume_resources.animation.animated_light_count(),
             )
         };
         let Some(layout) = validation else {
@@ -263,51 +267,58 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return false;
+        };
         if !lights_bytes.is_empty() {
-            queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
+            queue.write_buffer(&level.lights_buffer, 0, lights_bytes);
         }
         if !influence_bytes.is_empty() {
-            queue.write_buffer(&full.influence_buffer, 0, influence_bytes);
+            queue.write_buffer(&level.influence_buffer, 0, influence_bytes);
         }
         if layout.descriptor_prefix_len != 0 {
             queue.write_buffer(
-                &full.sh_volume_resources.scripted_light_descriptors,
+                &level.sh_volume_resources.scripted_light_descriptors,
                 0,
                 &descriptor_bytes[..layout.descriptor_prefix_len],
             );
         }
         if !samples_bytes.is_empty() {
             queue.write_buffer(
-                &full.sh_volume_resources.animation.anim_samples,
-                full.sh_volume_resources.scripted_sample_byte_offset as u64,
+                &level.sh_volume_resources.animation.anim_samples,
+                level.sh_volume_resources.scripted_sample_byte_offset as u64,
                 samples_bytes,
             );
         }
 
-        full.light_count = layout.dynamic_light_count as u32;
-        full.total_light_count = full.light_count
-            + full.animated_baked_light_count as u32
-            + full
+        level.light_count = layout.dynamic_light_count as u32;
+        level.total_light_count = level.light_count
+            + level.animated_baked_light_count as u32
+            + level
                 .promoted_baked_records
                 .iter()
                 .filter(|record| record.source.selected_static_index().is_some())
                 .count() as u32;
-        full.last_lights_upload.clear();
-        full.last_lights_upload.extend_from_slice(lights_bytes);
-        retain_authored_animated_tail(full, lights_bytes);
-        full.last_influence_upload.clear();
-        full.last_influence_upload
+        level.last_lights_upload.clear();
+        level.last_lights_upload.extend_from_slice(lights_bytes);
+        retain_authored_animated_tail(level, lights_bytes);
+        level.last_influence_upload.clear();
+        level
+            .last_influence_upload
             .extend_from_slice(influence_bytes);
         for (slot, bytes) in compose_descriptor_writes {
-            full.sh_volume_resources
+            level
+                .sh_volume_resources
                 .animation
                 .write_descriptor(*slot as usize, bytes);
         }
-        full.light_effective_brightness.clear();
-        full.light_effective_brightness
+        level.light_effective_brightness.clear();
+        level
+            .light_effective_brightness
             .extend_from_slice(effective_brightness);
-        full.animated_light_window_brightness.clear();
-        full.animated_light_window_brightness
+        level.animated_light_window_brightness.clear();
+        level
+            .animated_light_window_brightness
             .extend_from_slice(animated_window_brightness);
         true
     }
@@ -323,29 +334,32 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let Some(light_count) = bridge_dynamic_prefix_count(
             lights_bytes.len(),
             GPU_LIGHT_SIZE,
-            full.dynamic_light_capacity,
-            full.animated_baked_light_count,
+            level.dynamic_light_capacity,
+            level.animated_baked_light_count,
         ) else {
             log::warn!(
                 "[Renderer] upload_bridge_lights: bridge produced {} bytes; expected a multiple \
                  of {} with its {}-record animated-baked tail inside the {}-record dynamic capacity. Skipping upload.",
                 lights_bytes.len(),
                 GPU_LIGHT_SIZE,
-                full.animated_baked_light_count,
-                full.dynamic_light_capacity,
+                level.animated_baked_light_count,
+                level.dynamic_light_capacity,
             );
             return;
         };
         if !lights_bytes.is_empty() {
-            queue.write_buffer(&full.lights_buffer, 0, lights_bytes);
+            queue.write_buffer(&level.lights_buffer, 0, lights_bytes);
         }
-        full.light_count = light_count as u32;
-        full.total_light_count = full.light_count
-            + full.animated_baked_light_count as u32
-            + full
+        level.light_count = light_count as u32;
+        level.total_light_count = level.light_count
+            + level.animated_baked_light_count as u32
+            + level
                 .promoted_baked_records
                 .iter()
                 .filter(|record| record.source.selected_static_index().is_some())
@@ -358,9 +372,9 @@ impl Renderer {
         // checks `last_lights_upload.len() == expected_len` and takes the fallback
         // full static-repack path when the lengths mismatch, clobbering the
         // animated base data written here with static bytes.
-        full.last_lights_upload.clear();
-        full.last_lights_upload.extend_from_slice(lights_bytes);
-        retain_authored_animated_tail(full, lights_bytes);
+        level.last_lights_upload.clear();
+        level.last_lights_upload.extend_from_slice(lights_bytes);
+        retain_authored_animated_tail(level, lights_bytes);
     }
 
     /// Upload the influence record paired with each compact dynamic light.
@@ -370,14 +384,17 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let expected =
-            (full.light_count as usize + full.animated_baked_light_count) * LIGHT_INFLUENCE_SIZE;
+            (level.light_count as usize + level.animated_baked_light_count) * LIGHT_INFLUENCE_SIZE;
         if influence_bytes.len() != expected
             || bridge_dynamic_prefix_count(
                 influence_bytes.len(),
                 LIGHT_INFLUENCE_SIZE,
-                full.dynamic_light_capacity,
-                full.animated_baked_light_count,
+                level.dynamic_light_capacity,
+                level.animated_baked_light_count,
             )
             .is_none()
         {
@@ -385,17 +402,18 @@ impl Renderer {
                 "[Renderer] upload_bridge_influences: bridge produced {} bytes; expected {} \
                  dynamic-plus-animated-forward records × {} = {}. Skipping upload.",
                 influence_bytes.len(),
-                full.light_count,
+                level.light_count,
                 LIGHT_INFLUENCE_SIZE,
                 expected,
             );
             return;
         }
         if !influence_bytes.is_empty() {
-            queue.write_buffer(&full.influence_buffer, 0, influence_bytes);
+            queue.write_buffer(&level.influence_buffer, 0, influence_bytes);
         }
-        full.last_influence_upload.clear();
-        full.last_influence_upload
+        level.last_influence_upload.clear();
+        level
+            .last_influence_upload
             .extend_from_slice(influence_bytes);
     }
 
@@ -408,19 +426,22 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_ref() else {
+            return false;
+        };
         let Some(prefix_len) = forward_descriptor_prefix_len(
             descriptor_bytes.len(),
-            full.light_count,
-            full.dynamic_light_capacity,
-            full.animated_baked_light_count,
+            level.light_count,
+            level.dynamic_light_capacity,
+            level.animated_baked_light_count,
         ) else {
-            let expected = (full.light_count as usize + full.animated_baked_light_count)
+            let expected = (level.light_count as usize + level.animated_baked_light_count)
                 * sh_volume::ANIMATION_DESCRIPTOR_SIZE;
             log::warn!(
                 "[Renderer] upload_bridge_descriptors: bridge produced {} bytes; \
                  expected {} × {} = {}. Skipping upload.",
                 descriptor_bytes.len(),
-                full.light_count,
+                level.light_count,
                 sh_volume::ANIMATION_DESCRIPTOR_SIZE,
                 expected,
             );
@@ -430,7 +451,7 @@ impl Renderer {
             return true;
         }
         queue.write_buffer(
-            &full.sh_volume_resources.scripted_light_descriptors,
+            &level.sh_volume_resources.scripted_light_descriptors,
             0,
             &descriptor_bytes[..prefix_len],
         );
@@ -446,7 +467,10 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
-        let sample_capacity = full.sh_volume_resources.scripted_light_count as usize
+        let Some(level) = full.level.as_ref() else {
+            return;
+        };
+        let sample_capacity = level.sh_volume_resources.scripted_light_count as usize
             * postretro_render_cpu::sh_volume::SCRIPTED_FLOATS_PER_LIGHT
             * std::mem::size_of::<f32>();
         if samples_bytes.len() > sample_capacity
@@ -463,9 +487,9 @@ impl Renderer {
             );
             return;
         }
-        let offset = full.sh_volume_resources.scripted_sample_byte_offset as u64;
+        let offset = level.sh_volume_resources.scripted_sample_byte_offset as u64;
         queue.write_buffer(
-            &full.sh_volume_resources.animation.anim_samples,
+            &level.sh_volume_resources.animation.anim_samples,
             offset,
             samples_bytes,
         );
@@ -473,16 +497,24 @@ impl Renderer {
 
     /// Divide by 4 for float index; pass as `fgd_sample_float_count` to `LightBridge`.
     pub fn scripted_sample_byte_offset(&self) -> usize {
-        self.full().sh_volume_resources.scripted_sample_byte_offset
+        self.full().level.as_ref().map_or(0, |level| {
+            level.sh_volume_resources.scripted_sample_byte_offset
+        })
     }
 
     pub fn level_lights(&self) -> &[MapLight] {
-        &self.full().level_lights
+        self.full()
+            .level
+            .as_ref()
+            .map_or(&[], |level| level.level_lights.as_slice())
     }
 
     pub fn set_light_effective_brightness(&mut self, effective_brightness: &[f32]) {
         let full = self.full_mut();
-        let expected = full.light_count as usize;
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
+        let expected = level.light_count as usize;
         if effective_brightness.len() != expected {
             log::warn!(
                 "[Renderer] effective brightness count {} does not match dynamic light count {}; \
@@ -491,10 +523,11 @@ impl Renderer {
                 expected,
             );
         }
-        full.light_effective_brightness.clear();
-        full.light_effective_brightness
+        level.light_effective_brightness.clear();
+        level
+            .light_effective_brightness
             .extend(effective_brightness.iter().copied().take(expected));
-        full.light_effective_brightness.resize(expected, 1.0);
+        level.light_effective_brightness.resize(expected, 1.0);
     }
 
     /// Install the animated-baked lookahead brightness gate. This vector is
@@ -503,7 +536,10 @@ impl Renderer {
     /// space excludes baked animated lights.
     pub fn set_animated_light_window_brightness(&mut self, brightness: &[f32]) {
         let full = self.full_mut();
-        let expected = full.promoted_animated_states.len();
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
+        let expected = level.promoted_animated_states.len();
         if brightness.len() != expected {
             log::warn!(
                 "[Renderer] animated lookahead brightness count {} does not match section-45 animated-light count {}; \\
@@ -512,13 +548,14 @@ impl Renderer {
                 expected,
             );
         }
-        full.animated_light_window_brightness.clear();
-        full.animated_light_window_brightness
+        level.animated_light_window_brightness.clear();
+        level
+            .animated_light_window_brightness
             .extend(brightness.iter().copied().take(expected));
         // Absent bridge data must fail closed: treating a baked animated light
         // as fully bright here would recreate the dynamic-index-space accident
         // this channel exists to avoid.
-        full.animated_light_window_brightness.resize(expected, 0.0);
+        level.animated_light_window_brightness.resize(expected, 0.0);
     }
 }
 

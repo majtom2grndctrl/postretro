@@ -106,6 +106,9 @@ impl Renderer {
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
         full.fluid_surface.set_planar_route(None);
+        let Some(level) = full.level.as_ref() else {
+            return;
+        };
         let pass = &full.planar_reflection;
         let (Some(preset), Some(camera), Some(extent)) = (
             pass.preset(quality),
@@ -115,11 +118,14 @@ impl Renderer {
             return;
         };
         if !render_world
-            || !full.fluid_surface.has_draws()
+            || !full.fluid_surface.has_draws(level.fluid_surfaces.as_ref())
             || full.fluid_surface.planar_layer_extent() != Some(extent)
-            || !full
-                .fluid_surface
-                .has_planar_parts(light_term_mask, quality, camera.h)
+            || !full.fluid_surface.has_planar_parts(
+                level.fluid_surfaces.as_ref(),
+                light_term_mask,
+                quality,
+                camera.h,
+            )
         {
             return;
         }
@@ -141,20 +147,20 @@ impl Renderer {
         );
         full.planar_reflection.upload_inputs(queue, &inputs);
         full.fluid_surface.upload_planar_inputs(queue);
-        let buckets = full
+        let buckets = level
             .compute_cull
             .as_ref()
             .map_or(&[][..], |cull| cull.bucket_ranges());
         let PlanarReflectionPass { draws, visible, .. } = &mut full.planar_reflection;
         draws.rebuild(
-            &full.bvh_leaves,
+            &level.bvh_leaves,
             buckets,
-            full.cell_draw_index.as_ref(),
+            level.cell_draw_index.as_ref(),
             visible,
             &camera.cull_planes(),
         );
-        let sh = full.sh_bind_group().clone();
-        let sh_mesh = full.sh_mesh_bind_group().clone();
+        let sh = level.sh_bind_group().clone();
+        let sh_mesh = level.sh_mesh_bind_group().clone();
 
         let frame = PlanarFrame {
             camera,
@@ -164,7 +170,7 @@ impl Renderer {
             sh: &sh,
             sh_mesh: &sh_mesh,
         };
-        if record_planar_passes(full, encoder, &frame) {
+        if record_planar_passes(full, level, encoder, &frame) {
             full.fluid_surface.set_planar_route(Some(camera.h));
             #[cfg(test)]
             {
@@ -190,6 +196,7 @@ struct PlanarFrame<'a> {
 /// only the world mesh plan and the mirror's own sprites reach the mirror.
 fn record_planar_passes(
     full: &crate::render::renderer_types::FullRenderer,
+    level: &crate::render::LevelResourceSet,
     encoder: &mut wgpu::CommandEncoder,
     frame: &PlanarFrame<'_>,
 ) -> bool {
@@ -223,10 +230,16 @@ fn record_planar_passes(
         });
         mask.set_pipeline(&pass.pipelines.mask);
         mask.set_bind_group(0, &targets.mask_inputs, &[]);
-        full.fluid_surface
-            .record_planar_parts(&mut mask, light_term_mask, quality, camera.h, None);
+        full.fluid_surface.record_planar_parts(
+            &mut mask,
+            level.fluid_surfaces.as_ref(),
+            light_term_mask,
+            quality,
+            camera.h,
+            None,
+        );
     }
-    let world = full.has_geometry && full.index_count > 0 && !pass.draws.draws().is_empty();
+    let world = level.has_geometry && level.index_count > 0 && !pass.draws.draws().is_empty();
     if world {
         let mut depth = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Planar World Prepass"),
@@ -236,8 +249,8 @@ fn record_planar_passes(
         });
         depth.set_pipeline(&full.depth_prepass_pipeline);
         depth.set_bind_group(0, &pass.uniform_bind_group, &[]);
-        depth.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-        depth.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        depth.set_vertex_buffer(0, level.vertex_buffer.slice(..));
+        depth.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for run in pass.draws.depth_runs() {
             depth.draw_indexed(run.clone(), 0, 0..1);
         }
@@ -269,28 +282,29 @@ fn record_planar_passes(
             // light holds a shadow slot; only the reflection shows that shadow.
             forward.set_bind_group(
                 2,
-                full.mirror_lighting
-                    .lighting_bind_group(&full.lighting_bind_group),
+                level
+                    .mirror_lighting
+                    .lighting_bind_group(&level.lighting_bind_group),
                 &[],
             );
             forward.set_bind_group(3, sh, &[]);
-            forward.set_bind_group(4, &full.lightmap_resources.bind_group, &[]);
+            forward.set_bind_group(4, &level.lightmap_resources.bind_group, &[]);
             forward.set_bind_group(5, &full.spot_shadow_pool.bind_group, &[]);
             forward.set_bind_group(
                 LIGHTMAP_BLOCK_TABLE_GROUP,
-                &full.lightmap_resources.block_table_bind_group,
+                &level.lightmap_resources.block_table_bind_group,
                 &[],
             );
-            forward.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-            forward.set_vertex_buffer(1, full.spec_owner_buffer.slice(..));
-            forward.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            forward.set_vertex_buffer(0, level.vertex_buffer.slice(..));
+            forward.set_vertex_buffer(1, level.spec_owner_buffer.slice(..));
+            forward.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             let mut bound_bucket = None;
             for draw in pass.draws.draws() {
                 if bound_bucket != Some(draw.bucket) {
-                    let material = full
+                    let material = level
                         .gpu_textures
                         .get(draw.bucket as usize)
-                        .unwrap_or(&full.gpu_textures[0]);
+                        .unwrap_or(&level.gpu_textures[0]);
                     forward.set_bind_group(1, &material.bind_group, &[]);
                     bound_bucket = Some(draw.bucket);
                 }
@@ -298,7 +312,7 @@ fn record_planar_passes(
             }
         }
     }
-    if full.kinematic_brush.has_draws() {
+    if full.kinematic_brush.has_draws(&level.kinematic) {
         let mut movers = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Planar Movers"),
             color_attachments: &[Some(color_attachment(&targets.color, wgpu::LoadOp::Load))],
@@ -309,7 +323,8 @@ fn record_planar_passes(
         movers.set_bind_group(4, sh_mesh, &[]);
         full.kinematic_brush.record_mirror_draws(
             &mut movers,
-            &full.gpu_textures,
+            &level.kinematic,
+            &level.gpu_textures,
             &camera.cull_planes(),
             camera.clip_plane,
         );
@@ -323,7 +338,8 @@ fn record_planar_passes(
         });
         skinned.set_bind_group(0, &pass.uniform_bind_group, &[]);
         skinned.set_bind_group(4, sh_mesh, &[]);
-        full.mesh_pass.record_mirror_draws(&mut skinned, plan);
+        full.mesh_pass
+            .record_mirror_draws(&mut skinned, &level.mesh_lights, plan);
     }
     if pass.sprites.has_draws() && full.smoke_pass.has_any_sheet() {
         // After the opaque mirror, as the billboard pass follows the opaque
@@ -340,7 +356,7 @@ fn record_planar_passes(
             ..Default::default()
         });
         sprites.set_bind_group(0, &pass.uniform_bind_group, &[]);
-        sprites.set_bind_group(2, &full.lighting_bind_group, &[]);
+        sprites.set_bind_group(2, &level.lighting_bind_group, &[]);
         sprites.set_bind_group(3, sh, &[]);
         pass.sprites.record_draws(&mut sprites, &full.smoke_pass);
     }
@@ -379,10 +395,11 @@ fn record_planar_passes(
         );
         full.fluid_surface.record_planar_parts(
             &mut resolve,
+            level.fluid_surfaces.as_ref(),
             light_term_mask,
             quality,
             camera.h,
-            Some((pipelines::RESOLVE_MATERIAL_GROUP, &full.gpu_textures)),
+            Some((pipelines::RESOLVE_MATERIAL_GROUP, &level.gpu_textures)),
         );
     }
     if let Some(timing) = &full.frame_timing {

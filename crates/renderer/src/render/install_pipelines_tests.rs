@@ -35,23 +35,27 @@ fn install_lit_triangle(renderer: &mut Renderer) {
 /// Every family the fixture enables binds the slot's pipeline, not a copy.
 fn assert_installed_families_bind(renderer: &Renderer, set: &InstallPipelines) {
     let full = renderer.full();
+    let level = full
+        .level
+        .as_ref()
+        .expect("a level-gated renderer path requires an active level set");
     assert_eq!(
-        full.sh_compose.bound_pipeline(),
+        level.sh_compose.bound_pipeline(),
         Some(set.sh_compose.pipeline()),
         "SH compose binds the renderer's pipeline"
     );
     assert_eq!(
-        full.direct_sh_compose.promotion_pipeline(),
+        level.direct_sh_compose.promotion_pipeline(),
         Some(set.direct_sh_compose.promotion_pipeline()),
         "direct SH compose binds the renderer's promotion pipeline"
     );
     assert_eq!(
-        full.compute_cull.as_ref().map(|cull| cull.pipeline()),
+        level.compute_cull.as_ref().map(|cull| cull.pipeline()),
         Some(set.compute_cull.pipeline()),
         "the BVH cull binds the renderer's pipeline"
     );
     assert_eq!(
-        full.candidate_cull.as_ref().map(|cull| cull.pipeline()),
+        level.candidate_cull.as_ref().map(|cull| cull.pipeline()),
         Some(set.candidate_cull.pipeline()),
         "the candidate cull binds the renderer's pipeline"
     );
@@ -100,8 +104,8 @@ fn install_pipelines_build_once_per_renderer() {
         "release builds no pipeline: {released:?}"
     );
     assert!(
-        renderer.full().compute_cull.is_none(),
-        "release drops the cull"
+        !renderer.has_level_resources(),
+        "release drops the level set, the cull with it"
     );
     assert!(
         Arc::ptr_eq(&set, &renderer.wait_install_pipelines_for_test()),
@@ -126,7 +130,7 @@ fn a_streamed_install_builds_no_pipeline() {
         renderer.install_level_geometry(&geometry, payloads);
         let created = gpu_creation_counts().since(before);
         assert!(
-            renderer.full().sh_streaming.is_some(),
+            renderer.level().sh_streaming.is_some(),
             "the {install} install streams"
         );
         assert_eq!(

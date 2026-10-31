@@ -553,11 +553,11 @@ impl FluidSurfacePass {
     /// disagree. That draw degrades safely: its vertices carry
     /// `FLUID_REFLECTION_NO_PROBE`, so the gate shuts, and the placeholder
     /// reads c = 0.
-    pub(super) fn wanted_reflection_target(&self) -> Option<(u32, u32)> {
-        let probe_bound = self
-            .installed
-            .as_ref()
-            .is_some_and(InstalledFluidSurfaces::has_probe_bound_face);
+    pub(super) fn wanted_reflection_target(
+        &self,
+        installed: Option<&InstalledFluidSurfaces>,
+    ) -> Option<(u32, u32)> {
+        let probe_bound = installed.is_some_and(InstalledFluidSurfaces::has_probe_bound_face);
         if !probe_bound || !self.reflection.quality.runs_screen_space() {
             return None;
         }
@@ -599,6 +599,7 @@ impl FluidSurfacePass {
     /// init, at every tier.
     pub fn set_reflection_quality(
         &mut self,
+        installed: Option<&InstalledFluidSurfaces>,
         device: &wgpu::Device,
         quality: FluidReflectionQuality,
     ) {
@@ -606,7 +607,7 @@ impl FluidSurfacePass {
             return;
         }
         self.reflection.apply_preset(quality);
-        self.set_reflection_target(device, self.wanted_reflection_target());
+        self.set_reflection_target(device, self.wanted_reflection_target(installed));
     }
 
     /// Override the active preset's target fraction per axis, until the next
@@ -615,12 +616,17 @@ impl FluidSurfacePass {
     /// the screen-space layer has a fraction to override; elsewhere, and for
     /// a fraction outside (0, 1], it changes nothing and returns false.
     /// Creates no pipeline and no shader module.
-    pub fn set_reflection_target_fraction(&mut self, device: &wgpu::Device, fraction: f32) -> bool {
+    pub fn set_reflection_target_fraction(
+        &mut self,
+        installed: Option<&InstalledFluidSurfaces>,
+        device: &wgpu::Device,
+        fraction: f32,
+    ) -> bool {
         if self.reflection.fraction.is_none() || !(fraction > 0.0 && fraction <= 1.0) {
             return false;
         }
         self.reflection.fraction = Some(fraction);
-        self.set_reflection_target(device, self.wanted_reflection_target());
+        self.set_reflection_target(device, self.wanted_reflection_target(installed));
         true
     }
 
@@ -640,6 +646,18 @@ impl FluidSurfacePass {
             .set_ssr_scale(self.reflection.target_scale());
     }
 
+    /// Drop the live reflection target, rebinding group 5 to the prebuilt
+    /// placeholder group first. Builds nothing: a level release frees its
+    /// target this way.
+    pub(in crate::render) fn release_reflection_target(&mut self) {
+        let released = self.reflection.target.take();
+        self.scene_inputs
+            .bind_placeholder(&self.reflection.placeholder_view);
+        self.scene_inputs
+            .set_ssr_scale(self.reflection.target_scale());
+        drop(released);
+    }
+
     /// Follow a recreated scene depth and colour, in order: a live target is
     /// recreated at the new extent, then the reflection inputs and group 5
     /// rebuild over the new resources, so none references a superseded one.
@@ -653,8 +671,12 @@ impl FluidSurfacePass {
         scene_color: &wgpu::TextureView,
     ) {
         let superseded = self.reflection.resize(device, scene_depth, scene_color);
-        self.scene_inputs
-            .rebuild(device, scene_depth, self.reflection.bound_view());
+        self.scene_inputs.rebuild_scene(
+            device,
+            scene_depth,
+            self.reflection.target.as_ref().map(|target| &target.view),
+            &self.reflection.placeholder_view,
+        );
         self.scene_inputs
             .set_ssr_scale(self.reflection.target_scale());
         drop(superseded);
@@ -706,12 +728,13 @@ impl FluidSurfacePass {
     /// reflecting runs lie on the plane the planar layer covers.
     pub fn has_reflecting_draws(
         &self,
+        installed: Option<&InstalledFluidSurfaces>,
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
     ) -> bool {
         quality.runs_screen_space()
             && self.reflection.target.is_some()
-            && self.installed.as_ref().is_some_and(|installed| {
+            && installed.is_some_and(|installed| {
                 let route = self.planar_route(quality);
                 installed.reflection_probe_bind_group.is_some()
                     && installed
@@ -731,11 +754,12 @@ impl FluidSurfacePass {
     pub fn record_reflection_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        installed: Option<&InstalledFluidSurfaces>,
         materials: &[GpuTexture],
         light_term_mask: LightTermMask,
         quality: FluidReflectionQuality,
     ) {
-        let Some(installed) = self.installed.as_ref() else {
+        let Some(installed) = installed else {
             return;
         };
         let Some(probe_bind_group) = installed.reflection_probe_bind_group.as_ref() else {
@@ -854,6 +878,9 @@ impl Renderer {
         quality: FluidReflectionQuality,
     ) {
         let full = self.full();
+        let Some(level) = full.level.as_ref() else {
+            return;
+        };
         let fluid = &full.fluid_surface;
         let Some((target, depth)) = fluid.reflection_attachments() else {
             return;
@@ -890,7 +917,13 @@ impl Renderer {
             ..Default::default()
         });
         pass.set_bind_group(0, &full.uniform_bind_group, &[]);
-        fluid.record_reflection_draws(&mut pass, &full.gpu_textures, light_term_mask, quality);
+        fluid.record_reflection_draws(
+            &mut pass,
+            level.fluid_surfaces.as_ref(),
+            &level.gpu_textures,
+            light_term_mask,
+            quality,
+        );
     }
 }
 

@@ -92,6 +92,10 @@ pub(crate) struct FluidSceneInputs {
     /// scale changes.
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Group 5 over the current scene depth and the reflection target's
+    /// placeholder, rebuilt with the scene targets. Releasing a level's
+    /// target rebinds this one, so a release creates no bind group.
+    placeholder_bind_group: wgpu::BindGroup,
     fog_weight: f32,
     reflection_style: FluidReflectionStyle,
     ssr_scale: [f32; 2],
@@ -160,7 +164,7 @@ impl FluidSceneInputs {
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = create_bind_group(
+        let placeholder_bind_group = create_bind_group(
             device,
             &layout,
             scene_depth,
@@ -170,7 +174,8 @@ impl FluidSceneInputs {
         Self {
             layout,
             uniform_buffer,
-            bind_group,
+            bind_group: placeholder_bind_group.clone(),
+            placeholder_bind_group,
             fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
             reflection_style: FluidReflectionStyle::default(),
             ssr_scale: [0.0; 2],
@@ -214,6 +219,48 @@ impl FluidSceneInputs {
             self.reflection_target = reflection_target.clone();
             self.builds += 1;
         }
+    }
+
+    /// Rebuild over a recreated scene depth: the placeholder group always,
+    /// and the live group over `reflection_target` when one exists, else
+    /// the live group is the placeholder's.
+    pub fn rebuild_scene(
+        &mut self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: Option<&wgpu::TextureView>,
+        placeholder: &wgpu::TextureView,
+    ) {
+        self.placeholder_bind_group = create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            placeholder,
+        );
+        #[cfg(test)]
+        {
+            self.builds += 1;
+        }
+        match reflection_target {
+            Some(target) => self.rebuild(device, scene_depth, target),
+            None => {
+                self.scene_depth = scene_depth.clone();
+                self.bind_placeholder(placeholder);
+            }
+        }
+    }
+
+    /// Bind the prebuilt placeholder group: a released reflection target's
+    /// group drops with no bind group built.
+    pub fn bind_placeholder(&mut self, placeholder: &wgpu::TextureView) {
+        self.bind_group = self.placeholder_bind_group.clone();
+        #[cfg(test)]
+        {
+            self.reflection_target = placeholder.clone();
+        }
+        #[cfg(not(test))]
+        let _ = placeholder;
     }
 
     /// The scene depth group 5 is bound over.

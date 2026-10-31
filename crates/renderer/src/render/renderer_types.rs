@@ -17,7 +17,6 @@ pub use diagnostics::{
     PortalOverlayState, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
 };
 pub(super) use full_renderer::FullRenderer;
-#[cfg(test)]
 pub(super) use full_renderer::sh_sampler_lattice;
 pub use level_geometry::{LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage};
 pub(super) use promoted_lights::animated_baked_promotion_weight;
@@ -286,9 +285,9 @@ impl Renderer {
     /// level overlays its current pool snapshot so capture observes growth and
     /// retirement after warmup rather than stale install-time capacity.
     pub fn sh_residency_report(&self) -> Option<ShResidencyReport> {
-        let full = self.full.as_ref()?;
-        let report = full.sh_residency_report.as_ref()?.clone();
-        match full.sh_streaming.as_ref() {
+        let level = self.full.as_ref()?.level.as_ref()?;
+        let report = level.sh_residency_report.clone();
+        match level.sh_streaming.as_ref() {
             Some(streaming) => {
                 Some(report.with_streaming_summary(streaming.streaming_allocation_summary()))
             }
@@ -298,7 +297,14 @@ impl Renderer {
 
     /// Resident bytes of every lightmap-family texture currently bound.
     pub fn lightmap_residency_report(&self) -> Option<&LightmapResidencyReport> {
-        Some(&self.full.as_ref()?.lightmap_residency_report)
+        Some(
+            &self
+                .full
+                .as_ref()?
+                .level
+                .as_ref()?
+                .lightmap_residency_report,
+        )
     }
 
     /// Borrow the full-phase state. Panics if called before `finish_full_init`

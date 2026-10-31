@@ -151,8 +151,8 @@ impl PreparedModels {
     }
 
     /// The over-predictions: handles prep prepared that the real sweep does
-    /// not hold, in predicted order. Each one cost a parse and nothing else.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// not hold, in predicted order. Each one cost a parse, and its set entry
+    /// is released at commit ([`super::ModelOverPredictions`]).
     pub(crate) fn over_predictions(&self, real_sweep: &[String]) -> Vec<&str> {
         let real: std::collections::HashSet<&str> = real_sweep.iter().map(String::as_str).collect();
         self.handles()

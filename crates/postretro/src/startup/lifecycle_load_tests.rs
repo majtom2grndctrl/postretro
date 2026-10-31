@@ -296,16 +296,24 @@ fn register_loading_tree(app: &mut App) {
         );
 }
 
-// Off the main thread 1: with the upload stage held at its first creation
-// (the upload thread's first job, the install-pipeline build, parked, so the
-// load's parts queue behind it), Loading frames keep painting and the
-// transport polls on each; across those frames the main thread creates no
-// GPU object, and neither the parse nor a model parse runs on it. Released,
-// the load reaches bundle-ready and commits.
-#[test]
-fn staged_load_upload_hold_keeps_loading_frames_painting() {
-    let test = "staged_load_upload_hold_keeps_loading_frames_painting";
-    let case = CommitCase::textured_with_model();
+/// Each prep kind's task, recorded with the thread that ran it.
+type TaskThreads = Arc<std::sync::Mutex<Vec<(PrepKind, std::thread::ThreadId)>>>;
+
+/// Off the main thread 1, on `case`: the upload stage held at its first
+/// creation (the upload thread's first job, the install-pipeline build,
+/// parked, so the load's parts queue behind it) while 12 Loading frames run
+/// and paint on this, the main thread. Prep runs with audio on, its sounds
+/// decoded from `sound_root`. Every prep task records the thread it ran on,
+/// the parse and each model parse too; none ran here, and each of `expect`
+/// ran. Across the held frames the main thread creates no GPU object and the
+/// transport polls on each. Released, the load reaches bundle-ready and
+/// commits.
+fn assert_upload_hold_keeps_main_thread_clear(
+    test: &str,
+    case: &CommitCase,
+    sound_root: &Path,
+    expect: &[PrepKind],
+) {
     let Some((renderer, release)) = held_renderer(test) else {
         return;
     };
@@ -313,8 +321,16 @@ fn staged_load_upload_hold_keeps_loading_frames_painting() {
     let main_thread = std::thread::current().id();
     let parse_thread = Arc::new(std::sync::Mutex::new(None));
     let model_thread = Arc::new(std::sync::Mutex::new(None));
-    let (parse_seen, model_seen) = (Arc::clone(&parse_thread), Arc::clone(&model_thread));
-    use_case(&mut app, &case, move |inputs| {
+    let task_threads: TaskThreads = Arc::default();
+    let (parse_seen, model_seen, tasks_seen) = (
+        Arc::clone(&parse_thread),
+        Arc::clone(&model_thread),
+        Arc::clone(&task_threads),
+    );
+    let sound_root = sound_root.to_path_buf();
+    use_case(&mut app, case, move |inputs| {
+        inputs.audio_enabled = true;
+        inputs.content_root = sound_root.clone();
         let parse_seen = Arc::clone(&parse_seen);
         inputs.hooks.after_hand_out = Some(Arc::new(move |_, _| {
             *parse_seen.lock().unwrap() = Some(std::thread::current().id());
@@ -322,6 +338,13 @@ fn staged_load_upload_hold_keeps_loading_frames_painting() {
         let model_seen = Arc::clone(&model_seen);
         inputs.hooks.before_model_parse = Some(Arc::new(move |_| {
             *model_seen.lock().unwrap() = Some(std::thread::current().id());
+        }));
+        let tasks_seen = Arc::clone(&tasks_seen);
+        inputs.hooks.on_task_run = Some(Arc::new(move |kind| {
+            tasks_seen
+                .lock()
+                .unwrap()
+                .push((kind, std::thread::current().id()));
         }));
     });
     let exit = TestExit::default();
@@ -363,14 +386,34 @@ fn staged_load_upload_hold_keeps_loading_frames_painting() {
     );
     assert!(app.level.is_none(), "nothing committed while held");
     let parse_ran_on = parse_thread.lock().unwrap().expect("the parse ran");
-    let model_ran_on = model_thread.lock().unwrap().expect("the model parse ran");
     assert_ne!(
         parse_ran_on, main_thread,
         "the parse ran off the main thread"
     );
-    assert_ne!(
-        model_ran_on, main_thread,
-        "the model parse ran off the main thread"
+    if !case.models.is_empty() {
+        let model_ran_on = model_thread.lock().unwrap().expect("the model parse ran");
+        assert_ne!(
+            model_ran_on, main_thread,
+            "the model parse ran off the main thread"
+        );
+    }
+    let ran = task_threads.lock().unwrap().clone();
+    for kind in expect {
+        assert!(
+            ran.iter().any(|(ran_kind, _)| ran_kind == kind),
+            "{}: {kind:?} ran as a prep task: {ran:?}",
+            case.label
+        );
+    }
+    let on_main: Vec<PrepKind> = ran
+        .iter()
+        .filter(|(_, thread)| *thread == main_thread)
+        .map(|(kind, _)| *kind)
+        .collect();
+    assert!(
+        on_main.is_empty(),
+        "{}: prep work ran on the main thread: {on_main:?}",
+        case.label
     );
 
     release.release();
@@ -378,6 +421,47 @@ fn staged_load_upload_hold_keeps_loading_frames_painting() {
     assert!(!exit.0.get());
     assert_eq!(installed_path(&app).as_deref(), Some(case.map.as_path()));
     retire_all(&mut app);
+}
+
+// Off the main thread 1, on the textured level with a model: with the upload
+// stage held at its first creation, Loading frames keep painting and the
+// transport polls on each; across them the main thread creates no GPU object,
+// and the parse, each `.prm` read and parse (texture prep), the glTF parse
+// and the sound decode each ran on a pool thread, never on the main thread.
+// Released, the load reaches bundle-ready and commits.
+#[test]
+fn staged_load_upload_hold_keeps_loading_frames_painting() {
+    let case = CommitCase::textured_with_model();
+    assert_upload_hold_keeps_main_thread_clear(
+        "staged_load_upload_hold_keeps_loading_frames_painting",
+        &case,
+        &dev_content_root(),
+        &[
+            PrepKind::Textures,
+            PrepKind::Sounds,
+            PrepKind::ModelPrediction,
+            PrepKind::ModelParse,
+        ],
+    );
+}
+
+// Off the main thread 1, the SH half, on the streamed-SH level: the SH
+// residency plan and the topology derivation (the streaming level data: the
+// id-49 hints and the planner topology) and the sound decode each ran on a
+// pool thread while the held Loading frames painted on the main thread.
+#[test]
+fn staged_load_upload_hold_derives_sh_off_the_main_thread() {
+    let case = CommitCase::streamed_sh();
+    assert_upload_hold_keeps_main_thread_clear(
+        "staged_load_upload_hold_derives_sh_off_the_main_thread",
+        &case,
+        &dev_content_root(),
+        &[
+            PrepKind::ShResidency,
+            PrepKind::StreamingData,
+            PrepKind::Sounds,
+        ],
+    );
 }
 
 // Off the main thread 3, the frame half: a Loading step whose bundle is not
@@ -415,6 +499,326 @@ fn loading_step_paints_when_bundle_not_ready() {
     }
     hold.release();
     run_to_commit(&mut app, &exit, "the released load");
+    retire_all(&mut app);
+}
+
+/// One Settling redraw's offscreen stand-in, in `run_settling_frame`'s
+/// order: a release decided on the previous frame reveals now (`None`);
+/// otherwise the held level's streaming step from the presented pose (the
+/// real `prepare_held_level_frame`), the settle check against the session's
+/// streaming state and its decision (`advance_settle`), the loading screen's
+/// paint, and the held frame drawn with that step's drain batch, whose
+/// outcome the session applies. The frame's report. (The windowed redraw
+/// also polls the transport and staged reloads, which no test here feeds; it
+/// presents through a surface, which an offscreen renderer lacks, so the
+/// held frame draws through `capture_held_level_frame`.)
+fn settling_frame(app: &mut App) -> Option<SettleReport> {
+    app.poll_stage_retirements();
+    if app.reveal_if_released() {
+        return None;
+    }
+    assert_eq!(app.boot_state, BootState::Settling, "a Settling frame");
+    let frame_start = Instant::now();
+    app.commit_render_extents();
+    let view = app.presented_pose().held_view(app.camera.aspect());
+    let held = app
+        .prepare_held_level_frame(view)
+        .expect("the held level streams")
+        .expect("a held level frame: a level, a session and a full renderer");
+    let report = app.session.as_ref().unwrap().settle_report();
+    app.advance_settle(report, frame_start);
+    paint_cpu(app);
+    capture_held_level_frame(app, held);
+    Some(report)
+}
+
+/// Draw `held` through the offscreen capture where a Settling frame presents
+/// it on the surface: the same sample regions (main and mirror), the same
+/// drain batch, its outcome applied and its compose marked as the windowed
+/// frame does. An offscreen renderer has no surface, and a capture has no
+/// compose-only scene, so the frame also records the world draw a held
+/// frame skips; nothing it draws reaches the session's settle state.
+fn capture_held_level_frame(app: &mut App, held: crate::app::world_less_frame::HeldLevelFrame) {
+    let (view, visible_render, batch) = held.into_parts();
+    let App {
+        session,
+        renderer,
+        planar_render,
+        script_time,
+        ..
+    } = app;
+    let (Some(session), Some(renderer)) = (session.as_mut(), renderer.as_mut()) else {
+        panic!("a held frame needs a session and a renderer");
+    };
+    renderer.set_planar_reflection_view(planar_render.camera(), planar_render.visible());
+    renderer.set_planar_mirror_light_reach(planar_render.mirror_light_cell_aabbs());
+    let result = renderer
+        .capture_frame_indirect(
+            visible_render.camera_cull(),
+            &visible_render.light_reachable_cell_mask,
+            &visible_render.reachable_cell_aabbs,
+            &visible_render.fog_reachable,
+            crate::render::ShSampleRegionSets {
+                visible_cells: planar_render.drawn_cells(&visible_render.visible_cells),
+                fog_cells: planar_render.sample_fog_cells(&visible_render.fog_reachable),
+                movers: &[],
+            },
+            Some(visible_render.stats.camera_cell),
+            view.camera.view_projection,
+            view.camera.eye_position,
+            &[],
+            &[],
+            *script_time as f32,
+            crate::render::SPLASH_CLEAR_COLOR,
+            true,
+            batch,
+        )
+        .expect("the held frame drains");
+    let submitted = result.compose_submitted;
+    session
+        .apply_sh_streaming_outcome(result.outcome, renderer)
+        .expect("the outcome applies");
+    result.frame.expect("the held frame draws");
+    session.mark_sh_streaming_compose_submitted(submitted);
+}
+
+/// Settling frames until one reveals, failing past [`APP_LOAD_TIMEOUT`]:
+/// each frame's report, in order.
+fn settle_to_reveal(app: &mut App, what: &str) -> Vec<SettleReport> {
+    let deadline = Instant::now() + APP_LOAD_TIMEOUT;
+    let mut reports = Vec::new();
+    while let Some(report) = settling_frame(app) {
+        reports.push(report);
+        assert!(
+            Instant::now() < deadline,
+            "{what}: never revealed; last report {report:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(app.boot_state, BootState::Running, "{what}: revealed");
+    reports
+}
+
+/// Off the main thread 5, the reveal half: `case` loads through Loading
+/// frames to its commit, then real Settling frames reach the release and the
+/// reveal, settled (the session's settle check answered, never the
+/// timeout). `check` reads the committed level first.
+fn assert_reaches_reveal(test: &str, case: &CommitCase, check: impl Fn(&App)) {
+    let Some(mut app) = gpu_app(test, case) else {
+        return;
+    };
+    register_loading_tree(&mut app);
+    use_case(&mut app, case, |_| {});
+    let exit = TestExit::default();
+    let capture = LogCapture::start();
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, case.label);
+    check(&app);
+    let counter = app.loading_screen_progress().expect("the load's counter");
+    let entered = Instant::now();
+    let reports = settle_to_reveal(&mut app, case.label);
+    let last = *reports.last().expect("at least one Settling frame decided");
+    assert!(
+        last.settled(),
+        "{}: released settled, not timed out: {last:?}",
+        case.label
+    );
+    assert!(
+        entered.elapsed() < super::super::settling::SETTLE_TIMEOUT,
+        "{}: before the timeout",
+        case.label
+    );
+    capture.assert_not_logged(log::Level::Warn, "settle timeout");
+    assert_eq!(counter.fraction(), 1.0, "{}: 1.0 at reveal", case.label);
+    assert!(
+        app.loading_screen_progress().is_none(),
+        "{}: the loading screen ended",
+        case.label
+    );
+    assert!(!exit.0.get(), "{}: no exit", case.label);
+    retire_all(&mut app);
+}
+
+// Off the main thread 5: a map with no textures reaches reveal. The
+// streamed-SH level names no texture, so its texture prep is an empty kind;
+// its one SH cluster streams in through real Settling frames (the session's
+// SH answer moves from asked to settled), and the reveal follows.
+#[test]
+fn no_texture_map_reaches_reveal() {
+    let case = CommitCase::streamed_sh();
+    assert_reaches_reveal("no_texture_map_reaches_reveal", &case, |app| {
+        let level = app.level.as_ref().expect("committed");
+        assert!(level.texture_names.is_empty(), "the level has no texture");
+        assert!(level.sh_stream_manifest().is_some(), "its SH streams");
+        let sh = app.session.as_ref().unwrap().settle_report().sh;
+        assert_ne!(sh, ResourceSettle::NotStreamed, "SH is a settle resource");
+    });
+}
+
+// Off the main thread 5: a map with no SH manifest reaches reveal. The
+// textured level's SH is a resident volume with no stream manifest, so no
+// residency plan or SH session exists (SH answers "not streamed"); its
+// baked texture uploads and its lightmap streams in through real Settling
+// frames until the settle check releases it, and the reveal follows.
+#[test]
+fn no_sh_manifest_map_reaches_reveal() {
+    let case = CommitCase::textured();
+    assert_reaches_reveal("no_sh_manifest_map_reaches_reveal", &case, |app| {
+        let level = app.level.as_ref().expect("committed");
+        assert!(level.sh_stream_manifest().is_none(), "no SH manifest");
+        assert!(!level.texture_names.is_empty(), "a baked texture");
+        assert_eq!(
+            app.session.as_ref().unwrap().settle_report().sh,
+            ResourceSettle::NotStreamed,
+            "no SH session"
+        );
+    });
+}
+
+/// The first level frame's windowed entry with its surface acquire forced
+/// to skip: the in-play streaming step, then `render_frame_indirect`, which
+/// takes the skipped-acquire path (its drain admitted, no compose recorded,
+/// the frame's queued writes flushed) and presents nothing.
+fn skipped_level_frame(app: &mut App) {
+    use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
+    app.poll_stage_retirements();
+    assert_eq!(app.boot_state, BootState::Running, "a level frame");
+    app.script_time += f64::from(DT);
+    app.commit_render_extents();
+    let cells = VisibleCells::Culled(vec![0]);
+    let cpu = postretro_stage_timing::StageFrame::default();
+    let now = app.script_time;
+    let (Some(world), Some(session), Some(renderer)) = (
+        app.level.as_ref(),
+        app.session.as_mut(),
+        app.renderer.as_mut(),
+    ) else {
+        panic!("a level frame has a level, a session and a renderer");
+    };
+    let batch = session
+        .run_level_streaming_step(
+            world.sh_stream_manifest(),
+            Some(world),
+            renderer,
+            crate::session::level_streaming::StreamingFrame {
+                visible_cells: &cells,
+                sh_visible_cells: &cells,
+                camera_cell: Some(0),
+                path: VisibilityPath::PrlPortal { walk_reach: 1 },
+                monotonic_seconds: now,
+                settling: false,
+                cpu: &cpu,
+            },
+        )
+        .expect("the in-play streaming step runs");
+    renderer.skip_next_surface_acquire();
+    let result = renderer
+        .render_frame_indirect(
+            &mut session.font_system,
+            CameraCullVisibility {
+                cells: &cells,
+                path: VisibilityPath::PrlPortal { walk_reach: 1 },
+            },
+            &[],
+            &[],
+            &[],
+            crate::render::ShSampleRegionSets {
+                visible_cells: &cells,
+                fog_cells: &[],
+                movers: &[],
+            },
+            Some(0),
+            glam::Mat4::IDENTITY,
+            &[],
+            now,
+            crate::render::SPLASH_CLEAR_COLOR,
+            crate::render::FrameScene::World,
+            batch,
+        )
+        .expect("the frame drains");
+    session
+        .apply_sh_streaming_outcome(result.outcome, renderer)
+        .expect("the outcome applies");
+    session.mark_sh_streaming_compose_submitted(result.compose_submitted);
+    assert!(
+        result.frame.expect("the frame runs").is_none(),
+        "the acquire skipped: nothing to present"
+    );
+}
+
+// Off the main thread 4 (P13): the upload's last write is submitted before
+// the first frame that draws it presents, also when that frame's surface
+// acquire is skipped. A full App load of the textured level with a model
+// (a baked texture and a model, both written on the upload thread) runs
+// through Loading frames to its commit and through real Settling frames to
+// the reveal; the first two level frames run the windowed frame entry with
+// the surface acquire forced to skip (`skip_next_surface_acquire`: the
+// offscreen renderer has no surface, so this is the seam, and the frame
+// takes the occluded/timed-out path), and the third presents through the
+// offscreen capture, the present's stand-in. The upload thread's write
+// ledger reads every staged byte submitted, by upload-thread submits, at
+// the commit, across both skipped frames and just before the present; no
+// upload write lands after it.
+#[test]
+fn upload_last_write_submitted_before_first_level_present() {
+    let test = "upload_last_write_submitted_before_first_level_present";
+    let case = CommitCase::textured_with_model();
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    use_case(&mut app, &case, |_| {});
+    let exit = TestExit::default();
+    let writes = |app: &App| {
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .upload_writes()
+            .expect("a full renderer's upload thread")
+    };
+    let before = writes(&app);
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, "the load");
+    let at_commit = writes(&app);
+    assert!(
+        at_commit.staged_bytes > before.staged_bytes,
+        "the load's set build wrote on the upload thread: {before:?} -> {at_commit:?}"
+    );
+    assert!(
+        at_commit.submits > before.submits,
+        "and submitted from it: {at_commit:?}"
+    );
+    assert_eq!(
+        at_commit.unsubmitted_bytes(),
+        0,
+        "every upload write was submitted before the commit: {at_commit:?}"
+    );
+    settle_to_reveal(&mut app, "the load");
+    assert_eq!(
+        writes(&app),
+        at_commit,
+        "Settling wrote nothing on the upload thread"
+    );
+    for skipped in 0..2 {
+        skipped_level_frame(&mut app);
+        assert_eq!(
+            writes(&app),
+            at_commit,
+            "skipped level frame {skipped}: every upload write stays submitted"
+        );
+    }
+    let before_present = writes(&app);
+    assert_eq!(
+        before_present.unsubmitted_bytes(),
+        0,
+        "the last upload write was submitted before the first present: {before_present:?}"
+    );
+    assert_eq!(before_present.submitted_bytes, at_commit.submitted_bytes);
+    beside::running_frame(&mut app, &exit).expect("the first presenting level frame");
+    assert_eq!(
+        writes(&app),
+        before_present,
+        "no upload write after the present"
+    );
     retire_all(&mut app);
 }
 
@@ -1414,36 +1818,169 @@ fn injected_stage_failures_end_load_once() {
     );
 }
 
-// Failure 2, P18: late parse validation rejecting after hand-outs went out
-// (the cross-section check): one load failure, every stage joins, nothing
-// commits, and no cache entry from the load remains.
+// Failure 2, P18: late parse validation rejecting after hand-outs went out,
+// on a cross-section check (a legacy BSP-node section beside the cells) and
+// on a cluster directory naming a cell past the cell table. Each through an
+// App load at runtime: hand-outs 1–4 went out (a model parse and its upload
+// ran on them), then the parse's verdict is the one load failure; every
+// stage joins, no stage panicked on the unvalidated hand-outs, nothing
+// commits, no registry mutation, no parity, the game is in Frontend, and no
+// cache entry or set from the load remains.
 #[test]
 fn late_parse_validation_fails_load_after_hand_outs() {
     let test = "late_parse_validation_fails_load_after_hand_outs";
-    let level = crate::level_load::test_support::write_late_rejected_level();
+    let cross_section = crate::level_load::test_support::write_late_rejected_level();
+    let cluster_directory = crate::level_load::test_support::write_late_cluster_directory_level();
     let case = CommitCase::textured_with_model();
     let Some(mut app) = gpu_app(test, &case) else {
         return;
     };
-    // The model placement rides hand-out 4, so a model parse and its upload
-    // run before the verdict.
-    use_case(&mut app, &case, |inputs| inputs.hooks.edit_world = None);
     let exit = TestExit::default();
     let capture = LogCapture::start();
-    request_path(&mut app, level.path());
-    run_until(&mut app, &exit, "the late rejection", load_ended);
-    let errors = loader_errors(&capture);
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("level parse failed"), "{errors:?}");
-    assert_eq!(app.boot_state, BootState::Frontend);
-    assert!(app.level.is_none());
+    for (label, map, names) in [
+        ("cross-section", cross_section.path(), "BspNodes"),
+        (
+            "cluster directory past the cell table",
+            cluster_directory.path(),
+            "runtime_cell_count",
+        ),
+    ] {
+        capture.clear();
+        let stages: Arc<std::sync::Mutex<Vec<HandOutStage>>> = Arc::default();
+        let seen = Arc::clone(&stages);
+        // The model placement rides hand-out 4, so a model parse and its
+        // upload run before the verdict.
+        use_case(&mut app, &case, move |inputs| {
+            inputs.hooks.edit_world = None;
+            let seen = Arc::clone(&seen);
+            inputs.hooks.after_hand_out = Some(Arc::new(move |stage, _| {
+                seen.lock().unwrap().push(stage);
+            }));
+        });
+        let entities = registry_fingerprint(&app);
+        request_path(&mut app, map);
+        run_until(&mut app, &exit, label, load_ended);
+        let errors = loader_errors(&capture);
+        assert_eq!(errors.len(), 1, "{label}: one report: {errors:?}");
+        assert!(
+            errors[0].contains("level parse failed") && errors[0].contains(names),
+            "{label}: the parse's verdict, naming {names}: {errors:?}"
+        );
+        assert_eq!(
+            *stages.lock().unwrap(),
+            [
+                HandOutStage::ShManifest,
+                HandOutStage::Geometry,
+                HandOutStage::Spatial,
+                HandOutStage::Entities
+            ],
+            "{label}: hand-outs 1–4 went out before the verdict"
+        );
+        assert_eq!(app.boot_state, BootState::Frontend, "{label}");
+        assert!(app.level.is_none(), "{label}: nothing committed");
+        assert!(app.published_level_identity.is_none(), "{label}: no parity");
+        assert_eq!(
+            registry_fingerprint(&app),
+            entities,
+            "{label}: no registry mutation"
+        );
+        assert!(!exit.0.get() && app.exit_result.is_ok(), "{label}: no exit");
+        retire_all(&mut app);
+        capture.assert_not_logged(log::Level::Error, "panicked");
+        let renderer = app.renderer.as_ref().unwrap();
+        assert!(renderer.resident_level_sets().is_empty(), "{label}");
+        assert!(
+            renderer.model_cache_keys().is_empty(),
+            "{label}: no cache entry remains"
+        );
+    }
+}
+
+// Failure 4, through an App load: a streamed-SH init error (the residency
+// plan refusing the manifest; no fixture's manifest makes it refuse, so the
+// injected refusal stands in, as at prep) and an id-49 hint section that
+// fails to decode (a hint naming a cluster the directory lacks, a real level
+// edit) each fail the load before commit, through the one failure route the
+// snapshot and controller rejections take: one `LevelLoadFailure` report,
+// nothing committed, no registry mutation, no parity, Frontend at runtime,
+// no panic and no exit.
+#[test]
+fn streamed_sh_level_data_failures_end_load_before_commit() {
+    use postretro_level_format::cluster_directory::ClusterHintRecord;
+    fn hint_names_missing_cluster(world: &mut postretro_level_loader::LevelWorld) {
+        let directory = world.cluster_directory.as_mut().expect("streamed id 49");
+        directory.cluster_hints.push(ClusterHintRecord {
+            cluster_id: 99,
+            flags: 0,
+            priority: 0,
+        });
+    }
+    let test = "streamed_sh_level_data_failures_end_load_before_commit";
+    let case = CommitCase::streamed_sh();
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    let exit = TestExit::default();
+    let capture = LogCapture::start();
+    type Edit = Box<dyn Fn(&mut LevelPrepInputs)>;
+    let rows: [(&str, &str, Edit); 2] = [
+        (
+            "streamed-SH init",
+            "streamed-SH residency plan",
+            Box::new(|inputs| {
+                inputs.hooks.fail = vec![(PrepKind::ShResidency, "injected plan refusal")];
+            }),
+        ),
+        (
+            "id-49 hint decode",
+            "cluster hint names an out-of-range cluster",
+            Box::new(|inputs| inputs.hooks.edit_world = Some(hint_names_missing_cluster)),
+        ),
+    ];
+    for (label, names, edit) in rows {
+        capture.clear();
+        use_case(&mut app, &case, move |inputs| edit(inputs));
+        let entities = registry_fingerprint(&app);
+        request_path(&mut app, &case.map);
+        run_until(&mut app, &exit, label, load_ended);
+        let errors = loader_errors(&capture);
+        assert_eq!(errors.len(), 1, "{label}: one report: {errors:?}");
+        assert!(
+            errors[0].contains(names),
+            "{label}: names {names}: {errors:?}"
+        );
+        assert!(
+            !errors[0].contains("panicked"),
+            "{label}: a check failed by panicking: {errors:?}"
+        );
+        assert_eq!(app.boot_state, BootState::Frontend, "{label}");
+        assert!(app.level.is_none(), "{label}: nothing committed");
+        assert!(app.published_level_identity.is_none(), "{label}: no parity");
+        assert!(
+            app.session.as_ref().unwrap().sh_streaming.is_none(),
+            "{label}: no streaming session"
+        );
+        assert_eq!(
+            registry_fingerprint(&app),
+            entities,
+            "{label}: no registry mutation"
+        );
+        assert!(!exit.0.get() && app.exit_result.is_ok(), "{label}: no exit");
+        retire_all(&mut app);
+        assert!(
+            app.renderer
+                .as_ref()
+                .unwrap()
+                .resident_level_sets()
+                .is_empty(),
+            "{label}: the load's set was released"
+        );
+    }
+    // The same level unedited loads and commits.
+    use_case(&mut app, &case, |_| {});
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, "the unedited level");
     retire_all(&mut app);
-    let renderer = app.renderer.as_ref().unwrap();
-    assert!(renderer.resident_level_sets().is_empty());
-    assert!(
-        renderer.model_cache_keys().is_empty(),
-        "no cache entry remains"
-    );
 }
 
 // Failure 3, P10: two stages failing together, and the parse failing while
@@ -1797,6 +2334,185 @@ fn load_progress_spans_every_phase() {
         app.unload_level();
         retire_all(&mut app);
     }
+}
+
+/// A mod root whose start script declares one entity type, `classname`,
+/// whose mesh is `model`: the manifest a staged hot reload builds.
+fn reload_mod_root(classname: &str, model: &str) -> tempfile::TempDir {
+    let mod_root = tempfile::tempdir().expect("a temporary mod root");
+    std::fs::write(
+        mod_root.path().join("start-script.js"),
+        format!(
+            "globalThis.__postretroModManifest = {{ name: 'Reload', id: 'reload', version: '1', \
+             entities: [{{ canonicalName: '{classname}', components: {{ mesh: {{ model: '{model}' }} }} }}] }};"
+        ),
+    )
+    .expect("the start script is written");
+    mod_root
+}
+
+/// The real staged-manifest hot reload of `mod_root`: queue the build on the
+/// runtime's staged lane, then run `frame` and the redraw's staged-manifest
+/// poll (`poll_staged_manifest_results`, the commit the file watcher's
+/// reload reaches) until the build commits, failing past
+/// [`APP_LOAD_TIMEOUT`].
+fn commit_staged_reload(app: &mut App, mod_root: &Path, mut frame: impl FnMut(&mut App)) {
+    let generation = app
+        .session
+        .as_mut()
+        .unwrap()
+        .scripting
+        .script_runtime
+        .enqueue_staged_manifest_build(mod_root)
+        .expect("the staged build is queued")
+        .expect("debug builds stage manifest reloads");
+    let deadline = Instant::now() + APP_LOAD_TIMEOUT;
+    loop {
+        frame(app);
+        app.poll_staged_manifest_results();
+        let committed = app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_runtime
+            .committed_staged_manifest_generation();
+        if committed == Some(generation) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the staged reload never committed"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// `handle`'s cache key under `content_root`, read from its files now, at
+/// `params`.
+fn model_key_now(
+    content_root: &Path,
+    prm_root: &Path,
+    handle: &str,
+    params: crate::level_load::ModelInstallParams,
+) -> crate::render::ModelContentKey {
+    let sources = postretro_model::gltf_loader::read_model_sources(&content_root.join(handle))
+        .expect("the model's files read");
+    let sidecars =
+        postretro_render_cpu::texture_prep::ModelSidecars::read(sources.material_keys(), prm_root);
+    crate::level_load::model_content_key(&sources, &sidecars, params)
+}
+
+// Models 2 (P9), through the real staged reload: a hot reload committed on a
+// Running frame that changes a descriptor's mesh block (deferred for the
+// running level, which keeps its model), then a load in the loading-screen
+// order: the load predicts the reloaded model, so its commit misses nothing,
+// and the placement spawns with it.
+#[test]
+fn hot_reload_then_load_predicts_the_reloaded_model() {
+    let test = "hot_reload_then_load_predicts_the_reloaded_model";
+    const CLASSNAME: &str = "p9_reload_crate";
+    const OLD: &str = super::lifecycle_commit_tests::MODEL;
+    const NEW: &str = "models/ar_4/model.gltf";
+    let level = crate::level_load::model_tests::write_level_with_entities(vec![
+        crate::level_load::model_tests::record(CLASSNAME, &[], 0),
+    ]);
+    let case = CommitCase {
+        label: "p9",
+        map: level.path().to_path_buf(),
+        prm_root: crate::startup::worker::derive_prm_root_dev_layout(&dev_content_root()),
+        content_root: dev_content_root(),
+        edit_world: None,
+        edit_hand_out: None,
+        models: &[],
+        frame: false,
+        _keep: Box::new(level),
+    };
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    let mut crate_type = descriptor(CLASSNAME);
+    crate_type.mesh = Some(postretro_entities::MeshDescriptor {
+        model: OLD.to_string(),
+        shadow_only: false,
+        attachments: Default::default(),
+        shadow_bias_scale: 1.0,
+        animations: Default::default(),
+        default_state: None,
+        locomotion: None,
+    });
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![crate_type]);
+    use_case(&mut app, &case, |_| {});
+    let exit = TestExit::default();
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, "the old level");
+    app.advance_settle(
+        SettleReport {
+            sh: ResourceSettle::Settled,
+            lightmap: ResourceSettle::Settled,
+        },
+        Instant::now(),
+    );
+    assert!(app.reveal_if_released());
+    retire_all(&mut app);
+    let old_set = app.renderer.as_ref().unwrap().active_level_set().unwrap();
+    let old_entry = app
+        .renderer
+        .as_ref()
+        .unwrap()
+        .level_set_model_identity(old_set, OLD);
+    assert!(old_entry.is_some(), "the old level draws the old model");
+
+    let mod_root = reload_mod_root(CLASSNAME, NEW);
+    commit_staged_reload(&mut app, mod_root.path(), |_| {});
+    assert_eq!(app.boot_state, BootState::Running);
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_runtime
+            .deferred_mesh_descriptors()
+            .is_some(),
+        "the mesh change is deferred for the running level"
+    );
+    assert_eq!(
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .level_set_model_identity(old_set, OLD),
+        old_entry,
+        "the old level keeps the old model until its unload"
+    );
+
+    let capture = LogCapture::start();
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, "the load after the reload");
+    capture.assert_not_logged(log::Level::Warn, "model prediction missed");
+    let new_set = app.renderer.as_ref().unwrap().active_level_set().unwrap();
+    assert!(
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .level_set_model_identity(new_set, NEW)
+            .is_some(),
+        "the load predicted, built and draws the reloaded model"
+    );
+    let ctx = script_ctx(&app);
+    let registry = ctx.registry.borrow();
+    assert!(
+        registry
+            .iter_with_kind(postretro_entities::ComponentKind::Mesh)
+            .any(|(entity, _)| registry
+                .get_component::<postretro_entities::components::mesh::MeshComponent>(entity)
+                .is_ok_and(|mesh| mesh.model == NEW)),
+        "the placement spawned with the reloaded model"
+    );
+    drop(registry);
+    retire_all(&mut app);
 }
 
 // Models 6, P7, at the App: suspend with a ready, uncommitted bundle drops
@@ -2298,6 +3014,11 @@ fn commit_path_has_no_blocking_wait() {
         ("PendingLevelSet::try_take", level_build, "try_take"),
         ("Renderer::publish_level_set", publish, "publish_level_set"),
         ("Renderer::commit_model_cache", cache, "commit_model_cache"),
+        (
+            "Renderer::release_unused_active_set_models",
+            cache,
+            "release_unused_active_set_models",
+        ),
     ] {
         checked.push((
             name.to_string(),

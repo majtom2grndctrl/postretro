@@ -51,10 +51,12 @@ pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
 #[cfg(test)]
 pub(crate) use model_cache::ModelCacheUse;
-pub(crate) use model_cache::ModelMissFallback;
+pub(crate) use model_cache::{ModelMissFallback, ModelOverPredictions};
 #[cfg(test)]
 pub(crate) use model_key::MODEL_CONTENT_KEY_VERSION;
 pub(crate) use model_key::ModelInstallParams;
+#[cfg(test)]
+pub(crate) use model_key::model_content_key;
 pub(crate) use products::{
     PrepTimings, PreparedGpuLevel, PreparedLevel, PreparedModel, PreparedModels,
     PreparedPresentation,

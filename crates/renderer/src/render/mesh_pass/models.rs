@@ -101,6 +101,23 @@ impl LevelModels {
         self.entries.insert(handle, entry);
     }
 
+    /// Drop the entry at `handle`, and any cache offer no remaining handle
+    /// draws with; whether the set held it.
+    pub(in crate::render) fn remove(&mut self, handle: &ModelHandle) -> bool {
+        let Some(removed) = self.entries.remove(handle) else {
+            return false;
+        };
+        let still_drawn = self
+            .entries
+            .values()
+            .any(|entry| Arc::ptr_eq(entry, &removed));
+        if !still_drawn {
+            self.offers
+                .retain(|(_, cached)| !Arc::ptr_eq(&cached.entry, &removed));
+        }
+        true
+    }
+
     /// Whether any model has been uploaded. The renderer skips the pass entirely
     /// when the cache is empty.
     pub(in crate::render) fn has_model(&self) -> bool {

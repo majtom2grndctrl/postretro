@@ -138,7 +138,7 @@ impl Renderer {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, false),
             load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-seams"))]
             injected_acquire_failure: false,
             surface: Some(surface),
             extent_state: postretro_render_cpu::render_extent::ExtentState::new(
@@ -272,7 +272,7 @@ impl Renderer {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, true),
             load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-seams"))]
             injected_acquire_failure: false,
             surface: None,
             extent_state,

@@ -243,6 +243,15 @@ pub struct ModelCacheCommit {
     pub retained: usize,
 }
 
+/// What one [`Renderer::release_unused_active_set_models`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModelSetRelease {
+    /// Handles the active set held and dropped.
+    pub released: usize,
+    /// Cache entries freed because nothing but the cache held them after.
+    pub freed: usize,
+}
+
 impl Renderer {
     /// A handle pool tasks look the model cache up through, `None` before
     /// full init. Capture it at dispatch, beside the set build.
@@ -330,6 +339,26 @@ impl Renderer {
             Arc::clone(&cached.entry),
         );
         true
+    }
+
+    /// The commit's over-prediction release, after its real sweep: drop each
+    /// of `handles` from the active set's models (a model the load predicted
+    /// and built that the sweep does not draw), then free every cache entry
+    /// nothing references any more, as the commit's cache step does. An
+    /// entry another handle, another resident set or an uncommitted build
+    /// still holds stays. Creates nothing; `None` with no active set.
+    pub fn release_unused_active_set_models(
+        &mut self,
+        handles: &[&str],
+    ) -> Option<ModelSetRelease> {
+        let full = self.full.as_mut()?;
+        let level = full.level.as_mut()?;
+        let released = handles
+            .iter()
+            .filter(|handle| level.models.remove(&ModelHandle::from(handle.to_string())))
+            .count();
+        let freed = full.model_cache.sweep();
+        Some(ModelSetRelease { released, freed })
     }
 
     /// The commit's synchronous miss: upload one parsed model into the

@@ -40,6 +40,13 @@ impl HeldLevelFrame {
     pub(crate) fn visible_cells(&self) -> &VisibleCells {
         &self.visible_render.visible_cells
     }
+
+    /// Test seam: the prepared frame's parts (its view, its visibility and
+    /// its SH drain batch), for a test that presents it offscreen.
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (HeldLevelView, VisibleRenderPreparation, ShDrainBatch) {
+        (self.view, self.visible_render, self.sh_drain_batch)
+    }
 }
 
 impl App {

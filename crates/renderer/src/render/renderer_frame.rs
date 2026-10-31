@@ -125,8 +125,24 @@ impl Renderer {
         self.injected_acquire_failure = true;
     }
 
+    /// Test seam: the next surface acquire is skipped, as an occluded or
+    /// timed-out acquire is. An offscreen renderer has no surface, so this is
+    /// how the app's tests run the windowed frame entry's skipped-frame path
+    /// (pin P13).
+    #[cfg(feature = "test-seams")]
+    pub fn skip_next_surface_acquire(&mut self) {
+        self.injected_acquire_failure = true;
+    }
+
+    /// Test seam: the upload thread's write counts, `None` before full init
+    /// (pin P13).
+    #[cfg(feature = "test-seams")]
+    pub fn upload_writes(&self) -> Option<super::upload_thread::UploadWrites> {
+        self.full.as_ref().map(|full| full.upload_thread.writes())
+    }
+
     pub(super) fn acquire_present_handle(&mut self, phase: &str) -> Result<Option<PresentHandle>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-seams"))]
         if std::mem::take(&mut self.injected_acquire_failure) {
             return Ok(None);
         }

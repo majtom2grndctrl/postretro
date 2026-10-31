@@ -63,6 +63,9 @@ pub(crate) struct PrepTestHooks {
     /// Runs on the upload thread as each set-build part reports done:
     /// blocking here holds the upload thread, with later parts queued.
     pub(crate) after_upload_part: Option<UploadPartHook>,
+    /// Runs in each prep task, on the thread that runs it, with its kind,
+    /// just before its body: a probe of where each kind's work ran.
+    pub(crate) on_task_run: Option<TaskRunHook>,
 }
 
 /// A fault a set build's part raises on the upload thread.
@@ -73,6 +76,7 @@ pub(crate) enum UploadFault {
 }
 
 type BeforeModelParse = Arc<dyn Fn(usize) + Send + Sync>;
+type TaskRunHook = Arc<dyn Fn(PrepKind) + Send + Sync>;
 pub(crate) type UploadPartHook = Arc<dyn Fn(crate::render::LevelBuildPart) + Send + Sync>;
 type ProbeHook = Arc<dyn Fn(&PrepProbe) + Send + Sync>;
 
@@ -114,6 +118,12 @@ impl PrepTestHooks {
     pub(super) fn after_parse_queued(&self, probe: &PrepProbe) {
         if let Some(hook) = &self.after_parse_queued {
             hook(probe);
+        }
+    }
+
+    pub(super) fn on_task_run(&self, kind: PrepKind) {
+        if let Some(hook) = &self.on_task_run {
+            hook(kind);
         }
     }
 
@@ -493,6 +503,59 @@ pub(crate) fn write_late_rejected_level()
             section_id: SectionId::BspNodes as u32,
             version: 1,
             data: vec![0; 4],
+        });
+    })
+}
+
+/// The streamed-lightmap fixture with a cluster directory (id 49) whose
+/// members name a cell past the cell table: the directory's structure reads,
+/// so hand-outs 1–4 go out, then the parse's semantic check rejects it on
+/// `runtime_cell_count` (the level loader's `late_validation_rejects_after_hand_outs`
+/// shape, on this fixture's cells).
+pub(crate) fn write_late_cluster_directory_level()
+-> crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl {
+    use postretro_level_format::cells::CellsSection;
+    use postretro_level_format::cluster_directory::{
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectorySection, ClusterRecord,
+        ClusterResourceDomain, ClusterResourceRecord,
+    };
+    use postretro_level_format::{SectionBlob, SectionId};
+    crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl::write_edited(|sections| {
+        let cells = sections
+            .iter()
+            .find(|section| section.section_id == SectionId::Cells as u32)
+            .map(|section| CellsSection::from_bytes(&section.data).expect("fixture cells"))
+            .expect("the fixture has cells");
+        let past_table = cells.cells.len() as u32 + 1;
+        let directory = ClusterDirectorySection {
+            runtime_cell_count: past_table,
+            primitive_limit: 64,
+            cell_limit: 64,
+            clusters: vec![ClusterRecord {
+                bounds_min: [0.0, 0.0, 0.0],
+                bounds_max: [1.0, 1.0, 1.0],
+                member_start: 0,
+                member_count: past_table,
+                range_start: 0,
+                range_count: 0,
+                primitive_count: 0,
+                flags: 0,
+            }],
+            resources: vec![ClusterResourceRecord {
+                section_id: SectionId::OctahedralShVolume as u32,
+                domain: ClusterResourceDomain::DenseProbe,
+                dimensions: [0, 0, 0],
+            }],
+            members: (0..past_table).collect(),
+            ranges: Vec::new(),
+            seam_portal_ids: Vec::new(),
+            cluster_hints: Vec::new(),
+        };
+        sections.retain(|section| section.section_id != SectionId::ClusterDirectory as u32);
+        sections.push(SectionBlob {
+            section_id: SectionId::ClusterDirectory as u32,
+            version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            data: directory.try_to_bytes().expect("the directory serializes"),
         });
     })
 }

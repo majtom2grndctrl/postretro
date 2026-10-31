@@ -26,6 +26,12 @@ pub(crate) struct LevelCommitReport {
     /// missed, each loaded synchronously.
     pub(crate) model_misses: usize,
     pub(crate) model_miss_created: GpuCreationCounts,
+    /// Distinct models the load predicted and built that the real sweep
+    /// does not draw, each released from the published set (creating
+    /// nothing).
+    pub(crate) model_over_predictions: usize,
+    /// Cache entries that release freed: nothing else referenced them.
+    pub(crate) model_over_prediction_freed: usize,
     /// Sprite-collection registration: a named exception the commit keeps.
     pub(crate) sprite_created: GpuCreationCounts,
     /// The model cache step after the publish.

@@ -32,17 +32,26 @@ pub(crate) struct ChunkedWrites {
     queue: wgpu::Queue,
     chunk_bytes: u64,
     pending: Cell<u64>,
+    /// Every metered and submitted byte, shared with the owning renderer so
+    /// the app's tests can read the writer's state against a frame (P13).
+    #[cfg(feature = "test-seams")]
+    ledger: std::sync::Arc<UploadWriteLedger>,
     /// Each submitted batch's bytes, oldest first; tests read and clear it.
     #[cfg(test)]
     batches: std::cell::RefCell<Vec<u64>>,
 }
 
 impl ChunkedWrites {
-    fn new(queue: wgpu::Queue) -> Self {
+    fn new(
+        queue: wgpu::Queue,
+        #[cfg(feature = "test-seams")] ledger: std::sync::Arc<UploadWriteLedger>,
+    ) -> Self {
         Self {
             queue,
             chunk_bytes: UPLOAD_SUBMIT_CHUNK_BYTES,
             pending: Cell::new(0),
+            #[cfg(feature = "test-seams")]
+            ledger,
             #[cfg(test)]
             batches: Default::default(),
         }
@@ -56,6 +65,8 @@ impl ChunkedWrites {
             self.flush();
         }
         self.pending.set(self.pending.get().saturating_add(bytes));
+        #[cfg(feature = "test-seams")]
+        self.ledger.staged(bytes);
         #[cfg(test)]
         UNSUBMITTED.with(|unsubmitted| unsubmitted.set(self.pending.get()));
     }
@@ -65,13 +76,15 @@ impl ChunkedWrites {
     pub(crate) fn flush(&self) {
         flush_staged_writes(&self.queue);
         let bytes = self.pending.replace(0);
+        #[cfg(feature = "test-seams")]
+        self.ledger.submitted(bytes);
         #[cfg(test)]
         UNSUBMITTED.with(|unsubmitted| unsubmitted.set(0));
         #[cfg(test)]
         if bytes > 0 {
             self.batches.borrow_mut().push(bytes);
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let _ = bytes;
     }
 
@@ -79,6 +92,69 @@ impl ChunkedWrites {
     #[cfg(test)]
     pub(crate) fn take_batches(&self) -> Vec<u64> {
         std::mem::take(&mut *self.batches.borrow_mut())
+    }
+}
+
+/// One upload thread's writes, counted where they are metered and where
+/// they are submitted. Test seam: the app's acquire-skip test reads it
+/// against the first frame that presents (pin P13).
+#[cfg(feature = "test-seams")]
+#[derive(Debug, Default)]
+pub struct UploadWriteLedger {
+    staged_bytes: std::sync::atomic::AtomicU64,
+    submitted_bytes: std::sync::atomic::AtomicU64,
+    submits: std::sync::atomic::AtomicU64,
+}
+
+/// A reading of an [`UploadWriteLedger`].
+#[cfg(feature = "test-seams")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UploadWrites {
+    /// Bytes the writer staged on the queue.
+    pub staged_bytes: u64,
+    /// Bytes an upload-thread submit carried.
+    pub submitted_bytes: u64,
+    /// Upload-thread submits (every job ends with one).
+    pub submits: u64,
+}
+
+#[cfg(feature = "test-seams")]
+impl UploadWrites {
+    /// Bytes staged on the queue and not yet submitted by the upload thread.
+    pub fn unsubmitted_bytes(&self) -> u64 {
+        self.staged_bytes - self.submitted_bytes
+    }
+}
+
+#[cfg(feature = "test-seams")]
+impl UploadWriteLedger {
+    fn staged(&self, bytes: u64) {
+        self.staged_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    fn submitted(&self, bytes: u64) {
+        // The submit itself precedes this count, so a reader that sees the
+        // bytes counted sees them submitted.
+        self.submitted_bytes
+            .fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
+        self.submits
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// The writer's counts now. Submitted bytes read first, so a write
+    /// racing the read never shows as submitted before it is staged.
+    pub fn read(&self) -> UploadWrites {
+        let submits = self.submits.load(std::sync::atomic::Ordering::Acquire);
+        let submitted_bytes = self
+            .submitted_bytes
+            .load(std::sync::atomic::Ordering::Acquire);
+        let staged_bytes = self.staged_bytes.load(std::sync::atomic::Ordering::Acquire);
+        UploadWrites {
+            staged_bytes,
+            submitted_bytes,
+            submits,
+        }
     }
 }
 
@@ -150,17 +226,27 @@ pub struct UploadThread {
     jobs: Option<mpsc::Sender<Job>>,
     // Kept, not joined: see `Drop`. Handed off by `take_retirement`.
     handle: Option<JoinHandle<()>>,
+    #[cfg(feature = "test-seams")]
+    ledger: std::sync::Arc<UploadWriteLedger>,
 }
 
 impl UploadThread {
     pub fn spawn(device: wgpu::Device, queue: wgpu::Queue) -> std::io::Result<Self> {
         let (jobs, receiver) = mpsc::channel::<Job>();
+        #[cfg(feature = "test-seams")]
+        let ledger = std::sync::Arc::<UploadWriteLedger>::default();
+        #[cfg(feature = "test-seams")]
+        let thread_ledger = std::sync::Arc::clone(&ledger);
         let handle = std::thread::Builder::new()
             .name("render-upload".into())
             .spawn(move || {
                 let context = UploadContext {
                     device,
-                    writes: ChunkedWrites::new(queue),
+                    writes: ChunkedWrites::new(
+                        queue,
+                        #[cfg(feature = "test-seams")]
+                        thread_ledger,
+                    ),
                 };
                 // A closed channel (the owner dropped) ends the thread.
                 while let Ok(job) = receiver.recv() {
@@ -170,7 +256,15 @@ impl UploadThread {
         Ok(Self {
             jobs: Some(jobs),
             handle: Some(handle),
+            #[cfg(feature = "test-seams")]
+            ledger,
         })
+    }
+
+    /// This thread's write counts (test seam, pin P13).
+    #[cfg(feature = "test-seams")]
+    pub fn writes(&self) -> UploadWrites {
+        self.ledger.read()
     }
 
     /// Queue `job` and return a handle the caller polls. The job's GPU writes

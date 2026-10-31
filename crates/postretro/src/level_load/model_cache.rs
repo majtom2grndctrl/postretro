@@ -4,7 +4,8 @@
 //! to the commit, so the commit cannot tell it from a parse; a miss parses
 //! and uploads from the bytes it already read and offers its entry for the
 //! commit to enter. Also the commit's synchronous fallback for a model the
-//! prediction lacked, with its per-load count.
+//! prediction lacked, with its per-load count, and the release of a model the
+//! prediction added that the commit's sweep does not draw.
 //! See: context/plans/in-progress/level-load-pipeline/index.md (Model cache, Predict models, then fall back exactly) · research.md §9 (P11, P29)
 
 use std::collections::HashSet;
@@ -17,7 +18,9 @@ use postretro_render_cpu::texture_prep::{
 
 use super::model_key::{ModelInstallParams, model_content_key};
 use super::products::{ParsedModelProducts, PreparedModel};
-use crate::render::{CachedModel, ModelCacheHandle, ModelCacheOffer, ModelContentKey, Renderer};
+use crate::render::{
+    CachedModel, ModelCacheHandle, ModelCacheOffer, ModelContentKey, ModelSetRelease, Renderer,
+};
 use crate::scripting_systems::hit_zones::ModelHitZones;
 use crate::startup::lifecycle::{ModelClipEntry, model_clip_entry};
 
@@ -220,5 +223,52 @@ impl ModelMissFallback {
             }),
             cache: ModelCacheUse::Miss,
         }
+    }
+}
+
+/// The commit's over-predictions, for one load: handles the load predicted,
+/// prepared and built into its set that the commit's real sweep does not
+/// draw (a descriptor a hot reload changed after dispatch, or any other
+/// prediction drift). Each is released from the published set at commit and
+/// its cache entry freed when nothing else references it, counted and logged
+/// once per handle, as a miss is. Creates nothing.
+#[derive(Debug, Default)]
+pub(crate) struct ModelOverPredictions {
+    handles: Vec<String>,
+    release: ModelSetRelease,
+}
+
+impl ModelOverPredictions {
+    /// Distinct handles released this load.
+    pub(crate) fn count(&self) -> usize {
+        self.handles.len()
+    }
+
+    /// Cache entries the release freed.
+    pub(crate) fn freed(&self) -> usize {
+        self.release.freed
+    }
+
+    /// Release `handles` from `renderer`'s active set, the one the commit
+    /// published, then free what nothing references.
+    pub(crate) fn release(&mut self, renderer: &mut Renderer, handles: Vec<String>) {
+        let handles: Vec<String> = handles
+            .into_iter()
+            .filter(|handle| !self.handles.contains(handle))
+            .collect();
+        if handles.is_empty() {
+            return;
+        }
+        for handle in &handles {
+            log::warn!(
+                "[Model] model prediction over-predicted '{handle}': released from the level at commit"
+            );
+        }
+        let names: Vec<&str> = handles.iter().map(String::as_str).collect();
+        if let Some(release) = renderer.release_unused_active_set_models(&names) {
+            self.release.released += release.released;
+            self.release.freed += release.freed;
+        }
+        self.handles.extend(handles);
     }
 }

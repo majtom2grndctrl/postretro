@@ -189,6 +189,9 @@ pub(crate) struct PreparedModelSweep<'a> {
     /// GPU objects the fallback created on this thread, added up: a counted
     /// fallback.
     pub(crate) fallback_created: &'a mut postretro_renderer::GpuCreationCounts,
+    /// The prepared models the real sweep does not draw, released from the
+    /// published set once the sweep is installed.
+    pub(crate) over_predictions: &'a mut crate::level_load::ModelOverPredictions,
 }
 
 impl ModelSweep for WindowedModelSweep<'_> {
@@ -257,7 +260,9 @@ impl PreparedModelSweep<'_> {
     /// prepared clip entry and hit zones, or, for a handle the prediction
     /// missed, the synchronous fallback's (which loads it into the published
     /// set). Parses nothing a prediction covered. The renderer never saw a
-    /// model that failed to parse, so the hit-zone store reports it.
+    /// model that failed to parse, so the hit-zone store reports it. Then
+    /// every prepared model the sweep does not hold is released from the
+    /// published set, creating nothing.
     #[allow(clippy::too_many_arguments)]
     fn install(
         &mut self,
@@ -271,6 +276,11 @@ impl PreparedModelSweep<'_> {
     ) {
         let prepared = std::mem::take(&mut self.models);
         let missed = prepared.misses(models).len();
+        let over: Vec<String> = prepared
+            .over_predictions(models)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         let mut by_handle: std::collections::HashMap<String, crate::level_load::PreparedModel> =
             prepared
                 .into_models()
@@ -303,6 +313,12 @@ impl PreparedModelSweep<'_> {
                 ModelLoadWarningOwner::GameSide,
             );
         }
+        // What the prediction built that nothing in this level draws (pin
+        // P26: a model only a hot reload removed after dispatch) leaves the
+        // published set now, so the cache step frees it once nothing else
+        // references it.
+        drop(by_handle);
+        self.over_predictions.release(renderer, over);
         if !models.is_empty() {
             log::info!(
                 "[Model] installed {} distinct mesh model(s) for this level, {missed} missed by the prediction",

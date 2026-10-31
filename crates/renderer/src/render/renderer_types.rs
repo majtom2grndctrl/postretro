@@ -194,7 +194,7 @@ pub struct Renderer {
     /// The device's uncaptured-error handler: wgpu's default panic, or a
     /// level load's failure while armed for one.
     pub(super) load_errors: std::sync::Arc<super::load_error_capture::LoadErrorCapture>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) injected_acquire_failure: bool,
     /// Present surface for a windowed renderer. Offscreen capture deliberately
     /// has no surface and never reaches the present/splash paths.

@@ -11,7 +11,7 @@ use super::lifecycle_model_sweep::{LevelModels, PreparedModelSweep};
 use super::*;
 use crate::level_load::{
     BundleSet, LevelBundle, LevelCommitReport, LevelLoadFailure, ModelInstallParams,
-    ModelMissFallback,
+    ModelMissFallback, ModelOverPredictions,
 };
 use crate::render::LevelSetId;
 use crate::session::level_streaming::{
@@ -53,7 +53,9 @@ impl App {
     /// 5. `bundle.world` becomes `App::level`; the light bridge; segment B,
     ///    which installs `bundle.collision` before its mover build and whose
     ///    model sweep installs each prepared model's clip entry and hit zones
-    ///    (a model the prediction missed loads synchronously, counted); the
+    ///    (a model the prediction missed loads synchronously, counted; one it
+    ///    over-predicted leaves the published set, counted, creating
+    ///    nothing); the
     ///    post-load passes; the camera pose; the fog masks (CPU only: the set
     ///    holds the target and masks); sprite collections (counted); the
     ///    bundle's decoded sounds.
@@ -99,6 +101,7 @@ impl App {
             Some(id) => {
                 let light_seed = self.commit_level_set(id, &world, &mut report);
                 let mut fallback = ModelMissFallback::default();
+                let mut over_predictions = ModelOverPredictions::default();
                 let params = ModelInstallParams::at_tier(renderer_surface_depth_quality(
                     tiers.surface_depth_quality,
                 ));
@@ -114,12 +117,15 @@ impl App {
                             params,
                             fallback: &mut fallback,
                             fallback_created: &mut report.model_miss_created,
+                            over_predictions: &mut over_predictions,
                         }),
                         fog_masks: LevelFogMasks::InSet,
                         sounds: LevelSounds::Decoded(presentation.sounds),
                     },
                 );
                 report.model_misses = fallback.misses();
+                report.model_over_predictions = over_predictions.count();
+                report.model_over_prediction_freed = over_predictions.freed();
             }
         }
         // A level tree drawing a loading-only image keeps it loaded.

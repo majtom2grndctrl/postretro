@@ -88,11 +88,23 @@ impl App {
                 reflection_quality: options.reflection_quality,
             },
             audio_enabled: session.audio.is_some(),
-            models: ModelPredictionInputs::capture(
-                &session.scripting.script_ctx.data_registry.borrow().entities,
-                &session.classname_dispatch,
-                self.is_connected_client(),
-            ),
+            // The descriptors this load's install will spawn from: a staged
+            // reload's deferred presentation snapshot when one is pending
+            // (the install promotes it before its model sweep), else the
+            // committed registry's (pin P9).
+            models: {
+                let registry = session.scripting.script_ctx.data_registry.borrow();
+                let descriptors = session
+                    .scripting
+                    .script_runtime
+                    .deferred_mesh_descriptors()
+                    .unwrap_or(&registry.entities);
+                ModelPredictionInputs::capture(
+                    descriptors,
+                    &session.classname_dispatch,
+                    self.is_connected_client(),
+                )
+            },
             upload: None,
             #[cfg(test)]
             hooks: Default::default(),

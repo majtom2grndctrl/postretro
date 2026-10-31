@@ -425,6 +425,8 @@ impl PrepShared {
                     shared.finish(kind, Duration::ZERO, Err(message));
                     return;
                 }
+                #[cfg(test)]
+                shared.inputs.hooks.on_task_run(kind);
                 let started = Instant::now();
                 let result = work(&shared);
                 shared.finish(kind, started.elapsed(), result);

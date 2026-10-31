@@ -7,8 +7,8 @@
 
 use std::cell::Cell;
 
+use postretro_entities::MeshDescriptor;
 use postretro_entities::components::mesh::MeshComponent;
-use postretro_entities::{EntityTypeDescriptor, MeshDescriptor};
 use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 use super::*;
@@ -24,7 +24,7 @@ const RIFLE: &str = "models/ar_4/model.gltf";
 const RELOADED: &str = "beside_reload_crate";
 
 /// What one Running frame did.
-struct RunningFrame {
+pub(super) struct RunningFrame {
     step: BesideLoadStep,
     /// The running level's frame, drawn through cell 0 as the fixture
     /// frames are hashed.
@@ -44,7 +44,7 @@ struct RunningFrame {
 /// the session applies as the play frame does. `None` once the frame is not
 /// a Running frame. (The windowed `redraw` itself needs an event loop and a
 /// surface; this is its offscreen stand-in.)
-fn running_frame(app: &mut App, exit: &TestExit) -> Option<RunningFrame> {
+pub(super) fn running_frame(app: &mut App, exit: &TestExit) -> Option<RunningFrame> {
     app.poll_stage_retirements();
     if super::super::lifecycle_boot_state::boot_state_drains_level_requests(&app.boot_state) {
         app.drain_level_requests();
@@ -835,13 +835,25 @@ fn beside_load_failure_keeps_level_running() {
     }
 }
 
-// Beside 5 (P26), the part App tests reach: the staged-manifest reload
-// commit is not drivable here, so its effect, the whole descriptor swap, is
-// applied on a Running frame after the load beside the level dispatched
-// (its prediction read the old descriptors). The commit spawns from the
-// reloaded descriptors: the model only the reload added misses once, logs
-// once and loads correctly into the published set; the running level keeps
-// its model until its release.
+// Beside 5 (P26): a mod hot reload committed on a Running frame while a
+// load runs beside the running level, through the real staged-manifest
+// route (the reload built on the runtime's staged lane and committed by the
+// redraw's staged-manifest poll). The load dispatched first, so its
+// prediction read the old descriptors: the reloaded classname's model, ZONES.
+// The reload re-points that classname at the rifle; the runtime defers the
+// mesh change for the running level, which keeps drawing ZONES on every
+// Running frame until its release (e). At the commit:
+// (a) the placement spawns from the reloaded descriptors, with the rifle;
+// (b) the rifle, a model only the reload added, takes the counted fallback:
+//     one miss, logged once, loaded into the published set;
+// (c) ZONES, a model only the reload removed, is released at commit: out of
+//     the published set, its cache entry freed (the released running level
+//     was its only other holder), counted and logged once, creating nothing;
+// (d) no entry keyed on a pre-reload install-time parameter is hit: the
+//     load's one cache hit (ZONES) and every model the published set draws
+//     are keyed by the files read after the reload at the commit's
+//     parameters (install parameters come only from the dispatch tiers,
+//     which no reload changes).
 #[test]
 fn hot_reload_beside_load_installs_reloaded_models() {
     let test = "hot_reload_beside_load_installs_reloaded_models";
@@ -853,57 +865,69 @@ fn hot_reload_beside_load_installs_reloaded_models() {
     let Some((mut app, exit)) = running_level(test, &running) else {
         return;
     };
-    let descriptor = |model: &str| EntityTypeDescriptor {
-        mesh: Some(MeshDescriptor {
-            model: model.to_string(),
-            shadow_only: false,
-            attachments: Default::default(),
-            shadow_bias_scale: 1.0,
-            animations: Default::default(),
-            default_state: None,
-            locomotion: None,
-        }),
-        ..super::super::lifecycle_test_fixtures::descriptor(RELOADED)
-    };
-    let set_descriptors = |app: &mut App, model: &str| {
-        script_ctx(app)
-            .data_registry
-            .borrow_mut()
-            .replace_entity_types(vec![descriptor(model)]);
-    };
-    set_descriptors(&mut app, ZONES);
+    let mut crate_type = super::super::lifecycle_test_fixtures::descriptor(RELOADED);
+    crate_type.mesh = Some(MeshDescriptor {
+        model: ZONES.to_string(),
+        shadow_only: false,
+        attachments: Default::default(),
+        shadow_bias_scale: 1.0,
+        animations: Default::default(),
+        default_state: None,
+        locomotion: None,
+    });
+    // The mod's descriptors before the reload.
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![crate_type]);
     let running_set = active_set(&app).unwrap();
-    let running_entry = app
-        .renderer
-        .as_ref()
-        .unwrap()
-        .level_set_model_identity(running_set, ZONES);
+    let identity = |app: &App, id: LevelSetId, handle: &str| {
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .level_set_model_identity(id, handle)
+    };
+    let running_entry = identity(&app, running_set, ZONES);
     assert!(running_entry.is_some());
 
     let upload = Hold::default();
     begin_beside(&mut app, &beside, hold_upload(&upload));
     assert!(
         app.level_loads.is_staged(),
-        "dispatched: prediction read the old descriptors"
+        "dispatched: the prediction read the old descriptors"
     );
-    // The reload commits on a Running frame while the load runs.
-    running_frame(&mut app, &exit).unwrap();
-    set_descriptors(&mut app, RIFLE);
+    // The reload commits on Running frames while the load runs.
+    let mod_root = super::reload_mod_root(RELOADED, RIFLE);
+    let capture = LogCapture::start();
+    super::commit_staged_reload(&mut app, mod_root.path(), |app| {
+        running_frame(app, &exit).expect("Running");
+        assert_eq!(identity(app, running_set, ZONES), running_entry, "(e)");
+    });
+    assert_eq!(app.boot_state, BootState::Running);
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "staged descriptor refresh deferred components.mesh for `beside_reload_crate`",
+    );
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_runtime
+            .deferred_mesh_descriptors()
+            .is_some(),
+        "the mesh change waits for the next level install"
+    );
     upload.release();
     run_running_until(&mut app, &exit, "the held bundle", held, |app, _| {
         assert_eq!(
-            app.renderer
-                .as_ref()
-                .unwrap()
-                .level_set_model_identity(running_set, ZONES),
+            identity(app, running_set, ZONES),
             running_entry,
-            "the running level keeps its model"
+            "(e) the running level keeps its model"
         );
     });
-    let predicted: Vec<String> = app
-        .level_loads
-        .held_bundle()
-        .unwrap()
+    let bundle = app.level_loads.held_bundle().unwrap();
+    let predicted: Vec<String> = bundle
         .presentation
         .models
         .handles()
@@ -914,20 +938,74 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         [ZONES],
         "the prediction read the old descriptors"
     );
-    let capture = LogCapture::start();
+    assert_eq!(
+        bundle.presentation.models.get(ZONES).unwrap().cache,
+        ModelCacheUse::Hit,
+        "the load hit the running level's entry"
+    );
+    let params = crate::level_load::ModelInstallParams::at_tier(
+        crate::startup::render_profile::renderer_surface_depth_quality(
+            bundle.tiers.surface_depth_quality,
+        ),
+    );
+    let prm_root = dev_prm_root();
+    let zones_key = super::model_key_now(&dev_content_root(), &prm_root, ZONES, params);
+    assert_eq!(
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .cached_model(&zones_key)
+            .map(|cached| cached.identity()),
+        running_entry,
+        "(d) the hit entry is the one the post-reload files key at the commit's parameters"
+    );
+
+    capture.clear();
     let (report, id) = commit_held(&mut app, &exit);
+    // (b)
     assert_eq!(report.model_misses, 1, "{report:?}");
     assert!(report.model_miss_created.total() > 0, "{report:?}");
-    assert_eq!(report.uncounted_creations().total(), 0, "{report:?}");
     capture.assert_logged_once(
         log::Level::Warn,
         "model prediction missed 'models/ar_4/model.gltf'",
     );
+    // (c)
+    assert_eq!(report.model_over_predictions, 1, "{report:?}");
+    assert_eq!(report.model_over_prediction_freed, 1, "{report:?}");
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "model prediction over-predicted 'models/pose-modifier-fixture/joint_zones.gltf'",
+    );
+    assert_eq!(report.uncounted_creations().total(), 0, "{report:?}");
     let renderer = app.renderer.as_ref().unwrap();
     assert!(
-        renderer.level_set_model_identity(id, RIFLE).is_some(),
-        "the reloaded descriptor's model loads into the published set"
+        renderer.level_set_model_identity(id, ZONES).is_none(),
+        "(c) the removed model left the published set"
     );
+    assert!(
+        renderer.cached_model(&zones_key).is_none(),
+        "(c) and its cache entry was freed"
+    );
+    // (b), (d)
+    let rifle_key = super::model_key_now(&dev_content_root(), &prm_root, RIFLE, params);
+    let rifle_entry = renderer.level_set_model_identity(id, RIFLE);
+    assert!(
+        rifle_entry.is_some(),
+        "(b) the reloaded descriptor's model loads into the published set"
+    );
+    assert_eq!(
+        renderer
+            .cached_model(&rifle_key)
+            .map(|cached| cached.identity()),
+        rifle_entry,
+        "(d) the set's model is the entry the post-reload files key"
+    );
+    assert_eq!(
+        renderer.model_cache_keys(),
+        vec![rifle_key],
+        "the cache holds only what the published set draws"
+    );
+    // (a)
     let ctx = script_ctx(&app);
     let registry = ctx.registry.borrow();
     let meshes: Vec<String> = registry
@@ -941,7 +1019,11 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         .collect();
     assert!(
         meshes.iter().any(|model| model == RIFLE),
-        "the placement spawned with the reloaded model: {meshes:?}"
+        "(a) the placement spawned with the reloaded model: {meshes:?}"
+    );
+    assert!(
+        !meshes.iter().any(|model| model == ZONES),
+        "(a) nothing spawned with the removed model: {meshes:?}"
     );
     drop(registry);
     retire_all(&mut app);

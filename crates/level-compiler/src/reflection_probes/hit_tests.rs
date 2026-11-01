@@ -46,10 +46,12 @@ fn closest_hit_returns_the_floor_face_uv_and_barycentrics_below_a_point() {
     assert!((surface.texel_density - 32.0).abs() < 1e-2);
 }
 
-// A masked face is skipped and reported; a min distance accepts a face
-// just past it, so a re-trace from a hull exit never steps over one.
+// A masked face is skipped and reported when it comes first in hit order
+// (distance, then triangle index); an ignored one is neither kept nor
+// reported. A min distance accepts a face just past it, so a re-trace from
+// a hull exit never steps over one.
 #[test]
-fn closest_hit_masked_skips_masked_faces_and_reports_the_nearest_one() {
+fn closest_hit_masked_skips_masked_faces_and_reports_the_first_one() {
     let room = box_room([-2.0, 0.0, -2.0], [2.0, 3.0, 2.0]);
     let (bvh, primitives, _) = build_bvh(&room).unwrap();
     let tracer = SceneTracer::new(&bvh, &primitives, &room);

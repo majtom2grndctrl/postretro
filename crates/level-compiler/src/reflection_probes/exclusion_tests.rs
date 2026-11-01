@@ -430,8 +430,9 @@ fn overrides_beat_the_rule_in_both_directions() {
     assert_eq!(classify_with(&brushes, &overrides, width), vec![0, 2]);
 }
 
-// The stage classifies only brushes whose hulls touch
-// the probe's projection box, its floor ignored, within the plane tolerance.
+// The stage classifies only brushes whose hulls touch the probe's
+// projection box, its floor ignored, within the plane tolerance plus 2τ
+// (2 mm in all).
 #[test]
 fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
     let cube = |x: f64, y: f64, z: f64| hull([x, y, z], [x + 1.0, y + 1.0, z + 1.0]);
@@ -439,6 +440,9 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
         cube(1.0, 1.0, 1.0),
         // A 0.5 mm gap past +x, inside the tolerance.
         cube(10.0005, 1.0, 1.0),
+        // A 1.75 mm gap past +x: inside the plane tolerance plus 2τ, outside
+        // it plus τ.
+        cube(10.00175, 1.0, 1.0),
         // A 3 mm gap past +x, beyond the tolerance.
         cube(10.003, 1.0, 1.0),
         // Under the floor, which the test ignores.
@@ -464,11 +468,11 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
     }];
     assert_eq!(
         classify_probes(&scene, &probes),
-        vec![vec![0, 1, 2, 3, 4, 5]]
+        vec![vec![0, 1, 2, 3, 4, 5, 6]]
     );
     assert_eq!(
         classify_probes_within_boxes(&scene, &probes, &ExclusionConstants::PRODUCTION),
-        vec![vec![0, 1, 3]]
+        vec![vec![0, 1, 2, 4]]
     );
 }
 

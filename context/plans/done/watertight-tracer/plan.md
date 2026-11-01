@@ -1,7 +1,7 @@
 # watertight-tracer — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 26ab6c534
 
 ## Corrections

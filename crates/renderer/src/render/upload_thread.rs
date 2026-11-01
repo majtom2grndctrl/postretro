@@ -12,8 +12,9 @@ use super::queue_writes::QueueWrites;
 /// job stages on the queue is metered as it is staged: its
 /// [`QueueWrites`] buffer and texture writes, the initial data of a texture
 /// created through `GpuCreate::new_texture_with_data`, and the contents of a
-/// buffer created through `GpuCreate::new_buffer_init` (which wgpu stages on
-/// the queue's pending writes when it unmaps the buffer). One that would
+/// buffer created through `GpuCreate::new_buffer_init` at the size wgpu
+/// pads them to (it stages them on the queue's pending writes when it unmaps
+/// the buffer). One that would
 /// push the pending batch past this submits the batch first, so every batch
 /// stays within it except a single write larger than the chunk, which is its
 /// own batch. Bounds the flush any one submit (and the frame after it) pays.
@@ -61,6 +62,10 @@ thread_local! {
 /// normal exit or an unwind. Left to the thread-local destructor, dropping
 /// its queue would reach wgpu's own thread-locals, which may already be
 /// destroyed by then: a panic in a thread-local destructor aborts the process.
+/// Observed: without this guard the test binaries aborted with `0xc0000409`
+/// (`STATUS_STACK_BUFFER_OVERRUN`) as the upload thread exited, from a
+/// wgpu-core thread-local `AccessError` panic while the destructor dropped
+/// the queue.
 struct ClearThreadWrites;
 
 impl Drop for ClearThreadWrites {
@@ -75,11 +80,14 @@ impl Drop for ClearThreadWrites {
 /// submits first when they would carry it past the chunk); on any other
 /// thread this does nothing, and the contents ride that thread's next
 /// submit. Only the creation chokepoint (`GpuCreate::new_buffer_init`)
-/// calls it.
+/// calls it, with the contents' length.
 pub(super) fn meter_initial_buffer_data(bytes: u64) {
+    // wgpu sizes the buffer, and so the staged copy, up to the copy alignment
+    // (empty contents stay zero).
+    let staged = bytes.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
     THREAD_WRITES.with(|writes| {
         if let Some(writes) = writes.borrow().as_ref() {
-            writes.meter(bytes);
+            writes.meter(staged);
         }
     });
 }

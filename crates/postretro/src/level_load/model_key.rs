@@ -145,3 +145,46 @@ pub(crate) fn model_content_key(
     params.hash_into(&mut hasher);
     ModelContentKey::new(MODEL_CONTENT_KEY_VERSION, *hasher.finalize().as_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn digest_of(params: ModelInstallParams) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        params.hash_into(&mut hasher);
+        *hasher.finalize().as_bytes()
+    }
+
+    // `build_tier` is the tier a build binds at, not a keyed input: two
+    // parameter sets that differ only there are equal and hash alike, so they
+    // name one cache entry. The build tier itself is the dispatch tier.
+    #[test]
+    fn install_params_differing_only_in_build_tier_are_equal() {
+        let off = ModelInstallParams {
+            surface_depth: None,
+            build_tier: SurfaceDepthQuality::Off,
+        };
+        let on = ModelInstallParams {
+            surface_depth: None,
+            build_tier: SurfaceDepthQuality::On,
+        };
+        assert_eq!(off, on);
+        assert_eq!(digest_of(off), digest_of(on));
+        assert_ne!(off.build_tier(), on.build_tier());
+
+        let keyed = ModelInstallParams {
+            surface_depth: Some(SurfaceDepthQuality::On),
+            build_tier: SurfaceDepthQuality::On,
+        };
+        assert_ne!(off, keyed, "a keyed input still separates parameter sets");
+        assert_ne!(digest_of(off), digest_of(keyed));
+    }
+
+    #[test]
+    fn install_params_at_tier_build_at_the_dispatch_tier() {
+        for tier in [SurfaceDepthQuality::Off, SurfaceDepthQuality::On] {
+            assert_eq!(ModelInstallParams::at_tier(tier).build_tier(), tier);
+        }
+    }
+}

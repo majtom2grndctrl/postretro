@@ -173,7 +173,7 @@ impl PendingSessionInit {
 /// `EventLoop::new`. The entire `Session` (options completion, audio, the scripting
 /// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
 /// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
-/// the hot-reload watcher, debug-UI lazy-init, and the level-load worker spawn
+/// the hot-reload watcher, debug-UI lazy-init, and the boot level-load request
 /// likewise run on the splash frame loop so the first splash frame paints before
 /// any of that.
 /// See: context/lib/boot_sequence.md §1.
@@ -727,7 +727,7 @@ fn mod_content_root(name: &Path) -> Result<PathBuf> {
 /// reason `--mod` takes a name: every mod lives under `content/`, so typing
 /// that prefix is noise. A path that starts with `content/` anyway is refused
 /// rather than joined, since `content/dev/content/dev/maps/...` fails only as a
-/// missing file on the load worker, far from the argument that caused it. An
+/// missing file in the level load's parse, far from the argument that caused it. An
 /// absolute path stays as given.
 ///
 /// Without `--mod` the path is read from the working directory unchanged, and
@@ -1423,7 +1423,7 @@ mod tests {
     /// A map that still carries the `content/` prefix is refused at boot, with
     /// the path to pass instead, rather than joined into
     /// `content/<mod>/content/<mod>/...` and reported only as a missing file
-    /// by the load worker.
+    /// by the level load's parse.
     #[test]
     fn with_a_mod_a_content_prefixed_map_is_refused_with_the_path_to_pass() {
         for map in [

@@ -76,8 +76,8 @@ pub(crate) struct LevelCommitReport {
     pub(crate) model_miss_created: GpuCreationCounts,
     /// Distinct models the load predicted and built that the real sweep
     /// does not draw, each released from the published set (creating
-    /// nothing); the cache sweep below frees an entry so released once
-    /// nothing else references it.
+    /// nothing); the commit's one sweep below frees its entry once nothing
+    /// else references it.
     pub(crate) model_over_predictions: usize,
     /// Sprite-collection registration: a named exception the commit keeps.
     pub(crate) sprite_created: GpuCreationCounts,

@@ -464,7 +464,7 @@ mod tests {
     /// Boot-timing marks in the exact order the boot path records them, valid
     /// (logo-present) path. Each entry names its `record(...)` call site so the
     /// sequence stays tied to the source — a moved or renamed mark forces a diff
-    /// here. Net/audio/debug-UI/mod/level-worker marks AND `script_runtime_ctor`
+    /// here. Net/audio/debug-UI/mod/boot-level-load-dispatch marks AND `script_runtime_ctor`
     /// are the marks the spec requires `first_black_frame` to precede: the script
     /// runtime is now constructed inside `Session::build` (post-first-pixel), so
     /// its mark fires after the logo frame, beside the other deferred-session

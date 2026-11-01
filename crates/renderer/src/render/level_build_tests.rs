@@ -824,9 +824,86 @@ fn upload_errors_end_the_build_once() {
     }
 }
 
-// Settling runs outside a part's `catch_unwind`: a panic there (here, in the
-// caller's progress hook, on a stored part and on `finish`) still ends that
-// build exactly once, and the upload thread serves the next build.
+/// The events a build's hook was handed, in order.
+fn record_events(builder: &LevelSetBuilder) -> Arc<Mutex<Vec<LevelBuildEvent>>> {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let hook_events = Arc::clone(&events);
+    assert!(builder.on_event(move |event| hook_events.lock().unwrap().push(event)));
+    events
+}
+
+/// `pending`'s one outcome was taken: the build's sender is gone with it, so
+/// no second outcome can follow.
+fn assert_no_second_outcome(pending: &PendingLevelSet, row: &str) {
+    assert!(
+        matches!(
+            pending.result.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ),
+        "{row}: the build delivered exactly one outcome"
+    );
+}
+
+// The caller's progress hook panicking on a stored part's or on `finish`'s
+// `PartDone` comes back through `report` as an error: the build ends exactly
+// once with that panic, reports `Failed` once either way, and the upload
+// thread serves the next build.
+#[test]
+fn a_panicking_progress_hook_ends_the_build_and_the_thread_serves_on() {
+    let test = "a_panicking_progress_hook_ends_the_build_and_the_thread_serves_on";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
+        return;
+    };
+    let fixture = legacy_fixture(0x5A);
+    let tiers = renderer.level_build_tiers();
+    let resident = renderer.resident_level_sets();
+    for panicking in [LevelBuildPart::Geometry, LevelBuildPart::Finish] {
+        let (builder, mut pending) = renderer.begin_level_set_build(tiers);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        {
+            let events = Arc::clone(&events);
+            assert!(builder.on_event(move |event| {
+                // Recorded, and the lock released, before the panic.
+                events.lock().unwrap().push(event);
+                if event == LevelBuildEvent::PartDone(panicking) {
+                    panic!("injected hook panic");
+                }
+            }));
+        }
+        fixture.queue(&builder, false);
+        builder.finish();
+        match take(&mut renderer, &mut pending) {
+            Err(LevelBuildError::Upload(UploadError::Panicked(message))) => {
+                assert!(message.contains("injected hook panic"), "{message}")
+            }
+            other => panic!("{panicking:?}: wrong outcome {other:?}"),
+        }
+        assert_no_second_outcome(&pending, &format!("{panicking:?}"));
+        let failed = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| **event == LevelBuildEvent::Failed)
+            .count();
+        assert_eq!(failed, 1, "{panicking:?}: `Failed` reported once");
+        assert_eq!(
+            renderer.resident_level_sets(),
+            resident,
+            "{panicking:?}: nothing reached the resident sets"
+        );
+    }
+    let id = fixture.build(&mut renderer, tiers);
+    assert!(
+        renderer.resident_level_sets().contains(&id),
+        "the upload thread built the next set"
+    );
+}
+
+// Settling runs outside a part's `catch_unwind`: a panic in settling itself
+// (not a hook's, which `report` contains), on a stored part or after `finish`
+// marked the build finished, still ends that build exactly once with the
+// panic, reports `Failed` once, publishes nothing, and the upload thread
+// serves the next build.
 #[test]
 fn a_panic_while_a_part_settles_ends_the_build_and_the_thread_serves_on() {
     let test = "a_panic_while_a_part_settles_ends_the_build_and_the_thread_serves_on";
@@ -836,25 +913,36 @@ fn a_panic_while_a_part_settles_ends_the_build_and_the_thread_serves_on() {
     let fixture = legacy_fixture(0x5A);
     let tiers = renderer.level_build_tiers();
     let resident = renderer.resident_level_sets();
-    for panicking in [LevelBuildPart::Geometry, LevelBuildPart::Finish] {
+    for at in [
+        SettlePanic::Stored(LevelBuildPart::Geometry),
+        SettlePanic::Finished,
+    ] {
         let (builder, mut pending) = renderer.begin_level_set_build(tiers);
-        assert!(builder.on_event(move |event| {
-            if event == LevelBuildEvent::PartDone(panicking) {
-                panic!("injected settle panic");
-            }
-        }));
+        let events = record_events(&builder);
+        assert!(builder.panic_while_settling(at));
         fixture.queue(&builder, false);
         builder.finish();
         match take(&mut renderer, &mut pending) {
             Err(LevelBuildError::Upload(UploadError::Panicked(message))) => {
                 assert!(message.contains("injected settle panic"), "{message}")
             }
-            other => panic!("{panicking:?}: wrong outcome {other:?}"),
+            other => panic!("{at:?}: wrong outcome {other:?}"),
         }
+        assert_no_second_outcome(&pending, &format!("{at:?}"));
+        let events = events.lock().unwrap().clone();
+        let failed = events
+            .iter()
+            .filter(|event| **event == LevelBuildEvent::Failed)
+            .count();
+        assert_eq!(failed, 1, "{at:?}: `Failed` reported once: {events:?}");
+        assert!(
+            !events.contains(&LevelBuildEvent::PartDone(LevelBuildPart::Finish)),
+            "{at:?}: the panicking build never reported its finish: {events:?}"
+        );
         assert_eq!(
             renderer.resident_level_sets(),
             resident,
-            "{panicking:?}: nothing reached the resident sets"
+            "{at:?}: nothing reached the resident sets"
         );
     }
     let id = fixture.build(&mut renderer, tiers);

@@ -222,6 +222,8 @@ impl Renderer {
             state: Mutex::new(BuildState::default()),
             result: Mutex::new(Some(result)),
             events: OnceLock::new(),
+            #[cfg(test)]
+            settle_panic: OnceLock::new(),
         });
         if shared.submitter.is_none() {
             shared.fail(LevelBuildError::Upload(UploadError::ThreadGone));
@@ -452,8 +454,9 @@ pub enum LevelBuildEvent {
     /// The part's job ran and its writes are submitted. A part that found
     /// the build already ended reports nothing.
     PartDone(LevelBuildPart),
-    /// The build failed; a cancel ([`LevelSetBuilder::cancel`]) reports
-    /// nothing.
+    /// The build failed: reported once, before the failure is delivered,
+    /// including after the hook itself panicked on a `PartDone` (any part,
+    /// `Finish` too). A cancel ([`LevelSetBuilder::cancel`]) reports nothing.
     Failed,
 }
 
@@ -504,7 +507,8 @@ impl LevelSetBuilder {
     /// the upload thread. Set once, before the first part; a second hook is
     /// refused (returns `false`). The hook must not hold a builder: it lives
     /// as long as the build. A hook that panics ends the build with
-    /// [`UploadError::Panicked`].
+    /// [`UploadError::Panicked`] (and is then handed
+    /// [`LevelBuildEvent::Failed`]).
     pub fn on_event(&self, hook: impl Fn(LevelBuildEvent) + Send + Sync + 'static) -> bool {
         self.shared.events.set(Box::new(hook)).is_ok()
     }
@@ -803,6 +807,15 @@ impl LevelSetBuilder {
         });
     }
 
+    /// Make this build's settling panic at `at`, on the upload thread and
+    /// outside every part's `catch_unwind`: the path a hook panic never
+    /// reaches, since `report` contains those. Set once, before the first
+    /// part; a second is refused (returns `false`).
+    #[cfg(test)]
+    pub(crate) fn panic_while_settling(&self, at: SettlePanic) -> bool {
+        self.shared.settle_panic.set(at).is_ok()
+    }
+
     fn queue_part(
         &self,
         part: Option<LevelBuildPart>,
@@ -870,6 +883,18 @@ enum PartDone {
     Finished(Box<LevelResourceSet>),
 }
 
+/// Where a test makes a part's settling panic
+/// ([`LevelSetBuilder::panic_while_settling`]).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettlePanic {
+    /// Settling this part's stored product, before it reports.
+    Stored(LevelBuildPart),
+    /// Settling `finish`, after it marked the build finished and before it
+    /// delivers the set.
+    Finished,
+}
+
 /// A finished set on its way to the receipt.
 struct BuiltLevelSet {
     set: Box<LevelResourceSet>,
@@ -893,6 +918,9 @@ struct BuildShared {
     result: Mutex<Option<mpsc::Sender<Result<BuiltLevelSet, LevelBuildError>>>>,
     /// The caller's progress hook, if it set one.
     events: OnceLock<LevelBuildEventHook>,
+    /// Where a test made settling panic, if it did.
+    #[cfg(test)]
+    settle_panic: OnceLock<SettlePanic>,
 }
 
 /// The build's partial state: what each part produced, held with the jobs
@@ -960,23 +988,53 @@ impl BuildShared {
         }
     }
 
-    /// End the build with `error`, once: drop every partial resource and
-    /// report. A build that already ended keeps its first outcome.
+    /// End the build with `error`, once: drop every partial resource, report
+    /// [`LevelBuildEvent::Failed`] (unless a cancel) and deliver the error. A
+    /// build that already ended keeps its first outcome.
     fn fail(&self, error: LevelBuildError) {
-        {
+        self.end_failed(error, false);
+    }
+
+    /// A part's settling panicked on the upload thread: end the build with
+    /// that panic, as [`Self::fail`]. A build a failure or cancel already
+    /// ended keeps that outcome (its own path delivers it); a build its
+    /// `finish` marked finished before unwinding short of delivery ends with
+    /// the panic instead, and a set already delivered stays.
+    fn fail_after_settle_panic(&self, error: UploadError) {
+        self.end_failed(LevelBuildError::Upload(error), true);
+    }
+
+    /// [`Self::fail`]; with `over_finish`, also ending a build `finish`
+    /// marked finished whose set is not yet delivered. Only settling passes
+    /// it: the upload thread alone delivers a finished build, so a finished
+    /// build whose sender is still here has no delivery in flight.
+    fn end_failed(&self, error: LevelBuildError, over_finish: bool) {
+        let partial = {
             let mut state = self.state();
-            if state.ended() {
+            if state.failed || (state.finished && !over_finish) {
                 return;
             }
-            let creations = state.creations;
-            let model_creations = state.model_creations;
-            *state = BuildState {
+            if state.finished
+                && self
+                    .result
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_none()
+            {
+                // The finished set was delivered: that outcome stays.
+                return;
+            }
+            let failed = BuildState {
                 failed: true,
-                creations,
-                model_creations,
+                creations: state.creations,
+                model_creations: state.model_creations,
                 ..BuildState::default()
             };
-        }
+            std::mem::replace(&mut *state, failed)
+        };
+        // The partial resources drop outside the lock: a main-thread cancel
+        // takes it and must never wait on GPU work.
+        drop(partial);
         if !matches!(error, LevelBuildError::Cancelled) {
             // The build is already failing: a hook that panics on the
             // report changes nothing about the outcome.
@@ -985,29 +1043,12 @@ impl BuildShared {
         self.deliver(Err(error));
     }
 
-    /// A part's settling panicked on the upload thread: end the build with
-    /// that panic. Unlike [`Self::fail`], this also ends a build its `finish`
-    /// had marked finished before unwinding short of delivery; settling runs
-    /// only on the upload thread, so no delivery is still in flight, and an
-    /// outcome already delivered stays.
-    fn fail_after_settle_panic(&self, error: UploadError) {
-        let was_ended = {
-            let mut state = self.state();
-            let was_ended = state.ended();
-            let creations = state.creations;
-            let model_creations = state.model_creations;
-            *state = BuildState {
-                failed: true,
-                creations,
-                model_creations,
-                ..BuildState::default()
-            };
-            was_ended
-        };
-        if !was_ended {
-            let _ = self.report(LevelBuildEvent::Failed);
+    /// Panic when a test asked settling to panic at `at`.
+    #[cfg(test)]
+    fn injected_settle_panic(&self, at: Option<SettlePanic>) {
+        if at.is_some() && self.settle_panic.get().copied() == at {
+            panic!("injected settle panic at {at:?}");
         }
-        self.deliver(Err(LevelBuildError::Upload(error)));
     }
 
     /// A part's verdict, on the upload thread after its writes were
@@ -1019,6 +1060,8 @@ impl BuildShared {
     ) {
         match result {
             Ok(Ok(PartDone::Stored)) => {
+                #[cfg(test)]
+                self.injected_settle_panic(part.map(SettlePanic::Stored));
                 // Read under the lock, reported outside it: the hook may take
                 // its time, and a cancel must never wait on it.
                 let ended = self.state().ended();
@@ -1039,12 +1082,16 @@ impl BuildShared {
                     state.finished = true;
                     (state.creations.0, state.model_creations.0)
                 };
+                #[cfg(test)]
+                self.injected_settle_panic(Some(SettlePanic::Finished));
                 if let Some(part) = part
                     && let Err(error) = self.report(LevelBuildEvent::PartDone(part))
                 {
-                    // The set drops; the build ends with the hook's panic.
-                    self.state().failed = true;
-                    self.deliver(Err(LevelBuildError::Upload(error)));
+                    // The set drops, outside the lock, and the build ends
+                    // with the hook's panic, reporting `Failed` as a stored
+                    // part's hook panic does.
+                    drop(set);
+                    self.end_failed(LevelBuildError::Upload(error), true);
                     return;
                 }
                 self.deliver(Ok(BuiltLevelSet {

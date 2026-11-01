@@ -95,8 +95,8 @@ pub(crate) enum BundleSet {
     /// No renderer at dispatch: prep ran alone and kept its GPU-bound
     /// products, which nothing uploaded. Tests only: the load state machine
     /// never dispatches without a full-ready renderer.
-    // A test-only seam until hub U3 adds a production verb: production reads
-    // none of the kept products.
+    // Production dispatches only once the renderer is full-ready, so only
+    // tests reach this variant; production reads none of the kept products.
     PrepOnly(#[cfg_attr(not(test), allow(dead_code))] Box<PreparedGpuLevel>),
 }
 

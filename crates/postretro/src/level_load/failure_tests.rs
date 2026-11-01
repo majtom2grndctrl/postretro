@@ -319,11 +319,14 @@ fn sound_panic_before_verdict_yields_to_parse_rejection() {
                         probe.wait_until(|state| state.started.contains(&PrepKind::Sounds)),
                         "the sound decode never started"
                     );
-                    // The decode panics as it starts; the main thread polls
-                    // every millisecond, so its handle's panic is routed
-                    // well inside this before the parse may reject.
-                    std::thread::sleep(Duration::from_millis(200));
-                    assert!(!probe.state().settled, "the panic was held for the verdict");
+                    // The decode panics as it starts; wait for the main
+                    // thread to route that panic into the held failure
+                    // before the parse may reject.
+                    assert!(
+                        probe.wait_until(|state| state.held_failure),
+                        "the sound decode's panic was never held for the verdict"
+                    );
+                    assert!(!probe.state().settled, "the panic settled the load early");
                 },
             )),
             ..Default::default()

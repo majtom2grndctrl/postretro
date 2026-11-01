@@ -259,13 +259,13 @@ impl Renderer {
             .and_then(|full| full.model_cache.lookup(key))
     }
 
-    /// The commit's cache step in one call: the set `committed`'s offers
-    /// enter ([`Self::enter_model_cache_offers`]), then one sweep
-    /// ([`Self::sweep_model_cache`]). For a commit with no model work of
-    /// its own between the two; a level commit splits them around its model
-    /// install, so its miss fallback can still hit an entry only the level
-    /// it released held. Creates nothing. `None` (changing nothing) for an
-    /// unknown set.
+    /// The tests' one-call stand-in for a commit's cache step: the set
+    /// `committed`'s offers enter ([`Self::enter_model_cache_offers`]), then
+    /// one sweep ([`Self::sweep_model_cache`]). The level commit itself calls
+    /// the two apart, around its model install, so its miss fallback can
+    /// still hit an entry only the level it released held. Creates nothing.
+    /// `None` (changing nothing) for an unknown set.
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn commit_model_cache(&mut self, committed: LevelSetId) -> Option<ModelCacheCommit> {
         let inserted = self.enter_model_cache_offers(committed)?;
         let freed = self.sweep_model_cache()?;

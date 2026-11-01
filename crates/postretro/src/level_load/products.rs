@@ -53,8 +53,8 @@ pub(crate) struct PreparedLevel {
 /// The upload stage's inputs, all `Send`. A prep-only bundle keeps them;
 /// production never dispatches one (the load state machine holds a load
 /// queued until the renderer is full-ready), so only tests read them.
-// A test-only seam until hub U3 adds a production verb: production builds
-// it only on the no-builder branch no dispatch takes, and reads none of it.
+// Production dispatches only once the renderer is full-ready, so only tests
+// reach the no-builder branch that builds it; production reads none of it.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct PreparedGpuLevel {
@@ -206,8 +206,8 @@ pub(crate) struct ParsedModelProducts {
 
 /// One parsed model's upload inputs, kept only by a prep-only load (see
 /// [`PreparedGpuLevel`]).
-// A test-only seam until hub U3 adds a production verb, as
-// `PreparedGpuLevel` is.
+// Only a prep-only load keeps it, and production dispatches only once the
+// renderer is full-ready, so only tests read it, as with `PreparedGpuLevel`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ModelUpload {
     /// The parse itself, which the upload reads (mesh, skeleton, clips).

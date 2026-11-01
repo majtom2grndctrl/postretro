@@ -1125,8 +1125,9 @@ pub(crate) struct App {
     /// script_runtime_ctor, net_endpoint_complete, session_init_complete),
     /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch,
     /// which records the boot level load request being enqueued (its stages
-    /// dispatch later, in `try_dispatch_level_load`). The script runtime is constructed inside `Session::build`, so its mark fires
-    /// after the logo frame — not in early engine boot.
+    /// dispatch later, in `try_dispatch_level_load`). The script runtime is
+    /// constructed inside `Session::build`, so its mark fires after the logo
+    /// frame — not in early engine boot.
     /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
 

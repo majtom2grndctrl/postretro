@@ -533,9 +533,10 @@ impl PrepShared {
     /// whichever pool thread stored the last of them. The planar candidate
     /// is the app's verdict over its fluid tables (session data, not level
     /// data), so the build keys the planar targets by the install rule and a
-    /// different verdict re-keys them on main at publish. The part therefore
-    /// carries `planar_candidate: None`: the verdict is not a prep input, and
-    /// the commit syncs it from the app's tables after the set is published.
+    /// different verdict re-keys them on main when the commit publishes the
+    /// set. The part therefore carries `planar_candidate: None`: the verdict
+    /// is not a prep input, and the commit syncs it from the app's tables
+    /// just after the publish (`sync_planar_candidate`).
     fn submit_geometry(&self, state: &mut PrepState) {
         if state.geometry_submitted
             || state.lightmap_family.is_none()
@@ -723,10 +724,10 @@ impl PrepShared {
             self.upload.release();
             None
         } else {
-            // No builder: a test-only seam until hub U3 adds a production
-            // verb, since production dispatches only with a full-ready
-            // renderer. Each reader dropped its clone of the payloads before
-            // its product was stored, so the state holds the only one.
+            // No builder: production dispatches only once the renderer is
+            // full-ready, so only tests reach this renderer-less path. Each
+            // reader dropped its clone of the payloads before its product was
+            // stored, so the state holds the only one.
             let payloads = state.payloads.take().map(Arc::try_unwrap);
             let (
                 Some(prepared),
@@ -899,6 +900,7 @@ impl PrepShared {
             finished: state.finished.clone(),
             last_hand_out: state.last_hand_out,
             parse_accepted: state.parse_accepted,
+            held_failure: state.held_failure.is_some(),
             settled: state.settled,
         }
     }

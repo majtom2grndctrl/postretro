@@ -158,6 +158,8 @@ pub(crate) struct ProbeState {
     pub(crate) finished: BTreeSet<PrepKind>,
     pub(crate) last_hand_out: Option<HandOutStage>,
     pub(crate) parse_accepted: bool,
+    /// A pre-verdict failure is held, awaiting the parse's verdict.
+    pub(crate) held_failure: bool,
     pub(crate) settled: bool,
 }
 

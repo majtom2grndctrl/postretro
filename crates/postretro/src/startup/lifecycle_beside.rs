@@ -166,8 +166,11 @@ impl App {
     /// and frees the entries only the released level referenced. The commit
     /// enters Settling, as every commit does (hub U3 owns the visual
     /// hand-off); with no loading screen up, Settling credits no
-    /// `loading.progress`. `None`, changing nothing but a failed bundle's
-    /// own set, unless a beside load holds a ready bundle whose checks pass.
+    /// `loading.progress`. `None` when no beside load holds a ready bundle,
+    /// which changes nothing, or when its checks fail: the held load is then
+    /// consumed, its line C marks through `commit_checks` stay recorded, and
+    /// its set is released. The commit itself cannot return `None`, for it
+    /// gets a bundle already checked.
     // A test-only seam until hub U3 adds a production verb that commits one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn commit_ready_beside_bundle(

@@ -27,8 +27,8 @@ pub(crate) struct LevelPayload {
     /// absent or unusable directories surface per-texture warnings from
     /// `load_textures` and degrade those entries to placeholders.
     pub prm_cache_root: PathBuf,
-    /// Prep-task stages, attached to `bundle_ready` in level-load `StartupTimings`
-    /// (they ran inside its interval, so they are shown with it, not added to it).
+    /// The oracle's `prl_parse` timing, read by tests. The production load's
+    /// timing marks come from `LevelBundle::line_c_marks`, not from here.
     pub timings: Vec<(&'static str, Duration)>,
 }
 

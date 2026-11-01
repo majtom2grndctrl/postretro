@@ -1765,7 +1765,8 @@ fn a_sealed_room_takes_no_light_from_outside() {
 
 #[test]
 fn lead_ins_enter_only_front_faces_in_the_band_from_their_first_point() {
-    use crate::lightmap_bake::{RAY_EPSILON, segment_clear};
+    use crate::lightmap_bake::RAY_EPSILON;
+    use crate::ray_traversal::segment_clear;
     // A floor, a wall standing on it at x = 0 facing −x, and a plate three
     // lifts up facing down: wholly above the band.
     let receiver = Receiver::centred(8, 8);
@@ -1970,7 +1971,7 @@ fn floor_disabled_bakes_centre_point_soft_visibility() {
                     || probes,
                     crate::texel_footprint::ProbeEarlyOut::Agreed,
                     |from, to| {
-                        crate::lightmap_bake::segment_clear_remembering(
+                        crate::ray_traversal::segment_clear_remembering(
                             &fixture.bvh,
                             &fixture.primitives,
                             &fixture.geometry,

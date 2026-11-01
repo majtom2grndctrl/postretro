@@ -187,8 +187,8 @@ fn bounded_segment_clear_matches_full_scan_at_segment_end() {
             let full = segment_clear_full_scan(&ctx, from, to);
             assert_eq!(segment_clear(&ctx, from, to), full, "sh: {from} -> {to}");
             assert_eq!(
-                crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
-                crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, from, to),
+                crate::ray_traversal::segment_clear(&bvh, &prims, &geo, from, to),
+                crate::ray_traversal::segment_clear_full_scan(&bvh, &prims, &geo, from, to),
                 "lightmap: {from} -> {to}"
             );
             if full {
@@ -380,7 +380,7 @@ fn lightmap_clear_by_every_triangle(
     to: Vec3,
 ) -> bool {
     (0..geo.geometry.indices.len()).step_by(3).all(|tri| {
-        crate::lightmap_bake::segment_clear_remembering(
+        crate::ray_traversal::segment_clear_remembering(
             bvh,
             prims,
             geo,
@@ -405,16 +405,16 @@ fn lightmap_segment_clear_occluder_cache_catches_flat_box_rounding_leak() {
     let to = Vec3::from_array([1059964654, 1061407677, 3211917106].map(f32::from_bits));
 
     assert!(
-        crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
+        crate::ray_traversal::segment_clear(&bvh, &prims, &geo, from, to),
         "the stock box test must reject this ray's box for the leak to exist"
     );
     let empty = std::cell::Cell::new(None);
-    assert!(crate::lightmap_bake::segment_clear_remembering(
+    assert!(crate::ray_traversal::segment_clear_remembering(
         &bvh, &prims, &geo, from, to, &empty
     ));
     assert_eq!(empty.get(), None, "a clear traversal records no occluder");
     let holding = std::cell::Cell::new(Some(0));
-    assert!(!crate::lightmap_bake::segment_clear_remembering(
+    assert!(!crate::ray_traversal::segment_clear_remembering(
         &bvh, &prims, &geo, from, to, &holding
     ));
     assert_eq!(holding.get(), Some(0));
@@ -555,9 +555,9 @@ fn bounded_queries_match_full_scan_on_random_rounding_stress() {
                 "sh, ray {i}: {origin} -> {to}"
             );
             let lightmap_full =
-                crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to);
+                crate::ray_traversal::segment_clear_full_scan(&bvh, &prims, &geo, origin, to);
             assert_eq!(
-                crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, origin, to),
+                crate::ray_traversal::segment_clear(&bvh, &prims, &geo, origin, to),
                 lightmap_full,
                 "lightmap, ray {i}: {origin} -> {to}"
             );
@@ -565,7 +565,7 @@ fn bounded_queries_match_full_scan_on_random_rounding_stress() {
             // an unrelated triangle first. It may only add a blocked answer
             // the box test lost to rounding, so a disagreement must be a
             // real hit by some triangle.
-            let remembered = crate::lightmap_bake::segment_clear_remembering(
+            let remembered = crate::ray_traversal::segment_clear_remembering(
                 &bvh,
                 &prims,
                 &geo,

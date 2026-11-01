@@ -5,7 +5,7 @@ use glam::{DVec3, Vec3};
 
 use super::margin::*;
 use super::*;
-use crate::lightmap_bake::ray_triangle_hit;
+use crate::ray_traversal::ray_triangle_hit;
 
 /// SplitMix64: a fixed, dependency-free stream, so the search is the same on
 /// every run.

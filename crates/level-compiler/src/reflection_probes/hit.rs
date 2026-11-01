@@ -252,7 +252,7 @@ impl<'a> SceneTracer<'a> {
     /// Whether nothing in the static world blocks the segment `from` → `to`,
     /// either face of a triangle counting: the lightmap bake's visibility test.
     pub(crate) fn segment_clear(&self, from: Vec3, to: Vec3) -> bool {
-        crate::lightmap_bake::segment_clear(self.bvh, self.primitives, self.geometry, from, to)
+        crate::ray_traversal::segment_clear(self.bvh, self.primitives, self.geometry, from, to)
     }
 
     fn face_for_offset(&self, index_offset: u32) -> Option<u32> {

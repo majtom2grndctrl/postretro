@@ -36,12 +36,13 @@ use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights, StaticBakedLights};
 use crate::lightmap_bake::{
     DEFAULT_AREA_SAMPLE_COUNT, RAY_EPSILON, SOFT_PROBE_SAMPLES, area_sample_target, emitter_radius,
-    probe_sample_direction, segment_clear, soft_visibility_early_out,
+    probe_sample_direction, soft_visibility_early_out,
 };
 use crate::map_data::{
     DEFAULT_LIGHT_SIZE, FalloffModel, LightAnimation, LightType, MapLight, ShadowType,
 };
 use crate::partition::{Aabb, BspLeaf, BspTree};
+use crate::ray_traversal::segment_clear;
 use crate::sh_bake::{ShBakeCtx, ShConfig, incident_radiance_at_point};
 use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut};
 

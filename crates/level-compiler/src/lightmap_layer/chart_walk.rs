@@ -20,8 +20,8 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
 use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
-use crate::lightmap_bake::segment_clear_remembering;
 use crate::map_data::{LightType, MapLight};
+use crate::ray_traversal::segment_clear_remembering;
 use crate::texel_footprint::{
     ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };

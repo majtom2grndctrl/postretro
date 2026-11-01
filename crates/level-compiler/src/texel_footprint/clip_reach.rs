@@ -11,8 +11,9 @@ use nalgebra::{Point3, Vector3};
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{Chart, RAY_EPSILON, ray_triangle_hit};
+use crate::lightmap_bake::{Chart, RAY_EPSILON};
 use crate::ray_traversal::BoundedRay;
+use crate::ray_traversal::ray_triangle_hit;
 
 /// Footprint reach covered by the pre-pass, in texels: every sample offset is
 /// under one texel from the centre at any count.

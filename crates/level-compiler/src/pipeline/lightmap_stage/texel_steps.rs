@@ -10,8 +10,9 @@ use bvh::bvh::Bvh;
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims};
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{CutParent, segment_clear};
+use crate::lightmap_bake::CutParent;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
+use crate::ray_traversal::segment_clear;
 use crate::texel_step_detector::{
     ChartSteps, CutSites, TexelRect, TexelStepReport, merge_chart_steps, scan_chart,
 };

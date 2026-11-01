@@ -14,9 +14,9 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
     CutParent, light_contribution_and_direction, light_texel_contribution_and_visibility_with,
-    segment_clear_remembering,
 };
 use crate::lightmap_layer::{SharedAtlas, light_may_reach};
+use crate::ray_traversal::segment_clear_remembering;
 use crate::texel_footprint::{
     ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };

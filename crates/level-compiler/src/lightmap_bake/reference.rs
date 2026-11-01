@@ -20,10 +20,8 @@ use crate::texel_footprint::{
     ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
 
-use super::{
-    Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas,
-    segment_clear_remembering,
-};
+use super::{Chart, CompositedAtlas, light_texel_contribution, scatter_chart_into_atlas};
+use crate::ray_traversal::segment_clear_remembering;
 
 /// Bake the full static-light atlas and dilate — the monolithic side of the
 /// byte-identity comparison seam.

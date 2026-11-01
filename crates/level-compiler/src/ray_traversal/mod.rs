@@ -6,6 +6,14 @@ use std::cell::Cell;
 use bvh::aabb::{Aabb, IntersectsAabb};
 use bvh::ray::Ray;
 
+mod occlusion;
+
+#[cfg(test)]
+pub(crate) use occlusion::segment_clear_full_scan;
+pub(crate) use occlusion::{
+    RAY_EPSILON, ray_triangle_hit, segment_clear, segment_clear_remembering,
+};
+
 /// A ray query for `Bvh::traverse_iterator` that accepts exactly the boxes
 /// the stock ray accepts, minus those it enters clearly beyond `bound`. The
 /// iterator's visit order is unchanged, so the hit a caller keeps on a distance

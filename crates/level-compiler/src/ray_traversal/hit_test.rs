@@ -278,7 +278,7 @@ impl TraceRay {
 /// Squared distance from `point` to the closed triangle `[a, b, c]`
 /// (Ericson, *Real-Time Collision Detection* §5.1.5). For a point in the
 /// triangle's plane it is the in-plane distance, rounded at the corners.
-fn distance_squared_to_triangle(point: DVec3, [a, b, c]: [DVec3; 3]) -> f64 {
+pub(super) fn distance_squared_to_triangle(point: DVec3, [a, b, c]: [DVec3; 3]) -> f64 {
     let ab = b - a;
     let ac = c - a;
     let ap = point - a;

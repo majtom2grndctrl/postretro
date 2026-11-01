@@ -204,6 +204,10 @@ pub(crate) fn without_far_scale<R>(work: impl FnOnce() -> R) -> R {
 }
 
 #[cfg(test)]
+mod census;
+#[cfg(test)]
+mod census_tests;
+#[cfg(test)]
 mod cost_tests;
 
 #[cfg(test)]

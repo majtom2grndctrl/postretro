@@ -1360,7 +1360,10 @@ pub(crate) fn segment_clear_remembering(
     last_occluder: &Cell<Option<usize>>,
 ) -> bool {
     #[cfg(test)]
-    crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
+    {
+        crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
+        crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
+    }
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -1386,6 +1389,8 @@ pub(crate) fn segment_clear_remembering(
     );
     let query = BoundedRay::new(&ray, max_distance);
     for prim in bvh.traverse_iterator(&query, primitives) {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;
@@ -1448,11 +1453,15 @@ pub(crate) fn segment_clear_full_scan(
 
 /// Double-sided Möller-Trumbore intersection.
 pub(crate) fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+    #[cfg(test)]
+    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);
     let det = edge1.dot(h);
     if det.abs() < 1.0e-8 {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
         return None;
     }
     let inv_det = 1.0 / det;

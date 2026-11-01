@@ -186,6 +186,8 @@ impl<'a> SceneTracer<'a> {
         max_distance: f32,
         mask: &M,
     ) -> (Option<Candidate>, Option<Candidate>) {
+        #[cfg(test)]
+        crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Gather);
         let ray = Ray::new(
             Point3::new(origin.x, origin.y, origin.z),
             Vector3::new(direction.x, direction.y, direction.z),
@@ -195,6 +197,8 @@ impl<'a> SceneTracer<'a> {
         let mut best: Option<Candidate> = None;
         let mut skipped: Option<Candidate> = None;
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
+            #[cfg(test)]
+            crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
             let masked = mask.skips(prim.index_offset);
             let start = prim.index_offset as usize;
             let end = start + prim.index_count as usize;
@@ -333,6 +337,8 @@ fn front_face_hit(
     p1: Vec3,
     p2: Vec3,
 ) -> Option<(f32, f32, f32)> {
+    #[cfg(test)]
+    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
     let edge1 = p1 - p0;
     let edge2 = p2 - p0;
     if edge1.cross(edge2).dot(dir) >= 0.0 {
@@ -341,6 +347,8 @@ fn front_face_hit(
     let h = dir.cross(edge2);
     let det = edge1.dot(h);
     if det.abs() < 1.0e-8 {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
         return None;
     }
     let inv_det = 1.0 / det;

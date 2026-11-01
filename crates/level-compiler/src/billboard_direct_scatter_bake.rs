@@ -629,6 +629,8 @@ fn scatter_visibility_seed(probe_index: u64, light_index: u64) -> u64 {
 }
 
 fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -644,6 +646,8 @@ fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     let geometry = &ctx.geometry.geometry;
     let query = BoundedRay::new(&ray, max_distance);
     for primitive in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         let mut triangle = primitive.index_offset as usize;
         let end = triangle + primitive.index_count as usize;
         while triangle + 3 <= end {
@@ -699,11 +703,15 @@ fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> boo
 }
 
 fn ray_triangle_distance(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+    #[cfg(test)]
+    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
     let edge_one = b - a;
     let edge_two = c - a;
     let h = direction.cross(edge_two);
     let determinant = edge_one.dot(h);
     if determinant.abs() < 1.0e-8 {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
         return None;
     }
     let inverse = 1.0 / determinant;

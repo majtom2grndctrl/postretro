@@ -111,6 +111,8 @@ pub(super) fn closest_hit(
     ray_dir: Vec3,
     max_distance: f32,
 ) -> Option<Hit> {
+    #[cfg(test)]
+    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Gather);
     let ray = Ray::new(
         Point3::new(ray_origin.x, ray_origin.y, ray_origin.z),
         Vector3::new(ray_dir.x, ray_dir.y, ray_dir.z),
@@ -118,6 +120,8 @@ pub(super) fn closest_hit(
     let query = BoundedRay::new(&ray, max_distance);
     let mut best: Option<Hit> = None;
     for prim in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         if closest_hit_in_leaf(ctx, prim, ray_origin, ray_dir, max_distance, &mut best)
             && let Some(hit) = &best
         {
@@ -136,11 +140,15 @@ pub(super) fn closest_hit(
 /// Double-sided Möller-Trumbore. Normal is flipped toward the incoming ray so
 /// indirect illumination does not vanish at back-facing walls.
 fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, Vec3)> {
+    #[cfg(test)]
+    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
     let edge1 = b - a;
     let edge2 = c - a;
     let h = dir.cross(edge2);
     let det = edge1.dot(h);
     if det.abs() < 1.0e-8 {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
         return None;
     }
     let inv_det = 1.0 / det;
@@ -167,7 +175,10 @@ fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Optio
 
 pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
     #[cfg(test)]
-    crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
+    {
+        crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
+        crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
+    }
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
@@ -182,6 +193,8 @@ pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bo
     let max_distance = length - RAY_EPSILON;
     let geom = &ctx.geometry.geometry;
     let blocks = |prim: &BvhPrimitive| {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         let mut tri = start;

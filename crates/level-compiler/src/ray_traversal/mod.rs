@@ -81,6 +81,8 @@ impl IntersectsAabb<f32, 3> for BoundedRay {
     /// The stock test and the bound prune in one pass over the six slab values.
     #[inline]
     fn intersects_aabb(&self, aabb: &Aabb<f32, 3>) -> bool {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.box_tests += 1);
         let min = [aabb.min.x, aabb.min.y, aabb.min.z];
         let max = [aabb.max.x, aabb.max.y, aabb.max.z];
         self.stock_entry(&min, &max)
@@ -101,6 +103,9 @@ impl IntersectsAabb<f32, 3> for BoundedRay {
 fn prune_limit(bound: f32) -> f32 {
     bound + bound.abs() * 1e-4 + 1e-2
 }
+
+#[cfg(test)]
+mod cost_tests;
 
 #[cfg(test)]
 mod tests {

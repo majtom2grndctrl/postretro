@@ -93,6 +93,8 @@ pub(crate) fn front_faces_clear(
     to: Vec3,
     admits: impl Fn([Vec3; 3]) -> bool,
 ) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
     let delta = to - from;
     let length = delta.length();
     if length <= 0.0 {
@@ -106,6 +108,8 @@ pub(crate) fn front_faces_clear(
     let query = BoundedRay::new(&ray, length);
     let geom = &geometry.geometry;
     for prim in bvh.traverse_iterator(&query, primitives) {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         let start = prim.index_offset as usize;
         let end = start + prim.index_count as usize;
         for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {

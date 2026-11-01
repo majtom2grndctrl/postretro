@@ -4,9 +4,9 @@ Derivation behind the brief's Decisions. Source read at 343ff98b6; `bvh` 0.12.0 
 
 | Evidence | Origin |
 |---|---|
-| `drafts/lightmap-reach-cull/leak-diagnosis-findings.md` §Verdict, §Cause 2 in detail, §H3 residue, §Visible impact, §Fix sizing | Spike: rays within 1 µm of a shared edge miss both triangles on movement-feel; crease edges miss each other by 1–250 µm; all leaks on buried texels; option (a), an in-plane tolerance, against option (b), snapping |
+| `ready/lightmap-reach-cull/leak-diagnosis-findings.md` §Verdict, §Cause 2 in detail, §H3 residue, §Visible impact, §Fix sizing | Spike: rays within 1 µm of a shared edge miss both triangles on movement-feel; crease edges miss each other by 1–250 µm; all leaks on buried texels; option (a), an in-plane tolerance, against option (b), snapping |
 | `drafts/lightmap-stage-sizing/findings.md` §1 | The remembered occluder answers 65.8% of hallway-mini's shadow rays, mostly on dark texels |
-| `drafts/lightmap-reach-cull/research.md` §Occluder caches | The downstream cull, and why it needs the cache to be answer-neutral |
+| `ready/lightmap-reach-cull/research.md` §Occluder caches | The downstream cull, and why it needs the cache to be answer-neutral |
 | `lightmap-reach-cull` brief review, premise P1–P2 and rows R7–R9, R15, R16, R25 | The prune path, the stock-ray reference, stale warm entries, pins that encode today's leak, SH cost |
 | `done/lightmap-exact-skips/research.md` §Margin derivation | The shaft-cull margins, sized to Möller–Trumbore |
 | `done/bake-ray-speed-contract.md` | The fused node test, the occluder cache, and the id-19 byte-identity invariant |

@@ -1,8 +1,8 @@
 // Host same-map restart followed through the client lifecycle.
 // See: context/lib/networking.md §Slot lifecycle
 
-use super::tests::{
-    catalog_map, connect_test_app_as_client, drop_in_flight_worker, install_capture_world,
+use super::lifecycle_test_fixtures::{
+    catalog_map, connect_test_app_as_client, drop_in_flight_load, install_capture_world,
     level_world, script_ctx, test_app,
 };
 use super::*;
@@ -151,8 +151,8 @@ fn host_restart_relevel_reinstalls_the_client_and_refires_level_load() {
         "a duplicate of the restart does not restart the reload"
     );
 
-    // The worker cannot load a fixture path; install its payload directly.
-    drop_in_flight_worker(&mut app);
+    // The load cannot read a fixture path; install its payload directly.
+    drop_in_flight_load(&mut app);
     install_and_reveal_e1m1(&mut app);
     assert_eq!(played(&app), ["intro"], "levelLoad fires for the new life");
     assert_eq!(
@@ -196,5 +196,5 @@ fn host_restart_during_settling_reloads_the_settling_life() {
     );
     assert!(app.settle.is_none(), "the settling life fires no reveal");
     assert_eq!(declared_reveal(&app), None);
-    drop_in_flight_worker(&mut app);
+    drop_in_flight_load(&mut app);
 }

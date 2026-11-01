@@ -31,10 +31,44 @@ mod tests;
 mod tuning;
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::fluid_surface::reflection_quality::FluidReflectionQuality;
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
 use postretro_render_cpu::planar_reflection::{MirrorCamera, PlanarPreset, planar_preset};
 use targets::PlanarTargets;
+
+/// A level set's planar mirror colour and depth targets with the mask and
+/// resolve groups over them, held by the set while another set is active.
+#[derive(Default)]
+pub(in crate::render) struct LentMirrorTargets(Option<PlanarTargets>);
+
+/// What the mirror targets bind from the planar pass (its pipelines'
+/// layouts and the inputs uniform), cloned so a level build on any thread
+/// builds a set's own mirror targets.
+#[derive(Clone)]
+pub(in crate::render) struct PlanarMirrorLayout {
+    pipelines: pipelines::PlanarPipelines,
+    inputs_buffer: wgpu::Buffer,
+}
+
+impl PlanarMirrorLayout {
+    /// A set's mirror targets at `extent` over `scene_depth`, for its publish
+    /// to lend.
+    pub(in crate::render) fn build(
+        &self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        extent: (u32, u32),
+    ) -> LentMirrorTargets {
+        LentMirrorTargets(Some(PlanarTargets::new(
+            device,
+            &self.pipelines,
+            &self.inputs_buffer,
+            scene_depth,
+            extent,
+        )))
+    }
+}
 
 /// The planar layer's texel format: premultiplied (c·X, c), filterable, as
 /// the screen-space reflection target.
@@ -107,13 +141,13 @@ impl PlanarReflectionPass {
         material_layout: &wgpu::BindGroupLayout,
         sprite_instance_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Camera Uniform"),
             size: UNIFORM_SIZE as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniform_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Mirror Camera Bind Group"),
             layout: camera_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -121,7 +155,7 @@ impl PlanarReflectionPass {
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
-        let inputs_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let inputs_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mask and Resolve Uniform"),
             size: PLANAR_INPUT_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -207,6 +241,28 @@ impl PlanarReflectionPass {
         }
         union_cells(main, &self.visible, &mut self.compose_union);
         &self.compose_union
+    }
+
+    /// The mirror targets' layouts and inputs uniform, for a level build.
+    pub(in crate::render) fn mirror_layout(&self) -> PlanarMirrorLayout {
+        PlanarMirrorLayout {
+            pipelines: self.pipelines.clone(),
+            inputs_buffer: self.inputs_buffer.clone(),
+        }
+    }
+
+    /// Take the active set's mirror targets back for its set, building
+    /// nothing.
+    pub(in crate::render) fn take_level_targets(&mut self) -> LentMirrorTargets {
+        LentMirrorTargets(self.targets.take())
+    }
+
+    /// Lend a just-published set's mirror targets, building nothing; the
+    /// inputs and camera re-upload on the next planar frame.
+    pub(in crate::render) fn lend_level_targets(&mut self, lent: LentMirrorTargets) {
+        self.targets = lent.0;
+        self.uploaded_inputs = None;
+        self.uploaded_camera = None;
     }
 
     /// Drop the level's mirror view, visible cells, targets, world draws and

@@ -11,7 +11,6 @@ use winit::event_loop::ActiveEventLoop;
 use crate::App;
 use crate::session::level_streaming::settle::{ResourceSettle, SettleReport, SettleSetSize};
 use crate::startup::BootState;
-use crate::startup::loading_screen::LOAD_PARSE_SHARE;
 use crate::startup::settle_log::SettleLog;
 
 /// How long a level entry waits for its settle set before revealing with
@@ -30,8 +29,6 @@ pub(crate) enum SettleRelease {
 #[derive(Debug)]
 pub(crate) struct SettleState {
     started: Instant,
-    /// The largest settle-set shortfall seen: the bar's denominator.
-    peak_unsettled: usize,
     /// Decided on the previous Settling frame, which painted the bar full; the
     /// next redraw, after its request drain, reveals.
     release: Option<SettleRelease>,
@@ -39,16 +36,18 @@ pub(crate) struct SettleState {
     hold: Duration,
     /// What the per-entry `[Settling]` line reports.
     log: SettleLog,
+    /// Line C's `settle_hold` was recorded, at the first release decided.
+    hold_marked: bool,
 }
 
 impl SettleState {
     pub(crate) fn new(started: Instant) -> Self {
         Self {
             started,
-            peak_unsettled: 0,
             release: None,
             hold: Duration::ZERO,
             log: SettleLog::default(),
+            hold_marked: false,
         }
     }
 }
@@ -72,21 +71,6 @@ fn unsettled_units(report: SettleReport) -> Option<usize> {
         ResourceSettle::Unsettled(count) => Some(count),
     };
     Some(units(report.sh)? + units(report.lightmap)?)
-}
-
-/// The bar's value through Settling, from the parse share up to 1.0, which a
-/// release reaches. A shortfall that grows raises the denominator instead of
-/// moving the bar back; the caller still never lowers the bar.
-pub(crate) fn settle_progress(unsettled: usize, peak_unsettled: usize, release: bool) -> f32 {
-    if release {
-        return 1.0;
-    }
-    let done = if peak_unsettled == 0 {
-        0.0
-    } else {
-        1.0 - unsettled as f32 / peak_unsettled as f32
-    };
-    LOAD_PARSE_SHARE + (1.0 - LOAD_PARSE_SHARE) * done
 }
 
 impl App {
@@ -237,8 +221,8 @@ impl App {
     /// frame, so a mouse delta or press from that gap neither turns the pose
     /// the reveal frame presents nor reaches its first tick. The frame loop
     /// applies no look on the reveal frame, so a held stick does not turn it
-    /// either.
-    fn reveal_if_released(&mut self) -> bool {
+    /// either. Tests reveal a committed level through it.
+    pub(in crate::startup) fn reveal_if_released(&mut self) -> bool {
         let Some(release) = self.settle.as_ref().and_then(|settle| settle.release) else {
             return false;
         };
@@ -247,25 +231,25 @@ impl App {
         true
     }
 
-    /// Decide this frame's release and move the bar, never down.
-    fn advance_settle(&mut self, report: SettleReport, now: Instant) {
+    /// Decide this frame's release and move the bar, never down: the settle
+    /// set's shortfall credits the load's Settling phase, and a release
+    /// (settled or timed out) fills the bar. The first release decided
+    /// closes line C's `settle_hold`, as the `[Settling]` line's `hold_ms`
+    /// ends at the deciding frame.
+    pub(in crate::startup) fn advance_settle(&mut self, report: SettleReport, now: Instant) {
         let Some(settle) = self.settle.as_mut() else {
             return;
         };
         let elapsed = now.duration_since(settle.started);
         let release = settle_decision(report, elapsed);
-        let unsettled = unsettled_units(report);
-        if let Some(unsettled) = unsettled {
-            settle.peak_unsettled = settle.peak_unsettled.max(unsettled);
-        }
         settle.release = release;
         settle.hold = elapsed;
-        let progress = match unsettled {
-            Some(unsettled) => settle_progress(unsettled, settle.peak_unsettled, release.is_some()),
-            None if release.is_some() => 1.0,
-            None => LOAD_PARSE_SHARE,
-        };
-        self.raise_loading_progress(progress);
+        let close_hold = release.is_some() && !settle.hold_marked;
+        settle.hold_marked |= close_hold;
+        if close_hold {
+            self.level_timings.record("settle_hold");
+        }
+        self.credit_settle_progress(unsettled_units(report), release.is_some());
     }
 
     /// The reveal edge: the held level becomes the Running level. A
@@ -279,11 +263,19 @@ impl App {
                 report.lightmap.describe(),
             );
         }
+        let mut hold_marked = false;
         if let Some(settle) = self.settle.take() {
             let timed_out = matches!(release, SettleRelease::TimedOut(_));
+            hold_marked = settle.hold_marked;
             self.settle_summary = Some(settle.log.finish(timed_out, settle.hold));
         }
-        self.level_timings.record("settle_hold");
+        // Line C's `reveal`: the deciding frame to this edge, a timed-out
+        // reveal included. A hold no deciding frame closed (none in
+        // production: a release is always decided first) is closed here.
+        if !hold_marked {
+            self.level_timings.record("settle_hold");
+        }
+        self.level_timings.record("reveal");
         self.end_loading_screen();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.clear_splash();
@@ -331,6 +323,7 @@ mod tests {
     use crate::input::{Action, ButtonState};
     use crate::startup::lifecycle::tests::test_app;
     use crate::startup::{LevelLoadEntry, LevelRequest};
+    use postretro_level_loader::LoadPhase;
 
     fn report(sh: ResourceSettle, lightmap: ResourceSettle) -> SettleReport {
         SettleReport { sh, lightmap }
@@ -360,17 +353,33 @@ mod tests {
     }
 
     // A growing shortfall holds the bar; a shrinking one advances it;
-    // a release fills it.
+    // a release fills it. Settling's units go to the load's Settling phase.
     #[test]
     fn settle_progress_is_monotone_and_reaches_one_before_reveal() {
-        let start = settle_progress(4, 4, false);
-        assert!((start - LOAD_PARSE_SHARE).abs() < 1e-6);
-        let half = settle_progress(2, 4, false);
-        assert!(half > start && half < 1.0);
-        // The total grows to 8 with 4 left: the formula reads lower, which the
-        // caller's never-decreasing write absorbs.
-        assert!(settle_progress(4, 8, false) <= half);
-        assert_eq!(settle_progress(3, 8, true), 1.0);
+        let started = Instant::now();
+        let mut app = settling_app(started);
+        let shown = |app: &App| match progress(app) {
+            SlotValue::Number(shown) => shown,
+            other => panic!("progress is a number: {other:?}"),
+        };
+        app.advance_settle(unsettled(4), started);
+        let start = shown(&app);
+        assert!((start - BUNDLE_SHARE).abs() < 1e-5, "{start}");
+        app.advance_settle(unsettled(2), started);
+        let half = shown(&app);
+        assert!(half > start && half < 1.0, "{half}");
+        let counter = app.loading_screen_progress().unwrap();
+        assert_eq!(counter.phase(LoadPhase::Settling).counts(), (2, 4));
+        // A shortfall that grows stalls the bar instead of moving it back.
+        app.advance_settle(unsettled(8), started);
+        assert_eq!(shown(&app), half);
+        app.advance_settle(
+            report(ResourceSettle::Unsettled(3), ResourceSettle::NotStreamed),
+            started + SETTLE_TIMEOUT,
+        );
+        assert!(release(&app).is_some(), "timed out");
+        assert_eq!(shown(&app), 1.0, "a timed-out release fills the bar too");
+        assert!(counter.is_finished());
     }
 
     const TIMEOUT_WARNING: &str = "settle timeout";
@@ -393,12 +402,20 @@ mod tests {
         }
     }
 
+    /// What a committed bundle's load shows entering Settling: parse, prep
+    /// and upload done, Settling's share to come.
+    const BUNDLE_SHARE: f32 = (1.0 - postretro_level_loader::LOAD_PHASE_WEIGHT_SETTLING) as f32;
+
     /// An app holding a level in Settling since `started`, its loading
-    /// screen active at the parse share.
+    /// screen active with every phase before Settling finished, as a
+    /// committed bundle leaves it.
     fn settling_app(started: Instant) -> App {
         let mut app = test_app();
-        app.begin_loading_screen(&entry());
-        app.raise_loading_progress(LOAD_PARSE_SHARE);
+        let counter = app.begin_loading_screen(&entry());
+        for phase in [LoadPhase::Parse, LoadPhase::Prep, LoadPhase::Upload] {
+            counter.phase(phase).finish();
+        }
+        app.advance_loading_screen(0.0);
         app.level = Some(crate::runtime_movers::tests::single_cell_world(
             Default::default(),
         ));
@@ -549,6 +566,10 @@ mod tests {
             has_mark(&app, "settle_hold"),
             "the hold is its own line C mark"
         );
+        assert!(
+            has_mark(&app, "reveal"),
+            "a timed-out reveal is line C's reveal mark too"
+        );
     }
 
     const SETTLE_LINE: &str = "[Settling] entry outcome=";
@@ -644,16 +665,25 @@ mod tests {
     fn settle_progress_never_decreases_across_a_growing_set() {
         let started = Instant::now();
         let mut app = settling_app(started);
-        let mut last = LOAD_PARSE_SHARE;
+        let mut last = BUNDLE_SHARE;
         for count in [4, 2, 6, 3, 0] {
             app.advance_settle(unsettled(count), started);
             let SlotValue::Number(shown) = progress(&app) else {
                 panic!("progress is a number");
             };
             assert!(shown >= last, "{count}: {shown} < {last}");
+            assert!(shown < 1.0, "{count}: below 1.0 until the release");
             last = shown;
         }
-        assert_eq!(last, 1.0, "the settled frame fills the bar");
+        app.advance_settle(
+            report(ResourceSettle::Settled, ResourceSettle::NotStreamed),
+            started,
+        );
+        assert!(release(&app).is_some());
+        let SlotValue::Number(shown) = progress(&app) else {
+            panic!("progress is a number");
+        };
+        assert_eq!(shown, 1.0, "the settled frame fills the bar");
     }
 
     // A request drained on a frame whose settle check would pass wins.
@@ -671,7 +701,9 @@ mod tests {
         assert_eq!(app.boot_state, BootState::Frontend);
         assert!(app.settle.is_none(), "no stale settle or timer");
         assert!(!app.pending_level_log, "no reveal edge fired");
-        assert!(!has_mark(&app, "settle_hold"));
+        // The deciding frame closed line C's hold; no reveal mark follows.
+        assert!(has_mark(&app, "settle_hold"));
+        assert!(!has_mark(&app, "reveal"));
         assert_eq!(
             progress(&app),
             SlotValue::Number(0.0),

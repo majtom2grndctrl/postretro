@@ -34,6 +34,45 @@ pub(crate) struct WantedStreaming<'a> {
 }
 
 impl LevelStreaming {
+    /// Replace every session with the ones a level install built for its
+    /// level ([`super::PreparedLevelStreaming`]): the previous level's
+    /// sessions and issuer retire off the frame path, and the level's hints
+    /// and cell-demand stage (over `residency_set`, its id 51) restart. A
+    /// level that streams nothing releases everything, as
+    /// [`Self::ensure_sessions`] does. Fails on nothing: every fallible step
+    /// ran when the sessions were built.
+    pub(crate) fn install_prepared(
+        &mut self,
+        sh: &mut Option<ShStreamingSession>,
+        residency_set: Option<&CellResidencySetSection>,
+        prepared: super::PreparedLevelStreaming,
+    ) {
+        let super::PreparedLevelStreaming {
+            hints,
+            sh: sh_session,
+            lightmap,
+        } = prepared;
+        if sh_session.is_none() && lightmap.is_none() {
+            self.clear(sh);
+            return;
+        }
+        // Cancel the old I/O now. Its threads retire off the frame path; the
+        // replacement issuer starts only after they have joined.
+        self.retire(sh);
+        // Hints, the cell-demand stage and the device-limit warning belong
+        // to the level, and this is a new one.
+        self.hints = hints;
+        self.cell_demand = residency_set.map(|set| CellDemand::new(set.max_lead));
+        self.sh_device_limit_warned = Arc::default();
+        if let Some(mut streaming) = sh_session {
+            streaming.share_device_limit_warning(Arc::clone(&self.sh_device_limit_warned));
+            *sh = Some(streaming);
+        }
+        if let Some(session) = lightmap {
+            self.install_lightmap(session);
+        }
+    }
+
     /// Makes the sessions match the loaded level. Returns whether anything
     /// streams; when nothing does, every session is released. `make_sh`
     /// builds a fresh SH session from its manifest, its mode, and the
@@ -125,7 +164,8 @@ impl LevelStreaming {
         if let Some(view) = lightmap
             && self.lightmap.is_none()
         {
-            self.install_lightmap(LightmapStreamingSession::new(view, self.hints.as_deref())?);
+            let session = LightmapStreamingSession::new(view, self.hints.as_deref())?;
+            self.install_lightmap(session);
         }
         Ok(true)
     }

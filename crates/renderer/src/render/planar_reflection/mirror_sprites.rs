@@ -1,7 +1,10 @@
 // Mirror billboards: the planar mirror's own sprite instance store, drawn through the billboard pipeline.
 // See: context/lib/rendering_pipeline.md §7.3a, §7.4
 
-use crate::render::smoke::{SmokePass, align_up_to_dynamic_offset, build_instance_bind_group};
+use crate::render::gpu_create::GpuCreate;
+use crate::render::smoke::{
+    SmokeLevelCollections, SmokePass, align_up_to_dynamic_offset, build_instance_bind_group,
+};
 use postretro_render_cpu::smoke::SPRITE_INSTANCE_SIZE;
 
 /// One collection's mirror sprites this frame: a region of the store.
@@ -35,7 +38,7 @@ pub(super) struct MirrorSprites {
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Planar Mirror Sprite Instance Buffer"),
         size: capacity as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -136,13 +139,18 @@ impl MirrorSprites {
     /// and 3 (SH) must be set by the caller; group 0 carries the mirror's
     /// raster view-projection and eye, so every quad faces the mirror camera.
     /// A collection with no registered sheet this level draws nothing.
-    pub fn record_draws(&self, pass: &mut wgpu::RenderPass<'_>, smoke: &SmokePass) {
+    pub fn record_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        smoke: &SmokePass,
+        collections: &SmokeLevelCollections,
+    ) {
         if self.batch_count == 0 {
             return;
         }
         pass.set_pipeline(smoke.pipeline());
         for batch in &self.batches[..self.batch_count] {
-            let Some(sheet) = smoke.sheet_bind_group(&batch.collection) else {
+            let Some(sheet) = collections.sheet_bind_group(&batch.collection) else {
                 continue;
             };
             pass.set_bind_group(1, sheet, &[]);

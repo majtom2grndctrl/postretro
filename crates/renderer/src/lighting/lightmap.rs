@@ -4,7 +4,6 @@
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 mod bindings;
-mod plan;
 mod pool;
 #[cfg(test)]
 mod pool_sample_test;
@@ -15,25 +14,28 @@ pub(crate) mod test_fixtures;
 mod tests;
 mod upload;
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::SectionId;
 use postretro_level_format::lightmap::LightmapBlockIndex;
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 use postretro_render_cpu::lightmap_pool::{block_table_bytes, placeholder_block_table};
-use wgpu::util::DeviceExt;
 
 use crate::render::residency::{ResidencyAllocation, ResidencyAllocationState, texture_row};
 use crate::render::{LIGHTMAP_SHADOWMASK, LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE};
 
+#[cfg(test)]
+pub(crate) use bindings::animated_block_table_bytes;
 use bindings::{ANIMATED_BLOCK_TABLE_BYTES, BIND_BLOCK_TABLE, Group4Bindings};
 pub(crate) use bindings::{
-    animated_block_table_bytes, bind_group_layout_entries, block_table_bind_group_layout_entries,
-    filtering_sampler_descriptor,
+    bind_group_layout_entries, block_table_bind_group_layout_entries, filtering_sampler_descriptor,
 };
-#[cfg(test)]
-pub(crate) use plan::StaticPoolPlan;
-pub(crate) use plan::{StaticPool, StreamingPoolPlan, plan_static_pool, plan_streaming_pool};
 pub(crate) use pool::upload_static_pool;
+#[cfg(test)]
+pub(crate) use postretro_render_cpu::lightmap_pool::StaticPoolPlan;
+pub(crate) use postretro_render_cpu::lightmap_pool::{StaticPool, StreamingPoolPlan};
+#[cfg(test)]
+pub(crate) use postretro_render_cpu::lightmap_pool::{plan_static_pool, plan_streaming_pool};
 use stream::{DrainEffects, LightmapStreamState};
 pub use stream::{LightmapResidencyDrainError, LightmapStreamCounters};
 pub(crate) use upload::upload_placeholder_shadowmask;
@@ -107,7 +109,7 @@ impl LightmapResources {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         index: Option<&LightmapBlockIndex>,
         shadowmask: Option<&ShadowmaskBlockIndex>,
         pool: &StaticPool,
@@ -144,7 +146,7 @@ impl LightmapResources {
             filtering_sampler: device.create_sampler(&filtering_sampler_descriptor()),
             animated_atlas_view: animated_atlas_view.clone(),
             animated_direction_view: animated_direction_view.clone(),
-            animated_block_table: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            animated_block_table: device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Animated LM Block Table"),
                 contents: animated_block_table,
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -241,7 +243,7 @@ impl LightmapResources {
         ];
 
         let bind_group = group4.bind(device, &irradiance_tex, &direction_tex, &shadowmask_tex);
-        let block_table_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let block_table_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Block Table Bind Group"),
             layout: block_table_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -338,7 +340,7 @@ impl LightmapResources {
 fn table_buffer(device: &wgpu::Device, table: &[u8]) -> wgpu::Buffer {
     // `COPY_DST` leaves room for per-entry residency writes; only a streamed
     // pool's drains write it after install.
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Lightmap Block Table"),
         contents: table,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,

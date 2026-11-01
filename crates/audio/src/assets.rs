@@ -1,8 +1,10 @@
 // Sound asset loading and the per-level sound registry. Resolves paths under
 // `content/<mod>/sounds/`, decodes SFX in memory (static) and probes music for
 // streaming, and holds the result keyed by content-relative name. Consumed by
-// `play`. Load and decode failures degrade gracefully: a missing or undecodable
-// file logs an `[Audio]` warning, is skipped, and never panics.
+// `play`. Loading splits into a pure, `Send` decode half a level load may run
+// off the main thread, and a main-thread registration half that registers in
+// sorted path order. Load and decode failures degrade gracefully: a missing or
+// undecodable file logs an `[Audio]` warning, is skipped, and never panics.
 // See: context/lib/audio.md · context/lib/resource_management.md §7.2
 
 use std::collections::HashMap;
@@ -120,27 +122,40 @@ impl SoundRegistry {
     /// memory as static. A missing `sounds/` directory is not an error (the mod
     /// simply ships no sounds). Individual unreadable or undecodable files log an
     /// `[Audio]` warning, are skipped, and never panic.
+    ///
+    /// The two halves in sequence: [`decode_level_sounds`], which a load may
+    /// run off the main thread, then [`Self::register_decoded`].
     pub(crate) fn load_from_content_root(&mut self, content_root: &Path) {
+        self.register_decoded(decode_level_sounds(content_root));
+    }
+
+    /// Replace the registry's sounds with a decoded set, registering its files
+    /// in sorted path order whatever order they were decoded in: a later path
+    /// wins a shared key, with a warning. Every warning the decode deferred
+    /// (an unreadable directory, a file outside the root, an undecodable file)
+    /// logs here, in the order the scan and the files would have raised it.
+    pub(crate) fn register_decoded(&mut self, decoded: DecodedLevelSounds) {
         self.clear();
 
-        let sounds_root = content_root.join(SOUNDS_DIR);
-        if !sounds_root.is_dir() {
+        let DecodedLevelSounds {
+            sounds_root,
+            files,
+            scan_warnings,
+        } = decoded;
+        let Some(files) = files else {
             // No sound assets shipped with this mod — not an error.
             log::info!(
                 "[Audio] no sound directory at {} — level has no sounds",
                 sounds_root.display(),
             );
             return;
+        };
+        for warning in scan_warnings {
+            log::warn!("{warning}");
         }
 
-        let mut files: Vec<PathBuf> = Vec::new();
-        collect_sound_files(&sounds_root, &mut files);
-        // Deterministic registration order so logs and any future tie-breaking
-        // are reproducible across runs (directory iteration order is not).
-        files.sort();
-
-        for path in files {
-            self.register_file(&sounds_root, &path);
+        for file in files {
+            self.register_file(file);
         }
 
         log::info!(
@@ -150,72 +165,279 @@ impl SoundRegistry {
         );
     }
 
-    /// Decode and register a single sound file. `sounds_root` is the `sounds/`
-    /// directory the key is made relative to. Failures warn and skip.
-    fn register_file(&mut self, sounds_root: &Path, path: &Path) {
-        let key = match registry_key(sounds_root, path) {
-            Some(k) => k,
-            None => {
+    /// Register one decoded file. Failures warn and skip.
+    fn register_file(&mut self, file: DecodedSoundFile) {
+        let DecodedSoundFile { path, outcome, .. } = file;
+        match outcome {
+            DecodeOutcome::OutsideRoot => {
                 log::warn!(
                     "[Audio] sound '{}' is outside the sounds root — skipped",
                     path.display(),
                 );
-                return;
             }
-        };
-
-        if is_streaming(&key) {
-            // Probe-decode so an undecodable music file degrades at load time;
-            // the playable entry re-opens the path per playback. Re-opening does
-            // blocking disk I/O on the calling thread; acceptable at level-load
-            // time but revisit if streaming assets are loaded mid-frame.
-            match StreamingSoundData::from_file(path) {
-                Ok(_probe) => {
-                    if self.sounds.contains_key(&key) {
-                        log::warn!(
-                            "[Audio] registry key '{}' already occupied — overwriting with '{}'",
-                            key,
-                            path.display(),
-                        );
-                    }
-                    self.sounds.insert(
+            DecodeOutcome::Failed {
+                streaming: true,
+                error,
+            } => {
+                log::warn!(
+                    "[Audio] cannot decode streaming sound '{}': {error} — skipped",
+                    path.display(),
+                );
+            }
+            DecodeOutcome::Failed {
+                streaming: false,
+                error,
+            } => {
+                log::warn!(
+                    "[Audio] cannot decode sound '{}': {error} — skipped",
+                    path.display(),
+                );
+            }
+            DecodeOutcome::Decoded { key, sound } => {
+                if self.sounds.contains_key(&key) {
+                    log::warn!(
+                        "[Audio] registry key '{}' already occupied — overwriting with '{}'",
                         key,
-                        LoadedSound::Streaming {
-                            path: path.to_path_buf(),
-                        },
-                    );
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[Audio] cannot decode streaming sound '{}': {err} — skipped",
                         path.display(),
                     );
                 }
+                self.sounds.insert(key, sound);
             }
-        } else {
-            match StaticSoundData::from_file(path) {
-                Ok(data) => {
-                    if self.sounds.contains_key(&key) {
-                        log::warn!(
-                            "[Audio] registry key '{}' already occupied — overwriting with '{}'",
-                            key,
-                            path.display(),
-                        );
-                    }
-                    self.sounds.insert(key, LoadedSound::Static(Box::new(data)));
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[Audio] cannot decode sound '{}': {err} — skipped",
-                        path.display(),
-                    );
+        }
+    }
+
+    /// One line per registered sound, sorted by key: its key, its kind, and
+    /// what identifies the file that won it (the path of a streaming entry,
+    /// the frame count and rate of a static one).
+    pub(crate) fn summary(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .sounds
+            .iter()
+            .map(|(key, sound)| format!("{key}: {}", sound_summary(sound)))
+            .collect();
+        lines.sort();
+        lines
+    }
+}
+
+/// A registered sound's kind and what identifies the file it came from.
+fn sound_summary(sound: &LoadedSound) -> String {
+    match sound {
+        LoadedSound::Static(data) => format!(
+            "static {} frames @ {} Hz",
+            data.num_frames(),
+            data.sample_rate
+        ),
+        LoadedSound::Streaming { path } => format!("streaming {}", path.display()),
+    }
+}
+
+/// The sound files of one level's `sounds/` directory, found and sorted but
+/// not yet decoded: the first step of the decode half. Pure and `Send`, so a
+/// load may decode its files on any thread, in any order.
+#[derive(Debug)]
+pub struct LevelSoundScan {
+    sounds_root: PathBuf,
+    /// Sorted. `None` when the directory does not exist.
+    files: Option<Vec<PathBuf>>,
+    /// Each unreadable subdirectory's warning, logged at registration.
+    scan_warnings: Vec<String>,
+}
+
+/// One scanned file, decoded (or found unusable). Opaque: no kira type
+/// crosses the crate's surface.
+pub struct DecodedSoundFile {
+    /// The file's position in its scan's sorted list.
+    index: usize,
+    path: PathBuf,
+    outcome: DecodeOutcome,
+}
+
+enum DecodeOutcome {
+    OutsideRoot,
+    Decoded { key: String, sound: LoadedSound },
+    Failed { streaming: bool, error: String },
+}
+
+/// One level's sounds, decoded and in sorted path order, waiting for the
+/// main thread's registration. Opaque: no kira type crosses the crate's
+/// surface. A missing or empty directory and an undecodable file are all
+/// ordinary values here, never errors.
+pub struct DecodedLevelSounds {
+    sounds_root: PathBuf,
+    /// Sorted by path. `None` when the directory does not exist.
+    files: Option<Vec<DecodedSoundFile>>,
+    scan_warnings: Vec<String>,
+}
+
+impl std::fmt::Debug for DecodedLevelSounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedLevelSounds")
+            .field("sounds_root", &self.sounds_root)
+            .field("files", &self.files.as_ref().map(Vec::len))
+            .finish_non_exhaustive()
+    }
+}
+
+// Compile-time guard: the decode half runs on the engine's load pool and
+// hands its products to the main thread, so kira's decoded sound data and
+// every decode-half product must be `Send`.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<StaticSoundData>();
+    assert_send::<LoadedSound>();
+    assert_send::<LevelSoundScan>();
+    assert_send::<DecodedSoundFile>();
+    assert_send::<DecodedLevelSounds>();
+};
+
+/// Find and sort every `.ogg`/`.wav` file under `<content_root>/sounds/`.
+/// Logs nothing: the warnings wait for registration.
+pub fn scan_level_sounds(content_root: &Path) -> LevelSoundScan {
+    let sounds_root = content_root.join(SOUNDS_DIR);
+    if !sounds_root.is_dir() {
+        return LevelSoundScan {
+            sounds_root,
+            files: None,
+            scan_warnings: Vec::new(),
+        };
+    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut scan_warnings = Vec::new();
+    collect_sound_files(&sounds_root, &mut files, &mut scan_warnings);
+    // Deterministic registration order so logs and any future tie-breaking
+    // are reproducible across runs (directory iteration order is not).
+    files.sort();
+    LevelSoundScan {
+        sounds_root,
+        files: Some(files),
+        scan_warnings,
+    }
+}
+
+/// The decode half in full: scan, then decode every file in sorted order.
+/// `Audio::register_level_sounds` registers the result.
+pub fn decode_level_sounds(content_root: &Path) -> DecodedLevelSounds {
+    let scan = scan_level_sounds(content_root);
+    let decoded = (0..scan.file_count())
+        .map(|index| scan.decode_file(index))
+        .collect();
+    scan.finish(decoded)
+}
+
+impl LevelSoundScan {
+    /// How many files the scan found.
+    pub fn file_count(&self) -> usize {
+        self.files.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Decode the scan's `index`th file (in sorted order): a static clip
+    /// decoded into memory, or a `music/` track probe-opened for streaming.
+    /// Never fails; an unusable file comes back as the warning registration
+    /// will log. Panics if `index` is not below [`Self::file_count`].
+    pub fn decode_file(&self, index: usize) -> DecodedSoundFile {
+        let path = &self.files.as_ref().expect("a scan with files")[index];
+        let outcome = match registry_key(&self.sounds_root, path) {
+            None => DecodeOutcome::OutsideRoot,
+            Some(key) if is_streaming(&key) => {
+                // Probe-decode so an undecodable music file degrades at load
+                // time; the playable entry re-opens the path per playback.
+                // Re-opening does blocking disk I/O on the calling thread;
+                // acceptable at level-load time but revisit if streaming
+                // assets are loaded mid-frame.
+                match StreamingSoundData::from_file(path) {
+                    Ok(_probe) => DecodeOutcome::Decoded {
+                        key,
+                        sound: LoadedSound::Streaming { path: path.clone() },
+                    },
+                    Err(err) => DecodeOutcome::Failed {
+                        streaming: true,
+                        error: err.to_string(),
+                    },
                 }
             }
+            Some(key) => match StaticSoundData::from_file(path) {
+                Ok(data) => DecodeOutcome::Decoded {
+                    key,
+                    sound: LoadedSound::Static(Box::new(data)),
+                },
+                Err(err) => DecodeOutcome::Failed {
+                    streaming: false,
+                    error: err.to_string(),
+                },
+            },
+        };
+        DecodedSoundFile {
+            index,
+            path: path.clone(),
+            outcome,
+        }
+    }
+
+    /// Gather the decoded files, in whatever order they finished, back into
+    /// the scan's sorted path order. A file decoded twice keeps one result;
+    /// one never decoded is left out.
+    pub fn finish(self, mut decoded: Vec<DecodedSoundFile>) -> DecodedLevelSounds {
+        decoded.sort_by_key(|file| file.index);
+        decoded.dedup_by_key(|file| file.index);
+        DecodedLevelSounds {
+            sounds_root: self.sounds_root,
+            files: self.files.map(|_| decoded),
+            scan_warnings: self.scan_warnings,
         }
     }
 }
 
-/// Whether a registry key belongs to the streaming collection. The rule is a
+impl DecodedSoundFile {
+    /// The file's position in its scan's sorted list.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
+
+impl DecodedLevelSounds {
+    /// How many files the set holds, decodable or not.
+    pub fn file_count(&self) -> usize {
+        self.files.as_ref().map_or(0, Vec::len)
+    }
+
+    /// The scan's warnings, then one line per file in registration order
+    /// (its path and what decoding made of it): a comparable view of the set
+    /// for tests and diagnostics.
+    pub fn summary(&self) -> Vec<String> {
+        let Some(files) = &self.files else {
+            return vec![format!(
+                "no sound directory at {}",
+                self.sounds_root.display()
+            )];
+        };
+        let mut lines = self.scan_warnings.clone();
+        lines.extend(files.iter().map(|file| {
+            let outcome = match &file.outcome {
+                DecodeOutcome::OutsideRoot => "outside the sounds root".to_string(),
+                DecodeOutcome::Failed { streaming, error } => {
+                    format!("undecodable (streaming: {streaming}): {error}")
+                }
+                DecodeOutcome::Decoded { key, sound } => {
+                    format!("{key}: {}", sound_summary(sound))
+                }
+            };
+            format!("{} -> {outcome}", file.path.display())
+        }));
+        lines
+    }
+
+    /// What registering the set leaves in a registry, one line per key,
+    /// sorted: registration's own code on a scratch registry, its warnings
+    /// included. For tests and diagnostics on a machine with no audio device.
+    pub fn registry_summary(self) -> Vec<String> {
+        let mut registry = SoundRegistry::new();
+        registry.register_decoded(self);
+        registry.summary()
+    }
+}
+
+// Whether a registry key belongs to the streaming collection. The rule is a
 /// simple first-segment match against `music/`; subdirectories under it (e.g.
 /// `music/ambient/track`) stream too.
 fn is_streaming(key: &str) -> bool {
@@ -250,15 +472,16 @@ fn is_supported_extension(path: &Path) -> bool {
 }
 
 /// Recursively collect `.ogg`/`.wav` files under `dir` into `out`. Unreadable
-/// subdirectories warn and are skipped rather than aborting the scan.
-fn collect_sound_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// subdirectories are skipped rather than aborting the scan; each one's
+/// warning goes to `warnings`, for registration to log.
+fn collect_sound_files(dir: &Path, out: &mut Vec<PathBuf>, warnings: &mut Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
-            log::warn!(
+            warnings.push(format!(
                 "[Audio] cannot read sound directory {}: {err} — skipped",
                 dir.display(),
-            );
+            ));
             return;
         }
     };
@@ -266,7 +489,7 @@ fn collect_sound_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_sound_files(&path, out);
+            collect_sound_files(&path, out, warnings);
         } else if is_supported_extension(&path) {
             out.push(path);
         }
@@ -392,5 +615,131 @@ mod tests {
             "a subsequent load repopulates the same entries",
         );
         assert!(registry.contains("sfx/test_tone"));
+    }
+
+    /// A mono 16-bit PCM WAV of `frames` silent frames at 8 kHz.
+    fn wav_bytes(frames: u32) -> Vec<u8> {
+        let data_len = frames * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&8000u32.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_len as usize, 0);
+        bytes
+    }
+
+    /// A fresh scratch directory under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "postretro_audio_{label}_{}_{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A content root whose `sounds/` holds a shared key (`sfx/dup` from a
+    /// `.ogg` and a `.wav`), an undecodable file, a nested clip and a music
+    /// track.
+    fn mixed_content_root() -> Scratch {
+        let root = Scratch::new("mixed");
+        let sounds = root.path().join(SOUNDS_DIR);
+        for dir in ["sfx/nested", "music"] {
+            std::fs::create_dir_all(sounds.join(dir)).unwrap();
+        }
+        let dev = dev_content_root().join(SOUNDS_DIR);
+        std::fs::copy(dev.join("fixtures/jump.ogg"), sounds.join("sfx/dup.ogg")).unwrap();
+        std::fs::write(sounds.join("sfx/dup.wav"), wav_bytes(40)).unwrap();
+        std::fs::write(sounds.join("sfx/broken.wav"), b"not a wav").unwrap();
+        std::fs::write(sounds.join("sfx/nested/a.wav"), wav_bytes(10)).unwrap();
+        std::fs::copy(
+            dev.join("music/test_loop.ogg"),
+            sounds.join("music/loop.ogg"),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn decode_then_register_matches_load_from_content_root() {
+        let mixed = mixed_content_root();
+        for root in [dev_content_root(), mixed.path().to_path_buf()] {
+            let mut loaded = SoundRegistry::new();
+            loaded.load_from_content_root(&root);
+            let mut registered = SoundRegistry::new();
+            registered.register_decoded(decode_level_sounds(&root));
+            assert_eq!(registered.summary(), loaded.summary(), "{}", root.display());
+            assert!(!loaded.summary().is_empty());
+        }
+    }
+
+    // Registration follows the scan's sorted path order, never the order the
+    // files finished decoding: the later path wins a shared key.
+    #[test]
+    fn registration_order_is_sorted_path_order_whatever_the_decode_order() {
+        let root = mixed_content_root();
+        let in_order = decode_level_sounds(root.path());
+        let scan = scan_level_sounds(root.path());
+        assert_eq!(scan.file_count(), 5);
+        let reversed: Vec<DecodedSoundFile> = (0..scan.file_count())
+            .rev()
+            .map(|index| scan.decode_file(index))
+            .collect();
+        assert_eq!(reversed[0].index(), 4);
+        let finished = scan.finish(reversed);
+        assert_eq!(finished.summary(), in_order.summary());
+        let registry = finished.registry_summary();
+        assert_eq!(registry, in_order.registry_summary());
+        assert!(
+            registry.contains(&"sfx/dup: static 40 frames @ 8000 Hz".to_string()),
+            "the sorted-later `.wav` wins the shared key: {registry:?}"
+        );
+        assert!(
+            !registry.iter().any(|line| line.starts_with("sfx/broken")),
+            "an undecodable file is skipped: {registry:?}"
+        );
+        assert_eq!(registry.len(), 3, "{registry:?}");
+    }
+
+    #[test]
+    fn empty_and_missing_sound_directories_decode_to_empty_sets() {
+        let empty = Scratch::new("empty");
+        std::fs::create_dir(empty.path().join(SOUNDS_DIR)).unwrap();
+        let decoded = decode_level_sounds(empty.path());
+        assert_eq!(decoded.file_count(), 0);
+        assert!(decoded.summary().is_empty());
+        assert!(decoded.registry_summary().is_empty());
+
+        let missing = Scratch::new("missing");
+        let decoded = decode_level_sounds(missing.path());
+        assert_eq!(decoded.file_count(), 0);
+        assert!(decoded.summary()[0].starts_with("no sound directory"));
+        assert!(decoded.registry_summary().is_empty());
     }
 }

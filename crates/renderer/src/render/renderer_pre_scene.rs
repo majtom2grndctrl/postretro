@@ -107,14 +107,18 @@ impl Renderer {
 
         let frame_light_term_mask = self.frame_light_term_mask();
         let full = self.full_mut();
-        let indirect_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
-            streaming.indirect_has_active_animation(&full.sh_volume_resources.animation)
+        // No level, no streamed SH: nothing to prepare.
+        let Some(level) = full.level.as_mut() else {
+            return Ok(());
+        };
+        let indirect_active = level.sh_streaming.as_ref().is_some_and(|streaming| {
+            streaming.indirect_has_active_animation(&level.sh_volume_resources.animation)
         });
-        let animated_direct_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
-            streaming.direct_has_active_animation(&full.sh_volume_resources.animation)
+        let animated_direct_active = level.sh_streaming.as_ref().is_some_and(|streaming| {
+            streaming.direct_has_active_animation(&level.sh_volume_resources.animation)
         }) || animated_override.active();
         let force_full_resident = full.force_full_resident_sh_compose;
-        let Some(streaming) = full.sh_streaming.as_mut() else {
+        let Some(streaming) = level.sh_streaming.as_mut() else {
             return Ok(());
         };
         streaming.prepare_compose_frame(
@@ -129,8 +133,8 @@ impl Renderer {
             frame_light_term_mask,
             promotion_override,
             animated_override,
-            &full.promoted_static_weights,
-            &full.promoted_animated_states,
+            &level.promoted_static_weights,
+            &level.promoted_animated_states,
         )
     }
 
@@ -146,19 +150,28 @@ impl Renderer {
     ) {
         let visible: &VisibleCells = cam_vis.cells;
         let full = self.full_mut();
-        let Some(total_leaves) = full.compute_cull.as_ref().map(|cull| cull.total_leaves()) else {
+        let Some(total_leaves) = full
+            .level
+            .as_ref()
+            .and_then(|level| level.compute_cull.as_ref())
+            .map(|cull| cull.total_leaves())
+        else {
             full.camera_cull_diagnostics = CameraCullDiagnostics::default();
             full.bvh_cull_diagnostics = None;
             return;
         };
-        full.bvh_cull_diagnostics = full
+        let level = full
+            .level
+            .as_mut()
+            .expect("a level with a cull pipeline is installed");
+        full.bvh_cull_diagnostics = level
             .compute_cull
             .as_ref()
             .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
 
         let candidate_counts = match (
-            full.cell_draw_index.as_ref(),
-            full.candidate_cull.as_mut(),
+            level.cell_draw_index.as_ref(),
+            level.candidate_cull.as_mut(),
             visible,
             cam_vis.path,
         ) {
@@ -169,13 +182,13 @@ impl Renderer {
                     crate::candidate_cull::GatherStatus::Ok => Some((
                         candidate.candidates().len() as u32,
                         count_submitted_candidates(
-                            &full.bvh_leaves,
+                            &level.bvh_leaves,
                             candidate.candidates(),
                             &view_proj,
                         ),
                     )),
                     crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                        if !full.candidate_cull_oor_logged {
+                        if !level.candidate_cull_oor_logged {
                             log::warn!(
                                 "[Renderer] candidate cull: visible cell id {} out of \\
                              CellDrawIndex range ({} cells); using whole-BVH tree walk \\
@@ -183,7 +196,7 @@ impl Renderer {
                                 cell_id,
                                 index.cell_count,
                             );
-                            full.candidate_cull_oor_logged = true;
+                            level.candidate_cull_oor_logged = true;
                         }
                         None
                     }
@@ -204,7 +217,7 @@ impl Renderer {
             CameraCullDiagnostics {
                 path: CameraCullPath::TreeWalk,
                 total_leaves,
-                submitted_leaves: count_submitted_tree_walk(&full.bvh_leaves, visible, &view_proj),
+                submitted_leaves: count_submitted_tree_walk(&level.bvh_leaves, visible, &view_proj),
             }
         };
     }
@@ -228,38 +241,46 @@ impl Renderer {
         #[cfg(not(feature = "dev-tools"))]
         let animated_direct_sh_debug_override = AnimatedDirectShDebugOverride::default();
         let full = self.full();
-        let streamed_direct_animation_active = full.sh_streaming.as_ref().is_some_and(|state| {
-            state.direct_has_active_animation(&full.sh_volume_resources.animation)
+        // No level: nothing composes; the frame records no compose.
+        let Some(level) = full.level.as_ref() else {
+            return true;
+        };
+        let streamed_direct_animation_active = level.sh_streaming.as_ref().is_some_and(|state| {
+            state.direct_has_active_animation(&level.sh_volume_resources.animation)
         });
-        let direct_sh_active = full
+        let direct_sh_active = level
             .promoted_static_weights
             .iter()
             .any(|weight| *weight > 0.0)
-            || full
+            || level
                 .promoted_animated_states
                 .iter()
                 .any(|state| state.weight > 0.0)
-            || if full.sh_streaming.is_some() {
+            || if level.sh_streaming.is_some() {
                 streamed_direct_animation_active
             } else {
-                full.sh_volume_resources
+                level
+                    .sh_volume_resources
                     .direct
-                    .has_active_animated_descriptor(&full.sh_volume_resources.animation)
+                    .has_active_animated_descriptor(&level.sh_volume_resources.animation)
             }
             || direct_sh_debug_override.active()
             || animated_direct_sh_debug_override.active();
         // This intentionally keys on descriptor activity rather than the
         // curve's current evaluated scale: an active zero-valued curve
         // still needs composition for a later nonzero sample.
-        let billboard_direct_scatter_active = full
+        let billboard_direct_scatter_active = level
             .sh_volume_resources
             .billboard_direct_scatter
-            .has_active_animated_descriptor(&full.sh_volume_resources.animation);
+            .has_active_animated_descriptor(&level.sh_volume_resources.animation);
         let frame_light_term_mask = self.frame_light_term_mask();
         let Self { queue, full, .. } = self;
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return true;
+        };
         let direct_sh_ts = full
             .frame_timing
             .as_ref()
@@ -272,7 +293,7 @@ impl Renderer {
             .frame_timing
             .as_ref()
             .map(|t| t.compute_pass_writes(TIMING_PAIR_BILLBOARD_DIRECT_SCATTER_COMPOSE));
-        let compose_succeeded = if let Some(streaming) = full.sh_streaming.as_mut() {
+        let compose_succeeded = if let Some(streaming) = level.sh_streaming.as_mut() {
             match streaming.dispatch_direct_compose(
                 queue,
                 encoder,
@@ -281,7 +302,7 @@ impl Renderer {
                 frame_light_term_mask,
                 direct_sh_debug_override,
                 animated_direct_sh_debug_override,
-                &full.promoted_animated_states,
+                &level.promoted_animated_states,
                 direct_sh_ts,
                 animated_direct_sh_ts,
             ) {
@@ -294,7 +315,7 @@ impl Renderer {
                 }
             }
         } else {
-            full.direct_sh_compose.dispatch_if_needed(
+            level.direct_sh_compose.dispatch_if_needed(
                 queue,
                 encoder,
                 DirectShComposeFrameInputs {
@@ -305,7 +326,7 @@ impl Renderer {
                         promotion: direct_sh_debug_override,
                         animated: animated_direct_sh_debug_override,
                     },
-                    animated_promotion_states: &full.promoted_animated_states,
+                    animated_promotion_states: &level.promoted_animated_states,
                     timestamp_writes: DirectShComposeTimestampWrites {
                         promotion: direct_sh_ts,
                         animated: animated_direct_sh_ts,
@@ -317,7 +338,7 @@ impl Renderer {
         // Shares the already-flushed descriptor/sample buffers with animated
         // direct SH. This stays before every billboard draw, so its initial
         // copy-through is visible on the first frame.
-        full.billboard_direct_scatter_compose.dispatch_if_needed(
+        level.billboard_direct_scatter_compose.dispatch_if_needed(
             encoder,
             &full.uniform_bind_group,
             billboard_direct_scatter_active,
@@ -355,6 +376,9 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return true;
+        };
 
         // Same submission as render passes — no readback or GPU sync between cull and draw.
         if render_world {
@@ -366,7 +390,7 @@ impl Renderer {
             #[cfg(feature = "dev-tools")]
             {
                 let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
-                full.bvh_cull_diagnostics = full
+                full.bvh_cull_diagnostics = level
                     .compute_cull
                     .as_ref()
                     .map(|cull| cull.estimate_diagnostics(visible, &view_proj));
@@ -374,8 +398,8 @@ impl Renderer {
 
             // Both camera passes share this frame's drawable set, independently
             // of cull routing and fog reach. Build before any later compose exit.
-            if let Some(cull) = &mut full.compute_cull {
-                cull.prepare_camera_ranges(full.cell_draw_index.as_ref(), visible);
+            if let Some(cull) = &mut level.compute_cull {
+                cull.prepare_camera_ranges(level.cell_draw_index.as_ref(), visible);
             }
 
             // Candidate-cull routing. Eligible iff ALL hold:
@@ -394,8 +418,8 @@ impl Renderer {
             // returned flag only signals readiness; the gathered leaves stay in
             // the pipeline's scratch for the dispatch match below.
             let candidates_ready: bool = match (
-                full.cell_draw_index.as_ref(),
-                full.candidate_cull.as_mut(),
+                level.cell_draw_index.as_ref(),
+                level.candidate_cull.as_mut(),
                 visible,
                 cam_vis.path,
             ) {
@@ -405,7 +429,7 @@ impl Renderer {
                     match candidate.gather(index, cells) {
                         crate::candidate_cull::GatherStatus::Ok => true,
                         crate::candidate_cull::GatherStatus::OutOfRange { cell_id } => {
-                            if !full.candidate_cull_oor_logged {
+                            if !level.candidate_cull_oor_logged {
                                 log::warn!(
                                     "[Renderer] candidate cull: visible cell id {} out of \\
                                  CellDrawIndex range ({} cells); using whole-BVH tree walk \\
@@ -413,7 +437,7 @@ impl Renderer {
                                     cell_id,
                                     index.cell_count,
                                 );
-                                full.candidate_cull_oor_logged = true;
+                                level.candidate_cull_oor_logged = true;
                             }
                             false
                         }
@@ -435,8 +459,8 @@ impl Renderer {
             // SAME global indirect/status slots as the tree-walk fallback arm.
             match (
                 candidates_ready,
-                full.compute_cull.as_ref(),
-                full.candidate_cull.as_mut(),
+                level.compute_cull.as_ref(),
+                level.candidate_cull.as_mut(),
             ) {
                 (true, Some(cull), Some(candidate)) => {
                     // CPU-derived Spatial diagnostics (dev-tools only, like the
@@ -455,7 +479,7 @@ impl Renderer {
                             },
                             total_leaves: cull.total_leaves(),
                             submitted_leaves: count_submitted_candidates(
-                                &full.bvh_leaves,
+                                &level.bvh_leaves,
                                 candidates,
                                 &view_proj,
                             ),
@@ -476,19 +500,19 @@ impl Renderer {
                 // cell id, no installed level/empty BVH/released resources, or
                 // no candidate pipeline).
                 _ => {
-                    if let Some(cull) = &mut full.compute_cull {
+                    if let Some(cull) = &mut level.compute_cull {
                         cull.dispatch(device, queue, encoder, visible, &view_proj, cull_ts);
                     }
                     // Tree-walk diagnostics (dev-tools only): submitted = drawable,
                     // visible-cell, frustum-passing leaves over the WHOLE leaf array.
                     #[cfg(feature = "dev-tools")]
-                    if let Some(cull) = full.compute_cull.as_ref() {
+                    if let Some(cull) = level.compute_cull.as_ref() {
                         let _diagnostics_scope = cpu.scope(RenderStage::CullDiagnostics);
                         full.camera_cull_diagnostics = CameraCullDiagnostics {
                             path: CameraCullPath::TreeWalk,
                             total_leaves: cull.total_leaves(),
                             submitted_leaves: count_submitted_tree_walk(
-                                &full.bvh_leaves,
+                                &level.bvh_leaves,
                                 visible,
                                 &view_proj,
                             ),
@@ -497,7 +521,7 @@ impl Renderer {
                 }
             }
 
-            if let Some(cull) = &full.compute_cull
+            if let Some(cull) = &level.compute_cull
                 && log::log_enabled!(log::Level::Debug)
             {
                 let f = full.debug_frame;
@@ -545,7 +569,7 @@ impl Renderer {
         }
 
         // Before depth pre-pass: storage→sampled barrier must resolve before forward sampling.
-        if render_world && full.animated_lightmap.is_active() {
+        if render_world && level.animated_lightmap.is_active() {
             let _animated_scope = cpu.scope(RenderStage::AnimatedLightmapCompose);
             let animated_ts = full
                 .frame_timing
@@ -555,7 +579,7 @@ impl Renderer {
             let compose = full
                 .planar_reflection
                 .compose_cells(visible, *reflection_quality);
-            full.animated_lightmap.dispatch(
+            level.animated_lightmap.dispatch(
                 queue,
                 encoder,
                 &full.uniform_bind_group,
@@ -571,10 +595,10 @@ impl Renderer {
                 .frame_timing
                 .as_ref()
                 .map(|t| t.compute_pass_writes(TIMING_PAIR_SH_COMPOSE));
-            let streamed_indirect_active = full.sh_streaming.as_ref().is_some_and(|streaming| {
-                streaming.indirect_has_active_animation(&full.sh_volume_resources.animation)
+            let streamed_indirect_active = level.sh_streaming.as_ref().is_some_and(|streaming| {
+                streaming.indirect_has_active_animation(&level.sh_volume_resources.animation)
             });
-            if let Some(streaming) = full.sh_streaming.as_mut() {
+            if let Some(streaming) = level.sh_streaming.as_mut() {
                 if let Err(error) = streaming.dispatch_indirect_compose(
                     queue,
                     encoder,
@@ -587,10 +611,10 @@ impl Renderer {
                     return false;
                 }
             } else {
-                let indirect_active = full
+                let indirect_active = level
                     .sh_compose
-                    .has_active_animated_descriptor(&full.sh_volume_resources.animation);
-                full.sh_compose.dispatch_if_needed(
+                    .has_active_animated_descriptor(&level.sh_volume_resources.animation);
+                level.sh_compose.dispatch_if_needed(
                     encoder,
                     &full.uniform_bind_group,
                     indirect_active,

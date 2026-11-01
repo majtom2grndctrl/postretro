@@ -1,17 +1,17 @@
-// Loading-only UI images: decoded on a worker when a load chooses its tree,
+// Loading-only UI images: decoded on the load pool when a load chooses its tree,
 // uploaded by the Loading and Settling frames that poll, released when the
 // loading screen ends. A level tree naming one promotes it to eager instead.
 // See: context/lib/boot_sequence.md §1 · context/lib/ui.md §5
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
 
 use postretro_ui::descriptor::AnchoredTree;
 
 use crate::App;
 use crate::app::ui_images::{DecodedUiImage, ModUiImages, decode_ui_image};
+use crate::load_pool::{LoadPool, Priority, TaskGroup, TaskHandle};
 
 use super::LoadingScreenState;
 
@@ -40,69 +40,77 @@ impl LoadingImageRegistry for crate::render::Renderer {
     }
 }
 
-/// One finished decode, sent from the worker.
+/// One finished decode, produced by a pool task.
 struct LoadingImageDecode {
-    key: String,
-    /// The mod-relative path the worker read, so a reload that moved the
-    /// entry can be told apart on arrival.
-    path: String,
     result: Result<DecodedUiImage, String>,
     decode_ms: f64,
 }
 
+/// A decode started and not yet arrived.
+struct PendingDecode {
+    /// The mod-relative path the task reads, so a reload that moved the
+    /// entry can be told apart on arrival.
+    path: String,
+    decode: TaskHandle<LoadingImageDecode>,
+}
+
 /// One load's loading-only images: the decodes in flight and the keys it
-/// uploaded. Dropping it discards every decode still in flight: nothing
-/// receives it, and the worker stops at its next send.
+/// uploaded. Dropping it cancels its task group: queued decodes never run,
+/// and one already running is discarded when it finishes.
 #[derive(Default)]
 pub(crate) struct LoadingImages {
-    /// Decodes started and not yet arrived: key → mod-relative path.
-    pending: BTreeMap<String, String>,
-    arrivals: Option<Receiver<LoadingImageDecode>>,
+    /// Decodes started and not yet arrived, by key.
+    pending: BTreeMap<String, PendingDecode>,
+    /// The load's pool tasks; `None` once nothing is pending.
+    decodes: Option<TaskGroup>,
     /// Keys this load registered. The load releases exactly these.
     uploaded: BTreeSet<String>,
 }
 
 impl LoadingImages {
     /// Decode `wanted` (`(key, mod-relative path)`, in order) under
-    /// `mod_root` on one worker thread. The main thread never waits on it.
-    pub(crate) fn start(mod_root: &Path, wanted: Vec<(String, String)>) -> Self {
+    /// `mod_root` as one UI-priority task each on the load pool, ahead of
+    /// queued level work. The main thread never waits on them. `pool` is the
+    /// load pool, or the error that kept it from starting; on `Err` the load
+    /// draws no loading-screen images and the error is logged.
+    pub(crate) fn start(
+        pool: Result<&LoadPool, String>,
+        mod_root: &Path,
+        wanted: Vec<(String, String)>,
+    ) -> Self {
         if wanted.is_empty() {
             return Self::default();
         }
-        let pending: BTreeMap<String, String> = wanted.iter().cloned().collect();
-        let mod_root = mod_root.to_path_buf();
-        let (tx, rx) = mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("loading-image-decode".to_string())
-            .spawn(move || {
-                for (key, path) in wanted {
-                    let started = Instant::now();
-                    let result = decode_ui_image(&mod_root, &key, &path);
-                    let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
-                    let decode = LoadingImageDecode {
-                        key,
-                        path,
-                        result,
-                        decode_ms,
-                    };
-                    // A closed channel means the load ended: skip the rest.
-                    if tx.send(decode).is_err() {
-                        return;
-                    }
-                }
-            });
-        match spawned {
-            Ok(_) => Self {
-                pending,
-                arrivals: Some(rx),
-                uploaded: BTreeSet::new(),
-            },
+        let pool = match pool {
+            Ok(pool) => pool,
             Err(err) => {
                 log::warn!(
                     "[UI] could not start decoding loading-screen images ({err}); this load draws none"
                 );
-                Self::default()
+                return Self::default();
             }
+        };
+        let group = pool.group();
+        let pending = wanted
+            .into_iter()
+            .map(|(key, path)| {
+                let mod_root = mod_root.to_path_buf();
+                let (task_key, task_path) = (key.clone(), path.clone());
+                let decode = group.spawn(Priority::Ui, move |_| {
+                    let started = Instant::now();
+                    let result = decode_ui_image(&mod_root, &task_key, &task_path);
+                    LoadingImageDecode {
+                        result,
+                        decode_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    }
+                });
+                (key, PendingDecode { path, decode })
+            })
+            .collect();
+        Self {
+            pending,
+            decodes: Some(group),
+            uploaded: BTreeSet::new(),
         }
     }
 
@@ -121,31 +129,32 @@ impl LoadingImages {
         images: &ModUiImages,
         registry: &mut impl LoadingImageRegistry,
     ) {
-        let Some(arrivals) = &self.arrivals else {
-            return;
-        };
         let mut arrived = Vec::new();
-        let worker_gone = loop {
-            match arrivals.try_recv() {
-                Ok(decode) => arrived.push(decode),
-                Err(TryRecvError::Empty) => break false,
-                Err(TryRecvError::Disconnected) => break true,
-            }
-        };
-        for decode in arrived {
-            let LoadingImageDecode {
-                key,
-                path,
-                result,
-                decode_ms,
-            } = decode;
-            let started_for = self.pending.remove(&key);
-            if started_for.as_deref() != Some(path.as_str())
-                || images.deferred_path(&key) != Some(path.as_str())
-            {
+        self.pending
+            .retain(|key, pending| match pending.decode.try_take() {
+                Some(result) => {
+                    arrived.push((key.clone(), std::mem::take(&mut pending.path), result));
+                    false
+                }
+                None => true,
+            });
+        for (key, path, result) in arrived {
+            let decode = match result {
+                Ok(decode) => decode,
+                // The task panicked, or the pool dropped it unrun.
+                Err(err) => {
+                    log::debug!("[UI] uiImages.{key} decode task: {err:?}");
+                    log::warn!(
+                        "[UI] uiImages.{key} did not load: its decode task stopped; skipping it"
+                    );
+                    continue;
+                }
+            };
+            if images.deferred_path(&key) != Some(path.as_str()) {
                 log::debug!("[UI] discarded a stale decode of uiImages.{key}");
                 continue;
             }
+            let LoadingImageDecode { result, decode_ms } = decode;
             let image = match result {
                 Ok(image) => image,
                 Err(err) => {
@@ -168,22 +177,13 @@ impl LoadingImages {
                 Err(err) => log::warn!("[UI] uiImages.{key} did not load ({err}); skipping it"),
             }
         }
-        // The worker sends every decode before it exits, so a closed channel
-        // with decodes still owed means it panicked partway.
-        if worker_gone {
-            for key in std::mem::take(&mut self.pending).into_keys() {
-                log::warn!(
-                    "[UI] uiImages.{key} did not load: its decode worker stopped; skipping it"
-                );
-            }
-        }
         if self.pending.is_empty() {
-            self.arrivals = None;
+            self.decodes = None;
         }
     }
 
     /// Unregister every image this load uploaded. Decodes still in flight are
-    /// discarded as `self` drops.
+    /// cancelled as `self` drops.
     pub(crate) fn release(self, registry: &mut impl LoadingImageRegistry) {
         for key in &self.uploaded {
             registry.unregister(key);
@@ -662,19 +662,61 @@ mod tests {
 
     #[test]
     fn loading_images_worker_that_stops_early_warns_for_what_it_owed() {
-        let (tx, rx) = mpsc::channel::<LoadingImageDecode>();
-        drop(tx);
+        let pool = LoadPool::new(2).unwrap();
+        let group = pool.group();
+        let decode = group.spawn(Priority::Ui, |_| -> LoadingImageDecode {
+            panic!("the decode worker stopped partway")
+        });
         let mut images = LoadingImages {
-            pending: [(SHOT.to_string(), "ui/e1m1.png".to_string())].into(),
-            arrivals: Some(rx),
+            pending: [(
+                SHOT.to_string(),
+                PendingDecode {
+                    path: "ui/e1m1.png".to_string(),
+                    decode,
+                },
+            )]
+            .into(),
+            decodes: Some(group),
             uploaded: BTreeSet::new(),
         };
         let capture = postretro_test_log_capture::LogCapture::start();
-        images.upload_arrived(&ModUiImages::default(), &mut FakeRegistry::default());
-        assert!(!images.is_decoding());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while images.is_decoding() {
+            assert!(
+                Instant::now() < deadline,
+                "the panicked decode never reported"
+            );
+            images.upload_arrived(&ModUiImages::default(), &mut FakeRegistry::default());
+            std::thread::sleep(Duration::from_millis(5));
+        }
         capture.assert_logged_once(
             log::Level::Warn,
-            "uiImages.shots/e1m1 did not load: its decode worker stopped",
+            "uiImages.shots/e1m1 did not load: its decode task stopped",
         );
+    }
+
+    #[test]
+    fn loading_screen_images_decode_on_the_pool() {
+        let root = mod_root();
+        let mut app = app_with_loading_tree(root.path(), "ui/e1m1.png");
+        assert!(
+            app.load_pool.built().is_none(),
+            "no pool before a load wants one"
+        );
+
+        // Two loads, each wanting the image: the second reuses the pool.
+        for load in 1..=2 {
+            app.begin_loading_screen(&entry());
+            let mut registry = FakeRegistry::default();
+            poll_until_decoded(&mut app, &mut registry);
+            assert_eq!(registry.0.get(SHOT), Some(&[4, 2]), "load {load}");
+            let pool = app
+                .load_pool
+                .built()
+                .expect("the first load built the pool");
+            assert_eq!(pool.tasks_started(), load, "each decode ran as a pool task");
+            assert_eq!(pool.threads_started(), 2, "load {load} started no thread");
+            app.end_loading_screen();
+        }
     }
 }

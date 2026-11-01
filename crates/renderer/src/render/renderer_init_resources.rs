@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §4
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::lightmap::RUNTIME_MAX_TEXTURE_ARRAY_LAYERS as REQUIRED_MAX_TEXTURE_ARRAY_LAYERS;
 
 /// Whether an adapter's granted `max_texture_array_layers` clears the engine's
@@ -320,152 +321,6 @@ pub(crate) fn request_renderer_device(
     Ok((device, queue))
 }
 
-pub(crate) struct LightingResources {
-    pub lights_buffer: wgpu::Buffer,
-    pub influence_buffer: wgpu::Buffer,
-    pub spec_lights_buffer: wgpu::Buffer,
-    pub chunk_grid_info_buffer: wgpu::Buffer,
-    pub chunk_grid_offsets_buffer: wgpu::Buffer,
-    pub chunk_grid_indices_buffer: wgpu::Buffer,
-    pub lighting_bind_group: wgpu::BindGroup,
-}
-
-pub(crate) fn build_lighting_bind_group(
-    device: &wgpu::Device,
-    lighting_bind_group_layout: &wgpu::BindGroupLayout,
-    level_lights: &[MapLight],
-    dynamic_influences: &[LightInfluence],
-    geometry: Option<&LevelGeometry>,
-) -> LightingResources {
-    let promoted_capacity = geometry
-        .map(|g| g.entity_shadow_lights.len())
-        .unwrap_or_default();
-    let animated_baked_capacity = geometry
-        .map(|g| g.animated_baked_roster().0.len())
-        .unwrap_or_default();
-    let dynamic_light_capacity = level_lights.len() + RUNTIME_DYNAMIC_LIGHT_RESERVE;
-    let light_record_capacity =
-        (dynamic_light_capacity + animated_baked_capacity + promoted_capacity).max(1);
-    // wgpu rejects zero-size storage buffers — pad to one dummy; light_count stays 0.
-    let mut lights_data = Vec::with_capacity(light_record_capacity * GPU_LIGHT_SIZE);
-    if !level_lights.is_empty() {
-        lights_data.extend_from_slice(&pack_lights(level_lights));
-    }
-    lights_data.resize(light_record_capacity * GPU_LIGHT_SIZE, 0);
-    let lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Direct Lights Storage Buffer"),
-        contents: &lights_data,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // Influence volume buffer — same dummy strategy as lights.
-    let influence_record_capacity = shadowmask::influence_capacity_with_shadowmask_metadata(
-        dynamic_light_capacity,
-        animated_baked_capacity,
-        promoted_capacity,
-    );
-    let mut influence_data = Vec::with_capacity(influence_record_capacity * 16);
-    if !dynamic_influences.is_empty() {
-        influence::pack_influence_into(&mut influence_data, dynamic_influences);
-    }
-    influence_data.resize(influence_record_capacity * 16, 0);
-    let influence_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Light Influence Storage Buffer"),
-        contents: &influence_data,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // Specular-only static lights; 1-record dummy avoids zero-size storage binding.
-    let spec_lights_data = {
-        let packed = geometry
-            .map(|g| pack_spec_lights(g.lights))
-            .unwrap_or_default();
-        if packed.is_empty() {
-            vec![0u8; SPEC_LIGHT_SIZE]
-        } else {
-            packed
-        }
-    };
-    let spec_lights_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Spec-Only Lights Storage Buffer"),
-        contents: &spec_lights_data,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // Absent → fallback payload with has_chunk_grid=0: SDF selection scans the
-    // full spec buffer and billboard specular skips its static lights. World
-    // specular does not read the grid.
-    let chunk_grid = match geometry.and_then(|g| g.chunk_light_list) {
-        Some(sec) => ChunkGrid::from_section(sec),
-        None => ChunkGrid::fallback(),
-    };
-    if chunk_grid.present {
-        log::info!(
-            "[Renderer] ChunkLightList active (SDF selection and billboard specular are spatially partitioned)"
-        );
-    } else {
-        log::info!(
-            "[Renderer] ChunkLightList absent — SDF selection scans the full spec buffer; billboard static specular is off"
-        );
-    }
-    let chunk_grid_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Chunk Grid Info Uniform"),
-        contents: &chunk_grid.grid_info,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-    });
-    let chunk_grid_offsets_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Chunk Grid Offset Table"),
-        contents: &chunk_grid.offset_table,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-    let chunk_grid_indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Chunk Grid Index List"),
-        contents: &chunk_grid.index_list,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Lighting Bind Group"),
-        layout: lighting_bind_group_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: lights_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: influence_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: spec_lights_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: chunk_grid_info_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: chunk_grid_offsets_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: chunk_grid_indices_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    LightingResources {
-        lights_buffer,
-        influence_buffer,
-        spec_lights_buffer,
-        chunk_grid_info_buffer,
-        chunk_grid_offsets_buffer,
-        chunk_grid_indices_buffer,
-        lighting_bind_group,
-    }
-}
-
 pub(crate) struct ShadowVsResources {
     pub shadow_vs_stride: u32,
     pub shadow_vs_uniform_buffer: wgpu::Buffer,
@@ -481,13 +336,13 @@ pub(crate) fn build_shadow_vs_resources(
     // min_uniform_buffer_offset_alignment required for dynamic-offset bindings.
     let min_ubo_align = device.limits().min_uniform_buffer_offset_alignment.max(64);
     let shadow_vs_stride = min_ubo_align;
-    let shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let shadow_vs_uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Spot Shadow VS Uniforms"),
         size: (shadow_vs_stride as u64) * (crate::lighting::spot_shadow::SHADOW_POOL_SIZE as u64),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let shadow_vs_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow VS Bind Group"),
         layout: shadow_vs_bgl,
         entries: &[wgpu::BindGroupEntry {
@@ -514,13 +369,13 @@ pub(crate) fn build_shadow_vs_resources(
     // `slot * CUBE_FACES + face` (matching `CubeShadowPool::face_layer`).
     let cube_face_count =
         crate::lighting::cube_shadow::CUBE_COUNT * crate::lighting::cube_shadow::CUBE_FACES;
-    let cube_shadow_vs_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let cube_shadow_vs_uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Cube Shadow VS Uniforms"),
         size: (shadow_vs_stride as u64) * (cube_face_count as u64),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let cube_shadow_vs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let cube_shadow_vs_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Cube Shadow VS Bind Group"),
         layout: shadow_vs_bgl,
         entries: &[wgpu::BindGroupEntry {
@@ -554,7 +409,7 @@ pub(crate) fn build_uniform_bind_groups(
     device: &wgpu::Device,
     uniform_data: &[u8],
 ) -> UniformBindGroups {
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Uniform Buffer"),
         contents: uniform_data,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -566,7 +421,7 @@ pub(crate) fn build_uniform_bind_groups(
             entries: &uniform_bind_group_layout_entries(),
         });
 
-    let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let uniform_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Uniform Bind Group"),
         layout: &uniform_bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
@@ -665,39 +520,6 @@ pub(crate) fn build_initial_uniform_data(
         // No mask pool before a level installs.
         static_spec_mask_present: false,
     })
-}
-
-pub(crate) fn build_placeholder_textures(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture_bind_group_layout: &wgpu::BindGroupLayout,
-    mip_count_aniso_samplers: &std::collections::HashMap<u32, wgpu::Sampler>,
-    surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
-) -> (Vec<LoadedTexture>, Vec<GpuTexture>) {
-    let mut loaded_textures: Vec<LoadedTexture> = Vec::new();
-    let mut gpu_textures: Vec<GpuTexture> = Vec::new();
-    {
-        let placeholder = placeholder_loaded_texture(device, queue);
-        let aniso_sampler = mip_count_aniso_samplers
-            .get(&1)
-            .expect("mip_count 1 aniso seeded above");
-        // The placeholder's specular slot is the single-channel black 1x1, so
-        // this material is flat at every tier. The tier is still threaded in
-        // rather than defaulted, so there is exactly one rule for how a
-        // material's uniform bytes are produced.
-        let binding = build_material_bind_group(
-            device,
-            texture_bind_group_layout,
-            &placeholder,
-            aniso_sampler,
-            Material::Default,
-            surface_depth_quality,
-            "Placeholder Material",
-        );
-        loaded_textures.push(placeholder);
-        gpu_textures.push(binding.into());
-    }
-    (loaded_textures, gpu_textures)
 }
 
 #[cfg(test)]

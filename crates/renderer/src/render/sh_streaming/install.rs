@@ -9,7 +9,6 @@ pub(super) struct InstallGpu<'a> {
     pub(super) device: &'a wgpu::Device,
     pub(super) queue: &'a crate::render::uploads::UploadQueue,
     pub(super) sh: &'a mut crate::render::sh_volume::ShVolumeResources,
-    pub(super) uniform_bind_group_layout: &'a wgpu::BindGroupLayout,
     pub(super) selection_weights: &'a wgpu::Buffer,
 }
 

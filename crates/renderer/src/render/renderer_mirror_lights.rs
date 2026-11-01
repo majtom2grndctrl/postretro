@@ -2,8 +2,8 @@
 // See: context/lib/rendering_pipeline.md §7.3a (Pool rank), §4
 
 use super::renderer_light_slots::PromotionCandidateLookup;
-use super::renderer_types::FullRenderer;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::mesh_instances::MeshCapOccupancy;
 
 /// One shadow pool's occupancy this frame, split by admission rank: slots
@@ -100,43 +100,19 @@ impl MirrorLighting {
         }
     }
 
-    /// Follow a level install's reallocated light buffers. Every per-light
-    /// tag resets: the candidate list is the new level's.
-    pub(super) fn rebuild(
-        &mut self,
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        main_lights: &wgpu::Buffer,
-        shared: &SharedLightingBuffers<'_>,
-    ) {
-        let (lights_buffer, lighting_bind_group) = Self::build(device, layout, main_lights, shared);
-        self.lights_buffer = lights_buffer;
-        self.lighting_bind_group = lighting_bind_group;
-        self.uploaded.clear();
-        self.active = false;
-        self.reach.clear();
-        self.tags.clear();
-        self.held.clear();
-        self.occupancy = AdmissionOccupancy::default();
-        // The frame clock restarts with the level, so a report time kept
-        // from the old one would silence the line until the clock caught up.
-        self.reported = None;
-        self.reported_at = f64::NEG_INFINITY;
-    }
-
     fn build(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         main_lights: &wgpu::Buffer,
         shared: &SharedLightingBuffers<'_>,
     ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let lights_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let lights_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Planar Mirror Lights Storage Buffer"),
             size: main_lights.size(),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lighting_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let lighting_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Mirror Lighting Bind Group"),
             layout,
             entries: &[
@@ -391,7 +367,7 @@ pub(super) fn update_held_as_mirror_only(
 /// slot for, so main-view movers and meshes shade it unshadowed.
 pub(super) fn clear_mirror_only_promoted_slots(
     bytes: &mut [u8],
-    full: &FullRenderer,
+    level: &LevelResourceSet,
     lookup: &PromotionCandidateLookup,
     held: &[bool],
 ) {
@@ -408,14 +384,14 @@ pub(super) fn clear_mirror_only_promoted_slots(
             postretro_lighting::patch_cube_slots(record, &[postretro_lighting::NO_SHADOW_SLOT]);
         }
     };
-    let dynamic = full.light_count as usize;
-    for animated_index in 0..full.animated_baked_light_count {
+    let dynamic = level.light_count as usize;
+    for animated_index in 0..level.animated_baked_light_count {
         if mirror_only(lookup.animated_baked.get(animated_index)) {
             clear(bytes, dynamic + animated_index);
         }
     }
-    let suffix = dynamic + full.animated_baked_light_count;
-    for (appended, selection_index) in full
+    let suffix = dynamic + level.animated_baked_light_count;
+    for (appended, selection_index) in level
         .promoted_baked_records
         .iter()
         .filter_map(|record| record.source.selected_static_index())
@@ -432,7 +408,7 @@ pub(super) fn clear_mirror_only_promoted_slots(
 pub(super) fn pool_occupancy(
     assignment: &[u32],
     capacity: usize,
-    full: &FullRenderer,
+    level: &LevelResourceSet,
     held: &[bool],
 ) -> ShadowPoolOccupancy {
     let mut occupancy = ShadowPoolOccupancy {
@@ -444,8 +420,8 @@ pub(super) fn pool_occupancy(
             continue;
         }
         let promoted = shadow_candidate_is_promoted_baked(
-            &full.shadow_candidate_selection_indices,
-            &full.shadow_candidate_animated_baked_indices,
+            &level.shadow_candidate_selection_indices,
+            &level.shadow_candidate_animated_baked_indices,
             candidate_index,
         );
         if held.get(candidate_index).copied().unwrap_or(false) {
@@ -466,13 +442,19 @@ impl Renderer {
     /// reflection. Set each frame before rendering; a frame that sets none
     /// has no mirror-only light.
     pub fn set_planar_mirror_light_reach(&mut self, cells: &[(Vec3, Vec3)]) {
-        self.full_mut().mirror_lighting.set_reach(cells);
+        if let Some(level) = self.full_mut().level.as_mut() {
+            level.mirror_lighting.set_reach(cells);
+        }
     }
 
     /// The last frame's mesh-instance cap and shadow-pool occupancy, split by
     /// admission rank. Also logged at debug level (`[Admission]`) when it
     /// changes.
     pub fn admission_occupancy(&self) -> AdmissionOccupancy {
-        self.full().mirror_lighting.occupancy()
+        self.full()
+            .level
+            .as_ref()
+            .map(|level| level.mirror_lighting.occupancy())
+            .unwrap_or_default()
     }
 }

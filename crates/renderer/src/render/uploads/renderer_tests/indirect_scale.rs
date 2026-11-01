@@ -3,11 +3,15 @@ use super::*;
 
 fn read_receiver_scales(renderer: &Renderer) -> [f32; 3] {
     let full = renderer.full();
+    let level = full
+        .level
+        .as_ref()
+        .expect("a level-gated renderer path requires an active level set");
     full.mesh_pass.write_light_params(
         &renderer.queue,
-        full.total_light_count,
-        full.light_count,
-        full.light_count + full.animated_baked_light_count as u32,
+        level.total_light_count,
+        level.light_count,
+        level.light_count + level.animated_baked_light_count as u32,
         full.mesh_dynamic_time,
         full.frame_light_term_mask.bits(),
         full.ambient_floor,
@@ -15,9 +19,9 @@ fn read_receiver_scales(renderer: &Renderer) -> [f32; 3] {
     );
     full.kinematic_brush.write_light_params(
         &renderer.queue,
-        full.total_light_count,
-        full.light_count,
-        full.light_count + full.animated_baked_light_count as u32,
+        level.total_light_count,
+        level.light_count,
+        level.light_count + level.animated_baked_light_count as u32,
         full.mesh_dynamic_time,
         full.frame_light_term_mask.bits(),
         full.ambient_floor,

@@ -1,6 +1,7 @@
 // SH volume diagnostic overlay: emits debug-line segments visualizing baked SH
 // irradiance volumes. Gated on `dev-tools`. See: context/lib/rendering_pipeline.md §12
 //
+use crate::render::gpu_create::GpuCreate;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -419,7 +420,7 @@ impl ShProbeReadback {
         let padded_bytes_per_row = unpadded.div_ceil(align) * align;
         let buffer_size = padded_bytes_per_row as u64 * atlas_height as u64 * layer_count as u64;
 
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("SH Probe Irradiance Readback"),
             size: buffer_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,

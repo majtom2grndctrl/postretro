@@ -6,6 +6,7 @@
 // reach the window before the UI system initializes.
 // See: context/lib/boot_sequence.md §1 · context/lib/rendering_pipeline.md §7.8
 
+use crate::render::gpu_create::GpuCreate;
 use bytemuck::{Pod, Zeroable};
 
 use postretro_ui::UiTexture;
@@ -143,7 +144,7 @@ impl BootSplashPass {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Boot Splash Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -187,7 +188,7 @@ impl BootSplashPass {
             ..Default::default()
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Boot Splash Uniform"),
             size: std::mem::size_of::<SplashUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -218,7 +219,7 @@ impl BootSplashPass {
             height: loaded.height,
             depth_or_array_layers: 1,
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Boot Splash Logo Texture"),
             size,
             mip_level_count: 1,
@@ -245,7 +246,7 @@ impl BootSplashPass {
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Boot Splash Logo Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[

@@ -278,6 +278,44 @@ struct ReadyCluster {
     byte_charge: u64,
 }
 
+/// A streamed level's planner topology: derived from its manifest and id-49
+/// hints once per load, checked there, and handed to the controller that
+/// the level's streaming session builds. Pure CPU and `Send`, so load prep
+/// derives it off the main thread after the parse installs the manifest's
+/// cluster topology (pin P19).
+#[derive(Debug)]
+pub(crate) struct ShLevelTopology {
+    topology: PlannerTopology,
+}
+
+impl ShLevelTopology {
+    /// Every planner-topology check on the level's data. Reads the
+    /// manifest's cluster adjacency and seam portals, which the parse
+    /// installs last: call only on a completed parse's manifest.
+    pub(crate) fn decode(
+        manifest: &ShStreamManifest,
+        hints: Arc<ClusterHints>,
+    ) -> Result<Self, ShResidencyControllerError> {
+        Ok(Self {
+            topology: PlannerTopology::from_manifest(manifest, hints)?,
+        })
+    }
+
+    /// A summary for equivalence tests: every derived table.
+    #[cfg(test)]
+    pub(crate) fn summary(&self) -> String {
+        format!("{:?}", self.topology)
+    }
+
+    /// Drop the last cluster's owner list, so the controller refuses the
+    /// topology (its tables' lengths disagree): a stand-in for a rejection
+    /// no checked level provokes.
+    #[cfg(test)]
+    pub(crate) fn break_for_tests(&mut self) {
+        self.topology.owners.pop();
+    }
+}
+
 /// Session-local SH policy. It has no renderer or wgpu types: a renderer sees
 /// only the loader-owned `ShDrainBatch`, then returns `ShDrainOutcome`.
 #[derive(Debug)]
@@ -333,8 +371,24 @@ impl ShResidencyController {
         hints: Arc<ClusterHints>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
-        let topology = PlannerTopology::from_manifest(&manifest, hints)?;
-        Self::from_parts(Some(manifest), topology, clock, gpu_budget)
+        let topology = ShLevelTopology::decode(&manifest, hints)?;
+        Self::from_parts(Some(manifest), topology.topology, clock, gpu_budget)
+    }
+
+    /// A controller over a topology the level's load already derived (see
+    /// [`ShLevelTopology::decode`]), for the same `manifest`. Fails only on
+    /// what is not level data: the generation clock and `gpu_budget`.
+    pub(crate) fn with_topology(
+        manifest: Arc<ShStreamManifest>,
+        gpu_budget: ShGpuBudgetInputs,
+        topology: ShLevelTopology,
+    ) -> Result<Self, ShResidencyControllerError> {
+        Self::from_parts(
+            Some(manifest),
+            topology.topology,
+            &ProcessGenerationClock,
+            gpu_budget,
+        )
     }
 
     fn from_parts(

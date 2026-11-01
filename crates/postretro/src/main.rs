@@ -37,9 +37,13 @@ use postretro_sim::{impact_effects, impact_policy};
 mod client_weapon;
 mod input;
 mod weapon_observers;
+// Level-load stages on the engine load pool: prep from the staged parse.
+mod level_load;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
+// The engine load pool: the one place level-load CPU work runs.
+mod load_pool;
 use postretro_physics::kinematic_mover;
 use postretro_sim::mover_commands;
 mod mod_digest;
@@ -130,7 +134,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "observe-live")]
 use std::sync::mpsc;
+#[cfg(feature = "observe-live")]
 use std::thread::JoinHandle;
 #[cfg(test)]
 use std::time::Duration;
@@ -166,8 +172,8 @@ use crate::scripting::state_persistence::{
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
 use crate::startup::{
-    BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, LoadOutcome,
-    SplashSource, StartupTimings,
+    BootState, FRONTEND_CLEAR_COLOR, InFlightLevelLoad, LevelRequest, LevelSource, SplashSource,
+    StartupTimings,
 };
 #[cfg(test)]
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
@@ -586,7 +592,7 @@ fn main() -> Result<()> {
     // timing, the `pending_session` bundle) and the event loop. The entire
     // `Session` (options I/O, audio, scripting core, input/UI/modal group,
     // net endpoint) is constructed post-first-pixel by `Session::build` via
-    // `install_pending_session`. Mod init and the first level-load worker are
+    // `install_pending_session`. Mod init and the first level load are
     // deferred to the splash loop. See: context/lib/boot_sequence.md §1.
     let startup::BootSession {
         event_loop,
@@ -779,7 +785,7 @@ pub(crate) struct App {
     nav_graph: Option<nav::NavGraph>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in
-    /// Frontend after the splash instead of spawning the level-load worker.
+    /// Frontend after the splash instead of requesting a boot level load.
     map_path: Option<PathBuf>,
 
     /// Derived from the map path at startup. `textures/` and `scripts/`
@@ -788,8 +794,8 @@ pub(crate) struct App {
 
     /// `--baked-root` when supplied: the directory that *contains* `materials/`,
     /// so `.prm` sidecars are read from `<baked_root>/materials/`. `None` — the
-    /// normal case — leaves the level worker's grandparent derivation alone.
-    /// Threaded to `spawn_level_worker`; `prl-build` takes the same flag with
+    /// normal case — leaves the grandparent derivation alone. Read into each
+    /// load's prep inputs at dispatch; `prl-build` takes the same flag with
     /// the same meaning.
     baked_root: Option<PathBuf>,
 
@@ -1040,7 +1046,7 @@ pub(crate) struct App {
 
     /// Counts splash frames since `resumed()`. The state machine uses this to
     /// schedule the deferred `mod_init` and boot load request after the first
-    /// visible splash frame; Loading owns worker polling.
+    /// visible splash frame; Loading owns the load's progress polling.
     splash_frame: u32,
 
     /// When deferred mod init finished this boot. Whatever follows mod init
@@ -1117,9 +1123,11 @@ pub(crate) struct App {
     /// splash_decoded, splash_uploaded, first_splash_frame, then the
     /// post-first-pixel deferred-session marks (audio_init_complete,
     /// script_runtime_ctor, net_endpoint_complete, session_init_complete),
-    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch. The
-    /// script runtime is constructed inside `Session::build`, so its mark fires
-    /// after the logo frame — not in early engine boot.
+    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch,
+    /// which records the boot level load request being enqueued (its stages
+    /// dispatch later, in `try_dispatch_level_load`). The script runtime is
+    /// constructed inside `Session::build`, so its mark fires after the logo
+    /// frame — not in early engine boot.
     /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
 
@@ -1131,9 +1139,9 @@ pub(crate) struct App {
     /// mod_splash_swap [conditional]).
     mod_timings: StartupTimings,
 
-    /// Per-stage durations for log line C — level load. Worker-thread stages
-    /// are attached to `worker_delivered`, which contains them; see the
-    /// `StartupTimings` doc comment.
+    /// Per-stage durations for log line C — level load. Prep and parse marks
+    /// sit inside `bundle_ready` (an `incl.` group), the commit's sub-marks
+    /// inside `commit_frame`; see the `StartupTimings` doc comment.
     level_timings: StartupTimings,
 
     /// Metadata for the active Loading-state request. Catalog loads retain the
@@ -1150,6 +1158,10 @@ pub(crate) struct App {
     /// `restartLevel()` can requeue the same catalog id or raw dev path.
     active_level_source: Option<LevelSource>,
 
+    /// The level load in flight, if any: its generation, whether its stages
+    /// were dispatched, and its progress. See: `startup::level_loads`.
+    level_loads: startup::level_loads::LevelLoads,
+
     /// A connected client's last `Relevel` naming a known catalog id: the id
     /// and the host level life. A later life naming the active map reinstalls
     /// it; the same life again changes nothing. The reveal declares this life
@@ -1158,22 +1170,24 @@ pub(crate) struct App {
     /// one endpoint never reconnects, so nothing resets it.
     last_relevel: Option<(String, u64)>,
 
-    /// Receives the active level worker's `LoadOutcome`. `None` when no load is
-    /// in flight; consumed via `try_recv` by the `Loading` state.
-    level_rx: Option<mpsc::Receiver<LoadOutcome>>,
+    /// Every stage still winding down: cancelled or ended loads' stages and
+    /// the upload threads of renderers torn down at suspend. One list, polled
+    /// at the top of every redraw in every boot state and joined only once
+    /// each has finished. Boot lifetime.
+    stage_retirements: app::stage_retirements::StageRetirements,
 
-    /// Owned so the thread is detached (not joined) when App drops.
-    /// Detached on shutdown — drop discards the JoinHandle without joining;
-    /// the OS thread reaps when its work returns.
-    level_worker: Option<JoinHandle<()>>,
+    /// The engine load pool, built on first use and kept for the process
+    /// lifetime, suspend and resume included. Shut down without waiting at
+    /// exit. See: `load_pool`.
+    load_pool: load_pool::EngineLoadPool,
 
     /// Runtime level lifecycle requests drained by `startup::lifecycle` at the
     /// redraw boundary, before gameplay/world work for the frame runs.
     level_requests: VecDeque<LevelRequest>,
 
     /// One-shot marker for the CLI boot map load. Runtime load failures fall
-    /// back to Frontend; this boot load exits non-zero if the worker fails or
-    /// returns an empty payload.
+    /// back to Frontend; a boot load that fails at any stage (dispatch, parse,
+    /// prep, upload, commit check) exits non-zero through `finish_level_failure`.
     boot_load: bool,
 
     /// Deferred-startup owner: the raw inputs (`argv`) needed to construct the
@@ -1950,6 +1964,59 @@ fn maybe_save_connected_client_per_owner_state(
     }
 }
 
+impl App {
+    /// The platform suspend: everything `suspended` does, which needs no
+    /// event loop, so tests drive it too. The renderer, its window and every
+    /// renderer-held level resource go; the session survives.
+    pub(crate) fn suspend_platform(&mut self) {
+        self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
+        // Audit which boot phase a suspend interrupts. The resume path resets to
+        // `Booting` and re-drives the splash loop; the single-commit guards
+        // (`pending_session.take`, renderer full-ready idempotence) keep session
+        // init and renderer completion from re-running. See: boot_sequence §1, §5.
+        log::info!(
+            "[Engine] Suspended during boot phase {:?}",
+            self.boot_phase()
+        );
+        self.window_state = None;
+        // Cancel the level load in flight while its renderer still exists:
+        // a set it already received is released, every builder clone drops,
+        // and its stages join through the retirement list, polled on later
+        // frames (Booting and Splash included) before the resumed load may
+        // dispatch. A cancelled load reports nothing, so a suspended boot
+        // load resumes and installs instead of exiting.
+        self.cancel_level_load_for_suspend();
+        // Hand off the upload thread before the renderer drops: a job still
+        // running on the old device finishes into dropped receivers, and the
+        // redraw poll joins the thread once it has.
+        self.retire_renderer_upload_thread();
+        self.renderer = None;
+        // Session-owned debug UI is reset here (it borrows the window and reads
+        // the renderer's device limits); `ensure_debug_ui` rebuilds it on the next
+        // resumed splash loop. The rest of the session survives suspend.
+        #[cfg(feature = "dev-tools")]
+        if let Some(session) = self.session.as_mut() {
+            session.debug_ui = None;
+        }
+        if let Some(session) = self.session.as_mut() {
+            let registry = session.scripting.script_ctx.registry.borrow();
+            if let Some(seats) = session.seat_table.as_mut() {
+                // Harvest state but retain bindings until lifecycle events drain
+                // after resume; their durable fallback resolves the old pawn.
+                seats.harvest_bound_pawns(&registry);
+            }
+        }
+        self.clear_net_level_parity();
+        self.discard_pending_system_commands();
+        self.clear_surface_lifetime_level_state();
+        self.clear_fluid_eye_presentation();
+        // On resume the splash state machine starts over from frame 0 and
+        // dispatches a fresh load; the cancelled one is only retiring.
+        self.level_load = None;
+        self.reset_boot_state_after_suspend();
+    }
+}
+
 // --- ApplicationHandler ---
 
 impl ApplicationHandler for App {
@@ -1958,7 +2025,7 @@ impl ApplicationHandler for App {
         // (Booting → Splash). Guard against the Suspended → Resumed path that
         // some platforms issue during normal operation — re-entering from
         // Running would corrupt the boot state by resetting `splash_frame`,
-        // re-installing the splash, and stalling with `level_rx = None`.
+        // re-installing the splash, and stalling with no level load.
         if self.boot_state != BootState::Booting {
             return;
         }
@@ -2055,44 +2122,7 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
-        // Audit which boot phase a suspend interrupts. The resume path resets to
-        // `Booting` and re-drives the splash loop; the single-commit guards
-        // (`pending_session.take`, renderer full-ready idempotence) keep session
-        // init and renderer completion from re-running. See: boot_sequence §1, §5.
-        log::info!(
-            "[Engine] Suspended during boot phase {:?}",
-            self.boot_phase()
-        );
-        self.window_state = None;
-        self.renderer = None;
-        // Session-owned debug UI is reset here (it borrows the window and reads
-        // the renderer's device limits); `ensure_debug_ui` rebuilds it on the next
-        // resumed splash loop. The rest of the session survives suspend.
-        #[cfg(feature = "dev-tools")]
-        if let Some(session) = self.session.as_mut() {
-            session.debug_ui = None;
-        }
-        if let Some(session) = self.session.as_mut() {
-            let registry = session.scripting.script_ctx.registry.borrow();
-            if let Some(seats) = session.seat_table.as_mut() {
-                // Harvest state but retain bindings until lifecycle events drain
-                // after resume; their durable fallback resolves the old pawn.
-                seats.harvest_bound_pawns(&registry);
-            }
-        }
-        self.clear_net_level_parity();
-        self.discard_pending_system_commands();
-        self.clear_surface_lifetime_level_state();
-        self.clear_fluid_eye_presentation();
-        // Drop any in-flight level-load worker handoff. On resume the splash
-        // state machine starts over from frame 0 and will spawn a fresh
-        // worker; holding a stale receiver/handle would either block install
-        // forever or deliver into the wrong boot phase.
-        self.level_load = None;
-        self.level_rx = None;
-        self.level_worker = None;
-        self.reset_boot_state_after_suspend();
+        self.suspend_platform();
     }
 
     fn window_event(
@@ -2484,6 +2514,7 @@ impl ApplicationHandler for App {
         {
             audio.release_level_sounds();
         }
+        self.load_pool.shutdown();
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
@@ -5631,7 +5662,7 @@ impl App {
 
     /// Register the listen host's OWN player pawn for outbound replication after a
     /// level install (M15 Phase 3, issue 3b). The host's boot pawn is spawned by
-    /// `install_level_payload` via `spawn_from_player_starts` and marked the
+    /// level install's segment B via `spawn_from_player_starts` and marked the
     /// `local_player_pawn`; without registering it in the `ReplicableSet` it never
     /// reaches `produce_owned_snapshots`, so clients draw no host capsule.
     ///

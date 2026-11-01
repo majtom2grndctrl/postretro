@@ -9,11 +9,12 @@ pub const LIGHTMAP_SHADOWMASK: &str = "shadowmask";
 pub const LIGHTMAP_ANIMATED_IRRADIANCE: &str = "animated_irradiance";
 pub const LIGHTMAP_ANIMATED_DIRECTION: &str = "animated_direction";
 
-/// Resident bytes of every lightmap-family texture bound for the installed
-/// level, rebuilt by each level install (including the empty install that
-/// unloads a level) and by each streamed-pool growth or retirement release.
-/// Rows come from the textures actually bound, so a rejected atlas never
-/// reaches the meter; its placeholder does.
+/// Resident bytes of a level set's lightmap-family textures: one row per
+/// texture, built with the set and rebuilt by each streamed-pool growth or
+/// retirement release. Rows come from the textures actually bound, so a
+/// rejected atlas never reaches the meter; its placeholder does. The renderer
+/// reports the active set's; with no set active nothing lightmap-family is
+/// bound, and it reports [`Self::EMPTY`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LightmapResidencyReport {
     pub allocations: Vec<ResidencyAllocation>,
@@ -25,6 +26,13 @@ pub struct LightmapResidencyReport {
 }
 
 impl LightmapResidencyReport {
+    /// No rows and no bytes: the meter with no level set active.
+    pub const EMPTY: Self = Self {
+        allocations: Vec::new(),
+        total_bytes: 0,
+        retiring_bytes: 0,
+    };
+
     pub(super) fn new(
         static_rows: [ResidencyAllocation; 3],
         animated_rows: [ResidencyAllocation; 2],

@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §7.9
 
 use super::pipeline_layout::prepass_attachment_extent;
+use crate::render::gpu_create::GpuCreate;
 
 /// The ghost-only depth attachment, at the scene extent. Recreated with the
 /// other scene targets, never per frame.
@@ -12,7 +13,7 @@ pub(super) struct GhostDepthTarget {
 
 impl GhostDepthTarget {
     pub(super) fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Ghost Depth Texture"),
             size: prepass_attachment_extent(width, height),
             mip_level_count: 1,

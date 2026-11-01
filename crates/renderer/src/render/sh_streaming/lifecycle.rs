@@ -9,7 +9,6 @@ impl ShResidencyState {
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
         sh: &mut crate::render::sh_volume::ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
         batch: ShDrainBatch,
     ) -> Result<ShDrainOutcome, ShResidencyDrainError> {
@@ -29,7 +28,6 @@ impl ShResidencyState {
             device,
             queue,
             sh,
-            uniform_bind_group_layout,
             selection_weights,
         };
         self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;

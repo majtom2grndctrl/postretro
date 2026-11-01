@@ -247,7 +247,7 @@ impl App {
             self.start_boot_destination(destination);
         }
         // Final boot summary: the post-logo marks (session/audio/net/full-init,
-        // and the boot-map worker dispatch) append after the
+        // and the boot-map load enqueue) append after the
         // `first_splash_frame` line, so this logs the full auditable boot order
         // in one place. See: boot_sequence §1.
         log::info!("{}", self.boot_timings.summary());
@@ -281,7 +281,7 @@ impl App {
                 // The host's map replaces the CLI boot map; it loads as an
                 // ordinary runtime request, so a failure returns to Frontend.
                 // Present the menu first (mirrors the Frontend arm above): a
-                // worker failure or an unresolved catalog id leaves Frontend
+                // load failure or an unresolved catalog id leaves Frontend
                 // with no level, and the first-launch hold left the modal
                 // stack empty, so without this the player would be stranded
                 // on a blank frame. `drain_level_requests` overwrites
@@ -295,11 +295,11 @@ impl App {
             }
             BootDestination::BootMap(map_path) => {
                 // Route boot-map loading through the same request queue runtime
-                // transitions use. PRL parse still runs off the main thread, and
-                // `Loading` keeps painting while it waits. The boot worker
-                // dispatch is recorded into `boot_timings` so the boot order line
-                // proves first pixels precede the level-worker spawn. See:
-                // boot_sequence §1.
+                // transitions use. Parse and prep run on the load pool after
+                // dispatch, and `Loading` keeps painting while they run. The
+                // enqueue is recorded into `boot_timings` as
+                // `boot_worker_dispatch` so the boot order line proves first
+                // pixels precede the load's dispatch. See: boot_sequence §1.
                 self.boot_load = true;
                 self.boot_timings.record("boot_worker_dispatch");
                 self.enqueue_level_request(LevelRequest::Load(LevelSource::Path(map_path)));
@@ -390,7 +390,7 @@ impl App {
     /// splash loop replays this after `finish_renderer_full_init`, so the
     /// recreated renderer re-receives the committed profile.
     fn run_deferred_mod_init(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        // Mod init runs before the worker spawns so declarations and entity
+        // Mod init runs before the boot level load dispatches so declarations and entity
         // descriptors commit together, then persistence overlays defaults once
         // before any level work begins.
         // The script runtime + context now live on `Session` (built earlier this
@@ -756,7 +756,7 @@ mod tests {
     }
 
     // --- Finding B: a host map that replaces the CLI boot map must leave a
-    // frontend menu behind, so a worker failure or an unresolved catalog id
+    // frontend menu behind, so a load failure or an unresolved catalog id
     // doesn't strand the player on a blank Frontend. ---
 
     #[test]
@@ -775,7 +775,7 @@ mod tests {
             );
         // The host named a catalog id this fixture's empty map catalog
         // doesn't carry, so `resolve_level_source` rejects it and the queued
-        // load never spawns a worker — the failure case finding B guards.
+        // load never dispatches — the failure case finding B guards.
         app.level_requests
             .push_back(LevelRequest::Load(LevelSource::Catalog(
                 "host-map".to_string(),

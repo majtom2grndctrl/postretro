@@ -3,6 +3,7 @@
 
 mod hooks;
 mod io;
+mod level_data;
 mod sessions;
 pub(crate) mod settle;
 #[cfg(test)]
@@ -16,7 +17,9 @@ use postretro_level_loader::{LightmapStreamManifest, ShDrainBatch};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
+pub(crate) use hooks::{PreparedLevelStreaming, prepare_level_streaming};
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
+pub(crate) use level_data::{StreamingLevelData, StreamingLevelParts, decode_streaming_level_data};
 pub(crate) use sessions::WantedStreaming;
 
 use super::lightmap_residency::LightmapStreamingSession;

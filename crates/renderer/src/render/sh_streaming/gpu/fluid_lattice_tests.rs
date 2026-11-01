@@ -57,13 +57,15 @@ fn a_streamed_level_cuts_its_fluid_on_the_manifest_base_lattice() {
         .clone();
     let payloads = world.take_gpu_lighting_payloads();
     let geometry = crate::render::level_world_to_geometry(&world, &[]);
-    renderer.install_level_geometry(&geometry, payloads);
-    assert!(!renderer.full().sh_volume_resources.present);
-    assert_eq!(renderer.full().sh_volume_resources.grid_origin, [0.0; 3]);
+    renderer
+        .install_level_geometry(&geometry, payloads)
+        .expect("level resources install");
+    assert!(!renderer.level().sh_volume_resources.present);
+    assert_eq!(renderer.level().sh_volume_resources.grid_origin, [0.0; 3]);
 
     let volumes = [pool()];
     renderer.install_fluid_surfaces(&volumes, None);
-    let installed = renderer.full().fluid_surface.installed_grid();
+    let installed = renderer.fluid_test().installed_grid();
     let manifest = FluidGridLattice::new(base.grid_origin, base.cell_size);
     let placeholder = FluidGridLattice::new([0.0; 3], [1.0; 3]);
     let expected = choose_grid_planes(&volumes, manifest.as_ref(), u64::MAX);

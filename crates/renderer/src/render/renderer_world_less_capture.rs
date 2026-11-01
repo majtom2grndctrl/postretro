@@ -4,6 +4,7 @@
 // See: context/lib/rendering_pipeline.md §7.8 · context/lib/ui.md §5
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 impl Renderer {
     /// Render the stored UI snapshot over `clear_color` with no world, through
@@ -23,7 +24,7 @@ impl Renderer {
         self.commit_native_capture_extents();
         let extent = self.render_extents().surface;
         let (width, height) = (extent.width, extent.height);
-        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+        let target = self.device.new_texture(&wgpu::TextureDescriptor {
             label: Some("World-less Capture Target"),
             size: wgpu::Extent3d {
                 width,

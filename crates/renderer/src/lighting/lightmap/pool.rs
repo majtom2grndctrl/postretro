@@ -3,6 +3,7 @@
 // block's texels land in each (region writes, block copies).
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockPayload, LightmapHeader,
@@ -10,7 +11,7 @@ use postretro_level_format::lightmap::{
 use postretro_level_format::shadowmask_atlas::SHADOWMASK_GROUP_COUNT;
 use postretro_render_cpu::lightmap_pool::{BlockPlacement, PoolCopy};
 
-use super::plan::StaticPoolPlan;
+use postretro_render_cpu::lightmap_pool::StaticPoolPlan;
 
 /// BC texel block edge and bytes per BC6H / BC5 block.
 const BC_BLOCK_EDGE: u32 = 4;
@@ -164,9 +165,9 @@ pub(crate) fn create_pool_textures(
     with_shadowmask: bool,
 ) -> StaticPoolTextures {
     StaticPoolTextures {
-        irradiance: device.create_texture(&irradiance_descriptor(format, layers)),
-        direction: device.create_texture(&direction_descriptor(format, layers)),
-        shadowmask: with_shadowmask.then(|| device.create_texture(&shadowmask_descriptor(layers))),
+        irradiance: device.new_texture(&irradiance_descriptor(format, layers)),
+        direction: device.new_texture(&direction_descriptor(format, layers)),
+        shadowmask: with_shadowmask.then(|| device.new_texture(&shadowmask_descriptor(layers))),
     }
 }
 
@@ -319,7 +320,7 @@ pub(crate) fn block_copy_regions(
 /// drop after.
 pub(crate) fn upload_static_pool(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     plan: &StaticPoolPlan,
     payloads: &[LightmapBlockPayload],
 ) -> StaticPoolTextures {

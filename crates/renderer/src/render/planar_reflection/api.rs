@@ -123,7 +123,13 @@ impl Renderer {
         let wanted = full
             .planar_reflection
             .preset(quality)
-            .filter(|_| full.fluid_surface.has_planar_candidate())
+            .filter(|_| {
+                full.fluid_surface.has_planar_candidate(
+                    full.level
+                        .as_ref()
+                        .and_then(|level| level.fluid_surfaces.as_ref()),
+                )
+            })
             .map(|preset| preset.target_extent((scene.width, scene.height)));
         let defer = !rebuild && wanted.is_some() && commit_pending;
         full.planar_reflection.build_deferred = defer;

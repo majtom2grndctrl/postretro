@@ -3,11 +3,11 @@
 // init and rebuilt only with the scene targets and the reflection target.
 // See: context/lib/rendering_pipeline.md §7.3a, §10
 
+use crate::render::gpu_create::GpuCreate;
 use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use postretro_render_cpu::fluid_surface::reflection_style::FluidReflectionStyle;
-use wgpu::util::DeviceExt;
 
 /// Pipeline group of the fluid scene inputs.
 pub(crate) const FLUID_SCENE_INPUTS_GROUP: u32 = 5;
@@ -92,6 +92,10 @@ pub(crate) struct FluidSceneInputs {
     /// scale changes.
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Group 5 over the current scene depth and the reflection target's
+    /// placeholder, rebuilt with the scene targets. Releasing a level's
+    /// target rebinds this one, so a release creates no bind group.
+    placeholder_bind_group: wgpu::BindGroup,
     fog_weight: f32,
     reflection_style: FluidReflectionStyle,
     ssr_scale: [f32; 2],
@@ -116,7 +120,7 @@ fn create_bind_group(
     uniform_buffer: &wgpu::Buffer,
     reflection_target: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fluid Surface Scene Inputs Bind Group (group 5)"),
         layout,
         entries: &[
@@ -136,7 +140,42 @@ fn create_bind_group(
     })
 }
 
+/// Group 5's layout and uniform, cloned out of the fluid pass's live group
+/// so a level build on any thread builds a set's own group 5 over its
+/// reflection target: the group a publish lends to the pass as built.
+#[derive(Clone)]
+pub(crate) struct FluidSceneGroupLayout {
+    layout: wgpu::BindGroupLayout,
+    uniform_buffer: wgpu::Buffer,
+}
+
+impl FluidSceneGroupLayout {
+    /// A set's live group over `scene_depth` and its `reflection_target`.
+    pub(crate) fn build_live_group(
+        &self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            reflection_target,
+        )
+    }
+}
+
 impl FluidSceneInputs {
+    /// This group's layout and uniform, for a level build's own group 5.
+    pub(crate) fn group_layout(&self) -> FluidSceneGroupLayout {
+        FluidSceneGroupLayout {
+            layout: self.layout.clone(),
+            uniform_buffer: self.uniform_buffer.clone(),
+        }
+    }
+
     /// Build group 5 over the current scene depth and the reflection
     /// target's placeholder, at full init.
     pub fn new(
@@ -155,12 +194,12 @@ impl FluidSceneInputs {
             FluidReflectionStyle::default(),
             [0.0; 2],
         );
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Fluid Surface Scene Uniform"),
             contents: bytemuck::bytes_of(&initial),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = create_bind_group(
+        let placeholder_bind_group = create_bind_group(
             device,
             &layout,
             scene_depth,
@@ -170,7 +209,8 @@ impl FluidSceneInputs {
         Self {
             layout,
             uniform_buffer,
-            bind_group,
+            bind_group: placeholder_bind_group.clone(),
+            placeholder_bind_group,
             fog_weight: DEFAULT_FLUID_FOG_WEIGHT,
             reflection_style: FluidReflectionStyle::default(),
             ssr_scale: [0.0; 2],
@@ -214,6 +254,66 @@ impl FluidSceneInputs {
             self.reflection_target = reflection_target.clone();
             self.builds += 1;
         }
+    }
+
+    /// Rebuild over a recreated scene depth: the placeholder group always,
+    /// and the live group over `reflection_target` when one exists, else
+    /// the live group is the placeholder's.
+    pub fn rebuild_scene(
+        &mut self,
+        device: &wgpu::Device,
+        scene_depth: &wgpu::TextureView,
+        reflection_target: Option<&wgpu::TextureView>,
+        placeholder: &wgpu::TextureView,
+    ) {
+        self.placeholder_bind_group = create_bind_group(
+            device,
+            &self.layout,
+            scene_depth,
+            &self.uniform_buffer,
+            placeholder,
+        );
+        #[cfg(test)]
+        {
+            self.builds += 1;
+        }
+        match reflection_target {
+            Some(target) => self.rebuild(device, scene_depth, target),
+            None => {
+                self.scene_depth = scene_depth.clone();
+                self.bind_placeholder(placeholder);
+            }
+        }
+    }
+
+    /// The live group: over the reflection target while one is bound, else
+    /// the placeholder's. A level set takes it with its target.
+    pub fn live_bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    /// Bind a level set's live group, built over the current scene depth and
+    /// `reflection_target`, with no bind group built.
+    pub fn bind_live(&mut self, group: wgpu::BindGroup, reflection_target: &wgpu::TextureView) {
+        self.bind_group = group;
+        #[cfg(test)]
+        {
+            self.reflection_target = reflection_target.clone();
+        }
+        #[cfg(not(test))]
+        let _ = reflection_target;
+    }
+
+    /// Bind the prebuilt placeholder group: a released reflection target's
+    /// group drops with no bind group built.
+    pub fn bind_placeholder(&mut self, placeholder: &wgpu::TextureView) {
+        self.bind_group = self.placeholder_bind_group.clone();
+        #[cfg(test)]
+        {
+            self.reflection_target = placeholder.clone();
+        }
+        #[cfg(not(test))]
+        let _ = placeholder;
     }
 
     /// The scene depth group 5 is bound over.

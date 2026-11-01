@@ -1,8 +1,9 @@
 // GPU-driven BVH traversal compute pipeline and indirect draw dispatch.
 // See: context/lib/rendering_pipeline.md §7.1
 
+use crate::render::gpu_create::GpuCreate;
+use crate::render::install_pipelines::new_install_compute_pipeline;
 use glam::Mat4;
-use wgpu::util::DeviceExt;
 
 use postretro_render_data::cone_frustum::extract_frustum_planes_for_gpu;
 use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BucketRange, BvhLeaf, BvhNode, BvhTree};
@@ -66,98 +67,16 @@ pub struct BvhCullDiagnostics {
     pub frontier: BvhFrontierDiagnostics,
 }
 
-pub struct ComputeCullPipeline {
-    pipeline: wgpu::ComputePipeline,
+/// The BVH cull's device-only half, built once per renderer (see
+/// `InstallPipelines`). Each level's cull holds clones of these handles.
+#[derive(Clone)]
+pub(crate) struct ComputeCullPipelines {
     bind_group_layout: wgpu::BindGroupLayout,
-
-    node_buffer: wgpu::Buffer,
-    leaf_buffer: wgpu::Buffer,
-    visible_cells_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-
-    /// One `DrawIndexedIndirect` slot per leaf, indexed by leaf array position.
-    /// Leaves sorted by `material_bucket_id` so each bucket owns a contiguous range.
-    indirect_buffer: wgpu::Buffer,
-    total_leaves: u32,
-    bucket_ranges: Vec<BucketRange>,
-
-    has_multi_draw_indirect: bool,
-    camera_ranges: crate::VisibleSpanRanges,
-    #[cfg(test)]
-    pub(crate) range_builds: u32,
-    #[cfg(test)]
-    pub(crate) draw_trace: std::cell::RefCell<Vec<Vec<IndirectDrawCommand>>>,
-
-    /// Per-leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
-    cull_status_buffer: wgpu::Buffer,
-
-    visible_bitmask_scratch: Vec<u32>,
-    // CPU mirrors of the read-only BVH, kept for the dev-tools-only cull-cost
-    // estimate (`estimate_diagnostics`). Dead in shipping builds.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    bvh_nodes: Vec<BvhNode>,
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
-    bvh_leaves: Vec<BvhLeaf>,
+    pipeline: wgpu::ComputePipeline,
 }
 
-impl ComputeCullPipeline {
-    pub fn new(device: &wgpu::Device, bvh: &BvhTree, has_multi_draw_indirect: bool) -> Self {
-        let total_leaves = bvh.leaves.len() as u32;
-        let bucket_ranges = bvh.derive_bucket_ranges();
-
-        let node_bytes = serialize_bvh_nodes(&bvh.nodes);
-        let node_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("BVH Node Storage"),
-            contents: if node_bytes.is_empty() {
-                &[0u8; 40]
-            } else {
-                &node_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let leaf_bytes = serialize_bvh_leaves(&bvh.leaves);
-        let leaf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("BVH Leaf Storage"),
-            contents: if leaf_bytes.is_empty() {
-                &[0u8; 48]
-            } else {
-                &leaf_bytes
-            },
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let visible_cells_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Visible Cells Bitmask"),
-            size: VISIBLE_CELLS_BYTES,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Cull Uniforms"),
-            size: CULL_UNIFORMS_SIZE as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let indirect_buffer_size = (total_leaves.max(1) as u64) * DRAW_INDIRECT_SIZE;
-        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Indirect Draw Buffer"),
-            size: indirect_buffer_size,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::INDIRECT
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let cull_status_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Cull Status Buffer"),
-            size: (total_leaves.max(1) as u64) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
+impl ComputeCullPipelines {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("BVH Cull Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(CULL_SHADER_SOURCE.into()),
@@ -235,13 +154,124 @@ impl ComputeCullPipeline {
             immediate_size: 0,
         });
 
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("BVH Cull Compute Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("cull_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
+        let pipeline = new_install_compute_pipeline(
+            device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("BVH Cull Compute Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("cull_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
+        Self {
+            bind_group_layout,
+            pipeline,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
+    }
+}
+
+pub struct ComputeCullPipeline {
+    pipeline: wgpu::ComputePipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+
+    node_buffer: wgpu::Buffer,
+    leaf_buffer: wgpu::Buffer,
+    visible_cells_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+
+    /// One `DrawIndexedIndirect` slot per leaf, indexed by leaf array position.
+    /// Leaves sorted by `material_bucket_id` so each bucket owns a contiguous range.
+    indirect_buffer: wgpu::Buffer,
+    total_leaves: u32,
+    bucket_ranges: Vec<BucketRange>,
+
+    has_multi_draw_indirect: bool,
+    camera_ranges: crate::VisibleSpanRanges,
+    #[cfg(test)]
+    pub(crate) range_builds: u32,
+    #[cfg(test)]
+    pub(crate) draw_trace: std::cell::RefCell<Vec<Vec<IndirectDrawCommand>>>,
+
+    /// Per-leaf: 0 = portal-culled, 1 = frustum-culled, 2 = visible/rendered.
+    cull_status_buffer: wgpu::Buffer,
+
+    visible_bitmask_scratch: Vec<u32>,
+    // CPU mirrors of the read-only BVH, kept for the dev-tools-only cull-cost
+    // estimate (`estimate_diagnostics`). Dead in shipping builds.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    bvh_nodes: Vec<BvhNode>,
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    bvh_leaves: Vec<BvhLeaf>,
+}
+
+impl ComputeCullPipeline {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        pipelines: &ComputeCullPipelines,
+        bvh: &BvhTree,
+        has_multi_draw_indirect: bool,
+    ) -> Self {
+        let total_leaves = bvh.leaves.len() as u32;
+        let bucket_ranges = bvh.derive_bucket_ranges();
+
+        let node_bytes = serialize_bvh_nodes(&bvh.nodes);
+        let node_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Node Storage"),
+            contents: if node_bytes.is_empty() {
+                &[0u8; 40]
+            } else {
+                &node_bytes
+            },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let leaf_bytes = serialize_bvh_leaves(&bvh.leaves);
+        let leaf_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Leaf Storage"),
+            contents: if leaf_bytes.is_empty() {
+                &[0u8; 48]
+            } else {
+                &leaf_bytes
+            },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let visible_cells_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Visible Cells Bitmask"),
+            size: VISIBLE_CELLS_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let uniform_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cull Uniforms"),
+            size: CULL_UNIFORMS_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let indirect_buffer_size = (total_leaves.max(1) as u64) * DRAW_INDIRECT_SIZE;
+        let indirect_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Indirect Draw Buffer"),
+            size: indirect_buffer_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let cull_status_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cull Status Buffer"),
+            size: (total_leaves.max(1) as u64) * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         log::info!(
@@ -253,8 +283,8 @@ impl ComputeCullPipeline {
         );
 
         Self {
-            pipeline,
-            bind_group_layout,
+            pipeline: pipelines.pipeline.clone(),
+            bind_group_layout: pipelines.bind_group_layout.clone(),
             node_buffer,
             leaf_buffer,
             visible_cells_buffer,
@@ -273,6 +303,11 @@ impl ComputeCullPipeline {
             bvh_nodes: bvh.nodes.clone(),
             bvh_leaves: bvh.leaves.clone(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.pipeline
     }
 
     fn write_bitmask_from_cells(&mut self, cells: &[u32]) {
@@ -330,7 +365,7 @@ impl ComputeCullPipeline {
             return;
         }
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("BVH Cull Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[

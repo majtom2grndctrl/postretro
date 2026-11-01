@@ -4,9 +4,10 @@
 //! path. The loader passes decoded bytes only; it never observes a slot,
 //! texture, buffer, or bind group.
 
+use crate::render::gpu_create::GpuCreate;
+#[cfg(test)]
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
-use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_loader::{ShStreamBaseMetadata, ShStreamSourceMetadata};
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
 use postretro_render_cpu::sh_volume::{
@@ -19,15 +20,14 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use wgpu::util::DeviceExt;
 
 use super::dense::DenseTextures;
 use super::direct_compose::{
     DirectSparseReplacement, RetiredDirectSparsePass, StreamingDirectCompose, StreamingDirectViews,
 };
 use super::{PoolGrowthCounters, ShResidencyDrainError, SlotRun, SparseCapacityFloors};
-use crate::render::sh_indirection::WGSL_DECODE_HELPER;
 use crate::render::sh_volume::ShVolumeResources;
+use postretro_render_cpu::sh_residency::{SparseComposeLayout, SparseComposeLayouts};
 
 mod bindings;
 mod capacity;
@@ -42,6 +42,8 @@ mod isolated_tiles;
 #[cfg(test)]
 #[path = "gpu/load_fixture.rs"]
 mod load_fixture;
+#[cfg(test)]
+pub(in crate::render) use load_fixture::write_nine_cluster_prl;
 mod setup;
 mod upload;
 #[cfg(test)]
@@ -54,7 +56,7 @@ pub(crate) use upload_order_fixture::UploadOrderSh;
 use bindings::{create_grid_info, create_sample_bind_groups};
 use capacity::preflight_initial_resource_limits;
 pub(in crate::render::sh_streaming) use capacity::{
-    initial_fixed_metadata_bytes, sparse_compose_capacity,
+    initial_fixed_metadata_bytes, planned_animated_direct_layout, planned_direct_layout,
 };
 
 pub(crate) use crate::render::uploads::StagedUploads;
@@ -241,6 +243,12 @@ pub(super) struct DenseGrowthInputs<'a> {
 }
 
 pub(super) struct StreamingGpuPools {
+    /// The residency plan's sparse compose layouts; growth rebuilds carriers
+    /// from them without re-deriving them from the manifest.
+    sparse_compose: std::sync::Arc<SparseComposeLayouts>,
+    /// The renderer's streamed compose pipelines; sparse growth rebinds
+    /// against these and builds none.
+    pipelines: super::StreamingShPipelines,
     pub(super) shape: AtlasShape,
     limits: wgpu::Limits,
     pub(super) base_format: wgpu::TextureFormat,
@@ -314,7 +322,7 @@ pub(super) fn buffer_with_zeroes(
     label: &'static str,
     byte_len: usize,
 ) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: byte_len.max(4).next_multiple_of(4) as u64,
         usage: wgpu::BufferUsages::STORAGE
@@ -335,7 +343,7 @@ pub(super) fn validate_storage_buffer_size(
     Ok(())
 }
 
-fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(in crate::render::sh_streaming) fn compose_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,

@@ -137,7 +137,8 @@ impl Renderer {
         Ok(Self {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, false),
-            #[cfg(test)]
+            load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
+            #[cfg(any(test, feature = "test-seams"))]
             injected_acquire_failure: false,
             surface: Some(surface),
             extent_state: postretro_render_cpu::render_extent::ExtentState::new(
@@ -180,15 +181,30 @@ impl Renderer {
     /// path deliberately creates neither a window nor a `wgpu::Surface`; the
     /// scene target is the capture output and no present path is available.
     pub fn new_offscreen(capture_width: u32, capture_height: u32) -> Result<Self> {
-        let backends = renderer_backends_from_env()?;
-        log::info!("[Renderer] wgpu backend selection: {backends:?}");
+        Self::new_offscreen_on(
+            &offscreen_instance_from_env()?,
+            capture_width,
+            capture_height,
+        )
+    }
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
-            flags: renderer_instance_flags_from_env(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        Self::new_offscreen_on(&instance, capture_width, capture_height)
+    /// `new_offscreen` whose install-pipeline build waits, on the upload
+    /// thread, until the returned handle is released or dropped. Tests hold
+    /// it to observe the renderer while the build is in flight.
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn new_offscreen_holding_pipeline_build(
+        capture_width: u32,
+        capture_height: u32,
+    ) -> Result<(Self, super::install_pipelines::PipelineBuildRelease)> {
+        let gate = super::install_pipelines::PipelineBuildGate::default();
+        let release = gate.release_handle();
+        let renderer = Self::new_offscreen_with_gate(
+            &offscreen_instance_from_env()?,
+            capture_width,
+            capture_height,
+            Some(gate),
+        )?;
+        Ok((renderer, release))
     }
 
     /// `new_offscreen` against a caller-built instance. Tests use it to pin a
@@ -197,6 +213,15 @@ impl Renderer {
         instance: &wgpu::Instance,
         capture_width: u32,
         capture_height: u32,
+    ) -> Result<Self> {
+        Self::new_offscreen_with_gate(instance, capture_width, capture_height, None)
+    }
+
+    fn new_offscreen_with_gate(
+        instance: &wgpu::Instance,
+        capture_width: u32,
+        capture_height: u32,
+        pipeline_build_gate: Option<super::install_pipelines::PipelineBuildGate>,
     ) -> Result<Self> {
         validate_offscreen_capture_dimensions(capture_width, capture_height)?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -238,16 +263,16 @@ impl Renderer {
             &queue,
             capture_format,
             extent_state.committed(),
-            has_multi_draw_indirect,
             cube_array_supported,
             bloom_render_profile,
             spot_shadow_map_resolution,
-            surface_depth_quality,
+            pipeline_build_gate,
         )?;
         Ok(Self {
             device: device.clone(),
             queue: UploadQueue::new(&device, queue, true),
-            #[cfg(test)]
+            load_errors: super::load_error_capture::LoadErrorCapture::install(&device),
+            #[cfg(any(test, feature = "test-seams"))]
             injected_acquire_failure: false,
             surface: None,
             extent_state,
@@ -306,11 +331,10 @@ impl Renderer {
             self.queue.raw(),
             self.surface_config.format,
             self.extent_state.committed(),
-            self.has_multi_draw_indirect,
             self.cube_array_supported,
             self.bloom_render_profile,
             self.spot_shadow_map_resolution,
-            self.surface_depth_quality,
+            None,
         )?;
         self.full = Some(Box::new(full));
         // The rebuilt fluid pass starts at the default style; hand it the
@@ -323,14 +347,25 @@ impl Renderer {
         // kept default tier keeps its march; any other resets it to its own.
         let quality = self.reflection_quality;
         let Self { device, full, .. } = self;
+        // A freshly built full renderer holds no level set, so no fluid.
         full.as_mut()
             .expect("full renderer was just built")
             .fluid_surface
-            .set_reflection_quality(device, quality);
+            .set_reflection_quality(None, device, quality);
         self.queue.enable();
         self.log_render_extents();
         log::info!("[Renderer] Full renderer initialization complete");
         Ok(())
+    }
+
+    /// Hand off the full renderer's upload thread for a poll-and-join
+    /// retirement, before the renderer is torn down (suspend). Its queue
+    /// closes: jobs already queued (an unfinished install-pipeline build
+    /// included) finish on this device into dropped receivers, so nothing
+    /// from it reaches a resumed renderer, which builds its own set.
+    /// `None` without a full renderer or once taken.
+    pub fn take_upload_retirement(&mut self) -> Option<UploadRetirement> {
+        self.full.as_mut()?.upload_thread.take_retirement()
     }
 
     /// Ensure the full renderer exists. No-op when already full-ready, so callers
@@ -343,6 +378,16 @@ impl Renderer {
         }
         Ok(())
     }
+}
+
+fn offscreen_instance_from_env() -> Result<wgpu::Instance> {
+    let backends = renderer_backends_from_env()?;
+    log::info!("[Renderer] wgpu backend selection: {backends:?}");
+    Ok(wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        flags: renderer_instance_flags_from_env(),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    }))
 }
 
 fn validate_offscreen_capture_dimensions(capture_width: u32, capture_height: u32) -> Result<()> {

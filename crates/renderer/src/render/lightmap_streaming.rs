@@ -44,13 +44,17 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
-        let (outcome, meter_changed) = full
+        // No level, no streamed pool: the no-level renderer streams nothing.
+        let Some(level) = full.level.as_mut() else {
+            return Err(LightmapResidencyDrainError::NotStreaming);
+        };
+        let (outcome, meter_changed) = level
             .lightmap_resources
             .drain_streaming(device, queue, batch)?;
         if meter_changed {
-            full.lightmap_residency_report = full.lightmap_residency_report.with_static_rows(
-                full.lightmap_resources.residency.clone(),
-                full.lightmap_resources.retiring_bytes(),
+            level.lightmap_residency_report = level.lightmap_residency_report.with_static_rows(
+                level.lightmap_resources.residency.clone(),
+                level.lightmap_resources.retiring_bytes(),
             );
         }
         Ok(outcome)
@@ -59,6 +63,11 @@ impl Renderer {
     /// Counters of the installed level's streamed lightmap pool, `None` when
     /// the level does not stream its blocks.
     pub fn lightmap_stream_counters(&self) -> Option<LightmapStreamCounters> {
-        self.full.as_ref()?.lightmap_resources.stream_counters()
+        self.full
+            .as_ref()?
+            .level
+            .as_ref()?
+            .lightmap_resources
+            .stream_counters()
     }
 }

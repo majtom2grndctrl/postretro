@@ -80,9 +80,16 @@ fn assert_targets(renderer: &Renderer, scene: Extent, surface: Extent, when: &st
         bloom_expected.to_vec(),
         "{when}: bloom chain"
     );
+    // The fog scatter target is the active set's: it follows the scene.
+    let fog = &full
+        .level
+        .as_ref()
+        .expect("extent fixtures publish a level set")
+        .extent
+        .fog;
     assert_eq!(
-        full.fog.scatter_dims(),
-        scatter_dims_for(scene.width, scene.height, full.fog.pixel_scale),
+        fog.scatter_dims(),
+        scatter_dims_for(scene.width, scene.height, fog.pixel_scale()),
         "{when}: fog scatter"
     );
     assert_eq!(
@@ -113,6 +120,9 @@ fn extent_changes_rebuild_every_scene_target_at_the_scene_extent() {
     let Some(mut renderer) = offscreen(320, 180) else {
         return;
     };
+    // The fog scatter target is a level set's: publish one so the resize
+    // reaches it.
+    renderer.install_empty_level_for_test();
     assert_targets(
         &renderer,
         Extent::new(320, 180),
@@ -153,12 +163,13 @@ fn fog_pixel_scale_install_divides_the_scene_extent() {
     };
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 2 });
     renderer.commit_extents();
+    // The scale is the active level set's, so a level installs first.
+    renderer.install_empty_level_for_test();
     renderer.set_fog_pixel_scale(3);
-    assert_eq!(renderer.full().fog.pixel_scale, 3);
-    assert_eq!(
-        renderer.full().fog.scatter_dims(),
-        scatter_dims_for(320, 180, 3)
-    );
+    let fog = &renderer.level().extent.fog;
+    assert_eq!(fog.pixel_scale(), 3);
+    assert_eq!(fog.scatter_dims(), scatter_dims_for(320, 180, 3));
+    assert_eq!(renderer.fog_pixel_scale(), 3);
 }
 
 // P11: a manifest reload commit sets a new bloom profile after an extent change.
@@ -192,6 +203,9 @@ fn capture_renders_at_its_requested_resolution_regardless_of_render_resolution()
     let Some(mut renderer) = offscreen(96, 54) else {
         return;
     };
+    // The fog scatter target is a level set's: publish one so the extent
+    // changes reach it.
+    renderer.install_empty_level_for_test();
     renderer.set_render_resolution(RenderResolutionPolicy::Fixed { divisor: 3 });
     renderer.commit_extents();
     assert_eq!(renderer.scene_extent(), Extent::new(32, 18));

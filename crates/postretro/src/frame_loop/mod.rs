@@ -62,6 +62,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // player write later this frame wins over them.
     app.poll_os_preferences();
     app.poll_window_mode_readback();
+    // Every boot state, Booting and Splash included: retired stages (level
+    // loads, and the upload threads of suspended renderers) join here once
+    // finished, never on suspend or on any other frame path.
+    app.poll_stage_retirements();
 
     #[cfg(feature = "observe-live")]
     app.drain_observe_live_requests();
@@ -126,6 +130,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         app.finish_first_launch_hold_if_closed();
         return;
     }
+
+    // A Running frame: a load beside this level is polled once, never
+    // waited on. Its stages draw nothing here, a ready bundle is held for
+    // its caller, and a failure leaves this level Running.
+    app.poll_beside_level_load(event_loop);
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
@@ -2725,8 +2734,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 // Reveal frame just presented — close out
                 // log line C with the present-cost of the frame
                 // the user is about to see.
-                app.level_timings.record("first_level_frame");
-                log::info!("{}", app.level_timings.summary());
+                app.level_timings.log_level_line();
                 app.pending_level_log = false;
             }
         } else {

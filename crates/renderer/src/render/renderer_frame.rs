@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md §1
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// First-person weapon projection. Kept renderer-owned because this is a GPU
 /// pass contract; game assembly supplies a world-space model transform plus the
@@ -44,7 +45,7 @@ impl Renderer {
             .checked_mul(u64::from(height))
             .context("capture readback buffer size overflows u64")?;
 
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let buffer = self.device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Frame Capture Readback"),
             size: buffer_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
@@ -124,8 +125,24 @@ impl Renderer {
         self.injected_acquire_failure = true;
     }
 
+    /// Test seam: the next surface acquire is skipped, as an occluded or
+    /// timed-out acquire is. An offscreen renderer has no surface, so this is
+    /// how the app's tests run the windowed frame entry's skipped-frame path
+    /// (pin P13).
+    #[cfg(feature = "test-seams")]
+    pub fn skip_next_surface_acquire(&mut self) {
+        self.injected_acquire_failure = true;
+    }
+
+    /// Test seam: the upload thread's write counts, `None` before full init
+    /// (pin P13).
+    #[cfg(feature = "test-seams")]
+    pub fn upload_writes(&self) -> Option<super::upload_thread::UploadWrites> {
+        self.full.as_ref().map(|full| full.upload_thread.writes())
+    }
+
     pub(super) fn acquire_present_handle(&mut self, phase: &str) -> Result<Option<PresentHandle>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-seams"))]
         if std::mem::take(&mut self.injected_acquire_failure) {
             return Ok(None);
         }
@@ -191,6 +208,10 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("update_per_frame_uniforms requires full-ready renderer");
+        // No level: the world-less frame still uploads group 0, with the
+        // values the no-level placeholders held (no lights, no SDF atlas, no
+        // direct or scatter SH, no shadowmask).
+        let mut level = full.level.as_mut();
 
         #[cfg(not(feature = "dev-tools"))]
         let time = script_time;
@@ -216,7 +237,10 @@ impl Renderer {
         // K = 4 per-light slices. With the flag clear (legacy PRL / no atlas)
         // the forward skips the upsample and treats every light fully lit.
         let mut sdf_shadow_flags: u32 = 0;
-        if full.sdf_atlas_resources.present {
+        if level
+            .as_ref()
+            .is_some_and(|level| level.sdf_atlas_resources.present)
+        {
             sdf_shadow_flags |= SDF_SHADOW_FLAG_ATLAS_PRESENT;
         }
         // The diagnostics UI runs after this upload. Snapshot once so every
@@ -229,8 +253,8 @@ impl Renderer {
             view_proj,
             camera_position,
             ambient_floor: full.ambient_floor,
-            light_count: full.light_count,
-            total_light_count: full.total_light_count,
+            light_count: level.as_ref().map_or(0, |level| level.light_count),
+            total_light_count: level.as_ref().map_or(0, |level| level.total_light_count),
             time,
             light_term_mask: full.frame_light_term_mask,
             indirect_scale: full.frame_indirect_scale,
@@ -238,14 +262,23 @@ impl Renderer {
             sdf_shadow_mode: full.sdf_shadow_mode,
             sdf_force_visibility_one: full.sdf_force_visibility_one,
             dynamic_direct_scale: full.dynamic_direct_scale,
-            has_scatter: full
-                .sh_volume_resources
-                .billboard_direct_scatter
-                .has_scatter,
-            has_direct: full.sh_volume_resources.direct.has_direct,
-            animated_baked_light_count: full.animated_baked_light_count as u32,
+            has_scatter: level.as_ref().map_or(
+                postretro_render_cpu::frame_uniforms::BillboardScatterMode::Unavailable,
+                |level| {
+                    level
+                        .sh_volume_resources
+                        .billboard_direct_scatter
+                        .has_scatter
+                },
+            ),
+            has_direct: level
+                .as_ref()
+                .is_some_and(|level| level.sh_volume_resources.direct.has_direct),
+            animated_baked_light_count: level
+                .as_ref()
+                .map_or(0, |level| level.animated_baked_light_count as u32),
             spec_shadowmask_force_one: full.spec_shadowmask_force_one,
-            static_spec_mask_present: full.shadowmask_present,
+            static_spec_mask_present: level.as_ref().is_some_and(|level| level.shadowmask_present),
         });
         queue.write_buffer(&full.uniform_buffer, 0, &data);
         full.planar_reflection.upload_camera(queue, &data);
@@ -262,12 +295,17 @@ impl Renderer {
         // Mesh dynamic-direct uniform (group 4 binding 16). The mesh path reads
         // a trimmed camera uniform (no group-0 tail), so its direct scale and
         // level-fixed `has_direct` flag reach it through this dedicated uniform.
-        full.sh_volume_resources
+        let Some(level) = level.as_mut() else {
+            return;
+        };
+        level
+            .sh_volume_resources
             .direct
             .write_dynamic_direct_params(queue, full.dynamic_direct_scale);
 
         // Must precede the compose and SH fragment passes (both read the descriptor buffer).
-        full.sh_volume_resources
+        level
+            .sh_volume_resources
             .animation
             .upload_descriptors_if_dirty(queue);
     }

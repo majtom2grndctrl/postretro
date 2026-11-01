@@ -388,17 +388,9 @@ mod tests {
             .expect("full init calls ensure_full_ready");
         assert!(apply < full_ready, "applied before full init builds");
 
-        let lifecycle = include_str!("lifecycle.rs")
-            .split("#[cfg(test)]\npub(crate) mod tests")
-            .next()
-            .unwrap();
-        let install = lifecycle
-            .split("fn install_level_payload(")
-            .nth(1)
-            .expect("install_level_payload exists")
-            .split("\n    fn ")
-            .next()
-            .unwrap();
+        // The sequencer with every stage it calls spliced in at its call.
+        let install =
+            crate::startup::lifecycle::lifecycle_test_fixtures::install_level_payload_source();
         let apply = install
             .find("self.apply_player_reflection_quality(reflection_quality);")
             .expect("level install re-applies the kept reflection tier");
@@ -414,6 +406,19 @@ mod tests {
             1,
             "once per install"
         );
+        // A level load's commit applies no tier: its set was built at the
+        // dispatch snapshot's, and a change on the commit frame applies
+        // after the commit (pin P17).
+        let commit =
+            crate::startup::lifecycle::lifecycle_test_fixtures::commit_level_bundle_source();
+        assert!(commit.contains("renderer.publish_level_set("));
+        for tier in [
+            "apply_player_reflection_quality",
+            "apply_player_surface_depth_quality",
+            "configure_player_shadow_quality",
+        ] {
+            assert!(!commit.contains(tier), "the commit applies no {tier}");
+        }
 
         assert!(
             include_str!("../app/options_menu.rs")

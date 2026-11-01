@@ -54,6 +54,35 @@ pub struct ShStreamManifest {
     cluster_portal_topology: std::sync::OnceLock<ClusterPortalTopology>,
 }
 
+/// Test-only views for comparing two loads of one PRL.
+#[cfg(test)]
+impl ShStreamManifest {
+    /// Every field but the retained file handle (whose `Debug` names an OS
+    /// handle), so two loads of one file compare equal field by field.
+    pub(crate) fn content_debug(&self) -> String {
+        let Self {
+            file: _,
+            diagnostic_path,
+            container,
+            cluster_directory,
+            payloads,
+            base,
+            sources,
+            content_tag,
+            cluster_portal_topology,
+        } = self;
+        format!(
+            "{diagnostic_path:?} {container:?} {cluster_directory:?} {payloads:?} {base:?} \
+             {sources:?} {content_tag:?} {cluster_portal_topology:?}"
+        )
+    }
+
+    /// Whether the parse has installed the cluster portal topology yet.
+    pub(crate) fn cluster_portal_topology_installed(&self) -> bool {
+        self.cluster_portal_topology.get().is_some()
+    }
+}
+
 impl ShStreamManifest {
     pub fn diagnostic_path(&self) -> &Path {
         &self.diagnostic_path

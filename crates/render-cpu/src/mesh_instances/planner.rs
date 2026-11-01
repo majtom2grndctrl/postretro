@@ -19,7 +19,7 @@ pub const MAX_PALETTE_ENTRIES: usize = 4096;
 
 /// Fixed per-frame instance budget — the cap on how many instances the per-frame
 /// instance SSBO can hold. Defined here (the GPU-free planning half); the renderer
-/// (`mesh_pass.rs`) imports this const and sizes that SSBO to exactly this value,
+/// (`mesh_pass/pipeline.rs`) imports this const and sizes that SSBO to exactly this value,
 /// so the planner MUST drop instances past it or the GPU
 /// layer's `write_buffer` runs off the end of the buffer and wgpu validation
 /// panics. This is a SEPARATE cap from the palette budget, and its real job is

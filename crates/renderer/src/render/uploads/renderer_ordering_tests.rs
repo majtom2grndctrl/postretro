@@ -9,7 +9,7 @@ fn actual_light_count_patch_survives_the_preceding_full_uniform_write() {
     let before = renderer.queue.counts();
     // The full upload contains a distinguishable stale count. The slot updater
     // recomputes the actual zero-light scene and patches its count afterward.
-    renderer.full_mut().total_light_count = 17;
+    renderer.level_mut().total_light_count = 17;
     renderer.update_per_frame_uniforms(Mat4::IDENTITY, Vec3::ZERO, 1.0);
     renderer
         .update_dynamic_light_slots_with_capture_overrides(
@@ -68,19 +68,23 @@ fn install_spot_state(renderer: &mut Renderer) {
         radius: 20.0,
     };
     let full = renderer.full_mut();
-    full.level_lights = vec![light.clone()];
-    full.level_light_source_indices = vec![0];
-    full.level_light_influences = vec![influence.clone()];
-    full.shadow_candidate_lights = vec![light];
-    full.shadow_candidate_source_indices = vec![0];
-    full.shadow_candidate_influences = vec![influence];
-    full.shadow_candidate_selection_indices = vec![None];
-    full.shadow_candidate_animated_baked_indices = vec![None];
+    let level = full
+        .level
+        .as_mut()
+        .expect("a level-gated renderer path requires an active level set");
+    level.level_lights = vec![light.clone()];
+    level.level_light_source_indices = vec![0];
+    level.level_light_influences = vec![influence.clone()];
+    level.shadow_candidate_lights = vec![light];
+    level.shadow_candidate_source_indices = vec![0];
+    level.shadow_candidate_influences = vec![influence];
+    level.shadow_candidate_selection_indices = vec![None];
+    level.shadow_candidate_animated_baked_indices = vec![None];
 }
 fn commit_spot_bridge(renderer: &mut Renderer) -> Vec<u8> {
-    let lights = postretro_lighting::pack_lights(&renderer.full().level_lights);
+    let lights = postretro_lighting::pack_lights(&renderer.level().level_lights);
     let influence =
-        postretro_lighting::influence::pack_influence(&renderer.full().level_light_influences);
+        postretro_lighting::influence::pack_influence(&renderer.level().level_light_influences);
     assert!(renderer.upload_light_bridge_snapshot(
         &lights,
         &influence,
@@ -128,7 +132,7 @@ fn actual_shadow_slot_patch_preserves_the_bridges_base_light_bytes() {
     let probe = Probe::record(
         &renderer,
         &mut encoder,
-        &renderer.full().lights_buffer,
+        &renderer.level().lights_buffer,
         include_str!("light_readback.wgsl"),
         64,
     );
@@ -157,8 +161,8 @@ fn rejected_bridge_snapshot_reports_no_commit_and_retains_the_gpu_snapshot() {
     let before = renderer.queue.counts();
     let committed = commit_spot_bridge(&mut renderer);
     let before_rejection = renderer.queue.counts();
-    let lights_mirror = renderer.full().last_lights_upload.clone();
-    let influences_mirror = renderer.full().last_influence_upload.clone();
+    let lights_mirror = renderer.level().last_lights_upload.clone();
+    let influences_mirror = renderer.level().last_influence_upload.clone();
     assert!(!renderer.upload_light_bridge_snapshot(
         &[0; 1],
         &[0; 16],
@@ -173,14 +177,14 @@ fn rejected_bridge_snapshot_reports_no_commit_and_retains_the_gpu_snapshot() {
         renderer.queue.counts().direct_writes,
         before_rejection.direct_writes
     );
-    assert_eq!(renderer.full().last_lights_upload, lights_mirror);
-    assert_eq!(renderer.full().last_influence_upload, influences_mirror);
-    assert_eq!(renderer.full().light_count, 1);
+    assert_eq!(renderer.level().last_lights_upload, lights_mirror);
+    assert_eq!(renderer.level().last_influence_upload, influences_mirror);
+    assert_eq!(renderer.level().light_count, 1);
     let mut encoder = renderer.device.create_command_encoder(&Default::default());
     let probe = Probe::record(
         &renderer,
         &mut encoder,
-        &renderer.full().lights_buffer,
+        &renderer.level().lights_buffer,
         include_str!("light_readback.wgsl"),
         64,
     );

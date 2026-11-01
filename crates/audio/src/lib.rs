@@ -16,6 +16,9 @@ mod spatial;
 mod voices;
 mod volume;
 
+pub use assets::{
+    DecodedLevelSounds, DecodedSoundFile, LevelSoundScan, decode_level_sounds, scan_level_sounds,
+};
 pub use boundary::{
     Attenuation, AttenuationCurve, AudioError, ListenerState, SoundAnchor, SoundRequest,
 };
@@ -123,8 +126,20 @@ impl Audio {
     /// registry, replacing any sounds from a previously installed level.
     /// Missing directory or undecodable files degrade gracefully (warn, skip);
     /// never panics.
+    ///
+    /// The decode half ([`decode_level_sounds`]) then
+    /// [`register_level_sounds`](Self::register_level_sounds), in sequence.
     pub fn load_level_sounds(&mut self, content_root: &Path) {
         self.core.load_level_sounds(content_root);
+    }
+
+    /// Register a level's sounds that [`decode_level_sounds`] decoded,
+    /// possibly on another thread, replacing any sounds from a previously
+    /// installed level. Registers in sorted path order whatever order the
+    /// files decoded in, with the same warnings and skips as
+    /// [`load_level_sounds`](Self::load_level_sounds); never panics.
+    pub fn register_level_sounds(&mut self, sounds: DecodedLevelSounds) {
+        self.core.register_level_sounds(sounds);
     }
 
     /// Drop every registered sound, releasing registry memory with the level.

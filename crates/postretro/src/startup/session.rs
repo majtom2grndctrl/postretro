@@ -67,6 +67,15 @@ impl SessionBootConfig {
         }
     }
 
+    /// A config as `--pool-seed <seed>` would parse it.
+    #[cfg(test)]
+    pub(crate) fn with_pool_seed(seed: u64) -> Self {
+        Self {
+            pool_seed_override: Some(seed),
+            start_pose: None,
+        }
+    }
+
     /// `--start-pose` override, handed out once: only the session's first
     /// gameplay install starts there; later installs use their map spawn.
     pub(crate) fn take_start_pose(&mut self) -> Option<super::start_pose::StartPose> {
@@ -164,7 +173,7 @@ impl PendingSessionInit {
 /// `EventLoop::new`. The entire `Session` (options completion, audio, the scripting
 /// bootstrap, the input/UI/modal group, and the net endpoint) is constructed
 /// post-first-pixel by `Session::build` through `PendingSessionInit`. Mod init,
-/// the hot-reload watcher, debug-UI lazy-init, and the level-load worker spawn
+/// the hot-reload watcher, debug-UI lazy-init, and the boot level-load request
 /// likewise run on the splash frame loop so the first splash frame paints before
 /// any of that.
 /// See: context/lib/boot_sequence.md §1.
@@ -259,8 +268,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     boot_timings.record("event_loop_created");
 
-    // Camera starts at a placeholder; `install_level_payload` repositions it
-    // to the first `player_spawn` or the level geometry center
+    // Camera starts at a placeholder; level install's camera stage
+    // (`install_level_camera_pose`) repositions it to the first
+    // `player_spawn` or the level geometry center
     // (`spawn_position()`) when no player start exists.
     let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
     let initial_state = InterpolableState::new(initial_camera_pos);
@@ -381,8 +391,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
         active_level_source,
         last_relevel: None,
         level_load: None,
-        level_rx: None,
-        level_worker: None,
+        level_loads: Default::default(),
+        stage_retirements: Default::default(),
+        load_pool: crate::load_pool::EngineLoadPool::shipped(),
         level_requests: VecDeque::new(),
         boot_load: false,
         pending_session: Some(PendingSessionInit {
@@ -716,7 +727,7 @@ fn mod_content_root(name: &Path) -> Result<PathBuf> {
 /// reason `--mod` takes a name: every mod lives under `content/`, so typing
 /// that prefix is noise. A path that starts with `content/` anyway is refused
 /// rather than joined, since `content/dev/content/dev/maps/...` fails only as a
-/// missing file on the load worker, far from the argument that caused it. An
+/// missing file in the level load's parse, far from the argument that caused it. An
 /// absolute path stays as given.
 ///
 /// Without `--mod` the path is read from the working directory unchanged, and
@@ -1412,7 +1423,7 @@ mod tests {
     /// A map that still carries the `content/` prefix is refused at boot, with
     /// the path to pass instead, rather than joined into
     /// `content/<mod>/content/<mod>/...` and reported only as a missing file
-    /// by the load worker.
+    /// by the level load's parse.
     #[test]
     fn with_a_mod_a_content_prefixed_map_is_refused_with_the_path_to_pass() {
         for map in [

@@ -11,6 +11,7 @@
 // See: context/lib/rendering_pipeline.md §7.1 (shadow passes), §4 (lighting)
 
 use crate::lighting::spot_shadow::SHADOW_DEPTH_FORMAT;
+use crate::render::gpu_create::GpuCreate;
 use glam::{Mat4, Vec3};
 use postretro_level_loader::MapLight;
 
@@ -172,7 +173,7 @@ impl CubeShadowPool {
         }
 
         let layer_count = (CUBE_COUNT * CUBE_FACES) as u32;
-        let array_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let array_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Cube Shadow Depth Array"),
             size: wgpu::Extent3d {
                 width: CUBE_FACE_RESOLUTION,

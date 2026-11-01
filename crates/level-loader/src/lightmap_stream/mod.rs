@@ -10,7 +10,7 @@ pub use boundary::{
     LightmapBlockClass, LightmapDrainBatch, LightmapDrainOutcome, LightmapPoolReport,
     LightmapStreamingMode, LightmapTarget, PreparedLightmapBlock,
 };
-pub(crate) use load::read_lightmap_for_residency;
+pub(crate) use load::{LightmapResidencyRead, read_lightmap_for_residency};
 pub use manifest::{LightmapBlockFileRanges, LightmapStreamManifest};
 pub(crate) use storage::LightmapResidencyInputs;
 pub use storage::LightmapStorage;

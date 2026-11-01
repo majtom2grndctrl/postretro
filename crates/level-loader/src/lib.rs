@@ -46,7 +46,10 @@ pub use lightmap_stream::{
     LightmapPoolReport, LightmapStorage, LightmapStreamManifest, LightmapStreamingMode,
     LightmapTarget, PreparedLightmapBlock, requested_lightmap_streaming_mode,
 };
-pub use load_progress::LoadProgress;
+pub use load_progress::{
+    LOAD_PHASE_WEIGHT_PARSE, LOAD_PHASE_WEIGHT_PREP, LOAD_PHASE_WEIGHT_SETTLING,
+    LOAD_PHASE_WEIGHT_UPLOAD, LevelLoadProgress, LoadPhase, LoadProgress,
+};
 pub use portal_planes::PortalPlane;
 pub use prl::{
     CellData, CellId, CellLocatorChild, CellLocatorNodeData, CellLocatorSide, CellLocatorTrace,
@@ -65,7 +68,13 @@ pub use prl_lighting::LevelWorldLighting;
 #[cfg(feature = "load-prl")]
 pub use prl_lightmap::GpuLightingPayloads;
 #[cfg(feature = "load-prl")]
-pub use prl_streaming::{load_prl, load_prl_with_progress};
+pub use prl_loader::{
+    CompleteHandOuts, EntitiesHandOut, FinalHandOut, FinalLighting, GeometryHandOut, HandOut,
+    HandOutCollector, HandOutStage, LoadCancel, ShManifestHandOut, ShManifestMetadata,
+    SpatialHandOut, StagedParseOutcome, assemble,
+};
+#[cfg(feature = "load-prl")]
+pub use prl_streaming::{load_prl, load_prl_staged, load_prl_with_progress};
 #[cfg(feature = "load-prl")]
 pub use sh_stream::{
     PreparedShCluster, ShDrainBatch, ShDrainOutcome, ShStorage, ShStreamBaseMetadata,

@@ -9,6 +9,7 @@
 // maps) from the forward pass — the bind-group *objects* are shared, not
 // re-uploaded. Group 6 layout is owned here.
 
+use crate::render::gpu_create::GpuCreate;
 use glam::{Mat4, Vec3};
 
 use super::SCENE_COLOR_FORMAT;
@@ -67,7 +68,6 @@ const AABB_EPSILON: f32 = 1.0e-3;
 const FOG_HYSTERESIS_SECONDS: f64 = 0.3;
 
 pub struct FogPass {
-    pub pixel_scale: u32,
     pub step_size: f32,
 
     // --- Raymarch (compute) pipeline ---
@@ -76,7 +76,6 @@ pub struct FogPass {
 
     // --- Composite (fullscreen blit) pipeline ---
     pub composite_pipeline: wgpu::RenderPipeline,
-    pub composite_bind_group: wgpu::BindGroup,
     composite_bgl: wgpu::BindGroupLayout,
     composite_sampler: wgpu::Sampler,
 
@@ -95,24 +94,65 @@ pub struct FogPass {
     /// the worst case (`MAX_FOG_VOLUMES * 16` planes) so it never reallocates.
     pub fog_planes_buffer: wgpu::Buffer,
 
-    // --- Scatter target ---
-    scatter_view: wgpu::TextureView,
-    #[allow(dead_code)]
-    scatter_texture: wgpu::Texture,
-    /// Low-res dimensions currently allocated for the scatter target. Used
-    /// to skip reallocation when the scene extent changes without changing the
-    /// pixel scale.
-    scatter_dims: (u32, u32),
-
-    /// Group 6 bind group. Rebuilt on any call to `resize` — the depth
-    /// view is always re-bound even when scatter dims are unchanged,
-    /// because the scene depth texture is recreated on every resize.
-    pub bind_group: wgpu::BindGroup,
-
     /// Number of dense-packed `FogVolume` records the shader iterates this
     /// frame. Updated per-frame by `repack_active`. Shader loops against this
     /// count; trailing buffer slots are stale-but-safe.
     pub active_count: u32,
+    /// Reusable scratch buffer for the per-frame dense repack — capacity
+    /// retained between frames to avoid per-frame allocation.
+    repack_scratch: Vec<FogVolume>,
+    /// Reusable scratch buffer for per-frame `fog_planes` upload bytes —
+    /// fixed capacity (`FOG_PLANES_BUFFER_CAPACITY` planes × 16 bytes), no
+    /// dynamic growth.
+    planes_scratch: Vec<[f32; 4]>,
+    /// Most recent spot light count for dynamic beams.
+    pub spot_count: u32,
+    /// Most recent point-light count. Packed into `FogParams.point_count` so
+    /// the shader bounds its inner loop against the live count rather than
+    /// `arrayLength(&fog_points)` (which would replay stale records when a
+    /// frame uploads zero point lights).
+    pub point_count: u32,
+}
+
+/// One level set's fog scatter target at its pixel scale and the scene
+/// extent it was built at, with the two bind groups over it: the raymarch's
+/// group 6 (which also binds scene depth) and the composite's. Extent-bound:
+/// a window resize rebuilds only the active set's, and publishing a set
+/// built at another extent rebuilds it once.
+pub(crate) struct FogLevelTarget {
+    /// The level's worldspawn `fog_pixel_scale`, clamped.
+    pixel_scale: u32,
+    #[allow(dead_code)]
+    scatter_texture: wgpu::Texture,
+    scatter_view: wgpu::TextureView,
+    /// Low-res dimensions currently allocated for the scatter target. Used
+    /// to skip reallocation when the scene extent changes without changing the
+    /// pixel scale.
+    scatter_dims: (u32, u32),
+    /// Group 6 bind group. Rebuilt on every `resize_target` — the depth view
+    /// is always re-bound even when scatter dims are unchanged, because the
+    /// scene depth texture is recreated on every resize.
+    pub bind_group: wgpu::BindGroup,
+    pub composite_bind_group: wgpu::BindGroup,
+}
+
+impl FogLevelTarget {
+    pub fn pixel_scale(&self) -> u32 {
+        self.pixel_scale
+    }
+
+    /// Current low-res scatter target dimensions.
+    pub fn scatter_dims(&self) -> (u32, u32) {
+        self.scatter_dims
+    }
+}
+
+/// One level's canonical fog volumes, their bounding planes, live mask and
+/// hysteresis timestamps. Lives in the level's resource set beside its
+/// scatter target (`FogLevelTarget`); the pass keeps its fixed-size buffers
+/// and per-frame repack scratch.
+#[derive(Default)]
+pub(crate) struct FogLevelState {
     /// Canonical fog-volume list in source order (one entry per
     /// `fog_volume` brush / `fog_lamp` / `fog_tube` entity in the PRL).
     /// Re-packed per-frame by `repack_active`. Empty when no level is loaded
@@ -130,18 +170,11 @@ pub struct FogPass {
     /// upload. ANDed with the visible-cell-derived mask to produce the
     /// per-frame `active_mask`.
     live_mask: u32,
-    /// Reusable scratch buffer for the per-frame dense repack — capacity
-    /// retained between frames to avoid per-frame allocation.
-    repack_scratch: Vec<FogVolume>,
     /// Canonical bounding planes parallel to `canonical_volumes` (one entry per
     /// canonical slot; empty inner vec for semantic / zero-plane volumes). The
     /// dense repack patches `plane_offset` per `FogVolume` and accumulates
     /// these into `planes_scratch` for upload.
     canonical_planes: Vec<Vec<[f32; 4]>>,
-    /// Reusable scratch buffer for per-frame `fog_planes` upload bytes —
-    /// fixed capacity (`FOG_PLANES_BUFFER_CAPACITY` planes × 16 bytes), no
-    /// dynamic growth.
-    planes_scratch: Vec<[f32; 4]>,
     /// Wall-clock time (seconds) at which each canonical slot was last seen
     /// in `cell_mask & live_mask`. Parallel to `canonical_volumes`; slots
     /// never observed sit at `f64::NEG_INFINITY` so the hysteresis comparison
@@ -150,393 +183,9 @@ pub struct FogPass {
     /// on level load via `clear_for_level_load` so volumes from the previous
     /// level don't leak forward.
     last_active_time: Vec<f64>,
-    /// Most recent spot light count for dynamic beams.
-    pub spot_count: u32,
-    /// Most recent point-light count. Packed into `FogParams.point_count` so
-    /// the shader bounds its inner loop against the live count rather than
-    /// `arrayLength(&fog_points)` (which would replay stale records when a
-    /// frame uploads zero point lights).
-    pub point_count: u32,
 }
 
-impl FogPass {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        device: &wgpu::Device,
-        scene_width: u32,
-        scene_height: u32,
-        pixel_scale: u32,
-        depth_view: &wgpu::TextureView,
-        camera_bgl: &wgpu::BindGroupLayout,
-        sh_bgl: &wgpu::BindGroupLayout,
-        spot_shadow_bgl: &wgpu::BindGroupLayout,
-        cube_array_supported: bool,
-    ) -> Self {
-        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
-        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
-
-        // --- Group 6 layout ---
-        let raymarch_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Fog Raymarch BGL (group 6)"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_DEPTH_TEX,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_VOLUMES,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_SCATTER_OUT,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: SCATTER_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_FOG_PARAMS,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_FOG_SPOTS,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_FOG_POINTS,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: BIND_FOG_PLANES,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        // --- Buffers ---
-        //
-        // Initial fog-volumes buffer: zero-count dummy record. wgpu rejects
-        // zero-sized storage buffers, so we always size for MAX_FOG_VOLUMES
-        // and track the real count in `fog.active_count`.
-        let volumes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Fog Volume AABB Buffer"),
-            size: (MAX_FOG_VOLUMES * FOG_VOLUME_SIZE) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Fog Params Uniform"),
-            size: FOG_PARAMS_SIZE as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Spots buffer: fixed at SHADOW_POOL_SIZE capacity; never reallocated.
-        let spots_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Fog Spot Lights Buffer"),
-            size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Point-light storage buffer. Sized for MAX_FOG_POINT_LIGHTS so the
-        // buffer is never reallocated; per-frame uploads go through
-        // `upload_points`.
-        let fog_points_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Fog Point Lights Buffer"),
-            size: (MAX_FOG_POINT_LIGHTS * FOG_POINT_LIGHT_SIZE) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Plane payload buffer: every canonical fog volume's bounding planes
-        // packed contiguously, indexed via per-volume `plane_offset / plane_count`.
-        let fog_planes_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Fog Planes Buffer"),
-            size: (FOG_PLANES_BUFFER_CAPACITY * FOG_PLANE_SIZE) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // --- Scatter target ---
-        let (scatter_texture, scatter_view) =
-            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
-
-        // --- Group 6 bind group ---
-        let bind_group = build_group6(
-            device,
-            &raymarch_bgl,
-            depth_view,
-            &volumes_buffer,
-            &scatter_view,
-            &params_buffer,
-            &spots_buffer,
-            &fog_points_buffer,
-            &fog_planes_buffer,
-        );
-
-        // --- Raymarch compute pipeline ---
-        // Without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits binding 5, so
-        // the fog shader must not declare `point_shadow_cube`. Derive the no-cube
-        // variant from the SAME transform the forward shader uses (fog never
-        // samples the cube, so only the binding declaration is stripped).
-        let fog_source: std::borrow::Cow<str> = if cube_array_supported {
-            FOG_SHADER_SOURCE.into()
-        } else {
-            super::strip_point_shadow_cube(FOG_SHADER_SOURCE).into()
-        };
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Fog Raymarch Shader"),
-            source: wgpu::ShaderSource::Wgsl(fog_source),
-        });
-        let raymarch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Fog Raymarch Pipeline Layout"),
-            bind_group_layouts: &[
-                Some(camera_bgl),      // group 0
-                None,                  // group 1
-                None,                  // group 2
-                Some(sh_bgl),          // group 3
-                None,                  // group 4
-                Some(spot_shadow_bgl), // group 5
-                Some(&raymarch_bgl),   // group 6
-            ],
-            immediate_size: 0,
-        });
-        let raymarch_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Fog Raymarch Pipeline"),
-            layout: Some(&raymarch_layout),
-            module: &shader,
-            entry_point: Some("cs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        // --- Composite pipeline (fullscreen blit, additive) ---
-        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Fog Composite Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-        let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Fog Composite BGL"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-            ],
-        });
-        let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Fog Composite Bind Group"),
-            layout: &composite_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&scatter_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&composite_sampler),
-                },
-            ],
-        });
-        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Fog Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
-        });
-        let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Fog Composite Pipeline Layout"),
-            bind_group_layouts: &[Some(&composite_bgl)],
-            immediate_size: 0,
-        });
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Fog Composite Pipeline"),
-            layout: Some(&composite_layout),
-            vertex: wgpu::VertexState {
-                module: &composite_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &composite_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    // Additive: final = scene + fog_scatter. Alpha path is
-                    // unused but kept consistent.
-                    format: SCENE_COLOR_FORMAT,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        Self {
-            pixel_scale,
-            step_size: fog_volume::DEFAULT_FOG_STEP_SIZE,
-            raymarch_pipeline,
-            raymarch_bind_group_layout: raymarch_bgl,
-            composite_pipeline,
-            composite_bind_group,
-            composite_bgl,
-            composite_sampler,
-            volumes_buffer,
-            params_buffer,
-            spots_buffer,
-            fog_points_buffer,
-            fog_planes_buffer,
-            scatter_view,
-            scatter_texture,
-            scatter_dims,
-            bind_group,
-            active_count: 0,
-            canonical_volumes: Vec::new(),
-            live_mask: 0,
-            repack_scratch: Vec::new(),
-            canonical_planes: Vec::new(),
-            planes_scratch: Vec::with_capacity(FOG_PLANES_BUFFER_CAPACITY),
-            last_active_time: Vec::new(),
-            spot_count: 0,
-            point_count: 0,
-        }
-    }
-
-    /// Resize the scatter target and rebuild the group-6 bind group.
-    /// Call on a scene-extent change or `fog_pixel_scale` change.
-    pub fn resize(
-        &mut self,
-        device: &wgpu::Device,
-        scene_width: u32,
-        scene_height: u32,
-        depth_view: &wgpu::TextureView,
-    ) {
-        let dims = scatter_dims_for(scene_width, scene_height, self.pixel_scale);
-        if dims != self.scatter_dims {
-            let (tex, view) = create_scatter_target(device, dims.0, dims.1);
-            self.scatter_texture = tex;
-            self.scatter_view = view;
-            self.scatter_dims = dims;
-            self.composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Fog Composite Bind Group"),
-                layout: &self.composite_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.scatter_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
-                    },
-                ],
-            });
-        }
-        // Depth view may have been recreated even if scatter dims are
-        // unchanged (e.g., a scene-extent change that happens to match the scale).
-        self.bind_group = build_group6(
-            device,
-            &self.raymarch_bind_group_layout,
-            depth_view,
-            &self.volumes_buffer,
-            &self.scatter_view,
-            &self.params_buffer,
-            &self.spots_buffer,
-            &self.fog_points_buffer,
-            &self.fog_planes_buffer,
-        );
-    }
-
-    /// Set the global `fog_pixel_scale` from worldspawn. Rebuilds the scatter
-    /// target if the value changed.
-    pub fn set_pixel_scale(
-        &mut self,
-        device: &wgpu::Device,
-        scale: u32,
-        scene_width: u32,
-        scene_height: u32,
-        depth_view: &wgpu::TextureView,
-    ) {
-        let clamped = clamp_fog_pixel_scale(scale);
-        if clamped == self.pixel_scale {
-            return;
-        }
-        self.pixel_scale = clamped;
-        self.resize(device, scene_width, scene_height, depth_view);
-    }
-
+impl FogLevelState {
     /// Replace the canonical fog-volume list. The list is the per-frame
     /// `FogVolume` records emitted in original PRL record order — `live_mask`
     /// indicates which slots have density > 0 and are eligible for upload.
@@ -634,6 +283,359 @@ impl FogPass {
         self.last_active_time.fill(f64::NEG_INFINITY);
     }
 
+    /// Number of canonical fog-volume slots currently loaded. Used by callers
+    /// to derive the `DrawAll` cell-mask (`(1 << canonical_count) - 1`).
+    pub fn canonical_volume_count(&self) -> u32 {
+        self.canonical_volumes.len() as u32
+    }
+}
+
+impl FogPass {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        device: &wgpu::Device,
+        camera_bgl: &wgpu::BindGroupLayout,
+        sh_bgl: &wgpu::BindGroupLayout,
+        spot_shadow_bgl: &wgpu::BindGroupLayout,
+        cube_array_supported: bool,
+    ) -> Self {
+        // --- Group 6 layout ---
+        let raymarch_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Fog Raymarch BGL (group 6)"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_DEPTH_TEX,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_VOLUMES,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_SCATTER_OUT,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: SCATTER_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_PARAMS,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_SPOTS,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_POINTS,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: BIND_FOG_PLANES,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // --- Buffers ---
+        //
+        // Initial fog-volumes buffer: zero-count dummy record. wgpu rejects
+        // zero-sized storage buffers, so we always size for MAX_FOG_VOLUMES
+        // and track the real count in `fog.active_count`.
+        let volumes_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Volume AABB Buffer"),
+            size: (MAX_FOG_VOLUMES * FOG_VOLUME_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Params Uniform"),
+            size: FOG_PARAMS_SIZE as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Spots buffer: fixed at SHADOW_POOL_SIZE capacity; never reallocated.
+        let spots_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Spot Lights Buffer"),
+            size: (crate::lighting::spot_shadow::SHADOW_POOL_SIZE * FOG_SPOT_LIGHT_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Point-light storage buffer. Sized for MAX_FOG_POINT_LIGHTS so the
+        // buffer is never reallocated; per-frame uploads go through
+        // `upload_points`.
+        let fog_points_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Point Lights Buffer"),
+            size: (MAX_FOG_POINT_LIGHTS * FOG_POINT_LIGHT_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Plane payload buffer: every canonical fog volume's bounding planes
+        // packed contiguously, indexed via per-volume `plane_offset / plane_count`.
+        let fog_planes_buffer = device.new_buffer(&wgpu::BufferDescriptor {
+            label: Some("Fog Planes Buffer"),
+            size: (FOG_PLANES_BUFFER_CAPACITY * FOG_PLANE_SIZE) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // The scatter target and its groups 6 and composite are each level
+        // set's (`FogLevelTarget`), built at the set's extent.
+
+        // --- Raymarch compute pipeline ---
+        // Without CUBE_ARRAY_TEXTURES the shared group-5 BGL omits binding 5, so
+        // the fog shader must not declare `point_shadow_cube`. Derive the no-cube
+        // variant from the SAME transform the forward shader uses (fog never
+        // samples the cube, so only the binding declaration is stripped).
+        let fog_source: std::borrow::Cow<str> = if cube_array_supported {
+            FOG_SHADER_SOURCE.into()
+        } else {
+            super::strip_point_shadow_cube(FOG_SHADER_SOURCE).into()
+        };
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Fog Raymarch Shader"),
+            source: wgpu::ShaderSource::Wgsl(fog_source),
+        });
+        let raymarch_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Fog Raymarch Pipeline Layout"),
+            bind_group_layouts: &[
+                Some(camera_bgl),      // group 0
+                None,                  // group 1
+                None,                  // group 2
+                Some(sh_bgl),          // group 3
+                None,                  // group 4
+                Some(spot_shadow_bgl), // group 5
+                Some(&raymarch_bgl),   // group 6
+            ],
+            immediate_size: 0,
+        });
+        let raymarch_pipeline = device.new_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Fog Raymarch Pipeline"),
+            layout: Some(&raymarch_layout),
+            module: &shader,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
+        // --- Composite pipeline (fullscreen blit, additive) ---
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Fog Composite Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Fog Composite BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ],
+        });
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Fog Composite Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/fog_composite.wgsl").into()),
+        });
+        let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Fog Composite Pipeline Layout"),
+            bind_group_layouts: &[Some(&composite_bgl)],
+            immediate_size: 0,
+        });
+        let composite_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Fog Composite Pipeline"),
+            layout: Some(&composite_layout),
+            vertex: wgpu::VertexState {
+                module: &composite_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    // Additive: final = scene + fog_scatter. Alpha path is
+                    // unused but kept consistent.
+                    format: SCENE_COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            step_size: fog_volume::DEFAULT_FOG_STEP_SIZE,
+            raymarch_pipeline,
+            raymarch_bind_group_layout: raymarch_bgl,
+            composite_pipeline,
+            composite_bgl,
+            composite_sampler,
+            volumes_buffer,
+            params_buffer,
+            spots_buffer,
+            fog_points_buffer,
+            fog_planes_buffer,
+            active_count: 0,
+            repack_scratch: Vec::new(),
+            planes_scratch: Vec::with_capacity(FOG_PLANES_BUFFER_CAPACITY),
+            spot_count: 0,
+            point_count: 0,
+        }
+    }
+
+    /// What a level set's scatter target binds from the pass, cloned so a
+    /// level build on any thread builds the same groups
+    /// ([`FogTargetLayout::build_target`]).
+    pub(crate) fn target_layout(&self) -> FogTargetLayout {
+        FogTargetLayout {
+            raymarch_bind_group_layout: self.raymarch_bind_group_layout.clone(),
+            composite_bgl: self.composite_bgl.clone(),
+            composite_sampler: self.composite_sampler.clone(),
+            volumes_buffer: self.volumes_buffer.clone(),
+            params_buffer: self.params_buffer.clone(),
+            spots_buffer: self.spots_buffer.clone(),
+            fog_points_buffer: self.fog_points_buffer.clone(),
+            fog_planes_buffer: self.fog_planes_buffer.clone(),
+        }
+    }
+
+    /// Resize `target`'s scatter texture for a new scene extent and rebuild
+    /// its group 6. Call on a scene-extent change or a pixel-scale change.
+    pub fn resize_target(
+        &self,
+        device: &wgpu::Device,
+        target: &mut FogLevelTarget,
+        scene_width: u32,
+        scene_height: u32,
+        depth_view: &wgpu::TextureView,
+    ) {
+        let dims = scatter_dims_for(scene_width, scene_height, target.pixel_scale);
+        if dims != target.scatter_dims {
+            let (tex, view) = create_scatter_target(device, dims.0, dims.1);
+            target.scatter_texture = tex;
+            target.scatter_view = view;
+            target.scatter_dims = dims;
+            target.composite_bind_group = self.composite_group(device, &target.scatter_view);
+        }
+        // Depth view may have been recreated even if scatter dims are
+        // unchanged (e.g., a scene-extent change that happens to match the scale).
+        target.bind_group = self.group6(device, depth_view, &target.scatter_view);
+    }
+
+    /// Set `target`'s `fog_pixel_scale` from worldspawn. Rebuilds the scatter
+    /// target if the value changed.
+    pub fn set_target_pixel_scale(
+        &self,
+        device: &wgpu::Device,
+        target: &mut FogLevelTarget,
+        scale: u32,
+        scene_width: u32,
+        scene_height: u32,
+        depth_view: &wgpu::TextureView,
+    ) {
+        let clamped = clamp_fog_pixel_scale(scale);
+        if clamped == target.pixel_scale {
+            return;
+        }
+        target.pixel_scale = clamped;
+        self.resize_target(device, target, scene_width, scene_height, depth_view);
+    }
+
+    fn composite_group(
+        &self,
+        device: &wgpu::Device,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        self.target_layout().composite_group(device, scatter_view)
+    }
+
+    fn group6(
+        &self,
+        device: &wgpu::Device,
+        depth_view: &wgpu::TextureView,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        self.target_layout()
+            .group6(device, depth_view, scatter_view)
+    }
+
     /// Compute the per-frame `active_mask` as `(cell_mask & live_mask) |
     /// sticky`, where `sticky` is the set of live slots last seen within
     /// `FOG_HYSTERESIS_SECONDS`, dense-pack the surviving canonical slots into
@@ -643,13 +645,14 @@ impl FogPass {
     /// allocation occurs on the steady-state per-frame path.
     pub fn repack_active(
         &mut self,
+        level: &mut FogLevelState,
         queue: &crate::render::uploads::UploadQueue,
         cell_mask: u32,
         now_seconds: f64,
     ) {
         let active_mask = compute_active_mask_with_hysteresis(
-            &mut self.last_active_time,
-            self.live_mask,
+            &mut level.last_active_time,
+            level.live_mask,
             cell_mask,
             now_seconds,
             FOG_HYSTERESIS_SECONDS,
@@ -664,11 +667,11 @@ impl FogPass {
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            if let Some(v) = self.canonical_volumes.get(i) {
+            if let Some(v) = level.canonical_volumes.get(i) {
                 let mut packed = *v;
                 let plane_offset = self.planes_scratch.len() as u32;
                 packed.plane_offset = plane_offset;
-                if let Some(planes) = self.canonical_planes.get(i) {
+                if let Some(planes) = level.canonical_planes.get(i) {
                     // Trust the bridge's plane_count but clamp against the
                     // canonical plane list to defend against drift; on truncation
                     // we must also correct the GPU-bound count so the shader
@@ -705,12 +708,6 @@ impl FogPass {
         // frame. Safe: the shader loops `0..active_count` and gates plane reads
         // on `plane_count > 0u`, so stale slots / stale plane bytes are never
         // observed.
-    }
-
-    /// Number of canonical fog-volume slots currently loaded. Used by callers
-    /// to derive the `DrawAll` cell-mask (`(1 << canonical_count) - 1`).
-    pub fn canonical_volume_count(&self) -> u32 {
-        self.canonical_volumes.len() as u32
     }
 
     /// Upload the per-frame fog params (inv view-proj, camera pos, step size).
@@ -774,9 +771,12 @@ impl FogPass {
         self.spot_count = capped as u32;
     }
 
-    /// Current low-res scatter target dimensions.
-    pub fn scatter_dims(&self) -> (u32, u32) {
-        self.scatter_dims
+    /// Zero the per-frame volume, spot and point counts a released level
+    /// left, so no frame reads its records. CPU-only.
+    pub fn clear_frame_counts(&mut self) {
+        self.active_count = 0;
+        self.spot_count = 0;
+        self.point_count = 0;
     }
 
     /// Whether the pass should execute this frame. Skips the compute
@@ -837,12 +837,96 @@ pub(super) fn scatter_dims_for(width: u32, height: u32, pixel_scale: u32) -> (u3
     (w, h)
 }
 
+/// The fog pass's raymarch and composite layouts, composite sampler and
+/// per-frame buffers a level set's scatter-target groups bind, cloned for a
+/// level build on any thread.
+#[derive(Clone)]
+pub(crate) struct FogTargetLayout {
+    raymarch_bind_group_layout: wgpu::BindGroupLayout,
+    composite_bgl: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    volumes_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
+    spots_buffer: wgpu::Buffer,
+    fog_points_buffer: wgpu::Buffer,
+    fog_planes_buffer: wgpu::Buffer,
+}
+
+impl FogTargetLayout {
+    /// Build one level set's scatter target at `pixel_scale` (clamped) for a
+    /// `scene_width × scene_height` scene, with its group 6 over `depth_view`
+    /// and its composite group.
+    pub(crate) fn build_target(
+        &self,
+        device: &wgpu::Device,
+        scene_width: u32,
+        scene_height: u32,
+        pixel_scale: u32,
+        depth_view: &wgpu::TextureView,
+    ) -> FogLevelTarget {
+        let pixel_scale = clamp_fog_pixel_scale(pixel_scale);
+        let scatter_dims = scatter_dims_for(scene_width, scene_height, pixel_scale);
+        let (scatter_texture, scatter_view) =
+            create_scatter_target(device, scatter_dims.0, scatter_dims.1);
+        let composite_bind_group = self.composite_group(device, &scatter_view);
+        let bind_group = self.group6(device, depth_view, &scatter_view);
+        FogLevelTarget {
+            pixel_scale,
+            scatter_texture,
+            scatter_view,
+            scatter_dims,
+            bind_group,
+            composite_bind_group,
+        }
+    }
+
+    fn composite_group(
+        &self,
+        device: &wgpu::Device,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fog Composite Bind Group"),
+            layout: &self.composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                },
+            ],
+        })
+    }
+
+    fn group6(
+        &self,
+        device: &wgpu::Device,
+        depth_view: &wgpu::TextureView,
+        scatter_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        build_group6(
+            device,
+            &self.raymarch_bind_group_layout,
+            depth_view,
+            &self.volumes_buffer,
+            scatter_view,
+            &self.params_buffer,
+            &self.spots_buffer,
+            &self.fog_points_buffer,
+            &self.fog_planes_buffer,
+        )
+    }
+}
+
 fn create_scatter_target(
     device: &wgpu::Device,
     width: u32,
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
+    let tex = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Fog Scatter Target"),
         size: wgpu::Extent3d {
             width,
@@ -872,7 +956,7 @@ fn build_group6(
     points_buffer: &wgpu::Buffer,
     planes_buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Fog Group 6"),
         layout,
         entries: &[

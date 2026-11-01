@@ -14,7 +14,18 @@ use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 
 /// FGD `classname` this handler binds to.
-pub(crate) const CLASSNAME: &str = "prop_mesh";
+pub const CLASSNAME: &str = "prop_mesh";
+
+/// The model a `prop_mesh` placement attaches: its non-empty `model` key.
+/// Silent, for a reader that predicts the model sweep; [`handle`] warns about
+/// an absent or empty key.
+pub fn authored_model(entity: &MapEntity) -> Option<&str> {
+    entity
+        .key_values
+        .get("model")
+        .map(String::as_str)
+        .filter(|model| !model.is_empty())
+}
 
 /// Read the `model` KVP. Absent or empty → logs a `[Loader]` warning naming the
 /// key and origin, and returns `None`. The handler treats a missing model as a

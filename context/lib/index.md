@@ -96,9 +96,9 @@
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
-- **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
-- **Staged level load / engine load pool / upload thread / per-load renderer resources / shared model cache / loading beside a running level** → `boot_sequence.md` §9 (decided, not yet built) · `plans/ready/level-load-pipeline/`
-- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
+- **Level-load timing / log line C / dispatch, bundle, commit-frame, prep-kind and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
+- **Staged level load / staged parse hand-outs / engine load pool / prep checks / upload thread / commit frame and counted fallbacks / load state machine, generations, cancellation and retirement / load failure route / uncaptured wgpu errors during a load / loading beside a running level** → `boot_sequence.md` §2, §3, §4 · per-load renderer sets, install pipelines, off-main set build: `rendering_pipeline.md` §3 · shared model cache: `resource_management.md` §8.2
+- **Loading screen / loading tree pools / `loading.progress` / phase-weighted level-load progress / supersede keeps the tree / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Full-window tree background / `Tree.background` / cover-fit image beneath a UI tree** → `ui.md` §1
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).

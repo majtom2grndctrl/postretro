@@ -46,11 +46,24 @@ pub(crate) struct StreamedLightmapPrl {
 
 impl StreamedLightmapPrl {
     pub(crate) fn write() -> Self {
+        Self::write_edited(|_| {})
+    }
+
+    /// The fixture with `edit` applied to its sections before they are
+    /// written: a test's variant of the same level.
+    pub(crate) fn write_edited(edit: impl FnOnce(&mut Vec<SectionBlob>)) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("streamed-lightmap.prl");
         let mut file = std::fs::File::create(&path).unwrap();
-        write_prl(&mut file, &sections()).unwrap();
+        let mut sections = sections();
+        edit(&mut sections);
+        write_prl(&mut file, &sections).unwrap();
         Self { _dir: dir, path }
+    }
+
+    /// Where the fixture lives.
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Loads with the process's modes: `POSTRETRO_LIGHTMAP_STREAMING` unset

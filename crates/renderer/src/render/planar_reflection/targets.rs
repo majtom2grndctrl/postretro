@@ -2,6 +2,7 @@
 // See: context/lib/rendering_pipeline.md §7.3a
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 pub(super) struct PlanarTargets {
     pub extent: (u32, u32),
@@ -21,7 +22,7 @@ fn texture(
     extent: (u32, u32),
     format: wgpu::TextureFormat,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: extent.0,
@@ -57,7 +58,7 @@ impl PlanarTargets {
         let color = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_texture = texture(device, "Planar Mirror Depth", extent, DEPTH_FORMAT);
         let depth = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mask_inputs = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mask_inputs = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Mask Inputs"),
             layout: &pipelines.mask_layout,
             entries: &[
@@ -71,7 +72,7 @@ impl PlanarTargets {
                 },
             ],
         });
-        let resolve_inputs = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let resolve_inputs = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Planar Resolve Inputs"),
             layout: &pipelines.resolve_layout,
             entries: &[

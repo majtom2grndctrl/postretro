@@ -133,38 +133,40 @@ fn install_lit_quads(renderer: &mut Renderer, quads: &[WorldQuad], lights: &[Map
             radius: light.falloff_range,
         })
         .collect();
-    renderer.install_level_geometry(
-        &crate::render::LevelGeometry {
-            vertices: &vertices,
-            vertex_spec_owners: &[],
-            indices: &indices,
-            bvh: &bvh,
-            lights,
-            light_influences: &influences,
-            sh_volume: None,
-            sh_storage: crate::render::LevelGeometryShStorage::Legacy,
-            lightmap: None,
-            lightmap_streaming: None,
-            chunk_light_list: None,
-            animated_light_chunks: None,
-            animated_light_weight_maps: None,
-            delta_sh_volumes: None,
-            direct_sh_volume: None,
-            direct_sh_delta_volumes: None,
-            animated_direct_sh_delta_volumes: None,
-            billboard_direct_scatter_volume: None,
-            animated_billboard_direct_scatter_delta_volumes: None,
-            entity_shadow_lights: &[],
-            shadowmask_atlas: None,
-            sdf_atlas: None,
-            lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
-            cell_draw_index: None,
-            kinematic_geometry: None,
-            cells: &cells,
-            texture_materials: &[],
-        },
-        Default::default(),
-    );
+    renderer
+        .install_level_geometry(
+            &crate::render::LevelGeometry {
+                vertices: &vertices,
+                vertex_spec_owners: &[],
+                indices: &indices,
+                bvh: &bvh,
+                lights,
+                light_influences: &influences,
+                sh_volume: None,
+                sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                lightmap: None,
+                lightmap_streaming: None,
+                chunk_light_list: None,
+                animated_light_chunks: None,
+                animated_light_weight_maps: None,
+                delta_sh_volumes: None,
+                direct_sh_volume: None,
+                direct_sh_delta_volumes: None,
+                animated_direct_sh_delta_volumes: None,
+                billboard_direct_scatter_volume: None,
+                animated_billboard_direct_scatter_delta_volumes: None,
+                entity_shadow_lights: &[],
+                shadowmask_atlas: None,
+                sdf_atlas: None,
+                lightmap_mode: postretro_level_loader::LightmapMode::Shadowed,
+                cell_draw_index: None,
+                kinematic_geometry: None,
+                cells: &cells,
+                texture_materials: &[],
+            },
+            Default::default(),
+        )
+        .expect("level resources install");
 }
 
 /// The receiver: the magenta mover panel, doubled to 2.8 m × 3.6 m, standing
@@ -197,9 +199,9 @@ fn lit_renderer() -> Option<(Renderer, View)> {
     );
     let device = renderer.device.clone();
     renderer
-        .full_mut()
-        .kinematic_brush
-        .install_geometry(&device, Some(&mover_geometry()), 1);
+        .level_mut()
+        .kinematic
+        .replace_geometry(&device, &mover_geometry(), 1);
     let movers = [crate::render::KinematicMoverInstance {
         mover_id: MOVER,
         transform: panel(),
@@ -303,22 +305,26 @@ fn planar_gpu_mirror_only_light_shows_only_in_the_reflection() {
 
     let mirror_only = capture_lit(&mut renderer, view, &[FAR_CELL], &[MIRROR_CELLS]);
     let full = renderer.full();
+    let level = full
+        .level
+        .as_ref()
+        .expect("a level-gated renderer path requires an active level set");
     assert_eq!(
         full.spot_shadow_pool.slot_assignment,
         vec![0],
         "the mirror-only spot takes the free slot"
     );
     assert!(
-        full.mirror_lighting.active(),
+        level.mirror_lighting.active(),
         "the mirror reads its own records"
     );
-    assert!(full.mirror_lighting.is_mirror_only(0));
+    assert!(level.mirror_lighting.is_mirror_only(0));
     assert_eq!(
-        spot_slot(&full.last_lights_upload, 0),
+        spot_slot(&level.last_lights_upload, 0),
         postretro_lighting::NO_SHADOW_SLOT,
         "the main view's records carry no mirror-only slot"
     );
-    assert_eq!(spot_slot(&full.mirror_lighting.scratch, 0), 0);
+    assert_eq!(spot_slot(&level.mirror_lighting.scratch, 0), 0);
     let occupancy = renderer.admission_occupancy().spot;
     assert_eq!((occupancy.main, occupancy.mirror_only), (0, 1));
 
@@ -328,12 +334,12 @@ fn planar_gpu_mirror_only_light_shows_only_in_the_reflection() {
         vec![postretro_lighting::NO_SHADOW_SLOT],
         "with mirror lighting excluded the spot reaches no view"
     );
-    assert!(!renderer.full().mirror_lighting.active());
+    assert!(!renderer.level().mirror_lighting.active());
 
     let main_view = capture_lit(&mut renderer, view, &[], &[MIRROR_CELLS]);
     assert_eq!(renderer.full().spot_shadow_pool.slot_assignment, vec![0]);
     assert!(
-        !renderer.full().mirror_lighting.active(),
+        !renderer.level().mirror_lighting.active(),
         "a main-view light needs no mirror records"
     );
     assert_eq!(renderer.admission_occupancy().spot.main, 1);

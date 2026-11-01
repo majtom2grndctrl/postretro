@@ -1,11 +1,11 @@
 // Renderer-owned draw path for PRL-loaded kinematic brush movers.
 // See: context/lib/rendering_pipeline.md §7.2, §7.3
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
 
 use postretro_render_cpu::planar_reflection::aabb_in_planes;
 use postretro_render_data::cone_frustum::Aabb;
-use wgpu::util::DeviceExt;
 
 use super::*;
 
@@ -65,34 +65,38 @@ pub(crate) struct ActiveMoverDraw {
     pub(crate) instance_index: u32,
 }
 
+/// The mover pass's renderer-lifetime half: pipeline, layouts, the per-frame
+/// instance buffer and draw lists. Mover geometry and its light groups are a
+/// level's (`KinematicLevelState`).
 pub(crate) struct KinematicBrushPass {
     pipeline: wgpu::RenderPipeline,
     /// Depth-only `vs_depth` pipeline recorded into a view's depth pre-pass.
     depth_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    index_count: u32,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     instance_bind_group_layout: wgpu::BindGroupLayout,
     instance_bind_group: wgpu::BindGroup,
     light_bind_group_layout: wgpu::BindGroupLayout,
-    light_bind_group: Option<wgpu::BindGroup>,
-    /// Group 2 for the planar mirror's draws, over the mirror's light records
-    /// (`rendering_pipeline.md` §7.3a, Pool rank); built beside
-    /// `light_bind_group`.
-    mirror_light_bind_group: Option<wgpu::BindGroup>,
     /// Whether this frame's mirror draws read the mirror's light records.
     mirror_light_records: bool,
     light_params_buffer: wgpu::Buffer,
     cube_array_supported: bool,
-    movers: Vec<UploadedMoverDraw>,
-    mover_lookup: HashMap<u32, usize>,
     /// Every present mover transform, including camera-PVS-culled shadow casters.
     active_draws: Vec<ActiveMoverDraw>,
     active_draw_lookup: HashMap<usize, ActiveMoverDraw>,
     /// Camera-visible subset of `active_draws` for the beauty pass.
     beauty_draws: Vec<ActiveMoverDraw>,
+    instance_bytes: Vec<u8>,
+}
+
+/// One level's mover geometry, its lookups, and the group-2 light bind
+/// groups over that level's light buffers. Lives in the level's resource set.
+pub(crate) struct KinematicLevelState {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    movers: Vec<UploadedMoverDraw>,
+    mover_lookup: HashMap<u32, usize>,
     mover_index_ranges: Vec<MoverIndexRange>,
     /// Each uploaded mover's local geometry bounds, parallel to `movers`: a
     /// ghost of it sorts among the frame's ghosts by these bounds under its
@@ -105,7 +109,8 @@ pub(crate) struct KinematicBrushPass {
     /// at its exact size on every geometry install.
     mover_triangles: Vec<[glam::Vec3; 3]>,
     mover_triangle_spans: Vec<std::ops::Range<usize>>,
-    instance_bytes: Vec<u8>,
+    /// Group 2 over this level's light buffers, main view and mirror.
+    light_groups: LevelLightGroups,
 }
 
 const SHADER_SOURCE: &str = concat!(
@@ -470,7 +475,7 @@ impl KinematicBrushPass {
 
         // Colour draws test `Equal` against the depth `vs_depth` wrote in the
         // depth pre-pass and write none, so each mover pixel shades once.
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Kinematic Brush Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -514,7 +519,7 @@ impl KinematicBrushPass {
                 ],
                 immediate_size: 0,
             });
-        let depth_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let depth_pipeline = device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Kinematic Brush Depth Pipeline"),
             layout: Some(&depth_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -537,23 +542,13 @@ impl KinematicBrushPass {
             cache: None,
         });
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Vertex Buffer"),
-            contents: &[0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Index Buffer"),
-            contents: &[0u8; 4],
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Instance Buffer"),
             size: INSTANCE_ENTRY_SIZE as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let instance_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Kinematic Brush Instance Bind Group"),
             layout: &instance_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -561,7 +556,7 @@ impl KinematicBrushPass {
                 resource: instance_buffer.as_entire_binding(),
             }],
         });
-        let light_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let light_params_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Kinematic Brush Light Params"),
             size: KINEMATIC_LIGHT_PARAMS_SIZE as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -571,69 +566,58 @@ impl KinematicBrushPass {
         Self {
             pipeline,
             depth_pipeline,
-            vertex_buffer,
-            index_buffer,
-            index_count: 0,
             instance_buffer,
             instance_capacity: 1,
             instance_bind_group_layout,
             instance_bind_group,
             light_bind_group_layout,
-            light_bind_group: None,
-            mirror_light_bind_group: None,
             mirror_light_records: false,
             light_params_buffer,
             cube_array_supported,
-            movers: Vec::new(),
-            mover_lookup: HashMap::new(),
             active_draws: Vec::new(),
             active_draw_lookup: HashMap::new(),
             beauty_draws: Vec::new(),
-            mover_index_ranges: Vec::new(),
-            mover_bounds: Vec::new(),
-            mover_triangles: Vec::new(),
-            mover_triangle_spans: Vec::new(),
             instance_bytes: Vec::new(),
         }
     }
 
-    pub fn install_geometry(
-        &mut self,
-        device: &wgpu::Device,
-        geometry: Option<&postretro_level_loader::KinematicGeometry>,
-        material_count: usize,
-    ) {
-        self.movers.clear();
-        self.mover_lookup.clear();
+    /// Drop the per-frame draw lists, which index the previous level's
+    /// movers. Every level install and release starts here; allocates nothing.
+    pub(crate) fn clear_frame_draws(&mut self) {
         self.active_draws.clear();
         self.active_draw_lookup.clear();
         self.beauty_draws.clear();
-        self.mover_index_ranges.clear();
-        self.mover_bounds.clear();
-        // Dropped, not cleared: the previous level's triangles free with it.
-        self.mover_triangles = Vec::new();
-        self.mover_triangle_spans.clear();
+        self.instance_bytes.clear();
+    }
+}
 
-        let Some(geometry) = geometry else {
-            self.install_empty_geometry(device);
-            return;
-        };
-        // This map is rebuilt every render collection; reserve at level install
-        // so shadow recording does not trigger a per-frame reallocation.
-        self.active_draw_lookup.reserve(geometry.movers.len());
-        self.beauty_draws.reserve(geometry.movers.len());
-        self.mover_triangles.reserve_exact(
-            geometry
-                .movers
+impl KinematicLevelState {
+    /// Upload one level's mover geometry beside the light groups built over
+    /// its light buffers.
+    pub(crate) fn install(
+        device: &wgpu::Device,
+        geometry: Option<&postretro_level_loader::KinematicGeometry>,
+        material_count: usize,
+        light_groups: LevelLightGroups,
+    ) -> Self {
+        let level_movers = geometry.map_or(&[][..], |geometry| geometry.movers.as_slice());
+        let mut movers = Vec::new();
+        let mut mover_lookup = HashMap::new();
+        let mut mover_index_ranges = Vec::new();
+        let mut mover_bounds = Vec::new();
+        let mut mover_triangles = Vec::new();
+        mover_triangles.reserve_exact(
+            level_movers
                 .iter()
                 .filter(|mover| !mover.vertices.is_empty())
                 .map(|mover| mover.indices.len() / 3)
                 .sum(),
         );
+        let mut mover_triangle_spans = Vec::new();
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        for mover in &geometry.movers {
+        for mover in level_movers {
             if mover.vertices.is_empty() || mover.indices.is_empty() {
                 continue;
             }
@@ -655,13 +639,13 @@ impl KinematicBrushPass {
                     index_count: mover.indices.len() as u32,
                 });
             }
-            let draw_index = self.movers.len();
-            self.mover_lookup.insert(mover.mover_id, draw_index);
-            self.movers.push(UploadedMoverDraw {
+            let draw_index = movers.len();
+            mover_lookup.insert(mover.mover_id, draw_index);
+            movers.push(UploadedMoverDraw {
                 mover_id: mover.mover_id,
                 material_ranges: ranges,
             });
-            self.mover_index_ranges.push(MoverIndexRange {
+            mover_index_ranges.push(MoverIndexRange {
                 index_start: index_base,
                 index_count: mover.indices.len() as u32,
             });
@@ -672,49 +656,65 @@ impl KinematicBrushPass {
                     (min.min(position), max.max(position))
                 },
             );
-            self.mover_bounds.push(Aabb { min, max });
-            let first = self.mover_triangles.len();
+            mover_bounds.push(Aabb { min, max });
+            let first = mover_triangles.len();
             for corners in mover.indices.as_chunks::<3>().0 {
                 if let Some(triangle) = triangle_positions(&mover.vertices, corners) {
-                    self.mover_triangles.push(triangle);
+                    mover_triangles.push(triangle);
                 }
             }
-            self.mover_triangle_spans
-                .push(first..self.mover_triangles.len());
+            mover_triangle_spans.push(first..mover_triangles.len());
         }
 
-        if vertices.is_empty() || indices.is_empty() {
-            self.install_empty_geometry(device);
-            return;
+        // The buffers come last, from the packed arrays: a level that
+        // uploaded no mover binds the one-element placeholders instead.
+        let (vertex_buffer, index_buffer, index_count) =
+            if vertices.is_empty() || indices.is_empty() {
+                let (vertex_buffer, index_buffer) = empty_geometry_buffers(device);
+                (vertex_buffer, index_buffer, 0)
+            } else {
+                let vertex_bytes = cast_world_vertices_to_bytes(&vertices);
+                let index_bytes = bytemuck_cast_slice_u32(&indices);
+                let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Kinematic Brush Vertex Buffer"),
+                    contents: &vertex_bytes,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Kinematic Brush Index Buffer"),
+                    contents: &index_bytes,
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                (vertex_buffer, index_buffer, indices.len() as u32)
+            };
+        Self {
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            movers,
+            mover_lookup,
+            mover_index_ranges,
+            mover_bounds,
+            mover_triangles,
+            mover_triangle_spans,
+            light_groups,
         }
-
-        let vertex_bytes = cast_world_vertices_to_bytes(&vertices);
-        let index_bytes = bytemuck_cast_slice_u32(&indices);
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Vertex Buffer"),
-            contents: &vertex_bytes,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Index Buffer"),
-            contents: &index_bytes,
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        self.index_count = indices.len() as u32;
     }
 
-    fn install_empty_geometry(&mut self, device: &wgpu::Device) {
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Vertex Buffer"),
-            contents: &[0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Index Buffer"),
-            contents: &[0u8; 4],
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        self.index_count = 0;
+    /// Replace this level's mover geometry, keeping its light groups: a test
+    /// seam for fixtures that add movers to an installed level.
+    #[cfg(test)]
+    pub(crate) fn replace_geometry(
+        &mut self,
+        device: &wgpu::Device,
+        geometry: &postretro_level_loader::KinematicGeometry,
+        material_count: usize,
+    ) {
+        let light_groups = LevelLightGroups {
+            light: self.light_groups.light.clone(),
+            mirror: self.light_groups.mirror.clone(),
+        };
+        *self = Self::install(device, Some(geometry), material_count, light_groups);
     }
 
     /// Shared position-bearing vertex buffer. The rigid depth path consumes
@@ -726,25 +726,6 @@ impl KinematicBrushPass {
     /// Shared geometry index buffer used by both mover beauty and depth draws.
     pub(crate) fn shared_index_buffer(&self) -> &wgpu::Buffer {
         &self.index_buffer
-    }
-
-    /// Layout for the uploaded per-instance model transforms. The rigid depth
-    /// pipeline keeps it at group 1, separate from the beauty path's group 3.
-    pub(crate) fn instance_transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.instance_bind_group_layout
-    }
-
-    /// Existing per-instance model-transform binding populated by
-    /// [`Self::upload_instances`] before shadow recording.
-    pub(crate) fn instance_transform_bind_group(&self) -> &wgpu::BindGroup {
-        &self.instance_bind_group
-    }
-
-    /// Dense all-present mover instances, keyed by `mover_draw_index` rather
-    /// than the game-side mover id. Shadow depth reads this list; beauty draws
-    /// use the camera-visible subset held separately.
-    pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
-        &self.active_draws
     }
 
     /// One uploaded mover's geometry bounds, in the space its model matrix
@@ -771,10 +752,70 @@ impl KinematicBrushPass {
         &self.mover_index_ranges
     }
 
-    /// Resolve a game-side mover id through this pass's uploaded mover list to
-    /// the draw index that keys active instances and full index spans.
+    /// Resolve a game-side mover id through this level's uploaded mover list
+    /// to the draw index that keys active instances and full index spans.
     pub(crate) fn mover_draw_index_for_mover_id(&self, mover_id: u32) -> Option<usize> {
         self.mover_lookup.get(&mover_id).copied()
+    }
+
+    /// One uploaded mover's per-material index spans in the shared index
+    /// buffer, as `(world material index, index range)`: what a draw path that
+    /// binds world materials itself (the ghost pass) records per instance.
+    /// `None` for a mover id this level did not upload.
+    pub(super) fn material_spans(
+        &self,
+        mover_id: u32,
+    ) -> Option<impl Iterator<Item = (usize, std::ops::Range<u32>)> + '_> {
+        let mover = &self.movers[*self.mover_lookup.get(&mover_id)?];
+        Some(
+            mover
+                .material_ranges
+                .iter()
+                .filter(|range| range.index_count > 0)
+                .map(|range| {
+                    (
+                        range.material_index,
+                        range.index_start..range.index_start + range.index_count,
+                    )
+                }),
+        )
+    }
+}
+
+/// The one-vertex, one-index placeholder buffers a level without movers
+/// binds, so the mover vertex and index slots are never empty.
+fn empty_geometry_buffers(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
+    let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Kinematic Brush Vertex Buffer"),
+        contents: &[0u8; postretro_render_data::geometry::WorldVertex::STRIDE],
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Kinematic Brush Index Buffer"),
+        contents: &[0u8; 4],
+        usage: wgpu::BufferUsages::INDEX,
+    });
+    (vertex_buffer, index_buffer)
+}
+
+impl KinematicBrushPass {
+    /// Layout for the uploaded per-instance model transforms. The rigid depth
+    /// pipeline keeps it at group 1, separate from the beauty path's group 3.
+    pub(crate) fn instance_transform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.instance_bind_group_layout
+    }
+
+    /// Existing per-instance model-transform binding populated by
+    /// [`Self::upload_instances`] before shadow recording.
+    pub(crate) fn instance_transform_bind_group(&self) -> &wgpu::BindGroup {
+        &self.instance_bind_group
+    }
+
+    /// Dense all-present mover instances, keyed by `mover_draw_index` rather
+    /// than the game-side mover id. Shadow depth reads this list; beauty draws
+    /// use the camera-visible subset held separately.
+    pub(crate) fn active_draws(&self) -> &[ActiveMoverDraw] {
+        &self.active_draws
     }
 
     /// Resolve an active transform-buffer record by its geometry draw index.
@@ -786,94 +827,16 @@ impl KinematicBrushPass {
         self.active_draw_lookup.get(&mover_draw_index).copied()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn rebuild_light_bind_group(
-        &mut self,
-        device: &wgpu::Device,
-        lights: &wgpu::Buffer,
-        mirror_lights: &wgpu::Buffer,
-        influence: &wgpu::Buffer,
-        scripted_descriptors: &wgpu::Buffer,
-        anim_samples: &wgpu::Buffer,
-        spot_shadow_depth: &wgpu::TextureView,
-        spot_shadow_compare: &wgpu::Sampler,
-        light_space_matrices: &wgpu::Buffer,
-        point_shadow_cube: Option<&wgpu::TextureView>,
-        promoted_spot_cache: &wgpu::TextureView,
-        promoted_cube_cache: Option<&wgpu::TextureView>,
-    ) {
-        assert_eq!(
-            point_shadow_cube.is_some(),
-            self.cube_array_supported,
-            "kinematic brush group-2 cube view must be Some iff the BGL carries binding 8",
-        );
-        assert_eq!(
-            promoted_cube_cache.is_some(),
-            self.cube_array_supported,
-            "kinematic brush group-2 promoted cube cache must be Some iff the BGL carries binding 10",
-        );
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: lights.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: influence.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: scripted_descriptors.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: anim_samples.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: self.light_params_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(spot_shadow_depth),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Sampler(spot_shadow_compare),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: light_space_matrices.as_entire_binding(),
-            },
-        ];
-        if let Some(cube_view) = point_shadow_cube {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 8,
-                resource: wgpu::BindingResource::TextureView(cube_view),
-            });
+    /// The group-2 layout and params buffer a level's mover light groups
+    /// build over (`LightGroupLayout::light_bind_groups`), cloned so a level
+    /// build on any thread builds them.
+    pub(crate) fn light_group_layout(&self) -> crate::render::mesh_pass::LightGroupLayout {
+        crate::render::mesh_pass::LightGroupLayout {
+            pass: "Kinematic Brush",
+            layout: self.light_bind_group_layout.clone(),
+            light_params_buffer: self.light_params_buffer.clone(),
+            cube_array_supported: self.cube_array_supported,
         }
-        entries.push(wgpu::BindGroupEntry {
-            binding: 9,
-            resource: wgpu::BindingResource::TextureView(promoted_spot_cache),
-        });
-        if let Some(cube_view) = promoted_cube_cache {
-            entries.push(wgpu::BindGroupEntry {
-                binding: 10,
-                resource: wgpu::BindingResource::TextureView(cube_view),
-            });
-        }
-        self.light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Kinematic Brush Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
-            entries: &entries,
-        }));
-        // The mirror's group differs only in b0.
-        entries[0].resource = mirror_lights.as_entire_binding();
-        self.mirror_light_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Kinematic Brush Mirror Light Bind Group (group 2)"),
-            layout: &self.light_bind_group_layout,
-            entries: &entries,
-        }));
     }
 
     /// Whether this frame's mirror draws read the mirror's light records.
@@ -885,6 +848,7 @@ impl KinematicBrushPass {
         &mut self,
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
+        level: &KinematicLevelState,
         beauty_instances: &[KinematicMoverInstance],
         shadow_instances: &[KinematicMoverInstance],
     ) {
@@ -894,7 +858,7 @@ impl KinematicBrushPass {
         self.instance_bytes.clear();
 
         for instance in shadow_instances {
-            let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
+            let Some(&mover_draw_index) = level.mover_lookup.get(&instance.mover_id) else {
                 continue;
             };
             let instance_index = (self.instance_bytes.len() / INSTANCE_ENTRY_SIZE) as u32;
@@ -914,7 +878,7 @@ impl KinematicBrushPass {
         }
 
         for instance in beauty_instances {
-            let Some(&mover_draw_index) = self.mover_lookup.get(&instance.mover_id) else {
+            let Some(&mover_draw_index) = level.mover_lookup.get(&instance.mover_id) else {
                 continue;
             };
             let Some(active_draw) = self.active_draw_lookup.get(&mover_draw_index) else {
@@ -929,13 +893,13 @@ impl KinematicBrushPass {
         let instance_count = self.instance_bytes.len() / INSTANCE_ENTRY_SIZE;
         if instance_count > self.instance_capacity {
             self.instance_capacity = instance_count.next_power_of_two();
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            self.instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
                 label: Some("Kinematic Brush Instance Buffer"),
                 size: (self.instance_capacity * INSTANCE_ENTRY_SIZE) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.instance_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.instance_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Kinematic Brush Instance Bind Group"),
                 layout: &self.instance_bind_group_layout,
                 entries: &[wgpu::BindGroupEntry {
@@ -982,45 +946,26 @@ impl KinematicBrushPass {
         );
     }
 
-    pub fn has_draws(&self) -> bool {
-        self.index_count > 0 && !self.beauty_draws.is_empty()
-    }
-
-    /// One uploaded mover's per-material index spans in the shared index
-    /// buffer, as `(world material index, index range)`: what a draw path that
-    /// binds world materials itself (the ghost pass) records per instance.
-    /// `None` for a mover id this level did not upload.
-    pub(super) fn material_spans(
-        &self,
-        mover_id: u32,
-    ) -> Option<impl Iterator<Item = (usize, std::ops::Range<u32>)> + '_> {
-        let mover = &self.movers[*self.mover_lookup.get(&mover_id)?];
-        Some(
-            mover
-                .material_ranges
-                .iter()
-                .filter(|range| range.index_count > 0)
-                .map(|range| {
-                    (
-                        range.material_index,
-                        range.index_start..range.index_start + range.index_count,
-                    )
-                }),
-        )
+    pub(crate) fn has_draws(&self, level: &KinematicLevelState) -> bool {
+        level.index_count > 0 && !self.beauty_draws.is_empty()
     }
 
     /// This frame's movers for `view`: the one list both
     /// [`Self::record_depth`] and [`Self::record_draws`] walk. Movers the
     /// mirror cannot show (bounds off its cull frustum or wholly below its
     /// clip plane) cost it no vertex work.
-    fn view_draws(&self, view: MoverView) -> impl Iterator<Item = &ActiveMoverDraw> + '_ {
+    fn view_draws<'a>(
+        &'a self,
+        level: &'a KinematicLevelState,
+        view: MoverView,
+    ) -> impl Iterator<Item = &'a ActiveMoverDraw> + 'a {
         self.beauty_draws.iter().filter(move |active| match view {
             MoverView::Main => true,
             MoverView::Mirror {
                 cull_planes,
                 clip_plane,
             } => {
-                let local = self.mover_bounds[active.mover_draw_index];
+                let local = level.mover_bounds[active.mover_draw_index];
                 self.instance_model(active.instance_index)
                     .is_none_or(|model| {
                         mover_reaches_mirror(local, model, &cull_planes, clip_plane)
@@ -1031,22 +976,27 @@ impl KinematicBrushPass {
 
     /// Whether `view` has a mover to draw, so a view's mover passes open
     /// only when they record something.
-    pub(crate) fn has_view_draws(&self, view: MoverView) -> bool {
-        self.has_draws() && self.view_draws(view).next().is_some()
+    pub(crate) fn has_view_draws(&self, level: &KinematicLevelState, view: MoverView) -> bool {
+        self.has_draws(level) && self.view_draws(level, view).next().is_some()
     }
 
     /// Append `view`'s mover depth to its open depth pre-pass, after the
     /// static world. The caller binds group 0 (that view's camera).
-    pub(crate) fn record_depth(&self, pass: &mut wgpu::RenderPass<'_>, view: MoverView) {
-        if !self.has_draws() {
+    pub(crate) fn record_depth(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        level: &KinematicLevelState,
+        view: MoverView,
+    ) {
+        if !self.has_draws(level) {
             return;
         }
         pass.set_pipeline(&self.depth_pipeline);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for active in self.view_draws(view) {
-            let range = self.mover_index_ranges[active.mover_draw_index];
+        pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
+        pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        for active in self.view_draws(level, view) {
+            let range = level.mover_index_ranges[active.mover_draw_index];
             if range.index_count == 0 {
                 continue;
             }
@@ -1065,28 +1015,23 @@ impl KinematicBrushPass {
     pub(crate) fn record_draws(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        level: &KinematicLevelState,
         materials: &[GpuTexture],
         view: MoverView,
     ) {
-        if !self.has_draws() {
+        if !self.has_draws(level) {
             return;
         }
         let mirror_light_records =
             matches!(view, MoverView::Mirror { .. }) && self.mirror_light_records;
-        let light_bind_group = if mirror_light_records {
-            self.mirror_light_bind_group.as_ref()
-        } else {
-            self.light_bind_group.as_ref()
-        }
-        .expect("kinematic brush light bind group must be built before recording draws");
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(2, light_bind_group, &[]);
+        pass.set_bind_group(2, level.light_groups.select(mirror_light_records), &[]);
         pass.set_bind_group(3, &self.instance_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
+        pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-        for active in self.view_draws(view) {
-            let mover = &self.movers[active.mover_draw_index];
+        for active in self.view_draws(level, view) {
+            let mover = &level.movers[active.mover_draw_index];
             let instance_range = active.instance_index..active.instance_index + 1;
             for range in &mover.material_ranges {
                 if range.index_count == 0 {

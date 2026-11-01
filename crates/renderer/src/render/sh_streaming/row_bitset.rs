@@ -29,6 +29,13 @@ impl RowBitSet {
         }
     }
 
+    /// Backing words: the row capacity this set was sized for, in 64s (the
+    /// residency plan summary).
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(super) fn word_count(&self) -> usize {
+        self.words.len()
+    }
+
     pub(super) fn contains(&self, row: &u32) -> bool {
         let (word, bit) = split(*row);
         self.words.get(word).is_some_and(|bits| bits & bit != 0)

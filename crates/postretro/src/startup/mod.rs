@@ -1,6 +1,7 @@
 // Boot sequencing types: StartupTimings, BootState, SplashSource, level requests.
 // See: context/lib/boot_sequence.md
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ pub(crate) mod first_launch_hold;
 mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
+pub(crate) mod level_loads;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]
@@ -44,11 +46,23 @@ pub(crate) mod worker;
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
 pub(crate) use session::{BootSession, PendingSessionInit, build_session};
 pub(crate) use splash_lifecycle::BootDestination;
-pub(crate) use worker::{LoadOutcome, spawn_level_worker};
+
+/// What a frame path calls to end the event loop: the live loop in the
+/// engine, a recorder in tests (which have no event loop to hand in).
+pub(crate) trait LoopExit {
+    fn exit(&self);
+}
+
+impl LoopExit for winit::event_loop::ActiveEventLoop {
+    fn exit(&self) {
+        winit::event_loop::ActiveEventLoop::exit(self);
+    }
+}
 
 /// `Booting` = before `App::resumed()` (no window, no renderer).
 /// `Splash` = first paint, then deferred `mod_init` and boot load request.
-/// `Loading` = level worker in flight; main thread keeps painting while polling.
+/// `Loading` = a level load in flight (queued or staged); the main thread keeps
+/// painting the loading screen while it polls the load's stages.
 /// `Frontend` = renderer + UI loop with no level installed.
 /// `FirstLaunchHold` = world-less frames showing only the accessibility panel,
 /// before any level loads on a profile that has never closed it. Drains no
@@ -266,19 +280,31 @@ pub(crate) fn boot_allows_reload_drain(logo_frame_shown: bool) -> bool {
     logo_frame_shown
 }
 
+/// A stage shown inside another in a startup line, with its duration.
+type InnerMark = (Cow<'static, str>, Duration);
+
 /// Named stage timings for the three startup log lines (engine boot, mod init, level load).
 ///
 /// `entries` are disjoint, consecutive stages: each is the time since the
 /// previous mark, so they add up to the elapsed total. A stage measured on
-/// another thread that ran *inside* one of those intervals (the level worker's
-/// `prl_parse` inside `worker_delivered`) is attached to the enclosing stage
-/// with [`record_containing`](Self::record_containing) instead of being
-/// recorded as an entry of its own. The summary prints it in parentheses after
-/// that stage, so a reader summing the top-level numbers never counts it twice.
+/// another thread that ran *inside* one of those intervals (a level load's
+/// `prl_parse` and prep tasks inside `bundle_ready`) is attached to the
+/// enclosing stage with [`record_containing`](Self::record_containing) instead
+/// of being recorded as an entry of its own. The summary prints it in
+/// parentheses after that stage, so a reader summing the top-level numbers
+/// never counts it twice.
+///
+/// A run of consecutive marks can also be folded into one entry: marks
+/// recorded between [`open_group`](Self::open_group) and
+/// [`close_group`](Self::close_group) become that entry's `incl.` list (a
+/// level load's `commit_frame`). They stay disjoint and consecutive, so they
+/// sum to the folded entry, which takes their place in the top-level sum.
 pub(crate) struct StartupTimings {
     pub(crate) entries: Vec<(&'static str, Duration)>,
     /// `(index into entries, stages measured inside that entry)`.
-    contained: Vec<(usize, Vec<(&'static str, Duration)>)>,
+    contained: Vec<(usize, Vec<InnerMark>)>,
+    /// The index into `entries` where an open group's marks begin.
+    group: Option<usize>,
     last: Instant,
 }
 
@@ -287,6 +313,7 @@ impl StartupTimings {
         Self {
             entries: Vec::new(),
             contained: Vec::new(),
+            group: None,
             last: Instant::now(),
         }
     }
@@ -301,15 +328,61 @@ impl StartupTimings {
     /// [`record`](Self::record) `stage`, and attach `inside` (stages measured
     /// elsewhere during the same interval, already in chronological order) to
     /// it. They are shown with the stage, not added to the entries.
-    pub(crate) fn record_containing(
+    pub(crate) fn record_containing<L: Into<Cow<'static, str>>>(
         &mut self,
         stage: &'static str,
-        inside: Vec<(&'static str, Duration)>,
+        inside: impl IntoIterator<Item = (L, Duration)>,
     ) {
         self.record(stage);
+        let inside: Vec<InnerMark> = inside
+            .into_iter()
+            .map(|(label, duration)| (label.into(), duration))
+            .collect();
         if !inside.is_empty() {
             self.contained.push((self.entries.len() - 1, inside));
         }
+    }
+
+    /// Start folding the marks recorded from here on into one entry, which
+    /// [`close_group`](Self::close_group) names. The group's first mark
+    /// measures from the previous mark, like any other. A group already open
+    /// stays open.
+    pub(crate) fn open_group(&mut self) {
+        if self.group.is_none() {
+            self.group = Some(self.entries.len());
+        }
+    }
+
+    /// Fold the marks recorded since [`open_group`](Self::open_group) into one
+    /// `stage` entry whose duration is their sum, listed after it as its
+    /// `incl.` marks. The cursor stays at the last mark, so the next mark
+    /// measures from there and the entries still add up to the elapsed
+    /// total. A group with no marks adds nothing; no open group is a no-op.
+    pub(crate) fn close_group(&mut self, stage: &'static str) {
+        let Some(start) = self.group.take() else {
+            return;
+        };
+        if start >= self.entries.len() {
+            return;
+        }
+        // A contained list attached inside the group has no entry left to
+        // print beside: groups hold plain marks only.
+        self.contained.retain(|(at, _)| *at < start);
+        let marks: Vec<InnerMark> = self
+            .entries
+            .drain(start..)
+            .map(|(mark, duration)| (Cow::Borrowed(mark), duration))
+            .collect();
+        let total = marks.iter().map(|(_, duration)| *duration).sum();
+        self.entries.push((stage, total));
+        self.contained.push((self.entries.len() - 1, marks));
+    }
+
+    /// Close a level load's log line C on the reveal frame, after its present:
+    /// record `first_level_frame` and log the line.
+    pub(crate) fn log_level_line(&mut self) {
+        self.record("first_level_frame");
+        log::info!("{}", self.summary());
     }
 
     pub(crate) fn summary(&self) -> String {
@@ -391,7 +464,7 @@ mod tests {
     /// Boot-timing marks in the exact order the boot path records them, valid
     /// (logo-present) path. Each entry names its `record(...)` call site so the
     /// sequence stays tied to the source — a moved or renamed mark forces a diff
-    /// here. Net/audio/debug-UI/mod/level-worker marks AND `script_runtime_ctor`
+    /// here. Net/audio/debug-UI/mod/boot-level-load-dispatch marks AND `script_runtime_ctor`
     /// are the marks the spec requires `first_black_frame` to precede: the script
     /// runtime is now constructed inside `Session::build` (post-first-pixel), so
     /// its mark fires after the logo frame, beside the other deferred-session
@@ -670,8 +743,53 @@ mod tests {
     #[test]
     fn record_containing_with_nothing_inside_prints_like_record() {
         let mut t = StartupTimings::new();
-        t.record_containing("worker_delivered", Vec::new());
+        t.record_containing("worker_delivered", Vec::<(&'static str, Duration)>::new());
         assert!(!t.summary().contains("incl."), "{}", t.summary());
+    }
+
+    // A group folds its marks into one entry that takes their place in the
+    // top-level sum; the marks print inside it and sum to it.
+    #[test]
+    fn a_closed_group_folds_its_marks_into_one_entry_that_still_adds_up() {
+        let mut t = StartupTimings::new();
+        t.record("before");
+        t.open_group();
+        sleep(Duration::from_millis(2));
+        t.record("inner_a");
+        sleep(Duration::from_millis(2));
+        t.record("inner_b");
+        t.close_group("folded");
+        t.record("after");
+
+        let names: Vec<&str> = t.entries.iter().map(|(s, _)| *s).collect();
+        assert_eq!(names, ["before", "folded", "after"]);
+        let folded = t.entries[1].1;
+        assert!(folded >= Duration::from_millis(4), "{folded:?}");
+        let (_, inside) = t
+            .contained
+            .iter()
+            .find(|(at, _)| *at == 1)
+            .expect("the group's marks attach to its entry");
+        let labels: Vec<&str> = inside.iter().map(|(label, _)| label.as_ref()).collect();
+        assert_eq!(labels, ["inner_a", "inner_b"]);
+        assert_eq!(inside.iter().map(|(_, d)| *d).sum::<Duration>(), folded);
+        let summary = t.summary();
+        assert!(
+            summary.contains("folded=") && summary.contains(" (incl. inner_a="),
+            "{summary}"
+        );
+        assert!(summary.contains("), after="), "{summary}");
+    }
+
+    #[test]
+    fn an_empty_or_unopened_group_adds_nothing() {
+        let mut t = StartupTimings::new();
+        t.close_group("never_opened");
+        t.open_group();
+        t.close_group("empty");
+        t.record("only");
+        let names: Vec<&str> = t.entries.iter().map(|(s, _)| *s).collect();
+        assert_eq!(names, ["only"]);
     }
 
     // --- Boot-phase classifier (suspend/resume contract) ---

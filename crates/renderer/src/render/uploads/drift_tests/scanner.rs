@@ -1,5 +1,5 @@
 // Source-derived upload ownership and staging-mechanism gates.
-// See: context/plans/in-progress/per-frame-upload-batching, AC 2/7/18
+// See: context/plans/done/per-frame-upload-batching, AC 2/7/18
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ fn upload_method(name: &str) -> bool {
     )
 }
 
-fn expression_attrs(expr: &Expr) -> &[Attribute] {
+pub(super) fn expression_attrs(expr: &Expr) -> &[Attribute] {
     match expr {
         Expr::Array(e) => &e.attrs,
         Expr::Assign(e) => &e.attrs,
@@ -95,9 +95,30 @@ fn type_receiver(ty: &Type) -> Receiver {
             }
             named(&last.ident.to_string())
         }
+        // `&dyn QueueWrites` / `impl QueueWrites`: the trait names the
+        // receiver, so its writes are classified like a raw queue's.
+        Type::TraitObject(ty) => trait_bound_receiver(&ty.bounds),
+        Type::ImplTrait(ty) => trait_bound_receiver(&ty.bounds),
         _ => Receiver::Unknown,
     }
 }
+
+fn trait_bound_receiver(
+    bounds: &syn::punctuated::Punctuated<syn::TypeParamBound, syn::Token![+]>,
+) -> Receiver {
+    bounds
+        .iter()
+        .find_map(|bound| match bound {
+            syn::TypeParamBound::Trait(bound) => bound.path.segments.last(),
+            _ => None,
+        })
+        .map(|last| named(&last.ident.to_string()))
+        .unwrap_or(Receiver::Unknown)
+}
+
+/// The install-write router (`render/queue_writes.rs`): every write through
+/// it needs the same lifecycle class a raw-queue write does.
+pub(super) const QUEUE_WRITES: &str = "QueueWrites";
 
 fn receiver_name(receiver: &Receiver) -> Option<&str> {
     match receiver {
@@ -145,7 +166,7 @@ fn test_predicate(meta: &Meta) -> Option<bool> {
     }
 }
 
-fn test_only(attrs: &[Attribute]) -> bool {
+pub(super) fn test_only(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr
@@ -157,7 +178,7 @@ fn test_only(attrs: &[Attribute]) -> bool {
     })
 }
 
-fn item_attrs(item: &Item) -> &[Attribute] {
+pub(super) fn item_attrs(item: &Item) -> &[Attribute] {
     match item {
         Item::Const(item) => &item.attrs,
         Item::Enum(item) => &item.attrs,
@@ -677,16 +698,51 @@ pub(super) fn direct_class(site: &Site) -> Option<&'static str> {
         {
             Some("guarded chokepoint")
         }
-        ("render/loaded_texture.rs", "", "upload_texture_data" | "upload_texture_array_data") => {
-            Some("load")
+        // The upload thread's own queue timeline: it submits each job's staged
+        // writes before handing the job's result back.
+        ("render/upload_thread.rs", "", "flush_staged_writes")
+            if site.receiver == Receiver::RawQueue && site.method == "submit" =>
+        {
+            Some("off-main upload flush")
         }
+        // Off-main level-build writes: the upload thread's metered writer
+        // stages each write on its raw queue and submits in bounded batches
+        // through `flush_staged_writes`. Its callers stay classified below.
+        ("render/upload_thread.rs", "ChunkedWrites", "write_buffer" | "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method != "submit" =>
+        {
+            Some("off-main build write (metered, chunked submits)")
+        }
+        // The main thread's install writes: the raw queue implementing the
+        // same router, writing at once (the frame's submit carries them).
+        ("render/queue_writes.rs", "Queue", "write_buffer" | "write_texture")
+            if site.receiver == Receiver::RawQueue && site.method != "submit" =>
+        {
+            Some("install write routing (direct)")
+        }
+        // A `test-seams` fault for the app's failure tests: one deliberately
+        // invalid build write (past a buffer's end) through the upload
+        // thread's metered writer, compiled only with that feature.
+        ("render/level_build.rs", "", "write_past_buffer_end")
+            if site.receiver == Receiver::Named(QUEUE_WRITES.into())
+                && site.method == "write_buffer" =>
+        {
+            Some("test-seams fault (off-main build write)")
+        }
+        (
+            "render/loaded_texture/upload.rs",
+            "",
+            "upload_texture_data" | "upload_texture_array_data",
+        ) => Some("load"),
         ("render/sh_atlas.rs", "", "upload_depth_moment_texture") => Some("load"),
         ("render/sdf_atlas.rs", "SdfAtlasResources", "new") => Some("load"),
         ("render/smoke.rs", "", "create_sprite_placeholder_array") => Some("load"),
         ("render/smoke.rs", "SmokePass", "upload_sprite_asset") => Some("install"),
         ("render/ui/mod.rs", "", "upload_ui_texture") => Some("load"),
-        ("render/mesh_pass.rs", "MeshPass", "upload_identity_palette") => Some("install"),
-        ("render/fluid_surface.rs", "FluidSurfacePass", "set_drift") => {
+        ("render/mesh_pass/frame_upload.rs", "MeshPass", "upload_identity_palette") => {
+            Some("install")
+        }
+        ("render/fluid_surface.rs", "InstalledFluidSurfaces", "set_drift") => {
             Some("install/commit/tuning refresh (drift re-resolve; never batched)")
         }
         ("lighting/lightmap/pool.rs", "", "upload_static_pool") => Some("install"),
@@ -721,10 +777,15 @@ pub(super) fn violations(sites: &[Site]) -> Vec<String> {
             continue;
         }
         if site.method == "submit" {
+            // Queues a job on the renderer's upload thread; not a GPU submission.
+            if site.receiver == Receiver::Named("UploadThread".into()) {
+                continue;
+            }
             if site.receiver == Receiver::RawQueue
                 && !(site.path == "render/uploads/mod.rs"
                     && site.owner == "UploadQueue"
                     && site.function == "submit")
+                && direct_class(site).is_none()
             {
                 errors.push(format!(
                     "raw submission bypasses upload boundary: {}",
@@ -740,7 +801,10 @@ pub(super) fn violations(sites: &[Site]) -> Vec<String> {
                     site.location()
                 ));
             }
-        } else if site.receiver == Receiver::RawQueue || site.method == "direct_write_buffer" {
+        } else if site.receiver == Receiver::RawQueue
+            || site.receiver == Receiver::Named(QUEUE_WRITES.into())
+            || site.method == "direct_write_buffer"
+        {
             if direct_class(site).is_none() {
                 errors.push(format!(
                     "unclassified direct write (per-frame writers must stage): {}",

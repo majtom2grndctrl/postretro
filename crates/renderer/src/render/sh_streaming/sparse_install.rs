@@ -138,7 +138,6 @@ impl ShResidencyState {
             &self.source_metadata,
             &required,
             gpu.sh,
-            gpu.uniform_bind_group_layout,
             gpu.selection_weights,
         )
     }

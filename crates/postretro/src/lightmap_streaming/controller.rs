@@ -308,9 +308,33 @@ impl LightmapResidencyController {
             residency_set.camera_cell_count(),
             cluster_hints,
         )?;
+        Ok(Self::over_block_map(source, residency_set, map, generation))
+    }
+
+    /// A controller over a block map the level's load already built (see
+    /// [`LevelBlockMap::build`]) from the same `source` and `residency_set`.
+    /// Fails only on what is not level data: the generation clock.
+    pub(crate) fn with_block_map(
+        source: Arc<dyn LightmapBlockSource>,
+        residency_set: &CellResidencySetSection,
+        map: LevelBlockMap,
+    ) -> Result<Self, LightmapResidencyError> {
+        let generation = ProcessGenerationClock
+            .take_generation()
+            .filter(|&generation| generation != 0)
+            .ok_or(LightmapResidencyError::GenerationExhausted)?;
+        Ok(Self::over_block_map(source, residency_set, map, generation))
+    }
+
+    fn over_block_map(
+        source: Arc<dyn LightmapBlockSource>,
+        residency_set: &CellResidencySetSection,
+        map: LevelBlockMap,
+        generation: u64,
+    ) -> Self {
         let block_count = source.block_count();
         let demand = BlockDemand::new(&map);
-        Ok(Self {
+        Self {
             content_tag: source.content_tag(),
             source,
             demand,
@@ -358,7 +382,7 @@ impl LightmapResidencyController {
             misses_due: false,
             demand_updated: false,
             outcome_scratch: Vec::new(),
-        })
+        }
     }
 
     #[cfg(test)]

@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 // `material_shading.wgsl` owns world-material leaf helpers (`blinn_phong`,
 // `sample_normal`, `reconstruct_tbn_normal`). Its argument-only helpers are
@@ -240,7 +241,7 @@ pub(crate) fn create_depth_texture(
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let size = prepass_attachment_extent(width, height);
 
-    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+    let depth_texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Depth Texture"),
         size,
         mip_level_count: 1,

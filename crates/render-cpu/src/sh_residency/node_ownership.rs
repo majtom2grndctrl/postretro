@@ -1,8 +1,9 @@
-//! Canonical owner of every stored node, and the cross-cluster owner
-//! dependencies derived from it.
-//!
-//! Both are pure functions of the immutable manifest. Per-probe work indexes
-//! `NodeMap` arrays; nothing here walks a tree once per probe.
+// Canonical owner of every stored node, and the cross-cluster owner
+// dependencies derived from it.
+// See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
+//
+// Both are pure functions of the immutable manifest. Per-probe work indexes
+// `NodeMap` arrays; nothing here walks a tree once per probe.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,14 +14,14 @@ use super::node_map::NodeMap;
 use super::ownership::StoredNode;
 use super::{ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_BASE_ID, INDIRECT_DELTA_ID};
 
-pub(super) struct NodeOwnership {
+pub struct NodeOwnership {
     /// The lowest cluster owning any probe of each stored node.
-    pub(super) node_owner: NodeMap<u32>,
+    pub node_owner: NodeMap<u32>,
     /// The nodes each cluster owns, in `StoredNode` order.
-    pub(super) nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
+    pub nodes_by_owner: BTreeMap<u32, Vec<StoredNode>>,
 }
 
-pub(super) fn derive_node_ownership(
+pub fn derive_node_ownership(
     dense_node: &[Option<StoredNode>],
     dense_owner: &[Option<u32>],
     grid_dimensions: [u32; 3],
@@ -61,7 +62,7 @@ pub(super) fn derive_node_ownership(
 /// For each cluster, the other clusters that must be sampleable before it:
 /// the writers and stored-node owners of its dense probes, and the owners of
 /// its sparse halo rows. `node_owner` answers a stored node's canonical owner.
-pub(super) fn derive_owner_dependencies(
+pub fn derive_owner_dependencies(
     directory: &ClusterDirectorySection,
     dense_owner: &[Option<u32>],
     dense_node: &[Option<StoredNode>],

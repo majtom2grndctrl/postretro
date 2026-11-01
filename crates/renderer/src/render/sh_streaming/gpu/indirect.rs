@@ -3,6 +3,7 @@
 use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{ParsedSparseRow, SparseInstallPlan};
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 /// Indirect id-34/id-27 streamed compose. Its buffers are renderer-owned
 /// sparse pools; the loader only lends a decoded chunk until the queue writes
@@ -65,12 +66,15 @@ impl StreamingIndirectCompose {
         total_storage_view: &wgpu::TextureView,
         compose_indirection: &wgpu::Buffer,
         sh: &ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+        pipelines: &super::super::StreamingShPipelines,
+        layout: &SparseComposeLayout,
         sparse_floor: Option<(u32, u32)>,
     ) -> Result<Self, ShResidencyDrainError> {
         let source = sources.indirect_delta.as_ref();
-        let (affinity_dims, masks, levels, descriptor_indices, entry_capacity, tile_f16_capacity) =
-            sparse_compose_capacity(base, source, sparse_floor)?;
+        let affinity_dims = layout.affinity_dims;
+        let descriptor_indices = layout.animation_descriptor_indices.clone();
+        let entry_capacity = layout.entry_capacity(sparse_floor);
+        let tile_f16_capacity = layout.tile_f16_capacity(sparse_floor);
         let cell_count = checked_cell_count(affinity_dims)?;
         let mut compaction_words = Vec::with_capacity(
             usize::try_from(cell_count)
@@ -78,11 +82,11 @@ impl StreamingIndirectCompose {
                 .saturating_mul(3)
                 .saturating_add(usize::try_from(entry_capacity).unwrap_or(usize::MAX)),
         );
-        for mask in masks {
+        for &mask in &layout.valid_probe_masks {
             compaction_words.push(mask as u32);
             compaction_words.push((mask >> 32) as u32);
         }
-        compaction_words.extend(levels.into_iter().map(u32::from));
+        compaction_words.extend(layout.cell_levels.iter().copied().map(u32::from));
         compaction_words.resize(
             compaction_words
                 .len()
@@ -191,14 +195,14 @@ impl StreamingIndirectCompose {
                 reason: "streamed dirty compose records exceed adapter buffer limit",
             });
         }
-        let grid_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let grid_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Streamed SH Compose Grid Records"),
             size: grid_capacity.max(record_size),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let origin = compose_origin_bytes(base.grid_origin, base.cell_size);
-        let origin_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let origin_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Compose Grid Origin"),
             contents: &origin,
             usage: wgpu::BufferUsages::UNIFORM,
@@ -224,13 +228,12 @@ impl StreamingIndirectCompose {
                 .checked_mul(4)
                 .ok_or(ShResidencyDrainError::SlotOverflow)?,
         );
-        let descriptor_index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Streamed SH Indirect Descriptor Indices"),
-                contents: &u32_bytes(&descriptor_words),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-        let compaction_metadata = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let descriptor_index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Streamed SH Indirect Descriptor Indices"),
+            contents: &u32_bytes(&descriptor_words),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let compaction_metadata = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Streamed SH Indirect Compaction Metadata"),
             contents: &u32_bytes(&compaction_words),
             usage: wgpu::BufferUsages::STORAGE
@@ -247,35 +250,8 @@ impl StreamingIndirectCompose {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Streamed SH Compose BGL"),
-            entries: &compose_bgl_entries(),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Streamed SH Compose Pipeline Layout"),
-            bind_group_layouts: &[Some(uniform_bind_group_layout), Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-        let shader_source = [
-            include_str!("../../../shaders/sh_compose.wgsl"),
-            "\n",
-            include_str!("../../../shaders/curve_eval.wgsl"),
-            "\n",
-            WGSL_DECODE_HELPER,
-        ]
-        .concat();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Streamed SH Compose Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Streamed SH Compose Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let bind_group_layout = pipelines.indirect.bind_group_layout.clone();
+        let pipeline = pipelines.indirect.pipeline.clone();
         let bind_group = Self::build_bind_group(
             device,
             &bind_group_layout,
@@ -336,7 +312,7 @@ impl StreamingIndirectCompose {
         compose_indirection: &wgpu::Buffer,
         compaction_metadata: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Streamed SH Compose Bind Group"),
             layout,
             entries: &[

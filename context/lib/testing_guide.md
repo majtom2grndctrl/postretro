@@ -148,7 +148,7 @@ Manual stress and performance runs pin the fixture, inputs, machine class, worke
 
 ### GPU tests
 
-Tests run via `cargo test` with no window. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) keeps most logic testable as pure functions. A test that needs a device builds a headless one through the renderer's shared harness and skips when no adapter exists, so adapter absence never fails CI. `POSTRETRO_REQUIRE_GPU` (any non-empty value but `0`) turns that skip into a failure; a run that must prove a GPU result sets it. App-crate tests that build an offscreen renderer adopt the same policy with the staged load (`boot_sequence.md` §9).
+Tests run via `cargo test` with no window. The renderer's data-logic/GPU-interaction split ([Development Guide](./development_guide.md) §4.1) keeps most logic testable as pure functions. A test that needs a device builds a headless one through the renderer's shared harness and skips when no adapter exists, so adapter absence never fails CI. `POSTRETRO_REQUIRE_GPU` (any non-empty value but `0`) turns that skip into a failure; a run that must prove a GPU result sets it. App-crate tests that build an offscreen renderer follow the same policy through one shared helper, and a grep gate keeps every app offscreen constructor behind it.
 
 ### Sandboxed test runs
 

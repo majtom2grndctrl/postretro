@@ -6,10 +6,10 @@
 // the quads with matching painter depths.
 // See: context/lib/ui.md
 
+use crate::render::gpu_create::GpuCreate;
 use crate::render::uploads::UploadQueue;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use postretro_scripting_core::data_descriptors::PresentationTemplate;
 use postretro_ui::UiTexture;
@@ -396,7 +396,7 @@ impl UiPass {
             ..Default::default()
         });
 
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("UI Quad Uniform"),
             contents: bytemuck::bytes_of(&UiUniform {
                 viewport: [1.0, 1.0],
@@ -405,20 +405,20 @@ impl UiPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("UI Quad Instance Buffer"),
             size: (INITIAL_INSTANCE_CAPACITY * INSTANCE_SIZE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let ring_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let ring_instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("UI Ring Instance Buffer"),
             size: (INITIAL_INSTANCE_CAPACITY * RING_INSTANCE_SIZE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let ring_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let ring_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("UI Ring Bind Group"),
             layout: &ring_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -437,7 +437,7 @@ impl UiPass {
         };
         let white_view = upload_ui_texture(device, queue, &white).create_view(&Default::default());
 
-        let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let white_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("UI White Panel Bind Group"),
             layout: &bind_group_layout,
             entries: &[
@@ -747,7 +747,7 @@ impl UiPass {
             return;
         }
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        let texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("UI Depth Texture"),
             size: wgpu::Extent3d {
                 width: size[0],
@@ -772,7 +772,7 @@ impl UiPass {
         while capacity < needed {
             capacity *= 2;
         }
-        self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        self.instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("UI Quad Instance Buffer"),
             size: (capacity * INSTANCE_SIZE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -786,7 +786,7 @@ impl UiPass {
         while capacity < needed {
             capacity *= 2;
         }
-        self.ring_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        self.ring_instance_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("UI Ring Instance Buffer"),
             size: (capacity * RING_INSTANCE_SIZE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
@@ -805,7 +805,7 @@ fn create_ui_quad_pipeline(
     depth_write_enabled: bool,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
@@ -849,7 +849,7 @@ fn create_ui_ring_pipeline(
     instance_layout: &wgpu::VertexBufferLayout<'_>,
     color_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("UI Ring Pipeline"),
         layout: Some(pipeline_layout),
         vertex: wgpu::VertexState {
@@ -988,7 +988,7 @@ impl UiPass {
     ) -> (wgpu::Texture, wgpu::BindGroup) {
         let texture = upload_ui_texture(device, queue, image);
         let view = texture.create_view(&Default::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("UI Image Bind Group"),
             layout: &self.image_bind_group_layout,
             entries: &[
@@ -1021,7 +1021,7 @@ fn upload_ui_texture(device: &wgpu::Device, queue: &wgpu::Queue, tex: &UiTexture
         height: tex.height,
         depth_or_array_layers: 1,
     };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("UI Texture"),
         size,
         mip_level_count: 1,

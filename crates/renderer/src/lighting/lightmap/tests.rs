@@ -562,7 +562,7 @@ fn animated_block_table_packs_compact_minus_block_local_offsets() {
         blocks: vec![block(2000, 10, 0, 1000, 0), block(5, 1700, 900, 20, 1)],
         ..AnimatedLightWeightMapsSection::empty()
     };
-    let bytes = animated_block_table_bytes(Some(&section));
+    let bytes = animated_block_table_bytes(Some(&section)).expect("a valid section packs");
     assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
     let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
     assert_eq!(
@@ -576,7 +576,7 @@ fn animated_block_table_packs_compact_minus_block_local_offsets() {
 
 #[test]
 fn empty_block_table_names_no_block() {
-    let bytes = animated_block_table_bytes(None);
+    let bytes = animated_block_table_bytes(None).expect("the empty table always builds");
     assert_eq!(bytes.len(), ANIMATED_BLOCK_TABLE_BYTES);
     assert!(
         bytes.iter().all(|&b| b == 0),

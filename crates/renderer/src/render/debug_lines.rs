@@ -1,6 +1,7 @@
 // Immediate-mode debug-line renderer: per-frame CPU buffer of LineList segments uploaded each frame.
 // See: context/lib/rendering_pipeline.md §12 Debug-Line Renderer
 
+use crate::render::gpu_create::GpuCreate;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 
@@ -213,7 +214,7 @@ impl DebugLineRenderer {
         });
 
         let make_pipeline = |label: &str, depth_compare: wgpu::CompareFunction| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
@@ -280,14 +281,14 @@ impl DebugLineRenderer {
             wgpu::CompareFunction::Always,
         );
 
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let vertex_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Lines Vertex Buffer"),
             size: (MAX_DEBUG_SEGMENTS * 2 * std::mem::size_of::<DebugLineVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let overlay_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let overlay_vertex_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug Lines Overlay Vertex Buffer"),
             size: (MAX_DEBUG_OVERLAY_SEGMENTS * 2 * std::mem::size_of::<DebugLineVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,

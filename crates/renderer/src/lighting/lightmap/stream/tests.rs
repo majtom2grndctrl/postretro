@@ -732,7 +732,7 @@ fn streamed_resources(ctx: &GpuCtx, fixture: &BlockFixture, floor: u64) -> Light
         &block_table_bind_group_layout(&ctx.device),
         &view,
         &view,
-        &animated_block_table_bytes(None),
+        &animated_block_table_bytes(None).expect("the empty table always builds"),
         floor,
     )
 }

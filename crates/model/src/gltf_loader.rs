@@ -865,25 +865,104 @@ fn skeleton_build_error(path_str: &str, error: SkeletonBuildError) -> ModelLoadE
 /// on malformed or unsupported required model input. Malformed optional authored
 /// animation channels warn and are skipped, so the joint holds its rest pose.
 pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
+    let sources = read_model_sources(path)?;
+    load_model_from_sources(path, sources)
+}
+
+/// Everything [`load_model`] reads from disk, read once: the glTF document
+/// (its bytes' blake3 kept), every buffer it references (external `.bin`
+/// files and `data:` URIs alike), and each primitive's material key of the
+/// mesh the load selects, which content-hashes that material's base-color
+/// PNG. A content-keyed model cache hashes exactly this, and a cache miss
+/// parses from it without reading any file a second time.
+pub struct ModelSources {
+    document: gltf::Document,
+    buffers: Vec<gltf::buffer::Data>,
+    document_digest: [u8; 32],
+    material_keys: Vec<String>,
+}
+
+impl ModelSources {
+    /// blake3 of the glTF document's bytes as read.
+    pub fn document_digest(&self) -> [u8; 32] {
+        self.document_digest
+    }
+
+    /// Each referenced buffer's bytes, in buffer-index order.
+    pub fn buffers(&self) -> impl Iterator<Item = &[u8]> {
+        self.buffers.iter().map(|data| data.0.as_slice())
+    }
+
+    /// One material key per primitive of the selected mesh, in primitive
+    /// order: the key each [`Submesh`] of the load will carry.
+    pub fn material_keys(&self) -> &[String] {
+        &self.material_keys
+    }
+}
+
+impl std::fmt::Debug for ModelSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelSources")
+            .field("buffers", &self.buffers.len())
+            .field("material_keys", &self.material_keys)
+            .finish_non_exhaustive()
+    }
+}
+
+// Compile-time guard: sources are read on a load-pool thread and parsed there
+// or on the main thread.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<ModelSources>();
+};
+
+/// Read the files [`load_model`] reads, and fail as it fails before its
+/// parse proper: an unreadable or malformed document or buffer, or a document
+/// with no mesh. Opens the document and resolves only geometry/skin/animation
+/// buffers, no image data: `gltf::import` would decode every referenced PNG;
+/// `import_buffers` skips that decode. The `.glb` binary-blob arg is `None`
+/// (external-`.gltf` only; embedded-image / `.glb` support is out of scope).
+pub fn read_model_sources(path: &Path) -> Result<ModelSources, ModelLoadError> {
     let path_str = path.display().to_string();
-    // Open the document and resolve only geometry/skin/animation buffers — no
-    // image data. `gltf::import` would decode every referenced PNG (returning an
-    // `_images` we then discard); `Gltf::open` + `import_buffers` skips that
-    // decode entirely. The `.glb` binary-blob arg is `None` (external-`.gltf`
-    // only — embedded-image / `.glb` support is out of scope).
+    let import_error = |source| ModelLoadError::Import {
+        path: path_str.clone(),
+        source,
+    };
     let parent_dir = path.parent().unwrap_or_else(|| Path::new(""));
-    let document = gltf::Gltf::open(path)
-        .map_err(|source| ModelLoadError::Import {
-            path: path_str.clone(),
-            source,
-        })?
+    // `Gltf::open` is `from_reader` over the opened file; reading the bytes
+    // first keeps them for the digest and parses through the same reader.
+    let bytes = std::fs::read(path).map_err(|error| import_error(gltf::Error::Io(error)))?;
+    let document = gltf::Gltf::from_reader(std::io::Cursor::new(bytes.as_slice()))
+        .map_err(import_error)?
         .document;
-    let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(|source| {
-        ModelLoadError::Import {
-            path: path_str.clone(),
-            source,
-        }
-    })?;
+    let buffers = gltf::import_buffers(&document, Some(parent_dir), None).map_err(import_error)?;
+    let material_keys = {
+        let SelectedModel { mesh, .. } = select_model(&document, &path_str)?;
+        mesh.primitives()
+            .map(|primitive| content_hash_material_key(&primitive.material(), parent_dir))
+            .collect()
+    };
+    Ok(ModelSources {
+        document,
+        buffers,
+        document_digest: *blake3::hash(&bytes).as_bytes(),
+        material_keys,
+    })
+}
+
+/// [`load_model`] over sources [`read_model_sources`] already read from
+/// `path`: reads no file. `path` names the model in errors and warnings.
+pub fn load_model_from_sources(
+    path: &Path,
+    sources: ModelSources,
+) -> Result<LoadedModel, ModelLoadError> {
+    let path_str = path.display().to_string();
+    let ModelSources {
+        document,
+        buffers,
+        material_keys,
+        ..
+    } = sources;
 
     // The `utils` accessor readers each take a buffer-data closure that indexes
     // the imported buffer blobs (the external `.bin` resolved by
@@ -940,8 +1019,13 @@ pub fn load_model(path: &Path) -> Result<LoadedModel, ModelLoadError> {
         build_pose_modifier_stack(&skeleton, pose_masks, &aim_bend_weights, &legs, &path_str);
 
     // --- Mesh -------------------------------------------------------------
-    let (mut skinned_mesh, submeshes) =
-        load_mesh(&mesh, &buffers, &skin_joint_to_topo, parent_dir, &path_str)?;
+    let (mut skinned_mesh, submeshes) = load_mesh(
+        &mesh,
+        &buffers,
+        &skin_joint_to_topo,
+        &material_keys,
+        &path_str,
+    )?;
 
     // --- Animation clips --------------------------------------------------
     let clips: Vec<AnimationClip> = document
@@ -1374,14 +1458,14 @@ fn load_mesh(
     mesh: &gltf::Mesh,
     buffers: &[gltf::buffer::Data],
     skin_joint_to_topo: &HashMap<usize, usize>,
-    parent_dir: &Path,
+    material_keys: &[String],
     path_str: &str,
 ) -> Result<(SkinnedMesh, Vec<Submesh>), ModelLoadError> {
     let buffer_data = |buffer: gltf::Buffer| buffers.get(buffer.index()).map(|d| &d.0[..]);
     let mut out = SkinnedMesh::default();
     let mut submeshes: Vec<Submesh> = Vec::new();
 
-    for primitive in mesh.primitives() {
+    for (primitive_index, primitive) in mesh.primitives().enumerate() {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
             return Err(ModelLoadError::UnsupportedTopology {
                 path: path_str.to_string(),
@@ -1622,7 +1706,11 @@ fn load_mesh(
         let end = out.indices.len() as u32;
 
         submeshes.push(Submesh {
-            material_key: content_hash_material_key(&primitive.material(), parent_dir),
+            // Hashed from the base-color PNG when the sources were read.
+            material_key: material_keys
+                .get(primitive_index)
+                .cloned()
+                .unwrap_or_else(zero_material_key),
             indices: start..end,
         });
     }

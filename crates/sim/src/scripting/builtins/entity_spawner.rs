@@ -14,9 +14,22 @@ use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 /// FGD `classname` this handler binds to.
 pub const CLASSNAME: &str = "entity_spawner";
 
+/// The archetype an `entity_spawner` placement names: its non-empty
+/// `archetype` key. Silent, for a reader that predicts the model sweep;
+/// [`handle`] warns about an absent or empty key.
+pub fn authored_archetype(entity: &MapEntity) -> Option<&str> {
+    entity
+        .key_values
+        .get("archetype")
+        .map(String::as_str)
+        .filter(|archetype| !archetype.is_empty())
+}
+
 fn archetype_from_entity(entity: &MapEntity) -> String {
+    if let Some(archetype) = authored_archetype(entity) {
+        return archetype.to_string();
+    }
     match entity.key_values.get("archetype") {
-        Some(value) if !value.is_empty() => value.clone(),
         Some(_) => {
             log::warn!(
                 "[Loader] {}: key `archetype` is empty; entity_spawner will spawn nothing",

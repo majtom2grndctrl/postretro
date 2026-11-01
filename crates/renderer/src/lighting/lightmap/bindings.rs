@@ -3,11 +3,12 @@
 // and the group-6 vertex block-table layout.
 // See: context/lib/rendering_pipeline.md §4
 
-use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::animated_lightmap_atlas::{
-    ANIMATED_BLOCK_CAP, ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK, ANIMATED_BLOCK_TABLE_HEADER_BYTES,
-    ANIMATED_BLOCK_TABLE_UNIFORM_BYTES,
-};
+use crate::render::gpu_create::GpuCreate;
+// The block table is planned on CPU with the animated atlas; its builder
+// errs instead of panicking on a block it cannot pack.
+pub(crate) use postretro_render_cpu::animated_lightmap::plan::ANIMATED_BLOCK_TABLE_BYTES;
+#[cfg(test)]
+pub(crate) use postretro_render_cpu::animated_lightmap::plan::animated_block_table_bytes;
 
 /// Group 4 bindings. The layout is fixed — the fragment shader's
 /// `@binding` decorators must match these values.
@@ -43,50 +44,6 @@ pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Animated block table for the forward shader: where each animated face's
 /// block sits in the compact atlas. FRAGMENT-only uniform.
 pub const BIND_ANIMATED_BLOCK_TABLE: u32 = 7;
-
-/// Bytes of the binding-7 uniform, the same for every level: the forward
-/// shader declares a fixed-length table sized to the shared block cap.
-pub(crate) const ANIMATED_BLOCK_TABLE_BYTES: usize = ANIMATED_BLOCK_TABLE_UNIFORM_BYTES as usize;
-
-/// Build the binding-7 block-table uniform for the installed section, or an
-/// empty table when `section` is `None`. An empty table resolves every vertex
-/// to no block, whatever ids the level's vertices carry. Layout (native-endian
-/// u32s, as the GPU reads them, mirroring `AnimatedBlockTable` in forward.wgsl):
-/// `0 (reserved), page_size, block_count, 0`, then per block the packed
-/// `(i16 dx, i16 dy)` compact − block-local texel offset and the page. The
-/// forward stage adds that offset to the fragment's block-local texel.
-pub(crate) fn animated_block_table_bytes(
-    section: Option<&AnimatedLightWeightMapsSection>,
-) -> Vec<u8> {
-    let mut bytes = vec![0_u8; ANIMATED_BLOCK_TABLE_BYTES];
-    let Some(section) = section else {
-        return bytes;
-    };
-    assert!(
-        section.blocks.len() <= ANIMATED_BLOCK_CAP as usize,
-        "section 25 consistency validation bounds the block count to the table cap"
-    );
-    let mut write = |at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_ne_bytes());
-    write(4, section.page_size);
-    write(8, section.blocks.len() as u32);
-    for (index, block) in section.blocks.iter().enumerate() {
-        let dx = texel_offset(block.block_x, block.compact_x);
-        let dy = texel_offset(block.block_y, block.compact_y);
-        let at = ANIMATED_BLOCK_TABLE_HEADER_BYTES as usize
-            + index * ANIMATED_BLOCK_TABLE_BYTES_PER_BLOCK as usize;
-        write(at, u32::from(dx as u16) | (u32::from(dy as u16) << 16));
-        write(at + 4, block.compact_layer);
-    }
-    bytes
-}
-
-/// Block-local→compact translation on one axis. A block-local coordinate lies
-/// inside a 2048-texel cell block and a compact one inside an 8192-texel page,
-/// so the difference always fits an `i16`.
-fn texel_offset(block_coord: u16, compact_coord: u32) -> i16 {
-    i16::try_from(i64::from(compact_coord) - i64::from(block_coord))
-        .expect("block-local and compact coordinates lie within one 8192-texel page")
-}
 
 /// Group 6, binding 0: the lightmap block table the forward vertex stage
 /// reads, one `vec4<u32>` per `WorldVertex::lightmap_block`
@@ -257,7 +214,7 @@ impl Group4Bindings {
         let irr_view = array_view(irradiance);
         let dir_view = array_view(direction);
         let shadowmask_view = array_view(shadowmask);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Lightmap Bind Group"),
             layout: &self.layout,
             entries: &[

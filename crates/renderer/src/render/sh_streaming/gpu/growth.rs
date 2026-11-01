@@ -202,9 +202,9 @@ impl StreamingGpuPools {
         sources: &ShStreamSourceMetadata,
         required: &SparseCapacityFloors,
         sh: &mut ShVolumeResources,
-        uniform_bind_group_layout: &wgpu::BindGroupLayout,
         selection_weights: &wgpu::Buffer,
     ) -> Result<(), ShResidencyDrainError> {
+        let pipelines = self.pipelines.clone();
         let mut floors = self.sparse_capacity_floors.clone();
         let mut sections_to_grow = Vec::new();
         for (&section_id, &(required_entries, required_tiles)) in required {
@@ -265,7 +265,8 @@ impl StreamingGpuPools {
                 &self.total_storage_view,
                 &self.compose_indirection,
                 sh,
-                uniform_bind_group_layout,
+                &pipelines,
+                &self.sparse_compose.indirect,
                 Some(floor),
             )?)
         } else {
@@ -327,7 +328,8 @@ impl StreamingGpuPools {
                     },
                     &self.compose_indirection,
                     sh,
-                    uniform_bind_group_layout,
+                    &pipelines,
+                    &self.sparse_compose,
                     section_id,
                     floor,
                 )?;

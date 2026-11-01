@@ -448,18 +448,18 @@ pub(super) fn direct_atlas_usage(
 }
 
 pub(super) fn atlas_fits(per_layer_dim: [u32; 2], layer_count: u32, limits: &wgpu::Limits) -> bool {
-    per_layer_dim[0] > 0
-        && per_layer_dim[1] > 0
-        && layer_count > 0
-        && per_layer_dim[0] <= limits.max_texture_dimension_2d
-        && per_layer_dim[1] <= limits.max_texture_dimension_2d
-        && layer_count <= limits.max_texture_array_layers
+    postretro_render_cpu::sh_volume::atlas_fits(
+        per_layer_dim,
+        layer_count,
+        &super::install_prep::device_limits(limits),
+    )
 }
 
 pub(super) fn volume_3d_fits(dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
-    dimensions
-        .iter()
-        .all(|&dimension| dimension > 0 && dimension <= limits.max_texture_dimension_3d)
+    postretro_render_cpu::sh_volume::volume_3d_fits(
+        dimensions,
+        &super::install_prep::device_limits(limits),
+    )
 }
 
 pub(super) fn storage_byte_len(

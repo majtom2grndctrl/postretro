@@ -9,10 +9,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const INSTALL: &str = "render/renderer_resources.rs";
+const PUBLISH: &str = "render/renderer_resources/publish.rs";
+const WORLD_GEOMETRY: &str = "render/renderer_resources/world_geometry.rs";
 const BOOT: &str = "render/renderer_full_init.rs";
+const LEVEL_BUILD: &str = "render/level_build.rs";
 const INIT: &str = "render/renderer_init.rs";
 const PIPELINES: &str = "render/renderer_init_pipelines.rs";
-const WORLD_INDEX_UPLOAD: &str = "full.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
+const WORLD_INDEX_UPLOAD: &str = "let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });";
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -20,6 +23,14 @@ fn source_root() -> PathBuf {
 
 fn is_owner(site: &Site, path: &str, owner: &str, function: &str) -> bool {
     site.path == path && site.owner == owner && site.function == function
+}
+
+/// The windowed constructor and the offscreen instance helper (shared by
+/// `new_offscreen` and its held-pipeline-build test variant) own the
+/// renderer's instances.
+fn is_renderer_instance_owner(site: &Site) -> bool {
+    is_owner(site, INIT, "Renderer", "new")
+        || is_owner(site, INIT, "", "offscreen_instance_from_env")
 }
 
 fn rust_violations(sources: &[Source]) -> Vec<String> {
@@ -35,19 +46,21 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             }
             ("path" | "macro" | "import", "INDIRECT_FIRST_INSTANCE") => false,
             ("call", "ComputeCullPipeline::new") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
-                    || is_owner(site, BOOT, "", "build_full_renderer")
+                is_owner(site, WORLD_GEOMETRY, "", "install_bvh_and_cull")
             }
-            ("call", "build_world_vertex_buffers") => {
-                is_owner(site, BOOT, "", "build_full_renderer")
-            }
+            // The boot renderer holds no level set, so it builds no world
+            // buffers: the install's buffer phase is the one index upload.
+            ("call", "build_world_vertex_buffers") => false,
             ("literal", "World Index Buffer") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
-                    || is_owner(site, PIPELINES, "", "build_world_vertex_buffers")
+                is_owner(site, WORLD_GEOMETRY, "", "install_world_buffers")
             }
-            ("assign", "full.index_buffer") => {
-                is_owner(site, INSTALL, "Renderer", "install_level_geometry")
-                    && format!("{};", site.text) == compact(WORLD_INDEX_UPLOAD)
+            // A set's index buffer is built once and moved into the set; no
+            // path reassigns it, so every cull owner addresses the array it
+            // was built over.
+            ("assign", name)
+                if name.ends_with("index_buffer") && site.path != "render/kinematic_brush.rs" =>
+            {
+                false
             }
             ("call", "draw_indirect_buckets") => is_owner(
                 site,
@@ -77,7 +90,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
             ("method", "draw_indirect") => {
                 let whole = matches!(
                     site.index_binding.as_deref(),
-                    Some("full.index_buffer.slice(..)" | "self.full().index_buffer.slice(..)")
+                    Some("level.index_buffer.slice(..)" | "self.level().index_buffer.slice(..)")
                 );
                 let pipeline = matches!(
                     site.pipeline.as_deref(),
@@ -103,9 +116,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                     && is_owner(site, "compute_cull.rs", "", "draw_indirect_buckets")
             }
             ("call", "Instance::new") => {
-                site.path == INIT
-                    && site.owner == "Renderer"
-                    && matches!(site.function.as_str(), "new" | "new_offscreen")
+                is_renderer_instance_owner(site)
                     && site
                         .text
                         .contains("flags:renderer_instance_flags_from_env(),")
@@ -115,11 +126,7 @@ fn rust_violations(sources: &[Source]) -> Vec<String> {
                 "import",
                 "ComputeCullPipeline" | "draw_indirect_buckets" | "build_world_vertex_buffers",
             ) => !site.text.contains("as"),
-            ("call", "renderer_instance_flags_from_env") => {
-                site.path == INIT
-                    && site.owner == "Renderer"
-                    && matches!(site.function.as_str(), "new" | "new_offscreen")
-            }
+            ("call", "renderer_instance_flags_from_env") => is_renderer_instance_owner(site),
             ("reference", _) if name.ends_with("renderer_instance_flags_from_env") => false,
             ("literal", "WGPU_VALIDATION_INDIRECT_CALL") => {
                 is_owner(site, INIT, "", "renderer_instance_flags_from_env")
@@ -370,12 +377,12 @@ fn indirect_contract_production_consumers_keep_guarded_ownership() {
     // Inventory is discovered; counts keep removing a checked seam from passing.
     for (kind, name, count) in [
         ("path", "INDIRECT", 1),
-        ("call", "ComputeCullPipeline::new", 2),
+        ("call", "ComputeCullPipeline::new", 1),
         ("method", "draw_indirect", 2),
         ("call", "Instance::new", 2),
         ("call", "renderer_instance_flags_from_env", 2),
         ("literal", "WGPU_VALIDATION_INDIRECT_CALL", 1),
-        ("assign", "full.index_buffer", 1),
+        ("literal", "World Index Buffer", 1),
     ] {
         assert_eq!(
             sites
@@ -445,42 +452,123 @@ fn indirect_contract_compiled_pipeline_sources_ban_index_builtins() {
 fn indirect_contract_install_recreates_culls_for_checked_full_index_array() {
     let sources = load_sources(&source_root());
     let (functions, _) = scan(&sources);
-    let install = function(&functions, INSTALL, "install_level_geometry");
+    // The build is a sequencer: the buffer phase uploads the index buffer,
+    // and the cull phase, called after it, recreates every cull owner. The
+    // oracle install builds one set and publishes it; publishing is the only
+    // way a built set becomes the drawn one.
+    let oracle = function(&functions, INSTALL, "install_level_geometry");
     require(
-        install,
+        oracle,
         &[
-            "let (vertex_data, index_data, index_count) = if has_geometry { let count = geometry.indices.len() as u32; (cast_world_vertices_to_bytes(geometry.vertices), bytemuck_cast_slice_u32(geometry.indices), count,) } else { (vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], vec![0u8; 4], 0u32,) };",
-            WORLD_INDEX_UPLOAD,
-            "full.compute_cull = if !full.bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
-            "full.index_count = index_count;",
-            "full.bvh_leaves = bvh_leaves;",
-            "let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();",
+            "let sh_plan = plan_level_sh_residency(geometry)?;",
+            "let id = self.build_level_set_at(geometry, gpu_lighting_payloads, fog_pixel_scale, sh_plan)?;",
+            "self.publish_level_set(id, PreviousLevelSet::Retire);",
         ],
     );
+    // The level-data plan runs before the previous set is touched.
     assert!(
-        install.find("full.index_buffer=").unwrap() < install.find("full.compute_cull=").unwrap()
+        oracle
+            .find("letsh_plan=plan_level_sh_residency(geometry)?;")
+            .unwrap()
+            < oracle.find("letfull=self.full_mut();").unwrap()
     );
-    let boot = function(&functions, BOOT, "build_full_renderer");
-    // This explicit None makes the boot constructor closures unreachable. Only
-    // installation creates live args. Changing it must revisit load validation.
-    require(
-        boot,
-        &[
-            "let geometry: Option<&LevelGeometry> = None;",
-            "let compute_cull = geometry.filter(|g| !g.bvh.leaves.is_empty()).map(|g| ComputeCullPipeline::new(device, g.bvh, has_multi_draw_indirect));",
-            "} = build_world_vertex_buffers(device, geometry);",
-        ],
+    let publish = function(&functions, PUBLISH, "publish_level_set");
+    assert_eq!(publish.matches("full.level.replace(level)").count(), 1);
+    assert!(
+        !publish.contains("LevelResourceSet{"),
+        "publish builds no set"
     );
-    let buffers = function(&functions, PIPELINES, "build_world_vertex_buffers");
+    // The phases run in the one shared build both the oracle and the upload
+    // thread's geometry part call; the oracle's wrapper and the off-main
+    // receipt only file the set it returns as resident.
+    let oracle_build = function(&functions, INSTALL, "build_level_set_at");
+    let install = function(&functions, INSTALL, "build_level_set_core");
+    let off_main_build = function(&functions, LEVEL_BUILD, "build_geometry_set");
+    let receipt = function(&functions, LEVEL_BUILD, "receive_level_set");
+    for caller in [oracle_build, off_main_build] {
+        assert_eq!(caller.matches("build_level_set_core(").count(), 1);
+    }
+    assert_eq!(
+        oracle_build
+            .matches("full.resident_levels.push(level)")
+            .count(),
+        1
+    );
+    assert_eq!(receipt.matches("full.resident_levels.push(set)").count(), 1);
+    for body in [oracle_build, off_main_build, receipt] {
+        assert!(!body.contains("full.level="), "a build never publishes");
+        assert!(
+            !body.contains("LevelResourceSet{"),
+            "only the shared build makes a set"
+        );
+    }
+    let buffers = function(&functions, WORLD_GEOMETRY, "install_world_buffers");
     require(
         buffers,
         &[
-            "let count = geom.indices.len() as u32;",
-            "bytemuck_cast_slice_u32(geom.indices)",
-            "vec![0u8; 4], 0u32,",
-            "let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(\"World Index Buffer\"), contents: &index_data, usage: wgpu::BufferUsages::INDEX, });",
+            "let (vertex_data, index_data, index_count) = if has_geometry { let count = geometry.indices.len() as u32; (cast_world_vertices_to_bytes(geometry.vertices), bytemuck_cast_slice_u32(geometry.indices), count,) } else { (vec![0u8; postretro_render_data::geometry::WorldVertex::STRIDE], vec![0u8; 4], 0u32,) };",
+            WORLD_INDEX_UPLOAD,
+            "WorldBuffers { vertex_buffer, spec_owner_buffer, index_buffer, index_count,",
         ],
     );
+    let cull = function(&functions, WORLD_GEOMETRY, "install_bvh_and_cull");
+    require(
+        cull,
+        &[
+            "let compute_cull = if !bvh_leaves.is_empty() { Some(ComputeCullPipeline::new(device, &pipelines.compute_cull, geometry.bvh, has_multi_draw_indirect,)) } else { None };",
+            "WorldCull { bvh_leaves, cell_draw_index, compute_cull, candidate_cull, }",
+        ],
+    );
+    // The published set takes the buffer phase's index buffer and the cull
+    // phase's owners over it, from the one install call each.
+    require(
+        install,
+        &[
+            "index_buffer: world.index_buffer,",
+            "index_count: world.index_count,",
+            "bvh_leaves: cull.bvh_leaves,",
+            "compute_cull: cull.compute_cull,",
+            "candidate_cull: cull.candidate_cull,",
+        ],
+    );
+    assert_eq!(install.matches("Ok(LevelResourceSet{").count(), 1);
+    assert!(
+        !install.contains("full."),
+        "the shared build reads no live renderer"
+    );
+    require(
+        function(
+            &functions,
+            "render/renderer_resources/lightmap_shadow.rs",
+            "plan_lightmap_family",
+        ),
+        &[
+            "let bvh_leaves: Vec<postretro_render_data::geometry::BvhLeaf> = geometry.bvh.leaves.clone();",
+        ],
+    );
+    for phase in [
+        "world_geometry::install_world_buffers(",
+        "lightmap_shadow::plan_lightmap_family(",
+        "world_geometry::install_bvh_and_cull(",
+    ] {
+        assert_eq!(install.matches(phase).count(), 1, "{phase}");
+    }
+    assert!(
+        install
+            .find("world_geometry::install_world_buffers(")
+            .unwrap()
+            < install
+                .find("world_geometry::install_bvh_and_cull(")
+                .unwrap()
+    );
+    let boot = function(&functions, BOOT, "build_full_renderer");
+    // The boot renderer starts with no level set, so it holds no index buffer
+    // and no cull owner. Only installation creates them. Changing it must
+    // revisit load validation.
+    require(boot, &["level: None,"]);
+    for absent in ["World Index Buffer", "ComputeCullPipeline", "index_buffer"] {
+        assert!(!boot.contains(absent), "boot builds {absent}");
+    }
     assert_eq!(
         function(
             &functions,
@@ -611,11 +699,15 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     assert!(
         rust_violations(&[Source::fixture(
             path,
-            &fixture("full.index_buffer.slice(..)")
+            &fixture("level.index_buffer.slice(..)")
         )])
         .is_empty()
     );
-    for binding in ["full.index_buffer.slice(4..)", "other_buffer.slice(..)"] {
+    for binding in [
+        "level.index_buffer.slice(4..)",
+        "full.index_buffer.slice(..)",
+        "other_buffer.slice(..)",
+    ] {
         assert!(!rust_violations(&[Source::fixture(path, &fixture(binding))]).is_empty());
     }
     // Shadow passes draw direct: a correctly bound camera draw issued from the
@@ -623,7 +715,7 @@ fn indirect_contract_scanner_rejects_new_owners_calls_and_wrong_bound_indices() 
     assert!(
         !rust_violations(&[Source::fixture(
             "render/renderer_dynamic_shadow_passes.rs",
-            &fixture("full.index_buffer.slice(..)")
+            &fixture("level.index_buffer.slice(..)")
         )])
         .is_empty()
     );
@@ -638,18 +730,18 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
         format!(
             "impl Renderer {{ fn record_depth_and_sdf_passes() {{
                 pass.set_pipeline(&full.depth_prepass_pipeline);
-                pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 {nested}
                 cull.draw_indirect(&mut pass, None);
             }} }}"
         )
     };
     for nested in [
-        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
+        "{ pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); }",
         "{ pass.set_pipeline(&other_pipeline); }",
-        "if changed { pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
+        "if changed { pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); } else { pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
         "{ let mut pass = encoder.begin_render_pass(&descriptor); cull.draw_indirect(&mut pass, None); }",
-        "{ pass.set_index_buffer(full.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
+        "{ pass.set_index_buffer(level.index_buffer.slice(4..), wgpu::IndexFormat::Uint32); let mut pass = encoder.begin_render_pass(&descriptor); }",
     ] {
         assert!(
             !rust_violations(&[Source::fixture(path, &fixture(nested))]).is_empty(),
@@ -658,7 +750,7 @@ fn indirect_contract_scanner_tracks_nested_pass_binding_changes_and_local_shadow
     }
     for nested in [
         "{ let mut pass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&other_pipeline); pass.set_index_buffer(other_buffer.slice(..), wgpu::IndexFormat::Uint32); }",
-        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_indirect(&mut pass, None); }",
+        "{ let mut pass: RenderPass = encoder.begin_render_pass(&descriptor); pass.set_pipeline(&full.depth_prepass_pipeline); pass.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32); cull.draw_indirect(&mut pass, None); }",
         "{ let (mut pass, other) = pair; pass.set_pipeline(&other_pipeline); }",
     ] {
         assert!(

@@ -45,9 +45,14 @@ pub(crate) fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = u
 }
 
 /// The stored `f32` corners of the triangle at index `tri`, in index order.
+/// Every triangle test reads it, so it is always inlined and spelled out
+/// corner by corner: an array `map` here compiled to an out-of-line call per
+/// test.
+#[inline(always)]
 pub(crate) fn triangle_points(geometry: &GeometryResult, tri: usize) -> [Vec3; 3] {
     let geom = &geometry.geometry;
-    [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position))
+    let corner = |k: usize| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position);
+    [corner(0), corner(1), corner(2)]
 }
 
 /// A ray query for `Bvh::traverse_iterator`: a conservative slab test,
@@ -69,6 +74,8 @@ pub(crate) struct BoundedRay {
     origin: [f32; 3],
     inv_direction: [f32; 3],
     bound: Cell<f32>,
+    /// [`prune_limit`] of `bound`, kept beside it so a box test reads it.
+    limit: Cell<f32>,
     far_scale: f32,
 }
 
@@ -86,6 +93,7 @@ impl BoundedRay {
             origin: origin.to_array(),
             inv_direction: direction.recip().to_array(),
             bound: Cell::new(bound),
+            limit: Cell::new(prune_limit(bound)),
             far_scale: far_scale(),
         }
     }
@@ -96,6 +104,7 @@ impl BoundedRay {
     pub(crate) fn shrink_to(&self, distance: f32) {
         if distance < self.bound.get() {
             self.bound.set(distance);
+            self.limit.set(prune_limit(distance));
         }
     }
 
@@ -104,6 +113,11 @@ impl BoundedRay {
     /// value is NaN, `0 · ∞` for a ray lying in that face plane, is dropped
     /// whole for either sign of zero: the closed box holds the ray's line on
     /// that axis. Entry is negative when the origin is inside.
+    ///
+    /// A dropped axis takes the whole line as its slab rather than skipping
+    /// the loop body, and with NaN masked out every min and max is a plain
+    /// comparison, so the loop unrolls into straight-line code; an early
+    /// `continue` here kept it a loop over spilled box values.
     #[inline]
     fn conservative_entry(&self, min: &[f32; 3], max: &[f32; 3]) -> Option<f32> {
         let mut entry = f32::NEG_INFINITY;
@@ -111,11 +125,16 @@ impl BoundedRay {
         for axis in 0..3 {
             let a = (min[axis] - self.origin[axis]) * self.inv_direction[axis];
             let b = (max[axis] - self.origin[axis]) * self.inv_direction[axis];
-            if a.is_nan() || b.is_nan() {
-                continue;
-            }
-            entry = entry.max(a.min(b));
-            exit = exit.min(a.max(b) * self.far_scale);
+            let dropped = a.is_nan() | b.is_nan();
+            let (near, far) = if a < b { (a, b) } else { (b, a) };
+            let near = if dropped { f32::NEG_INFINITY } else { near };
+            let far = if dropped {
+                f32::INFINITY
+            } else {
+                far * self.far_scale
+            };
+            entry = if near > entry { near } else { entry };
+            exit = if far < exit { far } else { exit };
         }
         (exit >= entry.max(0.0)).then_some(entry)
     }
@@ -123,7 +142,7 @@ impl BoundedRay {
     /// Whether a box entered at `entry` lies within the current bound.
     #[inline]
     fn within_bound(&self, entry: f32) -> bool {
-        entry <= prune_limit(self.bound.get())
+        entry <= self.limit.get()
     }
 }
 

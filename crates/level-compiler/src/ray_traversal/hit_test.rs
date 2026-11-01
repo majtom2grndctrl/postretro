@@ -15,25 +15,41 @@ use super::BoundedRay;
 pub(crate) const TRACER_TOLERANCE_METERS: f32 = 5.0e-4;
 
 /// A bake ray as the watertight test sees it (Woop, Benthin and Wald 2013):
-/// the `f32` origin and direction widened to `f64`, and the shear that maps
-/// the ray onto the axis of its direction's largest component. Built once
-/// per ray; every triangle test reads it.
+/// the `f32` origin and direction widened to `f64`, the axis permutation
+/// that makes the direction's largest component z, and the shear that maps
+/// the ray onto that axis. Built once per ray; every triangle test reads it.
 pub(crate) struct TraceRay {
     origin: Vec3,
     direction: Vec3,
     origin_f64: DVec3,
-    /// The permutation and shear as three rows: with `kz` the direction's
-    /// largest-magnitude axis and `kx`, `ky` the other two (swapped when that
-    /// component is negative, so a triangle's determinant keeps its
-    /// winding's sign), `e[kx] − (d[kx]/d[kz])·e[kz]`, the same for `ky`, and
-    /// `e[kz]/d[kz]`. A corner's sheared coordinate is its offset from the
-    /// origin dotted with a row: the one and zero coefficients are exact, so
-    /// it rounds as `v[kx] − s·v[kz]` would, and both triangles of a shared
-    /// edge see the same values.
-    row_x: DVec3,
-    row_y: DVec3,
-    row_z: DVec3,
+    axes: Axes,
+    /// Shear: `d[kx] / d[kz]`, `d[ky] / d[kz]`, `1 / d[kz]`.
+    sx: f64,
+    sy: f64,
+    sz: f64,
     tolerance: f64,
+}
+
+/// The permutation `(kx, ky, kz)`: `kz` the direction's largest-magnitude
+/// axis, `kx` and `ky` the other two in cyclic order, swapped when that
+/// component is negative so a triangle's determinant keeps its winding's
+/// sign. The hit test dispatches on it once per triangle into a copy with
+/// constant indices, so a projected coordinate is `v[kx] − sx·v[kz]` with no
+/// runtime indexing.
+#[derive(Clone, Copy)]
+enum Axes {
+    /// `(y, z, x)`.
+    X,
+    /// `(z, y, x)`.
+    XNegative,
+    /// `(z, x, y)`.
+    Y,
+    /// `(x, z, y)`.
+    YNegative,
+    /// `(x, y, z)`.
+    Z,
+    /// `(y, x, z)`.
+    ZNegative,
 }
 
 /// An accepted crossing.
@@ -50,48 +66,49 @@ pub(crate) struct TriangleHit {
     pub(crate) barycentric: [f64; 3],
 }
 
+/// The hit test's accepted values, before any divide: the edge functions,
+/// their sum the determinant, and `t` scaled by it. A caller that needs only
+/// the answer never pays for the quotients.
+#[derive(Clone, Copy)]
+struct Crossing {
+    u: f64,
+    v: f64,
+    w: f64,
+    det: f64,
+    scaled_t: f64,
+}
+
 impl TraceRay {
     /// `direction` must be non-zero; callers pass a unit vector.
     #[inline]
     pub(crate) fn new(origin: Vec3, direction: Vec3) -> Self {
         let d = direction.as_dvec3();
         let abs = d.abs();
-        // Rows in the permuted frame (x, y, z) = (d[kx], d[ky], d[kz]), then
-        // placed back on the world axes; one arm per `kz`.
-        let rows = |dx: f64, dy: f64, dz: f64| {
-            let (dx, dy) = if dz < 0.0 { (dy, dx) } else { (dx, dy) };
-            [
-                DVec3::new(1.0, 0.0, -(dx / dz)),
-                DVec3::new(0.0, 1.0, -(dy / dz)),
-                DVec3::new(0.0, 0.0, 1.0 / dz),
-            ]
-        };
-        let swap = |row: DVec3, negative: bool| {
-            if negative {
-                DVec3::new(row.y, row.x, row.z)
+        let (axes, [kx, ky, kz]) = if abs.x >= abs.y && abs.x >= abs.z {
+            if d.x < 0.0 {
+                (Axes::XNegative, [2, 1, 0])
             } else {
-                row
+                (Axes::X, [1, 2, 0])
             }
-        };
-        // kz = x: (kx, ky) = (y, z); kz = y: (z, x); kz = z: (x, y).
-        let [row_x, row_y, row_z] = if abs.x >= abs.y && abs.x >= abs.z {
-            rows(d.y, d.z, d.x)
-                .map(|r| swap(r, d.x < 0.0))
-                .map(|r| DVec3::new(r.z, r.x, r.y))
         } else if abs.y >= abs.z {
-            rows(d.z, d.x, d.y)
-                .map(|r| swap(r, d.y < 0.0))
-                .map(|r| DVec3::new(r.y, r.z, r.x))
+            if d.y < 0.0 {
+                (Axes::YNegative, [0, 2, 1])
+            } else {
+                (Axes::Y, [2, 0, 1])
+            }
+        } else if d.z < 0.0 {
+            (Axes::ZNegative, [1, 0, 2])
         } else {
-            rows(d.x, d.y, d.z).map(|r| swap(r, d.z < 0.0))
+            (Axes::Z, [0, 1, 2])
         };
         Self {
             origin,
             direction,
             origin_f64: origin.as_dvec3(),
-            row_x,
-            row_y,
-            row_z,
+            axes,
+            sx: d[kx] / d[kz],
+            sy: d[ky] / d[kz],
+            sz: 1.0 / d[kz],
             tolerance: f64::from(tolerance()),
         }
     }
@@ -120,7 +137,10 @@ impl TraceRay {
     /// triangles. Only `det == 0`, a ray parallel to the plane, rejects on
     /// the determinant. A crossing outside the triangle but within τ of it in
     /// its plane is accepted too; see [`TRACER_TOLERANCE_METERS`].
-    #[inline]
+    ///
+    /// Always inlined: a caller that reads only whether it hit, or only `t`,
+    /// drops the divides for the fields it never reads.
+    #[inline(always)]
     pub(crate) fn hit(&self, [a, b, c]: [Vec3; 3], t_min: f32, t_max: f32) -> Option<TriangleHit> {
         #[cfg(test)]
         crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
@@ -132,11 +152,44 @@ impl TraceRay {
                 barycentric: [1.0 / 3.0; 3],
             });
         }
-        let corners = [a, b, c].map(Vec3::as_dvec3);
-        let [a, b, c] = corners.map(|p| p - self.origin_f64);
-        let (ax, ay) = (a.dot(self.row_x), a.dot(self.row_y));
-        let (bx, by) = (b.dot(self.row_x), b.dot(self.row_y));
-        let (cx, cy) = (c.dot(self.row_x), c.dot(self.row_y));
+        let corners = [a, b, c];
+        let crossing = match self.axes {
+            Axes::X => self.crossing::<1, 2, 0>(corners, t_min, t_max),
+            Axes::XNegative => self.crossing::<2, 1, 0>(corners, t_min, t_max),
+            Axes::Y => self.crossing::<2, 0, 1>(corners, t_min, t_max),
+            Axes::YNegative => self.crossing::<0, 2, 1>(corners, t_min, t_max),
+            Axes::Z => self.crossing::<0, 1, 2>(corners, t_min, t_max),
+            Axes::ZNegative => self.crossing::<1, 0, 2>(corners, t_min, t_max),
+        }?;
+        let Crossing {
+            u,
+            v,
+            w,
+            det,
+            scaled_t,
+        } = crossing;
+        Some(TriangleHit {
+            t: scaled_t / det,
+            front: det > 0.0,
+            barycentric: [u / det, v / det, w / det],
+        })
+    }
+
+    /// [`Self::hit`] for one permutation `(KX, KY, KZ)`, the ray's own.
+    #[inline(always)]
+    fn crossing<const KX: usize, const KY: usize, const KZ: usize>(
+        &self,
+        corners: [Vec3; 3],
+        t_min: f32,
+        t_max: f32,
+    ) -> Option<Crossing> {
+        let [a, b, c] = corners.map(|p| p.as_dvec3() - self.origin_f64);
+        let ax = a[KX] - self.sx * a[KZ];
+        let ay = a[KY] - self.sy * a[KZ];
+        let bx = b[KX] - self.sx * b[KZ];
+        let by = b[KY] - self.sy * b[KZ];
+        let cx = c[KX] - self.sx * c[KZ];
+        let cy = c[KY] - self.sy * c[KZ];
         // Edge functions, each twice the signed area the ray's projection
         // spans with one edge: u for b→c, v for c→a, w for a→b.
         let u = cx * by - cy * bx;
@@ -152,7 +205,8 @@ impl TraceRay {
             crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
             return None;
         }
-        let scaled_t = u * a.dot(self.row_z) + v * b.dot(self.row_z) + w * c.dot(self.row_z);
+        let (az, bz, cz) = (self.sz * a[KZ], self.sz * b[KZ], self.sz * c[KZ]);
+        let scaled_t = u * az + v * bz + w * cz;
         let (signed_t, abs_det) = if det > 0.0 {
             (scaled_t, det)
         } else {
@@ -161,17 +215,15 @@ impl TraceRay {
         if !(signed_t > f64::from(t_min) * abs_det && signed_t < f64::from(t_max) * abs_det) {
             return None;
         }
-        let t = scaled_t / det;
-        if !inside {
-            let crossing = self.origin_f64 + self.direction.as_dvec3() * t;
-            if distance_squared_to_triangle(crossing, corners) > self.tolerance * self.tolerance {
-                return None;
-            }
+        if !inside && !self.crossing_within_tolerance(corners, scaled_t / det) {
+            return None;
         }
-        Some(TriangleHit {
-            t,
-            front: det > 0.0,
-            barycentric: [u / det, v / det, w / det],
+        Some(Crossing {
+            u,
+            v,
+            w,
+            det,
+            scaled_t,
         })
     }
 
@@ -180,7 +232,7 @@ impl TraceRay {
     /// most 2r (each sheared axis adds at most the z run, |s| ≤ 1), so a ray
     /// more than 2τ from the projected triangle, past its box or past one
     /// edge's line, is more than τ from the triangle in its plane.
-    #[inline]
+    #[inline(always)]
     fn may_reach_within_tolerance(
         &self,
         [ax, ay, bx, by, cx, cy]: [f64; 6],
@@ -191,10 +243,12 @@ impl TraceRay {
         }
         // Margin over 2τ for the edge functions' own rounding.
         let reach = 2.0 * self.tolerance * (1.0 + 1e-6);
-        if ax.min(bx).min(cx) > reach
-            || ax.max(bx).max(cx) < -reach
-            || ay.min(by).min(cy) > reach
-            || ay.max(by).max(cy) < -reach
+        // The projected box test, as plain comparisons: the coordinates are
+        // finite, so no min or max needs NaN handling.
+        if (ax > reach) & (bx > reach) & (cx > reach)
+            || (ax < -reach) & (bx < -reach) & (cx < -reach)
+            || (ay > reach) & (by > reach) & (cy > reach)
+            || (ay < -reach) & (by < -reach) & (cy < -reach)
         {
             return false;
         }
@@ -202,15 +256,22 @@ impl TraceRay {
         // opposite sign is a side the ray lies outside of, by its value over
         // that edge's projected length.
         let positive = u + v + w > 0.0;
-        let edges = [
-            (u, bx, by, cx, cy),
-            (v, cx, cy, ax, ay),
-            (w, ax, ay, bx, by),
-        ];
-        edges.iter().all(|&(e, px, py, qx, qy)| {
+        let within = |e: f64, px: f64, py: f64, qx: f64, qy: f64| {
             let outside = if positive { e < 0.0 } else { e > 0.0 };
             !outside || e * e <= reach * reach * ((qx - px).powi(2) + (qy - py).powi(2))
-        })
+        };
+        within(u, bx, by, cx, cy) && within(v, cx, cy, ax, ay) && within(w, ax, ay, bx, by)
+    }
+
+    /// Whether the crossing at `t`, outside triangle `corners`, lies within
+    /// τ of it in its plane. Rare, so kept out of the inlined test.
+    #[cold]
+    #[inline(never)]
+    fn crossing_within_tolerance(&self, corners: [Vec3; 3], t: f64) -> bool {
+        let crossing = self.origin_f64 + self.direction.as_dvec3() * t;
+        let distance_squared = distance_squared_to_triangle(crossing, corners.map(Vec3::as_dvec3));
+        // Only a distance past τ rejects, so a NaN distance keeps the hit.
+        distance_squared.is_nan() || distance_squared <= self.tolerance * self.tolerance
     }
 }
 

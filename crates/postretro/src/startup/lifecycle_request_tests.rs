@@ -1034,3 +1034,87 @@ fn dev_level_cycle_ignores_runtime_load_in_flight_without_queueing_duplicate() {
     assert!(app.level_load_in_flight());
     drop_in_flight_load(&mut app);
 }
+
+/// Records whether the failure route asked the event loop to exit.
+#[derive(Default)]
+struct RecordedExit(std::cell::Cell<bool>);
+
+impl crate::startup::LoopExit for RecordedExit {
+    fn exit(&self) {
+        self.0.set(true);
+    }
+}
+
+fn failing_catalog_load() -> InFlightLevelLoad {
+    InFlightLevelLoad {
+        map_path: PathBuf::from("content/dev/maps/e1m1.prl"),
+        content_root: PathBuf::from("content/dev"),
+        entry: LevelLoadEntry {
+            catalog_id: Some("e1m1".to_string()),
+            path: "maps/e1m1.prl".to_string(),
+            name: "Entryway".to_string(),
+            tags: Vec::new(),
+            loading_tree: Vec::new(),
+        },
+    }
+}
+
+// A runtime load that fails enters Frontend, and its one `[Loader]` line says
+// which level failed, why, and why the player lands on Frontend.
+#[test]
+fn failed_runtime_load_logs_level_reason_and_why_frontend() {
+    let mut app = test_app();
+    app.level_load = Some(failing_catalog_load());
+    let exit = RecordedExit::default();
+    let logs = crate::scripting::reactions::log_capture::capture(|| {
+        app.finish_level_failure(
+            "level commit checks failed: the level's set is no longer resident".to_string(),
+            &exit,
+        );
+    });
+
+    let errors: Vec<&String> = logs
+        .iter()
+        .filter(|(level, message)| *level == log::Level::Error && message.starts_with("[Loader]"))
+        .map(|(_, message)| message)
+        .collect();
+    assert_eq!(errors.len(), 1, "one failure line: {logs:?}");
+    let line = errors[0];
+    assert!(
+        line.contains("loading `e1m1` (maps/e1m1.prl) failed"),
+        "names the level: {line}"
+    );
+    assert!(
+        line.contains("level commit checks failed: the level's set is no longer resident"),
+        "carries the reason: {line}"
+    );
+    assert!(
+        line.contains("entering frontend, since no level is installed to return to"),
+        "says why Frontend: {line}"
+    );
+    assert_eq!(app.boot_state, BootState::Frontend);
+    assert!(app.level_load.is_none());
+    assert!(!exit.0.get(), "a runtime load never exits");
+}
+
+// A CLI boot load that fails exits non-zero, naming the level and the reason.
+#[test]
+fn failed_boot_load_logs_level_and_reason_then_exits() {
+    let mut app = test_app();
+    app.level_load = Some(failing_catalog_load());
+    app.boot_load = true;
+    let exit = RecordedExit::default();
+    let logs = crate::scripting::reactions::log_capture::capture(|| {
+        app.finish_level_failure("prl parse failed: truncated section".to_string(), &exit);
+    });
+
+    assert!(
+        logs.iter()
+            .any(|(level, message)| *level == log::Level::Error
+                && message.contains("loading `e1m1` (maps/e1m1.prl) failed: prl parse failed")
+                && message.contains("exiting non-zero")),
+        "names the level and the reason: {logs:?}"
+    );
+    assert!(exit.0.get(), "a boot load exits");
+    assert!(app.exit_result.is_err(), "with a non-zero result");
+}

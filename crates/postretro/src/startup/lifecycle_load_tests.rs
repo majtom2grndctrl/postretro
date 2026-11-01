@@ -1770,7 +1770,7 @@ fn injected_stage_failures_end_load_once() {
         let errors = loader_errors(&capture);
         assert_eq!(errors.len(), 1, "{}: one report: {errors:?}", row.label);
         assert!(
-            !errors[0].contains("failed: level upload"),
+            errors[0].matches("level upload failed").count() <= 1,
             "{}: the stage is named once: {errors:?}",
             row.label
         );

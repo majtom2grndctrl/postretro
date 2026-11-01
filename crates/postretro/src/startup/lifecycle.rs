@@ -232,22 +232,44 @@ impl App {
             return;
         }
         self.retire_active_level_load();
-        self.level_load = None;
+        let level = self
+            .level_load
+            .take()
+            .map(|load| failed_level_label(&load.entry))
+            .unwrap_or_else(|| "the level".to_string());
         self.end_loading_screen();
         let was_boot_load = std::mem::take(&mut self.boot_load);
         if was_boot_load {
-            log::error!("[Loader] {reason}; boot map load failed");
+            log::error!(
+                "[Loader] loading {level} failed: {reason}; boot map load failed, exiting non-zero"
+            );
             self.exit_result = Err(anyhow::anyhow!("{reason}"));
             event_loop.exit();
             return;
         }
 
-        log::error!("[Loader] {reason}; entering frontend");
+        // Say why the player lands on Frontend: a loading-screen load
+        // unloads the previous level before it starts, so a failure leaves
+        // no level to return to.
+        log::error!(
+            "[Loader] loading {level} failed: {reason}; entering frontend, since no level is \
+             installed to return to (a loading-screen load unloads the previous level before \
+             it starts)"
+        );
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.clear_splash();
         }
         self.boot_state = BootState::Frontend;
         self.request_redraw();
+    }
+}
+
+/// How a failure line names the level that failed: its catalog id and path,
+/// or the path alone for a raw-path load.
+fn failed_level_label(entry: &LevelLoadEntry) -> String {
+    match &entry.catalog_id {
+        Some(id) => format!("`{id}` ({})", entry.path),
+        None => format!("`{}`", entry.path),
     }
 }
 

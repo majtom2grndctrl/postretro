@@ -2,7 +2,7 @@
 // oracle's, begin/receipt/publish create nothing on main, errors end a build
 // once, writes submit in bounded chunks and before the result, and tiers come
 // from the dispatch snapshot.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Off the main thread, Per-load resources, Settings and extent, Failure, Equivalence)
+// See: context/plans/done/level-load-pipeline/index.md (Off the main thread, Per-load resources, Settings and extent, Failure, Equivalence)
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};

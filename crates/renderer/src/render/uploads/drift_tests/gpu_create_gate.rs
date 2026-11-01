@@ -1,5 +1,5 @@
 // Source-derived gate: every non-test renderer GPU creation goes through `GpuCreate`.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance, Off the main thread)
+// See: context/plans/done/level-load-pipeline/index.md (Acceptance, Off the main thread)
 
 use super::scanner::{Source, expression_attrs, item_attrs, load_sources, test_only};
 use std::path::Path;

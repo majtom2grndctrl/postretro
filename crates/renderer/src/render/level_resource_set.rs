@@ -1,6 +1,6 @@
 // One load's renderer resources: everything a level install builds, held as
 // one set the renderer publishes as active and drops whole at release.
-// See: context/plans/in-progress/level-load-pipeline/index.md · context/lib/rendering_pipeline.md §4
+// See: context/plans/done/level-load-pipeline/index.md · context/lib/rendering_pipeline.md §4
 
 use super::dynamic_depth_cache::DynamicCacheTextures;
 use super::promoted_depth_cache::PromotedDepthTextures;

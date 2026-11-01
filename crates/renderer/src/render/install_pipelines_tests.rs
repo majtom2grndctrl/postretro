@@ -1,5 +1,5 @@
 // Install-time pipelines: built once per renderer off the main thread, reused by every install, retired with the upload thread.
-// See: context/lib/testing_guide.md §3 (GPU tests) · context/plans/in-progress/level-load-pipeline/index.md
+// See: context/lib/testing_guide.md §3 (GPU tests) · context/plans/done/level-load-pipeline/index.md
 
 use super::*;
 use crate::render::fluid_baked_frame_test_fixtures::{direct_section, sh_section};

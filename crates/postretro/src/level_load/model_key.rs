@@ -1,7 +1,7 @@
 //! The shared model cache's key, derived on the load pool: blake3 over the
 //! content of every file a model's parse and upload read, plus every
 //! install-time parameter that shapes the upload, in a versioned key.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Model cache) · context/lib/resource_management.md §7
+//! See: context/plans/done/level-load-pipeline/index.md (Model cache) · context/lib/resource_management.md §7
 
 use postretro_model::gltf_loader::ModelSources;
 use postretro_render_cpu::loaded_texture::model_materials_consume_specular;

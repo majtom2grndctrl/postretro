@@ -1,7 +1,7 @@
 //! Model prediction: the model handles the commit's real sweep will upload,
 //! predicted at prep from the dispatch snapshot and hand-out 4's map
 //! entities, without running a script or touching a registry.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Predict models, then fall back exactly)
+//! See: context/plans/done/level-load-pipeline/index.md (Predict models, then fall back exactly)
 
 use std::collections::{BTreeSet, HashSet};
 

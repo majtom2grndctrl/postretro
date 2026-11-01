@@ -6,7 +6,7 @@
 //! upload never reaches the next load's first lookup; a dropped renderer
 //! takes its cache with it; the commit's synchronous miss loads, counts and
 //! logs once; and an edited model misses while the old set keeps its entry.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Model cache, Models rows) · research.md §9 (P7, P9, P11, P29, P30)
+//! See: context/plans/done/level-load-pipeline/index.md (Model cache, Models rows) · research.md §9 (P7, P9, P11, P29, P30)
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

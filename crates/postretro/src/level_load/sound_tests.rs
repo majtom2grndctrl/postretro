@@ -2,7 +2,7 @@
 //! whatever order the pool decodes them, the later path wins a shared key,
 //! and a bad file, a missing directory and an empty one each degrade exactly
 //! as the oracle's `load_level_sounds` does, never failing the load.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Equivalence)
+//! See: context/plans/done/level-load-pipeline/index.md (Equivalence)
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

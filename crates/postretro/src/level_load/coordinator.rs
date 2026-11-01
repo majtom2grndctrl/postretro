@@ -2,7 +2,7 @@
 //! product, the rules that spawn a task once its inputs exist and settle the
 //! load's one outcome, and, for a load that builds a renderer set, the hand-off
 //! of each GPU-bound product to the set's builder as soon as it exists.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline) · research.md §9 (P10, P18, P19)
+//! See: context/plans/done/level-load-pipeline/index.md (Staged pipeline) · research.md §9 (P10, P18, P19)
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,5 +1,5 @@
 // Uncaptured wgpu errors while a level load is in flight: held as that load's failure instead of wgpu's default panic.
-// See: context/plans/in-progress/level-load-pipeline/index.md (The commit cannot fail on level data)
+// See: context/plans/done/level-load-pipeline/index.md (The commit cannot fail on level data)
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

@@ -1,5 +1,5 @@
 // The one list of stages still winding down: cancelled or ended level loads, and the upload threads of renderers torn down at suspend. Polled every redraw, in every boot state; nothing here waits.
-// See: context/lib/boot_sequence.md §4, §5 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation)
+// See: context/lib/boot_sequence.md §4, §5 · context/plans/done/level-load-pipeline/index.md (Cancellation)
 
 use postretro_renderer::UploadRetirement;
 

@@ -1,7 +1,7 @@
 //! Everything level prep reads, captured on the main thread at dispatch, so
 //! no prep task reads the App, the renderer, the options or the environment
 //! live (pin P21).
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Settings and scene extent, dispatch to commit)
+//! See: context/plans/done/level-load-pipeline/index.md (Settings and scene extent, dispatch to commit)
 
 use std::path::PathBuf;
 

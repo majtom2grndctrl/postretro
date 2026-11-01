@@ -1,5 +1,5 @@
 // Install-time pipelines: built once per renderer on the upload thread, then shared by every level install.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Decisions: Pipelines once per renderer)
+// See: context/plans/done/level-load-pipeline/index.md (Decisions: Pipelines once per renderer)
 
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 

@@ -1,7 +1,7 @@
 //! One load's stages behind one handle: the prep on the engine pool and the
 //! renderer's set build on the upload thread, ending in one bundle the
 //! commit consumes, or in the load's one failure.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, The commit cannot fail on level data, Cancellation) · research.md §9 (P10, P13, P15)
+//! See: context/plans/done/level-load-pipeline/index.md (Staged pipeline, The commit cannot fail on level data, Cancellation) · research.md §9 (P10, P13, P15)
 
 use std::borrow::Cow;
 use std::path::PathBuf;

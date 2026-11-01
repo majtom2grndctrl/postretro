@@ -1,6 +1,6 @@
 // GPU creation chokepoint: every renderer buffer, texture, bind group and pipeline, counted per thread;
 // initial data metered on the upload thread.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance, Off the main thread)
+// See: context/plans/done/level-load-pipeline/index.md (Acceptance, Off the main thread)
 
 use std::cell::Cell;
 use wgpu::util::DeviceExt;

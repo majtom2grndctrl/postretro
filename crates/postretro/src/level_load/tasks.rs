@@ -1,7 +1,7 @@
 //! The prep tasks' bodies: pure functions over hand-outs, the assembled
 //! level and the dispatch inputs. Every level-data check here is the same
 //! function the main-thread oracle install calls.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (The commit cannot fail on level data)
+//! See: context/plans/done/level-load-pipeline/index.md (The commit cannot fail on level data)
 
 use std::path::Path;
 

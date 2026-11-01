@@ -1,7 +1,7 @@
 //! Prep's ordering against the staged parse: texture prep before the last
 //! section read, planner topology after the parse installs it, cancel, and
 //! progress.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Off the main thread, Progress)
+//! See: context/plans/done/level-load-pipeline/index.md (Off the main thread, Progress)
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;

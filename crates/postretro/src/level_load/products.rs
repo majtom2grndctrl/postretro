@@ -1,6 +1,6 @@
 //! What level prep hands on: the GPU-bound products the upload stage
 //! consumes, and the main-pinned ones the commit consumes.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
+//! See: context/plans/done/level-load-pipeline/index.md (Staged pipeline)
 
 use std::collections::HashMap;
 use std::path::PathBuf;

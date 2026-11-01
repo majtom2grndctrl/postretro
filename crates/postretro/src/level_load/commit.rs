@@ -1,7 +1,7 @@
 //! What a level load's commit takes and reports: a ready bundle, checked or
 //! not, and the set it published with every GPU object it created on the
 //! main thread, by counted fallback.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Commit holds only main-pinned work, Off the main thread, One pipeline, two commit orders)
+//! See: context/plans/done/level-load-pipeline/index.md (Commit holds only main-pinned work, Off the main thread, One pipeline, two commit orders)
 
 use std::path::PathBuf;
 

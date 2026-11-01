@@ -1,7 +1,7 @@
 //! One failure per load: every level-data check, the late parse verdict,
 //! concurrent failures and a panicking task each end prep with exactly one
 //! report naming its stage.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Failure) · research.md §9 (P10, P18)
+//! See: context/plans/done/level-load-pipeline/index.md (Failure) · research.md §9 (P10, P18)
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;

@@ -1,7 +1,7 @@
 // Level-boundary shadow state: the build's tier lookup (spot pool and the
 // promoted and dynamic world-depth cache textures, shared by tier) and the
 // publish-time reset of the active cache contents.
-// See: context/lib/rendering_pipeline.md §4 · context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources)
+// See: context/lib/rendering_pipeline.md §4 · context/plans/done/level-load-pipeline/index.md (Per-load renderer resources)
 
 use super::super::level_resource_set::LevelShadowTier;
 use super::super::renderer_types::{FullRenderer, PromotedBakedLightState};

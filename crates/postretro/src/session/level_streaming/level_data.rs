@@ -2,7 +2,7 @@
 //! mode gate, the id-49 hints, SH's planner topology and the lightmap's block
 //! map. Pure CPU and `Send`: load prep runs it off the main thread, and the
 //! oracle install runs the same function before it creates the sessions.
-//! See: context/lib/rendering_pipeline.md §4 · context/plans/in-progress/level-load-pipeline/index.md (The commit cannot fail on level data)
+//! See: context/lib/rendering_pipeline.md §4 · context/plans/done/level-load-pipeline/index.md (The commit cannot fail on level data)
 
 use std::sync::Arc;
 

@@ -4484,9 +4484,14 @@ for loading screens to bind:
 
 - `loading.levelName` — the loading level's catalog `name`, or the map file's
   name for a load by path. Empty when nothing is loading.
-- `loading.progress` — `0` to `1`. It rises as the level file is read and never
-  goes backward; the bar reaches `0.85` when the file is read, and the level
-  appears straight after. `0` when nothing is loading.
+- `loading.progress` — `0` to `1`. It rises as the engine reads the level file,
+  prepares and uploads the level, then waits for the first view's lighting to
+  stream in, and it never goes backward within a load. It reaches `1` on the
+  last frame before the level appears. `0` when nothing is loading.
+
+If another level is requested while one is loading, the loading screen stays
+up with its tweens still running: `loading.levelName` changes to the new
+level and `loading.progress` starts again from `0`.
 
 Both are local to each player's machine: they are never saved or sent over the
 network.

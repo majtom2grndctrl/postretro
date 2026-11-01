@@ -6,7 +6,7 @@
 //! commit to enter. Also the commit's synchronous fallback for a model the
 //! prediction lacked, with its per-load count, and the release of a model the
 //! prediction added that the commit's sweep does not draw.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Model cache, Predict models, then fall back exactly) · research.md §9 (P11, P29)
+//! See: context/plans/done/level-load-pipeline/index.md (Model cache, Predict models, then fall back exactly) · research.md §9 (P11, P29)
 
 use std::collections::HashSet;
 use std::path::Path;

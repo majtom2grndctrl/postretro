@@ -7,7 +7,7 @@
 //! `loading.progress`. Every Running frame polls it without blocking; a
 //! ready bundle is held until its caller releases the running level and
 //! commits it. Nothing here waits on a stage thread or the GPU.
-//! See: context/lib/boot_sequence.md §4 · context/plans/in-progress/level-load-pipeline/index.md (One pipeline, two commit orders, Cancellation, The commit cannot fail on level data, Progress covers the whole load) · research.md §9 (P16, P26–P28, P30, P31)
+//! See: context/lib/boot_sequence.md §4 · context/plans/done/level-load-pipeline/index.md (One pipeline, two commit orders, Cancellation, The commit cannot fail on level data, Progress covers the whole load) · research.md §9 (P16, P26–P28, P30, P31)
 
 use std::sync::Arc;
 

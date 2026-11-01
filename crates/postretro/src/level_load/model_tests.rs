@@ -2,7 +2,7 @@
 //! install's real sweep (host and connected client), and each prepared
 //! model's parse, clip entry, hit zones and material CPU products equal what
 //! the oracle sweep builds, a model that fails to parse included.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Predict models, then fall back exactly)
+//! See: context/plans/done/level-load-pipeline/index.md (Predict models, then fall back exactly)
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

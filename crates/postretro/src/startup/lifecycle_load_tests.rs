@@ -2,7 +2,7 @@
 //! frame, the commit on the frame the bundle is ready, supersede, queued
 //! unloads, suspend and retirement, one failure per load, the tiers read at
 //! dispatch, the whole-load progress, and the grep gates on the commit path.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance: Off the main thread 1, 3, 6, 7; Failure 1–3; Cancellation 1–8; Settings 1; Models 6; Progress 1) · research.md §9 (P1–P8, P10, P12, P18, P20–P22, P24)
+//! See: context/plans/done/level-load-pipeline/index.md (Acceptance: Off the main thread 1, 3, 6, 7; Failure 1–3; Cancellation 1–8; Settings 1; Models 6; Progress 1) · research.md §9 (P1–P8, P10, P12, P18, P20–P22, P24)
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};

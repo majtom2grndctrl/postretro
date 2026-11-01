@@ -1,6 +1,6 @@
 // Off-main level-set build: one load's renderer resources built as a job
 // sequence on the upload thread, from renderer inputs snapshotted at dispatch.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, Per-load renderer resources, Off-main GPU creation, The commit cannot fail on level data)
+// See: context/plans/done/level-load-pipeline/index.md (Staged pipeline, Per-load renderer resources, Off-main GPU creation, The commit cannot fail on level data)
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak, mpsc};

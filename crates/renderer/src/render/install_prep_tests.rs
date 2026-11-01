@@ -1,7 +1,7 @@
 //! Prep-plan equivalence: every CPU install plan, built from level data and
 //! the device limits alone (as the load pool builds it), against the
 //! main-thread oracle install of the same level.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Equivalence)
+//! See: context/plans/done/level-load-pipeline/index.md (Equivalence)
 
 use std::path::Path;
 

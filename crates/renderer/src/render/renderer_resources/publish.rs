@@ -2,7 +2,7 @@
 // frames read and runs every level-boundary reset there (never at build);
 // release drops exactly one set and creates nothing; both share the
 // extent-bound group build and rebuild.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources, Settings and scene extent)
+// See: context/plans/done/level-load-pipeline/index.md (Per-load renderer resources, Settings and scene extent)
 
 use super::super::level_build::LevelBuildContext;
 use super::super::level_resource_set::{

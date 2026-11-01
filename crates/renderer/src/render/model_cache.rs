@@ -1,7 +1,7 @@
 // The shared model cache: uploaded skinned models with their CPU companions,
 // keyed by content, outliving the load that made them and shared by every
 // resident level set that draws them.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Model cache) · research.md §9 (P7, P11, P26, P28, P29, P30)
+// See: context/plans/done/level-load-pipeline/index.md (Model cache) · research.md §9 (P7, P11, P26, P28, P29, P30)
 
 use std::any::Any;
 use std::collections::HashMap;

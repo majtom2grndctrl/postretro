@@ -1,5 +1,5 @@
 // Install-time queue writes: direct on the main thread, metered into bounded submits on the upload thread.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Off-main GPU creation) · context/plans/done/per-frame-upload-batching
+// See: context/plans/done/level-load-pipeline/index.md (Off-main GPU creation) · context/plans/done/per-frame-upload-batching
 
 /// The queue writes a level build issues. The raw queue implements it
 /// directly (main-thread installs and in-play growth); the upload thread's

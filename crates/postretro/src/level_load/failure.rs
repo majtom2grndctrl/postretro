@@ -1,6 +1,6 @@
 //! What a level load reports when it fails: the stage that failed first and
 //! its message.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (The commit cannot fail on level data)
+//! See: context/plans/done/level-load-pipeline/index.md (The commit cannot fail on level data)
 
 use postretro_level_loader::PrlLoadError;
 

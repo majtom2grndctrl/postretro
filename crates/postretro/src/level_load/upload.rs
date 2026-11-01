@@ -1,7 +1,7 @@
 //! The upload stage's app side: the builder prep tasks hand each GPU-bound
 //! product to as soon as it exists, from the pool thread that made it, and
 //! the upload phase's progress in parts the upload thread finished.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline, Progress covers the whole load)
+//! See: context/plans/done/level-load-pipeline/index.md (Staged pipeline, Progress covers the whole load)
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Instant;

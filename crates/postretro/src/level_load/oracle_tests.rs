@@ -1,7 +1,7 @@
 //! Prep against today's path: every product the staged parse and the prep
 //! tasks build equals what the main-thread oracle computes from the
 //! monolithic parse of the same file, through the oracle's own functions.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Equivalence)
+//! See: context/plans/done/level-load-pipeline/index.md (Equivalence)
 
 use std::path::Path;
 

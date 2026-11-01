@@ -7,7 +7,7 @@
 //! into one bundle for the commit. The App's load state machine
 //! (`startup::level_loads`) dispatches and polls these stages; the level
 //! worker and the main-thread install remain only as the tests' oracle.
-//! See: context/lib/boot_sequence.md §9 · context/plans/in-progress/level-load-pipeline/index.md (Staged pipeline)
+//! See: context/lib/boot_sequence.md §2, §4 · context/plans/done/level-load-pipeline/index.md (Staged pipeline)
 
 mod commit;
 mod coordinator;

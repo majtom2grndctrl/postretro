@@ -3,7 +3,7 @@
 //! in the main-thread install's order, through that install's own stage
 //! functions, with each product the bundle holds in place of computing it, and
 //! creates no GPU object outside its counted fallbacks.
-//! See: context/lib/boot_sequence.md §3 · context/plans/in-progress/level-load-pipeline/index.md (Commit holds only main-pinned work, The commit cannot fail on level data, Settings and scene extent, dispatch to commit)
+//! See: context/lib/boot_sequence.md §3 · context/plans/done/level-load-pipeline/index.md (Commit holds only main-pinned work, The commit cannot fail on level data, Settings and scene extent, dispatch to commit)
 
 use super::lifecycle_install::{LevelLightSeed, LevelPresentation};
 use super::lifecycle_install_presentation::{LevelFogMasks, LevelSounds};

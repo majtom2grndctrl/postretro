@@ -3,7 +3,7 @@
 //! GPU harness does, so a run with the variable set and no adapter fails
 //! instead of skipping. A grep gate proves no test builds a renderer or a GPU
 //! device outside that helper; a unit test pins the helper's decision.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance: Gate)
+//! See: context/plans/done/level-load-pipeline/index.md (Acceptance: Gate)
 
 use std::path::{Path, PathBuf};
 

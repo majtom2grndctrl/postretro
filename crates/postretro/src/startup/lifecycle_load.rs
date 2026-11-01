@@ -3,7 +3,7 @@
 //! frame it is ready, and cancellation (supersede, a queued unload, suspend)
 //! with every cancelled load's stages handed to the App's one retirement list.
 //! Nothing here waits on a stage thread or the GPU.
-//! See: context/lib/boot_sequence.md §1 (Loading screen), §4 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation, The commit cannot fail on level data, Settings and scene extent, dispatch to commit) · research.md §9 (P1–P8, P10, P12, P20, P22, P24)
+//! See: context/lib/boot_sequence.md §1 (Loading screen), §4 · context/plans/done/level-load-pipeline/index.md (Cancellation, The commit cannot fail on level data, Settings and scene extent, dispatch to commit) · research.md §9 (P1–P8, P10, P12, P20, P22, P24)
 
 use super::*;
 use crate::level_load::{BundleSet, CommitBundle, LevelCommitReport, LevelLoadFailure};

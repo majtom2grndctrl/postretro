@@ -1,7 +1,7 @@
 // Per-load renderer resource sets: release drops one set and creates nothing,
 // a reinstall draws like the first install, and keyed resident sets build,
 // publish and release without touching each other.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Per-load resources)
+// See: context/plans/done/level-load-pipeline/index.md (Per-load resources)
 
 use super::renderer_textures::tests::{
     chain, install_one_triangle_with_sh, with_one_triangle, write_prm,

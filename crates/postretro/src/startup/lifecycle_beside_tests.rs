@@ -3,7 +3,7 @@
 //! simulates unchanged; release-then-commit; cancel and failure leaving the
 //! running level Running with its cache entries; tier, extent and descriptor
 //! changes on Running frames; and a loading-screen request superseding it.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance: Beside a running level 1–6, Per-load resources, Settings and extent 2, Models) · research.md §9 (P16, P26–P28, P30, P31)
+//! See: context/plans/done/level-load-pipeline/index.md (Acceptance: Beside a running level 1–6, Per-load resources, Settings and extent 2, Models) · research.md §9 (P16, P26–P28, P30, P31)
 
 use std::cell::Cell;
 

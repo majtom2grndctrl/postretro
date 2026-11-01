@@ -1,5 +1,5 @@
 //! Streamed SH compose pipelines: built once per renderer, cloned into each level's pools.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Decisions: Pipelines once per renderer)
+//! See: context/plans/done/level-load-pipeline/index.md (Decisions: Pipelines once per renderer)
 
 use crate::render::install_pipelines::new_install_compute_pipeline;
 use crate::render::sh_indirection::WGSL_DECODE_HELPER;

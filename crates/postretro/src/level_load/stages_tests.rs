@@ -3,7 +3,7 @@
 //! main-thread oracle's, the main thread creates nothing, one failure per
 //! load, cancel drops every builder and releases a received set, and upload
 //! credits its share of the bar.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Off the main thread, Equivalence, Failure, Cancellation, Progress) · research.md §9 (P10, P13, P15)
+//! See: context/plans/done/level-load-pipeline/index.md (Off the main thread, Equivalence, Failure, Cancellation, Progress) · research.md §9 (P10, P13, P15)
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,7 +1,7 @@
 // Shadow tiers: the spot pool and the promoted and dynamic world-depth cache
 // textures coupled to one spot shadow resolution, shared by every level set
 // built at it, and the registry from resolution to a live tier.
-// See: context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources) · context/lib/rendering_pipeline.md §4
+// See: context/plans/done/level-load-pipeline/index.md (Per-load renderer resources) · context/lib/rendering_pipeline.md §4
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Weak};

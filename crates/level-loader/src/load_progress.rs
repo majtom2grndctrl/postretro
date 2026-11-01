@@ -149,8 +149,8 @@ pub enum LoadPhase {
     /// CPU preparation of the parse's hand-outs. Units: the caller's (prep
     /// tasks finished, say).
     Prep,
-    /// GPU resource creation and writes. Units: the caller's (bytes written,
-    /// say).
+    /// GPU resource creation and writes. Units: the caller's (the level
+    /// set build's parts finished, as the app credits them).
     Upload,
     /// Holding the installed level until its streamed sets settle. Units: the
     /// caller's (the settle-set shortfall via

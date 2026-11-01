@@ -3,7 +3,7 @@
 //! its counted fallbacks, every failing check before any mutation, parity at
 //! the commit, tiers from dispatch, one extent rebuild, and a forced model
 //! miss loaded and logged once.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance: Off the main thread 2, Settings, Equivalence 2–3, Failure 4, Co-op, Models 1) · research.md §9 (P14, P16, P17, P23)
+//! See: context/plans/done/level-load-pipeline/index.md (Acceptance: Off the main thread 2, Settings, Equivalence 2–3, Failure 4, Co-op, Models 1) · research.md §9 (P14, P16, P17, P23)
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

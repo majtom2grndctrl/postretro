@@ -1,7 +1,7 @@
 // Renderer level resources: sprite-collection registration, the phased build
 // of one load's resource set, and the oracle wrappers over build, publish and
 // release (`publish.rs`).
-// See: context/lib/resource_management.md · context/plans/in-progress/level-load-pipeline/index.md (Per-load renderer resources)
+// See: context/lib/resource_management.md · context/plans/done/level-load-pipeline/index.md (Per-load renderer resources)
 
 mod lightmap_shadow;
 mod lights;

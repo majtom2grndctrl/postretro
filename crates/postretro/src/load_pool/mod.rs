@@ -1,6 +1,6 @@
 // Engine load pool: a few named threads with boot lifetime that run a load's
 // CPU work as cancellable, out-of-order tasks grouped per load.
-// See: context/lib/boot_sequence.md §9 · context/plans/in-progress/level-load-pipeline/index.md
+// See: context/lib/boot_sequence.md §2 · context/plans/done/level-load-pipeline/index.md
 
 use std::any::Any;
 use std::collections::VecDeque;

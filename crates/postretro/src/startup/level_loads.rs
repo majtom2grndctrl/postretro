@@ -1,5 +1,5 @@
 // The level load in flight: its generation, its commit order (loading screen or beside a running level), whether its stages run yet, and the whole load's progress counter.
-// See: context/lib/boot_sequence.md §1, §4 · context/plans/in-progress/level-load-pipeline/index.md (One pipeline, two commit orders, Cancellation, Progress covers the whole load)
+// See: context/lib/boot_sequence.md §1, §4 · context/plans/done/level-load-pipeline/index.md (One pipeline, two commit orders, Cancellation, Progress covers the whole load)
 
 use std::path::PathBuf;
 use std::sync::Arc;

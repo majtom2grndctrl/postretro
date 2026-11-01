@@ -126,10 +126,10 @@ const OFFSETS: [f64; 4] = [0.0, 104.0, 1024.0, 4096.0];
 #[derive(Default, Debug)]
 struct Search {
     cases: usize,
-    /// Accepted hits on segments the certificate places off the triangle.
+    /// Accepted hits on segments the separation places off the triangle.
     phantom_hits: usize,
     /// Cases whose gap reached the margin: the claim's domain.
-    certified: usize,
+    separated: usize,
     /// Accepted hits with the gap at or past the margin: must stay zero.
     violations: usize,
     /// Largest gap / margin over accepted hits with a positive gap.
@@ -140,7 +140,7 @@ impl Search {
     fn record(&mut self, hit: bool, (gap, margin): (f64, f64)) {
         self.cases += 1;
         if gap >= margin {
-            self.certified += 1;
+            self.separated += 1;
         }
         if hit && gap > 0.0 {
             self.phantom_hits += 1;
@@ -196,13 +196,13 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
         let from = to - toward_plane * length;
         let (from, to) = (from.as_vec3(), to.as_vec3());
         let bounds = segment_bounds(from, to);
-        let certificate = bounds.normal_certificate(&candidate, bounds.reach(&candidate));
-        search.record(traced_hit(from, to, points), certificate);
-        search.record(lead_in_hit(from, to, points), certificate);
+        let separation = bounds.normal_separation(&candidate, bounds.reach(&candidate));
+        search.record(traced_hit(from, to, points), separation);
+        search.record(lead_in_hit(from, to, points), separation);
     }
     assert_eq!(search.violations, 0, "{search:?}");
     assert!(
-        search.phantom_hits > 100 && search.certified > 10_000,
+        search.phantom_hits > 100 && search.separated > 10_000,
         "the search must reach the rounding regime and the margin: {search:?}"
     );
     assert!(search.worst_ratio > 0.01, "{search:?}");
@@ -287,11 +287,11 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         }
         let bounds = segment_bounds(from, to);
         let hits = [traced_hit(from, to, points), lead_in_hit(from, to, points)];
-        if let Some(certificate) = bounds.axis_certificate(&candidate, outward) {
+        if let Some(separation) = bounds.axis_separation(&candidate, outward) {
             for hit in hits {
-                search.record(hit, certificate);
+                search.record(hit, separation);
                 if at_corner {
-                    round_corners.record(hit, certificate);
+                    round_corners.record(hit, separation);
                 }
             }
         }
@@ -304,15 +304,15 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
             let open = scale * beyond / (length + 2.0 * candidate.longest_edge);
             outward + axis_stream.direction() * open * axis_stream.log_range(1.0e-3, 3.0)
         };
-        if let Some(certificate) = bounds.axis_certificate(&candidate, axis) {
+        if let Some(separation) = bounds.axis_separation(&candidate, axis) {
             for hit in hits {
-                other_axes.record(hit, certificate);
+                other_axes.record(hit, separation);
             }
         }
     }
     assert_eq!(search.violations, 0, "{search:?}");
     assert!(
-        search.phantom_hits > 100 && search.certified > 10_000,
+        search.phantom_hits > 100 && search.separated > 10_000,
         "the search must reach the rounding regime and the margin: {search:?}"
     );
     // m_A ≥ κτ, so a worst ratio past 0.9/κ means some accepted hit lay at
@@ -330,7 +330,7 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     );
     assert_eq!(other_axes.violations, 0, "{other_axes:?}");
     assert!(
-        other_axes.certified > 2_000,
+        other_axes.separated > 2_000,
         "the other axes must reach the margin: {other_axes:?}"
     );
     assert!(
@@ -380,7 +380,7 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
     let growth = scene.query_growth(&bounds).unwrap();
     let candidate = Candidate::of(at(bounds.hi.x + growth)).unwrap();
     let (gap, margin) = bounds
-        .axis_certificate(&candidate, DVec3::X)
+        .axis_separation(&candidate, DVec3::X)
         .expect("a unit axis");
     assert!(
         gap >= margin,
@@ -434,7 +434,7 @@ fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
         * (strict_height
             + height(4.0 * e_t + 2.0 * tau).min(tau + point_rounding)
             + (candidate.normal / area).abs().dot(epsilon));
-    let (_, margin) = bounds.normal_certificate(&candidate, bounds.reach(&candidate));
+    let (_, margin) = bounds.normal_separation(&candidate, bounds.reach(&candidate));
     assert!(
         strict_height > 0.1 * tau,
         "H_s {strict_height} must be a large share of m_N {expected}"
@@ -450,7 +450,7 @@ fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
         w * (e_t / area) / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
     let expected = KAPPA * (tau + point_rounding + reach + epsilon.y);
     let (_, margin) = bounds
-        .axis_certificate(&candidate, DVec3::Y)
+        .axis_separation(&candidate, DVec3::Y)
         .expect("a unit axis");
     assert!(
         reach > tau,
@@ -549,7 +549,7 @@ fn shaft_query_bound_matches_the_axis_margin_and_its_derivation_where_each_term_
         let [m0, m1, m2] = scene.axis_margin_bound(&bounds);
         let bound = m0 + m1 * r + m2 * r * r;
         let (_, margin) = bounds
-            .axis_certificate(&candidate, epsilon)
+            .axis_separation(&candidate, epsilon)
             .expect("a unit axis");
         assert!(
             relative(margin, expected) < AGREEMENT,

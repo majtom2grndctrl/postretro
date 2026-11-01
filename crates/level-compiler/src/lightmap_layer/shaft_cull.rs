@@ -276,8 +276,8 @@ impl<'a> ShaftCull<'a> {
     /// from the hull alone: the receiver normal, then the hull's own faces
     /// ([`Hull::tangent_plane`]) through each side of the padded rectangle,
     /// at both slab heights, and planes through each rectangle corner across
-    /// its outward diagonal, each tangent to the emitter. Any unit axis is a
-    /// certificate at its own margin; these are the ones a candidate beside
+    /// its outward diagonal, each tangent to the emitter. Any unit axis
+    /// separates at its own margin; these are the ones a candidate beside
     /// the shaft most often clears on.
     fn hull_axes(&self, bounds: &HullBounds, hull: &Hull) -> [Option<HullAxis>; HULL_AXES] {
         let mut axes = [None; HULL_AXES];
@@ -320,11 +320,11 @@ impl<'a> ShaftCull<'a> {
         axes
     }
 
-    /// The candidate certificates [`Self::tile_clear`] would read for one
+    /// The candidate separations [`Self::tile_clear`] would read for one
     /// triangle against tile `(tile_x, tile_y)`: (gap, margin) along its own
     /// normal and along `axis`.
     #[cfg(test)]
-    pub(crate) fn certificates(
+    pub(crate) fn separations(
         &self,
         tile: (i32, i32),
         points: [Vec3; 3],
@@ -333,8 +333,8 @@ impl<'a> ShaftCull<'a> {
         let bounds = HullBounds::new(self.tile_hull(tile.0, tile.1));
         let candidate = Candidate::of(points).expect("a non-degenerate triangle");
         (
-            bounds.normal_certificate(&candidate, bounds.reach(&candidate)),
-            bounds.axis_certificate(&candidate, axis),
+            bounds.normal_separation(&candidate, bounds.reach(&candidate)),
+            bounds.axis_separation(&candidate, axis),
         )
     }
 

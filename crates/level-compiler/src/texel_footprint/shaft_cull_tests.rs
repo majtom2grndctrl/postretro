@@ -324,7 +324,7 @@ fn place(
     let scene = fixture.shaft_scene();
     let shaft = fixture.shaft_cull(light, floor, &scene);
     let measure = |points: [Vec3; 3]| {
-        let (normal, along) = shaft.certificates(TILE_B, points, axis.unwrap_or(DVec3::X));
+        let (normal, along) = shaft.separations(TILE_B, points, axis.unwrap_or(DVec3::X));
         match axis {
             None => normal,
             Some(_) => along.expect("a unit axis"),
@@ -473,7 +473,7 @@ fn shaft_cull_blocks_a_triangle_inside_its_margin_and_clears_one_outside_it() {
 // it is that distance, because the emitter sets the hull's +z extreme, about
 // (0.48, 2.0, 0.411), and that point lies directly under edge ab. So at 0.95
 // the gap bounds every axis's gap, every other axis's margin differs from
-// this one only by e_H, far under 5%, and none certifies. The test asserts
+// this one only by e_H, far under 5%, and none separates. The test asserts
 // that witness, so a fixture change cannot quietly turn the 0.95 case into a
 // clear. Each margin matches an independent recomputation from the triangle
 // and the hull's box to within `MARGIN_AGREEMENT`: τ dominates it, but the
@@ -535,7 +535,7 @@ fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_mar
                 );
                 // Its own plane crosses the hull: only an off-normal axis
                 // can separate it.
-                let (normal, _) = shaft.certificates(TILE_B, occluder, DVec3::Z);
+                let (normal, _) = shaft.separations(TILE_B, occluder, DVec3::Z);
                 assert!(
                     normal.0 < 0.0,
                     "{case}: the plane cuts the shaft: {normal:?}"

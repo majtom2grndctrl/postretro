@@ -285,7 +285,7 @@ impl Hull {
     /// points to, pushed out to the slab: the tangent plane through `from`
     /// picks the slab corner farthest along its normal, and the tangent
     /// plane through that corner is returned. It approximates the hull face
-    /// a candidate edge along `run` would meet; any axis certifies at its
+    /// a candidate edge along `run` would meet; any axis separates at its
     /// own margin, so it need not be exact.
     fn edge_plane(&self, from: DVec3, run: DVec3, outward: DVec3) -> Option<DVec3> {
         let first = self.tangent_plane(from, run, outward)?;
@@ -382,7 +382,7 @@ impl HullBounds {
     /// comes from t's error alone, whose 1/sin θ cancels the 1/sin θ along
     /// the ray, so no ray-angle term enters, and τ only caps an
     /// ill-conditioned tolerance hit's height.
-    pub(super) fn normal_certificate(&self, tri: &Candidate, reach: f64) -> (f64, f64) {
+    pub(super) fn normal_separation(&self, tri: &Candidate, reach: f64) -> (f64, f64) {
         let axis = tri.normal / tri.normal.length();
         let offset = axis.dot(tri.corners[0]);
         let (lo, hi) = self.hull.range(axis);
@@ -404,16 +404,16 @@ impl HullBounds {
     }
 
     /// (g_a, m_A) along `axis`, normalized here; `None` for a zero or
-    /// non-finite axis, which certifies nothing. The margin holds for rays at
+    /// non-finite axis, which separates nothing. The margin holds for rays at
     /// or above the angle floor against the triangle's plane.
     #[cfg(test)]
-    pub(super) fn axis_certificate(&self, tri: &Candidate, axis: DVec3) -> Option<(f64, f64)> {
+    pub(super) fn axis_separation(&self, tri: &Candidate, axis: DVec3) -> Option<(f64, f64)> {
         let axis = self.hull_axis(axis)?;
-        axis.certificate(tri, self.axis_margin_base(tri, self.reach(tri)))
+        axis.separation(tri, self.axis_margin_base(tri, self.reach(tri)))
     }
 
     /// `axis`, normalized, with the hull's range and e_H along it: what every
-    /// candidate's certificate on that axis reads from the hull. `None` for a
+    /// candidate's separation on that axis reads from the hull. `None` for a
     /// zero or non-finite axis.
     pub(super) fn hull_axis(&self, axis: DVec3) -> Option<HullAxis> {
         let length = axis.length();
@@ -461,7 +461,7 @@ impl HullBounds {
             return false;
         }
         let reach = self.reach(tri);
-        let (gap, margin) = self.normal_certificate(tri, reach);
+        let (gap, margin) = self.normal_separation(tri, reach);
         if gap >= margin {
             return true;
         }
@@ -470,11 +470,11 @@ impl HullBounds {
             return false;
         }
         let base = self.axis_margin_base(tri, reach);
-        let certified = |axis: &HullAxis| {
-            axis.certificate(tri, base)
+        let separates = |axis: &HullAxis| {
+            axis.separation(tri, base)
                 .is_some_and(|(gap, margin)| gap >= margin)
         };
-        if hull_axes().iter().flatten().any(certified) {
+        if hull_axes().iter().flatten().any(separates) {
             return true;
         }
         let [a, b, c] = tri.corners;
@@ -484,7 +484,7 @@ impl HullBounds {
             self.hull
                 .edge_plane(slab_centre, edge, toward)
                 .and_then(|axis| self.hull_axis(axis))
-                .is_some_and(|axis| certified(&axis))
+                .is_some_and(|axis| separates(&axis))
         });
         if edge_planed {
             return true;
@@ -492,7 +492,7 @@ impl HullBounds {
         [b - a, c - a, c - b].into_iter().any(|edge| {
             frame_axes.iter().any(|&axis| {
                 self.hull_axis(edge.cross(axis))
-                    .is_some_and(|axis| certified(&axis))
+                    .is_some_and(|axis| separates(&axis))
             })
         })
     }
@@ -548,7 +548,7 @@ pub(super) struct HullAxis {
 
 impl HullAxis {
     /// (g_a, m_A) for `tri`, with `base` its [`HullBounds::axis_margin_base`].
-    pub(super) fn certificate(&self, tri: &Candidate, base: f64) -> Option<(f64, f64)> {
+    pub(super) fn separation(&self, tri: &Candidate, base: f64) -> Option<(f64, f64)> {
         let along = tri.corners.map(|corner| self.axis.dot(corner));
         let (t_lo, t_hi) = (
             along[0].min(along[1]).min(along[2]),
@@ -579,7 +579,7 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
-    /// `None` when the triangle has no certificate: a zero or non-finite N.
+    /// `None` when the triangle has no plane to separate by: a zero or non-finite N.
     pub(super) fn of([a, b, c]: [Vec3; 3]) -> Option<Self> {
         let corners = [a, b, c].map(Vec3::as_dvec3);
         let e1 = corners[1] - corners[0];

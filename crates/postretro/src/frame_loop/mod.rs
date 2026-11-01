@@ -817,6 +817,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         })
                 },
             );
+            // A respawn teleport turns the pawn to its start aim. Apply that
+            // yaw delta to the command (local and remote) so the start aim is
+            // turned through the teleport frame exactly once; the local sum
+            // also rides on the presentation camera aim below.
             let mut local_respawn_yaw = 0.0;
             for turn in respawn_turns {
                 if Some(turn.pawn) == local_pawn {
@@ -1431,10 +1435,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // already published health at each fire seam. See:
     // context/lib/scripting.md §5.
     //
-    // A connected client skips host-authoritative HUD slot writes:
-    // those values arrive through state-slot apply. It still samples
-    // a materialized local weapon so reload-feedback acknowledgement
-    // cannot accumulate. A missing local weapon is a safe no-op.
+    // A connected client skips host-authoritative HUD slot writes
+    // (health, ammo, reload): those values arrive through state-slot
+    // apply. It still publishes `player.lifeState` locally from its own
+    // pawn, and samples a materialized local weapon so reload-feedback
+    // acknowledgement cannot accumulate. A missing local weapon is a
+    // safe no-op.
     let is_connected_client = app.is_connected_client();
     let client_life_state_name = app.session.as_ref().and_then(|session| {
         let netcode::NetEndpoint::Client {

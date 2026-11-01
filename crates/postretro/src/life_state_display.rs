@@ -1,4 +1,5 @@
 //! Life-state HUD projection at the frozen UI boundary; gameplay keeps tick facts.
+//! See: context/lib/ui.md §3
 use crate::life_state_clock::{LifeStateClock, predicted_target_ms};
 use postretro_entities::{EntityId, ScriptCtx, SlotValue};
 use postretro_foundation::{PlayerMovementComponent, UNDECLARED_LIFE_STATE};
@@ -12,6 +13,10 @@ struct Identity {
     teleport_generation: u8,
 }
 
+/// One frame's life-state reading. Reset evidence differs by role: the host
+/// reads the authoritative elapsed tick count (`Some`, witness 0) and detects a
+/// rewind by comparing it; a client has no authoritative count (`None`) and
+/// relies on the state-slot apply's elapsed-reset witness instead.
 pub(crate) struct Sample {
     identity: Identity,
     target_ms: f64,

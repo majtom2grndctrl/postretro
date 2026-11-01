@@ -1,4 +1,10 @@
-//! O1/O2/O5 through a real simulation tick followed by the player-event pass.
+//! Proves the ordering between a real simulation tick and the player-event pass:
+//! two zeroed pawns each fire their own life-state edge plus one legacy death event,
+//! healing before the sweep suppresses the edges while a post-sweep heal rearms the
+//! per-pawn death latch, and re-setting the same state continues its clock and conditions
+//! through the next real tick.
+//!
+//! See: context/lib/scripting.md §12 Reaction Dispatch Model (player life states)
 use super::tests::{World, input, number, on_player, player_event};
 use super::*;
 use crate::ai_host::AiTickResult;
@@ -202,7 +208,7 @@ fn life_policy_o2_heal_before_sweep_suppresses_edges_and_post_sweep_heal_rearms_
         assert_eq!(
             deaths(&events),
             1,
-            "positive health rearmed the global latch"
+            "positive health rearmed the pawn's death latch"
         );
         world.tick();
         assert_eq!(

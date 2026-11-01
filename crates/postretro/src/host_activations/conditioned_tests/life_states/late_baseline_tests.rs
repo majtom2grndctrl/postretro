@@ -1,5 +1,5 @@
 //! A new recipient sees an already downed teammate through the normal baseline.
-//! See: context/lib/networking.md §Slot lifecycle and E18 AC15.
+//! See: context/lib/networking.md §Snapshot apply ordering
 
 use super::*;
 use crate::host_activations::conditioned_tests::receive_alternate::NoBindings;
@@ -78,18 +78,20 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         life.step(neutral());
     }
     let pawn = life.fixture.host_actors.pawn;
-    let expected = life
-        .fixture
-        .host
-        .borrow()
-        .get_component::<PlayerMovementComponent>(pawn)
-        .unwrap()
-        .clone();
-    assert_eq!(expected.life_state, life.down_id);
-    assert!(expected.life_state_elapsed_ticks > 0);
-    near(expected.capsule.half_height, 0.4);
+    let host_movement = |life: &LifeFixture| {
+        life.fixture
+            .host
+            .borrow()
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone()
+    };
+    let pre_join = host_movement(&life);
+    assert_eq!(pre_join.life_state, life.down_id);
+    assert!(pre_join.life_state_elapsed_ticks > 0);
+    near(pre_join.capsule.half_height, 0.4);
     assert!(matches!(
-        expected.movement_state,
+        pre_join.movement_state,
         postretro_foundation::MovementState::Crouching { .. }
     ));
 
@@ -106,7 +108,7 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         &scope,
     )
     .unwrap();
-    let assert_host_down = || {
+    let assert_host_down = |life: &LifeFixture| {
         scope.seed_player(
             &life.ctx.registry.borrow(),
             &life.ctx.slot_table.borrow(),
@@ -115,8 +117,55 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         );
         assert_eq!(eval_value(&condition, &scope), IrValue::Bool(true));
     };
-    assert_host_down();
+    assert_host_down(&life);
 
+    let mut client = NetClient::new(
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+        (Ipv4Addr::LOCALHOST, 1).into(),
+        LATE,
+        Duration::from_secs(1),
+        Some([0x5a; 32]),
+        None,
+    )
+    .unwrap();
+    client.set_mod_identity("test.mod".into(), "1.0.0".into());
+    client.set_mod_digest(Some([0x5a; 32]));
+    client.set_level_parity(Some(("test-level".into(), [0x5a; 32])));
+    client.set_revealed_level(Some("test-level".into()));
+    client.set_connected();
+    life.fixture.server.add_relay_connection(LATE, None);
+    // The host keeps simulating through the handshake: player events, movement
+    // and replication all run while the condition is read. Ticking stops once
+    // the host admits the recipient, so no production snapshot reaches it
+    // ahead of the baseline under test.
+    for _ in 0..32 {
+        if !life.fixture.server.is_participating(LATE) {
+            life.step(neutral());
+        }
+        assert_host_down(&life);
+        client.update_connections(Duration::from_millis(17));
+        life.fixture
+            .server
+            .update_connections(Duration::from_millis(17));
+        for packet in client.packets_to_send() {
+            life.fixture.server.process_packet_from(&packet, LATE);
+        }
+        let _ = life.fixture.server.poll_handshakes();
+        for packet in life.fixture.server.packets_to_send(LATE) {
+            client.process_packet(&packet);
+        }
+        let _ = client.drain_control();
+        if client.is_participating() && life.fixture.server.is_participating(LATE) {
+            break;
+        }
+    }
+    assert!(client.is_participating() && life.fixture.server.is_participating(LATE));
+    let expected = host_movement(&life);
+    assert_eq!(expected.life_state, life.down_id);
+    assert!(
+        expected.life_state_elapsed_ticks > pre_join.life_state_elapsed_ticks,
+        "the downed clock kept advancing on the host across the handshake"
+    );
     let mut tracker = ServerReplication::new();
     for _ in 0..2 {
         tracker.ingest_tick(netcode::produce_owned_snapshots_with_host_aim(
@@ -131,6 +180,7 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         let _ = tracker.begin_batch();
     }
     // No recipient existed while the pawn entered down and its capsule crouched.
+    // The baseline is built at admission, after the host ticked across the join.
     tracker.register_client(LATE);
     let sequence = tracker.begin_batch();
     let raw = tracker.encode_in_batch(LATE, 900, sequence).unwrap();
@@ -176,40 +226,6 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
         wire::WireMovementState::Crouching { .. }
     ));
 
-    let mut client = NetClient::new(
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
-        (Ipv4Addr::LOCALHOST, 1).into(),
-        LATE,
-        Duration::from_secs(1),
-        Some([0x5a; 32]),
-        None,
-    )
-    .unwrap();
-    client.set_mod_identity("test.mod".into(), "1.0.0".into());
-    client.set_mod_digest(Some([0x5a; 32]));
-    client.set_level_parity(Some(("test-level".into(), [0x5a; 32])));
-    client.set_revealed_level(Some("test-level".into()));
-    client.set_connected();
-    life.fixture.server.add_relay_connection(LATE, None);
-    for _ in 0..32 {
-        assert_host_down();
-        client.update_connections(Duration::from_millis(17));
-        life.fixture
-            .server
-            .update_connections(Duration::from_millis(17));
-        for packet in client.packets_to_send() {
-            life.fixture.server.process_packet_from(&packet, LATE);
-        }
-        let _ = life.fixture.server.poll_handshakes();
-        for packet in life.fixture.server.packets_to_send(LATE) {
-            client.process_packet(&packet);
-        }
-        let _ = client.drain_control();
-        if client.is_participating() && life.fixture.server.is_participating(LATE) {
-            break;
-        }
-    }
-    assert!(client.is_participating() && life.fixture.server.is_participating(LATE));
     assert!(life.fixture.server.send_snapshot(LATE, wire::encode(&raw)));
     let mut link = PacketConditioner::new(LinkConfig {
         delay: 75,
@@ -225,8 +241,11 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
     )
     .unwrap()
     .unwrap();
+    // Host ticks from here on also replicate to the admitted recipient, but
+    // only the conditioned link's packets reach this client.
     for _ in 0..8 {
-        assert_host_down();
+        life.step(neutral());
+        assert_host_down(&life);
         link.advance(17);
         for packet in link.take_ready() {
             client.process_packet(&packet);
@@ -297,5 +316,5 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
             .has_component_kind(remote, ComponentKind::PlayerMovement)
             .unwrap()
     );
-    assert_host_down();
+    assert_host_down(&life);
 }

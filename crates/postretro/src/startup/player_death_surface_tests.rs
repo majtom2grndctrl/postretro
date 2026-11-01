@@ -1,4 +1,8 @@
-//! The authored death policy through both VMs and a two-seat production tick loop.
+//! Proves the authored player death policy end to end: both script runtimes emit
+//! identical policy and down-vignette wire, dev registration and the HUD consume it,
+//! and a two-seat production tick loop bleeds out, respawns and resets clocks.
+//!
+//! See: context/lib/scripting.md §12 Reaction Dispatch Model (player life states, respawn)
 use super::teleporters_surface_tests::{canonical, workspace};
 use crate::startup::lifecycle::tests::{script_ctx, test_app};
 use glam::{Vec2, Vec3};

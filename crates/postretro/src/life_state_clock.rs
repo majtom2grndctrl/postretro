@@ -1,7 +1,11 @@
 //! Frame-continuous life-state time for the HUD, separate from gameplay time.
+//! See: context/lib/scripting.md §5 · context/lib/networking.md §What gates, and what replicates instead
+//!
 //! Ordinary prediction corrections change playback rate; only a caller-proven
-//! life-state/pawn/teleport reset reseeds the displayed value.
+//! life-state/pawn/teleport reset, retained reset witness, or accepted
+//! authoritative elapsed decrease reseeds the displayed value.
 
+use crate::frame_timing::MAX_ACCUMULATOR;
 use std::time::Duration;
 
 const RESPONSE_MS: f64 = 250.0;
@@ -49,7 +53,10 @@ impl LifeStateClock {
             self.reset_serial = Some(reset_serial);
             return self.displayed_ms;
         }
-        let dt_ms = frame_dt.as_secs_f64() * 1000.0;
+        // The fixed-tick accumulator caps catch-up at `MAX_ACCUMULATOR`, so
+        // gameplay elapsed can never advance more than that in one frame. An
+        // uncapped stall frame would run the display ahead of its target.
+        let dt_ms = frame_dt.min(MAX_ACCUMULATOR).as_secs_f64() * 1000.0;
         let error_ms = target_ms - (self.displayed_ms + dt_ms);
         // Exponential response remains stable for long game frames as well as
         // high refresh rates. Clamping the rate guarantees a positive advance
@@ -170,15 +177,40 @@ mod tests {
 
     #[test]
     fn life_state_clock_positive_long_frames_remain_bounded_and_converge() {
+        // Frames at the accumulator cap: the longest step gameplay can take.
         let mut clock = LifeStateClock::default();
-        let dt = Duration::from_secs(1);
+        let dt = MAX_ACCUMULATOR;
+        let dt_ms = dt.as_secs_f64() * 1000.0;
         let mut previous = clock.advance(dt, 1000.0, 1);
         for frame in 1..20 {
-            let target = 1000.0 + f64::from(frame) * 1000.0 - 50.0;
+            let target = 1000.0 + f64::from(frame) * dt_ms - 50.0;
             let next = clock.advance(dt, target, 1);
-            assert!((250.0..=1250.0).contains(&(next - previous)));
+            assert!((dt_ms * MIN_RATE..=dt_ms * MAX_RATE).contains(&(next - previous)));
             previous = next;
         }
-        assert_close(previous, 19_950.0, 0.001);
+        assert_close(previous, 1000.0 + 19.0 * dt_ms - 50.0, 0.001);
+    }
+
+    #[test]
+    fn life_state_clock_stall_frame_advances_no_further_than_capped_gameplay() {
+        // A 4 s event-loop stall: the accumulator lets gameplay advance only
+        // `MAX_ACCUMULATOR`, so the display must not run ahead of that target.
+        let frame = Duration::from_secs_f64(1.0 / 60.0);
+        let cap_ms = MAX_ACCUMULATOR.as_secs_f64() * 1000.0;
+        let mut clock = LifeStateClock::default();
+        let before = clock.advance(frame, 5000.0, 1);
+        let mut target = 5000.0 + cap_ms;
+        let stalled = clock.advance(Duration::from_secs(4), target, 1);
+        assert!(stalled > before);
+        assert_close(stalled, target, 1e-9);
+        let frame_ms = frame.as_secs_f64() * 1000.0;
+        let mut previous = stalled;
+        for _ in 0..60 {
+            target += frame_ms;
+            let next = clock.advance(frame, target, 1);
+            assert!(next > previous);
+            assert_close(next, target, 1e-6);
+            previous = next;
+        }
     }
 }

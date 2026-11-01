@@ -274,7 +274,7 @@ impl Rig {
 }
 
 #[test]
-fn respawn_tick_start_resets_crouched_geometry_motion_budgets_and_all_presented_alphas() {
+fn respawn_tick_start_resets_crouched_geometry_motion_budgets_and_registry_pose_at_every_alpha() {
     let rig = Rig::new();
     let (pawn, weapon) = rig.spawn(0, Vec3::new(70.0, 4.0, 5.0), true);
     let charge: postretro_foundation::WeaponDescriptor = serde_json::from_value(json!({"damage":5,"range":20,"resolution":"hitscan","primary":{"trigger":"press","recoveryMs":10,"charge":{"minMs":10,"fullMs":2000},"steps":[{"kind":"shot"}]}})).unwrap();
@@ -405,6 +405,9 @@ fn respawn_tick_start_resets_crouched_geometry_motion_budgets_and_all_presented_
             .activation_cursor()
             .is_none()
     );
+    // The registry pose, as live consumers read it. A connected client's pawn
+    // draws on the host's delayed timeline instead; netcode's host-presentation
+    // discontinuity tests prove that cut.
     for alpha in [0.0, 0.25, 0.5, 0.75, 1.0] {
         assert_eq!(
             r.interpolated_transform(pawn, alpha).unwrap().position,
@@ -597,7 +600,7 @@ fn respawn_named_state_resolves_after_reload_or_falls_back_once() {
 }
 
 #[test]
-fn respawn_missing_request_target_skips_once_and_no_free_placement_warns_once() {
+fn respawn_missing_target_or_placement_skips_once_and_no_free_placement_warns_once() {
     {
         let logs = LogCapture::start();
         let rig = Rig::new();
@@ -619,6 +622,30 @@ fn respawn_missing_request_target_skips_once_and_no_free_placement_warns_once() 
         rig.start(|_| None);
         assert_eq!(rig.pose(pawn).position, Vec3::new(0.0, 1.2, 0.0));
         logs.assert_logged_once(log::Level::Warn, "no free placement");
+    }
+    {
+        // A level with no joinable spawn publishes nothing; the whole request drops.
+        let logs = LogCapture::start();
+        let rig = Rig::new();
+        let (pawn, _) = rig.spawn(0, Vec3::new(60.0, 1.2, 0.0), true);
+        crate::life_state_commands::set_life_state(
+            &rig.ctx,
+            &mut rig.ctx.registry.borrow_mut(),
+            &[pawn],
+            "down",
+        );
+        set_health_absolute(&mut rig.ctx.registry.borrow_mut(), pawn, 0.0);
+        *rig.ctx.respawn_placements.borrow_mut() = postretro_entities::RespawnPlacements::default();
+        let position = rig.pose(pawn).position;
+        let generation = rig.movement(pawn).teleport.generation;
+        rig.enqueue(pawn, None, None);
+        rig.start(|_| None);
+        assert!(rig.ctx.pending_respawns.borrow().is_empty());
+        assert_eq!(rig.pose(pawn).position, position);
+        assert_eq!(rig.health(pawn).current, 0.0);
+        assert_eq!(rig.name(pawn), "down");
+        assert_eq!(rig.movement(pawn).teleport.generation, generation);
+        logs.assert_logged_once(log::Level::Warn, "no joinable player_spawn placement");
     }
 }
 

@@ -7,139 +7,30 @@ read at: 834a09c51
 
 ## Resume point
 
-[Review checklist](review-status.md): authoritative dispatch status and evidence
-links for all 31 passes. Updated after batch 04: 21 complete, 10 not started,
-none running. This documentation update started no reviews or builds.
+Branch `codex/player-life-states`, claimed from `origin/main` in a953f386f. Tasks
+1–7 are implemented and committed. The whole-feature review panel is complete:
+31 of 31 passes over 15 slices plus three cross-system seam tracers. No 🔴
+findings remained after repairs.
 
-Latest bounded round (2026-11-01): exactly two more authorized passes finished,
-slice 10 hygiene and slice 11 correctness. Neither found a new code or comment
-defect. Coverage **21/31**, **10 remain**, exact **NEXT slice 11 hygiene**.
-B03-F1/O44 remains unresolved; its PARTIAL proof status is accurate. AC17/18
-external visual proof and final preflight remain open. Both workers finished;
-full local uncommitted reports and manifest are in `reviews/batch-04/` and
-`review-batch-04.md`. No builds, tests, runtime edits, commits or pushes ran.
-Shared-account remaining before→after: five-hour **34%→16%**, weekly
-**55%→52%**, observed used increases 18 and 3 percentage points, unchanged
-resets 1793581158 / 1794098104. Other activity may contribute. No reset credit
-consumed. Final disk 31 GiB. Stopped after this round, no automatic next batch.
+- Rounds 1–4 (Codex, 2026-10-30 to 2026-11-01) found runtime defects C1–C6 and
+  comment/context drift D1–D13. All are repaired with regression tests and were
+  committed in 6b7560e6e.
+- Round 5 (Claude Code, 2026-11-01) ran the last ten passes against 6b7560e6e.
+  🟡 findings were comment drift, author-doc and SDK text errors, and test gaps:
+  mid-burst/hold/charge capability loss, vacuous late-baseline and look
+  assertions, and endpoint O36/O42 coverage. All are fixed in the following
+  commit, along with 🟢 nits (HUD clock frame cap, respawn placements republished
+  on hot reload).
+- B03-F1 is resolved by the owner's O44 restatement (see Corrections). The new
+  proof runs through the production host presenter.
 
-Latest bounded round (2026-11-01): the owner authorized one more round; exactly
-two passes completed, slice 09 hygiene and slice 10 correctness. Coverage is
-**19/31**, **12 remain**, exact **NEXT slice 10 hygiene**. Neither found a
-runtime defect. New yellow B03-F1 identifies an acceptance/proof mismatch:
-O44 promises immediate host placement at every respawn-tick alpha, whereas
-the production delayed host presenter holds the old pose until its timeline
-reaches the arrival cut. The registry-only alpha test does not cover that
-presenter. O44's full proof is now marked unresolved in `ordering-proof.md`;
-the approved requirement and runtime behavior have not been changed. Resolve
-the wording/behavior contract and add production-presenter proof before closing
-B03-F1. AC17/18 external visual proof and final preflight also remain open.
-Both workers finished; reports and summaries are local and uncommitted in
-`review-batch-03.md` and `reviews/batch-03/`. No builds, tests, runtime edits,
-commits or pushes ran. Shared-account remaining allowance before→after:
-five-hour **54%→34%**, weekly **58%→55%**, observed used increases 20 and 3
-percentage points with unchanged resets 1793581158 / 1794098104. Other account
-activity may contribute; no reset credit consumed. Final disk about 31 GiB.
-Stopped after this bounded round; do not automatically start another batch.
+Review reports and batch summaries stay on local disk, uncommitted, at the
+owner's request. They are not linked from this plan.
 
-Latest continuation (2026-11-01): the owner asked the executor to choose next
-steps in a fresh five-hour window. D10–D13 are corrected in source comments
-and one `must_use` diagnostic. A before/after non-comment code comparison,
-`cargo fmt --check`, and whitespace checks pass; no build/test was needed.
-Both selected passes completed: slice 08 hygiene and slice 09 correctness.
-No runtime findings. The hygiene pass found residual D12 enum documentation;
-that follow-up is now corrected, documenting protected finite life-state
-glides under both Teleport and OversizedSmoothed. All reported D10–D13
-locations are addressed. The same documentation/diagnostic-only comparison,
-format and whitespace checks pass after the follow-up. No build/test rerun.
-Coverage is **17/31**, **14 remain**, exact **NEXT slice 09 hygiene**. All
-workers finished; stop here before another review batch. Full local reports
-and manifest are in `review-batch-02.md` and `reviews/batch-02/`.
-No additional reviews, full preflight, commits or pushes ran. Shared-account
-remaining allowance before→after: five-hour **99%→60%**, weekly **65%→59%**;
-observed used increases 39 and 6 percentage points. Reset timestamps stayed
-1793581158 / 1794098104. These are account-wide readings; other activity may
-contribute. No reset credit was consumed. Final disk about 32 GiB.
+Remaining before landing: merge `main`, full preflight, AC17/AC18 manual visual
+proof per [manual-playtest.md](manual-playtest.md).
 
-On 2026-11-01 the owner authorized exactly five remaining review passes to
-measure usage, then pause. All five completed: slice 06 depth/hygiene, slice 07
-depth/hygiene, and slice 08 depth only. Batch 01 ended at 15/31, with 16 then
-remaining and slice 08 hygiene next. No fixes, builds or additional reviewers
-ran. All workers finished and execution paused at that checkpoint.
-`review-batch-01.md` and `reviews/batch-01/` hold durable dispatch/results.
-The owner requests keeping review reports and summaries on disk, uncommitted.
-Do not stage them with feature code. `reviews/README.md` indexes the local
-archive, including five earlier full reports copied from temporary storage.
-
-No new runtime defects were found. D10/D11/D13 are documentation nits; D12 is
-misleading source commentary about large corrections always snapping, caught
-independently twice. These four comment/context findings were then unfixed;
-the latest continuation above records their completed corrections. Previous
-C1–C6/D1–D9 repairs and focused verification remain complete.
-
-Shared-account remaining allowance before→after: five-hour 96%→23%, weekly
-77%→66% (observed used increases of 73 and 11 percentage points). The same
-window reset timestamps were reported at both reads. Other account activity
-can contribute; do not attribute the entire delta exclusively to this batch.
-No reset credit was consumed. Final disk check: about 22 GiB free. The batch
-was costly relative to the short-window allowance; smaller future batches
-would provide tighter stopping control. Batch 01 stopped before further dispatch.
-
-The brief was claimed from current `origin/main` (4b59b3b93), moved to
-`in-progress/`, and pushed to `main` in a953f386f. Feature branch:
-`codex/player-life-states`. Tasks 1–7 are implemented, focused-verified and
-committed through `3c2b915b1`. Resume the review/repair checkpoint below, not
-implementation Task 7. Tick-start and foot-anchor Path corrections are recorded
-below. Usage-window interruptions left edits intact; no scope or owner approval
-changed. Manual AC17/AC18 proof remains outstanding for the final runbook.
-
-### Known repairs and requested pause (2026-10-31)
-
-- Whole-feature panel: slices 01–05 have both independent reviews complete
-  (10 of 31 planned review passes). Slice 06 depth was interrupted by the
-  account usage limit; no completed result exists. Remaining: slices 06–13
-  depth/hygiene, mechanical slices 14/15, and three cross-system seam tracers.
-  `review-results.md` holds findings and coverage; complete prompts/diffs and
-  later individual reports remain in `/tmp/postretro-e18-review/`.
-- Six runtime findings confirmed so far: C1 optional JS undefined parity;
-  C2 true VM nonfinite respawn health; C3 retained descriptor name overflow;
-  C4 retained movement without crouch support; C5 protected velocity doubled
-  by a forced-crouch vault interruption; C6 fluid-jump recovery retaining a
-  crouched capsule. Separate comment/context drift is also recorded.
-- Owner requested finishing the known repairs and focused tests, then pausing
-  before the remaining 21 review passes to assess account usage. Do not start
-  further panel reviews or final preflight during this repair batch.
-- All C1–C6 repairs and D1–D9 comment/context corrections are written and
-  source-integrated. Reports: `/tmp/postretro-e18-vm-repairs.md`,
-  `/tmp/postretro-e18-reload-repairs.md`, and
-  `/tmp/postretro-e18-physics-repairs.md`. Fifteen new test functions cover the
-  original failures and their real SDK, staged-commit, respawn and movement
-  consumers. C3 validates the final retained name union before mutation; C4
-  installs only missing safe crouch support and atomically rejects unsafe
-  support; C5 retains protected velocity once; C6 shares posture-aware exits.
-- Central focused gate PASSED. Formatting and all-target touched-crate
-  compilation pass after correcting six test-only enum spelling errors.
-  Executed PASS: `life_state` library filter: netcode 23, physics 11,
-  scripting-core 21, sim 23; scripting-core `respawn_` 4; sim `respawn_` 17;
-  sim `--test life_state_reload` 4; physics `swim` 56; App `life_state`
-  with dev-tools 27. All filters matched tests, including all 15 newly added
-  regressions. Closing format and whitespace checks pass. Logs/results:
-  `/tmp/postretro-e18-repair-focused-results.md` and
-  `/tmp/postretro-e18-repair-*.log`.
-- All repair workers and the central test runner finished. Execution is now
-  paused at the owner's requested stopping point. Do not start the remaining
-  reviews until the owner resumes. Every build used the active rustc/prl-build
-  process guard, this worktree's target and incremental off.
-- Current repair edits and this checkpoint are uncommitted. Do not discard
-  them. Approved scope remains unchanged. No feature push, PR, landing, full
-  workspace suite or final preflight has occurred. AC17/AC18 remain external
-  manual proof before landing. Final preflight follows the completed review
-  loop when the owner resumes; it is not part of this requested stopping point.
-- Account usage readout at pause: 61% remaining in the five-hour window and
-  78% remaining in the weekly window. These are shared account limits, not
-  usage attributable solely to this task. No reset credit was consumed.
-- Last disk check: about 31 GiB free. Recheck before builds; obey the cache-only
-  cleanup rule below if free space falls below 15 GB.
+Every build checks for an active `rustc` or `prl-build` first (owner rule, below).
 
 The legacy brief has no compact/resumable header. Use resumable coordination
 because its seven tasks cross descriptor validation, prediction, replication,
@@ -174,6 +65,13 @@ and recheck before starting; continue independent reads/edits in the meantime.
 
 ## Corrections
 
+- **O44 restated by owner (2026-11-01, resolves B03-F1).** Original: "draws the pawn at the
+  placement at every alpha of T+1." The production host presenter renders connected-client
+  pawns on a delayed timeline, as teleporter arrivals already do (`networking.md`). A respawn
+  bypass would show the arrival before the delayed death and fork the discontinuity rule.
+  Owner chose the general invariant: a discontinuity is a cut, never a blend, on whatever
+  timeline the viewer renders. No runtime change. Proof must run through
+  `host_present_client_pawns`, shared with the teleport arrival case.
 - The brief predates workflow mode headers and has no `read at` SHA. Resumable
   source verification must re-read the cited symbols; continuity is not proof.
 - Task 5's Path excludes pawns with later respawn requests from overlap tests.
@@ -220,6 +118,9 @@ and recheck before starting; continue independent reads/edits in the meantime.
 
 ## Delegated answers and source findings
 
+- Respawn with no resolvable `player_spawn` — logs a `[Respawn]` warning and leaves
+  the pawn unchanged; no fallback. Owner (2026-11-01): a map without a spawn cannot
+  boot, so this state is upstream of respawn and unreachable in practice.
 - HUD feasibility — resolved by the owner's continuous-advancement decision.
   Use fixed-size high-precision presentation state and bounded positive rate
   correction at the store-to-UI seam; exact tick values remain separate.
@@ -545,8 +446,7 @@ listed boundaries; no allocation is a passing result.
   inferred; AC17/AC18 still block landing. No feature push/PR/landing occurred.
 - Logs: `/tmp/postretro-e18-task7-{fmt,check,policy,consumer,app-life,net-life,
   o16,coop-twins,map-spawn}.log`; playtest tool/map logs use
-  `/tmp/postretro-e18-playtest-{tools,map}.log`. Latest checkpoint commit before
-  Task 7 is `1b7ebb6c1`; commit Task 7 with this plan after readiness passes.
+  `/tmp/postretro-e18-playtest-{tools,map}.log`. Task 7 was committed in 3c2b915b1.
   Most recent free space about 15 GiB; check before the final gate and follow
   the cache-only cleanup rule if it falls below 15 GB.
 

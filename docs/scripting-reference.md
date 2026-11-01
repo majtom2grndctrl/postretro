@@ -3006,6 +3006,8 @@ needed for a bleed-out bar:
 Bar({
   bind: bindState(player.lifeStateMs),
   max: 15000,
+  fill: color.critical,
+  background: color.hud.panel,
   visibleWhen: stateEquals(player.lifeState, "down"),
 });
 ```

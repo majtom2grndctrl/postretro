@@ -1,5 +1,5 @@
 //! Owner look sampling across delayed authoritative life-state receipt.
-//! See: context/lib/networking.md §Snapshot apply ordering and E18 O38.
+//! See: context/lib/networking.md §Snapshot apply ordering
 
 use super::*;
 
@@ -50,6 +50,15 @@ fn life_state_o38_received_look_gate_freezes_sent_facing_and_host_accepts_in_fli
     let mut samples = BTreeMap::new();
     let mut frozen = None;
     let mut turns_before_receipt = 0;
+    // The camera takes the production writes around each tick: render-rate
+    // look, the tick's mover yaw carry, then receipt-time teleport adoption.
+    // Receipt may stop look; it may never move the view.
+    let mut timing = crate::frame_timing::FrameTiming::new(
+        crate::frame_timing::InterpolableState::new(camera.position),
+    );
+    let mut carry_ground = crate::local_player_ground(&life.fixture.local.borrow());
+    let mut arrival_sounds = Vec::new();
+    let mut adopted = 0;
     for _ in 0..100 {
         let allowed = {
             let registry = life.fixture.local.borrow();
@@ -60,6 +69,8 @@ fn life_state_o38_received_look_gate_freezes_sent_facing_and_host_accepts_in_fli
         };
         let before = (camera.yaw, camera.pitch);
         crate::life_state_eye::apply_look(&life.fixture.local.borrow(), &mut camera, 0.025, 0.01);
+        crate::apply_mover_yaw_carry(&mut camera, carry_ground, &life.fixture.movers);
+        carry_ground = crate::local_player_ground(&life.fixture.local.borrow());
         if allowed {
             turns_before_receipt += 1;
             assert!(camera.yaw > before.0 && camera.pitch > before.1);
@@ -73,11 +84,26 @@ fn life_state_o38_received_look_gate_freezes_sent_facing_and_host_accepts_in_fli
         command.movement.facing_pitch = camera.pitch;
         life.fixture.aim_pitch = camera.pitch;
         samples.insert(life.next_tick, (camera.yaw, camera.pitch, allowed));
+        let sent = (camera.yaw, camera.pitch);
         life.step(command);
-        if !allowed {
-            near(camera.yaw, before.0);
-            near(camera.pitch, before.1);
-        }
+        let adoptions = life.fixture.life_owner_adoptions[adopted..]
+            .iter()
+            .map(|&(_, adoption)| adoption)
+            .collect::<Vec<_>>();
+        adopted = life.fixture.life_owner_adoptions.len();
+        crate::runtime_teleporters::apply_local_adoptions(
+            &mut camera,
+            &mut timing,
+            &mut carry_ground,
+            &mut arrival_sounds,
+            &life.fixture.world.teleporters,
+            &life.fixture.local.borrow(),
+            Vec3::ZERO,
+            &adoptions,
+            None,
+        );
+        near(camera.yaw, sent.0);
+        near(camera.pitch, sent.1);
     }
     assert!(
         turns_before_receipt > 0,

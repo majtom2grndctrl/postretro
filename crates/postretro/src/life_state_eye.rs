@@ -1,16 +1,22 @@
 //! Render-only local eye-height easing across authoritative posture corrections.
 //! Timing retains gameplay eyes; this scalar replaces only their height term.
+//! See: context/lib/movement.md §2 (Life-state capabilities)
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::{Capability, PlayerMovementComponent, player_capability};
 
 #[derive(Default)]
 pub(crate) struct LifeStateEye {
+    /// Followed pawn and its teleport generation; a change reseeds everything.
     identity: Option<(EntityId, u8)>,
+    /// Raw tick eye height at the previous and current fixed ticks, lerped by alpha.
     previous_raw: f32,
     current_raw: f32,
+    /// Eased eye height last presented to the camera.
     presented: f32,
+    /// Life-state index and table revision last seen; a change starts a correction.
     life: Option<(u8, u8)>,
+    /// True while easing toward the authoritative eye height.
     correcting: bool,
 }
 
@@ -65,6 +71,9 @@ impl LifeStateEye {
             return eye;
         }
         let Some(crouch) = movement.crouch.as_ref() else {
+            // No crouch component means no easing rate. `correcting` stays set,
+            // which is harmless: the eye is returned untouched until a crouch
+            // component exists or the pawn identity changes and reseeds it.
             return eye;
         };
         eye.y += self.height_offset(

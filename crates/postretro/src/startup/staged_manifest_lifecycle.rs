@@ -300,6 +300,7 @@ impl App {
             }
             if committed && self.has_installed_level() {
                 self.rebuild_reactions_after_staged_commit();
+                self.refresh_respawn_placements();
             }
             if committed {
                 // A reload that declares, drops or reorders fluids re-resolves

@@ -248,3 +248,57 @@ fn respawn_o20_actual_level_unload_clears_requests_and_placements_while_suspend_
     assert!(placements.seats.is_empty());
     assert!(placements.first_player.is_none());
 }
+
+#[test]
+fn respawn_placements_republish_when_a_committed_reload_changes_spawn_eligibility() {
+    let mut app = crate::startup::lifecycle::tests::test_app();
+    let ctx = crate::startup::lifecycle::tests::script_ctx(&app);
+    let points = vec![
+        spawn("small", Vec3::ZERO, 0.0, false),
+        spawn("large", Vec3::X * 4.0, 0.0, false),
+    ];
+    app.host_spawn_points = points.clone();
+    let both = || vec![descriptor("small", 0.4, 0.8), descriptor("large", 0.7, 2.0)];
+    let published = |ctx: &ScriptCtx| -> Vec<usize> {
+        ctx.respawn_placements
+            .borrow()
+            .map_order
+            .iter()
+            .map(|placement| placement.map_index)
+            .collect()
+    };
+    ctx.data_registry.borrow_mut().replace_entity_types(both());
+    publish(
+        &ctx,
+        &points,
+        &ctx.data_registry.borrow().entities,
+        None,
+        Some(1),
+    );
+    assert_eq!(published(&ctx), [0, 1]);
+
+    // The reload drops `large`, so the join path now refuses spawn 1.
+    ctx.data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![descriptor("small", 0.4, 0.8)]);
+    app.refresh_respawn_placements();
+    assert_eq!(
+        published(&ctx),
+        joinable_spawns(&points, &ctx.data_registry.borrow().entities),
+        "respawn and join agree on the reloaded spawn set"
+    );
+    assert_eq!(published(&ctx), [0]);
+    assert_eq!(
+        ctx.respawn_placements.borrow().first_player,
+        Some(0),
+        "an installed first player whose class no longer resolves falls back"
+    );
+
+    ctx.data_registry.borrow_mut().replace_entity_types(both());
+    app.refresh_respawn_placements();
+    assert_eq!(
+        published(&ctx),
+        [0, 1],
+        "a restored class is eligible again"
+    );
+}

@@ -308,9 +308,10 @@ impl PlayerHudStatePublisher {
         is_connected_client: bool,
         client_life_state_name: Option<&str>,
     ) -> Option<EntityId> {
-        // A connected client suppresses host-authoritative HUD writes, but still
-        // samples its locally-owned active component so the HUD feedback consumer
-        // can acknowledge and drain its stream.
+        // A connected client suppresses host-authoritative HUD writes (health,
+        // ammo, reload) but still publishes `player.lifeState` locally from its
+        // own pawn, and samples its locally-owned active component so the HUD
+        // feedback consumer can acknowledge and drain its stream.
         if is_connected_client {
             self.publish_life_state(true, client_life_state_name);
             // These switching display slots are local on every role: their inventory

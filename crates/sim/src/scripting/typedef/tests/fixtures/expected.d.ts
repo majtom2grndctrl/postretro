@@ -220,7 +220,7 @@ declare module "postretro" {
     touch?: boolean;
     /** Include this pawn in trigger occupant counts. Defaults to true. */
     occupancy?: boolean;
-    /** Permit spatial damage targeting at any HP. Defaults to true. Explicit script damage, impacts, hitscan damage and mover crush retain their existing behavior. */
+    /** Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior. */
     damageable?: boolean;
   };
 

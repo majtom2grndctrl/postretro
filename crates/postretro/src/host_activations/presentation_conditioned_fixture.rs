@@ -272,7 +272,8 @@ impl Peer {
             false,
             &mut resolver,
             self.clock,
-            self.rtt, &Default::default(),
+            self.rtt,
+            &Default::default(),
         );
         if materialized.materialized_remote_entity_presentation {
             crate::resolve_mesh_entity_bindings(

@@ -219,7 +219,7 @@ export type LifeStateProfile = {
   touch: boolean?,
   --- Include this pawn in trigger occupant counts. Defaults to true.
   occupancy: boolean?,
-  --- Permit spatial damage targeting at any HP. Defaults to true. Explicit script damage, impacts, hitscan damage and mover crush retain their existing behavior.
+  --- Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior.
   damageable: boolean?,
 }
 
@@ -2435,7 +2435,9 @@ export type ActivatorsTarget = {
   damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this fire's activators.
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  --- Enter an authored life state.
   setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
+  --- Respawn on the next authoritative tick, preserving inventory.
   respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this fire's activators' named ammo-reserve pool.
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
@@ -2471,7 +2473,9 @@ export type PlayerTarget = {
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   --- Add health to this event's player.
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  --- Enter an authored life state.
   setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
+  --- Respawn on the next authoritative tick, preserving inventory.
   respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this event's player's named ammo-reserve pool.
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
@@ -2800,7 +2804,9 @@ export type PlayerGroup = {
   damage: (self: PlayerGroup, amount: number) -> GroupCommand,
   --- Add health to each player.
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  --- Enter an authored life state.
   setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
+  --- Respawn on the next authoritative tick, preserving inventory.
   respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   --- Add `amount` to each player's named ammo-reserve pool.
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,

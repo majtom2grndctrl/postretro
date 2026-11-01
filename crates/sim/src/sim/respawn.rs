@@ -91,8 +91,12 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
                     .find(|placement| placement.map_index == index)
             })
             .or_else(|| placements.map_order.first());
+        // With nowhere to relocate, no part of the respawn applies.
         let Some(preferred) = preferred else {
-            log::warn!("[Respawn] no published placement for pawn {pawn:?}; skipping");
+            log::warn!(
+                "[Respawn] dropping respawn of pawn {pawn:?}: the level published no joinable \
+                 player_spawn placement; health, life state and position stay unchanged"
+            );
             continue;
         };
         let position_for = |placement: &RespawnPlacement| {

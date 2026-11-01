@@ -1,4 +1,6 @@
-//! O24 crosses reliable Input catch-up, snapshot ack/replay, and frozen UI projection.
+//! The life-state HUD clock across a host catch-up trim, snapshot ack/replay and frozen UI projection.
+//! See: context/lib/networking.md §What gates, and what replicates instead · §Host input command queue
+
 use super::*;
 use crate::life_state_clock::predicted_target_ms;
 use crate::life_state_display::{LifeStateDisplay, UiProjection};

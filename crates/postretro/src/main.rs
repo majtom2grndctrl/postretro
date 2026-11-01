@@ -859,6 +859,8 @@ pub(crate) struct App {
     /// fixed-tick `InterpolableState` (movement.md D5). Inert until a pawn
     /// carries `view_feel`. See: context/lib/movement.md
     view_feel_state: view_feel::ViewFeelState,
+    /// Render-only eye-height easing across authoritative life-state posture
+    /// corrections. See: context/lib/movement.md §2
     life_state_eye: life_state_eye::LifeStateEye,
     /// Pawn currently owning the app-level view-feel integrator. A change
     /// clears all state so no motion continuity leaks between camera drivers.
@@ -975,6 +977,8 @@ pub(crate) struct App {
     fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
+    /// Eased `player.lifeStateMs` HUD projection, applied at the frozen UI
+    /// boundary. See: context/lib/ui.md §3
     life_state_display: life_state_display::LifeStateDisplay,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the

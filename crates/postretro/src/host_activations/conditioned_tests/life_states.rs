@@ -1,5 +1,5 @@
-//! Life profiles cross the player-event, fire authority and owning-client seams.
-//! See: E18 Task 1, AC4's fire arm and O15's player-event entry ordering.
+//! Life-state profiles over a conditioned link: fire authority, owner prediction, join, look, respawn.
+//! See: context/lib/scripting.md §12 (Player life states) · context/lib/networking.md §Combat authority
 
 use super::receive_alternate::ReceiveSetup;
 use super::*;
@@ -13,8 +13,9 @@ use postretro_foundation::{
 };
 use postretro_sim::player_events::PlayerEventTable;
 
-/// The ordinary fixture's second pawn is the listen host; only the remote
-/// shooter's zero-health edge enters `down`. Both are real player-event subjects.
+/// The host's local movement pawn (Seat 0) is the listen host; the remote
+/// shooter (Seat 1) is the connected client's pawn. Only the shooter's
+/// zero-health edge enters `down`. Both are real player-event subjects.
 struct LifeFixture {
     fixture: Fixture,
     ctx: ScriptCtx,
@@ -121,9 +122,10 @@ impl LifeFixture {
         {
             let mut local = fixture.local.borrow_mut();
             place(&mut local, fixture.local_actors.pawn, Vec3::ZERO);
-            // The real owner is normally health-slot-driven. Keep a local
-            // zero-HP component too, so the prediction and sweep regressions
-            // cover the independent component-based liveness check.
+            // The real owner is normally health-slot-driven. Give the local
+            // pawn a health component too, which `zero_shooter(true)` zeroes,
+            // so the prediction and sweep regressions cover the independent
+            // component-based liveness check.
             local
                 .set_component(fixture.local_actors.pawn, health(None))
                 .unwrap();
@@ -288,6 +290,91 @@ impl LifeFixture {
             TARGET_HP,
         );
     }
+
+    fn host_cursor(&self) -> Option<postretro_foundation::ActivationCursor> {
+        self.fixture
+            .host
+            .borrow()
+            .get_component::<WeaponComponent>(self.fixture.host_actors.weapon)
+            .unwrap()
+            .state
+            .activation_cursor()
+    }
+
+    fn owner_cursor(&self) -> Option<postretro_foundation::ActivationCursor> {
+        self.fixture
+            .local
+            .borrow()
+            .get_component::<WeaponComponent>(self.fixture.local_actors.weapon)
+            .unwrap()
+            .state
+            .activation_cursor()
+    }
+
+    fn owner_received_down(&self) -> bool {
+        self.fixture
+            .local
+            .borrow()
+            .get_component::<PlayerMovementComponent>(self.fixture.local_actors.pawn)
+            .unwrap()
+            .life_state
+            == self.down_id
+    }
+
+    /// Enters `down` on the host at full HP, as a trigger reaction does, so
+    /// only the profile can refuse fire.
+    fn host_enter_down(&self) {
+        postretro_sim::life_state_commands::set_life_state(
+            &self.ctx,
+            &mut self.ctx.registry.borrow_mut(),
+            &[self.fixture.host_actors.pawn],
+            "down",
+        );
+        near(
+            self.ctx
+                .registry
+                .borrow()
+                .get_component::<HealthComponent>(self.fixture.host_actors.pawn)
+                .unwrap()
+                .current,
+            TARGET_HP,
+        );
+    }
+
+    /// The owner liveness pass the client runs whenever a snapshot lands. Its
+    /// `player.health` slot reads full HP, so only the declared profile can
+    /// refuse fire.
+    fn owner_receipt_liveness(&mut self) -> bool {
+        let mut slots = postretro_entities::SlotTable::default();
+        slots.get_mut("player.health").unwrap().value =
+            Some(postretro_entities::SlotValue::Number(TARGET_HP));
+        let mut capture = crate::input::ActivationInputCapture::default();
+        capture.set_active(self.owner_cursor().map(|cursor| cursor.token));
+        self.fixture.frame.apply_owner_liveness(
+            &mut self.fixture.local.borrow_mut(),
+            &slots,
+            &mut capture,
+        )
+    }
+
+    /// Holds `lane` until the host's `down` record reaches the owner, running
+    /// the receipt liveness pass after every step. It must permit fire until
+    /// the record lands and refuse it from that step on.
+    fn hold_until_owner_receipt(&mut self, lane: ActivationLane) {
+        for _ in 0..40 {
+            self.step(held(lane, false));
+            let received = self.owner_received_down();
+            assert_eq!(
+                self.owner_receipt_liveness(),
+                !received,
+                "at full HP only the received fire:false profile refuses the owner"
+            );
+            if received {
+                return;
+            }
+        }
+        panic!("the host's down record never reached the owner");
+    }
 }
 
 #[test]
@@ -399,6 +486,121 @@ fn life_state_o12_owner_refuses_locally_until_host_fire_permission_arrives() {
         1,
         "a fresh press fires after the authoritative permission arrives"
     );
+    life.assert_other_player_untouched();
+}
+
+#[test]
+fn conditioned_fire_false_mid_burst_and_mid_hold_cancels_on_host_and_at_owner_receipt() {
+    // Twelve rounds 50 ms apart keep each execution running from the host's
+    // transition until well after the state reaches the owner.
+    for trigger in ["press", "hold"] {
+        let mut life = LifeFixture::new(descriptor(false, false, 12, trigger), false);
+        let start = token(life.next_tick, ActivationLane::Primary);
+        life.step(held(start.lane, true));
+        for _ in 0..40 {
+            if !life.fixture.authorized.is_empty() {
+                break;
+            }
+            life.step(held(start.lane, false));
+        }
+        let host_rounds = life.fixture.authorized.len();
+        assert!(
+            (1..12).contains(&host_rounds) && life.host_cursor().is_some(),
+            "{trigger}: the host is mid-execution when the state changes"
+        );
+        let predicted_at_transition = life.fixture.snapshots.len();
+        life.host_enter_down();
+        assert_eq!(
+            life.host_cursor(),
+            None,
+            "{trigger}: entering fire:false cancels the host execution"
+        );
+
+        life.hold_until_owner_receipt(start.lane);
+        assert!(
+            life.fixture.snapshots.len() > predicted_at_transition,
+            "{trigger}: the owner kept predicting rounds while the state was in flight"
+        );
+        assert_eq!(
+            life.owner_cursor(),
+            None,
+            "{trigger}: the owner's execution ends at receipt"
+        );
+
+        let predicted_at_receipt = life.fixture.snapshots.len();
+        let sent_at_receipt = life.fixture.sent.len();
+        for _ in 0..40 {
+            life.step(held(start.lane, false));
+        }
+        life.step(held(start.lane, true));
+        for _ in 0..80 {
+            life.step(neutral());
+        }
+        assert_eq!(
+            life.fixture.snapshots.len(),
+            predicted_at_receipt,
+            "{trigger}: neither the held trigger nor a fresh press predicts after receipt"
+        );
+        assert!(
+            life.fixture.sent[sent_at_receipt..]
+                .iter()
+                .all(|command| command.activation.initiation.is_none()),
+            "{trigger}: the refused owner sends no activation start"
+        );
+        assert_eq!(
+            life.fixture.authorized.len(),
+            host_rounds,
+            "{trigger}: the host authorizes no round after its transition"
+        );
+        life.assert_owner_down(false);
+        life.assert_other_player_untouched();
+    }
+}
+
+#[test]
+fn conditioned_fire_false_mid_charge_cancels_on_host_and_at_owner_receipt() {
+    let mut life = LifeFixture::new(descriptor(false, true, 1, "press"), false);
+    let start = token(life.next_tick, ActivationLane::Secondary);
+    life.step(held(start.lane, true));
+    for _ in 0..40 {
+        if life.fixture.host_charging() {
+            break;
+        }
+        life.step(held(start.lane, false));
+    }
+    assert!(
+        life.fixture.host_charging(),
+        "the host is mid-charge when the state changes"
+    );
+    life.host_enter_down();
+    assert_eq!(
+        life.host_cursor(),
+        None,
+        "entering fire:false cancels the host charge"
+    );
+
+    life.hold_until_owner_receipt(start.lane);
+    assert_eq!(
+        life.owner_cursor(),
+        None,
+        "the owner's charge ends at receipt"
+    );
+    let mut release = neutral();
+    release.activation.release = Some(ActivationRelease {
+        token: start,
+        release_tick: life.next_tick,
+    });
+    life.step(release);
+    for _ in 0..100 {
+        life.step(neutral());
+    }
+    assert!(
+        life.fixture.snapshots.is_empty(),
+        "the cancelled charge predicts no release shot"
+    );
+    life.fixture.assert_no_host_shot();
+    assert!(!life.fixture.host_charging());
+    life.assert_owner_down(false);
     life.assert_other_player_untouched();
 }
 

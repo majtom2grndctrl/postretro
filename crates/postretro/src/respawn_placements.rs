@@ -46,9 +46,10 @@ pub(crate) fn build(
     }
 }
 
-/// Publish only on install or a changed seat assignment. Retain the installed
-/// first-player placement when a later join rebuilds the assignment projection.
-/// No registry borrow is needed: the participation caller already holds one.
+/// Publish on install, a changed seat assignment, or a committed reload. Retain
+/// the installed first-player placement when a later publish rebuilds the
+/// assignment projection. No registry borrow is needed: the participation
+/// caller already holds one.
 pub(crate) fn publish(
     ctx: &ScriptCtx,
     spawn_points: &[MapEntity],
@@ -62,6 +63,26 @@ pub(crate) fn publish(
     let first_player = first_player.or(ctx.respawn_placements.borrow().first_player);
     let placements = build(spawn_points, descriptors, seats, first_player);
     *ctx.respawn_placements.borrow_mut() = placements;
+}
+
+impl crate::App {
+    /// A committed reload can change which spawns' classes resolve, so republish
+    /// against the new descriptors and respawn keeps agreeing with the next join.
+    /// Callers gate on an installed level: the retained spawn points outlive an
+    /// unload, which already cleared the published placements.
+    pub(crate) fn refresh_respawn_placements(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let ctx = &session.scripting.script_ctx;
+        publish(
+            ctx,
+            &self.host_spawn_points,
+            &ctx.data_registry.borrow().entities,
+            session.seat_table.as_ref(),
+            None,
+        );
+    }
 }
 
 /// Actual level retirement only. Surface teardown also runs for suspend, which

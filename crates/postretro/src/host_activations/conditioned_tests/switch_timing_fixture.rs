@@ -266,10 +266,20 @@ impl Fixture {
         let Some(switch) = self.switch_receive.as_mut() else {
             return;
         };
-        let life_data = self
-            .respawn_ctx
-            .as_ref()
-            .map(|ctx| ctx.data_registry.borrow());
+        // Resend the table the client already holds. Without a respawn context
+        // that is the one admission built from the fixture's own descriptors;
+        // an empty revision-0 resend would replace it, and the client would
+        // treat a declared pawn as undeclared.
+        let (life_state_names, life_state_revision) = match self.respawn_ctx.as_ref() {
+            Some(ctx) => {
+                let data = ctx.data_registry.borrow();
+                (
+                    data.life_state_names.clone(),
+                    data.life_state_table_revision,
+                )
+            }
+            None => admission_life_state_table(&self.descriptors),
+        };
         let payload = netcode::tuning_payload_for_pawn(
             &self.host.borrow(),
             self.host_actors.pawn,
@@ -279,12 +289,8 @@ impl Fixture {
                 level_gravity: 0.0,
                 fluids: Default::default(),
             },
-            life_data
-                .as_ref()
-                .map_or(&[][..], |data| data.life_state_names.as_slice()),
-            life_data
-                .as_ref()
-                .map_or(0, |data| data.life_state_table_revision),
+            &life_state_names,
+            life_state_revision,
         );
         netcode::host_send_tuning_if_changed(
             &mut self.server,
@@ -491,4 +497,24 @@ impl Fixture {
             reserve.available(&weapon.ammo.as_ref().unwrap().ammo_type),
         )
     }
+}
+
+/// The life-state table `Fixture::with_snapshot_receive` sends at admission:
+/// every declared state name, sorted and deduplicated, under the first block's
+/// revision.
+fn admission_life_state_table(
+    descriptors: &[postretro_entities::EntityTypeDescriptor],
+) -> (Vec<String>, u8) {
+    let names = descriptors
+        .iter()
+        .filter_map(|descriptor| descriptor.life_states.as_ref())
+        .flat_map(|block| block.states.keys().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let revision = descriptors
+        .iter()
+        .find_map(|descriptor| descriptor.life_states.as_ref())
+        .map_or(0, |block| block.table_revision);
+    (names, revision)
 }

@@ -4,7 +4,8 @@ Derivation behind the brief's Decisions. Source read at 343ff98b6; `bvh` 0.12.0 
 
 | Evidence | Origin |
 |---|---|
-| `drafts/lightmap-reach-cull/leak-diagnosis-findings.md` §H3 residue | Spike: rays within 1 µm of a shared edge miss both triangles on movement-feel |
+| `drafts/lightmap-reach-cull/leak-diagnosis-findings.md` §H3 residue, §Visible impact, §Fix sizing | Spike: rays within 1 µm of a shared edge miss both triangles on movement-feel, all on buried texels; shared-edge watertightness judged "none proportionate" |
+| `drafts/lightmap-stage-sizing/findings.md` §1 | The remembered occluder answers 65.8% of hallway-mini's shadow rays, mostly on dark texels |
 | `drafts/lightmap-reach-cull/research.md` §Occluder caches | The downstream cull, and why it needs the cache to be answer-neutral |
 | `lightmap-reach-cull` brief review, premise P1–P2 and rows R7–R9, R15, R16, R25 | The prune path, the stock-ray reference, stale warm entries, pins that encode today's leak, SH cost |
 | `done/lightmap-exact-skips/research.md` §Margin derivation | The shaft-cull margins, sized to Möller–Trumbore |
@@ -48,7 +49,7 @@ Out of scope: runtime ray tests in `sim` (hitscan, nav clearance). They read col
 
 ## Cache independence
 
-Decision 4's argument, step by step:
+The cache Decision's argument, step by step:
 
 1. bvh 0.12 stores each child's box in its parent node, an exact componentwise union (`utils::joint_aabb_of_shapes`). A one-shape join is the shape's box exactly.
 2. The iterator tests a node's child boxes and descends only into those that pass (`bvh/iter.rs`). A leaf's box is tested as its parent's child box; a root leaf as the shape's box. With a fixed bound it yields every leaf whose ancestor chain passes.
@@ -60,25 +61,25 @@ The cached box must be the box the parent stores, so any padding applies to both
 
 ## Distance prune
 
-`prune_limit` keeps boxes entered within 1 cm plus 0.01% of the bound. Exact box entry ≤ exact `t` because the box is the min/max of the vertices the hit test reads, and padding only lowers entry. A pruned box therefore holds no exact hit before the segment end. Today the cache can still report a hit there, since MT's `t` error near a sliver's end reaches metres (`sh_bake/trace_tests.rs`, rounding-stress doc). Under Decision 4 the cache tests that box first and skips it, as the traversal does.
+`prune_limit` keeps boxes entered within 1 cm plus 0.01% of the bound. Exact box entry ≤ exact `t` because the box is the min/max of the vertices the hit test reads, and padding only lowers entry. A pruned box therefore holds no exact hit before the segment end. Today the cache can still report a hit there, since MT's `t` error near a sliver's end reaches metres (`sh_bake/trace_tests.rs`, rounding-stress doc). With the cache gated, it tests that box first and skips it, as the traversal does.
 
-## Pad bound and ray origins
+## Precision and pad
 
-The watertight test first forms v − o in f32, then shears. Its effective triangle moves by about c·u·‖v − o‖ per vertex. The pad is ray-independent only if ‖v − o‖ is bounded by one extent for every bake ray.
+Bake vertices and ray origins and directions are f32. In f64, v − o is exact whenever the two magnitudes lie within 2²⁸ of each other, and rounds once at 2⁻⁵³ otherwise. The shear and the two-term edge functions add about c·2⁻⁵³·‖v − o‖, for a small constant c.
 
-- Lightmap rays start at the texel. A sun's far point is the segment end, not the origin (`lightmap_bake::area_sample_target`).
-- Chunk light list sun segments start at the sample and run toward the sun. Point-light segments start at the light origin, which an author may place anywhere. A segment from 10 km out would put post-shear rounding near a millimetre.
-- So the extent covers the geometry plus every light origin and probe position. Every ray origin the bakes use then lies inside it, and the pad is sized to that extent.
+- One f32 ulp of the extent E (the largest coordinate magnitude of the geometry), at least 2⁻²⁴·E, covers that for any origin within about 2²⁹/c extents. No ray origin needs bounding, so the chunk light list's sun segments keep their 10 km start.
+- The step is one ulp of E, not the next f32 outward from each coordinate: at a coordinate of 0, where authored walls and floors often sit, that step is subnormal.
+- Counterpoint: pbrt-v4 and Embree keep the test in f32 partly for SIMD width; this tracer is scalar.
+- The f32 fallback rounds v − o at u = 2⁻²⁴, so the pad grows to about c·u·E′ (c from Woop et al.'s error analysis) and ‖v − o‖ must stay within E′. E′ covers the geometry, every light origin and every probe position, and every segment starts inside it: lightmap sun segments already start at the texel (`lightmap_bake::area_sample_target`); chunk light list sun segments would move to start at the sample.
 
 ## Margins
 
-`margin.rs` sums MT's rounding: γ₅√2 per cross-then-dot numerator, the shape term ρ because MT's products scale with ‖e1‖‖e2‖, and the accepted-hit conditions (`|det| ≥ 1e-8`, u, v, t ranges) from `done/lightmap-exact-skips/research.md`. The watertight test has no e1, e2 or s. Its rounding sits in v − o and the shear, then in two-term edge-function products. Expect ρ to change form and the 2° floor to stay, since in-plane reach still grows as 1/sin θ. Not derived here.
+`margin.rs` sums MT's rounding: γ₅√2 per cross-then-dot numerator, the shape term ρ because MT's products scale with ‖e1‖‖e2‖, and the accepted-hit conditions (`|det| ≥ 1e-8`, u, v, t ranges) from `done/lightmap-exact-skips/research.md`. The watertight test has no e1, e2 or s. In f64 its rounding sits in the shear and the two-term edge-function products at about 2⁻⁵³, so the hit-test terms shrink by about 2²⁹; the sampler-endpoint terms are f32 segment ends, stay, and likely dominate. Expect ρ to change form and the 2° floor to stay, since in-plane reach still grows as 1/sin θ. Under the f32 fallback the hit-test terms return at u, in v − o and the shear. Not derived here.
 
 ## Unverified
 
-- Whether Ize 2013, "Robust BVH Ray Traversal", or Woop et al. 2013's traversal section already prescribes the primitive-box margin and its constant.
-- Whether extracted faces are free of T-junctions. A T-junction leaves an edge with no shared vertex, which the watertight test does not close.
-- The cost of the watertight test and the wider boxes on these maps.
+- How many edges adjacent triangles share with bit-identical vertices. A T-junction or crease crack leaves an edge with no shared vertex, which the watertight test does not close; the shared-edge census measures it.
+- The cost of the f64 test against f32 on these maps.
 
 ## Pins
 

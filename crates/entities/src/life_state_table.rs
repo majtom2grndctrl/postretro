@@ -6,7 +6,8 @@ use crate::DataRegistry;
 
 impl DataRegistry {
     /// Rebuild once after startup's descriptor drain, and on snapshot replacement.
-    /// Manifest validation guarantees at most 255 distinct names (255 is reserved).
+    /// Callers validate the final snapshot's union, including retained reload
+    /// descriptors, before mutation. The reserved id 255 never names a state.
     pub fn rebuild_life_state_table(&mut self) {
         let names: Vec<String> = self
             .entities

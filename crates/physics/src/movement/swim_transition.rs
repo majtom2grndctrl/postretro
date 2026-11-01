@@ -1,4 +1,4 @@
-// Swim entry and exit by immersion at the tick seam, the standing capsule on entry and the fluid-jump re-entry latch.
+// Swim entry and exit by immersion, posture-aware capsule transitions and the fluid-jump re-entry latch.
 // See: context/lib/movement.md §4
 
 use glam::Vec3;
@@ -52,14 +52,17 @@ impl SwimSeam {
 ///   bounce straight back out), with jump held and the tick eye out, and only
 ///   when the jump clears the water ([`fluid_jump_clears`]). Otherwise jump at
 ///   the surface does nothing beyond treading.
-/// - **Exit.** `Swim` leaves for `Normal` when immersion is below `exit_depth`
-///   (exactly at it stays), unless a fluid jump qualifies this tick: the jump
-///   wins the tie, and the swim intent fires it.
+/// - **Exit.** `Swim` leaves when immersion is below `exit_depth` (exactly at
+///   it stays), unless a fluid jump qualifies: the jump wins the tie. Every
+///   exit selects `Crouching` while the capsule is shorter than standing, so
+///   normal clearance retries survive a later posture change; otherwise `Normal`.
 /// - **Entry.** Any other state enters `Swim` when the swimming capsule's
 ///   immersion is at or above `enter_depth`, the component has a `swim` block,
 ///   and the latch is clear. Between the two thresholds nothing toggles.
-/// - **Standing capsule.** A crouched capsule (crouch or slide) stands up on
-///   entry through the resize crouch stand-up uses, about the anchor its crouch
+/// - **Forced crouch.** Entry uses the current crouched capsule and its
+///   immersion, without standing growth. Swim keeps that posture.
+/// - **Ordinary standing entry.** An unforced crouched capsule (crouch or slide)
+///   stands through the resize crouch stand-up uses, about the anchor its crouch
 ///   entered with: feet planted when grounded, head pinned when airborne (D4).
 ///   Feet-anchoring an airborne crouch would lift the standing capsule by twice
 ///   the crouch shrink, so a diver crouching out of the bottom of a floating
@@ -70,7 +73,7 @@ impl SwimSeam {
 ///   crawlspace lower than the standing capsule) keeps the current state: the
 ///   pawn wades crouched under gravity and retries every tick.
 /// - **No swim block.** The pawn never swims and walks fluid floors; a hot swap
-///   that removes the block mid-swim leaves to `Normal`.
+///   that removes the block mid-swim uses the same posture-aware exit.
 pub(super) fn environment_transition(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -83,7 +86,7 @@ pub(super) fn environment_transition(
     let Some(swim) = component.swim.as_ref() else {
         component.swim_reentry_latched = false;
         return SwimSeam {
-            transition: swimming.then(|| leave_with_posture(component)),
+            transition: swimming.then(|| leave_swim(component)),
             fluid_jump: false,
         };
     };
@@ -105,7 +108,7 @@ pub(super) fn environment_transition(
         });
         let stays = resolved.immersion >= exit_depth || fluid_jump;
         return SwimSeam {
-            transition: (!stays).then(|| leave_with_posture(component)),
+            transition: (!stays).then(|| leave_swim(component)),
             fluid_jump,
         };
     }
@@ -180,7 +183,7 @@ pub(super) fn environment_transition(
 ///   it peaks at `v² / (2|a|)`; with `a ≥ 0` it never stops rising. The fixed
 ///   tick's integration (no gravity on the jump tick itself) overshoots that
 ///   continuous peak by about `v·dt / 2`, so the test is conservative.
-/// - **Headroom.** The standing capsule must be able to sweep up the required
+/// - **Headroom.** The current capsule must be able to sweep up the required
 ///   rise ([`upward_clearance_probe`]), so a low ceiling over the water blocks
 ///   it.
 fn fluid_jump_clears(
@@ -211,16 +214,4 @@ fn enter_swim(fluid: u16) -> Transition {
         next: MovementState::Swim { fluid },
         carry: CarryRule::KEEP_ALL,
     }
-}
-
-// A forced swimming capsule can remain crouched after the profile opens if
-// standing growth is blocked. Preserve the ordinary crouch clearance retry.
-fn leave_with_posture(component: &PlayerMovementComponent) -> Transition {
-    let mut transition = leave_swim();
-    if component.capsule.half_height < component.standing_half_height {
-        transition.next = MovementState::Crouching {
-            eye_current: component.capsule.eye_height,
-        };
-    }
-    transition
 }

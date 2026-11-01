@@ -85,7 +85,7 @@ local function opaqueTarget(call: string, verbs: { [string]: any }, wire: string
   })))
 end
 
--- The four player-facing verbs, shared by `players()`, `on.activators` and
+-- The player-facing verbs, shared by `players()`, `on.activators` and
 -- `on.player`; only the addressing each stamps differs.
 local function playerVerbs(make)
   return {

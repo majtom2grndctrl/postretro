@@ -197,7 +197,52 @@ pub(crate) fn validate_life_state_name_limit(
 
 // The raw adapters keep empty Luau tables as objects and reject invalid/nonfinite
 // values with their full path before JSON can lose their authored shape.
-fn raw_js(value: JsValue<'_>, path: &str, depth: u8) -> Result<Value, DescriptorError> {
+#[derive(Clone, Copy)]
+enum LifeStateShape {
+    Block,
+    States,
+    Profile,
+    Movement,
+    Other,
+}
+
+impl LifeStateShape {
+    fn child(self, key: &str) -> Self {
+        match (self, key) {
+            (Self::Block, "states") => Self::States,
+            (Self::States, _) => Self::Profile,
+            (Self::Profile, "movement") => Self::Movement,
+            _ => Self::Other,
+        }
+    }
+
+    fn optional(self, key: &str) -> bool {
+        match self {
+            Self::Block => key == "rejoin",
+            Self::Profile => matches!(
+                key,
+                "movement"
+                    | "look"
+                    | "fire"
+                    | "switchWeapon"
+                    | "reload"
+                    | "use"
+                    | "touch"
+                    | "occupancy"
+                    | "damageable"
+            ),
+            Self::Movement => matches!(key, "speedScale" | "abilities" | "posture"),
+            Self::States | Self::Other => false,
+        }
+    }
+}
+
+fn raw_js(
+    value: JsValue<'_>,
+    path: &str,
+    depth: u8,
+    shape: LifeStateShape,
+) -> Result<Value, DescriptorError> {
     if depth > 6 {
         return Err(invalid(path, "exceeds the life-state object depth"));
     }
@@ -228,9 +273,15 @@ fn raw_js(value: JsValue<'_>, path: &str, depth: u8) -> Result<Value, Descriptor
     }
     let mut out = Map::new();
     for (key, value) in entries {
+        // Luau nil removes an optional field. Keep unknown undefined keys so
+        // the closed-schema validator still rejects misspellings.
+        if value.is_undefined() && shape.optional(&key) {
+            continue;
+        }
+        let child_shape = shape.child(&key);
         out.insert(
             key.clone(),
-            raw_js(value, &format!("{path}.{key}"), depth + 1)?,
+            raw_js(value, &format!("{path}.{key}"), depth + 1, child_shape)?,
         );
     }
     Ok(Value::Object(out))
@@ -274,7 +325,7 @@ pub(crate) fn life_states_from_js(
     value: JsValue<'_>,
     movement: Option<&PlayerMovementDescriptor>,
 ) -> Result<LifeStatesDescriptor, DescriptorError> {
-    validate(raw_js(value, ROOT, 0)?, movement)
+    validate(raw_js(value, ROOT, 0, LifeStateShape::Block)?, movement)
 }
 
 pub(crate) fn life_states_from_lua(

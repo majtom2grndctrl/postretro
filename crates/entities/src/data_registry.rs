@@ -1025,8 +1025,8 @@ impl DataRegistry {
     /// Replace the engine-global descriptor snapshot as one complete commit.
     /// Used by dev hot reload after a staged manifest has validated and its
     /// live refresh plan has applied. Startup may continue to use upsert.
-    /// Duplicate `canonical_name`s are deduped last-write-wins to match
-    /// startup, so this is infallible.
+    /// Duplicate `canonical_name`s are deduped last-write-wins to match startup.
+    /// Callers must validate the final snapshot's life-state name union first.
     pub fn replace_entity_types(&mut self, descriptors: Vec<EntityTypeDescriptor>) {
         self.entities = Self::dedup_entity_type_snapshot(descriptors);
         self.rebuild_life_state_table();

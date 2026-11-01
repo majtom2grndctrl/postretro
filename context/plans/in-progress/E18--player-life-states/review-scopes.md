@@ -1,6 +1,8 @@
-# E18 deferred review dispatch manifest
+# E18 original review dispatch manifest
 
-**STOP: metadata only; review has not started.** Owner requested a pause after workers finish. Do not dispatch until the owner resumes and coordinator confirms readiness (fmt, touched-crate check and focused seam tests). No source diff was read and no findings were produced to prepare this file. No builds, source edits, plan edits, commits or agent spawns were performed.
+**Historical pre-review snapshot. Current coverage is 21/31 complete, with 10 not started. See [review checklist](review-status.md) for current dispatch status. The original pause/inventory text below is retained as history.**
+
+At this snapshot, review had not started. Owner requested a pause after workers finish. Do not dispatch until the owner resumes and coordinator confirms readiness (fmt, touched-crate check and focused seam tests). No source diff was read and no findings were produced to prepare this file. No builds, source edits, plan edits, commits or agent spawns were performed.
 
 Target: entire `codex/player-life-states` feature against base `a953f386f`, including committed Tasks 1–6 and uncommitted/untracked Task 7. Snapshot inventory: **216 tracked files / 14,437 changed lines**, plus **10 untracked files / 2,065 lines** = **226 files / 16,502 lines**. Counts are additions + deletions (untracked counts are full line counts). Refresh status/numstat before dispatch; working tree may change. File names and brief/research/plan supplied boundaries; entry points below are hypotheses for later triage, not source-verified implementation conclusions.
 

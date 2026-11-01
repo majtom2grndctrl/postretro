@@ -62,12 +62,11 @@ pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 /// states can legitimately produce a bigger visible delta than ordinary locomotion.
 pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 
-/// Teleport threshold: a correction at or above this (in metres) is too large to
-/// smooth without a visible rubber-band slide. It is snapped — history and the
-/// presentation offset are cleared and the registry transform stamps prev == current
-/// — so the pawn appears at the authoritative pose immediately. The same floor bounds
-/// the composed presentation offset: a smoothed correction whose sum with the
-/// in-flight remainder reaches it snaps the eye too (history kept).
+/// Ordinary teleport threshold (metres): a correction at or above this snaps,
+/// clearing history and presentation offset and stamping prev == current. The
+/// composed offset reaching this floor also cuts the eye (history kept).
+/// Protected finite life-state glides bypass both magnitude-based cuts;
+/// non-finite offsets and genuine teleport mismatches still cut.
 pub(crate) const TELEPORT_CORRECTION_MIN_M: f32 = 3.0;
 
 /// Fraction of the presentation offset retained per decay step as it decays to
@@ -99,18 +98,18 @@ pub(crate) enum CorrectionClass {
     /// Snapped, not smoothed. Taken at any distance when the post-replay teleport
     /// record (generation, accumulated yaw or last teleporter) differs from the
     /// prediction: that identity change keeps the unacked history, since stamped
-    /// rotation keeps its replay valid. A plain correction at or past
-    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. So does a
-    /// smoothed-class correction whose composition with the in-flight presentation
-    /// offset reaches that floor; it keeps the history, since the reconcile itself
-    /// was ordinary. Every way, reconcile reports a [`LocalTeleportAdoption`] for the
-    /// app's camera hold.
+    /// rotation keeps its replay valid. Outside a protected finite life-state
+    /// glide, a plain correction at or past `TELEPORT_CORRECTION_MIN_M` also
+    /// takes it and clears history. A composed offset reaching that floor cuts
+    /// under the same condition, keeping history. Protected finite life-state
+    /// glides bypass those magnitude cuts; non-finite offsets still cut.
+    /// Reconcile reports a [`LocalTeleportAdoption`] for the app's camera hold.
     Teleport,
-    /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
-    /// correction on a non-dash tick): smoothed like an ordinary correction, but the
-    /// magnitude is logged as out-of-band. Kept distinct so the harness can see the
-    /// engine took the seed-and-smooth path on a correction larger than the ordinary
-    /// cap rather than silently widening `Ordinary`.
+    /// Finite correction outside the ordinary smoothed bands. Magnitude-based
+    /// classification uses this below the teleport floor; a life-state identity
+    /// or revision change also selects it above the floor. The magnitude is
+    /// logged as out-of-band. Kept distinct so the harness can assert smoothing
+    /// without widening `Ordinary`.
     OversizedSmoothed,
 }
 
@@ -507,13 +506,13 @@ impl ClientPrediction {
     /// correction landing before the previous one decayed, and for two in one frame.
     /// Smoothing only — the caller has already snapped the registry.
     ///
-    /// Returns `true` when the composed offset reaches [`TELEPORT_CORRECTION_MIN_M`]:
-    /// too far to glide, so the offset is cleared and the caller cuts the camera, the
-    /// same rule a single teleport-floor correction follows. A teleport-class
-    /// correction, a first-record adoption and a level unload clear the offset
-    /// instead, so nothing composes across them. A non-finite composed offset snaps
-    /// the same way: kept, it would never decay or settle.
-    #[must_use = "a composed offset at the teleport floor snaps; the caller emits the camera cut"]
+    /// Returns `true` when the composed offset reaches [`TELEPORT_CORRECTION_MIN_M`]
+    /// outside a retained finite life-state glide, or is non-finite. The offset
+    /// is then cleared and the caller cuts the camera. A teleport-class correction,
+    /// first-record adoption or level unload clears the offset separately, so
+    /// nothing composes across those resets. A retained life-state glide stays
+    /// smooth above the floor; a non-finite offset always cuts.
+    #[must_use = "check whether offset composition requires a camera cut"]
     #[cfg(test)]
     pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) -> bool {
         self.seed_presentation_offset_with_life_change(correction, false)

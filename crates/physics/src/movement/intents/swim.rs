@@ -37,7 +37,8 @@ pub(crate) fn fluid_jump_input(input: &MovementInput, environment: &ResolvedEnvi
 ///    of both protected layers, the drift layer's current and knockback, are
 ///    discarded, so the jump leaves at exactly the velocity the seam's
 ///    clearance test assumed), the re-entry latch is armed, and the
-///    state leaves to airborne `Normal` with no solid needed.
+///    state leaves airborne with no solid needed, retaining `Crouching`
+///    when the capsule still needs its standing-clearance retry.
 /// 2. Drag: the fluid's viscosity removes a linear fraction of locomotion per
 ///    tick, `max(0, 1 - viscosity * dt)`, on all three axes. It is the only
 ///    drag while swimming; a swimmer touching the pool floor gets no ground
@@ -78,7 +79,7 @@ pub(crate) fn swim_intent(
     // The tick seam leaves swim when the block is gone (a descriptor hot swap);
     // stay total here regardless.
     let Some(swim) = component.swim.as_ref() else {
-        return Some(leave_swim());
+        return Some(leave_swim(component));
     };
     let speed = swim.speed * component.life_speed_scale;
     let accel = swim.accel;
@@ -92,7 +93,7 @@ pub(crate) fn swim_intent(
         component.jump_spent = true;
         component.swim_reentry_latched = true;
         events.jumped = true;
-        return Some(leave_swim());
+        return Some(leave_swim(component));
     }
 
     let drag = (1.0 - environment.viscosity * dt).max(0.0);
@@ -118,11 +119,20 @@ pub(crate) fn swim_intent(
     None
 }
 
-/// `Swim` → `Normal`, momentum unchanged: swim carries no boost layer. Dispatch
-/// folds the drift layer's vertical part into locomotion on the edge.
-pub(crate) fn leave_swim() -> Transition {
+/// Leave `Swim`, momentum unchanged: swim carries no boost layer. A shorter
+/// capsule keeps `Crouching` ownership of the standing-clearance retry even if
+/// forced posture opens after this step. Dispatch folds vertical drift into
+/// locomotion on the edge.
+pub(crate) fn leave_swim(component: &PlayerMovementComponent) -> Transition {
+    let next = if component.capsule.half_height < component.standing_half_height {
+        MovementState::Crouching {
+            eye_current: component.capsule.eye_height,
+        }
+    } else {
+        MovementState::Normal
+    };
     Transition {
-        next: MovementState::Normal,
+        next,
         carry: CarryRule::KEEP_ALL,
     }
 }

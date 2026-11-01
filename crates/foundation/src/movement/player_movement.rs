@@ -378,12 +378,12 @@ pub struct PlayerMovementComponent {
     /// replicated and restored by the reconcile merge like `jump_spent`.
     #[serde(default)]
     pub swim_reentry_latched: bool,
-    /// While set, no vault starts. Caller input, not tick state: set before
-    /// each tick from game state movement never reads (today, that the pawn is
-    /// dead) by the sim's `drop_vault_if_dead`, on host movement and client
-    /// prediction alike. Reconcile replay has no registry, so it keeps the
-    /// value the latest prediction left, and component rebuilds (tuning, hot
-    /// reload) carry it. Neither replicated nor serialized.
+    /// While set, no vault starts. Declared pawns derive it from movement
+    /// abilities at every profile adoption/restamp, including before replay;
+    /// a refused profile also breaks an active vault at that write. Undeclared
+    /// pawns receive the sim's HP-derived bar before forward ticks, and replay
+    /// retains that value. Component rebuilds carry it. Neither replicated nor
+    /// serialized.
     #[serde(skip)]
     pub vault_barred: bool,
     /// Relocation identity and arrival latches survive prediction and replay.

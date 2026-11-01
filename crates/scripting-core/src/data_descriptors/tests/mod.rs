@@ -29,6 +29,7 @@ mod movement_view_feel;
 mod movement_view_pose;
 mod player_events;
 mod reactions;
+mod respawn_args;
 mod sounds;
 mod ui_bridge;
 mod ui_bridge_drains;

@@ -258,8 +258,9 @@ impl TuningPayload {
         self
     }
 
-    /// Whether `other` carries the same pawn-scoped tuning (movement and
-    /// wieldables), whatever its environment. A client keeps its live
+    /// Whether `other` carries the same pawn-scoped tuning (movement,
+    /// wieldables and life-state names/profiles/revision), whatever its
+    /// environment. A client keeps its live
     /// descriptor-derived pawn state across an environment-only change.
     pub fn same_pawn_tuning(&self, other: &Self) -> bool {
         self.movement == other.movement

@@ -1067,8 +1067,9 @@ pub fn client_receive_and_apply(
         // authoritative record this snapshot delivered — merge the movement subset,
         // restore the transform, prune through the host ack, replay the unacked tail,
         // snap the reconciled gameplay state, and compose the correction onto the
-        // decaying presentation offset (or snap on a teleport, or when the composed
-        // offset reaches the teleport floor). The registry-touching orchestration
+        // decaying presentation offset. Genuine teleports and non-finite offsets
+        // cut; the magnitude floor cuts outside a protected finite life-state
+        // glide. The registry-touching orchestration
         // lives in `reconcile`; long-lived prediction/smoothing state lives in
         // `prediction`.
         // Replay runs under the host's installed level gravity; with no payload

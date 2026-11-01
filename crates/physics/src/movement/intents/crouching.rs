@@ -19,26 +19,26 @@ use super::ground_locomotion;
 /// `Normal` (gravity, jump/air-jump, ground/air acceleration, friction, the
 /// airborne cap) with ONE substitution: the omnidirectional horizontal speed
 /// target is the crouch tier `ground.speed.crouch` instead of walk/run (D5).
-/// Jump access is NEVER suppressed (D10) — the grounded/air jump branch and the
-/// `Dash` transition stay available exactly as in `Normal`.
+/// Crouch alone never suppresses jump access (D10). Jump and dash remain
+/// subject to life-state abilities; forced posture also refuses dash entry.
 ///
 /// Beyond locomotion the intent owns three crouch-specific responsibilities:
 ///   - Eye smoothing (D3): `eye_current` eases toward the crouched eye target
 ///     by a framerate-independent exponential approach at `transition_rate` per
 ///     second, written into `component.capsule.eye_height` each tick for the
 ///     camera follow.
-///   - Stand-up (D7): while `crouch_intent` is INACTIVE, sweep the crouched
-///     capsule in the direction standing grows it (up when the entry anchored the
+///   - Stand-up (D7): with posture unforced and `crouch_intent` INACTIVE,
+///     sweep the capsule in the direction standing grows it (up when entry anchored the
 ///     feet, down when it anchored the head) via
 ///     `anchored_standup_clearance_probe`; when CLEAR, resize back to
 ///     standing (apply the center delta to `position` — the feet stay planted,
 ///     the center rises), transition to `Normal` with `KEEP_ALL` (a resize, not
 ///     a velocity reset). When BLOCKED, stay crouched and retry next tick.
-///   - Crouch-jump (D10): when a jump edge fires while `crouch_intent` is STILL
-///     ACTIVE, run the same stand-up probe FIRST — clear headroom ⇒ stand
-///     (resize, shift position) and transition to `Normal`, then apply the jump
-///     this tick; blocked ⇒ apply the jump from the crouched state (lower arc,
-///     crouched capsule retained). The jump is never swallowed.
+///   - Crouch-jump (D10): with posture unforced, when a permitted jump fires
+///     while `crouch_intent` is STILL ACTIVE, run the stand-up probe — clear ⇒
+///     stand (resize, shift position) and transition to `Normal` carrying the
+///     jump; blocked ⇒ keep the crouched capsule and lower arc. The permitted
+///     jump is never swallowed.
 ///
 /// `eye_current` is borrowed in place from the active `Crouching` variant (the
 /// dispatch resolves the component-vs-state borrow once), so the intent advances
@@ -82,8 +82,8 @@ pub(crate) fn crouching_intent(
         crate::movement::knockback::clamp_fall_speed(component);
     }
 
-    // 2. Jump — NEVER suppressed while crouched (D10). A grounded/coyote/buffered
-    // edge or an air-jump edge fires exactly as in `Normal`. The crouch-jump
+    // 2. Jump — crouch itself never suppresses it (D10). Ability-filtered
+    // grounded/coyote/buffered and air edges fire as in `Normal`. The crouch-jump
     // stand-if-clear behavior is resolved AFTER the velocity is authored (below):
     // here we only launch the arc and record that a jump fired this tick.
     let mut jumped_this_tick = false;
@@ -155,17 +155,17 @@ pub(crate) fn crouching_intent(
     }
 
     // 5. Stand-up decision. The `Dash` transition stays available from
-    // `Crouching` (D10) — check it first so a dash press exits crouch into the
-    // dash burst regardless of crouch/jump state.
+    // `Crouching` (D10), subject to life-state ability/posture gates. Check
+    // it first so a permitted dash takes precedence over ordinary stand-up.
     if input.dash_pressed
         && let Some(transition) = try_enter_dash(component, input)
     {
         return Some(transition);
     }
 
-    // Crouch-jump (D10): a jump fired this tick while `crouch_intent` is STILL
-    // active. Probe the crouched capsule in the direction standing grows it (the
-    // entry's anchor) — clear ⇒ stand (resize) and exit to `Normal` carrying the
+    // Crouch-jump (D10): posture is unforced and a permitted jump fired this
+    // tick while `crouch_intent` is STILL active. Probe the capsule in the
+    // direction standing grows it (the entry's anchor) — clear ⇒ stand (resize) and exit to `Normal` carrying the
     // jump just launched; blocked ⇒ stay crouched, the jump still applies (lower
     // arc). Either way the jump is never swallowed.
     if jumped_this_tick
@@ -188,8 +188,8 @@ pub(crate) fn crouching_intent(
         return None;
     }
 
-    // Stand-up on release (D7): `crouch_intent` inactive. Probe the crouched
-    // capsule in the direction standing grows it (the entry's anchor: up for
+    // Stand-up on release (D7): posture unforced and `crouch_intent` inactive.
+    // Probe the capsule in the direction standing grows it (entry's anchor: up for
     // feet, down for head); CLEAR ⇒ resize to standing and exit to `Normal`;
     // BLOCKED ⇒ stay crouched and retry next tick.
     if !input.crouch_intent

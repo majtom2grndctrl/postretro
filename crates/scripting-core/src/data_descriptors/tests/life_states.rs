@@ -208,3 +208,113 @@ fn life_state_parser_twins_reject_nonfinite_numbers_before_json_conversion() {
         );
     }
 }
+
+// Regression: explicit JS undefined optional fields became null and rejected
+// profiles that Luau nil loaded with defaults.
+#[test]
+fn life_state_parser_twins_default_undefined_and_nil_optional_schema_fields() {
+    for (js, lua) in [
+        (
+            "{initial:'alive',states:{alive:{movement:undefined}},rejoin:undefined}",
+            "{initial='alive',states={alive={movement=nil}},rejoin=nil}",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{speedScale:undefined,abilities:undefined,posture:undefined},look:undefined,fire:undefined,switchWeapon:undefined,reload:undefined,use:undefined,touch:undefined,occupancy:undefined,damageable:undefined}}}",
+            "{initial='alive',states={alive={movement={speedScale=nil,abilities=nil,posture=nil},look=nil,fire=nil,switchWeapon=nil,reload=nil,use=nil,touch=nil,occupancy=nil,damageable=nil}}}",
+        ),
+    ] {
+        let (js, lua) = parse(js, lua, true);
+        let js = js.unwrap().life_states.unwrap();
+        assert_eq!(js, lua.unwrap().life_states.unwrap());
+        assert_eq!(
+            js.initial_state().1,
+            &postretro_foundation::LifeStateProfile::default()
+        );
+        assert!(js.rejoin.is_empty());
+    }
+}
+
+#[test]
+fn life_state_parser_twins_keep_required_fields_and_profile_shapes_invalid() {
+    for (js, lua, path) in [
+        (
+            "{initial:undefined,states:{alive:{}}}",
+            "{initial=nil,states={alive={}}}",
+            "initial",
+        ),
+        (
+            "{initial:'alive',states:undefined}",
+            "{initial='alive',states=nil}",
+            "states",
+        ),
+        (
+            "{initial:'alive',states:{alive:42}}",
+            "{initial='alive',states={alive=42}}",
+            "states.alive",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:false}}}",
+            "{initial='alive',states={alive={movement=false}}}",
+            "states.alive.movement",
+        ),
+    ] {
+        let (js, lua) = parse(js, lua, true);
+        for error in [js.unwrap_err(), lua.unwrap_err()] {
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("components.lifeStates.{path}")),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn life_state_parser_preserves_unknown_undefined_keys_and_explicit_null_errors() {
+    for (block, path) in [
+        ("{initial:'alive',states:{alive:{}},typo:undefined}", "typo"),
+        ("{initial:'alive',states:{alive:undefined}}", "states.alive"),
+        (
+            "{initial:'alive',states:{alive:{}},rejoin:{alive:undefined}}",
+            "rejoin.alive",
+        ),
+        (
+            "{initial:'alive',states:{alive:{typo:undefined}}}",
+            "states.alive.typo",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{typo:undefined}}}}",
+            "states.alive.movement.typo",
+        ),
+        ("{initial:'alive',states:{alive:{}},rejoin:null}", "rejoin"),
+        (
+            "{initial:'alive',states:{alive:{movement:null}}}",
+            "states.alive.movement",
+        ),
+        (
+            "{initial:'alive',states:{alive:{fire:null}}}",
+            "states.alive.fire",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{speedScale:null}}}}",
+            "states.alive.movement.speedScale",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{abilities:null}}}}",
+            "states.alive.movement.abilities",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{posture:null}}}}",
+            "states.alive.movement.posture",
+        ),
+        ("{initial:'alive',states:{alive:[]}}", "states.alive"),
+    ] {
+        let (js, _) = parse(block, "{initial='alive',states={alive={}}}", true);
+        let error = js.unwrap_err().to_string();
+        assert!(
+            error.contains(&format!("components.lifeStates.{path}")),
+            "{error}"
+        );
+    }
+}

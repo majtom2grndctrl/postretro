@@ -629,18 +629,32 @@ impl ScriptRuntime {
             };
 
             let incoming_descriptors = next_descriptors.clone();
-            if defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
-                // Preserve the unmodified, latest snapshot. A subsequent staged
-                // reload replaces it, so the next level sees the final authored
-                // presentation asset additions, removals, and path changes.
-                self.deferred_mesh_descriptors = Some(incoming_descriptors);
-            } else {
-                // A later reload can revert every previously deferred presentation
-                // change. Its snapshot is now safe for the active level, so do
-                // not let an older deferred snapshot override it at install.
-                self.deferred_mesh_descriptors = None;
+            let deferred =
+                defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors);
+            // Presentation retention can add removed descriptors. Validate the
+            // exact active union and the separate next-level snapshot before
+            // changing deferred state, live components, or stores.
+            let names_valid = super::staged_preflight::validate_life_state_names(
+                &incoming_descriptors,
+                "next-level descriptor snapshot",
+            )
+            .and_then(|()| {
+                super::staged_preflight::validate_life_state_names(
+                    &next_descriptors,
+                    "active-level descriptor snapshot (including retained presentation descriptors)",
+                )
+            });
+            if let Err(reason) = names_valid {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
             }
-            let refresh_plan = {
+            let mut refresh_plan = {
                 let registry = ctx.registry.borrow();
                 crate::refresh_plan::plan_descriptor_refresh(
                     &old_descriptors,
@@ -648,6 +662,22 @@ impl ScriptRuntime {
                     &registry,
                 )
             };
+            if crate::group_resolution::group_commands_apply_here(ctx) {
+                if let Err(reason) = super::staged_preflight::plan_retained_crouch_support(
+                    &next_descriptors,
+                    &ctx.registry.borrow(),
+                    &mut refresh_plan,
+                ) {
+                    log::error!(
+                        "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                        result.generation,
+                    );
+                    return StagedManifestCommitOutcome::Rejected {
+                        generation: result.generation,
+                        reason,
+                    };
+                }
+            }
             for diagnostic in &refresh_plan.diagnostics {
                 log::debug!(
                     "[Scripting] descriptor refresh diagnostic for entity {} `{}`: {}",
@@ -678,6 +708,10 @@ impl ScriptRuntime {
                 }
             };
 
+            // Keep the authored next-level snapshot only after every preflight
+            // and the live refresh have succeeded. A reverted reload
+            // clears any older deferred snapshot.
+            self.deferred_mesh_descriptors = deferred.then_some(incoming_descriptors);
             ctx.slot_table.borrow_mut().apply_reconcile_plan(store_plan);
             if self.cfg.skip_identity_enforcement {
                 self.store_identity = None;

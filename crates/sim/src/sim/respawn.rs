@@ -1,4 +1,5 @@
 //! Request-driven relocation before command admission; state names resolve at drain.
+//! See: context/lib/scripting.md §12 · context/lib/movement.md §6.
 use glam::{EulerRot, Quat, Vec3};
 use postretro_entities::components::health::{HealthComponent, set_health_absolute};
 use postretro_entities::provenance::DescriptorProvenance;

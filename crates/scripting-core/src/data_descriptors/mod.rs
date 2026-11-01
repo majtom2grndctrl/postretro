@@ -69,6 +69,7 @@ mod life_states;
 mod loading_manifest;
 mod movement_sounds;
 mod player_events;
+mod reaction_args;
 mod runtime_manifest;
 mod swim_block;
 mod trigger_events;

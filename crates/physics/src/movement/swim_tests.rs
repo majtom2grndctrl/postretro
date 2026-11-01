@@ -2154,3 +2154,126 @@ fn life_state_forced_crouch_swims_with_scaled_wish_and_keeps_its_capsule() {
     );
     assert!(pawn.velocity.z.abs() <= descriptor.swim.as_ref().unwrap().speed * 0.25 + 0.01);
 }
+
+/// Run a forced-crouch fluid jump, then the post-movement profile recovery
+/// before another movement tick can restore standing geometry.
+fn fluid_jump_then_recover(world: &CollisionWorld) -> (PlayerMovementComponent, Vec3) {
+    use postretro_foundation::{
+        LifeStateMovementProfile, LifeStatePosture, LifeStateProfile, enter_life_state,
+    };
+    let descriptor = full_descriptor();
+    let mut pawn = swimming(&descriptor);
+    pawn.knockback.air_drag = 0.0;
+    enter_life_state(
+        &mut pawn,
+        1,
+        &LifeStateProfile {
+            movement: LifeStateMovementProfile {
+                posture: LifeStatePosture::Crouch,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        7,
+    );
+    let volumes = open_water(1.0);
+    let view = water_view(&volumes);
+    // Establish the forced swimming capsule through the real posture seam.
+    let mut position = Vec3::new(0.0, -10.0, 0.0);
+    step(
+        &mut pawn,
+        &CollisionWorld::new(),
+        view,
+        &idle_input(),
+        &mut position,
+    );
+    assert_eq!(pawn.movement_state.kind(), MovementStateKind::Swim);
+    assert!((pawn.capsule.half_height - descriptor.crouch.unwrap().half_height).abs() < POS_EPS);
+    // At the surface the crouched feet clear y=0 while standing growth about
+    // the airborne head would cross it. Only the blocked test supplies a floor.
+    position = Vec3::new(0.0, 0.9, 0.0);
+    let knockback = Vec3::new(2.0, -1.0, 0.0);
+    let push = Vec3::new(0.0, -2.0, 3.0);
+    pawn.knockback_velocity = knockback;
+    pawn.push_velocity = push;
+    pawn.velocity = knockback + push;
+    let events = step(&mut pawn, world, view, &jump(), &mut position);
+    assert!(events.jumped);
+    assert!(pawn.jump_spent);
+    assert!(pawn.swim_reentry_latched);
+    assert!(!pawn.is_grounded());
+    assert!((pawn.velocity.y - 6.5).abs() < VEL_EPS);
+    assert!((pawn.knockback_velocity - Vec3::new(2.0, 0.0, 0.0)).length() < VEL_EPS);
+    // The jump leaves the swimming medium before push integration; horizontal
+    // protected layers survive once, with no dry airborne drag.
+    let expected_push = Vec3::new(0.0, 0.0, 3.0);
+    assert!((pawn.push_velocity - expected_push).length() < VEL_EPS);
+    assert!((pawn.velocity.x - 2.0).abs() < VEL_EPS);
+    assert!((pawn.velocity.z - 3.0).abs() < VEL_EPS);
+    assert_eq!(
+        events.state_edges,
+        [edge(MovementStateKind::Swim, MovementStateKind::Crouch)]
+    );
+    assert_eq!(pawn.movement_state.kind(), MovementStateKind::Crouch);
+    // Player-event recovery happens after movement in this same tick.
+    enter_life_state(&mut pawn, 0, &LifeStateProfile::default(), 7);
+    (pawn, position)
+}
+
+// Regression: fluid jump returned Normal with a crouched capsule, losing the
+// standing-clearance retry when forced posture opened after the movement step.
+#[test]
+fn life_state_fluid_jump_recovery_stands_on_the_next_tick_with_clearance() {
+    let world = CollisionWorld::new();
+    let (mut pawn, mut position) = fluid_jump_then_recover(&world);
+    let volumes = open_water(1.0);
+    let events = step(
+        &mut pawn,
+        &world,
+        water_view(&volumes),
+        &idle_input(),
+        &mut position,
+    );
+    assert_eq!(pawn.movement_state, MovementState::Normal);
+    assert!((pawn.capsule.half_height - pawn.standing_half_height).abs() < POS_EPS);
+    assert!((pawn.capsule.eye_height - pawn.standing_eye_height).abs() < POS_EPS);
+    assert!((pawn.velocity.y - (6.5 + LEVEL_GRAVITY * DT)).abs() < VEL_EPS);
+    assert!(!events.jumped);
+    assert_eq!(
+        events.state_edges,
+        [edge(MovementStateKind::Crouch, MovementStateKind::Normal)]
+    );
+}
+
+// Regression: the posture-aware fluid-jump exit must retain clearance retry
+// ownership across recovery even when the first standing growth is blocked.
+#[test]
+fn life_state_fluid_jump_recovery_retries_blocked_standing_until_clear() {
+    let blocked = floor_world();
+    let (mut pawn, mut position) = fluid_jump_then_recover(&blocked);
+    let volumes = open_water(1.0);
+    let view = water_view(&volumes);
+    let crouched = pawn.capsule.half_height;
+    let events = step(&mut pawn, &blocked, view, &idle_input(), &mut position);
+    assert_eq!(pawn.movement_state.kind(), MovementStateKind::Crouch);
+    assert!((pawn.capsule.half_height - crouched).abs() < POS_EPS);
+    assert!(events.state_edges.is_empty());
+    assert!(!events.jumped);
+    // Move into clear space: the same released input retries without a new
+    // crouch press.
+    let events = step(
+        &mut pawn,
+        &CollisionWorld::new(),
+        view,
+        &idle_input(),
+        &mut position,
+    );
+    assert_eq!(pawn.movement_state, MovementState::Normal);
+    assert!((pawn.capsule.half_height - pawn.standing_half_height).abs() < POS_EPS);
+    assert!((pawn.capsule.eye_height - pawn.standing_eye_height).abs() < POS_EPS);
+    assert!(!events.jumped);
+    assert_eq!(
+        events.state_edges,
+        [edge(MovementStateKind::Crouch, MovementStateKind::Normal)]
+    );
+}

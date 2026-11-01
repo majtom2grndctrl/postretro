@@ -444,11 +444,11 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    /// Publish the local pawn's `player.swimming` and `player.immersion`
-    /// through the shared per-pawn lookup. A slot whose source the pawn lacks
-    /// (no pawn, no movement or immersion component) keeps its last value.
-    /// Names are local presentation values; connected clients resolve through
-    /// the host table history before entering this publisher.
+    /// Publish the local pawn's life-state name; the host also publishes its
+    /// gameplay-tick elapsed milliseconds. Undeclared or unknown states
+    /// publish `""`; a missing pawn or movement component leaves prior slots
+    /// unchanged. Connected clients pass the name resolved from the matching
+    /// host table; their elapsed value comes from the presentation clock.
     fn publish_life_state(&mut self, is_connected_client: bool, client_name: Option<&str>) {
         let (name, elapsed) = {
             let registry = self.ctx.registry.borrow();
@@ -490,6 +490,8 @@ impl PlayerHudStatePublisher {
     }
 
     fn publish_swim_values(&mut self) {
+        // Both slots use the shared per-pawn lookup. Missing pawn, movement or
+        // immersion data leaves the prior HUD value unchanged.
         let (swimming, immersion) = {
             let registry = self.ctx.registry.borrow();
             let Some(pawn) = registry.local_player_movement_pawn() else {

@@ -154,9 +154,10 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     // component per entity_model.md ("a player by virtue of carrying
     // PlayerMovement").
     for id in dead {
-        // Pawns and corpses persist at zero HP. Stop their future shots now,
-        // before the one-shot death-report latch, rather than waiting for a
-        // later authored despawn. Holstered instances share this lifecycle.
+        // Cancel activations only when the shared fire gate refuses this pawn.
+        // Undeclared zero-HP pawns fail its HP fallback; declared pawns follow
+        // their fire capability, so fire-enabled pawns can keep firing or
+        // charging at zero HP across repeated sweeps.
         if !crate::weapon::pawn_gate::pawn_can_fire(registry, id) {
             cancel_owned_weapon_activations(registry, id);
         }

@@ -50,4 +50,4 @@ external visual proof (AC17/AC18).
 | O41 | `life_state_o41_actual_reload_remaps_removed_down_before_digest_harvest_and_initial_rejoin` | PASS, Task 6 |
 | O42 | `o42_same_revision_profile_removal_keeps_stamps_until_host_remap` | PASS, Task 1 |
 | O43 | `life_state_vault_event_write_clears_t_record_and_next_snapshot_matches_baseline` | PASS, Task 2 |
-| O44 | `respawn_tick_start_resets_crouched_geometry_motion_budgets_and_all_presented_alphas`; O10/O28 observer cut | PASS, Task 5 |
+| O44 | `respawn_tick_start_resets_crouched_geometry_motion_budgets_and_all_presented_alphas`; O10/O28 observer cut | PARTIAL / unresolved B03-F1: registry alpha assertions pass, but omit the production delayed host presenter; immediate host-display guarantee not established |

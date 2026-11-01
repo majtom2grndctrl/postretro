@@ -201,3 +201,60 @@ fn life_state_dash_boost_and_crouch_wish_read_the_same_scale() {
     );
     assert!((horiz_speed(&pawn) - descriptor.ground.speed.crouch * 0.25).abs() < 0.01);
 }
+
+// Regression: forcing crouch during a vault copied protected motion into the
+// peeled path base, then recomposed knockback and push a second time.
+#[test]
+fn life_state_forced_crouch_breaks_vault_without_doubling_protected_velocity() {
+    let mut descriptor = crouch_descriptor();
+    descriptor.vault = Some(super::super::vault_tests::vault_params(Default::default()));
+    descriptor.knockback.air_drag = 0.0;
+    let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
+    pawn.movement_state = MovementState::Vault {
+        elapsed_ms: 48.0,
+        target: Vec3::new(1.0, 12.0, 0.0),
+        start_offset: Vec3::new(-0.8, -0.7, 0.0),
+        mover: None,
+        entry_speed: 4.0,
+    };
+    let knockback = Vec3::new(3.0, 0.0, -2.0);
+    let push = Vec3::new(-1.0, 0.0, 4.0);
+    pawn.knockback_velocity = knockback;
+    pawn.push_velocity = push;
+    pawn.velocity = Vec3::new(8.0, 9.0, 5.0) + knockback + push;
+    pawn.swim_reentry_latched = true;
+    enter_life_state(
+        &mut pawn,
+        1,
+        &profile(1.0, true, LifeStatePosture::Crouch),
+        2,
+    );
+    assert!(matches!(pawn.movement_state, MovementState::Vault { .. }));
+    assert!(!pawn.vault_barred);
+
+    let position = Vec3::new(0.0, 10.0, 0.0);
+    let (next, events) = tick(
+        &mut pawn,
+        &idle_input(),
+        &CollisionWorld::new(),
+        ENV,
+        DT,
+        position,
+    );
+    assert!(is_crouching(&pawn));
+    assert!((pawn.capsule.half_height - descriptor.crouch.unwrap().half_height).abs() < POS_EPS);
+    assert!((pawn.knockback_velocity - knockback).length() < VEL_EPS);
+    assert!((pawn.push_velocity - push).length() < VEL_EPS);
+    let expected = knockback + push + Vec3::Y * GRAVITY * DT;
+    assert!((pawn.velocity - expected).length() < VEL_EPS);
+    assert!((next.x - position.x - expected.x * DT).abs() < POS_EPS);
+    assert!((next.z - position.z - expected.z * DT).abs() < POS_EPS);
+    assert!(!pawn.swim_reentry_latched);
+    assert_eq!(
+        events.state_edges,
+        [MovementStateEdge {
+            from: MovementStateKind::Vault,
+            to: MovementStateKind::Crouch,
+        }]
+    );
+}

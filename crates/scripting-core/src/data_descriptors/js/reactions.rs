@@ -1,6 +1,7 @@
 // Data-context descriptors: JS reaction/crossing converters.
 // See: context/lib/scripting.md
 
+use super::super::reaction_args::reaction_args_from_js;
 use super::super::*;
 
 pub fn named_reaction_from_js<'js>(
@@ -171,7 +172,7 @@ pub fn primitive_descriptor_from_js<'js>(
         if raw.is_null() || raw.is_undefined() {
             nullish_primitive_args(&primitive)
         } else {
-            conv::js_to_json(ctx, raw).map_err(js_err)?
+            reaction_args_from_js(ctx, &primitive, raw)?
         }
     } else {
         nullish_primitive_args(&primitive)
@@ -264,7 +265,7 @@ pub fn sequence_steps_from_js<'js>(
         }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
-            conv::js_to_json(ctx, raw).map_err(js_err)?
+            reaction_args_from_js(ctx, &primitive, raw)?
         } else {
             serde_json::Value::Null
         };

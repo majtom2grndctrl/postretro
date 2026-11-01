@@ -113,17 +113,16 @@ pub fn run_host_movement_tick(
     events_out
 }
 
-/// Settle vault state on `pawn`'s liveness before its movement tick. Movement
-/// itself never reads health; host movement and client prediction both call
-/// this, so the two take the same path.
+/// Settle vault state from the movement component's current capability stamp
+/// before its movement tick. Host movement and client prediction call this at
+/// that same point. A declared life-state profile owns vault admission, even
+/// at zero HP; only an undeclared pawn falls back to `is_quiescent` for its
+/// vault bar.
 ///
-/// A pawn dead or committed to removal leaves `Vault` through
-/// `PlayerMovementComponent::break_off_vault`: its path velocity is dropped, so
-/// it falls off the ledge path under gravity instead of finishing the climb or
-/// being thrown on by the rise. It is also barred from starting a vault this
-/// tick (`vault_barred`), or a dead pawn pressing into a ledge would re-enter
-/// `Vault` on the same tick, every tick. No state edge is emitted: death owns
-/// the moment, not `vault_ended`.
+/// When barred, `break_off_vault` drops path velocity so the pawn falls under
+/// gravity instead of finishing the climb. The bar also prevents vault entry
+/// during this tick. Breaking off emits no `vault_ended` edge: death, a
+/// life-state transition, or removal owns that moment.
 pub fn drop_vault_if_dead(
     registry: &EntityRegistry,
     pawn: EntityId,

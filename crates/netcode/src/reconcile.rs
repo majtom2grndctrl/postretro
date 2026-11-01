@@ -50,10 +50,12 @@ use postretro_foundation::PlayerMovementComponent;
 ///    compose a smoothed correction onto the in-flight presentation offset; for a
 ///    teleport, clear the offset, report a [`LocalTeleportAdoption`], and clear
 ///    history only for a plain teleport-floor correction (an identity change keeps
-///    it). A composed offset at or past the teleport floor snaps as well: offset
-///    cleared, an eye-cut-only adoption reported, history kept, and the class
-///    returned is [`CorrectionClass::Teleport`]. The newly armed pawn's first merged
-///    record skips this: it adopts silently and clears the offset.
+///    it). Outside a protected finite life-state glide, a composed offset at or
+///    past the teleport floor also clears the offset, reports an eye-only cut,
+///    keeps history and returns [`CorrectionClass::Teleport`]. Life-state glides
+///    remain smoothed above that floor; non-finite offsets and genuine teleport
+///    mismatches still cut. The newly armed pawn's first merged record adopts
+///    silently and clears the offset.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn reconcile_local_pawn(

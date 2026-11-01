@@ -1,5 +1,6 @@
 //! Revision-addressed host life profiles. Control and snapshots can arrive in
 //! either order; a state id is meaningful only under its own installed table.
+//! See: context/lib/networking.md §What gates, and what replicates instead.
 use std::collections::VecDeque;
 
 use postretro_combat_model::TuningPayload;

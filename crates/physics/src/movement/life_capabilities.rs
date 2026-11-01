@@ -16,8 +16,8 @@ pub(super) fn forced_crouch(component: &PlayerMovementComponent) -> bool {
     component.life_posture == LifeStatePosture::Crouch
 }
 
-/// Consume refused ability inputs rather than banking a buffered jump or a
-/// crouch toggle for the first tick after the capability opens.
+/// Suppress refused ability inputs for this tick and clear the jump buffer.
+/// The persistent crouch-toggle preference belongs to the input owner.
 pub(super) fn input(
     component: &mut PlayerMovementComponent,
     input: &MovementInput,
@@ -53,7 +53,13 @@ pub(super) fn posture(
             MovementState::Sliding { eye_current, .. } => {
                 component.movement_state = MovementState::Crouching { eye_current };
             }
-            MovementState::Vault { .. } => component.break_off_vault(),
+            MovementState::Vault { .. } => {
+                component.break_off_vault();
+                // The helper expects between-tick total velocity. This tick
+                // already peeled both protected layers; discard the path base
+                // here and let the normal recomposition add those layers once.
+                component.velocity = Vec3::ZERO;
+            }
             _ => {}
         }
     }

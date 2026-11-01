@@ -742,3 +742,97 @@ fn respawn_target_posture_keeps_spawn_feet_and_drops_active_dash_or_vault() {
 
 #[path = "respawn_boundary_tests.rs"]
 mod boundaries;
+
+// Regression: VM NaN/infinities failed load before AC13's drain normalization.
+#[test]
+fn respawn_true_vm_nonfinite_health_warns_once_at_drain_restores_max_and_rearms_death() {
+    use postretro_entities::ReactionDescriptor;
+    use postretro_scripting_core::data_descriptors::{
+        named_reaction_from_js, named_reaction_from_lua,
+    };
+    use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
+    use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
+
+    for (js_number, lua_number) in [
+        ("NaN", "0/0"),
+        ("Infinity", "math.huge"),
+        ("-Infinity", "-math.huge"),
+    ] {
+        for sequence in [false, true] {
+            let js_command =
+                format!("{{primitive:'respawn',kind:'player',args:{{health:{js_number}}}}}");
+            let lua_command =
+                format!("{{primitive='respawn',kind='player',args={{health={lua_number}}}}}");
+            let js_source = if sequence {
+                format!("({{name:'restore',sequence:[{js_command}]}})")
+            } else {
+                format!("({{name:'restore',...{js_command}}})")
+            };
+            let lua_source = if sequence {
+                format!("return {{name='restore',sequence={{{lua_command}}}}}")
+            } else {
+                format!("local r={lua_command}; r.name='restore'; return r")
+            };
+            let runtime = rquickjs::Runtime::new().unwrap();
+            let context = rquickjs::Context::full(&runtime).unwrap();
+            let js = context.with(|ctx| {
+                let value = ctx.eval(js_source).unwrap();
+                named_reaction_from_js(&ctx, value).unwrap()
+            });
+            let lua = mlua::Lua::new();
+            let value = lua.load(&lua_source).eval().unwrap();
+            let lua = named_reaction_from_lua(value).unwrap();
+            for parsed in [js, lua] {
+                let logs = LogCapture::start();
+                let rig = Rig::new();
+                let (pawn, _) = rig.spawn(0, Vec3::new(60.0, 1.2, 0.0), true);
+                let mut health = rig.health(pawn);
+                health.current = 0.0;
+                health.death_handled = true;
+                rig.ctx
+                    .registry
+                    .borrow_mut()
+                    .set_component(pawn, health)
+                    .unwrap();
+                match parsed.descriptor {
+                    ReactionDescriptor::Primitive(body) => {
+                        let mut registry = ReactionPrimitiveRegistry::new();
+                        crate::respawn_commands::register_respawn_reaction_primitives(
+                            &mut registry,
+                            rig.ctx.clone(),
+                        );
+                        registry.get("respawn").unwrap()(
+                            &mut rig.ctx.registry.borrow_mut(),
+                            &[pawn],
+                            &body.args,
+                        )
+                        .unwrap();
+                    }
+                    ReactionDescriptor::Sequence(steps) => {
+                        let mut registry = SequencedPrimitiveRegistry::new();
+                        crate::respawn_commands::register_sequenced_respawn_primitives(
+                            &mut registry,
+                            rig.ctx.clone(),
+                        );
+                        registry.get("respawn").unwrap()(pawn, &steps[0].args).unwrap();
+                    }
+                    other => panic!("unexpected respawn descriptor: {other:?}"),
+                }
+                assert!(rig.health(pawn).current.abs() < EPS);
+                logs.assert_not_logged(log::Level::Warn, "invalid health");
+                let _ = rig.start(|_| None);
+                assert!((rig.health(pawn).current - rig.health(pawn).max).abs() < EPS);
+                assert!(!rig.health(pawn).death_handled);
+                assert!(rig.ctx.pending_respawns.borrow().is_empty());
+                logs.assert_logged_once(log::Level::Warn, "invalid health");
+                set_health_absolute(&mut rig.ctx.registry.borrow_mut(), pawn, 0.0);
+                assert!(
+                    rig.tick(&sim_command(false, false), &[])
+                        .death
+                        .iter()
+                        .any(|event| event == "playerDied")
+                );
+            }
+        }
+    }
+}

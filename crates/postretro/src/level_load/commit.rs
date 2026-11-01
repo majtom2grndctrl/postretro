@@ -1,9 +1,57 @@
-//! What a level load's commit reports: the set it published, and every GPU
-//! object it created on the main thread, by counted fallback.
-//! See: context/plans/in-progress/level-load-pipeline/index.md (Commit holds only main-pinned work, Off the main thread)
+//! What a level load's commit takes and reports: a ready bundle, checked or
+//! not, and the set it published with every GPU object it created on the
+//! main thread, by counted fallback.
+//! See: context/plans/in-progress/level-load-pipeline/index.md (Commit holds only main-pinned work, Off the main thread, One pipeline, two commit orders)
 
+use std::path::PathBuf;
+
+use postretro_level_loader::LevelWorld;
+
+use super::{LevelBundle, LevelTiers, PreparedPresentation};
+use crate::collision::CollisionWorld;
 use crate::render::{LevelSetId, ModelCacheCommit};
+use crate::session::level_streaming::PreparedLevelStreaming;
 use postretro_renderer::GpuCreationCounts;
+
+/// A ready bundle on its way into the commit. Both variants are boxed: each
+/// carries a whole level.
+pub(crate) enum CommitBundle {
+    /// Its checks run first, in the commit: the loading-screen order.
+    Unchecked(Box<LevelBundle>),
+    /// Its checks already passed: the beside order runs them before it
+    /// releases the running level, so a check that fails leaves that level
+    /// running.
+    Checked(Box<CheckedLevelBundle>),
+}
+
+impl From<LevelBundle> for CommitBundle {
+    fn from(bundle: LevelBundle) -> Self {
+        Self::Unchecked(Box::new(bundle))
+    }
+}
+
+impl From<CheckedLevelBundle> for CommitBundle {
+    fn from(bundle: CheckedLevelBundle) -> Self {
+        Self::Checked(Box::new(bundle))
+    }
+}
+
+/// A bundle whose commit checks passed: what the commit installs, with what
+/// the checks built for it in place of the bundle's set and streaming data.
+/// Past the checks the commit cannot fail.
+pub(crate) struct CheckedLevelBundle {
+    pub(crate) world: LevelWorld,
+    pub(crate) collision: CollisionWorld,
+    pub(crate) presentation: PreparedPresentation,
+    pub(crate) tiers: LevelTiers,
+    pub(crate) prm_cache_root: PathBuf,
+    /// The set to publish, resident and unpublished; `None` for a
+    /// renderer-less commit.
+    pub(crate) set: Option<LevelSetId>,
+    /// The level's streaming sessions, built against that set's residency
+    /// snapshot; `None` for a renderer-less commit.
+    pub(crate) streaming: Option<PreparedLevelStreaming>,
+}
 
 /// One commit's report. The commit creates no GPU object of its own; what
 /// it creates belongs to one of the counted fallbacks here.
@@ -28,13 +76,15 @@ pub(crate) struct LevelCommitReport {
     pub(crate) model_miss_created: GpuCreationCounts,
     /// Distinct models the load predicted and built that the real sweep
     /// does not draw, each released from the published set (creating
-    /// nothing).
+    /// nothing); the cache sweep below frees an entry so released once
+    /// nothing else references it.
     pub(crate) model_over_predictions: usize,
-    /// Cache entries that release freed: nothing else referenced them.
-    pub(crate) model_over_prediction_freed: usize,
     /// Sprite-collection registration: a named exception the commit keeps.
     pub(crate) sprite_created: GpuCreationCounts,
-    /// The model cache step after the publish.
+    /// The model cache step: the set's offers entered after the publish
+    /// (`inserted`), then one sweep after the model install (`freed`, every
+    /// entry nothing referenced: a released level's, an over-prediction's),
+    /// and what the cache held after (`retained`).
     pub(crate) model_cache: Option<ModelCacheCommit>,
 }
 

@@ -603,6 +603,32 @@ fn queued_load_requests_coalesce_before_lifecycle_drain() {
 }
 
 #[test]
+fn queued_unload_after_a_load_keeps_the_trailing_unload() {
+    let mut app = test_app();
+
+    app.enqueue_level_request(LevelRequest::Unload);
+    app.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog("x".to_string())));
+    app.enqueue_level_request(LevelRequest::Unload);
+
+    assert_eq!(
+        app.level_requests,
+        VecDeque::from([
+            LevelRequest::Unload,
+            LevelRequest::Load(LevelSource::Catalog("x".to_string())),
+            LevelRequest::Unload,
+        ]),
+        "the drain must end in Frontend, not install the load",
+    );
+
+    app.enqueue_level_request(LevelRequest::Unload);
+    assert_eq!(
+        app.level_requests.len(),
+        3,
+        "a repeat of the last queued unload is redundant",
+    );
+}
+
+#[test]
 fn relevel_does_not_restart_an_active_or_already_selected_catalog_load() {
     let mut app = test_app();
     script_ctx(&app)

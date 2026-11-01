@@ -1,21 +1,18 @@
-// Off-main world-texture upload against the main-thread install oracle.
+// World-texture and one-triangle level fixtures shared by the renderer's GPU
+// tests: baked `.prm` sidecars and the smallest installable level. The
+// off-main textures part is proved against the oracle in `level_build_tests`.
 // See: context/lib/testing_guide.md §3 (GPU tests) · context/lib/boot_sequence.md §2
 
 use super::*;
-use crate::compute_cull::IndirectDrawCommand;
-use crate::render::gpu_test_harness::offscreen_renderer_or_skip;
-use crate::render::upload_thread::tests::wait_for;
-use crate::render::{ClearColor, LevelGeometry, LevelGeometryShStorage, ShSampleRegionSets};
-use glam::{Mat4, Vec3};
+use crate::render::{LevelGeometry, LevelGeometryShStorage};
+use glam::Vec3;
 use postretro_level_format::cell_draw_index::{CellDrawIndexSection, Span};
 use postretro_level_format::prm::{
     PrmFile, PrmFormat, PrmHeader, PrmSlot, PrmSlots, STAGE_VERSION, cache_filename_for_key,
     expected_level_count,
 };
-use postretro_level_loader::{CellData, ShDrainBatch};
-use postretro_render_cpu::texture_prep::prepare_world_textures;
+use postretro_level_loader::CellData;
 use postretro_render_data::geometry::{BVH_NODE_FLAG_LEAF, BvhLeaf, BvhNode, BvhTree, WorldVertex};
-use postretro_visibility::{CameraCullVisibility, VisibilityPath, VisibleCells};
 
 /// A full mip chain of `format` with distinct bytes per level and texel.
 pub(in crate::render) fn chain(format: PrmFormat, width: u16, height: u16, seed: u8) -> PrmSlot {
@@ -68,140 +65,6 @@ pub(in crate::render) fn write_prm(root: &Path, key: [u8; 32], slots: [Option<Pr
         bytes,
     )
     .unwrap();
-}
-
-/// Every resource-shaping property of the staged materials (else the active
-/// level's).
-fn summary(renderer: &Renderer) -> Vec<String> {
-    let full = renderer.full();
-    let (loaded, bind_groups) = match (&full.pending_textures, &full.level) {
-        (Some(pending), _) => (&pending.loaded_textures, pending.gpu_textures.len()),
-        (None, Some(level)) => (&level.loaded_textures, level.gpu_textures.len()),
-        (None, None) => panic!("no staged or installed materials"),
-    };
-    let describe = |texture: &wgpu::Texture| {
-        format!(
-            "{}x{} {:?} mips={}",
-            texture.width(),
-            texture.height(),
-            texture.format(),
-            texture.mip_level_count()
-        )
-    };
-    let mut rows: Vec<String> = loaded
-        .iter()
-        .map(|t| {
-            format!(
-                "mip_count={} diffuse=[{}] specular=[{}] normal=[{}] emissive=[{}] relief={:?}",
-                t.mip_count,
-                describe(&t.diffuse_texture),
-                describe(&t.specular_texture),
-                describe(&t.normal_texture),
-                describe(&t.emissive_texture),
-                t.surface_relief,
-            )
-        })
-        .collect();
-    rows.push(format!("bind groups={bind_groups}"));
-    rows
-}
-
-/// Reads mip 0 of an sRGB `view` through a compute probe on the main thread's
-/// queue, re-encoded to bytes. World textures carry no `COPY_SRC`, so a
-/// texture-to-buffer copy is not available; a `textureLoad` reads exactly what
-/// a draw would sample.
-fn read_srgb_mip0(
-    renderer: &Renderer,
-    view: &wgpu::TextureView,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let device = &renderer.device;
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("texture mip readback probe"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../shaders/texture_mip_readback.wgsl").into(),
-        ),
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("texture mip readback probe"),
-        layout: None,
-        module: &module,
-        entry_point: Some("main"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    let size = u64::from(width * height) * 16;
-    let output = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("texture mip probe output"),
-        size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("texture mip probe readback"),
-        size,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("texture mip probe"),
-        layout: &pipeline.get_bind_group_layout(0),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output.as_entire_binding(),
-            },
-        ],
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("texture mip probe"),
-    });
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(width, height, 1);
-    }
-    encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
-    renderer.queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        tx.send(result).ok();
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
-    rx.recv().expect("map channel").expect("map ok");
-    let texels: Vec<f32> =
-        bytemuck::cast_slice(&slice.get_mapped_range().expect("mapped")).to_vec();
-    readback.unmap();
-    // The load decodes sRGB colour to linear; alpha is stored linear.
-    let encode = |linear: f32| {
-        if linear <= 0.003_130_8 {
-            linear * 12.92
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        }
-    };
-    texels
-        .chunks(4)
-        .flat_map(|texel| {
-            [
-                encode(texel[0]),
-                encode(texel[1]),
-                encode(texel[2]),
-                texel[3],
-            ]
-            .map(|value| (value * 255.0).round() as u8)
-        })
-        .collect()
 }
 
 /// One triangle in one cell whose leaf draws material bucket 0.
@@ -328,131 +191,4 @@ pub(in crate::render) fn with_one_triangle<R>(
         cells: &cells,
         texture_materials: materials,
     })
-}
-
-#[test]
-fn off_main_world_texture_upload_matches_main_thread_install() {
-    let test = "off_main_world_texture_upload_matches_main_thread_install";
-    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
-        return;
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let small = [0x11u8; 32];
-    let wide = [0x22u8; 32];
-    let missing = [0x33u8; 32];
-    let small_diffuse = chain(PrmFormat::Rgba8UnormSrgb, 4, 4, 0x5A);
-    let small_mip0 = small_diffuse.payload[..4 * 4 * 4].to_vec();
-    write_prm(dir.path(), small, [Some(small_diffuse), None, None, None]);
-    write_prm(
-        dir.path(),
-        wide,
-        [
-            Some(chain(PrmFormat::Rgba8UnormSrgb, 8, 4, 0x3C)),
-            Some(chain(PrmFormat::R8Unorm, 8, 4, 0x77)),
-            None,
-            None,
-        ],
-    );
-    let names: Vec<String> = ["small", "zero", "missing", "wide"]
-        .iter()
-        .map(|name| name.to_string())
-        .collect();
-    let keys = TextureCacheKeysSection {
-        keys: vec![small, [0u8; 32], missing, wide],
-    };
-    let materials = vec![Material::Default; names.len()];
-
-    // Oracle: today's main-thread install.
-    renderer.install_textures(&names, &keys, dir.path(), &materials);
-    let oracle = summary(&renderer);
-    assert_eq!(oracle.len(), names.len() + 1);
-
-    let prepared = prepare_world_textures(&names, &keys, dir.path());
-    let uploaded = wait_for(renderer.begin_world_texture_upload(prepared))
-        .expect("the upload thread reports no error");
-
-    let scope = renderer
-        .device
-        .push_error_scope(wgpu::ErrorFilter::Validation);
-    renderer.install_uploaded_textures(uploaded, &materials);
-    assert_eq!(
-        summary(&renderer),
-        oracle,
-        "off-main install matches the oracle"
-    );
-
-    // The upload thread submitted its writes before handing the result back,
-    // so this main-thread submit samples the uploaded bytes.
-    let diffuse = &renderer
-        .full()
-        .pending_textures
-        .as_ref()
-        .expect("the upload's materials are staged")
-        .loaded_textures[0]
-        .diffuse_view;
-    assert_eq!(
-        read_srgb_mip0(&renderer, diffuse, 4, 4),
-        small_mip0,
-        "mip 0 written off-main is visible to the main thread"
-    );
-
-    install_one_triangle(&mut renderer, &materials);
-    let cells = VisibleCells::Culled(vec![0]);
-    renderer
-        .capture_frame_indirect(
-            CameraCullVisibility {
-                cells: &cells,
-                path: VisibilityPath::PrlPortal { walk_reach: 1 },
-            },
-            &[],
-            &[],
-            &[],
-            ShSampleRegionSets {
-                visible_cells: &cells,
-                fog_cells: &[],
-                movers: &[],
-            },
-            None,
-            Mat4::IDENTITY,
-            Vec3::ZERO,
-            &[],
-            &[],
-            1.0,
-            ClearColor {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            },
-            true,
-            ShDrainBatch::default(),
-        )
-        .expect("capture drains")
-        .frame
-        .expect("capture records");
-    let forward_binds: Vec<u32> = renderer
-        .level()
-        .compute_cull
-        .as_ref()
-        .expect("a level with leaves builds the cull")
-        .draw_trace
-        .borrow()
-        .last()
-        .expect("the frame traced its forward draws")
-        .iter()
-        .filter_map(|command| match command {
-            IndirectDrawCommand::BindMaterial(bucket) => Some(*bucket),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        forward_binds,
-        vec![0],
-        "the forward pass binds the off-main material"
-    );
-    let error = pollster::block_on(scope.pop());
-    assert!(
-        error.is_none(),
-        "install, readback or frame raised a validation error: {error:?}"
-    );
 }

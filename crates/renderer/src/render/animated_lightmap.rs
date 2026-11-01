@@ -466,7 +466,9 @@ impl AnimatedLightmapResources {
     }
 
     /// The meter state, section flag, atlas extent and dispatch tables this
-    /// resource was built with, for the prep-equivalence tests.
+    /// resource was built with, for the prep-equivalence tests and the set
+    /// summary.
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn plan_summary(&self) -> String {
         format!(
             "{:?}",

@@ -201,12 +201,11 @@ use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
 pub use renderer_resources::{LevelInstallError, lightmap_family_inputs};
-pub use renderer_textures::UploadedWorldTextures;
 pub use upload_thread::UPLOAD_SUBMIT_CHUNK_BYTES;
+pub(crate) use upload_thread::UploadThread;
 #[cfg(feature = "test-seams")]
 pub use upload_thread::UploadWrites;
-pub use upload_thread::{PendingUpload, UploadError, UploadRetirement};
-pub(crate) use upload_thread::{UploadContext, UploadThread};
+pub use upload_thread::{UploadError, UploadRetirement};
 
 pub use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
@@ -236,7 +235,7 @@ pub use lightmap_streaming::{
 };
 pub use model_cache::{
     CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
-    ModelEntryIdentity, ModelSetRelease,
+    ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};

@@ -84,8 +84,9 @@ impl crate::session::Session {
     /// renderer's residency snapshot of the published set, the budget it
     /// yields, and the generation clocks, all in
     /// [`prepare_level_streaming`], before any session changes.
-    // Reached only from the main-thread oracle's streaming install.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Reached only from the main-thread oracle's streaming install, so
+    // compiled for tests only.
+    #[cfg(test)]
     pub(crate) fn install_level_streaming(
         &mut self,
         level: &LevelWorld,

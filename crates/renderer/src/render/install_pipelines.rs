@@ -114,10 +114,10 @@ impl InstallPipelinesSlot {
     }
 
     /// ORACLE ONLY: block the calling thread until the set is published.
-    /// The main-thread `install_level_geometry` (the oracle, and today's
-    /// production install) is its one caller; the staged commit path must
-    /// never reach it (level-load-pipeline task 11 forbids it there by grep
-    /// gate). In practice the build finished long before a first install.
+    /// The main-thread oracle (`install_level_geometry`, used by tests and
+    /// capture) is its one caller, plus a test-only renderer accessor; the
+    /// staged commit path must never reach it (a grep gate enforces this). In
+    /// practice the build finished long before a first install.
     /// Panics if the build failed, as a pipeline validation error built on
     /// the main thread did before the build moved off it.
     pub(crate) fn wait_for_oracle(&self) -> Arc<InstallPipelines> {

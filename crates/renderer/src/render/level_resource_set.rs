@@ -242,7 +242,9 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) shadowmask_present: bool,
     pub(in crate::render) forward_shadowmask_metadata_scratch: Vec<u8>,
 
-    // --- Promoted baked lights (the depth caches stay renderer-wide) ---
+    // --- Promoted baked lights ---
+    // The depth caches are tier-owned (shared per resolution via
+    // `LevelShadowTier`), not held here.
     pub(in crate::render) promoted_static_states: Vec<PromotedBakedLightState>,
     pub(in crate::render) promoted_animated_states: Vec<PromotedBakedLightState>,
     pub(in crate::render) promoted_baked_records: Vec<PromotedBakedLightRecord>,

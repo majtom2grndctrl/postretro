@@ -1,5 +1,6 @@
-//! Loads beside a running level: the pipeline's second commit order, as a
-//! test and dev surface (hub U3 owns the seamless swap and its UX). The load
+//! Loads beside a running level: the pipeline's second commit order, a
+//! test-only seam until a production verb drives it (hub U3 owns that verb,
+//! the seamless swap and its UX). The load
 //! shares the loading-screen order's machinery (its generation in
 //! `LevelLoads`, its dispatch rules, its stages and their retirement), but
 //! nothing unloads, no loading screen starts, and nothing it credits reaches
@@ -17,6 +18,8 @@ use crate::level_load::{LevelBundle, LevelCommitReport};
 use crate::startup::level_loads::{ActivePhase, LoadOrder};
 
 /// What one Running frame's poll found of a load beside the running level.
+// The frame loop ignores it; only tests read it, a test-only seam until hub
+// U3 adds a production verb that acts on a held bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BesideLoadStep {
     /// No load runs beside the level.
@@ -40,7 +43,7 @@ impl App {
     /// `loading.progress`. A load beside the level already in flight is
     /// superseded: cancelled, its stages retiring, reporting nothing.
     /// Returns false, starting nothing, unless a level is Running.
-    // Reached from tests only: no production verb starts one yet.
+    // A test-only seam until hub U3 adds a production verb that starts one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn begin_level_load_beside(
         &mut self,
@@ -60,6 +63,13 @@ impl App {
             return false;
         };
         load.content_root = content_root;
+        // The running level's line C may still wait for its reveal frame's
+        // present (`pending_level_log`): log it now, with the marks it has,
+        // rather than let the reset below hand it this load's marks. Its
+        // `first_level_frame` then closes here instead of at that present.
+        if std::mem::take(&mut self.pending_level_log) {
+            self.level_timings.log_level_line();
+        }
         self.level_timings = StartupTimings::new();
         self.level_loads
             .start_beside(load, Arc::new(LevelLoadProgress::new()));
@@ -139,21 +149,26 @@ impl App {
         self.stage_retirements.push_load(generation, retirement);
     }
 
-    /// Commit the bundle a load beside the running level holds: release the
-    /// running level (`unload_level`, which drops only its own set and frees
-    /// no cache entry), then commit the bundle through `commit_level_bundle`
-    /// in the same frame (pin P30). The release frees nothing the bundle
-    /// holds (its set, fog target and extent-bound groups stay resident, its
-    /// cached models referenced) and cancels nothing; the commit rebuilds
-    /// the set's extent-bound groups once if the scene extent moved since
-    /// its build (pin P16), loads its predicted models with no miss and no
-    /// re-upload, and frees the entries only the released level referenced.
-    /// The commit enters Settling, as every commit does (hub U3 owns the
-    /// visual hand-off); with no loading screen up, Settling credits no
-    /// `loading.progress`. A commit check that fails after the release
-    /// takes the loading-screen half of the failure route (Frontend): the
-    /// running level is already gone. `None`, changing nothing, unless a
-    /// beside load holds a ready bundle.
+    /// Commit the bundle a load beside the running level holds. First the
+    /// commit's checks (`check_level_bundle`), while the running level still
+    /// runs: they read only the bundle's unpublished set and streaming data,
+    /// touch no session state and start no thread. A failing check takes the
+    /// failure route's beside half: the bundle's set released, one report,
+    /// the running level left Running. Then release the running level
+    /// (`unload_level`, which drops only its own set and frees no cache
+    /// entry) and commit the checked bundle through `commit_level_bundle`
+    /// in the same frame (pin P30), which runs no check twice and cannot
+    /// fail. The release frees nothing the bundle holds (its set, fog
+    /// target and extent-bound groups stay resident, its cached models
+    /// referenced) and cancels nothing; the commit rebuilds the set's
+    /// extent-bound groups once if the scene extent moved since its build
+    /// (pin P16), loads its predicted models with no miss and no re-upload,
+    /// and frees the entries only the released level referenced. The commit
+    /// enters Settling, as every commit does (hub U3 owns the visual
+    /// hand-off); with no loading screen up, Settling credits no
+    /// `loading.progress`. `None`, changing nothing but a failed bundle's
+    /// own set, unless a beside load holds a ready bundle whose checks pass.
+    // A test-only seam until hub U3 adds a production verb that commits one.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn commit_ready_beside_bundle(
         &mut self,
@@ -165,15 +180,26 @@ impl App {
         else {
             unreachable!("a held bundle belongs to a load beside the running level");
         };
-        // Line C: how long the ready bundle waited for its caller, then the
-        // running level's release; the commit frame follows.
+        // Line C: how long the ready bundle waited for its caller, the
+        // commit's checks, then the running level's release; the commit
+        // frame follows.
         self.level_timings.record("bundle_held");
+        let checked = match self.check_level_bundle(*bundle) {
+            Ok(checked) => checked,
+            Err(failure) => {
+                // The load is no longer active, and its stages retired when
+                // the bundle was held: this is its one report.
+                self.finish_beside_level_failure(&failure.to_string());
+                return None;
+            }
+        };
+        self.level_timings.record("commit_checks");
         if self.level_is_installed_state() {
             self.unload_level();
         }
         self.level_timings.record("running_release");
         self.level_load = Some(*load);
-        self.commit_ready_level_bundle(*bundle, event_loop)
+        self.commit_ready_level_bundle(checked, event_loop)
     }
 
     /// Cancel a load beside the running level, if one is active: its stages
@@ -187,6 +213,9 @@ impl App {
     /// The failure route's beside half: the load's one report, its stages
     /// retiring, and nothing else. No state change toward Frontend, no exit:
     /// the running level stays Running with its cache entries (pin P31).
+    /// The beside commit reaches it directly when its checks refuse the held
+    /// bundle: the load is no longer active then, and its stages already
+    /// retired when the bundle was held.
     pub(in crate::startup) fn finish_beside_level_failure(&mut self, reason: &str) {
         self.retire_active_level_load();
         log::error!(

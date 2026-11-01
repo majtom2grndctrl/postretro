@@ -1,18 +1,9 @@
-// Renderer world-texture install: main-thread load, off-main upload, and the
-// one bind-group path both share.
+// Renderer world-texture install: the main-thread load, and the one
+// bind-group path it shares with the upload thread's textures part.
 // See: context/lib/boot_sequence.md §2–§3 · context/lib/resource_management.md
 
-use super::loaded_texture::upload_prepared_textures;
 use super::renderer_types::FullRenderer;
 use super::*;
-use postretro_render_cpu::texture_prep::PreparedWorldTextures;
-
-/// The GPU pass's product for one load's world materials, created on the
-/// upload thread and bound by nothing until [`Renderer::install_uploaded_textures`].
-pub struct UploadedWorldTextures {
-    pub(crate) textures: Vec<LoadedTexture>,
-    pub(crate) timing: TextureLoadTiming,
-}
 
 impl Renderer {
     /// Builds one load's material bind groups from baked `.prm` mip sidecars
@@ -60,56 +51,6 @@ impl Renderer {
             &load_timing,
             texture_materials,
             install_started.elapsed(),
-        );
-    }
-
-    /// Runs the GPU pass for one load's prepared world materials on the upload
-    /// thread. Poll the handle; nothing it creates is bound until
-    /// [`Self::install_uploaded_textures`].
-    pub fn begin_world_texture_upload(
-        &self,
-        prepared: PreparedWorldTextures,
-    ) -> PendingUpload<UploadedWorldTextures> {
-        let upload_thread: &UploadThread = &self.full().upload_thread;
-        upload_thread.submit(move |context: &UploadContext| {
-            let (textures, timing) =
-                upload_prepared_textures(&context.device, &context.writes, &prepared);
-            Ok(UploadedWorldTextures { textures, timing })
-        })
-    }
-
-    /// Binds world materials the upload thread created: the same sampler-pool,
-    /// bind-group and placeholder-fallback path as [`Self::install_textures`].
-    pub fn install_uploaded_textures(
-        &mut self,
-        uploaded: UploadedWorldTextures,
-        texture_materials: &[Material],
-    ) {
-        let surface_depth_quality = self.surface_depth_quality;
-        let Self {
-            device,
-            queue,
-            full,
-            ..
-        } = self;
-        let _installation = queue.installation();
-        let queue = queue.raw();
-        let full = full
-            .as_mut()
-            .expect("renderer full-init must complete before full-ready paths run");
-        let UploadedWorldTextures { textures, timing } = uploaded;
-        // Off-main reads, parses and uploads run before this frame; they are
-        // the whole pre-bind share of the install.
-        let before_bind_groups = timing.read + timing.parse + timing.create_write;
-        bind_loaded_textures(
-            device,
-            queue,
-            full,
-            surface_depth_quality,
-            textures,
-            &timing,
-            texture_materials,
-            before_bind_groups,
         );
     }
 }

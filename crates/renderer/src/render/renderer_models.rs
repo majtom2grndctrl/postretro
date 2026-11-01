@@ -281,8 +281,9 @@ impl Renderer {
     }
 
     /// Reset per-level transient mesh-pass state at level load. `pub` forwarder
-    /// over the private `mesh_pass`; called from the level-load model sweep at the
-    /// model-cache install site (where each distinct model uploads). Empties the
+    /// over the private `mesh_pass`; the app's parse-and-upload model sweep
+    /// calls it before its first upload. Publishing a level set resets the
+    /// same state on its own (`reset_level_frame_state`). Empties the
     /// `"smooth"`-interrupt snapshot store and the per-entity palette cache —
     /// entity seeds are not stable across levels, so stale state must not survive.
     pub fn clear_mesh_pass_for_level_load(&mut self) {

@@ -1,17 +1,22 @@
 // Renderer-owned upload thread: off-main GPU creation with per-job error scopes.
 // See: context/lib/boot_sequence.md §2 · context/lib/rendering_pipeline.md §1
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use super::queue_writes::QueueWrites;
 
-/// The most queue-write bytes one upload-thread submit carries. Writes are
-/// metered as they are staged; one that would push the pending batch past
-/// this submits the batch first, so every batch stays within it except a
-/// single write larger than the chunk, which is its own batch. Bounds the
-/// flush any one submit (and the frame after it) pays.
+/// The most queue-write bytes one upload-thread submit carries. Every byte a
+/// job stages on the queue is metered as it is staged: its
+/// [`QueueWrites`] buffer and texture writes, the initial data of a texture
+/// created through `GpuCreate::new_texture_with_data`, and the contents of a
+/// buffer created through `GpuCreate::new_buffer_init` (which wgpu stages on
+/// the queue's pending writes when it unmaps the buffer). One that would
+/// push the pending batch past this submits the batch first, so every batch
+/// stays within it except a single write larger than the chunk, which is its
+/// own batch. Bounds the flush any one submit (and the frame after it) pays.
 pub const UPLOAD_SUBMIT_CHUNK_BYTES: u64 = 32 * 1024 * 1024;
 
 /// What a job sees on the upload thread: a clone of the renderer's device,
@@ -28,17 +33,55 @@ pub struct UploadContext {
 /// and submits the pending batch before a write would carry it past
 /// [`UPLOAD_SUBMIT_CHUNK_BYTES`]. Every job ends with [`Self::flush`], so a
 /// job's writes are submitted before its result is delivered (pin P13).
+/// Clones share one pending batch: the thread's creation meter
+/// ([`meter_initial_buffer_data`]) holds one, so buffer contents count into
+/// the same batch as the job's writes.
+#[derive(Clone)]
 pub(crate) struct ChunkedWrites {
     queue: wgpu::Queue,
     chunk_bytes: u64,
-    pending: Cell<u64>,
+    pending: Rc<Cell<u64>>,
     /// Every metered and submitted byte, shared with the owning renderer so
     /// the app's tests can read the writer's state against a frame (P13).
     #[cfg(feature = "test-seams")]
     ledger: std::sync::Arc<UploadWriteLedger>,
     /// Each submitted batch's bytes, oldest first; tests read and clear it.
     #[cfg(test)]
-    batches: std::cell::RefCell<Vec<u64>>,
+    batches: Rc<RefCell<Vec<u64>>>,
+}
+
+// The upload thread's writer, installed when the thread starts: what the
+// creation chokepoint meters a buffer's initial contents through. Unset on
+// every other thread.
+thread_local! {
+    static THREAD_WRITES: RefCell<Option<ChunkedWrites>> = const { RefCell::new(None) };
+}
+
+/// Drops the upload thread's writer while thread-locals are still alive, on a
+/// normal exit or an unwind. Left to the thread-local destructor, dropping
+/// its queue would reach wgpu's own thread-locals, which may already be
+/// destroyed by then: a panic in a thread-local destructor aborts the process.
+struct ClearThreadWrites;
+
+impl Drop for ClearThreadWrites {
+    fn drop(&mut self) {
+        let _ = THREAD_WRITES.try_with(|writes| writes.borrow_mut().take());
+    }
+}
+
+/// Meter `bytes` of a buffer's initial contents through the calling thread's
+/// upload writer, before the buffer is created: on the upload thread they
+/// count toward its submit chunk like any queued write (the pending batch
+/// submits first when they would carry it past the chunk); on any other
+/// thread this does nothing, and the contents ride that thread's next
+/// submit. Only the creation chokepoint (`GpuCreate::new_buffer_init`)
+/// calls it.
+pub(super) fn meter_initial_buffer_data(bytes: u64) {
+    THREAD_WRITES.with(|writes| {
+        if let Some(writes) = writes.borrow().as_ref() {
+            writes.meter(bytes);
+        }
+    });
 }
 
 impl ChunkedWrites {
@@ -49,7 +92,7 @@ impl ChunkedWrites {
         Self {
             queue,
             chunk_bytes: UPLOAD_SUBMIT_CHUNK_BYTES,
-            pending: Cell::new(0),
+            pending: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-seams")]
             ledger,
             #[cfg(test)]
@@ -248,6 +291,10 @@ impl UploadThread {
                         thread_ledger,
                     ),
                 };
+                // Buffers created with contents on this thread meter through
+                // the jobs' own writer.
+                THREAD_WRITES.with(|writes| *writes.borrow_mut() = Some(context.writes.clone()));
+                let _clear_writes = ClearThreadWrites;
                 // A closed channel (the owner dropped) ends the thread.
                 while let Ok(job) = receiver.recv() {
                     job(&context);
@@ -269,8 +316,10 @@ impl UploadThread {
 
     /// Queue `job` and return a handle the caller polls. The job's GPU writes
     /// are submitted before its result is sent, so a result in hand means its
-    /// writes precede any later submit on any thread.
-    pub fn submit<T: Send + 'static>(
+    /// writes precede any later submit on any thread. Tests' polling form of
+    /// [`Self::submit_then`]; production jobs deliver through that.
+    #[cfg(test)]
+    pub(crate) fn submit<T: Send + 'static>(
         &self,
         job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
     ) -> PendingUpload<T> {
@@ -287,7 +336,10 @@ impl UploadThread {
     /// Queue `job`, then hand its result to `deliver` on the upload thread,
     /// after the job's flush and error scopes, before the next job starts. A
     /// later job therefore observes everything `deliver` published. If the
-    /// thread is gone, both closures drop unrun.
+    /// thread is gone, both closures drop unrun. A panic in `deliver` is
+    /// contained and logged, so the thread keeps serving later jobs; turning
+    /// it into the job's own failure is the deliverer's (a level build's
+    /// does).
     pub(crate) fn submit_then<T: 'static>(
         &self,
         job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
@@ -327,7 +379,19 @@ impl UploadSubmitter {
         job: impl FnOnce(&UploadContext) -> Result<T, UploadError> + Send + 'static,
         deliver: impl FnOnce(Result<T, UploadError>) + Send + 'static,
     ) -> bool {
-        let wrapped: Job = Box::new(move |context| deliver(run_job(context, job)));
+        let wrapped: Job = Box::new(move |context| {
+            let result = run_job(context, job);
+            // Delivery runs outside the job's `catch_unwind`; a panic here
+            // must not end the thread every later job (other loads') needs.
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| deliver(result)))
+            {
+                log::error!(
+                    "[Renderer] upload job delivery panicked: {}",
+                    panic_message(payload.as_ref())
+                );
+            }
+        });
         self.0.send(wrapped).is_ok()
     }
 }
@@ -397,7 +461,8 @@ fn flush_staged_writes(queue: &wgpu::Queue) {
     queue.submit(std::iter::empty());
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+/// A caught panic's message, for an [`UploadError::Panicked`].
+pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|message| message.to_string())
@@ -414,11 +479,13 @@ impl Drop for UploadThread {
     }
 }
 
-/// A job's result, polled without blocking.
-pub struct PendingUpload<T> {
+/// A job's result, polled without blocking (tests).
+#[cfg(test)]
+pub(crate) struct PendingUpload<T> {
     result: mpsc::Receiver<Result<T, UploadError>>,
 }
 
+#[cfg(test)]
 impl<T> PendingUpload<T> {
     /// `None` while the job runs. Never blocks.
     pub fn try_take(&mut self) -> Option<Result<T, UploadError>> {

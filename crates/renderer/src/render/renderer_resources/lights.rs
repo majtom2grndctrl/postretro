@@ -68,7 +68,7 @@ pub(super) fn install_level_lights<'g>(
     device: &wgpu::Device,
     geometry: &'g LevelGeometry<'_>,
 ) -> (LevelLights, LevelLightSelection<'g>) {
-    // --- Lights + lighting bind group ---
+    // --- Dynamic, selected-static and shadow-candidate light sets ---
     let filtered_level_lights = filter_dynamic_lights(geometry.lights, geometry.light_influences);
     let level_lights = filtered_level_lights.lights;
     let dynamic_influences = filtered_level_lights.influences;

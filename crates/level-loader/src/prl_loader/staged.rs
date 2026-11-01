@@ -123,6 +123,11 @@ pub enum HandOutStage {
 /// - a non-empty geometry having BVH leaves, or a zero-leaf BVH having no
 ///   drawable cell (the cross-section check);
 /// - `fog_volumes.len()` being within `MAX_FOG_VOLUMES`;
+/// - a hand-out 2 vertex's `lightmap_block` or `animated_block` naming a block
+///   inside the lightmap or animated-block table: the lighting decode checks
+///   them after hand-outs 2 and 3;
+/// - a hand-out 3 cell's `portal_ref_start` / `portal_ref_count` range lying
+///   inside the portal-ref array: the parse-end portal check validates it;
 /// - a reflection probe's `roster_index` falling inside the animated-light
 ///   roster, or the roster tables being the identity;
 /// - the SH cluster directory's members naming real cells, or any cluster

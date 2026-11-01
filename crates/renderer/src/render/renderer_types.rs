@@ -304,15 +304,17 @@ impl Renderer {
         }
     }
 
-    /// Resident bytes of every lightmap-family texture currently bound.
+    /// Resident bytes of every lightmap-family texture currently bound: the
+    /// active level set's report, or, with no set active (the Frontend,
+    /// after an unload), the empty report, since no lightmap texture is bound
+    /// then. `None` only before full init.
     pub fn lightmap_residency_report(&self) -> Option<&LightmapResidencyReport> {
+        static NO_ACTIVE_SET: LightmapResidencyReport = LightmapResidencyReport::EMPTY;
+        let full = self.full.as_ref()?;
         Some(
-            &self
-                .full
-                .as_ref()?
-                .level
-                .as_ref()?
-                .lightmap_residency_report,
+            full.level
+                .as_ref()
+                .map_or(&NO_ACTIVE_SET, |level| &level.lightmap_residency_report),
         )
     }
 

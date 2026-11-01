@@ -135,8 +135,9 @@ impl ShResidencyState {
     }
 
     /// Every field the residency plan seeded, formatted in one fixed order,
-    /// for the prep-equivalence tests: equal to
-    /// [`residency_plan_summary`] of the plan the state was built from.
+    /// for the prep-equivalence tests and the set summary: equal to
+    /// `residency_plan_summary` of the plan the state was built from.
+    #[cfg(any(test, feature = "test-seams"))]
     pub(in crate::render) fn plan_summary(&self) -> String {
         let sparse_pool_rows: BTreeMap<u32, usize> = self
             .sparse_pools

@@ -1,9 +1,14 @@
-//! CPU half of the level-load model sweep: one glTF parse per distinct model.
+//! Level-load model sweep: one glTF parse per distinct model, the `ModelSweep` trait and its windowed and
+//! prepared forms (commit-side install, miss fallback, over-prediction release), and `ModelClipEntry`.
 //! See: context/lib/boot_sequence.md §3
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "observability"))]
+use std::path::PathBuf;
 
-use postretro_model::gltf_loader::{self, LoadedModel, ModelLoadError};
+#[cfg(any(test, feature = "observability"))]
+use postretro_model::gltf_loader;
+use postretro_model::gltf_loader::{LoadedModel, ModelLoadError};
 
 use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
 use crate::scripting_systems::mesh_anim::MeshClipTables;
@@ -15,6 +20,11 @@ use crate::scripting_systems::mesh_anim::MeshClipTables;
 /// A failed parse stays in `result`: both consumers see the same error, and the
 /// [`ModelLoadWarningOwner`] the upload hook returns decides which of them
 /// reports it.
+///
+/// This sweep and its parse helpers serve the renderer-free installer
+/// (`install_world_cpu`: the headless driver and tests) and the main-thread
+/// oracle, so they compile only for tests and the `observability` feature.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) struct ParsedSweepModel {
     /// The verbatim handle: the renderer's cache key and `MeshComponent.model`.
     pub(crate) handle: String,
@@ -25,6 +35,7 @@ pub(crate) struct ParsedSweepModel {
 
 /// Parse every model in `models`, in order, on the calling thread. Parsing never
 /// depends on a renderer, so a headless install runs the same step.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn parse_sweep_models(models: &[String], content_root: &Path) -> Vec<ParsedSweepModel> {
     models
         .iter()
@@ -36,6 +47,7 @@ pub(crate) fn parse_sweep_models(models: &[String], content_root: &Path) -> Vec<
 /// prep runs the same parse in two halves (`read_model_sources`, then
 /// `load_model_from_sources`), so it can key the bytes it read before
 /// parsing them. Pure.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn parse_sweep_model(handle: &str, content_root: &Path) -> ParsedSweepModel {
     let open_path = content_root.join(handle);
     let result = gltf_loader::load_model(&open_path);
@@ -92,10 +104,11 @@ impl ModelClipEntry {
 
 /// How the install's model sweep turns the real sweep's handles into
 /// installed models: each one's renderer entry (windowed only), clip-table
-/// entry and hit-zone entry, in the sweep's order. The main-thread path
-/// parses each handle on this thread ([`ParsedModelSweep`],
-/// [`WindowedModelSweep`]); a level load's commit installs its bundle's
-/// prepared products instead.
+/// entry and hit-zone entry, in the sweep's order. A level load's commit
+/// installs its bundle's prepared products ([`WindowedModelSweep`] over
+/// [`LevelModels::Prepared`]); the renderer-free installer and the test
+/// oracle parse each handle on this thread instead (`ParsedModelSweep`, or
+/// `LevelModels::Parse`).
 pub(crate) trait ModelSweep {
     /// Install every handle of `models`, recording the sweep's stages into
     /// `timings`.
@@ -112,10 +125,11 @@ pub(crate) trait ModelSweep {
 /// A sweep over parsed models: each handle is parsed here, the closure gets
 /// the parses (the renderer upload and clip tables; a headless caller passes
 /// a no-op), and the hit zones install from the same parses
-/// ([`install_parsed_models`]).
-#[cfg_attr(not(any(test, feature = "observability")), allow(dead_code))]
+/// (`install_parsed_models`). Only `install_world_cpu` builds one.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) struct ParsedModelSweep<F>(pub(crate) F);
 
+#[cfg(any(test, feature = "observability"))]
 impl<F> ModelSweep for ParsedModelSweep<F>
 where
     F: FnMut(&[ParsedSweepModel], &mut MeshClipTables) -> ModelLoadWarningOwner,
@@ -142,6 +156,7 @@ where
 /// The main-thread sweep: parse each model once, on this thread, then
 /// `upload` (the renderer upload and clip-table build, or a headless no-op)
 /// and the hit-zone build both read the same parses.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn install_parsed_models(
     models: &[String],
     content_root: &Path,
@@ -168,9 +183,9 @@ pub(crate) struct WindowedModelSweep<'a> {
 
 /// Where a windowed sweep's models come from.
 pub(crate) enum LevelModels<'a> {
-    /// The main-thread oracle: parse each model here, upload it into the
-    /// renderer and build its clip-table entry from the same parse.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The main-thread oracle (test-only): parse each model here, upload it
+    /// into the renderer and build its clip-table entry from the same parse.
+    #[cfg(test)]
     Parse,
     /// A level load's commit: the bundle's prepared models, whose set
     /// already holds their renderer entries.
@@ -183,7 +198,9 @@ pub(crate) enum LevelModels<'a> {
 /// missed, with what that fallback created.
 pub(crate) struct PreparedModelSweep<'a> {
     pub(crate) models: crate::level_load::PreparedModels,
-    /// The install parameters the load keyed its models by.
+    /// The install parameters the load keyed its models by; the miss
+    /// fallback keys and builds at them (their build tier is the dispatch
+    /// tier, not the live one).
     pub(crate) params: crate::level_load::ModelInstallParams,
     pub(crate) fallback: &'a mut crate::level_load::ModelMissFallback,
     /// GPU objects the fallback created on this thread, added up: a counted
@@ -209,6 +226,7 @@ impl ModelSweep for WindowedModelSweep<'_> {
             source,
         } = self;
         match source {
+            #[cfg(test)]
             LevelModels::Parse => install_parsed_models(
                 models,
                 content_root,
@@ -315,8 +333,8 @@ impl PreparedModelSweep<'_> {
         }
         // What the prediction built that nothing in this level draws (pin
         // P26: a model only a hot reload removed after dispatch) leaves the
-        // published set now, so the cache step frees it once nothing else
-        // references it.
+        // published set now, so the commit's cache sweep after this install
+        // frees it once nothing else references it.
         drop(by_handle);
         self.over_predictions.release(renderer, over);
         if !models.is_empty() {
@@ -332,6 +350,7 @@ impl PreparedModelSweep<'_> {
 /// Install each parsed model's hit-zone entry, consuming the parses. Equivalent
 /// to calling [`HitZoneStore::insert_from_load`] on every handle, minus the
 /// second parse.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn install_hit_zones(
     store: &mut HitZoneStore,
     parsed: Vec<ParsedSweepModel>,

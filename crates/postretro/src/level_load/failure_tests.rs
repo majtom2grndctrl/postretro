@@ -299,6 +299,40 @@ fn concurrent_prep_failures_report_once() {
     assert_eq!(failure.stage, LoadStage::Parse, "{failure}");
 }
 
+// Sound decode starts on hand-out 4, while the parse can still reject the
+// level: its panic, observed before the verdict, is held like any
+// pre-verdict task's, so the later rejection is the one report. The parse
+// waits at hand-out 4 until the decode has run and panicked and the main
+// thread's polls have seen it.
+#[test]
+fn sound_panic_before_verdict_yields_to_parse_rejection() {
+    let failure = only_failure(
+        Fixture::LateRejected,
+        PrepTestHooks {
+            panic: Some(PrepKind::Sounds),
+            after_hand_out: Some(Arc::new(
+                |stage: HandOutStage, probe: &super::test_support::PrepProbe| {
+                    if stage != HandOutStage::Entities {
+                        return;
+                    }
+                    assert!(
+                        probe.wait_until(|state| state.started.contains(&PrepKind::Sounds)),
+                        "the sound decode never started"
+                    );
+                    // The decode panics as it starts; the main thread polls
+                    // every millisecond, so its handle's panic is routed
+                    // well inside this before the parse may reject.
+                    std::thread::sleep(Duration::from_millis(200));
+                    assert!(!probe.state().settled, "the panic was held for the verdict");
+                },
+            )),
+            ..Default::default()
+        },
+    );
+    assert_eq!(failure.stage, LoadStage::Parse, "{failure}");
+    assert!(failure.parse_error.is_some(), "{failure}");
+}
+
 #[test]
 fn panicking_prep_task_fails_the_load() {
     for kind in [

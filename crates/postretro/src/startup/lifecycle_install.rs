@@ -1,5 +1,6 @@
-//! Level install: the `install_level_payload` sequencer and its early stages
-//! (identity and parity, segment A, renderer upload, light bridge).
+//! Level install stages the commit shares with the main-thread oracle
+//! (identity and parity, segment A, world stages, light bridge), plus the
+//! oracle's own sequencer and renderer stage, compiled for tests only.
 //! See: context/lib/boot_sequence.md §3
 
 use super::lifecycle_install_presentation::{LevelFogMasks, LevelSounds};
@@ -8,16 +9,17 @@ use super::*;
 
 /// Why a delivered level payload was refused before any install mutation.
 /// Routed through `finish_level_failure` like any other failed level load.
-/// The main-thread oracle's; production loads fail through their stages.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The main-thread oracle's, so test-only; production loads fail through
+/// their stages.
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LevelInstallRejection {
     #[error(transparent)]
     GeometryRange(#[from] render::LevelGeometryRangeError),
     #[error("static collision: {0}")]
     StaticCollision(#[from] crate::collision::CollisionMeshError),
-    /// The renderer refused the level's resources: today only a streamed-SH
-    /// residency plan or first pool generation. It arrives after identity
+    /// The renderer refused the level's resources: only a streamed-SH
+    /// residency plan or first pool generation can. It arrives after identity
     /// and segment A ran, but ends the load through the same route.
     #[error(transparent)]
     RendererInstall(#[from] render::LevelInstallError),
@@ -60,17 +62,19 @@ impl App {
     /// archetype sweep, and `levelLoad` fire. Each stage is recorded into
     /// `self.level_timings` for log line C.
     ///
-    /// Texture upload now runs before geometry upload: `.prm` slot dimensions
+    /// Texture upload runs before geometry upload: `.prm` slot dimensions
     /// drive UV normalization, so the renderer must have produced
     /// `LoadedTexture`s before the per-leaf texel-space UVs can be converted to
     /// `[0,1]`.
     ///
-    /// Called after a level worker delivers a payload; assumes `self.renderer`
-    /// is `Some` and `world` is populated. Rejects invalid indirect index ranges
-    /// and a static collision mesh parry refuses before any install mutation.
-    // The main-thread oracle: production loads commit a bundle instead; the
-    // tests compare the two until landing.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The main-thread test oracle; production never calls it. Assumes
+    /// `self.renderer` is `Some` and `world` is populated. Rejects invalid
+    /// indirect index ranges and a static collision mesh parry refuses before
+    /// any install mutation.
+    // The main-thread oracle, compiled for tests only: production loads
+    // commit a bundle instead; the staged-load tests compare the commit
+    // against this install.
+    #[cfg(test)]
     pub(super) fn install_level_payload(
         &mut self,
         mut world: postretro_level_loader::LevelWorld,
@@ -284,9 +288,9 @@ impl App {
     /// surfaces. Returns what the light bridge needs, or `None` when no
     /// renderer exists and the caller takes the renderer-less return. A
     /// renderer refusal of the level's resources is a rejection.
-    // The main-thread oracle: production loads commit a bundle instead; the
-    // tests compare the two until landing.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // The main-thread oracle's, compiled for tests only: a load's set
+    // already holds this work when its bundle commits.
+    #[cfg(test)]
     fn install_level_renderer_stage(
         &mut self,
         world: &mut postretro_level_loader::LevelWorld,
@@ -336,8 +340,9 @@ impl App {
         self.level_timings.record("texture_upload");
 
         // 2. UV normalize using freshly-uploaded diffuse-texture dimensions.
-        //    Texel-space UVs on the worker side; converted to `[0,1]` here so
-        //    install_level_geometry uploads the final values.
+        //    The parsed level carries texel-space UVs; converted to `[0,1]`
+        //    here so install_level_geometry uploads the final values. Staged
+        //    loads normalize in prep on the load pool instead.
         renderer.normalize_world_uvs(world);
         self.level_timings.record("uv_normalize");
 
@@ -346,8 +351,7 @@ impl App {
         //    drops them; the stashed world keeps only their headers.
         let gpu_lighting_payloads = world.take_gpu_lighting_payloads();
         let geometry = render::level_world_to_geometry(world, &texture_materials);
-        // Test-only seam: a refusal no fixture's real data provokes.
-        #[cfg(test)]
+        // Test seam: a refusal no fixture's real data provokes.
         if let Some(error) = super::lifecycle_test_fixtures::take_injected_geometry_install_error()
         {
             return Err(error.into());

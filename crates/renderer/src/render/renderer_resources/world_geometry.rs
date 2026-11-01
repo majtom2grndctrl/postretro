@@ -1,5 +1,5 @@
 // World draw geometry: the vertex, index and wireframe buffers, and the BVH
-// cull owners recreated over the index buffer they address.
+// cull owners built over the set's own index buffer.
 // See: context/lib/rendering_pipeline.md §5
 
 use super::super::install_pipelines::InstallPipelines;
@@ -62,8 +62,8 @@ pub(super) fn install_world_buffers(
         usage: wgpu::BufferUsages::VERTEX,
     });
     // Indirect slots copy only these checked leaves' baked ranges, and all
-    // world indirect passes bind this complete array. Recreate every cull
-    // owner below before drawing; no slot may survive an index-buffer swap.
+    // world indirect passes bind this complete array. Every cull owner is
+    // built over this set's index buffer, never another set's.
     let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("World Index Buffer"),
         contents: &index_data,

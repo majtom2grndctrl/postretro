@@ -58,15 +58,18 @@ pub(in crate::render) struct ModelEntry {
 }
 
 /// One level set's skinned models keyed by handle (the raw
-/// `MeshComponent.model` string). One entry per distinct model; mirrors
-/// `SmokePass::sheets`. The level-load model sweep populates the active
-/// set's through `Renderer::upload_parsed_skinned_model`; the mesh pass
-/// resolves every draw's handle through the active set's.
+/// `MeshComponent.model` string). One entry per distinct model. A staged
+/// load fills the set through `LevelSetBuilder::model`, `offered_model` and
+/// `cached_model`; a model the load did not predict uploads into the active set
+/// at commit through `Renderer::upload_missed_model_into_active_set`; the
+/// parse-and-upload sweep fills it through
+/// `Renderer::upload_parsed_skinned_model`. The mesh pass resolves every
+/// draw's handle through the active set's.
 ///
 /// A set built off-main also carries its cache offers: the entries it
 /// uploaded on a cache miss, each with its content key and CPU companion,
 /// which join the shared model cache only when the set commits
-/// (`Renderer::commit_model_cache`).
+/// (`Renderer::enter_model_cache_offers`).
 #[derive(Default)]
 pub(in crate::render) struct LevelModels {
     entries: HashMap<ModelHandle, Arc<ModelEntry>>,
@@ -85,6 +88,7 @@ impl LevelModels {
     }
 
     /// Every cached handle, sorted (tests and the set summary).
+    #[cfg(any(test, feature = "test-seams"))]
     pub(in crate::render) fn handles(&self) -> Vec<String> {
         let mut handles: Vec<String> = self
             .entries
@@ -236,8 +240,8 @@ impl MeshPass {
     /// in submesh order — built by the renderer via `build_material_bind_group`
     /// against the shared group-1 layout (the same `.prm` → `LoadedTexture` path
     /// the world uses). The caller inserts the entry into one level set's
-    /// [`LevelModels`]; this is the upload seam the level-load model sweep calls
-    /// once per distinct model.
+    /// [`LevelModels`]; every model upload path reaches this once per distinct
+    /// model, through `build_model_entry`.
     ///
     /// `clips` is the model's FULL animation set in glTF (authored) index order,
     /// for the name/metadata query seam and for per-instance sampling:
@@ -279,8 +283,10 @@ impl MeshPass {
     }
 
     /// Level-load clear hook: reset per-level transient mesh-pass state. Called
-    /// when a level set is published and at the model-cache install site in
-    /// the level-load sweep (mirrors `FogPass::clear_for_level_load`). The
+    /// when a level set is published (`reset_level_frame_state`) and from
+    /// `Renderer::clear_mesh_pass_for_level_load`, which the parse-and-upload
+    /// model sweep calls before its first upload (mirrors
+    /// `FogPass::clear_for_level_load`). The
     /// single per-level reset seam, so any future per-level state lands here
     /// rather than scattered.
     ///

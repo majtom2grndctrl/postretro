@@ -1769,6 +1769,18 @@ fn injected_stage_failures_end_load_once() {
         run_until(&mut app, &exit, row.label, load_ended);
         let errors = loader_errors(&capture);
         assert_eq!(errors.len(), 1, "{}: one report: {errors:?}", row.label);
+        assert!(
+            !errors[0].contains("failed: level upload"),
+            "{}: the stage is named once: {errors:?}",
+            row.label
+        );
+        if row.main_submit_error {
+            assert!(
+                errors[0].contains("level load failed: uncaptured wgpu error"),
+                "{}: an uncaptured error claims no stage: {errors:?}",
+                row.label
+            );
+        }
         assert!(app.level.is_none(), "{}: nothing committed", row.label);
         assert!(
             app.published_level_identity.is_none(),
@@ -2951,6 +2963,8 @@ fn commit_path_has_no_blocking_wait() {
         "begin_level_load_stages",
         "try_take",
         "poll_prep",
+        "poll_prep_with_verdict",
+        "keep_prep_outcome",
         "poll_upload",
         "fail",
         "bundle",
@@ -2963,7 +2977,12 @@ fn commit_path_has_no_blocking_wait() {
             function_source(stages, name).to_string(),
         ));
     }
-    for name in ["try_take", "cancel", "cancel_in_place"] {
+    for name in [
+        "try_take",
+        "try_take_with_verdict",
+        "cancel",
+        "cancel_in_place",
+    ] {
         checked.push((
             format!("prep::{name}"),
             function_source(prep, name).to_string(),
@@ -3013,11 +3032,21 @@ fn commit_path_has_no_blocking_wait() {
         ),
         ("PendingLevelSet::try_take", level_build, "try_take"),
         ("Renderer::publish_level_set", publish, "publish_level_set"),
-        ("Renderer::commit_model_cache", cache, "commit_model_cache"),
+        (
+            "Renderer::enter_model_cache_offers",
+            cache,
+            "enter_model_cache_offers",
+        ),
+        ("Renderer::sweep_model_cache", cache, "sweep_model_cache"),
         (
             "Renderer::release_unused_active_set_models",
             cache,
             "release_unused_active_set_models",
+        ),
+        (
+            "Renderer::upload_missed_model_into_active_set",
+            cache,
+            "upload_missed_model_into_active_set",
         ),
     ] {
         checked.push((

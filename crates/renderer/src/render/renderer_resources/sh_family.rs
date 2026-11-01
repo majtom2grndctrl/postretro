@@ -40,7 +40,7 @@ pub(super) fn install_sh_volume(
     promoted_static_weight_buffer: &wgpu::Buffer,
     sh_plan: Option<postretro_render_cpu::sh_residency::ShResidencyPlan>,
 ) -> Result<LevelShVolume, sh_streaming::ShResidencyDrainError> {
-    // --- SH volume, sh_compose, lightmap, animated lightmap ---
+    // --- SH volume and streamed-SH residency state ---
     // This ledger is intentionally scoped to one level install. Every SH
     // constructor records the exact descriptor it sends to wgpu, and the
     // completed plain-Rust report stays with the renderer for capture.
@@ -82,6 +82,11 @@ pub(super) fn install_sh_volume(
     // buffer sizes. Either way the error fails the load.
     let sh_streaming = match (streaming_manifest, sh_plan) {
         (Some(manifest), Some(plan)) => {
+            debug_assert_eq!(
+                plan.content_tag,
+                manifest.content_tag(),
+                "the residency plan was built from a different stream manifest"
+            );
             let mut state = sh_streaming::ShResidencyState::from_plan(
                 plan,
                 manifest.base(),

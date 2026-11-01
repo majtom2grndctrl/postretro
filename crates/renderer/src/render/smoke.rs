@@ -721,15 +721,16 @@ impl Default for SmokeLevelCollections {
 }
 
 impl SmokeLevelCollections {
-    /// Whether any collection is registered. Used by the renderer to skip the
-    /// pass entirely on levels with no emitters.
     /// Every registered collection id, sorted (tests and the set summary).
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn collection_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.sheets.keys().cloned().collect();
         ids.sort();
         ids
     }
 
+    /// Whether any collection is registered. Used by the renderer to skip the
+    /// pass entirely on levels with no emitters.
     pub fn has_any_sheet(&self) -> bool {
         !self.sheets.is_empty()
     }

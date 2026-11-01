@@ -273,6 +273,7 @@ pub(crate) struct InstalledFluidSurfaces {
     planar_candidate: bool,
     /// The planes the faces were cut along; tests and the set summary read
     /// it.
+    #[cfg(any(test, feature = "test-seams"))]
     grid: Option<postretro_render_cpu::fluid_surface::FluidGridPlanes>,
     /// Parameter-row uploads so far; tests read it.
     #[cfg(test)]
@@ -422,6 +423,7 @@ impl FluidLevelLayout {
             slots,
             planar_parts,
             planar_candidate: planar_routing::has_candidate_plane(volumes, reflection_probes),
+            #[cfg(any(test, feature = "test-seams"))]
             grid: mesh.grid,
             #[cfg(test)]
             param_uploads: 0,
@@ -809,7 +811,8 @@ impl InstalledFluidSurfaces {
 
 /// What prep decided, read back from the install: vertex count, index and
 /// probe-index buffer bytes, planar runs, whether a probe-bound face built
-/// the probe bind group, and the grid planes.
+/// the probe bind group, and the grid planes. Test-only, for the set summary.
+#[cfg(any(test, feature = "test-seams"))]
 impl InstalledFluidSurfaces {
     pub(crate) fn prep_summary(&self) -> String {
         format!(

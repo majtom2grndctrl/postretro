@@ -113,7 +113,8 @@ impl Renderer {
         }
         if !bytes.len().is_multiple_of(stride) {
             log::warn!(
-                "[Renderer] upload_fog_volumes: byte length {} is not a multiple of                  FogVolume stride {}; skipping.",
+                "[Renderer] upload_fog_volumes: byte length {} is not a multiple of \
+                 FogVolume stride {}; skipping.",
                 bytes.len(),
                 stride,
             );

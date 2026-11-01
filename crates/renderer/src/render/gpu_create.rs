@@ -1,10 +1,12 @@
-// GPU creation chokepoint: every renderer buffer, texture, bind group and pipeline, counted per thread.
+// GPU creation chokepoint: every renderer buffer, texture, bind group and pipeline, counted per thread;
+// initial data metered on the upload thread.
 // See: context/plans/in-progress/level-load-pipeline/index.md (Acceptance, Off the main thread)
 
 use std::cell::Cell;
 use wgpu::util::DeviceExt;
 
 use super::queue_writes::QueueWrites;
+use super::upload_thread::meter_initial_buffer_data;
 
 /// Running totals of GPU objects created through [`GpuCreate`] on one thread.
 /// Render and compute pipelines share `pipelines`.
@@ -62,9 +64,15 @@ fn count(bump: impl FnOnce(&mut GpuCreationCounts)) {
 }
 
 /// The renderer's only way to create the counted kinds. Each method counts on
-/// the calling thread, then calls the matching `wgpu` method unchanged.
+/// the calling thread, meters any initial data it stages on the queue (see
+/// [`super::upload_thread::UPLOAD_SUBMIT_CHUNK_BYTES`] for what the upload
+/// thread meters), then calls the matching `wgpu` method unchanged.
 pub(crate) trait GpuCreate {
     fn new_buffer(&self, desc: &wgpu::BufferDescriptor) -> wgpu::Buffer;
+    /// Its contents are staged on the queue's pending writes, so they ride
+    /// the next submit like a queued write. On the upload thread they are
+    /// metered into its submit chunk first (`meter_initial_buffer_data`);
+    /// elsewhere they are not metered.
     fn new_buffer_init(&self, desc: &wgpu::util::BufferInitDescriptor) -> wgpu::Buffer;
     fn new_texture(&self, desc: &wgpu::TextureDescriptor) -> wgpu::Texture;
     /// Its initial data is a queued write, metered through `queue`.
@@ -89,6 +97,10 @@ impl GpuCreate for wgpu::Device {
 
     fn new_buffer_init(&self, desc: &wgpu::util::BufferInitDescriptor) -> wgpu::Buffer {
         count(|counts| counts.buffers += 1);
+        // wgpu maps the buffer at creation, copies the contents and, for a
+        // usage that cannot map, stages them on the queue's pending writes at
+        // unmap: queue-write bytes the upload thread's chunk must count.
+        meter_initial_buffer_data(desc.contents.len() as u64);
         self.create_buffer_init(desc)
     }
 

@@ -26,12 +26,27 @@ pub(crate) const MODEL_CONTENT_KEY_VERSION: u32 = 1;
 /// specular slot the two-channel surface map rides, so the bound specular is
 /// the single-channel placeholder. The Surface Depth tier enters the key only
 /// while that policy consumes specular ([`Self::at_tier`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ModelInstallParams {
     /// The Surface Depth tier, when it shapes model materials; `None` while
     /// it cannot.
     surface_depth: Option<SurfaceDepthQuality>,
+    /// The Surface Depth tier a model built under these parameters binds its
+    /// materials at: the tier they were derived from. Not hashed: it shapes
+    /// the upload only through `surface_depth`, which carries it whenever
+    /// it does.
+    build_tier: SurfaceDepthQuality,
 }
+
+/// Equal when the key is: `build_tier` is not hashed, so two parameter sets
+/// that differ only there name the same cache entry.
+impl PartialEq for ModelInstallParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.surface_depth == other.surface_depth
+    }
+}
+
+impl Eq for ModelInstallParams {}
 
 impl ModelInstallParams {
     /// The parameters a load dispatched at the `surface_depth` tier builds
@@ -39,14 +54,24 @@ impl ModelInstallParams {
     pub(crate) fn at_tier(surface_depth: SurfaceDepthQuality) -> Self {
         Self {
             surface_depth: model_materials_consume_specular().then_some(surface_depth),
+            build_tier: surface_depth,
         }
+    }
+
+    /// The tier a model built under these parameters binds its materials
+    /// at, so a build and the key it is entered under agree.
+    pub(crate) fn build_tier(self) -> SurfaceDepthQuality {
+        self.build_tier
     }
 
     /// Parameters with an explicit Surface Depth input, whatever the slot
     /// policy says: the key's tests show a parameter change misses.
     #[cfg(test)]
     pub(crate) fn with_surface_depth(surface_depth: Option<SurfaceDepthQuality>) -> Self {
-        Self { surface_depth }
+        Self {
+            surface_depth,
+            build_tier: surface_depth.unwrap_or_default(),
+        }
     }
 
     fn hash_into(self, hasher: &mut blake3::Hasher) {

@@ -486,7 +486,7 @@ impl PrepShared {
             self.spawn(state, PrepKind::Assemble, move |shared| {
                 #[cfg_attr(not(test), allow(unused_mut))]
                 let mut world = tasks::assemble_level(hand_outs, &dims);
-                // The worker's accepted-parse warning, off the state lock.
+                // The accepted parse's stale-data-script warning, off the state lock.
                 crate::startup::data_script_staleness::report_stale_data_script(
                     &shared.inputs.map_path,
                     world.data_script.as_ref(),
@@ -533,7 +533,9 @@ impl PrepShared {
     /// whichever pool thread stored the last of them. The planar candidate
     /// is the app's verdict over its fluid tables (session data, not level
     /// data), so the build keys the planar targets by the install rule and a
-    /// different verdict re-keys them on main at publish.
+    /// different verdict re-keys them on main at publish. The part therefore
+    /// carries `planar_candidate: None`: the verdict is not a prep input, and
+    /// the commit syncs it from the app's tables after the set is published.
     fn submit_geometry(&self, state: &mut PrepState) {
         if state.geometry_submitted
             || state.lightmap_family.is_none()
@@ -721,8 +723,10 @@ impl PrepShared {
             self.upload.release();
             None
         } else {
-            // Each reader dropped its clone of the payloads before its
-            // product was stored, so the state holds the only one.
+            // No builder: a test-only seam until hub U3 adds a production
+            // verb, since production dispatches only with a full-ready
+            // renderer. Each reader dropped its clone of the payloads before
+            // its product was stored, so the state holds the only one.
             let payloads = state.payloads.take().map(Arc::try_unwrap);
             let (
                 Some(prepared),
@@ -774,8 +778,20 @@ impl PrepShared {
 
     /// Route one failure. The first wins and stops the load; a pre-verdict
     /// task's waits for the parse's verdict, which a rejection overrides.
+    /// While one is held, a later failure is dropped, so it can neither
+    /// settle the load before the verdict nor displace the first; only the
+    /// parse's own failure (a panic, which yields no verdict) replaces it,
+    /// as a rejection does.
     fn fail(&self, state: &mut PrepState, failure: LevelLoadFailure) {
         if state.settled {
+            return;
+        }
+        if state.held_failure.is_some() {
+            if failure.stage != LoadStage::Parse {
+                return;
+            }
+            state.held_failure = None;
+            self.settle(state, Err(failure));
             return;
         }
         if let LoadStage::Prep(kind) = failure.stage
@@ -848,8 +864,13 @@ impl PrepShared {
         }
     }
 
-    pub(super) fn take_outcome(&self) -> Option<Result<PreparedLevel, LevelLoadFailure>> {
-        self.lock().outcome.take()
+    /// The outcome, once, and whether the parse accepted the level, both
+    /// read under one lock.
+    pub(super) fn take_outcome_and_verdict(
+        &self,
+    ) -> (Option<Result<PreparedLevel, LevelLoadFailure>>, bool) {
+        let mut state = self.lock();
+        (state.outcome.take(), state.parse_accepted)
     }
 
     /// The load was cancelled: stop, cancel the build, drop everything,

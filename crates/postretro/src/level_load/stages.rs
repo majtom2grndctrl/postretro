@@ -95,6 +95,8 @@ pub(crate) enum BundleSet {
     /// No renderer at dispatch: prep ran alone and kept its GPU-bound
     /// products, which nothing uploaded. Tests only: the load state machine
     /// never dispatches without a full-ready renderer.
+    // A test-only seam until hub U3 adds a production verb: production reads
+    // none of the kept products.
     PrepOnly(#[cfg_attr(not(test), allow(dead_code))] Box<PreparedGpuLevel>),
 }
 
@@ -282,12 +284,17 @@ impl LevelLoadStages {
         }
         if self.held_upload_failure.is_some() || self.build_cancelled {
             // A prep failure that stopped the build, or that settled while
-            // the build was failing, wins.
-            if let Some(failure) = self.poll_prep() {
+            // the build was failing, wins. Prep's outcome and the parse's
+            // verdict are read together: the acceptance that settles a held
+            // pre-verdict failure does both under one lock, so a verdict read
+            // apart could see the acceptance without its failure and let the
+            // upload's win.
+            let (prep_failure, parse_accepted) = self.poll_prep_with_verdict();
+            if let Some(failure) = prep_failure {
                 return Some(Err(self.fail(failure, renderer)));
             }
             if self.held_upload_failure.is_some()
-                && (self.prepared.is_some() || self.prep.parse_accepted())
+                && (self.prepared.is_some() || parse_accepted)
                 && let Some(failure) = self.held_upload_failure.take()
             {
                 return Some(Err(self.fail(failure, renderer)));
@@ -314,7 +321,31 @@ impl LevelLoadStages {
         if self.prepared.is_some() {
             return None;
         }
-        match self.prep.try_take()? {
+        let outcome = self.prep.try_take();
+        self.keep_prep_outcome(outcome)
+    }
+
+    /// [`Self::poll_prep`], with whether the parse accepted the level, read
+    /// under the same lock as prep's outcome.
+    fn poll_prep_with_verdict(&mut self) -> (Option<LevelLoadFailure>, bool) {
+        #[cfg(test)]
+        if self.withhold_prep {
+            return (None, self.prep.parse_accepted());
+        }
+        if self.prepared.is_some() {
+            // Prep succeeds only on an accepted parse.
+            return (None, true);
+        }
+        let (outcome, parse_accepted) = self.prep.try_take_with_verdict();
+        (self.keep_prep_outcome(outcome), parse_accepted)
+    }
+
+    /// Keep a success for the bundle; hand a failure back.
+    fn keep_prep_outcome(
+        &mut self,
+        outcome: Option<Result<PreparedLevel, LevelLoadFailure>>,
+    ) -> Option<LevelLoadFailure> {
+        match outcome? {
             Ok(prepared) => {
                 self.prepared = Some(prepared);
                 None
@@ -388,11 +419,9 @@ impl LevelLoadStages {
         let world = match Arc::try_unwrap(world) {
             Ok(world) => world,
             Err(_) => {
-                let failure = LevelLoadFailure {
-                    stage: super::LoadStage::Upload,
-                    message: "the level is still shared after its set arrived".to_string(),
-                    parse_error: None,
-                };
+                let failure = LevelLoadFailure::upload_message(
+                    "the level is still shared after its set arrived",
+                );
                 return Err(self.fail(failure, renderer));
             }
         };
@@ -405,11 +434,9 @@ impl LevelLoadStages {
             }
             (None, Some(gpu)) => BundleSet::PrepOnly(Box::new(gpu)),
             (None, None) => {
-                let failure = LevelLoadFailure {
-                    stage: super::LoadStage::Upload,
-                    message: "a load without a set builder kept no GPU products".to_string(),
-                    parse_error: None,
-                };
+                let failure = LevelLoadFailure::upload_message(
+                    "a load without a set builder kept no GPU products",
+                );
                 return Err(self.fail(failure, renderer));
             }
         };

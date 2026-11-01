@@ -1,5 +1,6 @@
-// The level-geometry install contract: the borrowed level sections that
-// `install_level_geometry` consumes, and the section-45 roster it reserves.
+// The level-geometry install contract: the borrowed level sections that the
+// level install and build consume (`level_world_to_geometry` produces them from
+// a loaded world), and the section-45 roster they reserve.
 // See: context/lib/boot_sequence.md §3
 
 use super::*;
@@ -41,7 +42,8 @@ pub struct LevelGeometry<'a> {
     pub sh_storage: LevelGeometryShStorage<'a>,
     /// Id-22 cell-block index. `None` or zero blocks is placeholder mode: the
     /// 1×1 white placeholder, and bumped-Lambert falls back to flat white.
-    /// The index only; install hands the blobs to `install_level_geometry`.
+    /// The index only; the blobs travel as `GpuLightingPayloads` beside this
+    /// struct (in `LevelGeometryParts` on the staged build).
     pub lightmap: Option<&'a postretro_level_format::lightmap::LightmapBlockIndex>,
     /// `Some` when the level streams its cell blocks: install hands no
     /// payloads and builds an empty streamed pool over `lightmap` and
@@ -90,8 +92,8 @@ pub struct LevelGeometry<'a> {
     pub entity_shadow_lights: &'a [u32],
     /// Id 42's index: per-face owners and one record per id-22 cell block.
     /// Its presence alone plans the mask pool; owners reach the forward pass
-    /// through `vertex_spec_owners`. The index only; install hands the groups
-    /// to `install_level_geometry` inside each block's payload.
+    /// through `vertex_spec_owners`. The index only; the groups travel inside
+    /// each block's payload in `GpuLightingPayloads`.
     pub shadowmask_atlas:
         Option<&'a postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex>,
     /// `None` → no SDF static-occluder atlas; runtime SDF shadow pass disabled.

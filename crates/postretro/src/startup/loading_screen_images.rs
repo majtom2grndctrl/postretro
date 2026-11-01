@@ -71,7 +71,8 @@ impl LoadingImages {
     /// Decode `wanted` (`(key, mod-relative path)`, in order) under
     /// `mod_root` as one UI-priority task each on the load pool, ahead of
     /// queued level work. The main thread never waits on them. `pool` is the
-    /// error that kept the pool from starting, if it did not.
+    /// load pool, or the error that kept it from starting; on `Err` the load
+    /// draws no loading-screen images and the error is logged.
     pub(crate) fn start(
         pool: Result<&LoadPool, String>,
         mod_root: &Path,
@@ -144,7 +145,7 @@ impl LoadingImages {
                 Err(err) => {
                     log::debug!("[UI] uiImages.{key} decode task: {err:?}");
                     log::warn!(
-                        "[UI] uiImages.{key} did not load: its decode worker stopped; skipping it"
+                        "[UI] uiImages.{key} did not load: its decode task stopped; skipping it"
                     );
                     continue;
                 }
@@ -690,7 +691,7 @@ mod tests {
         }
         capture.assert_logged_once(
             log::Level::Warn,
-            "uiImages.shots/e1m1 did not load: its decode worker stopped",
+            "uiImages.shots/e1m1 did not load: its decode task stopped",
         );
     }
 

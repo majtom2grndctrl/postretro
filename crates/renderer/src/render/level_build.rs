@@ -503,7 +503,8 @@ impl LevelSetBuilder {
     /// Report each part's completion and the build's failure to `hook`, from
     /// the upload thread. Set once, before the first part; a second hook is
     /// refused (returns `false`). The hook must not hold a builder: it lives
-    /// as long as the build.
+    /// as long as the build. A hook that panics ends the build with
+    /// [`UploadError::Panicked`].
     pub fn on_event(&self, hook: impl Fn(LevelBuildEvent) + Send + Sync + 'static) -> bool {
         self.shared.events.set(Box::new(hook)).is_ok()
     }
@@ -545,6 +546,11 @@ impl LevelSetBuilder {
                 &texture_materials,
             );
             let mut state = shared.state();
+            if state.ended() {
+                // Ended (a cancel) while this part built: its product drops
+                // here instead of lingering in the ended state.
+                return Ok(PartDone::Skipped);
+            }
             if state.textures.is_some() {
                 return Err(LevelBuildError::DuplicatePart("textures"));
             }
@@ -617,7 +623,11 @@ impl LevelSetBuilder {
                 }
             });
             let set = built.unwrap_or(Err(LevelBuildError::MissingGeometry))?;
-            shared.state().set = Some(set);
+            let mut state = shared.state();
+            if state.ended() {
+                return Ok(PartDone::Skipped);
+            }
+            state.set = Some(set);
             Ok(PartDone::Stored)
         });
     }
@@ -635,7 +645,7 @@ impl LevelSetBuilder {
 
     /// [`Self::model`] for a model the shared cache missed: the set also
     /// carries `offer`, so the entry joins the cache when the set commits
-    /// (`Renderer::commit_model_cache`). A set that never commits drops the
+    /// (`Renderer::enter_model_cache_offers`). A set that never commits drops the
     /// offer with it, so no later lookup ever sees the entry (pin P29).
     pub fn offered_model(
         &self,
@@ -653,7 +663,11 @@ impl LevelSetBuilder {
     pub fn cached_model(&self, handle: impl Into<String>, cached: CachedModel) {
         let handle = postretro_model::ModelHandle::from(handle.into());
         self.queue_part(Some(LevelBuildPart::CachedModel), move |shared, _| {
-            shared.state().models.insert(handle, cached.entry);
+            let mut state = shared.state();
+            if state.ended() {
+                return Ok(PartDone::Skipped);
+            }
+            state.models.insert(handle, cached.entry);
             Ok(PartDone::Stored)
         });
     }
@@ -680,6 +694,10 @@ impl LevelSetBuilder {
             let created = gpu_creation_counts().since(before);
             let mut state = shared.state();
             state.model_creations.add(created);
+            if state.ended() {
+                // The entry (and its cache offer) drops here.
+                return Ok(PartDone::Skipped);
+            }
             state.samplers.merge(samplers);
             if let Some(offer) = offer {
                 let (key, cached) = offer.into_cached(&entry);
@@ -709,7 +727,11 @@ impl LevelSetBuilder {
                     collection.registration,
                 );
             }
-            shared.state().smoke = level;
+            let mut state = shared.state();
+            if state.ended() {
+                return Ok(PartDone::Skipped);
+            }
+            state.smoke = level;
             Ok(PartDone::Stored)
         });
     }
@@ -718,9 +740,18 @@ impl LevelSetBuilder {
     /// (and so every earlier part's) are submitted.
     pub fn finish(&self) {
         self.queue_part(Some(LevelBuildPart::Finish), |shared, upload| {
-            let mut state = shared.state();
-            let mut set = state.set.take().ok_or(LevelBuildError::MissingGeometry)?;
-            let textures = match state.textures.take() {
+            // The parts come out under the lock; the placeholder material is
+            // created outside it, since a main-thread cancel takes this lock
+            // and must never wait on GPU work.
+            let (mut set, textures) = {
+                let mut state = shared.state();
+                if state.ended() {
+                    return Ok(PartDone::Skipped);
+                }
+                let set = state.set.take().ok_or(LevelBuildError::MissingGeometry)?;
+                (set, state.textures.take())
+            };
+            let textures = match textures {
                 Some(textures) => textures,
                 None => placeholder_level_textures(
                     &upload.device,
@@ -729,6 +760,11 @@ impl LevelSetBuilder {
                 ),
             };
             set.install_textures(textures);
+            let mut state = shared.state();
+            if state.ended() {
+                // A cancel landed while the set was joined: it drops here.
+                return Ok(PartDone::Skipped);
+            }
             set.samplers.absorb(&mut state.samplers);
             set.models = std::mem::take(&mut state.models);
             set.smoke = std::mem::take(&mut state.smoke);
@@ -788,7 +824,20 @@ impl LevelSetBuilder {
                     job_shared.state().creations.add(created);
                     Ok(outcome)
                 },
-                move |result| deliver_shared.settle(part, result),
+                move |result| {
+                    // Settling runs outside the part's `catch_unwind`. A panic
+                    // in it must still end this build, or the pending handle
+                    // (whose builder clones keep the build alive) never
+                    // reports.
+                    let settled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        deliver_shared.settle(part, result)
+                    }));
+                    if let Err(payload) = settled {
+                        deliver_shared.fail_after_settle_panic(UploadError::Panicked(
+                            super::upload_thread::panic_message(payload.as_ref()),
+                        ));
+                    }
+                },
             )
         });
         if !queued {
@@ -886,10 +935,17 @@ impl BuildShared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn report(&self, event: LevelBuildEvent) {
-        if let Some(hook) = self.events.get() {
-            hook(event);
-        }
+    /// Hand `event` to the caller's hook, if any. A panicking hook comes back
+    /// as an error for the caller to end the build with: it must never skip
+    /// the build's delivery.
+    fn report(&self, event: LevelBuildEvent) -> Result<(), UploadError> {
+        let Some(hook) = self.events.get() else {
+            return Ok(());
+        };
+        let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(event)));
+        reported.map_err(|payload| {
+            UploadError::Panicked(super::upload_thread::panic_message(payload.as_ref()))
+        })
     }
 
     fn deliver(&self, outcome: Result<BuiltLevelSet, LevelBuildError>) {
@@ -922,9 +978,36 @@ impl BuildShared {
             };
         }
         if !matches!(error, LevelBuildError::Cancelled) {
-            self.report(LevelBuildEvent::Failed);
+            // The build is already failing: a hook that panics on the
+            // report changes nothing about the outcome.
+            let _ = self.report(LevelBuildEvent::Failed);
         }
         self.deliver(Err(error));
+    }
+
+    /// A part's settling panicked on the upload thread: end the build with
+    /// that panic. Unlike [`Self::fail`], this also ends a build its `finish`
+    /// had marked finished before unwinding short of delivery; settling runs
+    /// only on the upload thread, so no delivery is still in flight, and an
+    /// outcome already delivered stays.
+    fn fail_after_settle_panic(&self, error: UploadError) {
+        let was_ended = {
+            let mut state = self.state();
+            let was_ended = state.ended();
+            let creations = state.creations;
+            let model_creations = state.model_creations;
+            *state = BuildState {
+                failed: true,
+                creations,
+                model_creations,
+                ..BuildState::default()
+            };
+            was_ended
+        };
+        if !was_ended {
+            let _ = self.report(LevelBuildEvent::Failed);
+        }
+        self.deliver(Err(LevelBuildError::Upload(error)));
     }
 
     /// A part's verdict, on the upload thread after its writes were
@@ -941,8 +1024,9 @@ impl BuildShared {
                 let ended = self.state().ended();
                 if let Some(part) = part
                     && !ended
+                    && let Err(error) = self.report(LevelBuildEvent::PartDone(part))
                 {
-                    self.report(LevelBuildEvent::PartDone(part));
+                    self.fail(LevelBuildError::Upload(error));
                 }
             }
             Ok(Ok(PartDone::Skipped)) => {}
@@ -955,8 +1039,13 @@ impl BuildShared {
                     state.finished = true;
                     (state.creations.0, state.model_creations.0)
                 };
-                if let Some(part) = part {
-                    self.report(LevelBuildEvent::PartDone(part));
+                if let Some(part) = part
+                    && let Err(error) = self.report(LevelBuildEvent::PartDone(part))
+                {
+                    // The set drops; the build ends with the hook's panic.
+                    self.state().failed = true;
+                    self.deliver(Err(LevelBuildError::Upload(error)));
+                    return;
                 }
                 self.deliver(Ok(BuiltLevelSet {
                     set,
@@ -1034,7 +1123,9 @@ impl PendingLevelSet {
 }
 
 /// Everything a set's build decided, by family: counts, sizes, formats and
-/// plan values. Equal summaries are equal builds.
+/// plan values. Equal summaries are equal builds. Test-only: the renderer's
+/// and the app's equivalence tests compare builds through it.
+#[cfg(any(test, feature = "test-seams"))]
 pub(in crate::render) fn level_resource_summary(level: &LevelResourceSet) -> String {
     let textures: Vec<_> = level
         .loaded_textures
@@ -1099,6 +1190,7 @@ pub(in crate::render) fn level_resource_summary(level: &LevelResourceSet) -> Str
     )
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 impl Renderer {
     /// The active set's [`level_resource_summary`]: what its build decided,
     /// family by family. Equal summaries are equal builds, so an app-side

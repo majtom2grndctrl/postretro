@@ -46,7 +46,7 @@ use postretro_level_loader::{LevelLoadProgress, LoadCancel, LoadPhase};
 
 use crate::load_pool::{CancelToken, GroupRetirement, TaskGroup};
 
-pub(crate) use commit::{LevelCommitReport, add_creation_counts};
+pub(crate) use commit::{CheckedLevelBundle, CommitBundle, LevelCommitReport, add_creation_counts};
 pub(crate) use failure::{LevelLoadFailure, LoadStage, PrepKind};
 pub(crate) use inputs::{LevelPrepInputs, LevelTiers};
 #[cfg(test)]
@@ -64,6 +64,7 @@ pub(crate) use products::{
 #[cfg(test)]
 pub(crate) use stages::start_level_load_stages;
 pub(crate) use stages::{BundleSet, LevelBundle, LevelLoadStages, LoadRetirement};
+#[cfg(test)]
 pub(crate) use tasks::level_texture_materials;
 
 use coordinator::PrepShared;
@@ -102,8 +103,10 @@ pub(crate) fn start_level_prep(
 /// It ends one of three ways, each reported at most once:
 /// - [`try_take`](Self::try_take) yields `Ok(PreparedLevel)`;
 /// - it yields `Err(LevelLoadFailure)`: the first failing task, the parse
-///   included, wins, the group is cancelled at once, and every later failure
-///   is dropped and reported nowhere;
+///   included, wins (a pre-verdict task's failure waits for the parse's
+///   verdict, and a rejection replaces it), every later failure is dropped
+///   and reported nowhere, and the group is cancelled when `try_take`
+///   observes the failure;
 /// - it is cancelled ([`cancel`](Self::cancel)): it then yields neither,
 ///   ever. The caller polls the returned retirement; this type keeps no
 ///   cancelled state to poll. A pool shutdown under it likewise leaves it
@@ -120,18 +123,32 @@ impl LevelPrep {
     /// that and after it was taken. Never blocks. A task that panicked
     /// surfaces here, through its handle, as that task's failure.
     pub(crate) fn try_take(&mut self) -> Option<Result<PreparedLevel, LevelLoadFailure>> {
+        self.try_take_with_verdict().0
+    }
+
+    /// [`Self::try_take`], with whether the parse accepted the level, read
+    /// under the same lock as the outcome. The acceptance that settles a
+    /// held pre-verdict failure stores both at once, so an owner weighing
+    /// its own failure against prep's never sees the acceptance without
+    /// that failure.
+    pub(crate) fn try_take_with_verdict(
+        &mut self,
+    ) -> (Option<Result<PreparedLevel, LevelLoadFailure>>, bool) {
         if self.taken {
-            return None;
+            return (None, self.shared.parse_verdict_accepted());
         }
         self.shared.poll_task_handles();
-        let outcome = self.shared.take_outcome()?;
+        let (outcome, parse_accepted) = self.shared.take_outcome_and_verdict();
+        let Some(outcome) = outcome else {
+            return (None, parse_accepted);
+        };
         self.taken = true;
         // A failure cancels the group now: its queued tasks drop and its
         // running ones see their token. On success every task has finished.
         if outcome.is_err() {
             self.group.cancel_in_place();
         }
-        Some(outcome)
+        (Some(outcome), parse_accepted)
     }
 
     /// Cancel the load: the parse stops at its next stage boundary, queued
@@ -151,7 +168,10 @@ impl LevelPrep {
         self.group.cancel_in_place();
     }
 
-    /// Whether the parse returned an accepting verdict.
+    /// Whether the parse returned an accepting verdict. Tests only: an owner
+    /// that weighs it against prep's outcome reads both at once
+    /// ([`Self::try_take_with_verdict`]).
+    #[cfg(test)]
     pub(crate) fn parse_accepted(&self) -> bool {
         self.shared.parse_verdict_accepted()
     }

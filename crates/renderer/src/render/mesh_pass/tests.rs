@@ -593,7 +593,8 @@ fn skinned_mesh_shader_source_validates_both_cube_variants() {
 // cube-support variants. b5–b7 and the cache spot b9 are unconditional;
 // b8 and cache cube b10 are
 // present IFF `cube_array_supported` — the `Some`-iff-layout invariant the
-// BGL builder and `rebuild_light_bind_group` both honor. All FRAGMENT-only.
+// BGL builder and `LightGroupLayout::light_bind_groups` both honor. All
+// FRAGMENT-only.
 #[test]
 fn mesh_group2_shadow_bindings_match_both_cube_variants() {
     // No cube support: b5–b7 and b9 present; cube bindings b8/b10 absent.

@@ -9,7 +9,7 @@ use super::*;
 
 /// The lightmap family's planned pool and built animated atlas, handed from
 /// the plan to the lightmap install.
-pub(super) struct LightmapFamilyPlan {
+pub(super) struct BuiltLightmapFamily {
     lightmap_bgl: wgpu::BindGroupLayout,
     block_table_bgl: wgpu::BindGroupLayout,
     static_pool: crate::lighting::lightmap::StaticPool,
@@ -37,7 +37,7 @@ pub(super) fn plan_lightmap_family(
     gpu_lighting_payloads: &postretro_level_loader::GpuLightingPayloads,
     prepared: Option<postretro_render_cpu::lightmap_family::LightmapFamilyPlan>,
 ) -> (
-    LightmapFamilyPlan,
+    BuiltLightmapFamily,
     Vec<postretro_render_data::geometry::BvhLeaf>,
 ) {
     let lightmap_bgl = crate::lighting::lightmap::bind_group_layout(device);
@@ -65,7 +65,7 @@ pub(super) fn plan_lightmap_family(
     );
 
     (
-        LightmapFamilyPlan {
+        BuiltLightmapFamily {
             lightmap_bgl,
             block_table_bgl,
             static_pool,
@@ -147,10 +147,10 @@ pub(super) fn install_lightmap(
     writes: &dyn crate::render::queue_writes::QueueWrites,
     geometry: &LevelGeometry<'_>,
     gpu_lighting_payloads: postretro_level_loader::GpuLightingPayloads,
-    plan: LightmapFamilyPlan,
+    plan: BuiltLightmapFamily,
     generation_floor: u64,
 ) -> LevelLightmapFamily {
-    let LightmapFamilyPlan {
+    let BuiltLightmapFamily {
         lightmap_bgl,
         block_table_bgl,
         static_pool,
@@ -198,7 +198,7 @@ pub(super) fn rebind_sdf_shadow(
     // SDF half-res shadow pass — rebind to the freshly-loaded SH
     // depth-moment texture + static-light buffers. The pass itself is always
     // allocated; the dispatch is gated on `sdf_atlas_resources.present`,
-    // which `install_level_geometry` may have just flipped.
+    // which `install_compose_family` sets.
     let sdf_shadow_sh_grid = streaming_manifest
         .filter(|_| sh_streaming.is_some())
         .map(|manifest| {

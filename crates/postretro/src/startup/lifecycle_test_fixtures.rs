@@ -672,7 +672,9 @@ pub(crate) fn runtime_audience_manifest(
 const LIFECYCLE_TESTS_MARKER: &str = "#[cfg(test)]\npub(crate) mod tests";
 
 /// The files holding `install_level_payload` and the stages it calls. None
-/// of them holds tests, so all of each file is production code.
+/// of them holds a test module: all of each file is install code, the
+/// shared stages and the oracle's own `#[cfg(test)]` sequencer and renderer
+/// stage alike.
 const INSTALL_SOURCES: [&str; 3] = [
     include_str!("lifecycle_install.rs"),
     include_str!("lifecycle_install_world.rs"),

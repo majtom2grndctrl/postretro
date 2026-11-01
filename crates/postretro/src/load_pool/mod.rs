@@ -10,9 +10,6 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
-// Items marked `allow(dead_code)` outside tests are the cancel, retirement
-// and inspection API the later load stages consume.
-
 /// The most threads the pool ever runs. Prep shares the CPU with the main
 /// thread, the upload thread and the SH decode workers, so width buys
 /// structure, not speed.
@@ -34,7 +31,6 @@ fn width_for_parallelism(parallelism: usize) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Priority {
     Ui,
-    #[cfg_attr(not(test), allow(dead_code))]
     Load,
 }
 
@@ -50,7 +46,6 @@ pub(crate) enum TaskError {
 
 /// What a task reads between steps to stop early: set when its group is
 /// cancelled or the pool shuts down.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct CancelToken {
     group: Arc<AtomicBool>,
@@ -58,7 +53,6 @@ pub(crate) struct CancelToken {
 }
 
 impl CancelToken {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_cancelled(&self) -> bool {
         self.group.load(Ordering::Acquire) || self.pool.load(Ordering::Acquire)
     }
@@ -135,28 +129,30 @@ impl LoadPool {
     }
 
     /// How many tasks run at once, at most.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn width(&self) -> usize {
         self.workers.len()
     }
 
     /// Threads this pool has started, counted by the pool itself. Never
     /// exceeds [`LoadPool::width`].
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn threads_started(&self) -> usize {
         self.shared.threads_started.load(Ordering::Relaxed)
     }
 
-    /// Tasks a worker has taken off the queue.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Tasks a worker has taken off the queue. A worker bumps the count
+    /// after it releases the queue lock, so it can lag a task already taken.
+    #[cfg(test)]
     pub(crate) fn tasks_started(&self) -> usize {
         self.shared.tasks_started.load(Ordering::Relaxed)
     }
 
     /// Tasks accepted onto the queue (a spawn into a cancelled group, or
-    /// after shutdown, is refused and not counted). A task queued before a
-    /// cancel may still be taken off the queue after it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// after shutdown, is refused and not counted). A cancel removes its
+    /// group's queued tasks under the queue lock, so none is taken off the
+    /// queue after it.
+    #[cfg(test)]
     pub(crate) fn tasks_queued(&self) -> usize {
         self.shared.tasks_queued.load(Ordering::Relaxed)
     }
@@ -223,21 +219,12 @@ impl TaskGroup {
 
     /// A cloneable submitter into this group, for a task that queues more
     /// work (the parse handing prep its sections). It never cancels.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn spawner(&self) -> GroupSpawner {
         self.spawner.clone()
     }
 
-    /// Keep `value` alive until every task this group started has returned,
-    /// even past a cancel: the retirement releases it when it finishes.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn retain<A: Any + Send + Sync>(&self, value: Arc<A>) {
-        lock(&self.spawner.group.retained).push(value);
-    }
-
     /// Cancel the group and hand back what tracks its started tasks. Never
     /// waits.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cancel(self) -> GroupRetirement {
         self.cancel_now();
         GroupRetirement {
@@ -249,7 +236,6 @@ impl TaskGroup {
     /// in [`Self::cancel`], which still hands back the retirement later.
     /// For an owner that must stop the group's work at once (a load's first
     /// failure) but retires it on its own schedule.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn cancel_in_place(&self) {
         self.cancel_now();
     }
@@ -345,22 +331,16 @@ impl GroupSpawner {
 /// A cancelled group still finishing the tasks it started. Poll
 /// [`GroupRetirement::try_finish`] on later frames; nothing here waits, and
 /// dropping it early gives up nothing a running task needs.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct GroupRetirement {
     group: Arc<GroupState>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl GroupRetirement {
     /// True once every task the group started has returned; its queued tasks
-    /// were dropped at cancel. Then releases what the group retained.
+    /// were dropped at cancel.
     pub(crate) fn try_finish(&mut self) -> bool {
-        if self.group.running.load(Ordering::Acquire) != 0 {
-            return false;
-        }
-        drop(std::mem::take(&mut *lock(&self.group.retained)));
-        true
+        self.group.running.load(Ordering::Acquire) == 0
     }
 }
 
@@ -404,10 +384,6 @@ struct GroupState {
     /// Tasks a worker has taken and not finished. Raised under the queue
     /// lock, lowered after the task and its inputs are dropped.
     running: AtomicUsize,
-    /// Kept until the retirement finishes; failing that, until the last
-    /// running task drops its hold on the group.
-    #[cfg_attr(not(test), allow(dead_code))]
-    retained: Mutex<Vec<Arc<dyn Any + Send + Sync>>>,
 }
 
 struct Job {
@@ -491,7 +467,7 @@ impl EngineLoadPool {
     }
 
     /// The pool, if it has been built.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn built(&self) -> Option<&LoadPool> {
         self.pool.as_ref()
     }

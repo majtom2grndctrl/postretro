@@ -82,3 +82,23 @@ fn upload_thread_reports_job_panic_as_error() {
     let next = thread.submit(|_: &UploadContext| Ok("still serving"));
     assert_eq!(wait_for(next).unwrap(), "still serving");
 }
+
+// Delivery runs outside the job's `catch_unwind`; a panic there is contained
+// so the thread still serves every later job.
+#[test]
+fn upload_thread_survives_a_panicking_delivery() {
+    let Some(ctx) = gpu_or_skip("upload_thread_survives_a_panicking_delivery") else {
+        return;
+    };
+    let thread = UploadThread::spawn(ctx.device.clone(), ctx.queue.clone()).unwrap();
+
+    thread.submit_then(
+        |_: &UploadContext| Ok(()),
+        |_: Result<(), UploadError>| panic!("injected delivery panic"),
+    );
+    let next = thread.submit(|_: &UploadContext| Ok("still serving"));
+    assert_eq!(
+        wait_for(next).expect("the thread outlives a panicking delivery"),
+        "still serving"
+    );
+}

@@ -824,6 +824,46 @@ fn upload_errors_end_the_build_once() {
     }
 }
 
+// Settling runs outside a part's `catch_unwind`: a panic there (here, in the
+// caller's progress hook, on a stored part and on `finish`) still ends that
+// build exactly once, and the upload thread serves the next build.
+#[test]
+fn a_panic_while_a_part_settles_ends_the_build_and_the_thread_serves_on() {
+    let test = "a_panic_while_a_part_settles_ends_the_build_and_the_thread_serves_on";
+    let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
+        return;
+    };
+    let fixture = legacy_fixture(0x5A);
+    let tiers = renderer.level_build_tiers();
+    let resident = renderer.resident_level_sets();
+    for panicking in [LevelBuildPart::Geometry, LevelBuildPart::Finish] {
+        let (builder, mut pending) = renderer.begin_level_set_build(tiers);
+        assert!(builder.on_event(move |event| {
+            if event == LevelBuildEvent::PartDone(panicking) {
+                panic!("injected settle panic");
+            }
+        }));
+        fixture.queue(&builder, false);
+        builder.finish();
+        match take(&mut renderer, &mut pending) {
+            Err(LevelBuildError::Upload(UploadError::Panicked(message))) => {
+                assert!(message.contains("injected settle panic"), "{message}")
+            }
+            other => panic!("{panicking:?}: wrong outcome {other:?}"),
+        }
+        assert_eq!(
+            renderer.resident_level_sets(),
+            resident,
+            "{panicking:?}: nothing reached the resident sets"
+        );
+    }
+    let id = fixture.build(&mut renderer, tiers);
+    assert!(
+        renderer.resident_level_sets().contains(&id),
+        "the upload thread built the next set"
+    );
+}
+
 #[test]
 fn upload_writes_submit_in_bounded_chunks() {
     let Some(ctx) = gpu_or_skip("upload_writes_submit_in_bounded_chunks") else {
@@ -866,6 +906,46 @@ fn upload_writes_submit_in_bounded_chunks() {
             "batch {batch} exceeds the chunk and is not one oversized write"
         );
     }
+}
+
+// A buffer created with contents stages them on the queue like a write, so
+// on the upload thread they meter into the same chunks as the job's writes.
+#[test]
+fn buffer_contents_created_on_the_upload_thread_meter_into_its_chunks() {
+    use crate::render::gpu_create::GpuCreate;
+    let test = "buffer_contents_created_on_the_upload_thread_meter_into_its_chunks";
+    let Some(ctx) = gpu_or_skip(test) else {
+        return;
+    };
+    let thread = UploadThread::spawn(ctx.device.clone(), ctx.queue.clone()).unwrap();
+    const MIB: u64 = 1024 * 1024;
+    let staged = thread.submit(move |context: &UploadContext| {
+        let _ = context.writes.take_batches();
+        let target = context.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer-init meter proof target"),
+            size: 24 * MIB,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        context
+            .writes
+            .write_buffer(&target, 0, &vec![0u8; (24 * MIB) as usize]);
+        // 16 MiB more would carry the pending 24 MiB past the chunk: the
+        // pending batch submits before the buffer's contents stage.
+        let _ = context
+            .device
+            .new_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("buffer-init meter proof contents"),
+                contents: &vec![0u8; (16 * MIB) as usize],
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        Ok(())
+    });
+    wait_for(staged).expect("the writes and the buffer stage cleanly");
+    let batches =
+        wait_for(thread.submit(|context: &UploadContext| Ok(context.writes.take_batches())))
+            .expect("the batch log reads");
+    assert_eq!(batches, vec![24 * MIB, 16 * MIB]);
 }
 
 #[test]

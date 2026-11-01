@@ -592,7 +592,7 @@ fn main() -> Result<()> {
     // timing, the `pending_session` bundle) and the event loop. The entire
     // `Session` (options I/O, audio, scripting core, input/UI/modal group,
     // net endpoint) is constructed post-first-pixel by `Session::build` via
-    // `install_pending_session`. Mod init and the first level-load worker are
+    // `install_pending_session`. Mod init and the first level load are
     // deferred to the splash loop. See: context/lib/boot_sequence.md §1.
     let startup::BootSession {
         event_loop,
@@ -785,7 +785,7 @@ pub(crate) struct App {
     nav_graph: Option<nav::NavGraph>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in
-    /// Frontend after the splash instead of spawning the level-load worker.
+    /// Frontend after the splash instead of requesting a boot level load.
     map_path: Option<PathBuf>,
 
     /// Derived from the map path at startup. `textures/` and `scripts/`
@@ -1046,7 +1046,7 @@ pub(crate) struct App {
 
     /// Counts splash frames since `resumed()`. The state machine uses this to
     /// schedule the deferred `mod_init` and boot load request after the first
-    /// visible splash frame; Loading owns worker polling.
+    /// visible splash frame; Loading owns the load's progress polling.
     splash_frame: u32,
 
     /// When deferred mod init finished this boot. Whatever follows mod init
@@ -1123,8 +1123,9 @@ pub(crate) struct App {
     /// splash_decoded, splash_uploaded, first_splash_frame, then the
     /// post-first-pixel deferred-session marks (audio_init_complete,
     /// script_runtime_ctor, net_endpoint_complete, session_init_complete),
-    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch. The
-    /// script runtime is constructed inside `Session::build`, so its mark fires
+    /// renderer_full_init_complete, and (CLI-map boot) boot_worker_dispatch,
+    /// which records the boot level load request being enqueued (its stages
+    /// dispatch later, in `try_dispatch_level_load`). The script runtime is constructed inside `Session::build`, so its mark fires
     /// after the logo frame — not in early engine boot.
     /// See: context/lib/boot_sequence.md §1.
     boot_timings: StartupTimings,
@@ -1137,9 +1138,9 @@ pub(crate) struct App {
     /// mod_splash_swap [conditional]).
     mod_timings: StartupTimings,
 
-    /// Per-stage durations for log line C — level load. Worker-thread stages
-    /// are attached to `worker_delivered`, which contains them; see the
-    /// `StartupTimings` doc comment.
+    /// Per-stage durations for log line C — level load. Prep and parse marks
+    /// sit inside `bundle_ready` (an `incl.` group), the commit's sub-marks
+    /// inside `commit_frame`; see the `StartupTimings` doc comment.
     level_timings: StartupTimings,
 
     /// Metadata for the active Loading-state request. Catalog loads retain the
@@ -1184,8 +1185,8 @@ pub(crate) struct App {
     level_requests: VecDeque<LevelRequest>,
 
     /// One-shot marker for the CLI boot map load. Runtime load failures fall
-    /// back to Frontend; this boot load exits non-zero if the worker fails or
-    /// returns an empty payload.
+    /// back to Frontend; a boot load that fails at any stage (dispatch, parse,
+    /// prep, upload, commit check) exits non-zero through `finish_level_failure`.
     boot_load: bool,
 
     /// Deferred-startup owner: the raw inputs (`argv`) needed to construct the
@@ -5660,7 +5661,7 @@ impl App {
 
     /// Register the listen host's OWN player pawn for outbound replication after a
     /// level install (M15 Phase 3, issue 3b). The host's boot pawn is spawned by
-    /// `install_level_payload` via `spawn_from_player_starts` and marked the
+    /// level install's segment B via `spawn_from_player_starts` and marked the
     /// `local_player_pawn`; without registering it in the `ReplicableSet` it never
     /// reaches `produce_owned_snapshots`, so clients draw no host capsule.
     ///

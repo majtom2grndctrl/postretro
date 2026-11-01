@@ -97,7 +97,7 @@ pub(crate) enum LoadOrder {
     /// swap): no unload, no loading screen, no `loading.progress` credit,
     /// and the uncaptured-error capture stays disarmed. The request's
     /// metadata waits here until the commit installs it.
-    // Reached from tests only: no production verb starts one yet.
+    // A test-only seam until hub U3 adds a production verb that starts one.
     #[cfg_attr(not(test), allow(dead_code))]
     Beside(Box<InFlightLevelLoad>),
 }
@@ -141,6 +141,7 @@ impl LevelLoads {
     /// one, under the next generation. `progress` is the load's own counter,
     /// which its stages credit and nothing reads into `loading.progress`.
     /// The caller has already cancelled any active load.
+    // A test-only seam until hub U3 adds a production verb that calls it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn start_beside(
         &mut self,
@@ -200,7 +201,7 @@ impl LevelLoads {
     }
 
     /// Whether the active load was dispatched.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn is_staged(&self) -> bool {
         matches!(
             self.active.as_ref().map(|active| &active.phase),
@@ -214,6 +215,8 @@ impl LevelLoads {
     }
 
     /// The bundle a load beside a running level holds, once ready.
+    // A test-only seam until hub U3 adds a production verb: only the beside
+    // commit and tests read it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn held_bundle(&self) -> Option<&LevelBundle> {
         match &self.active.as_ref()?.phase {

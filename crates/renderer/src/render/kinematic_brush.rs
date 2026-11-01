@@ -600,37 +600,24 @@ impl KinematicLevelState {
         material_count: usize,
         light_groups: LevelLightGroups,
     ) -> Self {
-        let empty = |light_groups| {
-            let (vertex_buffer, index_buffer) = empty_geometry_buffers(device);
-            Self {
-                vertex_buffer,
-                index_buffer,
-                index_count: 0,
-                movers: Vec::new(),
-                mover_lookup: HashMap::new(),
-                mover_index_ranges: Vec::new(),
-                mover_bounds: Vec::new(),
-                mover_triangles: Vec::new(),
-                mover_triangle_spans: Vec::new(),
-                light_groups,
-            }
-        };
-        let Some(geometry) = geometry else {
-            return empty(light_groups);
-        };
-        let mut level = empty_cpu(light_groups);
-        level.mover_triangles.reserve_exact(
-            geometry
-                .movers
+        let level_movers = geometry.map_or(&[][..], |geometry| geometry.movers.as_slice());
+        let mut movers = Vec::new();
+        let mut mover_lookup = HashMap::new();
+        let mut mover_index_ranges = Vec::new();
+        let mut mover_bounds = Vec::new();
+        let mut mover_triangles = Vec::new();
+        mover_triangles.reserve_exact(
+            level_movers
                 .iter()
                 .filter(|mover| !mover.vertices.is_empty())
                 .map(|mover| mover.indices.len() / 3)
                 .sum(),
         );
+        let mut mover_triangle_spans = Vec::new();
 
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        for mover in &geometry.movers {
+        for mover in level_movers {
             if mover.vertices.is_empty() || mover.indices.is_empty() {
                 continue;
             }
@@ -652,13 +639,13 @@ impl KinematicLevelState {
                     index_count: mover.indices.len() as u32,
                 });
             }
-            let draw_index = level.movers.len();
-            level.mover_lookup.insert(mover.mover_id, draw_index);
-            level.movers.push(UploadedMoverDraw {
+            let draw_index = movers.len();
+            mover_lookup.insert(mover.mover_id, draw_index);
+            movers.push(UploadedMoverDraw {
                 mover_id: mover.mover_id,
                 material_ranges: ranges,
             });
-            level.mover_index_ranges.push(MoverIndexRange {
+            mover_index_ranges.push(MoverIndexRange {
                 index_start: index_base,
                 index_count: mover.indices.len() as u32,
             });
@@ -669,36 +656,49 @@ impl KinematicLevelState {
                     (min.min(position), max.max(position))
                 },
             );
-            level.mover_bounds.push(Aabb { min, max });
-            let first = level.mover_triangles.len();
+            mover_bounds.push(Aabb { min, max });
+            let first = mover_triangles.len();
             for corners in mover.indices.as_chunks::<3>().0 {
                 if let Some(triangle) = triangle_positions(&mover.vertices, corners) {
-                    level.mover_triangles.push(triangle);
+                    mover_triangles.push(triangle);
                 }
             }
-            level
-                .mover_triangle_spans
-                .push(first..level.mover_triangles.len());
+            mover_triangle_spans.push(first..mover_triangles.len());
         }
 
-        if vertices.is_empty() || indices.is_empty() {
-            return empty(level.light_groups);
+        // The buffers come last, from the packed arrays: a level that
+        // uploaded no mover binds the one-element placeholders instead.
+        let (vertex_buffer, index_buffer, index_count) =
+            if vertices.is_empty() || indices.is_empty() {
+                let (vertex_buffer, index_buffer) = empty_geometry_buffers(device);
+                (vertex_buffer, index_buffer, 0)
+            } else {
+                let vertex_bytes = cast_world_vertices_to_bytes(&vertices);
+                let index_bytes = bytemuck_cast_slice_u32(&indices);
+                let vertex_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Kinematic Brush Vertex Buffer"),
+                    contents: &vertex_bytes,
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Kinematic Brush Index Buffer"),
+                    contents: &index_bytes,
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                (vertex_buffer, index_buffer, indices.len() as u32)
+            };
+        Self {
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            movers,
+            mover_lookup,
+            mover_index_ranges,
+            mover_bounds,
+            mover_triangles,
+            mover_triangle_spans,
+            light_groups,
         }
-
-        let vertex_bytes = cast_world_vertices_to_bytes(&vertices);
-        let index_bytes = bytemuck_cast_slice_u32(&indices);
-        level.vertex_buffer = Some(device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Vertex Buffer"),
-            contents: &vertex_bytes,
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
-        level.index_buffer = Some(device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Kinematic Brush Index Buffer"),
-            contents: &index_bytes,
-            usage: wgpu::BufferUsages::INDEX,
-        }));
-        level.index_count = indices.len() as u32;
-        level.finish()
     }
 
     /// Replace this level's mover geometry, keeping its light groups: a test
@@ -779,52 +779,6 @@ impl KinematicLevelState {
                     )
                 }),
         )
-    }
-}
-
-/// A level-in-progress whose GPU buffers are still unset.
-struct KinematicLevelCpu {
-    vertex_buffer: Option<wgpu::Buffer>,
-    index_buffer: Option<wgpu::Buffer>,
-    index_count: u32,
-    movers: Vec<UploadedMoverDraw>,
-    mover_lookup: HashMap<u32, usize>,
-    mover_index_ranges: Vec<MoverIndexRange>,
-    mover_bounds: Vec<Aabb>,
-    mover_triangles: Vec<[glam::Vec3; 3]>,
-    mover_triangle_spans: Vec<std::ops::Range<usize>>,
-    light_groups: LevelLightGroups,
-}
-
-fn empty_cpu(light_groups: LevelLightGroups) -> KinematicLevelCpu {
-    KinematicLevelCpu {
-        vertex_buffer: None,
-        index_buffer: None,
-        index_count: 0,
-        movers: Vec::new(),
-        mover_lookup: HashMap::new(),
-        mover_index_ranges: Vec::new(),
-        mover_bounds: Vec::new(),
-        mover_triangles: Vec::new(),
-        mover_triangle_spans: Vec::new(),
-        light_groups,
-    }
-}
-
-impl KinematicLevelCpu {
-    fn finish(self) -> KinematicLevelState {
-        KinematicLevelState {
-            vertex_buffer: self.vertex_buffer.expect("mover vertex buffer uploaded"),
-            index_buffer: self.index_buffer.expect("mover index buffer uploaded"),
-            index_count: self.index_count,
-            movers: self.movers,
-            mover_lookup: self.mover_lookup,
-            mover_index_ranges: self.mover_index_ranges,
-            mover_bounds: self.mover_bounds,
-            mover_triangles: self.mover_triangles,
-            mover_triangle_spans: self.mover_triangle_spans,
-            light_groups: self.light_groups,
-        }
     }
 }
 

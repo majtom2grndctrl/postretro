@@ -159,9 +159,11 @@ fn cancelled_prep_reports_nothing_and_spawns_no_more_tasks() {
     held_rx
         .recv_timeout(HOLD_TIMEOUT)
         .expect("the parse reached hand-out 2");
-    // Queued, not started: a task the held hand-out already queued may
-    // still be taken off the queue after the cancel (the pool counts that
-    // as started), but nothing new is queued.
+    // Queued, not started: the cancel drops every still-queued task of the
+    // group under the queue lock, so nothing is taken off the queue after
+    // it. The `tasks_started` counter can lag, though: a worker bumps it
+    // after releasing the lock, so a task taken before the cancel may be
+    // counted after it. Nothing new is queued.
     let queued_at_cancel = pool.tasks_queued();
     let mut retirement = prep.cancel();
     release_tx.send(()).unwrap();

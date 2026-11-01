@@ -66,6 +66,8 @@ impl SampleRegionIndex {
         self.tables.writer_row(row)
     }
 
+    /// The static tables (the residency plan summary).
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn tables(&self) -> &SampleRegionTables {
         &self.tables
     }

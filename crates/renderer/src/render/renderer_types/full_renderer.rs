@@ -17,9 +17,11 @@ pub(in crate::render) struct FullRenderer {
     pub(in crate::render) uniform_buffer: wgpu::Buffer,
     pub(in crate::render) uniform_bind_group: wgpu::BindGroup,
 
-    /// Retained so `install_textures` can create material bind groups after init.
+    /// Retained so each level build can create material bind groups; the
+    /// layout is snapshotted into its `LevelBuildContext`.
     pub(in crate::render) texture_bind_group_layout: wgpu::BindGroupLayout,
-    /// Retained so `install_level_geometry` can rebuild the lighting bind group.
+    /// Retained so each level build can create its lighting bind group; the
+    /// layout is snapshotted into its `LevelBuildContext`.
     pub(in crate::render) lighting_bind_group_layout: wgpu::BindGroupLayout,
     /// The add-only sampler maps, one sampler per distinct uploaded
     /// `mip_count` (keyed by `LoadedTexture::mip_count`), a named exception to

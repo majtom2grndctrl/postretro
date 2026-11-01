@@ -105,11 +105,10 @@ impl App {
                     .retain(|queued| !matches!(queued, LevelRequest::Load(_)));
             }
             LevelRequest::Unload => {
-                if self
-                    .level_requests
-                    .iter()
-                    .any(|queued| matches!(queued, LevelRequest::Unload))
-                {
+                // Only a repeat of the queue's last request is redundant: an
+                // earlier `Unload` followed by a `Load` still ends that load
+                // in Frontend, so the unload is never dropped (pin P3).
+                if matches!(self.level_requests.back(), Some(LevelRequest::Unload)) {
                     return;
                 }
             }

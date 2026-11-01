@@ -1,13 +1,12 @@
-//! Finishing a delivered level load: install, the level's streaming sessions,
-//! then Settling behind the loading tree. Production loads finish through
-//! their bundle's commit (`lifecycle_commit.rs`); `finish_level_payload`, the
-//! main-thread oracle's finish, stays for the tests that compare the two.
+//! The tail a level load ends with, shared by the commit and the main-thread
+//! test oracle (`finish_level_payload`): host pawn registration, then Settling.
 //! See: context/lib/boot_sequence.md §1 (Settling) · §3
 
 use super::*;
 
 impl App {
-    /// The oracle: install a worker payload on the main thread, then Settling.
+    /// The oracle: install a parsed level payload on the main thread, then
+    /// Settling. Production loads finish through the commit instead.
     #[cfg(test)]
     pub(super) fn finish_level_payload(
         &mut self,
@@ -48,9 +47,9 @@ impl App {
         // The install frame never counts, and no CPU timing surface may
         // show a window from the previous level.
         self.cpu_timer.level_changed();
-        // M15 Phase 3 (issue 3b): register the listen host's own boot pawn for
-        // outbound replication now that the install has spawned + marked it the
-        // local player. Reload-safe and a no-op off the host / on a map without a
+        // Register the listen host's own boot pawn for outbound replication
+        // once the install has spawned and marked it the local player.
+        // Reload-safe and a no-op off the host / on a map without a
         // player_spawn. The host pawn stays driven locally by `simulate_tick`.
         self.host_register_own_pawn_after_install();
         self.level_load = None;

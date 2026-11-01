@@ -32,7 +32,7 @@ pub(crate) struct PreparedLevel {
     /// The assembled level, UVs normalized by the prepared texture dims, its
     /// GPU-only lightmap and shadowmask payloads taken
     /// (`LevelWorld::take_gpu_lighting_payloads`); the commit installs it as
-    /// today's `App::level`. Shared: a load that builds a set hands the
+    /// `App::level`. Shared: a load that builds a set hands the
     /// geometry part a clone, which the part drops before the set arrives,
     /// so the load-stage handle unwraps it then.
     pub(crate) world: Arc<LevelWorld>,
@@ -53,6 +53,8 @@ pub(crate) struct PreparedLevel {
 /// The upload stage's inputs, all `Send`. A prep-only bundle keeps them;
 /// production never dispatches one (the load state machine holds a load
 /// queued until the renderer is full-ready), so only tests read them.
+// A test-only seam until hub U3 adds a production verb: production builds
+// it only on the no-builder branch no dispatch takes, and reads none of it.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub(crate) struct PreparedGpuLevel {
@@ -113,23 +115,25 @@ impl PreparedModels {
         prepared
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Test-only readers: the commit takes the models whole
+    // (`into_models`).
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.models.is_empty()
     }
 
     /// The predicted handles, in predicted order.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn handles(&self) -> impl Iterator<Item = &str> {
         self.models.iter().map(|model| model.handle.as_str())
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &PreparedModel> {
         self.models.iter()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn get(&self, handle: &str) -> Option<&PreparedModel> {
         self.by_handle.get(handle).map(|&index| &self.models[index])
     }
@@ -152,10 +156,15 @@ impl PreparedModels {
 
     /// The over-predictions: handles prep prepared that the real sweep does
     /// not hold, in predicted order. Each one cost a parse, and its set entry
-    /// is released at commit ([`super::ModelOverPredictions`]).
+    /// is released at commit ([`super::ModelOverPredictions`]). A model whose
+    /// read or parse failed is none: no set ever held it, and the hit-zone
+    /// store already reports it.
     pub(crate) fn over_predictions(&self, real_sweep: &[String]) -> Vec<&str> {
         let real: std::collections::HashSet<&str> = real_sweep.iter().map(String::as_str).collect();
-        self.handles()
+        self.models
+            .iter()
+            .filter(|model| model.parsed.is_ok())
+            .map(|model| model.handle.as_str())
             .filter(|handle| !real.contains(handle))
             .collect()
     }
@@ -197,6 +206,8 @@ pub(crate) struct ParsedModelProducts {
 
 /// One parsed model's upload inputs, kept only by a prep-only load (see
 /// [`PreparedGpuLevel`]).
+// A test-only seam until hub U3 adds a production verb, as
+// `PreparedGpuLevel` is.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ModelUpload {
     /// The parse itself, which the upload reads (mesh, skeleton, clips).

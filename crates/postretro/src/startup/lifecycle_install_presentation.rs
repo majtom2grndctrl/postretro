@@ -18,8 +18,8 @@ pub(super) enum LevelFogMasks {
 /// Where a level's sounds come from.
 #[derive(Debug)]
 pub(super) enum LevelSounds {
-    /// The main-thread install decodes the mod's `sounds/` here.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The main-thread oracle decodes the mod's `sounds/` here (test-only).
+    #[cfg(test)]
     Load,
     /// A load decoded them on its pool: `None` when its dispatch had no
     /// audio, which decodes none.
@@ -165,15 +165,18 @@ impl App {
         // Sound registry follows level lifetime, parallel to textures: load the
         // level's sounds from `sounds/`, released at unload. Fault-tolerant — a
         // missing directory or undecodable file warns and is skipped; silent if
-        // audio init failed (`audio` is `None`). Session-owned; clone the content
-        // root so the `self.session` borrow does not alias the read. Deliberately
-        // last in install, after `levelLoad`: safe because `playSound` enqueues an
-        // async `SystemReactionCommand` drained a frame later, after install
-        // completes, so no reaction observes unloaded sounds.
+        // audio init failed (`audio` is `None`). Session-owned; the oracle's
+        // decode clones the content root so the `self.session` borrow does not
+        // alias the read. Deliberately last in install, after `levelLoad`: safe
+        // because `playSound` enqueues an async `SystemReactionCommand` drained
+        // a frame later, after install completes, so no reaction observes
+        // unloaded sounds.
+        #[cfg(test)]
         let content_root = self.content_root.clone();
         if let Some(session) = self.session.as_mut() {
             if let Some(audio) = session.audio.as_mut() {
                 match sounds {
+                    #[cfg(test)]
                     LevelSounds::Load => audio.load_level_sounds(&content_root),
                     // Registered in sorted path order, whatever order the
                     // pool decoded them in.

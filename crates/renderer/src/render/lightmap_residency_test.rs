@@ -1,6 +1,6 @@
 // GPU coverage of the lightmap-family byte meter: the rows describe the
 // textures actually bound — a real compact atlas, the placeholder that
-// replaced a rejected one, and the placeholders an unload installs.
+// replaced a rejected one — and with no level set active the meter is empty.
 // See: context/lib/rendering_pipeline.md §7.8
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": the
@@ -190,11 +190,11 @@ fn a_rejected_atlas_meters_its_placeholder_not_the_rejected_size() {
 
 /// Pins P5 and P12 through the renderer's own install and unload wiring: a
 /// level without animated lights meters the animated pair at placeholder
-/// size, and after an unload every row is the placeholder again; the next
-/// level's rows are its own.
+/// size, with no set active (at boot and after an unload) the meter is empty,
+/// and the next level's rows are its own.
 #[test]
 #[ignore = "on-demand GPU coverage"]
-fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
+fn offscreen_renderer_meter_is_empty_with_no_active_set() {
     use crate::lighting::lightmap::test_fixtures::{block_fixture, zero_texels};
     use crate::render::Renderer;
     use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
@@ -207,8 +207,12 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
     let boot = renderer
         .lightmap_residency_report()
         .cloned()
-        .expect("full renderer");
-    assert_eq!(boot.allocations.len(), 5);
+        .expect("a full renderer reports with no level set");
+    assert_eq!(
+        boot,
+        super::LightmapResidencyReport::EMPTY,
+        "no set active: nothing lightmap-family is bound"
+    );
 
     // Five 1024² Rgba16Float cell blocks fill two pool layers; no animated
     // sections.
@@ -269,24 +273,24 @@ fn offscreen_renderer_meter_returns_to_placeholders_after_unload() {
         Some(2 * layer_bytes),
         "the pool meters its layers, not the block bytes"
     );
-    for name in [LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_ANIMATED_DIRECTION] {
+    assert_eq!(level_a.allocations.len(), 5, "one row per family texture");
+    for (name, placeholder_bytes) in [
+        (LIGHTMAP_ANIMATED_IRRADIANCE, 8),
+        (LIGHTMAP_ANIMATED_DIRECTION, 4),
+    ] {
         assert_eq!(
             level_a.bytes(name),
-            boot.bytes(name),
-            "no animated lights: {name} stays at placeholder size"
+            Some(placeholder_bytes),
+            "no animated lights: {name} meters its 1×1 placeholder"
         );
     }
 
     renderer.release_level_resources();
-    let unloaded = renderer.lightmap_residency_report().cloned().unwrap();
-    for (row, boot_row) in unloaded.allocations.iter().zip(&boot.allocations) {
-        assert_eq!(row.name, boot_row.name);
-        assert_eq!(
-            row.bytes, boot_row.bytes,
-            "{} returns to its placeholder",
-            row.name
-        );
-    }
+    assert_eq!(
+        renderer.lightmap_residency_report().cloned().unwrap(),
+        super::LightmapResidencyReport::EMPTY,
+        "after an unload no set is active and the meter is empty"
+    );
 
     // Level B: one small block on one pool layer; its rows are its own.
     let level_b_blocks = block_fixture(&[(64, 64)], 2, &zero_texels());

@@ -1,6 +1,8 @@
 //! Renderer-free CPU portion of level installation.
 
-use super::lifecycle_model_sweep::{ModelSweep, ParsedModelSweep, ParsedSweepModel};
+use super::lifecycle_model_sweep::ModelSweep;
+#[cfg(any(test, feature = "observability"))]
+use super::lifecycle_model_sweep::{ParsedModelSweep, ParsedSweepModel};
 use super::*;
 
 use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
@@ -74,8 +76,9 @@ pub(crate) fn start_installed_presentation_animations(
 /// caller builds it with `CollisionWorld::from_level` (fallible, before any
 /// install mutation) and commits it before this call.
 // The headless driver and tests install through closures; the windowed
-// install and the commit pass their own sweep.
-#[cfg_attr(not(any(test, feature = "observability")), allow(dead_code))]
+// install and the commit pass their own sweep, so this compiles only for
+// them.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn install_world_cpu(
     handles: WorldInstallHandles<'_>,
     timings: &mut StartupTimings,

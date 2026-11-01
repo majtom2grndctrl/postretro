@@ -222,7 +222,7 @@ pub(in crate::render) struct LevelSetCoreInputs<'a, 'g> {
 
 /// Build one level's renderer set from `context`, on whichever thread runs
 /// it: the main-thread oracle and the upload thread's geometry part both
-/// call this. Today's intra-install order: world buffers, lights, the shadow
+/// call this. Intra-install order: world buffers, lights, the shadow
 /// tier and promoted state, the lighting group, SH volume and streamed
 /// residency (over the promoted weight buffer), the mesh and mover light
 /// groups, the compose family, the lightmap family (animated atlas first),
@@ -458,9 +458,12 @@ const DEFAULT_LEVEL_FOG_PIXEL_SCALE: u32 = 0;
 
 impl FullRenderer {
     /// The lightmap generation floor a new set reserves: above the
-    /// renderer-wide add-only floor and every live set's high water, so its
-    /// generations stay disjoint from every live set's accepted ones (the
-    /// streaming controllers' generations are process-monotonic).
+    /// renderer-wide add-only floor and every live set's high water at
+    /// dispatch. The floor is reserved at dispatch, so beside a running level
+    /// that set can still accept generations above it until the new set
+    /// commits. That is safe because the old session retires before the
+    /// commit and the streaming controllers' generation clocks are
+    /// process-monotonic, so no generation is accepted twice.
     pub(in crate::render) fn reserve_lightmap_generation_floor(&mut self) -> u64 {
         let live = self
             .level

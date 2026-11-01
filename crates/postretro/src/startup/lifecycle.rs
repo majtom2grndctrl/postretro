@@ -1,5 +1,5 @@
-//! Level load requests, the Loading-frame step, and load failure; declares the
-//! `lifecycle_*` siblings that install, finish and rebuild a level.
+//! Level source resolution, level identity and the one load-failure route;
+//! declares the `lifecycle_*` siblings that load, install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
 #[path = "lifecycle_beside.rs"]

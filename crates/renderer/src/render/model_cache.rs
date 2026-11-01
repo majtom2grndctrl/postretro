@@ -104,7 +104,7 @@ impl ModelEntryIdentity {
 
 /// What a missed model's build part offers the cache: its key and the CPU
 /// companion a later hit hands back. The entry joins the cache only when the
-/// set that built it commits ([`Renderer::commit_model_cache`]); a set that
+/// set that built it commits ([`Renderer::enter_model_cache_offers`]); a set that
 /// never commits drops its offers with it.
 pub struct ModelCacheOffer {
     key: ModelContentKey,
@@ -232,7 +232,9 @@ const _: fn() = || {
     assert_send_sync::<ModelCacheOffer>();
 };
 
-/// What one [`Renderer::commit_model_cache`] did.
+/// What one commit's cache step did: its set's offers entered
+/// ([`Renderer::enter_model_cache_offers`]), then one sweep
+/// ([`Renderer::sweep_model_cache`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelCacheCommit {
     /// The committed set's new entries that joined the cache.
@@ -241,15 +243,6 @@ pub struct ModelCacheCommit {
     pub freed: usize,
     /// Entries the cache holds after the commit.
     pub retained: usize,
-}
-
-/// What one [`Renderer::release_unused_active_set_models`] did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ModelSetRelease {
-    /// Handles the active set held and dropped.
-    pub released: usize,
-    /// Cache entries freed because nothing but the cache held them after.
-    pub freed: usize,
 }
 
 impl Renderer {
@@ -266,19 +259,35 @@ impl Renderer {
             .and_then(|full| full.model_cache.lookup(key))
     }
 
-    /// The commit's cache step, after the set `committed` was published:
-    /// the set's new entries (its cache misses) join the cache, each under
-    /// its key unless an entry holds that key already, and then the cache
-    /// frees every entry no resident or active set and no uncommitted build
-    /// references. Creates nothing. `None` (changing nothing) for an
+    /// The commit's cache step in one call: the set `committed`'s offers
+    /// enter ([`Self::enter_model_cache_offers`]), then one sweep
+    /// ([`Self::sweep_model_cache`]). For a commit with no model work of
+    /// its own between the two; a level commit splits them around its model
+    /// install, so its miss fallback can still hit an entry only the level
+    /// it released held. Creates nothing. `None` (changing nothing) for an
     /// unknown set.
+    pub fn commit_model_cache(&mut self, committed: LevelSetId) -> Option<ModelCacheCommit> {
+        let inserted = self.enter_model_cache_offers(committed)?;
+        let freed = self.sweep_model_cache()?;
+        Some(ModelCacheCommit {
+            inserted,
+            freed,
+            retained: self.model_cache_keys().len(),
+        })
+    }
+
+    /// The commit's cache entry step, after the set `committed` was
+    /// published: the set's new entries (its cache misses) join the cache,
+    /// each under its key unless an entry holds that key already; how many
+    /// joined. Frees nothing: the commit sweeps once, after its model
+    /// install ([`Self::sweep_model_cache`]). Creates nothing. `None`
+    /// (changing nothing) for an unknown set.
     ///
     /// The one place entries join (beside the commit's own synchronous miss
     /// path, [`Self::upload_missed_model_into_active_set`]): a failed or
     /// cancelled load never commits, so its uploads never become visible to
     /// a later lookup, and nothing needs rolling back (pins P11, P29).
-    /// Releasing a set frees no entry; the next commit does (P30).
-    pub fn commit_model_cache(&mut self, committed: LevelSetId) -> Option<ModelCacheCommit> {
+    pub fn enter_model_cache_offers(&mut self, committed: LevelSetId) -> Option<usize> {
         let full = self.full.as_mut()?;
         let level = match full.level.as_mut() {
             Some(level) if level.id == committed => level,
@@ -288,16 +297,23 @@ impl Renderer {
                 .find(|level| level.id == committed)?,
         };
         let offers = level.models.take_offers();
-        let inserted = offers
-            .into_iter()
-            .filter(|(key, cached)| full.model_cache.insert(*key, cached.clone()))
-            .count();
-        let freed = full.model_cache.sweep();
-        Some(ModelCacheCommit {
-            inserted,
-            freed,
-            retained: full.model_cache.keys().len(),
-        })
+        Some(
+            offers
+                .into_iter()
+                .filter(|(key, cached)| full.model_cache.insert(*key, cached.clone()))
+                .count(),
+        )
+    }
+
+    /// Free every cache entry no resident or active set, no uncommitted
+    /// build and no task still holding a looked-up model references; how
+    /// many it freed. A commit runs it once, after its model install, so
+    /// the entries only a released level or an over-prediction held go
+    /// then, and not before the miss fallback could hit them. Releasing a
+    /// set frees no entry; the next commit's sweep does (P30). Creates
+    /// nothing; `None` before full init.
+    pub fn sweep_model_cache(&mut self) -> Option<usize> {
+        self.full.as_ref().map(|full| full.model_cache.sweep())
     }
 
     /// Every key the model cache holds, sorted (diagnostics and tests).
@@ -343,38 +359,40 @@ impl Renderer {
 
     /// The commit's over-prediction release, after its real sweep: drop each
     /// of `handles` from the active set's models (a model the load predicted
-    /// and built that the sweep does not draw), then free every cache entry
-    /// nothing references any more, as the commit's cache step does. An
-    /// entry another handle, another resident set or an uncommitted build
-    /// still holds stays. Creates nothing; `None` with no active set.
-    pub fn release_unused_active_set_models(
-        &mut self,
-        handles: &[&str],
-    ) -> Option<ModelSetRelease> {
-        let full = self.full.as_mut()?;
-        let level = full.level.as_mut()?;
-        let released = handles
-            .iter()
-            .filter(|handle| level.models.remove(&ModelHandle::from(handle.to_string())))
-            .count();
-        let freed = full.model_cache.sweep();
-        Some(ModelSetRelease { released, freed })
+    /// and built that the sweep does not draw); how many it held. Frees no
+    /// cache entry: the commit's one sweep after its model install
+    /// ([`Self::sweep_model_cache`]) frees each entry nothing references
+    /// any more, while an entry another handle, another resident set or an
+    /// uncommitted build still holds stays. Creates nothing; `None` with no
+    /// active set.
+    pub fn release_unused_active_set_models(&mut self, handles: &[&str]) -> Option<usize> {
+        let level = self.full.as_mut()?.level.as_mut()?;
+        Some(
+            handles
+                .iter()
+                .filter(|handle| level.models.remove(&ModelHandle::from(handle.to_string())))
+                .count(),
+        )
     }
 
     /// The commit's synchronous miss: upload one parsed model into the
     /// active set (its new samplers join the renderer's maps, as a publish
     /// merges them) and, with an `offer`, enter it in the cache at once:
     /// this runs on the main thread at the commit, where a set's entries
-    /// join. Returns the cached model it entered, `None` with no offer, with
-    /// the key already taken, or with no active set (which uploads nothing).
+    /// join. Its materials bind at `surface_depth_quality`, the tier the
+    /// offer's key was derived at (the load's dispatch tier, which the set
+    /// it joins was built at), never the live one, so the entry's content
+    /// matches its key. Returns the cached model it entered, `None` with no
+    /// offer, with the key already taken, or with no active set (which
+    /// uploads nothing).
     pub fn upload_missed_model_into_active_set(
         &mut self,
         handle: &str,
         model: &LoadedModel,
         materials: PreparedModelMaterials,
+        surface_depth_quality: postretro_render_cpu::surface_depth::SurfaceDepthQuality,
         offer: Option<ModelCacheOffer>,
     ) -> Option<CachedModel> {
-        let surface_depth_quality = self.surface_depth_quality;
         let Self {
             device,
             queue,

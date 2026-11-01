@@ -185,7 +185,8 @@ pub(crate) fn validate_reflection_probe_lights(
             return Err(section_validation_from_error(
                 "ReflectionProbes",
                 format!(
-                    "{table} maps animated light {slot} to descriptor {descriptor}; probe shares                      need the identity roster"
+                    "{table} maps animated light {slot} to descriptor {descriptor}; probe shares \
+                     need the identity roster"
                 ),
             ));
         }

@@ -3,22 +3,25 @@
 // See: context/lib/rendering_pipeline.md §9
 //
 // Mirrors the shape of `crate::render::smoke::SmokePass` (`new` builds the
-// pipeline + layouts; a model cache keyed by handle mirrors `SmokePass::sheets`;
-// `render_frame` writes the per-frame buffers + records the draws). Owns ALL
+// pipeline + layouts; `render_frame` writes the per-frame buffers + records the
+// draws). The per-handle model table is a level resource (`LevelModels`, in the
+// level set), as smoke's sprite sheets are in `SmokeLevelCollections`. Owns ALL
 // wgpu for skinned meshes — `postretro_model` stays wgpu-free.
 //
 // Binding plan (forward, non-shadow):
 //   * group 0 = camera (shared renderer-owned camera uniform / bind group)
 //   * group 1 = material (the `build_material_bind_group` bind group — the SH-lit
 //               fragment samples diffuse + character-model sampler from this group)
-//   * group 2 = runtime direct lighting + shadow receipt (fully allocated b0–b8):
+//   * group 2 = runtime direct lighting + shadow receipt (fully allocated b0–b10):
 //               b0 three regions: dynamic prefix, raw animated-baked tail, and
 //               selected-static suffix, b1
 //               per-light influence volumes, b2
 //               scripted-animation descriptors, b3 scripted-animation curve
 //               samples, b4 the mesh-side params uniform; b5 spot shadow depth,
 //               b6 comparison sampler, b7 light-space matrices uniform, b8 the
-//               conditional cube-array depth (present iff `cube_array_supported`).
+//               conditional cube-array depth (present iff `cube_array_supported`),
+//               b9 promoted spot depth cache, b10 the conditional promoted cube
+//               depth cache (present iff `cube_array_supported`).
 //               SH indirect ships at group 4, so this is not the SH ambient slot.
 //   * group 3 = skinned instance data: shared bone-palette storage buffer
 //               (binding 0) + per-instance SSBO carrying each instance's model
@@ -126,9 +129,10 @@ pub struct MeshPass {
     /// [`MeshPass::new`]): b0 dynamic prefix, raw animated-baked tail, then
     /// selected-static suffix; b1 per-light influence volumes, b2
     /// scripted-animation descriptors, b3 scripted-animation curve samples, b4
-    /// the mesh-side params uniform. b0–b3 alias the SAME renderer-owned GPU
-    /// buffers forward binds; b4 is owned here. Retained so the bind group can
-    /// be rebuilt on buffer reallocation (level load).
+    /// the mesh-side params uniform; b5–b10 shadow receipt. b0–b3 alias the
+    /// SAME level-set GPU buffers forward binds; b4 is owned here. Retained so
+    /// each level set can build its own group-2 bind groups
+    /// ([`MeshPass::light_group_layout`]).
     light_bind_group_layout: wgpu::BindGroupLayout,
 
     // The group-2 bind groups themselves (main view and planar mirror) are
@@ -148,8 +152,9 @@ pub struct MeshPass {
 
     /// Adapter cube-array support (`DownlevelFlags::CUBE_ARRAY_TEXTURES`), threaded
     /// from `Renderer::new`. Pins the `Some`-iff-layout invariant: the group-2 BGL
-    /// carries the b8 cube entry iff this is `true`, so `rebuild_light_bind_group`
-    /// supplies the cube view `Some` iff this is `true`. Fixed for the renderer's
+    /// carries the b8 and b10 cube entries iff this is `true`, so
+    /// `LightGroupLayout::light_bind_groups` takes the cube views `Some` iff
+    /// this is `true`. Fixed for the renderer's
     /// lifetime — the same flag drives the pipeline's no-cube shader strip.
     cube_array_supported: bool,
 

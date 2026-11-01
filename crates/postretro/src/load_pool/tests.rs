@@ -114,9 +114,6 @@ fn load_pool_runs_tasks_out_of_order() {
 fn cancelled_group_drops_queued_tasks_and_retires_by_polling() {
     let pool = LoadPool::new(2).unwrap();
     let group = pool.group();
-    let input = Arc::new(String::from("opened level"));
-    let input_alive = Arc::downgrade(&input);
-    group.retain(input);
 
     // One running task waits on a gate; the other stops when it notices the
     // cancel.
@@ -159,11 +156,9 @@ fn cancelled_group_drops_queued_tasks_and_retires_by_polling() {
     assert_eq!(late.try_take(), Some(Err(TaskError::Cancelled)));
     assert_eq!(take(&mut noticing), Ok("noticed"));
     assert!(!retirement.try_finish(), "the held task has not returned");
-    assert!(input_alive.upgrade().is_some(), "retained until finished");
 
     release_held.send(()).unwrap();
     poll_until("the retirement", || retirement.try_finish());
-    assert!(input_alive.upgrade().is_none(), "released when finished");
     assert_eq!(ran.load(Ordering::SeqCst), 0, "queued tasks never ran");
     assert_eq!(pool.tasks_started(), 2);
 }

@@ -3,10 +3,10 @@
 //! frame it is ready, and cancellation (supersede, a queued unload, suspend)
 //! with every cancelled load's stages handed to the App's one retirement list.
 //! Nothing here waits on a stage thread or the GPU.
-//! See: context/lib/boot_sequence.md §1 (Loading screen), §4 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation, One failure per load, Settings and scene extent, dispatch to commit) · research.md §9 (P1–P8, P10, P12, P20, P22, P24)
+//! See: context/lib/boot_sequence.md §1 (Loading screen), §4 · context/plans/in-progress/level-load-pipeline/index.md (Cancellation, The commit cannot fail on level data, Settings and scene extent, dispatch to commit) · research.md §9 (P1–P8, P10, P12, P20, P22, P24)
 
 use super::*;
-use crate::level_load::{BundleSet, LevelBundle, LevelCommitReport, LevelLoadFailure};
+use crate::level_load::{BundleSet, CommitBundle, LevelCommitReport, LevelLoadFailure};
 use crate::startup::level_loads::{ActivePhase, LoadOrder};
 use crate::startup::loading_screen::LoadingStep;
 
@@ -199,6 +199,22 @@ impl App {
                 {
                     self.level_loads.test.last_upload_creations = creations;
                 }
+                // An uncaptured error recorded since the check above is still
+                // this load's failure: retiring disarms the capture and would
+                // drop it. The failure route retires the stages; the bundle
+                // never commits, so its own set goes with it.
+                if let Some(error) = self
+                    .renderer
+                    .as_ref()
+                    .and_then(|renderer| renderer.take_load_error(generation))
+                {
+                    if let (BundleSet::Resident(id), Some(renderer)) =
+                        (&bundle.set, self.renderer.as_mut())
+                    {
+                        renderer.release_level_set(*id);
+                    }
+                    return LoadingStep::Fail(LevelLoadFailure::uncaptured(error));
+                }
                 // The stages are done: retire them now (the bundle owns the
                 // set, so nothing is released) and drop the error capture
                 // before any commit-frame GPU work.
@@ -208,8 +224,9 @@ impl App {
         }
     }
 
-    /// Commit a ready bundle; its report, or `None` when a commit check
-    /// failed and took the one failure route. Nothing else here can fail.
+    /// Commit a ready bundle, checked or not; its report, or `None` when a
+    /// commit check failed and took the one failure route. Nothing else here
+    /// can fail, and a checked bundle (the beside order's) fails nowhere.
     ///
     /// Line C folds the commit frame into one `commit_frame` mark, from the
     /// mark before it (the bundle taken, or the running level's release
@@ -217,7 +234,7 @@ impl App {
     /// to it.
     pub(in crate::startup) fn commit_ready_level_bundle(
         &mut self,
-        bundle: LevelBundle,
+        bundle: impl Into<CommitBundle>,
         event_loop: &impl LoopExit,
     ) -> Option<LevelCommitReport> {
         self.level_timings.open_group();

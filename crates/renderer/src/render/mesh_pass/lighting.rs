@@ -71,10 +71,10 @@ pub(super) fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
 ///   dynamic-light loop runs in the fragment stage, so b0–b3 contribute FOUR
 ///   fragment-visible storage buffers — well under the per-stage ceiling of 8
 ///   (rendering_pipeline.md §10). b4 is a uniform (no storage-slot cost).
-///   b5–b8 are the SHADOW-RECEIPT bindings on a MESH-SPECIFIC layout that omits
-///   forward's SDF-factor + scene-depth entries the mesh must not sample. They
+///   b5–b10 are the SHADOW-RECEIPT bindings on a MESH-SPECIFIC layout that omits
+///   forward's SDF-factor + scene-depth entries the mesh must not sample. b5–b8
 ///   alias the SAME GPU resources the forward pass binds in its group 5 (NOT
-///   forward's group-5 BGL):
+///   forward's group-5 BGL); b9/b10 are the promoted depth caches:
 ///     b5 spot depth 2D-array (`spot_shadow_depth`, FRAGMENT),
 ///     b6 comparison sampler (`spot_shadow_compare`, FRAGMENT),
 ///     b7 light-space matrices UNIFORM (`light_space_matrices`, FRAGMENT) — a
@@ -89,11 +89,17 @@ pub(super) fn build_light_params_bytes(params: MeshLightParams) -> Vec<u8> {
 ///        omits its binding 5. The cube view is passed `Some` to
 ///        `light_bind_groups` iff this entry is present (the
 ///        `Some`-iff-layout invariant — a single unconditional BGL crashes on a
-///        no-cube adapter).
+///        no-cube adapter),
+///     b9 promoted spot depth-cache 2D-array (`promoted_spot_depth_cache`,
+///        FRAGMENT) — always present,
+///     b10 promoted cube depth-cache cube-array (`promoted_cube_depth_cache`,
+///        FRAGMENT) — present ONLY when `cube_array_supported`, like b8. Its view
+///        is passed `Some` to `light_bind_groups` iff this entry is present.
 ///
-/// b5 + b8 are sampled depth textures (spot 2D-array always, cube array iff
-/// supported): the mesh pipeline's group-2 sampled-texture count is ONE without
-/// cube support and TWO with it.
+/// b5, b8, b9 and b10 are sampled depth textures (spot 2D-array b5 and promoted
+/// spot cache b9 always; cube array b8 and promoted cube cache b10 iff
+/// supported): the mesh pipeline's group-2 sampled-texture count is TWO without
+/// cube support and FOUR with it.
 pub(super) fn mesh_light_bind_group_layout_entries(
     cube_array_supported: bool,
 ) -> Vec<wgpu::BindGroupLayoutEntry> {
@@ -236,7 +242,8 @@ pub(super) fn fragment_storage_buffers(entries: &[wgpu::BindGroupLayoutEntry]) -
 /// pipeline layout per stage, not against how many textures a shader samples.
 /// Mirrors `render::mod::fragment_sampled_textures` for the mesh group-2 budget
 /// guard; the mesh group-2 shadow textures (spot depth array + the optional cube
-/// array) are the mesh fragment stage's group-2 sampled-texture draw.
+/// array, and the promoted spot/cube caches) are the mesh fragment stage's
+/// group-2 sampled-texture draw.
 #[cfg(test)]
 pub(super) fn fragment_sampled_textures(entries: &[wgpu::BindGroupLayoutEntry]) -> u32 {
     entries
@@ -290,12 +297,15 @@ pub(in crate::render) struct LightGroupInputs<'a> {
 }
 
 impl LightGroupLayout {
-    /// (Re)build the group-2 runtime-direct light bind group over the renderer's
-    /// runtime light buffers. Called once after geometry installs and again on any
-    /// reallocation of these buffers (level load), mirroring how the renderer
-    /// rebuilds its forward `lighting_bind_group`. The buffers are owned by the
-    /// renderer and bound here by reference; b4 is this pass's own
-    /// `light_params_buffer` (cloned into this layout).
+    /// Build a level set's group-2 runtime-direct light bind groups (main view
+    /// and planar mirror) over that set's [`LightGroupInputs`]. Built once per
+    /// set, in `rebind_mesh_light_groups`, mirroring how the set's forward
+    /// `lighting_bind_group` is built; nothing rebuilds them on reallocation.
+    /// The groups stay valid because the set owns every buffer and shadow-tier
+    /// view bound here, and a later set builds its own. b4 is the one binding
+    /// not from the set: this pass's `light_params_buffer` (cloned into this
+    /// layout), shared by every set. The mirror group differs from the main
+    /// group only in b0, which binds `mirror_lights`.
     ///
     /// b0 uses three semantic intervals:
     /// - `[0, dynamic_light_count)`: dynamic prefix from `filter_dynamic_lights`;
@@ -317,13 +327,18 @@ impl LightGroupLayout {
     /// `light_space_matrices` is the pool's `matrices_buffer` UNIFORM (b7), and
     /// `point_shadow_cube` is the cube pool's `CubeArray` `sampling_view` (b8).
     ///
+    /// b9–b10 are the promoted depth caches, from the set's shadow tier:
+    /// `promoted_spot_cache` is the promoted source's spot cache view (b9), and
+    /// `promoted_cube_cache` its cube cache view (b10). A level with no promoted
+    /// source passes the tier's live views instead (the spot pool `array_view`,
+    /// the cube `sampling_view`), so both entries always bind a valid view.
+    ///
     /// `point_shadow_cube` MUST be `Some` IFF the layout carries the b8 entry — i.e.
-    /// iff `self.cube_array_supported` (the `Some`-iff-layout invariant). Passing
-    /// `Some` on a no-cube layout (or `None` on a cube layout) is a bind-group /
-    /// layout mismatch wgpu rejects; the assert below pins the invariant before the
-    /// GPU sees it. A level install may reallocate the spot pool for a pending
-    /// shadow-quality change, so rebuild this group against the current pool resources
-    /// after each level install/reallocation, alongside the b0–b4 rebind.
+    /// iff `self.cube_array_supported` (the `Some`-iff-layout invariant) — and
+    /// `promoted_cube_cache` MUST be `Some` IFF it carries b10, i.e. under the
+    /// same condition. Passing `Some` on a no-cube layout (or `None` on a cube
+    /// layout) is a bind-group / layout mismatch wgpu rejects; the asserts below
+    /// pin the invariant before the GPU sees it.
     pub(in crate::render) fn light_bind_groups(
         &self,
         device: &wgpu::Device,

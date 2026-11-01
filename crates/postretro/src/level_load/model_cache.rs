@@ -18,9 +18,7 @@ use postretro_render_cpu::texture_prep::{
 
 use super::model_key::{ModelInstallParams, model_content_key};
 use super::products::{ParsedModelProducts, PreparedModel};
-use crate::render::{
-    CachedModel, ModelCacheHandle, ModelCacheOffer, ModelContentKey, ModelSetRelease, Renderer,
-};
+use crate::render::{CachedModel, ModelCacheHandle, ModelCacheOffer, ModelContentKey, Renderer};
 use crate::scripting_systems::hit_zones::ModelHitZones;
 use crate::startup::lifecycle::{ModelClipEntry, model_clip_entry};
 
@@ -31,8 +29,10 @@ pub(crate) enum ModelCacheUse {
     Hit,
     /// The cache lacked its key: parsed, and uploaded by the set.
     Miss,
-    /// Not keyed: the load had no cache (no renderer), or the model's files
-    /// could not be read, so the parse fails as the oracle's does.
+    /// Not keyed: the load had no cache (no renderer), or the model failed,
+    /// either because its files could not be read (no key exists) or because
+    /// the bytes read did not parse. A failure carries the error the oracle's
+    /// parse yields.
     Unkeyed,
 }
 
@@ -207,10 +207,13 @@ impl ModelMissFallback {
         };
         let hit_zones = ModelHitZones::build(&model);
         let materials = sidecars.prepare(&model.submeshes, prm_cache_root);
+        // Built at the tier `params` were derived from, so the entry's
+        // content matches the key it joins the cache under.
         renderer.upload_missed_model_into_active_set(
             handle,
             &model,
             materials,
+            params.build_tier(),
             Some(ModelCacheOffer::new(key, hit_zones.clone())),
         );
         PreparedModel {
@@ -229,13 +232,13 @@ impl ModelMissFallback {
 /// The commit's over-predictions, for one load: handles the load predicted,
 /// prepared and built into its set that the commit's real sweep does not
 /// draw (a descriptor a hot reload changed after dispatch, or any other
-/// prediction drift). Each is released from the published set at commit and
-/// its cache entry freed when nothing else references it, counted and logged
-/// once per handle, as a miss is. Creates nothing.
+/// prediction drift). Each is released from the published set at commit,
+/// counted and logged once per handle, as a miss is; the commit's one cache
+/// sweep after its model install frees its entry when nothing else
+/// references it. Creates nothing.
 #[derive(Debug, Default)]
 pub(crate) struct ModelOverPredictions {
     handles: Vec<String>,
-    release: ModelSetRelease,
 }
 
 impl ModelOverPredictions {
@@ -244,13 +247,9 @@ impl ModelOverPredictions {
         self.handles.len()
     }
 
-    /// Cache entries the release freed.
-    pub(crate) fn freed(&self) -> usize {
-        self.release.freed
-    }
-
     /// Release `handles` from `renderer`'s active set, the one the commit
-    /// published, then free what nothing references.
+    /// published. The commit's cache sweep, after the model install, frees
+    /// what nothing references then.
     pub(crate) fn release(&mut self, renderer: &mut Renderer, handles: Vec<String>) {
         let handles: Vec<String> = handles
             .into_iter()
@@ -265,10 +264,7 @@ impl ModelOverPredictions {
             );
         }
         let names: Vec<&str> = handles.iter().map(String::as_str).collect();
-        if let Some(release) = renderer.release_unused_active_set_models(&names) {
-            self.release.released += release.released;
-            self.release.freed += release.freed;
-        }
+        renderer.release_unused_active_set_models(&names);
         self.handles.extend(handles);
     }
 }

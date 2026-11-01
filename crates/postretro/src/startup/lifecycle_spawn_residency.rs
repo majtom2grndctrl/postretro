@@ -2,7 +2,6 @@
 //! Settling drains the presented pose's set.
 //! See: context/lib/boot_sequence.md §3 · context/lib/rendering_pipeline.md §4
 
-use anyhow::Result;
 use glam::Vec3;
 
 use crate::App;
@@ -27,10 +26,10 @@ impl App {
     /// The level-data checks run first, through the same
     /// `decode_streaming_level_data` load prep runs off the main thread; the
     /// sessions are then built from what it decoded.
-    // The main-thread oracle's; a load's commit installs the sessions it
-    // prepared at its checks instead.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) fn install_level_streaming_sessions(&mut self) -> Result<()> {
+    // The main-thread oracle's, compiled for tests only; a load's commit
+    // installs the sessions it prepared at its checks instead.
+    #[cfg(test)]
+    pub(super) fn install_level_streaming_sessions(&mut self) -> anyhow::Result<()> {
         let (Some(world), Some(renderer), Some(session)) = (
             self.level.as_ref(),
             self.renderer.as_ref(),
@@ -52,7 +51,6 @@ impl App {
     /// anything (`prepare_level_streaming`). Fails on nothing. `None` for a
     /// renderer-less commit, which, like the main-thread install without a
     /// renderer, creates no session.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn install_prepared_level_streaming_sessions(
         &mut self,
         prepared: Option<crate::session::level_streaming::PreparedLevelStreaming>,

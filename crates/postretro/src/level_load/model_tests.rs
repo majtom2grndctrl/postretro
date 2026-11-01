@@ -324,6 +324,19 @@ fn prepared_models_match_the_oracle_sweep() {
         "a handle only the real sweep holds is a miss"
     );
     assert_eq!(models.over_predictions(&real_sweep), [PROP_MODEL]);
+    // A model whose parse failed is no over-prediction, though the real
+    // sweep lacks it too: no set ever held it, and the hit-zone store
+    // reports it.
+    let without_missing: Vec<String> = handles[2..]
+        .iter()
+        .map(|handle| handle.to_string())
+        .collect();
+    assert_eq!(
+        models.over_predictions(&without_missing),
+        [PROP_MODEL],
+        "the failed parse of {} is not released",
+        handles[1]
+    );
     let has_zone_bearing_model = models
         .iter()
         .filter_map(|model| model.parsed.as_ref().ok())

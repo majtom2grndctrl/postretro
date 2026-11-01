@@ -5,9 +5,10 @@
 use super::*;
 
 /// Bind PRL member-light links only after the complete mover spawn result is
-/// available. This is intentionally windowed: [`App::install_level_payload`]
-/// owns both the map-light bridge and the mover spawn result, while the
-/// renderer-free installer owns neither bridge nor a reason to bind lights.
+/// available. This is intentionally windowed: [`App::install_level_world_stages`],
+/// shared by the commit and the main-thread oracle, owns both the map-light
+/// bridge and the mover spawn result, while the renderer-free installer owns
+/// neither bridge nor a reason to bind lights.
 ///
 /// A failed all-or-nothing mover spawn leaves every member unbound. The next
 /// level install builds a new bridge and registry, then calls this pass again;

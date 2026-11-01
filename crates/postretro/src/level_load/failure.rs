@@ -95,16 +95,20 @@ impl PrepKind {
         }
     }
 
-    /// Whether the task runs on hand-outs the parse may still reject. Its
-    /// failure is held until the parse's verdict: a rejection wins over it,
-    /// since its input was never promised valid. Sound decode reads no level
-    /// data, so its failure stands on its own.
+    /// Whether the task can fail before the parse's verdict. Its failure is
+    /// held until that verdict, and a rejection wins over it: most of these
+    /// read hand-outs the parse may still reject, whose input was never
+    /// promised valid. Sound decode reads no level data, but it starts on
+    /// hand-out 4 while the parse can still reject, so it is held the same
+    /// way: a level the parse rejects reports the rejection, whatever ran
+    /// beside it.
     pub(crate) fn before_verdict(self) -> bool {
         matches!(
             self,
             PrepKind::Textures
                 | PrepKind::ShResidency
                 | PrepKind::RangeCheck
+                | PrepKind::Sounds
                 | PrepKind::ModelPrediction
                 | PrepKind::ModelParse
         )
@@ -120,6 +124,10 @@ pub(crate) enum LoadStage {
     Prep(PrepKind),
     /// The renderer's off-main set build on the upload thread.
     Upload,
+    /// A wgpu error no error scope caught while the load's capture was
+    /// armed. The upload thread and main-thread work raise them alike, so no
+    /// one stage owns it.
+    Uncaptured,
     /// The commit's checks on what is not level data (the bundle's set
     /// still resident, its streaming sessions against that set), which run
     /// before the commit mutates anything.
@@ -133,6 +141,7 @@ impl LoadStage {
             LoadStage::Parse => "level parse",
             LoadStage::Prep(kind) => kind.label(),
             LoadStage::Upload => "level upload",
+            LoadStage::Uncaptured => "level load",
             LoadStage::Commit => "level commit checks",
         }
     }
@@ -166,16 +175,30 @@ impl LevelLoadFailure {
     }
 
     /// The set build's one error: a captured wgpu error, a job panic, the
-    /// upload thread gone, or a GPU half rejecting the level's data.
+    /// upload thread gone, or a GPU half rejecting the level's data. The
+    /// renderer's own message for the first two already names the upload
+    /// ("level upload failed: …", "level upload rejected the level: …"),
+    /// which the stage label prefixes again, so the message carries only
+    /// the detail.
     pub(crate) fn upload(error: &LevelBuildError) -> Self {
+        let message = match error {
+            LevelBuildError::Upload(error) => error.to_string(),
+            LevelBuildError::LevelData(error) => format!("rejected the level: {error}"),
+            other => other.to_string(),
+        };
+        Self::upload_message(message)
+    }
+
+    /// A failure of the upload stage that no [`LevelBuildError`] carries:
+    /// the bundle could not be assembled from what the stages left.
+    pub(crate) fn upload_message(message: impl Into<String>) -> Self {
         Self {
             stage: LoadStage::Upload,
-            message: error.to_string(),
+            message: message.into(),
             parse_error: None,
         }
     }
 
-    /// A commit check that refused the bundle before anything mutated.
     /// The load's stages could not start.
     pub(crate) fn dispatch(message: impl Into<String>) -> Self {
         Self {
@@ -187,14 +210,18 @@ impl LevelLoadFailure {
 
     /// A wgpu error no error scope caught, raised while this load was
     /// uncommitted and no level ran: the load's failure, not wgpu's panic.
+    /// It may come from the upload thread or from main-thread work, so it
+    /// names no stage it cannot prove: "level load failed: uncaptured wgpu
+    /// error: …".
     pub(crate) fn uncaptured(message: impl Into<String>) -> Self {
         Self {
-            stage: LoadStage::Upload,
+            stage: LoadStage::Uncaptured,
             message: format!("uncaptured wgpu error: {}", message.into()),
             parse_error: None,
         }
     }
 
+    /// A commit check that refused the bundle before anything mutated.
     pub(crate) fn commit(message: impl Into<String>) -> Self {
         Self {
             stage: LoadStage::Commit,

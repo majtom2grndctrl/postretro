@@ -268,8 +268,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     boot_timings.record("event_loop_created");
 
-    // Camera starts at a placeholder; `install_level_payload` repositions it
-    // to the first `player_spawn` or the level geometry center
+    // Camera starts at a placeholder; level install's camera stage
+    // (`install_level_camera_pose`) repositions it to the first
+    // `player_spawn` or the level geometry center
     // (`spawn_position()`) when no player start exists.
     let initial_camera_pos = Vec3::new(0.0, 200.0, 500.0);
     let initial_state = InterpolableState::new(initial_camera_pos);

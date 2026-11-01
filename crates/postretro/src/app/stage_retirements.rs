@@ -21,6 +21,9 @@ enum Retiring {
     Upload(UploadRetirement),
     /// A level load's prep tasks and set build, by the load's generation.
     Load {
+        // Read by the tests' `retiring_loads` and shown in Debug output;
+        // nothing in production branches on it.
+        #[cfg_attr(not(test), allow(dead_code))]
         generation: u64,
         retirement: LoadRetirement,
     },
@@ -58,8 +61,8 @@ impl StageRetirements {
         self.entries.is_empty()
     }
 
-    /// The generations of the loads still retiring, oldest first.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The generations of the loads still retiring, oldest first. Test-only.
+    #[cfg(test)]
     pub(crate) fn retiring_loads(&self) -> Vec<u64> {
         self.entries
             .iter()
@@ -70,8 +73,8 @@ impl StageRetirements {
             .collect()
     }
 
-    /// How many retiring upload threads remain.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// How many retiring upload threads remain. Test-only.
+    #[cfg(test)]
     pub(crate) fn retiring_uploads(&self) -> usize {
         self.entries
             .iter()

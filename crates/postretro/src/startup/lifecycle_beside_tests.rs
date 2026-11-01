@@ -969,9 +969,19 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         log::Level::Warn,
         "model prediction missed 'models/ar_4/model.gltf'",
     );
-    // (c)
+    // (c): ZONES' entry is freed by the commit's one cache sweep, after the
+    // model install, the released running level and the released
+    // over-prediction having been its only other holders.
     assert_eq!(report.model_over_predictions, 1, "{report:?}");
-    assert_eq!(report.model_over_prediction_freed, 1, "{report:?}");
+    assert_eq!(
+        report.model_cache,
+        Some(crate::render::ModelCacheCommit {
+            inserted: 0,
+            freed: 1,
+            retained: 1,
+        }),
+        "{report:?}"
+    );
     capture.assert_logged_once(
         log::Level::Warn,
         "model prediction over-predicted 'models/pose-modifier-fixture/joint_zones.gltf'",
@@ -1026,6 +1036,173 @@ fn hot_reload_beside_load_installs_reloaded_models() {
         "(a) nothing spawned with the removed model: {meshes:?}"
     );
     drop(registry);
+    retire_all(&mut app);
+}
+
+// The commit sweeps the model cache once, after its model install: a model
+// the prediction missed whose content only the released running level held
+// is a cache hit on the commit frame, drawn with the running level's entry,
+// not parsed and uploaded again. A hot reload committed beside the load
+// re-points the placement's classname from ZONES, which the load predicted
+// and uploaded, to the rifle, which only the running level draws.
+#[test]
+fn commit_miss_reuses_released_level_model() {
+    let test = "commit_miss_reuses_released_level_model";
+    let running = props_case("running", &[RIFLE]);
+    let beside = entities_case(
+        "beside",
+        vec![crate::level_load::model_tests::record(RELOADED, &[], 0)],
+    );
+    let Some((mut app, exit)) = running_level(test, &running) else {
+        return;
+    };
+    let mut crate_type = super::super::lifecycle_test_fixtures::descriptor(RELOADED);
+    crate_type.mesh = Some(MeshDescriptor {
+        model: ZONES.to_string(),
+        shadow_only: false,
+        attachments: Default::default(),
+        shadow_bias_scale: 1.0,
+        animations: Default::default(),
+        default_state: None,
+        locomotion: None,
+    });
+    // The mod's descriptors before the reload.
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![crate_type]);
+    let running_set = active_set(&app).unwrap();
+    let running_rifle = app
+        .renderer
+        .as_ref()
+        .unwrap()
+        .level_set_model_identity(running_set, RIFLE);
+    assert!(running_rifle.is_some(), "the running level draws the rifle");
+
+    let upload = Hold::default();
+    begin_beside(&mut app, &beside, hold_upload(&upload));
+    assert!(
+        app.level_loads.is_staged(),
+        "dispatched: the prediction read the old descriptors"
+    );
+    let mod_root = super::reload_mod_root(RELOADED, RIFLE);
+    super::commit_staged_reload(&mut app, mod_root.path(), |app| {
+        running_frame(app, &exit).expect("Running");
+    });
+    upload.release();
+    run_running_until(&mut app, &exit, "the held bundle", held, |_, _| {});
+    let models = &app.level_loads.held_bundle().unwrap().presentation.models;
+    assert_eq!(models.handles().collect::<Vec<_>>(), [ZONES]);
+    assert_eq!(
+        models.get(ZONES).unwrap().cache,
+        ModelCacheUse::Miss,
+        "the running level does not draw ZONES: the load uploaded it"
+    );
+
+    let capture = LogCapture::start();
+    let (report, id) = commit_held(&mut app, &exit);
+    assert_eq!(report.model_misses, 1, "{report:?}");
+    capture.assert_logged_once(
+        log::Level::Warn,
+        "model prediction missed 'models/ar_4/model.gltf'",
+    );
+    assert_eq!(
+        report.model_miss_created.total(),
+        0,
+        "the miss hit the released level's entry, uploading nothing: {report:?}"
+    );
+    assert_eq!(report.uncounted_creations().total(), 0, "{report:?}");
+    assert_eq!(
+        app.renderer
+            .as_ref()
+            .unwrap()
+            .level_set_model_identity(id, RIFLE),
+        running_rifle,
+        "the published set draws the running level's rifle entry"
+    );
+    // ZONES' offer joined at the publish; the one sweep after the install
+    // freed it (released as an over-prediction) and kept the rifle.
+    assert_eq!(report.model_over_predictions, 1, "{report:?}");
+    assert_eq!(
+        report.model_cache,
+        Some(crate::render::ModelCacheCommit {
+            inserted: 1,
+            freed: 1,
+            retained: 1,
+        }),
+        "{report:?}"
+    );
+    retire_all(&mut app);
+}
+
+// The beside order runs the commit's checks before it releases the running
+// level: a held bundle whose check fails (the SH controller rejecting its
+// level's topology, the commit checks' own seam) takes the failure route's
+// beside half. The running level keeps Running on its own set with its
+// registry and cache entries, the bundle's set is released, nothing
+// commits, and the load reports once.
+#[test]
+fn beside_commit_check_failure_keeps_level_running() {
+    let test = "beside_commit_check_failure_keeps_level_running";
+    let running = CommitCase::textured();
+    let beside = CommitCase::streamed_sh();
+    let Some((mut app, exit)) = running_level(test, &running) else {
+        return;
+    };
+    let running_set = active_set(&app);
+    let level = installed_path(&app);
+    let entities = registry_fingerprint(&app);
+    let keys = cache_keys(&app);
+    begin_beside(&mut app, &beside, |_| {});
+    run_running_until(&mut app, &exit, "the held bundle", held, |_, _| {});
+    let bundle_set = held_set(&app);
+    match &mut app
+        .level_loads
+        .active_mut()
+        .expect("the held load is active")
+        .phase
+    {
+        crate::startup::level_loads::ActivePhase::Ready(bundle) => bundle
+            .streaming
+            .sh
+            .as_mut()
+            .expect("the fixture streams SH")
+            .topology
+            .break_for_tests(),
+        _ => panic!("a held load's bundle is ready"),
+    }
+    let capture = LogCapture::start();
+    assert!(
+        app.commit_ready_beside_bundle(&exit).is_none(),
+        "the check refuses the bundle"
+    );
+    assert_eq!(
+        app.boot_state,
+        BootState::Running,
+        "the level keeps Running"
+    );
+    assert_eq!(active_set(&app), running_set, "its set stays active");
+    assert_eq!(installed_path(&app), level, "nothing committed");
+    assert_eq!(registry_fingerprint(&app), entities);
+    assert_eq!(cache_keys(&app), keys, "cache entries intact");
+    assert!(
+        !resident_sets(&app).contains(&bundle_set),
+        "the bundle's set was released"
+    );
+    assert!(!app.level_load_in_flight());
+    let errors = loader_errors(&capture);
+    assert_eq!(errors.len(), 1, "one report: {errors:?}");
+    assert!(
+        errors[0].contains("level commit checks failed") && errors[0].contains("keeps running"),
+        "the commit check's failure, on the beside route: {errors:?}"
+    );
+    assert!(!exit.0.get(), "no exit");
+    assert!(app.exit_result.is_ok());
+    // The running level draws on.
+    for _ in 0..3 {
+        running_frame(&mut app, &exit).expect("still Running");
+    }
+    assert_eq!(loader_errors(&capture).len(), 1, "still one report");
     retire_all(&mut app);
 }
 
@@ -1248,9 +1425,12 @@ fn loading_screen_request_supersedes_beside_load() {
 // Marks, beside a running level: the load logs its own line C, after its
 // reveal like any load: dispatch, `bundle_ready` closed on the Running frame
 // that took the bundle (its stages inside), `bundle_held` until its caller
-// commits, the running level's release, the commit frame, the settle hold
-// and the reveal. No loading-screen mark: it has none. It adds up from the
-// beside entry to the reveal.
+// commits, the commit's checks (run before the release), the running
+// level's release, the commit frame, the settle hold and the reveal. No
+// loading-screen mark: it has none. It adds up from the beside entry to the
+// reveal. The running level's own line C, still waiting for a present when
+// the load begins beside it, is logged at the beside entry with its own
+// marks, not the load's.
 #[test]
 fn beside_load_logs_its_own_line_c() {
     let test = "beside_load_logs_its_own_line_c";
@@ -1259,9 +1439,31 @@ fn beside_load_logs_its_own_line_c() {
     let Some((mut app, exit)) = running_level(test, &running) else {
         return;
     };
+    assert!(
+        app.pending_level_log,
+        "no frame presented since the running level's reveal: its line C waits"
+    );
     let capture = LogCapture::start();
     let wall_start = Instant::now();
     begin_beside(&mut app, &beside, |_| {});
+    assert!(!app.pending_level_log, "the beside entry closed it");
+    let running_line = logged_line_c(&capture);
+    let running_marks: Vec<String> = parse_line_c(&running_line)
+        .into_iter()
+        .map(|mark| mark.name)
+        .collect();
+    assert_eq!(
+        running_marks.last().map(String::as_str),
+        Some("first_level_frame"),
+        "{running_line}"
+    );
+    for beside_mark in ["bundle_held", "commit_checks", "running_release"] {
+        assert!(
+            !running_marks.iter().any(|mark| mark == beside_mark),
+            "the running level's line holds none of the load's marks: {running_line}"
+        );
+    }
+    capture.clear();
     run_running_until(&mut app, &exit, "the held bundle", held, |_, _| {});
     for _ in 0..2 {
         running_frame(&mut app, &exit).expect("Running while held");
@@ -1280,6 +1482,7 @@ fn beside_load_logs_its_own_line_c() {
             "load_dispatch",
             "bundle_ready",
             "bundle_held",
+            "commit_checks",
             "running_release",
             "commit_frame",
             "settle_hold",
@@ -1293,7 +1496,15 @@ fn beside_load_logs_its_own_line_c() {
     assert_eq!(bundle_ready.inside[0].0, "prl_parse", "{line}");
     assert_eq!(bundle_ready.inside[1].0, "upload", "{line}");
     assert!(marks[2].ms > 0.0, "held across Running frames: {line}");
-    assert_group_sums(&marks[4]);
+    let commit_frame = &marks[5];
+    assert!(
+        !commit_frame
+            .inside
+            .iter()
+            .any(|(name, _)| name == "commit_checks"),
+        "the checks ran before the release, not again in the commit: {line}"
+    );
+    assert_group_sums(commit_frame);
     retire_all(&mut app);
 }
 
@@ -1351,9 +1562,25 @@ fn beside_path_has_no_blocking_wait() {
         let waits = blocking_waits_in(source);
         assert!(waits.is_empty(), "`{name}` blocks: {waits:?}");
     }
-    // The commit it calls is the Loading frame's, under the existing gate.
+    // The commit it calls is the Loading frame's, under the existing gate,
+    // with the bundle its checks passed; those checks (the commit's own,
+    // under the same gate) run before the release, and a failing one takes
+    // the beside half of the failure route.
+    let commit = function_source(beside, "commit_ready_beside_bundle");
+    let checks = commit
+        .find("self.check_level_bundle(*bundle)")
+        .expect("the beside commit checks the bundle");
+    let failure = commit
+        .find("self.finish_beside_level_failure(")
+        .expect("a failed check keeps the running level running");
+    let release = commit
+        .find("self.unload_level();")
+        .expect("the running level's release");
+    let committed = commit
+        .find("self.commit_ready_level_bundle(checked, event_loop)")
+        .expect("the checked bundle commits");
     assert!(
-        function_source(beside, "commit_ready_beside_bundle")
-            .contains("self.commit_ready_level_bundle(*bundle, event_loop)")
+        checks < failure && failure < release && release < committed,
+        "check, then release, then commit"
     );
 }

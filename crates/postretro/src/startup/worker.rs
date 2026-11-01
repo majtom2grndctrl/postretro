@@ -27,7 +27,7 @@ pub(crate) struct LevelPayload {
     /// absent or unusable directories surface per-texture warnings from
     /// `load_textures` and degrade those entries to placeholders.
     pub prm_cache_root: PathBuf,
-    /// Worker-thread stages, attached to `worker_delivered` in level-load `StartupTimings`
+    /// Prep-task stages, attached to `bundle_ready` in level-load `StartupTimings`
     /// (they ran inside its interval, so they are shown with it, not added to it).
     pub timings: Vec<(&'static str, Duration)>,
 }

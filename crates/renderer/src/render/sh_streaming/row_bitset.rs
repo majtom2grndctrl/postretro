@@ -29,7 +29,9 @@ impl RowBitSet {
         }
     }
 
-    /// Backing words: the row capacity this set was sized for, in 64s.
+    /// Backing words: the row capacity this set was sized for, in 64s (the
+    /// residency plan summary).
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn word_count(&self) -> usize {
         self.words.len()
     }

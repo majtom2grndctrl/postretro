@@ -869,12 +869,111 @@ fn a_ray_through_the_contact_gap_under_an_excluded_block_fills_the_floor() {
     });
 }
 
-// A pass beside an excluded hull spends none of the trace's hull passes
-// (one per excluded brush, plus one). A ray 0.2 mm over two low blocks'
-// tops, level but for a 1e-5 descent, takes a tolerance hit on each front
-// and passes beside both, then crosses a tall block behind them and reads
-// the wall behind: one pass, where two spent beside the low blocks would
-// leave three.
+/// The room with a kept platform `height` u tall on the floor, in two
+/// brushes butted at map x = 100 (the near one from 84, the far one to 116),
+/// and an excluded block over the far one's whole footprint, [`CONTACT_GAP`]
+/// above it, up to 40 u. CSG removes the far brush's front against the near
+/// one and its whole top against the block, so where a ray through the gap
+/// under the block meets the far brush, none of its faces survive.
+fn platform_under_a_block(height: f64) -> CaptureFixture {
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [84.0, -8.0, 0.0],
+        [100.0, 8.0, height],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [100.0, -8.0, 0.0],
+        [116.0, 8.0, height],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [100.0, -8.0, height + CONTACT_GAP],
+        [116.0, 8.0, 40.0],
+        TRIM_TEXTURE,
+    ));
+    CaptureFixture::compile(&world, &[pool_entity()])
+}
+
+// Regression: a ray through the contact gap under an excluded block, over a
+// kept platform whose faces CSG removed there, took a tolerance hit on the
+// block's front and passed beside it. The fill's first crossing, the
+// platform's front, pooled no surviving face, so the trace dropped the block
+// and the ray ran on inside the platform: out its far side onto the wall
+// behind, or, over a thin platform and steeper, out its bottom through the
+// floor slab to a miss. It reads what a ray 0.4 mm higher, entering the
+// block, reads: kept solid past the gap, so the leak guard on the block's
+// front (or a fill).
+#[test]
+fn a_ray_through_the_contact_gap_over_a_platform_with_no_face_left_never_passes_through_it() {
+    // An 8 u platform under a ray descending at a slope of 0.1, which leaves
+    // its far side; a 2 u one under a slope of 0.25, which leaves its bottom.
+    // Either way the ray meets the platform's top plane more than 1.5 mm
+    // past the near brush's top, so that top is never crossed.
+    for (height, slope) in [(8.0, 0.1), (2.0, 0.25)] {
+        let room = platform_under_a_block(height);
+        let near = room.brush_at([92.0, 0.0, height / 2.0]);
+        let far = room.brush_at([108.0, 0.0, height / 2.0]);
+        let block = room.brush_at([108.0, 0.0, 24.0]);
+        assert_eq!(
+            room.faces_on_plane(far, 0, [100.0, 0.0, 0.0]),
+            0,
+            "{height}: CSG removes the far brush's front against the near one"
+        );
+        assert_eq!(
+            room.faces_on_plane(far, 2, [0.0, 0.0, height]),
+            0,
+            "{height}: CSG removes the far brush's top under the block"
+        );
+        room.with_scene(|scene, probes| {
+            let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+            let none = exclusion(scene, &probe, &[]);
+            let filter = exclusion(scene, &probe, &[block]);
+            // Across the block's front (map x = 100) 0.6 mm over the
+            // platform, 0.2 mm under the block's bottom edge, so a tolerance
+            // hit beside the hull; and 1.0 mm over, 0.2 mm inside the block's
+            // front, entering it. Each origin lies 1 m before the crossing,
+            // past the pool and over the near brush.
+            for over in [0.0006, 0.001] {
+                let crossing = engine([100.0, 0.5, height + over * UNITS_PER_METER]);
+                let direction = engine([1.0, 0.0, -slope]).normalize();
+                let (origin, direction) = ((crossing - direction).as_vec3(), direction.as_vec3());
+                let kept = scene.trace(origin, direction, &none);
+                let RayOutcome::Hit(front) = kept else {
+                    panic!("{height}, {over}: the block's front faces the ray, not {kept:?}");
+                };
+                assert_eq!(
+                    room.face_brush(front.face),
+                    Some(block),
+                    "{height}, {over}: {front:?}"
+                );
+                assert!(
+                    (front.distance - 1.0).abs() < 1e-3,
+                    "{height}, {over}: {front:?}"
+                );
+                match scene.trace(origin, direction, &filter) {
+                    RayOutcome::LeakGuard(hit) => {
+                        assert_eq!(hit, front, "{height}, {over}");
+                    }
+                    RayOutcome::Fill(fill) => assert!(
+                        [near, far].contains(&fill.brush),
+                        "{height}, {over}: {fill:?}"
+                    ),
+                    other => {
+                        panic!("{height}, {over}: reads kept solid past the gap, not {other:?}")
+                    }
+                }
+            }
+        });
+    }
+}
+
+// A pass beside an excluded hull that drops it spends none of the trace's
+// hull passes (one per excluded brush, plus one). A ray 0.2 mm over two low
+// blocks' tops, level but for a 1e-5 descent, takes a tolerance hit on each
+// front and passes beside both, then crosses a tall block behind them and
+// reads the wall behind: one pass, where two spent beside the low blocks
+// would leave three.
 #[test]
 fn passes_beside_two_excluded_blocks_spend_no_hull_pass() {
     let low_top = 32.0;
@@ -903,6 +1002,26 @@ fn passes_beside_two_excluded_blocks_spend_no_hull_pass() {
         };
         assert_eq!(room.face_brush(front.face), Some(blocks[0]), "{front:?}");
         assert!((front.distance - 1.0).abs() < 1e-3, "{front:?}");
+        // With the first block's faces masked, the kept hit is the second
+        // block's front, 16 u on: a tolerance hit too.
+        let first_masked = scene
+            .tracer
+            .face_mask(room.brush_faces.of(blocks[0]).iter().copied());
+        let behind = scene
+            .tracer
+            .closest_hit_masked(
+                origin,
+                direction,
+                RAY_EPSILON,
+                scene.max_distance,
+                &first_masked,
+                &FaceMask::default(),
+            )
+            .hit
+            .expect("the second block's front faces the ray");
+        assert_eq!(room.face_brush(behind.face), Some(blocks[1]), "{behind:?}");
+        let to_second = 1.0 + (16.0 / UNITS_PER_METER) as f32;
+        assert!((behind.distance - to_second).abs() < 1e-3, "{behind:?}");
         let filter = exclusion(scene, &probe, &blocks);
         let mut hull_passes = 0;
         match filter.trace_counting(
@@ -1056,6 +1175,20 @@ fn a_crate_seam_ray_taking_the_real_entry_first_enters_its_crate() {
     crate_seam_reads_the_entered_crate(false);
 }
 
+/// Which branch of the exclusion trace decides a seam ray whose two hits tie.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SeamArm {
+    /// The kept block wins the tie: no excluded face is skipped.
+    KeptFirst,
+    /// The excluded block's tolerance hit wins: a pass beside it, off the
+    /// box, takes the leak guard on that face.
+    OffBoxBeside,
+    /// The excluded block's real entry wins: a crossing. Its fill on the
+    /// kept block's front, or the kept hit tying it, lies past the box edge,
+    /// so the box check after the fill takes the leak guard on that face.
+    OffBoxCrossing,
+}
+
 // Regression: a tie between a kept face and an off-box excluded brush at a
 // seam went to whichever the traversal reached first when both were kept,
 // but to the kept face when the brush was excluded, so excluding a brush
@@ -1064,9 +1197,11 @@ fn a_crate_seam_ray_taking_the_real_entry_first_enters_its_crate() {
 // either side ties the two fronts, and reads the same face, at the same
 // distance, kept or excluded. Two layouts of one compile: the box stops 1 u
 // short of the seam with the far block excluded, or 1 u short of the near
-// block with that one excluded. The rays tie on the same triangles in both,
-// so on each ray the excluded block wins the tie in exactly one layout, and
-// the trace runs both with the excluded face first and with the kept one.
+// block with that one excluded. Hit order breaks the tie by triangle index,
+// and both rays tie on the same two triangles, so one block wins it on both
+// rays. In the layout that excludes the winner, the ray taking its
+// tolerance hit runs the off-box beside arm and the ray entering it runs
+// the crossing; the other layout pins only that a kept winner skips nothing.
 #[test]
 fn a_tie_at_a_seam_with_an_off_box_brush_captures_the_same_kept_or_excluded() {
     let mut world = textured_room();
@@ -1086,50 +1221,57 @@ fn a_tie_at_a_seam_with_an_off_box_brush_captures_the_same_kept_or_excluded() {
     let direction = engine([1.0, 0.0, -1.0e-5]).normalize();
     // The last map y each layout's box holds, and the block it excludes.
     let layouts = [(63.0, far), (31.0, near)];
-    let excluded_wins: Vec<Vec<bool>> = room.with_scene(|scene, probes| {
-        layouts
-            .iter()
-            .map(|&(box_edge_y, off_box)| {
-                let probe = boxed(&probes[0], ROOM_MIN, [ROOM_MAX[0], box_edge_y, ROOM_MAX[2]]);
-                let none = exclusion(scene, &probe, &[]);
-                let filter = exclusion(scene, &probe, &[off_box]);
-                assert_eq!(
-                    filter.excluded(),
-                    &[off_box][..],
-                    "excluded though off the box"
+    // Each ray's offset across the seam, in metres, and the block taking its
+    // tolerance hit, whose front it crosses 0.2 mm outside: under the seam,
+    // inside the near block's front, the far block; over it, the near one.
+    let rays = [(-0.0002, far), (0.0002, near)];
+    let (winners, arms) = room.with_scene(|scene, probes| {
+        let (mut winners, mut arms) = (Vec::new(), Vec::new());
+        for &(box_edge_y, off_box) in &layouts {
+            let probe = boxed(&probes[0], ROOM_MIN, [ROOM_MAX[0], box_edge_y, ROOM_MAX[2]]);
+            let none = exclusion(scene, &probe, &[]);
+            let filter = exclusion(scene, &probe, &[off_box]);
+            assert_eq!(
+                filter.excluded(),
+                &[off_box][..],
+                "excluded though off the box"
+            );
+            for &(offset, tolerance_hit) in &rays {
+                let crossing = engine([80.0, 64.0 + offset * UNITS_PER_METER, 24.0]);
+                let (origin, direction) = ((crossing - direction).as_vec3(), direction.as_vec3());
+                let [first, _] = tied_hits(&room, scene, (origin, direction), [near, far]);
+                let kept = scene.trace(origin, direction, &none);
+                let RayOutcome::Hit(hit) = kept else {
+                    panic!("{offset}: a front faces the ray, not {kept:?}");
+                };
+                assert!(
+                    [Some(near), Some(far)].contains(&room.face_brush(hit.face)),
+                    "{offset}: {hit:?}"
                 );
-                [-0.0002, 0.0002]
-                    .iter()
-                    .map(|&offset| {
-                        let crossing = engine([80.0, 64.0 + offset * UNITS_PER_METER, 24.0]);
-                        let (origin, direction) =
-                            ((crossing - direction).as_vec3(), direction.as_vec3());
-                        let [first, _] = tied_hits(&room, scene, (origin, direction), [near, far]);
-                        let kept = scene.trace(origin, direction, &none);
-                        let RayOutcome::Hit(hit) = kept else {
-                            panic!("{offset}: a front faces the ray, not {kept:?}");
-                        };
-                        assert!(
-                            [Some(near), Some(far)].contains(&room.face_brush(hit.face)),
-                            "{offset}: {hit:?}"
-                        );
-                        let excluded = scene.trace(origin, direction, &filter);
-                        assert_eq!(
-                            excluded.surface(),
-                            Some(&hit),
-                            "box edge {box_edge_y}, {offset}: {excluded:?} vs {kept:?}"
-                        );
-                        room.face_brush(first.face) == Some(off_box)
-                    })
-                    .collect::<Vec<bool>>()
-            })
-            .collect()
+                let excluded = scene.trace(origin, direction, &filter);
+                assert_eq!(
+                    excluded.surface(),
+                    Some(&hit),
+                    "box edge {box_edge_y}, {offset}: {excluded:?} vs {kept:?}"
+                );
+                let winner = room.face_brush(first.face);
+                winners.push(winner);
+                arms.push(if winner != Some(off_box) {
+                    SeamArm::KeptFirst
+                } else if winner == Some(tolerance_hit) {
+                    SeamArm::OffBoxBeside
+                } else {
+                    SeamArm::OffBoxCrossing
+                });
+            }
+        }
+        (winners, arms)
     });
     assert!(
-        excluded_wins[0]
-            .iter()
-            .zip(&excluded_wins[1])
-            .all(|(first_layout, second_layout)| first_layout != second_layout),
-        "each ray's tie goes to the excluded block in exactly one layout: {excluded_wins:?}"
+        winners.iter().all(|&winner| winner == winners[0]),
+        "one block wins the tie on every ray: {winners:?}"
     );
+    for arm in [SeamArm::OffBoxBeside, SeamArm::OffBoxCrossing] {
+        assert!(arms.contains(&arm), "{arm:?} decides a ray: {arms:?}");
+    }
 }

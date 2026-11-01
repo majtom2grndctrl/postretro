@@ -156,24 +156,31 @@ struct Contacts {
     excluded: Vec<usize>,
 }
 
-/// How a ray leaves an excluded hull it skipped.
+/// How a ray passes an excluded hull it skipped.
 enum Crossing {
+    /// Into the hull, leaving it as the exit reads.
+    Through(Exit),
+    /// Never into the hull: the skipped face took a tolerance hit, within τ
+    /// of it in its plane, from a ray that passes beside the hull
+    /// (`ray_traversal::TRACER_TOLERANCE_METERS`). It classifies like a
+    /// crossing whose exit is that hit, so a ray through the contact gap
+    /// between the hull and a kept brush reads what a ray just inside the
+    /// hull would: CSG removed the kept faces in that gap, so passing on
+    /// would go through the hole. `None` when it neither fills nor leaves
+    /// into kept solid or another excluded hull: a ray that misses a convex
+    /// hull misses all of it, so inside the projection box it traces on as
+    /// if the brush were absent.
+    Beside(Option<Exit>),
+}
+
+/// What a ray reads where it leaves an excluded hull, or passes beside one.
+enum Exit {
     /// Through a kept brush's covering side, inside the hull or in contact.
     Fill(Fill),
     /// Into empty space at this distance: trace on from there.
-    Exit(f64),
+    Open(f64),
     /// Into kept solid, or past the crossing bound.
     LeakGuard,
-    /// Never into the hull: the skipped face took a tolerance hit, within τ
-    /// of it in its plane, from a ray that passes beside the hull
-    /// (`ray_traversal::TRACER_TOLERANCE_METERS`). A ray that misses a convex
-    /// hull misses all of it, so inside the projection box the ray traces on
-    /// as if the brush were absent, unless it first crosses a kept brush's
-    /// covering side in contact with the hull: the fill, as a crossing reads
-    /// it. A ray through the contact gap between the hull and a kept brush
-    /// passes beside the hull, and CSG removed the kept side it crosses
-    /// there.
-    Beside(Option<Fill>),
 }
 
 impl<'a> ProbeExclusion<'a> {
@@ -325,14 +332,15 @@ impl<'a> ProbeExclusion<'a> {
     /// through a side with surviving faces, fills there. A ray that skipped
     /// any excluded brush and then misses, or ends (traced or filled) outside
     /// the projection box, takes the leak guard. A tolerance hit on an
-    /// excluded face whose hull the ray never enters is no crossing. Outside
-    /// the box it takes the leak guard, as a crossing there would. Inside
-    /// it, a covering side the ray crosses in contact with that hull fills
-    /// as it would on a crossing; otherwise the trace drops that brush's
-    /// faces and re-traces from the same bound, so another brush's face at
-    /// the same distance still counts, and the pass neither counts as
-    /// skipping that brush nor spends a hull pass. Every distance is from
-    /// `origin`.
+    /// excluded face whose hull the ray never enters passes beside it.
+    /// Outside the box that takes the leak guard, as a crossing there would.
+    /// Inside it, the pass classifies like a crossing whose exit is the hit:
+    /// it fills, takes the leak guard into kept solid, or continues through
+    /// another excluded hull. Only when it does none of these does the trace
+    /// drop that brush's faces and re-trace from the same bound, so another
+    /// brush's face at the same distance still counts; that pass neither
+    /// counts as skipping the brush nor spends a hull pass. Every distance
+    /// is from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -371,10 +379,12 @@ impl<'a> ProbeExclusion<'a> {
         // Each hull pass moves past one excluded hull, so the excluded set
         // bounds them; a ray re-entering hulls past that takes the guard, as
         // does a grazing ray that spends its passes re-entering the same
-        // hull. A pass beside a hull spends none of that budget and keeps
-        // `min_distance`, yet the loop still ends: it adds the brush to
-        // `beside`, whose faces are ignored from then on, so no brush is
-        // passed beside twice and the excluded set bounds those passes too.
+        // hull. A pass beside a hull that goes on through another excluded
+        // hull spends one, as a crossing does. One that drops the brush
+        // spends none and keeps `min_distance`, yet the loop still ends: it
+        // adds the brush to `beside`, whose faces are ignored from then on,
+        // so no brush is dropped twice and the excluded set bounds those
+        // passes too.
         loop {
             if *hull_passes > self.excluded.len() {
                 return first_skipped.map_or(RayOutcome::Miss, RayOutcome::LeakGuard);
@@ -424,15 +434,11 @@ impl<'a> ProbeExclusion<'a> {
                 {
                     return RayOutcome::LeakGuard(first);
                 }
-                // A kept side CSG removed against the hull, crossed inside it
-                // or, passing beside it, through their contact gap.
-                Crossing::Fill(fill) | Crossing::Beside(Some(fill)) => {
-                    return self.filled(fill, hit, first, origin, direction);
-                }
-                // No hull crossed and no fill: drop the brush and trace again
-                // from the same bound. Stepping past the tolerance hit's
-                // distance instead would step over another brush's real entry
-                // at that same `f32` distance.
+                // No hull entered, no fill and nothing solid past the hit:
+                // drop the brush and trace again from the same bound.
+                // Stepping past the tolerance hit's distance instead would
+                // step over another brush's real entry at that same `f32`
+                // distance.
                 Crossing::Beside(None) => {
                     let brush = self.excluded[slot];
                     debug_assert!(
@@ -445,14 +451,21 @@ impl<'a> ProbeExclusion<'a> {
                         .flat_map(|&b| brush_faces.of(b).iter().copied());
                     ignored = tracer.face_mask(passed);
                 }
-                Crossing::LeakGuard => return RayOutcome::LeakGuard(first),
-                // Never at or before the skipped face itself, so each pass
-                // advances even when f32 rounds the exit below it.
-                Crossing::Exit(exit) => {
-                    first_skipped = Some(first);
-                    min_distance = (exit as f32).max(skipped.distance);
-                    *hull_passes += 1;
-                }
+                // A pass beside the hull reads as a crossing would.
+                Crossing::Through(exit) | Crossing::Beside(Some(exit)) => match exit {
+                    // A kept side CSG removed against the hull, crossed
+                    // inside it or, passing beside it, through their contact
+                    // gap.
+                    Exit::Fill(fill) => return self.filled(fill, hit, first, origin, direction),
+                    Exit::LeakGuard => return RayOutcome::LeakGuard(first),
+                    // Never at or before the skipped face itself, so each
+                    // pass advances even when f32 rounds the exit below it.
+                    Exit::Open(exit) => {
+                        first_skipped = Some(first);
+                        min_distance = (exit as f32).max(skipped.distance);
+                        *hull_passes += 1;
+                    }
+                },
             }
         }
     }
@@ -513,9 +526,10 @@ impl<'a> ProbeExclusion<'a> {
     /// would stop a re-trace. A level or gently rising ray leaving a
     /// pillar's side just under the ceiling enters the ceiling, if at all,
     /// far from the pillar, so it re-traces onto the intact ceiling. A ray
-    /// that never enters the hull, its entry a tolerance hit, passes beside,
-    /// with the fill of a covering side it crosses in contact with the hull
-    /// from that hit on.
+    /// that never enters the hull, its entry a tolerance hit, passes beside
+    /// it and runs the same steps with that hit as its exit: through a
+    /// contact gap, CSG removed the kept faces it would meet, so a kept
+    /// brush it enters there is solid behind the gap.
     fn cross(
         &self,
         tracer: &SceneTracer<'_>,
@@ -527,21 +541,32 @@ impl<'a> ProbeExclusion<'a> {
         let volumes = self.brushes.volumes;
         let mut reached = entry;
         let (enters, mut leaves) = self.span(self.excluded[slot], origin, direction);
-        // The ray misses the hull: its hit on the face was a tolerance hit.
-        // Through a contact gap under or beside the hull it still crosses
-        // the kept side CSG removed there, within the fill's tolerance.
-        if enters > leaves {
-            return Crossing::Beside(self.fill(tracer, slot, (origin, direction), entry));
+        // The ray misses the hull: its hit on the face was a tolerance hit,
+        // and the exit is classified there.
+        let beside = enters > leaves;
+        if beside {
+            leaves = entry;
         }
+        // Whether the ray has entered an excluded hull. A pass beside this
+        // one enters one only by going on through a neighbour that holds
+        // the hit.
+        let mut entered = !beside;
+        let passed = |exit: Exit| {
+            if beside {
+                Crossing::Beside(Some(exit))
+            } else {
+                Crossing::Through(exit)
+            }
+        };
         for _ in 0..self.excluded.len() {
             let exit = leaves.max(reached);
             if !exit.is_finite() {
-                return Crossing::LeakGuard;
+                return passed(Exit::LeakGuard);
             }
             let hull = &volumes[self.excluded[slot] as usize];
             let contacts = &self.contacts[slot];
             if let Some(fill) = self.fill(tracer, slot, (origin, direction), reached) {
-                return Crossing::Fill(fill);
+                return passed(Exit::Fill(fill));
             }
             // Where the ray leaves `brush`, when it holds the exit.
             let holds = |brush: u32| {
@@ -558,6 +583,7 @@ impl<'a> ProbeExclusion<'a> {
                 slot = next;
                 reached = exit;
                 leaves = next_leaves;
+                entered = true;
                 continue;
             }
             // Kept solid behind the exit: leak guard.
@@ -566,11 +592,15 @@ impl<'a> ProbeExclusion<'a> {
                 .iter()
                 .any(|&kept| holds(self.kept[kept].brush).is_some())
             {
-                return Crossing::LeakGuard;
+                return passed(Exit::LeakGuard);
             }
-            return Crossing::Exit(exit);
+            return if entered {
+                passed(Exit::Open(exit))
+            } else {
+                Crossing::Beside(None)
+            };
         }
-        Crossing::LeakGuard
+        passed(Exit::LeakGuard)
     }
 
     /// The covering side of a kept contact of the excluded hull in `slot`

@@ -5,16 +5,18 @@ use super::*;
 // four soft-shadow samples, compressed irradiance, empty stage cache. The
 // gate-heavily-lit, soft_shadow_test and test_animated_weight_maps_mixed rows
 // were recaptured when the fixture pipeline moved to the occluder partition,
-// whose cells regroup their lightmap blocks; four-layer-cut is synthetic.
+// whose cells regroup their lightmap blocks, and gate-heavily-lit and
+// soft_shadow_test again for the watertight tracer, whose shadow answers
+// move their texels; four-layer-cut is synthetic.
 fn expected_sections(name: &str) -> (&'static str, &'static str) {
     match name {
         "gate-heavily-lit" => (
-            "caab4444205fa6f56a846b87579a00e904b6927603cad775d7876c709c578007",
-            "89e8f975e5954ac82f7cabbc5610bb4a549f2303f46731b21d307c4a7f2a594d",
+            "9e5b6e23b38dcfa82468762518706e2a80976f759e9357d42869c5cf5c30a644",
+            "1037c69da2c98b7f453ad119b2787dcac8fd47ac5798233df34fce49103d8a53",
         ),
         "soft_shadow_test" => (
-            "d115fedb4d31573430d1f456bd5d6c97df297c707454a245e0b822927f817464",
-            "0e45f8a66505cf8da16b2da5c088182f5f5932a24ba9bdad417ba0fe6f134567",
+            "045753ebd02fff2c71287156b9549275888fcdae4e7074358868225b01724acb",
+            "94acef0c28e06bc392e071ae4a29754f17645629ab43d5c44ed0d8e28142488e",
         ),
         "test_animated_weight_maps_cap" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",

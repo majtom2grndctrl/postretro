@@ -34,6 +34,7 @@ Here, the unculled walk's skipped texels are dark: their rays hit, and each hit 
 Exact alternatives, and why they lose:
 - *Cull only pairs with no traced texel.* Charts border the walls their light is behind, so almost every culled pair has a traced border. Close to the strict rule's 4% of the win.
 - *Replay the cache writes without tracing.* The triangle a skipped texel's ray would hit is unknown without the trace.
+- *Make the traversal conservative (chosen, owner 2026-10-31).* Pad the bounds the traversal tests so it reaches every triangle the direct test would hit. The answer then no longer depends on the cached triangle, so skipping cache writes can't change it. It moves bytes once wherever the old traversal missed a hit by rounding. Its cost is a slightly wider traversal, gated at 2% of hallway Lightmap Bake.
 
 ## Consumers of the unbounded flood
 

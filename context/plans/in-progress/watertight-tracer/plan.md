@@ -19,9 +19,9 @@ read at: 26ab6c534
 - A degenerate triangle (NaN in-plane distance) rejects instead of accepting, so every accepted point stays inside its padded box.
 - `pipeline/lightmap_stage/tests/budget_regression.rs` pins id-22/42 digests; gate-heavily-lit and soft_shadow_test were recaptured for the tracer's byte move (the test guards the layer budget, not the lighting).
 
-## Cost gate (Task 5) — breached, then cleared by optimization
+## Cost gate (Task 5)
 
-Resolution: an optimization round on the same answers (no output byte moves) brings warren-mini Lightmap Bake to +8.3% and SH Bake to parity, inside the gate; the owner had also said they were inclined to accept the cost, since the accuracy unblocks later briefs. Details at the end of this section. hallway-mini and hallway timings remain for the landing read (AC 24).
+Resolution (first read, corrected by the landing read below): an optimization round on the same answers (no output byte moves) brought warren-mini Lightmap Bake to +8.3% against that session's baseline and SH Bake to parity; the owner had also said they were inclined to accept the cost, since the accuracy unblocks later briefs. Details at the end of this section. hallway-mini and hallway timings remain for the landing read (AC 24).
 
 The first-slice cost read breached the ~10% gate on warren-mini; per the cost Decision the build stops for the owner before any fallback or hallway run. Cold `--release --no-tui` bakes on the Intel Mac, `/usr/bin/time -l` (instruction counts are clock-independent; the wall times are not):
 
@@ -50,6 +50,18 @@ Optimization round (working tree after aad4145da; output `cmp`-identical to aad4
 hallway-mini, same build, cold idle pair: Lightmap Bake 346.00 s → 365.16 s (+5.5%), SH Bake 50.70 s → 51.42 s (+1.4%), total 428.14 s → 447.81 s (+4.6%), instructions 14.66 T → 15.26 T (+4.1%).
 
 Remaining cost is serial per-ray setup (the shear divides and the cache gate's box test, both needed for these answers). Further levers move bytes (reciprocal-multiply shear, ~1–2%) or need SIMD target features.
+
+Landing read (ffd61b87b, warren-mini, cold `--release --no-tui`, baseline → ffd61 → baseline, pmset sampled every 15 s):
+
+| Run | Instructions | Lightmap Bake | SH Bake | Delta SH | Direct SH | Total |
+|---|---|---|---|---|---|---|
+| MT baseline | 10.0281 T | 213.26 s | 21.81 s | 6.08 s | 1.09 s | 292.63 s |
+| ffd61b87b | 10.6702 T (+6.40%) | 246.26 s (+15.5%) | 22.83 s | 6.49 s | 1.11 s | 325.81 s (+11.2%) |
+| MT baseline, again | 10.0275 T | 213.24 s | 22.41 s | 6.08 s | 1.15 s | 292.88 s |
+
+- Correction: the optimized pair's +8.3% above was flattered by a slow baseline (227.92 s). The bracketing baselines here agree to 0.02 s and match the earlier clean baseline rerun (215.06 s); ffd61's Lightmap Bake (246.26 s) matches the optimized build's 246.93 s. Measured against a clean baseline, Lightmap Bake costs about +15%, over the ~10% gate on warren-mini. Instructions agree with the earlier read (+6.4% against +6.2%; ffd61 is +0.15% over the optimized build).
+- Every run's 15 s trace dips below CPU_Speed_Limit 95 (means 88.0, 85.4, 87.2; minima 50–60) while start and exit read 100, the criterion the earlier pairs used. ffd61's mean is 2–3 points lower, which covers part of the gap between wall time and instructions, unconfirmed. Raw: scratchpad `gate-final/timing/`.
+- The gate is defined on hallway Lightmap Bake, the owner's run; hallway-mini read +5.5% (single pair, start/exit criterion). The owner said before the optimization round that they were inclined to accept the cost; the landing number goes to the owner.
 
 Options that were put to the owner: an optimization round on the same answers (per-ray monomorphized axis permutation instead of rows or runtime indexing; a cheaper miss path), with no promise it reaches 10%; accept the cost; or restate the gate.
 
@@ -88,35 +100,35 @@ Cache-key record: rounds 3 and 4 bumped `TRACER_EPOCH` (to 4 and 5) for capture-
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 Brute-force reference replaces every stock-ray reference scan; every tracer equals it on parity and rounding-stress fixtures | `ray_traversal` brute-force helpers; parity tests in lightmap, SH, chunk light list, scatter tracers and `sh_bake/trace_tests.rs` | achievable as stated |
-| 2 Shared-edge proptest, every entry point, τ = 0 and shipped τ; fails at τ = 0 with MT restored | proptest in `ray_traversal` tests over every entry point; MT-restored failure shown by a test-only MT reference asserting it misses on the same cases | achievable as stated |
-| 3 Cracks: narrow crease and T-junction block; wide crack clears; narrow fail at τ = 0 | focused tests on the hit test and `segment_clear` | achievable as stated |
-| 4 Silhouette bounded by τ, sliver acute vertex included | focused test | achievable as stated |
-| 5 1 mm triangle at 0.5° blocks; fails with old det threshold | focused test | achievable as stated |
-| 6 Both windings; just short / just past segment end, either det sign | focused test | achievable as stated |
-| 7 Front-face callers: ±x/±y/±z dominant axes; front hit, reversed skipped, det sign agrees with normal | focused test on the shared front-face predicate and both callers | achievable as stated |
-| 8 Cache independence: empty vs each primitive cached; edge/vertex hits equal brute force; one-primitive tree; planted sliver past prune limit fails without leaf-box check | test with a `#[cfg(test)]` seam on the hit test's `t` | achievable as stated |
-| 9 Flat-box witness blocked with empty cache; clear with both factor and pad removed; PR records which alone blocks | `sh_bake/trace_tests.rs` witness, inverted | achievable as stated |
-| 10 Box test ⊇ stock on lattice proptest; face-plane rays both zero signs, min and max faces, flat and thick boxes; traversal reaches the triangle | `ray_traversal` proptest and focused test | achievable as stated |
-| 11 Exact box: accepts witness leaf box stock rejects; rejects with factor removed | focused test | achievable as stated |
-| 12 Segment ending short of box entry tests none of its triangles, empty cache and cached | counter-based test | achievable as stated |
-| 13 Padded box ⊇ exact box grown by τ + ulp(E) on every face, exact compare, coordinate 0 and inward-rounding coordinate; holds every accepted point; shipped tree exact | focused tests on the pad and `build_bvh` | achievable as stated |
-| 14 Every traced tree padded: pre-cut, post-cut rebuild, no-cut map, constructor; assertion runs on each | tests over `build_bvh` and the pipeline's rebuild site | achievable as stated |
-| 15 Planted parent omitting a child sliver trips the assertion (debug-only test); every fixture BVH passes | `#[cfg(debug_assertions)]` `#[should_panic]` test | achievable as stated |
-| 16 Shared-crease fixture: padded tree yields leaves in exact tree's order | focused test | achievable as stated |
-| 17 Tracer epoch passed to each key builder changes each key; grep gate on other key sites | key-builder tests; grep in PR | achievable as stated |
-| 18 Margin searches find no accepted hit beyond re-derived margins; rescaled draws; reach guards hold; query-growth test; exact-skips A11/A12 at 0.95× and 1.05× | `shaft_cull/tests.rs` and exact-skips tests | achievable as stated |
-| 19 Existing parity: layered = monolithic, warm = cold, worker-count identity | existing gates, `--ignored` focused | achievable as stated |
-| 20 Whole-PRL `cmp` and per-section diff on every gate map; tracer-fed sections named first; other sections and id 19 identical; owner reviews | executor runs the small gate maps; owner runs hallway; owner reviews diff | owner, before landing |
-| 21 Warm over a pre-change cache equals cold; every tracing stage with an entry logs a miss | executor run per gate map (hallway: owner) | achievable as stated |
-| 22 Epoch landing value set in or after the last answer-changing commit | branch log check | achievable as stated |
-| 23 Counters: hallway-mini box tests, leaf visits, triangle tests, `det == 0` rejections per shadow and gather ray, before/after, deterministic; byte-neutral commit | `#[ignore]` counter harness; digest equality on its commit | achievable as stated |
-| 24 Timing: hallway and warren-mini cold Lightmap Bake vs baseline, SH/Delta/Direct SH recorded, hallway in plain f32 too; first slice and landing | executor: warren-mini and hallway-mini; owner: hallway | manual (owner for hallway) |
-| 25 f32 fallback origin check | only under the fallback | n/a unless the owner orders the fallback |
-| 26 Shared-edge census on every gate map, pre- and post-cut, bands; τ covers widest crease crack | `#[ignore]` census harness | achievable as stated |
-| 27 Grep gate: no MT, no det threshold in bake tracers (spine test exempt); f64 hit test; no runtime crate or shader changed | grep in PR | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 Brute-force reference replaces every stock-ray reference scan; every tracer equals it on parity and rounding-stress fixtures | `ray_traversal` brute-force helpers; parity tests in lightmap, SH, chunk light list, scatter tracers and `sh_bake/trace_tests.rs` | achievable as stated | pass at ffd61b87b: parity in every tracer; `front_faces_clear_matches_brute_force_on_rounding_stress`, `nearest_matches_brute_force_on_random_rounding_stress` (probe ties now require the exact `(distance, face)` winner) |
+| 2 Shared-edge proptest, every entry point, τ = 0 and shipped τ; fails at τ = 0 with MT restored | proptest in `ray_traversal` tests over every entry point; MT-restored failure shown by a test-only MT reference asserting it misses on the same cases | achievable as stated | pass: `every_entry_point_hits_a_ray_through_a_shared_edge_or_vertex` (any angle, crossing within f32 rounding of the edge or vertex: owner-confirmed reading), `retired_hit_test_lets_rays_through_shared_edges` |
+| 3 Cracks: narrow crease and T-junction block; wide crack clears; narrow fail at τ = 0 | focused tests on the hit test and `segment_clear` | achievable as stated | pass |
+| 4 Silhouette bounded by τ, sliver acute vertex included | focused test | achievable as stated | pass |
+| 5 1 mm triangle at 0.5° blocks; fails with old det threshold | focused test | achievable as stated | pass |
+| 6 Both windings; just short / just past segment end, either det sign | focused test | achievable as stated | pass |
+| 7 Front-face callers: ±x/±y/±z dominant axes; front hit, reversed skipped, det sign agrees with normal | focused test on the shared front-face predicate and both callers | achievable as stated | pass |
+| 8 Cache independence: empty vs each primitive cached; edge/vertex hits equal brute force; one-primitive tree; planted sliver past prune limit fails without leaf-box check | test with a `#[cfg(test)]` seam on the hit test's `t` | achievable as stated | pass (edge-interior hits also asserted blocked; the edge's open ends check parity only) |
+| 9 Flat-box witness blocked with empty cache; clear with both factor and pad removed; PR records which alone blocks | `sh_bake/trace_tests.rs` witness, inverted | achievable as stated | pass; the record of which alone blocks is in Corrections |
+| 10 Box test ⊇ stock on lattice proptest; face-plane rays both zero signs, min and max faces, flat and thick boxes; traversal reaches the triangle | `ray_traversal` proptest and focused test | achievable as stated | pass (face-plane rays in the padded boxes' own planes, hits asserted) |
+| 11 Exact box: accepts witness leaf box stock rejects; rejects with factor removed | focused test | achievable as stated | pass |
+| 12 Segment ending short of box entry tests none of its triangles, empty cache and cached | counter-based test | achievable as stated | pass |
+| 13 Padded box ⊇ exact box grown by τ + ulp(E) on every face, exact compare, coordinate 0 and inward-rounding coordinate; holds every accepted point; shipped tree exact | focused tests on the pad and `build_bvh` | achievable as stated | pass |
+| 14 Every traced tree padded: pre-cut, post-cut rebuild, no-cut map, constructor; assertion runs on each | tests over `build_bvh` and the pipeline's rebuild site | achievable as stated | pass (no-cut fixture asserts no cut face) |
+| 15 Planted parent omitting a child sliver trips the assertion (debug-only test); every fixture BVH passes | `#[cfg(debug_assertions)]` `#[should_panic]` test | achievable as stated | pass (assertion compiles under `cfg(any(test, debug_assertions))`; see Corrections) |
+| 16 Shared-crease fixture: padded tree yields leaves in exact tree's order | focused test | achievable as stated | pass |
+| 17 Tracer epoch passed to each key builder changes each key; grep gate on other key sites | key-builder tests; grep in PR | achievable as stated | pass: 12 key tests; grep gate clean. Re-read from `main` at landing: no tracing stage has landed since (main moved only by a brief draft) |
+| 18 Margin searches find no accepted hit beyond re-derived margins; rescaled draws; reach guards hold; query-growth test; exact-skips A11/A12 at 0.95× and 1.05× | `shaft_cull/tests.rs` and exact-skips tests | achievable as stated | pass: searches, corner sub-search, query-growth pin, A11/A12 at 0.95× and 1.05× |
+| 19 Existing parity: layered = monolithic, warm = cold, worker-count identity | existing gates, `--ignored` focused | achievable as stated | pass at ffd61b87b: `lightmap_composite_equals_monolithic_on_fixtures` and `layer_budget_sections_match_pre_change_cold_and_warm` (`--release --ignored`); worker-count and warm/cold parity tests in the 13,680-test preflight |
+| 20 Whole-PRL `cmp` and per-section diff on every gate map; tracer-fed sections named first; other sections and id 19 identical; owner reviews | executor runs the small gate maps; owner runs hallway; owner reviews diff | owner, before landing | executor maps pass (78bfd for the 8 maps without probes, identical through ffd61 in non-capture code; ffd61 on reflection-probes-test, id 54 identical to 78bfd); **outstanding: hallway run and the owner's diff review** |
+| 21 Warm over a pre-change cache equals cold; every tracing stage with an entry logs a miss | executor run per gate map (hallway: owner) | achievable as stated | executor maps pass, all 9 variants; **outstanding: hallway (owner)** |
+| 22 Epoch landing value set in or after the last answer-changing commit | branch log check | achievable as stated | pass: `TRACER_EPOCH` 5 set in af776ec89; the later capture-only commit bumps the capture `STAGE_VERSION` |
+| 23 Counters: hallway-mini box tests, leaf visits, triangle tests, `det == 0` rejections per shadow and gather ray, before/after, deterministic; byte-neutral commit | `#[ignore]` counter harness; digest equality on its commit | achievable as stated | pass (Task 1 and Task 5) |
+| 24 Timing: hallway and warren-mini cold Lightmap Bake vs baseline, SH/Delta/Direct SH recorded, hallway in plain f32 too; first slice and landing | executor: warren-mini and hallway-mini; owner: hallway | manual (owner for hallway) | warren-mini landing: instructions +6.4%, Lightmap Bake +15.5% against bracketing baselines, **over the ~10% gate: owner decides** (Cost gate); **outstanding: hallway f64 and plain f32 (owner)** |
+| 25 f32 fallback origin check | only under the fallback | n/a unless the owner orders the fallback | n/a (f64 ships) |
+| 26 Shared-edge census on every gate map, pre- and post-cut, bands; τ covers widest crease crack | `#[ignore]` census harness | achievable as stated | pass; re-run at 3adc24f61 identical |
+| 27 Grep gate: no MT, no det threshold in bake tracers (spine test exempt); f64 hit test; no runtime crate or shader changed | grep in PR | achievable as stated | pass at ffd61b87b: Möller–Trumbore only in the test-only reference and docs; no det threshold in a bake tracer; branch diff touches `level-compiler` and this brief only |
 
 ## Tasks
 

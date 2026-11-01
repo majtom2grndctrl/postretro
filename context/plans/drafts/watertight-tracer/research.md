@@ -67,8 +67,8 @@ The cached box must be the box the parent stores, so any padding applies to both
 The watertight test first forms v − o in f32, then shears. Its effective triangle moves by about c·u·‖v − o‖ per vertex. The pad is ray-independent only if ‖v − o‖ is bounded by one extent for every bake ray.
 
 - Lightmap rays start at the texel. A sun's far point is the segment end, not the origin (`lightmap_bake::area_sample_target`).
-- Chunk light list sun segments start 10 km out (`sample + to_light * 10_000.0`), and point-light segments start at the light origin, which an author may place anywhere.
-- So the extent must cover geometry and every ray origin. Brief §Open questions.
+- Chunk light list sun segments start at the sample and run toward the sun. Point-light segments start at the light origin, which an author may place anywhere. A segment from 10 km out would put post-shear rounding near a millimetre.
+- So the extent covers the geometry plus every light origin and probe position. Every ray origin the bakes use then lies inside it, and the pad is sized to that extent.
 
 ## Margins
 

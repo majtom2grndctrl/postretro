@@ -18,7 +18,7 @@ The ball holds every segment the sampler traces for a lit texel: from any emitte
 - the boundary has no face there (a hole). The precondition, checked by the hole check.
 - the ray enters solid inside its skipped first millimetre (`RAY_EPSILON`). Only texels within that reach of a closed leaf can do this, and the per-texel rule traces them.
 - it starts in solid (a buried texel). Traced, as above.
-- it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. The tracer's tolerance τ closes those narrower than it (`watertight-tracer`); a wider one is a hole. Named gap 1.
+- it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. The tracer's tolerance τ closes those narrower than it (`watertight-tracer`). The hole check reads any crack it cannot prove within τ as a hole, which switches the cull off. Named gap 1.
 - it crosses from one open leaf to a diagonal neighbour through a shared edge with no portal. When the leaves beside the edge are open, the flood reaches the neighbour through them. When they are solid, the ray grazes an edge between solids, which the tracer's watertight test and tolerance close. Not observed.
 - it lies in a face's plane. Named gap 2. The spike found one such ray on hallway-mini.
 
@@ -84,3 +84,4 @@ The chart slab is the spike's: the chart's padded texel rectangle at lifts 0.25,
 | P3 | Per-chart texel mask shared across lights | Lights walk the same chart on different workers in any order. Whichever walk comes first builds the mask. | The mask is a function of the chart alone. Bytes and cull tallies are identical at one worker and many, cold and warm. |
 | P4 | Traced texel after skipped ones in a culled pair | Skipped texels write no occluder. The next traced texel tests the cache the culled walk holds, which differs from the unculled walk's. | The two walks' remembered occluders differ at that texel, and its record equals both the unculled walk's and a brute-force test of every triangle. |
 | P5 | Verify mode on over a filled cache | The baseline binary fills every lightmap layer and section entry. The new binary then builds warm with verify on. | No lightmap layer or section entry is read. Every culled pair is re-walked, pairs re-walked equal pairs culled, and the PRL equals the cold bake. |
+| P6 | Crease crack wider than τ, narrower than 2τ | The tracer blocks a ray through its middle, which passes within half the width of an edge. The classifier cannot prove the gap within τ. | It reads a hole and the map culls nothing. Bytes match; only bake speed is lost. |

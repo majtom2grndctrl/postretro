@@ -399,10 +399,10 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
 // test's rounding past τ and the sampler's endpoint terms stay small. Both
 // margins are recomputed from the forms margin.rs states, H as
 // w·R_T·P(9A + 54P)/‖N‖ and the in-plane reach expanded in R_T, not from the
-// margin code's own expressions, so a coefficient error in either fails.
+// margin code's own expressions, so a coefficient error in either fails. κ
+// is read from the code: it is chosen, not derived.
 #[test]
 fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
-    let kappa = 2.0;
     let (w, u) = (2.0_f64.powi(-53), 2.0_f64.powi(-24));
     let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
     let sin_floor = 2.0_f64.to_radians().sin();
@@ -423,14 +423,14 @@ fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
     let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
     let magnitude = lo.abs().max(hi.abs());
     let point_rounding =
-        w * (4.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
+        w * (6.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
     let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
     let relative = |margin: f64, expected: f64| ((margin - expected) / expected).abs();
 
     // m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)].
     let height = |p: f64| w * r * p * (9.0 * (24.0 * r + 4.0 * p) + 54.0 * p) / area;
     let strict_height = height(4.0 * e_t);
-    let expected = kappa
+    let expected = KAPPA
         * (strict_height
             + height(4.0 * e_t + 2.0 * tau).min(tau + point_rounding)
             + (candidate.normal / area).abs().dot(epsilon));
@@ -448,7 +448,7 @@ fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
     // along an in-plane axis.
     let reach =
         w * (e_t / area) / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
-    let expected = kappa * (tau + point_rounding + reach + epsilon.y);
+    let expected = KAPPA * (tau + point_rounding + reach + epsilon.y);
     let (_, margin) = bounds
         .axis_certificate(&candidate, DVec3::Y)
         .expect("a unit axis");
@@ -460,6 +460,110 @@ fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
         relative(margin, expected) < 1.0e-12,
         "m_A {margin}, derived {expected}"
     );
+}
+
+// The query growth's bound on m_A, κ(c₀ + c₁R + c₂R²), matches the margin
+// and its derivation where each of its terms shows. With the scene holding
+// one triangle, the bound at that triangle's own R_T is m_A along ε, the
+// axis whose e_H(a) is all of ‖ε‖. Between them two cases give every term a
+// visible share: a 1 cm triangle at the origin with the segment 3 km out
+// (c₂R², and M and R_T in δ_r), and a 100 m sliver beside a segment at the
+// origin (c₀'s strict term and δ_r's edge term). Both are also recomputed
+// from the forms margin.rs states, so a coefficient wrong in the bound, or
+// in both, fails.
+#[test]
+fn shaft_query_bound_matches_the_axis_margin_and_its_derivation_where_each_term_shows() {
+    // Far above the `f64` evaluation's rounding; a term shows when its share
+    // of the margin is a hundred times that.
+    const AGREEMENT: f64 = 1.0e-12;
+    let (w, u) = (2.0_f64.powi(-53), 2.0_f64.powi(-24));
+    let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
+    let sin_floor = 2.0_f64.to_radians().sin();
+    let relative = |value: f64, expected: f64| ((value - expected) / expected).abs();
+    let (sin, cos) = 1.0_f64.to_radians().sin_cos();
+    let sliver = [
+        DVec3::new(0.5, 0.5, 0.5),
+        DVec3::new(100.5, 0.5, 0.5),
+        DVec3::new(0.5 + 100.0 * cos, 0.5 + 100.0 * sin, 0.5),
+    ];
+    /// A case's name, its segment, its triangle and the terms it shows.
+    type Case<'a> = (&'a str, (Vec3, Vec3), [Vec3; 3], &'a [&'a str]);
+    let cases: [Case; 2] = [
+        (
+            "1 cm triangle, segment 3 km out",
+            (Vec3::new(3000.0, 0.0, 0.0), Vec3::new(3000.0, 1.0, 0.0)),
+            [
+                Vec3::new(0.0, 0.5, 0.5),
+                Vec3::new(0.0, 0.51, 0.5),
+                Vec3::new(0.0, 0.5, 0.51),
+            ],
+            &["c₂R²", "c₁R, strict", "δ_r, coordinates"],
+        ),
+        (
+            "100 m sliver beside the segment",
+            (Vec3::ZERO, Vec3::Y),
+            sliver.map(|p| p.as_vec3()),
+            &["c₂R²", "c₁R, strict", "c₀, strict", "δ_r, edge"],
+        ),
+    ];
+    for (label, (from, to), points, shows) in cases {
+        let bounds = segment_bounds(from, to);
+        let candidate = Candidate::of(points).unwrap();
+        let mut scene = ShaftScene::default();
+        scene.include(&candidate);
+
+        // m_A = κ[τ + δ_r + (w·q/sin θ0)(864R² + 2016e_T·R + 384e_T²) + ‖ε‖],
+        // δ_r = w(6(M + R) + 20(e_T + τ)²/τ).
+        let [a, b, c] = points.map(Vec3::as_dvec3);
+        let (e1, e2) = (b - a, c - a);
+        let e_t = e1.length().max(e2.length());
+        let q = e_t / e1.cross(e2).length();
+        let (lo, hi) = (from.as_dvec3(), to.as_dvec3());
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        let diag = (hi - lo).length();
+        let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
+        let magnitude = lo.abs().max(hi.abs());
+        let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+        let strict = w * q / sin_floor;
+        let terms = [
+            ("τ", tau),
+            ("δ_r, coordinates", w * 6.0 * (magnitude.max_element() + r)),
+            ("δ_r, edge", w * 20.0 * (e_t + tau).powi(2) / tau),
+            ("c₂R²", strict * 864.0 * r * r),
+            ("c₁R, strict", strict * 2016.0 * e_t * r),
+            ("c₀, strict", strict * 384.0 * e_t * e_t),
+            ("‖ε‖", epsilon.length()),
+        ];
+        let expected = KAPPA * terms.iter().map(|(_, term)| term).sum::<f64>();
+        for name in shows {
+            let (_, term) = terms
+                .iter()
+                .find(|(term_name, _)| term_name == name)
+                .expect("a named term");
+            assert!(
+                KAPPA * term > 100.0 * AGREEMENT * expected,
+                "{label}: {name}, {term}, is too small a share of m_A {expected} to show"
+            );
+        }
+
+        let [m0, m1, m2] = scene.axis_margin_bound(&bounds);
+        let bound = m0 + m1 * r + m2 * r * r;
+        let (_, margin) = bounds
+            .axis_certificate(&candidate, epsilon)
+            .expect("a unit axis");
+        assert!(
+            relative(margin, expected) < AGREEMENT,
+            "{label}: m_A {margin}, derived {expected}"
+        );
+        assert!(
+            relative(bound, expected) < AGREEMENT,
+            "{label}: query bound {bound}, derived {expected}"
+        );
+        assert!(
+            bound >= margin * (1.0 - AGREEMENT) && relative(bound, margin) < AGREEMENT,
+            "{label}: query bound {bound}, m_A {margin}"
+        );
+    }
 }
 
 // The hull-face axes: the plane through a slab edge tangent to the emitter

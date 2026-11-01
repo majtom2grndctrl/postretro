@@ -17,7 +17,7 @@ use super::capture_exclusion_test_fixtures::{
     BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE,
     exclusion, pool_entity, textured_room, toward,
 };
-use super::hit::{RAY_EPSILON, SceneTracer};
+use super::hit::{FaceMask, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::PlacedProbe;
 use super::placement_test_fixtures::{engine, engine_box, textured_box_brush};
 use super::shading::{CaptureScene, ShadeScratch};
@@ -748,9 +748,10 @@ fn a_tolerance_hit_beside_an_excluded_pillar_off_the_box_takes_the_leak_guard_on
 
 // A ray within τ of the low pillar's top back corner, outside the hull,
 // takes a tolerance hit on both front faces that meet there, the top and
-// the side, and never enters the hull. Neither is a crossing, so neither
-// spends the hull passes (one per excluded brush, plus one): the ray still
-// reaches the floor past the pillar.
+// the side, and never enters the hull. The first is no crossing, so the
+// trace drops the pillar, the second face with it, and spends no hull pass
+// (one per excluded brush, plus one): the ray still reaches the floor past
+// the pillar.
 #[test]
 fn two_tolerance_hits_at_an_excluded_pillars_corner_still_reach_the_kept_hit() {
     let room = CaptureFixture::pool_room(Some(LOW_PILLAR_TOP));
@@ -775,10 +776,14 @@ fn two_tolerance_hits_at_an_excluded_pillars_corner_still_reach_the_kept_hit() {
         let mut min = RAY_EPSILON;
         let mut beside = Vec::new();
         let kept = loop {
-            let masked =
-                scene
-                    .tracer
-                    .closest_hit_masked(origin, direction, min, scene.max_distance, &mask);
+            let masked = scene.tracer.closest_hit_masked(
+                origin,
+                direction,
+                min,
+                scene.max_distance,
+                &mask,
+                &FaceMask::default(),
+            );
             let Some(skipped) = masked.skipped else {
                 break masked.hit;
             };
@@ -803,6 +808,196 @@ fn two_tolerance_hits_at_an_excluded_pillars_corner_still_reach_the_kept_hit() {
                 assert!((hit.distance - to_floor).abs() < 1e-3, "{hit:?}");
             }
             other => panic!("reaches the floor, not {other:?}"),
+        }
+    });
+}
+
+/// The two hits a ray takes on the faces of brushes `pair` at one `f32`
+/// distance, in the order the exclusion trace takes them: the first skipped
+/// with both masked, then the first with that one's brush ignored.
+fn tied_hits(
+    room: &CaptureFixture,
+    scene: &CaptureScene<'_>,
+    (origin, direction): (Vec3, Vec3),
+    pair: [u32; 2],
+) -> [SurfaceHit; 2] {
+    let faces = |brushes: &[u32]| {
+        scene.tracer.face_mask(
+            brushes
+                .iter()
+                .flat_map(|&brush| room.brush_faces.of(brush).iter().copied()),
+        )
+    };
+    let mask = faces(&pair[..]);
+    let first_skipped = |ignored: &FaceMask| {
+        scene
+            .tracer
+            .closest_hit_masked(
+                origin,
+                direction,
+                RAY_EPSILON,
+                scene.max_distance,
+                &mask,
+                ignored,
+            )
+            .skipped
+            .expect("both brushes face the ray")
+    };
+    let first = first_skipped(&FaceMask::default());
+    let first_brush = room.face_brush(first.face).expect("a brush owns the face");
+    assert!(pair.contains(&first_brush), "{first:?}");
+    let second = first_skipped(&faces(&[first_brush][..]));
+    assert!(
+        room.face_brush(second.face)
+            .is_some_and(|brush| brush != first_brush && pair.contains(&brush)),
+        "{second:?}"
+    );
+    // The tie that hit order decides.
+    assert_eq!(first.distance, second.distance, "{first:?} vs {second:?}");
+    [first, second]
+}
+
+/// The seam between two crates stacked against the wall behind, in map
+/// units: the lower crate's top and the upper's bottom.
+const CRATE_SEAM: f64 = 32.0;
+
+/// The room with two 32 u crates stacked from the floor against the wall
+/// behind (map x 96 to 128). CSG removes the faces between them, and the
+/// wall's face where they cover it.
+fn stacked_crates() -> CaptureFixture {
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [96.0, -16.0, 0.0],
+        [BACK_WALL_X, 16.0, CRATE_SEAM],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [96.0, -16.0, CRATE_SEAM],
+        [BACK_WALL_X, 16.0, 2.0 * CRATE_SEAM],
+        TRIM_TEXTURE,
+    ));
+    CaptureFixture::compile(&world, &[pool_entity()])
+}
+
+/// A ray toward the wall behind, level but for a 1e-5 descent, crossing the
+/// crates' front (map x = 96) 0.2 mm above their seam (`above`) or below
+/// it: inside one crate's front and within τ of the other's. Its origin
+/// lies 1 m before the crossing.
+fn at_the_crate_seam(above: bool) -> (Vec3, Vec3) {
+    let offset = 0.0002 * UNITS_PER_METER;
+    let z = if above {
+        CRATE_SEAM + offset
+    } else {
+        CRATE_SEAM - offset
+    };
+    let crossing = engine([96.0, 0.5, z]);
+    let direction = engine([1.0, 0.0, -1.0e-5]).normalize();
+    ((crossing - direction).as_vec3(), direction.as_vec3())
+}
+
+/// Both crates excluded, the ray of [`at_the_crate_seam`] whose first hit
+/// in hit order is the tolerance hit beside one crate when
+/// `tolerance_hit_first`, else the real entry into the other: it reads the
+/// wall's fill or the leak guard on the crate it enters, never a plain hit
+/// or a miss. The two rays share the two triangles at the seam, so hit
+/// order takes the tolerance hit first on exactly one of them.
+fn crate_seam_reads_the_entered_crate(tolerance_hit_first: bool) {
+    let room = stacked_crates();
+    let lower = room.brush_at([112.0, 0.0, CRATE_SEAM / 2.0]);
+    let upper = room.brush_at([112.0, 0.0, 1.5 * CRATE_SEAM]);
+    let back_wall = room.brush_at(IN_BACK_WALL);
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let filter = exclusion(scene, &probe, &[lower, upper]);
+        let mut rays = 0;
+        for above in [true, false] {
+            let (origin, direction) = at_the_crate_seam(above);
+            let entered = if above { upper } else { lower };
+            let [first, _] = tied_hits(&room, scene, (origin, direction), [lower, upper]);
+            if (room.face_brush(first.face) != Some(entered)) != tolerance_hit_first {
+                continue;
+            }
+            rays += 1;
+            match scene.trace(origin, direction, &filter) {
+                RayOutcome::Fill(fill) => assert_eq!(fill.brush, back_wall, "{fill:?}"),
+                RayOutcome::LeakGuard(hit) => {
+                    assert_eq!(room.face_brush(hit.face), Some(entered), "{hit:?}");
+                }
+                other => panic!("above {above}: enters the crate, not {other:?}"),
+            }
+        }
+        assert_eq!(rays, 1, "exactly one ray takes this order");
+    });
+}
+
+// Regression: a tolerance hit beside one excluded crate, taken first at the
+// same f32 distance as the real entry into the crate stacked on it, moved
+// the trace's bound past that distance. The entry was stepped over, and the
+// ray ran on inside the crate, its back faces culled, through the wall's
+// removed face to a miss.
+#[test]
+fn a_crate_seam_ray_taking_the_tolerance_hit_first_still_enters_the_other_crate() {
+    crate_seam_reads_the_entered_crate(true);
+}
+
+// The other order: the real entry first, the tolerance hit beside the
+// other crate behind it at the same distance.
+#[test]
+fn a_crate_seam_ray_taking_the_real_entry_first_enters_its_crate() {
+    crate_seam_reads_the_entered_crate(false);
+}
+
+/// The last map y the off-box seam rows' projection box holds: 1 u short of
+/// the seam, so the far block lies wholly off the box.
+const BOX_EDGE_Y: f64 = 63.0;
+
+// Regression: a tie between a kept face and an off-box excluded brush at a
+// seam went to whichever the traversal reached first when both were kept,
+// but to the kept face when the brush was excluded, so excluding a brush
+// wholly off the box changed the capture. Two blocks side by side share a
+// seam at map y = 64, their fronts coplanar; the far one lies off the box.
+// A ray within τ of the seam on either side ties the two fronts, and reads
+// the same face, at the same distance, kept or excluded.
+#[test]
+fn a_tie_at_a_seam_with_an_off_box_brush_captures_the_same_kept_or_excluded() {
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [80.0, 32.0, 0.0],
+        [96.0, 64.0, 32.0],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [80.0, 64.0, 0.0],
+        [96.0, 96.0, 32.0],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let near = room.brush_at([88.0, 48.0, 16.0]);
+    let far = room.brush_at([88.0, 80.0, 16.0]);
+    let direction = engine([1.0, 0.0, -1.0e-5]).normalize();
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, [ROOM_MAX[0], BOX_EDGE_Y, ROOM_MAX[2]]);
+        let none = exclusion(scene, &probe, &[]);
+        let filter = exclusion(scene, &probe, &[far]);
+        assert_eq!(filter.excluded(), &[far][..], "excluded though off the box");
+        for offset in [-0.0002, 0.0002] {
+            let crossing = engine([80.0, 64.0 + offset * UNITS_PER_METER, 24.0]);
+            let (origin, direction) = ((crossing - direction).as_vec3(), direction.as_vec3());
+            tied_hits(&room, scene, (origin, direction), [near, far]);
+            let kept = scene.trace(origin, direction, &none);
+            let RayOutcome::Hit(hit) = kept else {
+                panic!("{offset}: a front faces the ray, not {kept:?}");
+            };
+            assert!(
+                [Some(near), Some(far)].contains(&room.face_brush(hit.face)),
+                "{offset}: {hit:?}"
+            );
+            let excluded = scene.trace(origin, direction, &filter);
+            assert_eq!(
+                excluded.surface(),
+                Some(&hit),
+                "{offset}: {excluded:?} vs {kept:?}"
+            );
         }
     });
 }

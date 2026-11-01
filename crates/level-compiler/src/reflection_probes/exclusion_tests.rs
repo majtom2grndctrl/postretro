@@ -439,12 +439,12 @@ fn stage_sets_keep_only_brushes_touching_the_projection_box_floor_ignored() {
         cube(1.0, 1.0, 1.0),
         // A 0.5 mm gap past +x, inside the tolerance.
         cube(10.0005, 1.0, 1.0),
-        // A 2 mm gap past +x.
-        cube(10.002, 1.0, 1.0),
+        // A 3 mm gap past +x, beyond the tolerance.
+        cube(10.003, 1.0, 1.0),
         // Under the floor, which the test ignores.
         cube(1.0, -5.0, 1.0),
         // Over the top, and past -z.
-        cube(1.0, 5.002, 1.0),
+        cube(1.0, 5.003, 1.0),
         cube(1.0, 1.0, -3.0),
     ];
     let overrides = vec![ReflectionCapture::Auto; brushes.len()];

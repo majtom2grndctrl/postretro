@@ -361,7 +361,7 @@ fn hull_box(shaft: &ShaftCull, tile: (i32, i32)) -> (DVec3, DVec3) {
 /// expanded form the derivation states (`lightmap_layer/shaft_cull/margin.rs`):
 ///
 /// m_A = κ·[τ + δ_r + (w·q / sin θ0)·(864R² + 2016e_T·R + 384e_T²) + e_H],
-/// δ_r = w·(4(M + R) + 20(e_T + τ)² / τ),
+/// δ_r = w·(6(M + R) + 20(e_T + τ)² / τ),
 ///
 /// with κ = 2, θ0 = 2°, w = 2⁻⁵³, u = 2⁻²⁴, e1 = b − a, e2 = c − a, e_T =
 /// max(‖e1‖, ‖e2‖), q = e_T / ‖e1 × e2‖, L the box's diagonal, R = ‖a −
@@ -385,7 +385,7 @@ fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3
     let magnitude = lo.abs().max(hi.abs());
     let strict = w * q / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
     let point_rounding =
-        w * (4.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
+        w * (6.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
     let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
     let e_h = axis.abs().dot(epsilon);
     (
@@ -468,12 +468,17 @@ fn shaft_cull_blocks_a_triangle_inside_its_margin_and_clears_one_outside_it() {
 // and a trim triangle whose narrowest angle (at its first corner) is 5°, each
 // with an edge along the chart's u axis, crossing B's shaft only if extended,
 // separated from B's hull along the v axis by 0.95 and by 1.05 of that axis's
-// margin. Tile B stays blocked at 0.95, since that gap bounds the hull's
-// distance to the triangle and so every axis's gap, and clears at 1.05. Each
-// margin matches an independent recomputation from the triangle and the
-// hull's box to within `MARGIN_AGREEMENT`: τ dominates it, but the match is
-// tight enough to see the strict `f64` term, so a coefficient error there
-// fails it.
+// margin. Tile B clears at 1.05 and stays blocked at 0.95. A per-axis gap is
+// in general only a lower bound on the hull's distance to the triangle; here
+// it is that distance, because the emitter sets the hull's +z extreme, about
+// (0.48, 2.0, 0.411), and that point lies directly under edge ab. So at 0.95
+// the gap bounds every axis's gap, every other axis's margin differs from
+// this one only by e_H, far under 5%, and none certifies. The test asserts
+// that witness, so a fixture change cannot quietly turn the 0.95 case into a
+// clear. Each margin matches an independent recomputation from the triangle
+// and the hull's box to within `MARGIN_AGREEMENT`: τ dominates it, but the
+// match is tight enough to see the strict `f64` term, so a coefficient error
+// there fails it.
 #[test]
 fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_margins() {
     let light = default_point([0.48, 2.0, 0.16]);
@@ -501,6 +506,15 @@ fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_mar
         let shaft = bare.shaft_cull(&light, floor, &scene);
         let reach = shaft.tile_support(TILE_B, DVec3::Z);
         let hull = hull_box(&shaft, TILE_B);
+        // The 0.95 case's witness: the emitter sphere, whose radius the +y
+        // support reads two metres above the slab, sets the hull's +z extreme.
+        let emitter = light.origin.as_vec3().as_dvec3();
+        let radius = shaft.tile_support(TILE_B, DVec3::Y) - emitter.y;
+        assert!(
+            (reach - (emitter.z + radius)).abs() < 1.0e-12,
+            "floor {floor}: the emitter sets the hull's +z extreme {reach}"
+        );
+        let witness = DVec3::new(emitter.x, emitter.y, reach);
         for (label, shape) in shapes {
             let at = |gap: f64| {
                 let a = DVec3::new(0.48 - 1.5, 2.0, reach + gap);
@@ -526,6 +540,18 @@ fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_mar
                     normal.0 < 0.0,
                     "{case}: the plane cuts the shaft: {normal:?}"
                 );
+                if !expect_clear {
+                    // The witness lies within the z gap of edge ab, so that
+                    // gap is the hull's distance to the triangle.
+                    let [a, b, _] = occluder.map(|p| p.as_dvec3());
+                    let along =
+                        ((witness - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+                    let distance = witness.distance(a + (b - a) * along);
+                    assert!(
+                        distance <= gap * (1.0 + 1.0e-9),
+                        "{case}: the witness lies {distance} from edge ab, past the gap {gap}"
+                    );
+                }
                 let fixture = margin_fixture(occluder);
                 let stats = culled_matches_unculled(&fixture, &light, floor, &case);
                 assert_eq!(

@@ -8,9 +8,12 @@
 //! N = e1 × e2; ρ = ‖e1‖‖e2‖/‖N‖; e_T = max(‖e1‖, ‖e2‖); q = e_T/‖N‖;
 //! B the hull's box, L = diag(B) ≥ every t_max; S_T = ‖a − centre(B)‖ + ½L ≥
 //! ‖x − a‖ for every hull point x, and R_T = S_T + e_T ≥ ‖v − x‖ for every
-//! corner v and hull point x, ray origins included; θ the ray's angle to
-//! plane(T); τ the tracer tolerance ([`TRACER_TOLERANCE_METERS`]). A star
-//! marks an exact value; d is the ray's direction, k_z its largest axis.
+//! corner v and hull point x; M the largest coordinate magnitude of the
+//! hull's terms and box; θ the ray's angle to plane(T); τ the tracer
+//! tolerance ([`TRACER_TOLERANCE_METERS`]). A star marks an exact value; d
+//! is the ray's direction, k_z its largest axis. A ray origin lies up to
+//! ‖ε‖ outside the hull (**Sampler endpoints**); the w·‖ε‖ that adds to
+//! each R_T or M term is second order, inside κ.
 //!
 //! The hit test (`ray_traversal::TraceRay`, Woop et al. 2013 in `f64`)
 //! projects each corner along the ray, a shear onto the plane across k_z. An
@@ -38,9 +41,21 @@
 //!   it. A strict hit's crossing lies within 6e_T·δE/|det*| of T in its
 //!   plane (negative barycentrics sum at most 3δE/|det*|, each corner within
 //!   e_T of a), and Y within that plus H/sin θ. A tolerance hit is accepted
-//!   only when the computed Y lies within τ of T, so Y lies within τ + δ_r,
-//!   δ_r = 4w(M + R_T) + 20w(e_T + τ)²/τ the rounding of Y's coordinates
-//!   (magnitude M) and of the squared distance.
+//!   only when the computed Y lies within τ of T's computed nearest point
+//!   (`closest_point_on_triangle`), so Y lies within τ + δ_r of T, δ_r =
+//!   6w(M + R_T) + 20w(e_T + τ)²/τ.
+//! - **δ_r.** Its first part rounds coordinates: Y's by wL + √3wM (d·t,
+//!   then o + d·t), and the nearest point's. The interior arm is the worst:
+//!   two sums at coordinates up to M + R_T and products with edges summing
+//!   to e_T. With L + e_T ≤ 2R_T that is under 3√3wM + (2 + 2√3)wR_T; an
+//!   edge arm, one sum and an edge up to 2e_T, stays under 2√3wM + 4wR_T.
+//!   The second part holds the squared distance's rounding, under 3wτ, and
+//!   the interior arm's weights, which rounding can carry outside [0, 1]: a
+//!   few w past a sum of 1, and near a corner O(wρq·τ(e_T + τ)). An edge
+//!   arm's weight stays in [0, 1], so its rounding moves the nearest point
+//!   along T and only lengthens the computed distance. On a small sliver
+//!   the corner term outgrows the second part; κ covers it there, as m_A's
+//!   strict term and H_s each exceed it.
 //! - **m_N.** Height alone: m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)], H_s at
 //!   P_s for strict hits, H at P (capped by the tolerance check) for
 //!   tolerance hits.
@@ -66,9 +81,11 @@
 //!
 //! **Query growth.** A triangle at box distance D has R_T ≤ D + K, K =
 //! 3e_T + diag. So m_A ≤ κ[c₀ + c₁R + c₂R²], R = D + K, with the map's
-//! maxima of q, q·e_T, q·e_T² and e_T: c₂ = 864w·q/sin θ0, c₁ = 4w +
-//! 2016w·(q·e_T)/sin θ0, c₀ = τ + 4wM + 20w(e_T + τ)²/τ + 384w·(q·e_T²)/sin θ0 +
-//! ‖ε‖. m_A ≤ D between the roots of κc₂R² + (κc₁ − 1)R + κc₀ + K; the
+//! maxima of q, q·e_T, q·e_T² and e_T: c₂ = 864w·q/sin θ0, c₁ = 6w +
+//! 2016w·(q·e_T)/sin θ0, c₀ = τ + 6wM + 20w(e_T + τ)²/τ + 384w·(q·e_T²)/sin θ0 +
+//! ‖ε‖. The code reads each coefficient off the helper m_A itself calls
+//! ([`ShaftScene::axis_margin_bound`]), so the two cannot drift apart.
+//! m_A ≤ D between the roots of κc₂R² + (κc₁ − 1)R + κc₀ + K; the
 //! lower is the growth, and the upper must reach past every triangle the
 //! map holds, or the query cannot bound the candidates and the cull stays
 //! off for the light.
@@ -171,16 +188,9 @@ impl ShaftScene {
     /// box. A triangle past the cap is the accepted sliver gap outside the
     /// query.
     pub(super) fn query_growth(&self, bounds: &HullBounds) -> Option<f64> {
-        let (w, tau) = (F64_ROUNDOFF, tolerance());
         let k = 3.0 * self.edge + bounds.diag;
-        let c2 = 864.0 * w * self.reach / SIN_ANGLE_FLOOR;
-        let c1 = 4.0 * w + 2016.0 * w * self.reach_edge / SIN_ANGLE_FLOOR;
-        let c0 = tau
-            + 4.0 * w * bounds.magnitude
-            + 20.0 * w * (self.edge + tau).powi(2) / tau
-            + 384.0 * w * self.reach_edge2 / SIN_ANGLE_FLOOR
-            + bounds.sampler_error.length();
-        let (a, b, c) = (KAPPA * c2, 1.0 - KAPPA * c1, KAPPA * c0 + k);
+        let [m0, m1, m2] = self.axis_margin_bound(bounds);
+        let (a, b, c) = (m2, 1.0 - m1, m0 + k);
         let disc = b * b - 4.0 * a * c;
         if !(b > 0.0 && disc >= 0.0 && disc.is_finite()) {
             return None;
@@ -195,6 +205,29 @@ impl ShaftScene {
         let farthest = 3.0_f64.sqrt() * (self.extent + bounds.magnitude) + k;
         let growth = low - k;
         (growth.is_finite() && high >= farthest).then_some(growth.max(0.0))
+    }
+
+    /// [κc₀, κc₁, κc₂]: the module docs' bound κ(c₀ + c₁R + c₂R²) on m_A
+    /// for every triangle the scene holds whose corners lie within R of
+    /// each point of `bounds`' hull. Each term comes from a helper m_A
+    /// itself calls ([`HullBounds::axis_margin_base`]).
+    pub(super) fn axis_margin_bound(&self, bounds: &HullBounds) -> [f64; 3] {
+        // The strict reach is homogeneous of degree three in (R_T, e_T), so
+        // at e_T = 1 it is s(R) = w(864R² + 2016R + 384). Its values at R =
+        // 0, 1 and 2 give the three coefficients, exactly: each value is a
+        // small integer times w.
+        let s = |r: f64| strict_reach_times_area(r, 1.0);
+        let (s0, s1, s2) = (s(0.0), s(1.0), s(2.0));
+        let square = (s2 - 2.0 * s1 + s0) / 2.0;
+        let linear = s1 - s0 - square;
+        let c2 = square * self.reach / SIN_ANGLE_FLOOR;
+        let c1 = coordinate_rounding(1.0) + linear * self.reach_edge / SIN_ANGLE_FLOOR;
+        let c0 = tolerance()
+            + coordinate_rounding(bounds.magnitude)
+            + distance_rounding(self.edge)
+            + s0 * self.reach_edge2 / SIN_ANGLE_FLOOR
+            + bounds.sampler_error.length();
+        [KAPPA * c0, KAPPA * c1, KAPPA * c2]
     }
 }
 
@@ -364,12 +397,10 @@ impl HullBounds {
         (gap, margin)
     }
 
-    /// δ_r: how far the hit test's computed point and its squared distance
-    /// to the triangle can round, for a triangle `r_t` from the origin.
+    /// δ_r: how far past τ from the triangle the hit test's accepted point
+    /// can lie, for corners within `r_t` of every hull point.
     fn point_rounding(&self, tri: &Candidate, r_t: f64) -> f64 {
-        let tau = tolerance();
-        F64_ROUNDOFF
-            * (4.0 * (self.magnitude + r_t) + 20.0 * (tri.longest_edge + tau).powi(2) / tau)
+        coordinate_rounding(self.magnitude + r_t) + distance_rounding(tri.longest_edge)
     }
 
     /// (g_a, m_A) along `axis`, normalized here; `None` for a zero or
@@ -404,10 +435,7 @@ impl HullBounds {
     /// strict hit's in-plane reach at the angle floor.
     pub(super) fn axis_margin_base(&self, tri: &Candidate, reach: f64) -> f64 {
         let r_t = reach + tri.longest_edge;
-        let e = tri.longest_edge;
-        let p = 4.0 * e;
-        let strict = (6.0 * e * edge_rounding(r_t, p) + height_times_area(r_t, p))
-            / (tri.area * SIN_ANGLE_FLOOR);
+        let strict = strict_reach_times_area(r_t, tri.longest_edge) / (tri.area * SIN_ANGLE_FLOOR);
         tolerance() + self.point_rounding(tri, r_t) + strict
     }
 
@@ -484,6 +512,28 @@ fn height_times_area(r_t: f64, p: f64) -> f64 {
     let delta_e = edge_rounding(r_t, p);
     let product = F64_ROUNDOFF * p * p;
     r_t * ((3.0 * delta_e + 34.0 * product) + 2.0 * (3.0 * delta_e + 10.0 * product))
+}
+
+/// ‖N‖·sin θ0 times a strict hit's in-plane reach at the angle floor, for
+/// longest edge `e` and corners within `r_t` of every hull point:
+/// 6e_T·δE plus ‖N‖·H at P_s = 4e_T, which is w·e_T(864R_T² + 2016e_T·R_T +
+/// 384e_T²).
+fn strict_reach_times_area(r_t: f64, e: f64) -> f64 {
+    let p = 4.0 * e;
+    6.0 * e * edge_rounding(r_t, p) + height_times_area(r_t, p)
+}
+
+/// δ_r's first part, 6w·x at `x` = M + R_T: how far the accepted point's
+/// coordinates and its nearest point's can round.
+fn coordinate_rounding(x: f64) -> f64 {
+    6.0 * F64_ROUNDOFF * x
+}
+
+/// δ_r's second part, 20w(e_T + τ)²/τ for longest edge `e`: the squared
+/// distance's rounding and the nearest point's weights.
+fn distance_rounding(e: f64) -> f64 {
+    let tau = tolerance();
+    20.0 * F64_ROUNDOFF * (e + tau).powi(2) / tau
 }
 
 /// One unit separating axis with the hull's range and e_H along it. The

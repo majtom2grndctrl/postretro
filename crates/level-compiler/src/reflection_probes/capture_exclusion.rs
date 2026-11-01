@@ -166,9 +166,9 @@ enum Crossing {
     LeakGuard,
     /// Never into the hull: the skipped face took a tolerance hit, within τ
     /// of it in its plane, from a ray that passes beside the hull
-    /// (`ray_traversal::TRACER_TOLERANCE_METERS`). Nothing was crossed, so
-    /// inside the projection box the ray traces on past that hit as if it had
-    /// not skipped the face.
+    /// (`ray_traversal::TRACER_TOLERANCE_METERS`). A ray that misses a convex
+    /// hull misses all of it, so inside the projection box the ray traces on
+    /// as if the brush were absent.
     Beside,
 }
 
@@ -322,9 +322,11 @@ impl<'a> ProbeExclusion<'a> {
     /// any excluded brush and then misses, or ends (traced or filled) outside
     /// the projection box, takes the leak guard. A tolerance hit on an
     /// excluded face whose hull the ray never enters is no crossing: inside
-    /// the box the ray traces on past it, and it neither counts as skipping
-    /// that brush nor spends a hull pass; outside the box it takes the leak
-    /// guard, as a crossing there would. Every distance is from `origin`.
+    /// the box the trace drops that brush's faces and re-traces from the same
+    /// bound, so another brush's face at the same distance still counts, and
+    /// the pass neither counts as skipping that brush nor spends a hull pass;
+    /// outside the box it takes the leak guard, as a crossing there would.
+    /// Every distance is from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -338,17 +340,20 @@ impl<'a> ProbeExclusion<'a> {
                 .map_or(RayOutcome::Miss, RayOutcome::Hit);
         }
         let (origin64, direction64) = (origin.as_dvec3(), direction.as_dvec3());
+        let brush_faces = self.brushes.faces;
         let mut min_distance = RAY_EPSILON;
         let mut first_skipped: Option<SurfaceHit> = None;
+        // The excluded brushes the ray passes beside, and their faces, which
+        // the trace ignores from then on.
+        let mut beside: Vec<u32> = Vec::new();
+        let mut ignored = FaceMask::default();
         // Each hull pass moves past one excluded hull, so the excluded set
         // bounds them; a ray re-entering hulls past that takes the guard, as
         // does a grazing ray that spends its passes re-entering the same
-        // hull. A pass beside a hull spends none of that budget, yet the loop
-        // still ends: every pass that goes on raises `min_distance` to at
-        // least its skipped hit's distance, and the next accepts only hits
-        // strictly past it. A triangle's distance along one ray is fixed, so
-        // each pass skips a different masked triangle, and the mask's
-        // triangles bound the passes.
+        // hull. A pass beside a hull spends none of that budget and keeps
+        // `min_distance`, yet the loop still ends: it adds the brush to
+        // `beside`, whose faces are ignored from then on, so no brush is
+        // passed beside twice and the excluded set bounds those passes too.
         let mut hull_passes = 0;
         loop {
             if hull_passes > self.excluded.len() {
@@ -360,6 +365,7 @@ impl<'a> ProbeExclusion<'a> {
                 min_distance,
                 max_distance,
                 &self.mask,
+                &ignored,
             );
             let Some(skipped) = skipped else {
                 return self.settle(hit, first_skipped, origin, direction);
@@ -398,9 +404,22 @@ impl<'a> ProbeExclusion<'a> {
                 {
                     return RayOutcome::LeakGuard(first);
                 }
-                // No hull crossed: trace on past the tolerance hit, which
-                // skips no excluded brush.
-                Crossing::Beside => min_distance = skipped.distance,
+                // No hull crossed: drop the brush and trace again from the
+                // same bound. Stepping past the tolerance hit's distance
+                // instead would step over another brush's real entry at that
+                // same `f32` distance.
+                Crossing::Beside => {
+                    let brush = self.excluded[slot];
+                    debug_assert!(
+                        !beside.contains(&brush),
+                        "an ignored brush's faces are never skipped"
+                    );
+                    beside.push(brush);
+                    let passed = beside
+                        .iter()
+                        .flat_map(|&b| brush_faces.of(b).iter().copied());
+                    ignored = tracer.face_mask(passed);
+                }
                 // A kept front face nearer than the fill hides it.
                 Crossing::Fill(fill) if hit.is_some_and(|hit| hit.distance < fill.distance) => {
                     return self.settle(hit, Some(first), origin, direction);
@@ -619,12 +638,15 @@ impl ProjectionBox {
     }
 
     /// Whether `aabb` touches the box under [`Self::holds`]'s rule, its floor
-    /// ignored: within [`PLANE_TOLERANCE_M`], and τ more for a tolerance
-    /// hit, which lies up to τ off its triangle
-    /// ([`TRACER_TOLERANCE_METERS`]). A hull that does not touch it holds no
-    /// point the box holds, and no tolerance hit on its faces lands in it.
+    /// ignored: within [`PLANE_TOLERANCE_M`] and 2τ more
+    /// ([`TRACER_TOLERANCE_METERS`]). A tolerance hit lies up to τ off its
+    /// triangle; the second τ is margin for where `holds` reads the hit
+    /// against the hull's `f64` bounds: the mesh corners' `f32` rounding
+    /// (half an ulp, 15 µm at ±500 m) and the `f32` hit distance's (2⁻²⁴ of
+    /// it, 60 µm at 1 km). A hull that does not touch the box holds no point
+    /// the box holds, and no tolerance hit on its faces lands in it.
     pub(crate) fn touches(&self, aabb: &Aabb) -> bool {
-        let tolerance = PLANE_TOLERANCE_M + f64::from(TRACER_TOLERANCE_METERS);
+        let tolerance = PLANE_TOLERANCE_M + 2.0 * f64::from(TRACER_TOLERANCE_METERS);
         aabb.min.x <= self.max.x + tolerance
             && aabb.max.x >= self.min.x - tolerance
             && aabb.min.z <= self.max.z + tolerance

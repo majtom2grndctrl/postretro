@@ -208,7 +208,10 @@ fn fixture_map_without_cut_traces_padded_tree() {
         false,
     )
     .expect("fixture charts plan");
-    assert!(cut.face_remap.is_none(), "the fixture map has a cut face");
+    assert!(
+        cut.face_remap.is_none(),
+        "the fixture map must cut no face, or the tree it traces is not the no-cut case"
+    );
     assert_padded(&fixture.primitives, &fixture.geometry);
     super::assert_parents_contain_children(&fixture.bvh, &fixture.primitives);
 }

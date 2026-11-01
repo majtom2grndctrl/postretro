@@ -155,9 +155,12 @@ proptest! {
     }
 }
 
-/// The shared-edge property fails with Möller–Trumbore restored: over the
-/// same cases, its segment test lets some rays through between the two
-/// triangles while the watertight test at τ = 0 blocks every one.
+/// The shared-edge property fails with Möller–Trumbore restored: over
+/// shared-edge cases only, its segment test lets some rays through between
+/// the two triangles while the watertight test at τ = 0 blocks every one.
+/// The corner rotation in `SharedCase::new` is what exposes the slip: with the
+/// edge in the same slot of both triangles, Möller–Trumbore's two edge tests
+/// are exact negatives of each other and it does not slip.
 #[test]
 fn retired_hit_test_lets_rays_through_shared_edges() {
     let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);

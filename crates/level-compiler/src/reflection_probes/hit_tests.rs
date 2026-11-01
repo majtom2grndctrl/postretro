@@ -55,20 +55,23 @@ fn closest_hit_masked_skips_masked_faces_and_reports_the_nearest_one() {
     let tracer = SceneTracer::new(&bvh, &primitives, &room);
     let floor = RoomFace::Floor as u32;
     let mask = tracer.face_mask([floor]);
+    let none = FaceMask::default();
     let origin = Vec3::new(0.5, 1.0, -0.25);
 
-    let down = tracer.closest_hit_masked(origin, Vec3::NEG_Y, RAY_EPSILON, 100.0, &mask);
+    let down = tracer.closest_hit_masked(origin, Vec3::NEG_Y, RAY_EPSILON, 100.0, &mask, &none);
     assert_eq!(down.hit, None, "nothing faces the ray past the floor");
     assert_eq!(down.skipped, tracer.closest_hit(origin, Vec3::NEG_Y, 100.0));
     // A masked face behind the kept hit is hidden, not reported.
-    let up = tracer.closest_hit_masked(origin, Vec3::Y, RAY_EPSILON, 100.0, &mask);
+    let up = tracer.closest_hit_masked(origin, Vec3::Y, RAY_EPSILON, 100.0, &mask, &none);
     assert_eq!(up.hit.map(|h| h.face), Some(RoomFace::Ceiling as u32));
     assert_eq!(up.skipped, None);
+    // An ignored face is neither kept nor reported.
+    let ignored = tracer.closest_hit_masked(origin, Vec3::NEG_Y, RAY_EPSILON, 100.0, &mask, &mask);
+    assert_eq!((ignored.hit, ignored.skipped), (None, None));
 
-    let none = FaceMask::default();
     let past = |min| {
         tracer
-            .closest_hit_masked(origin, Vec3::NEG_Y, min, 100.0, &none)
+            .closest_hit_masked(origin, Vec3::NEG_Y, min, 100.0, &none, &none)
             .hit
     };
     assert_eq!(
@@ -320,39 +323,25 @@ fn front_hits(
     hits
 }
 
-/// The nearest of `hits` by distance, and every face at that distance: a
-/// tie may name any of them.
-fn nearest_of(hits: impl Iterator<Item = (f32, u32)>) -> Option<(f32, Vec<u32>)> {
-    let hits: Vec<(f32, u32)> = hits.collect();
-    let distance = hits.iter().map(|&(t, _)| t).reduce(f32::min)?;
-    let faces = hits
-        .iter()
-        .filter(|&&(t, _)| t == distance)
-        .map(|&(_, face)| face)
-        .collect();
-    Some((distance, faces))
+/// The first of `hits` in hit order: the nearest, and at one distance the
+/// lowest face, which on [`triangle_faces`] geometry is the lowest triangle.
+fn first_of(hits: impl Iterator<Item = (f32, u32)>) -> Option<(f32, u32)> {
+    hits.min_by(|a, b| a.partial_cmp(b).expect("hit distances are never NaN"))
 }
 
-/// Whether `hit` is the brute-force `expected`: the same distance, on one
-/// of the faces at it.
-fn matches(hit: Option<SurfaceHit>, expected: &Option<(f32, Vec<u32>)>) -> bool {
-    match (hit, expected) {
-        (None, None) => true,
-        (Some(hit), Some((distance, faces))) => {
-            hit.distance == *distance && faces.contains(&hit.face)
-        }
-        _ => false,
-    }
+/// Whether `hit` is the brute-force `expected`: the same distance and face.
+fn matches(hit: Option<SurfaceHit>, expected: Option<(f32, u32)>) -> bool {
+    hit.map(|hit| (hit.distance, hit.face)) == expected
 }
 
 // AC 1: the probe tracer's own traversal (a min distance, a mask, a
 // shrinking bound) gives the brute-force answer on the SH bake's
 // rounding-stress fixture: shared sliver edges, two sloped faces' crossing
-// line and large triangles far from the origin. The nearest kept front face
-// matches in distance and face (a tie may name either), and so does the
-// nearest masked one in front of it, from the origin's epsilon, up to a
-// hit's own distance, and from it as a re-trace does. The rays stay inside
-// the prune slack's envelope, as that fixture's do.
+// line and large triangles far from the origin. The first kept front face
+// in hit order matches in distance and face (a tie names the lower
+// triangle), and so does the first masked one before it, from the origin's
+// epsilon, up to a hit's own distance, and from it as a re-trace does. The
+// rays stay inside the prune slack's envelope, as that fixture's do.
 #[test]
 fn nearest_matches_brute_force_on_random_rounding_stress() {
     // The SH test's seed: the same triangles and rays.
@@ -447,11 +436,11 @@ fn nearest_matches_brute_force_on_random_rounding_stress() {
 
         // Unmasked: the plain closest hit.
         let all = front_hits(&geometry, |_| false, ray, (RAY_EPSILON, f32::INFINITY));
-        let expected = nearest_of(all.iter().map(|&(t, face, _)| (t, face)));
+        let expected = first_of(all.iter().map(|&(t, face, _)| (t, face)));
         assert!(
             matches(
                 tracer.closest_hit(origin, direction, f32::INFINITY),
-                &expected
+                expected
             ),
             "ray {i}: {origin} {direction}: {expected:?}"
         );
@@ -467,39 +456,106 @@ fn nearest_matches_brute_force_on_random_rounding_stress() {
         }
         for (min, max) in bounds {
             let found = front_hits(&geometry, is_masked, ray, (min, max));
-            let kept = nearest_of(
+            let kept = first_of(
                 found
                     .iter()
                     .filter(|&&(.., masked)| !masked)
                     .map(|&(t, face, _)| (t, face)),
             );
-            let in_front = |t: f32| kept.as_ref().is_none_or(|(d, _)| t < *d);
-            let skipped = nearest_of(
+            let before_kept = |hit: (f32, u32)| kept.is_none_or(|first| hit < first);
+            let skipped = first_of(
                 found
                     .iter()
-                    .filter(|&&(t, _, masked)| masked && in_front(t))
+                    .filter(|&&(t, face, masked)| masked && before_kept((t, face)))
                     .map(|&(t, face, _)| (t, face)),
             );
-            let traced = tracer.closest_hit_masked(origin, direction, min, max, &mask);
+            let traced = tracer.closest_hit_masked(origin, direction, min, max, &mask, &none);
             assert!(
-                matches(traced.hit, &kept),
+                matches(traced.hit, kept),
                 "ray {i}: {origin} {direction} in ({min}, {max}): {:?} vs {kept:?}",
                 traced.hit
             );
             assert!(
-                matches(traced.skipped, &skipped),
+                matches(traced.skipped, skipped),
                 "ray {i}: {origin} {direction} in ({min}, {max}): {:?} vs {skipped:?}",
                 traced.skipped
             );
             skips += usize::from(skipped.is_some());
-            let unmasked = tracer.closest_hit_masked(origin, direction, min, max, &none);
-            let any = nearest_of(found.iter().map(|&(t, face, _)| (t, face)));
+            let unmasked = tracer.closest_hit_masked(origin, direction, min, max, &none, &none);
+            let any = first_of(found.iter().map(|&(t, face, _)| (t, face)));
             assert!(
-                matches(unmasked.hit, &any) && unmasked.skipped.is_none(),
+                matches(unmasked.hit, any) && unmasked.skipped.is_none(),
                 "ray {i}: {origin} {direction} in ({min}, {max}): {unmasked:?} vs {any:?}"
             );
         }
     }
     // The draw reaches kept and masked hits alike.
     assert!(hits > 100 && skips > 50, "{hits} hits, {skips} skips");
+}
+
+/// Two triangles facing up on y = 0 that share their hypotenuse x + z = 1:
+/// the one holding the origin corner, and the one holding (1, 0, 1).
+fn seam_triangles() -> [[Vec3; 3]; 2] {
+    let (x, z) = (Vec3::X, Vec3::Z);
+    [[Vec3::ZERO, z, x], [x, z, x + z]]
+}
+
+// Regression: hits at one `f32` distance went to whichever triangle the
+// traversal reached first, so a masked trace dropped a skipped face that an
+// unmasked one kept. A ray crossing 0.14 mm inside one triangle of a seam
+// takes a real hit on it and a tolerance hit on its neighbour, at the same
+// distance. In either index order the lower triangle comes first, kept or
+// skipped, and once ignored it yields to the other.
+#[test]
+fn hits_at_one_distance_go_to_the_lower_triangle_kept_skipped_or_ignored() {
+    // 0.1 mm off the seam along x and z, inside the origin's triangle.
+    let crossing = Vec3::new(0.5 - 1.0e-4, 0.0, 0.5 - 1.0e-4);
+    let origin = crossing + Vec3::Y;
+    let [near, far] = seam_triangles();
+    for triangles in [[near, far], [far, near]] {
+        let geometry = triangle_faces(&triangles);
+        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
+        let tracer = SceneTracer::new(&bvh, &primitives, &geometry);
+        let none = FaceMask::default();
+        let trace = |mask: &FaceMask, ignored: &FaceMask| {
+            tracer.closest_hit_masked(origin, Vec3::NEG_Y, RAY_EPSILON, 10.0, mask, ignored)
+        };
+
+        let first = tracer
+            .closest_hit(origin, Vec3::NEG_Y, 10.0)
+            .expect("the seam faces the ray");
+        assert_eq!(first.face, 0, "{triangles:?}");
+        assert!((first.distance - 1.0).abs() < 1e-6, "{first:?}");
+
+        let lower = tracer.face_mask([0]);
+        let skipping_lower = trace(&lower, &none);
+        assert_eq!(skipping_lower.skipped, Some(first), "{triangles:?}");
+        let second = skipping_lower.hit.expect("the upper triangle is kept");
+        // The tie itself, exactly: both hits at one `f32` distance.
+        assert_eq!(
+            (second.face, second.distance),
+            (1, first.distance),
+            "{triangles:?}"
+        );
+
+        let skipping_upper = trace(&tracer.face_mask([1]), &none);
+        assert_eq!(skipping_upper.hit, Some(first), "{triangles:?}");
+        assert_eq!(
+            skipping_upper.skipped, None,
+            "the kept triangle precedes it"
+        );
+
+        let both = tracer.face_mask([0, 1]);
+        let skipping_both = trace(&both, &none);
+        assert_eq!(
+            (skipping_both.hit, skipping_both.skipped),
+            (None, Some(first))
+        );
+        let ignoring_lower = trace(&both, &lower);
+        assert_eq!(
+            (ignoring_lower.hit, ignoring_lower.skipped),
+            (None, Some(second)),
+            "{triangles:?}"
+        );
+    }
 }

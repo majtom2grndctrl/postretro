@@ -35,9 +35,9 @@ pub(crate) struct SurfaceHit {
     pub face: u32,
     /// Vertex indices of the hit triangle, in index-buffer order.
     pub triangle: [u32; 3],
-    /// Weights of `triangle`'s vertices, each in `[0, 1]`; they sum to 1.
-    /// A traced hit's name the point on the triangle nearest where the ray
-    /// crossed its plane.
+    /// Weights of `triangle`'s vertices, each in `[0, 1]` up to rounding;
+    /// they sum to 1. For a traced hit they name the point on the triangle
+    /// nearest where the ray crossed its plane.
     pub barycentric: [f32; 3],
 }
 
@@ -71,19 +71,35 @@ impl FaceMask {
     pub(crate) fn is_empty(&self) -> bool {
         self.offsets.is_empty()
     }
+
+    #[inline]
+    fn contains(&self, index_offset: u32) -> bool {
+        self.offsets.binary_search(&index_offset).is_ok()
+    }
 }
 
-/// A masked trace: the nearest kept front face, and the nearest skipped one
-/// in front of it.
+/// A masked trace: the first kept front face in hit order ([`hit_order`]),
+/// and the first skipped one before it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MaskedHit {
     pub hit: Option<SurfaceHit>,
     pub skipped: Option<SurfaceHit>,
 }
 
-/// Whether a trace skips a BVH primitive, by its index offset.
+/// How a trace treats a BVH primitive's hits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Treatment {
+    /// A hit on it can be the trace's answer.
+    Kept,
+    /// Passed over, and reported when it comes first.
+    Skipped,
+    /// As if absent: neither kept nor reported.
+    Ignored,
+}
+
+/// How a trace treats a BVH primitive, by its index offset.
 trait PrimitiveMask {
-    fn skips(&self, index_offset: u32) -> bool;
+    fn treatment(&self, index_offset: u32) -> Treatment;
 }
 
 /// The whole world: shadow rays, the box fit and an unfiltered capture.
@@ -91,20 +107,42 @@ struct Unmasked;
 
 impl PrimitiveMask for Unmasked {
     #[inline(always)]
-    fn skips(&self, _: u32) -> bool {
-        false
+    fn treatment(&self, _: u32) -> Treatment {
+        Treatment::Kept
     }
 }
 
-impl PrimitiveMask for FaceMask {
+/// `mask`'s faces skipped, but those also in `ignored` ignored.
+struct Masking<'m> {
+    mask: &'m FaceMask,
+    ignored: &'m FaceMask,
+}
+
+impl PrimitiveMask for Masking<'_> {
     #[inline]
-    fn skips(&self, index_offset: u32) -> bool {
-        self.offsets.binary_search(&index_offset).is_ok()
+    fn treatment(&self, index_offset: u32) -> Treatment {
+        if !self.mask.contains(index_offset) {
+            Treatment::Kept
+        } else if self.ignored.contains(index_offset) {
+            Treatment::Ignored
+        } else {
+            Treatment::Skipped
+        }
     }
 }
 
 /// `(t, first index of the triangle, barycentrics, primitive index offset)`.
 type Candidate = (f32, usize, [f32; 3], u32);
+
+/// The order a trace takes hits in: nearer first, and at one `f32` distance
+/// the lower triangle index. A tolerance hit lies at the same distance as a
+/// coplanar neighbour's real one, so ties are common at seams; a total order
+/// makes the winner independent of traversal order, and a masked trace
+/// reports a skipped face exactly when an unmasked one would have kept it.
+#[inline]
+fn hit_order(&(t, tri, ..): &Candidate) -> (f32, usize) {
+    (t, tri)
+}
 
 impl<'a> SceneTracer<'a> {
     pub(crate) fn new(
@@ -128,9 +166,10 @@ impl<'a> SceneTracer<'a> {
         }
     }
 
-    /// The nearest front-facing triangle within `max_distance`. Back faces are
-    /// skipped, as the world pass culls them (`cull_mode: Back`, CCW front), so
-    /// a ray that grazes a face's back sees what lies beyond it.
+    /// The first front-facing triangle within `max_distance`, in hit order
+    /// ([`hit_order`]). Back faces are skipped, as the world pass culls them
+    /// (`cull_mode: Back`, CCW front), so a ray that grazes a face's back sees
+    /// what lies beyond it.
     pub(crate) fn closest_hit(
         &self,
         origin: Vec3,
@@ -142,10 +181,12 @@ impl<'a> SceneTracer<'a> {
     }
 
     /// [`Self::closest_hit`] past `min_distance` with `mask`'s faces skipped,
-    /// and beside it the nearest skipped front face in front of that hit (or
-    /// anywhere within `max_distance` on a miss). A re-trace from an
-    /// excluded hull's exit passes the exit's distance as `min_distance`, so
-    /// a kept face just past the exit is never stepped over.
+    /// and beside it the first skipped front face before that hit (or
+    /// anywhere within `max_distance` on a miss). Faces of `mask` also in
+    /// `ignored` are neither kept nor reported: an exclusion trace drops a
+    /// hull the ray passes beside this way. A re-trace from an excluded
+    /// hull's exit passes the exit's distance as `min_distance`, so a kept
+    /// face just past the exit is never stepped over.
     pub(crate) fn closest_hit_masked(
         &self,
         origin: Vec3,
@@ -153,8 +194,10 @@ impl<'a> SceneTracer<'a> {
         min_distance: f32,
         max_distance: f32,
         mask: &FaceMask,
+        ignored: &FaceMask,
     ) -> MaskedHit {
-        let (best, skipped) = self.nearest(origin, direction, min_distance, max_distance, mask);
+        let masking = Masking { mask, ignored };
+        let (best, skipped) = self.nearest(origin, direction, min_distance, max_distance, &masking);
         MaskedHit {
             hit: best.and_then(|candidate| self.surface_hit(candidate)),
             skipped: skipped.and_then(|candidate| self.surface_hit(candidate)),
@@ -176,11 +219,13 @@ impl<'a> SceneTracer<'a> {
         FaceMask { offsets }
     }
 
-    /// The nearest unmasked front-face hit in `(min_distance, max_distance)`,
-    /// and the nearest masked one in front of it. A masked primitive's
-    /// triangles never shrink the query, so the traversal still reaches
-    /// every unmasked face behind them. Monomorphized over [`Unmasked`], the
-    /// skipped branch folds away and the unmasked trace costs what it did.
+    /// The first kept front-face hit in `(min_distance, max_distance)`, in hit
+    /// order ([`hit_order`]), and the first skipped one before it. A skipped
+    /// primitive's triangles never shrink the query, so the traversal still
+    /// reaches every kept face behind them; the prune's slack keeps every box
+    /// holding a hit at the kept distance, so a tie's winner is always seen.
+    /// Monomorphized over [`Unmasked`], the skipped and ignored branches fold
+    /// away and the unmasked trace costs what it did.
     fn nearest<M: PrimitiveMask>(
         &self,
         origin: Vec3,
@@ -198,7 +243,10 @@ impl<'a> SceneTracer<'a> {
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
             #[cfg(test)]
             crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
-            let masked = mask.skips(prim.index_offset);
+            let treatment = mask.treatment(prim.index_offset);
+            if treatment == Treatment::Ignored {
+                continue;
+            }
             for tri in primitive_triangles(prim) {
                 let points = triangle_points(self.geometry, tri);
                 if let Some(hit) = ray.hit(points, min_distance, max_distance)
@@ -209,21 +257,27 @@ impl<'a> SceneTracer<'a> {
                     // value too, so a hit at that distance is never found
                     // again past it.
                     let t = hit.t as f32;
-                    if t > min_distance && t < max_distance && best.is_none_or(|(d, ..)| t < d) {
-                        let weights = surface_weights(&ray, points, hit.t, hit.barycentric);
-                        let candidate = (t, tri, weights, prim.index_offset);
-                        if !masked {
-                            best = Some(candidate);
+                    let order = (t, tri);
+                    if t > min_distance
+                        && t < max_distance
+                        && best.is_none_or(|kept| order < hit_order(&kept))
+                    {
+                        if treatment == Treatment::Kept {
+                            let weights = surface_weights(&ray, points, hit.t, hit.barycentric);
+                            best = Some((t, tri, weights, prim.index_offset));
                             query.shrink_to(t);
-                        } else if skipped.is_none_or(|(d, ..)| t < d) {
-                            skipped = Some(candidate);
+                        } else if skipped.is_none_or(|first| order < hit_order(&first)) {
+                            let weights = surface_weights(&ray, points, hit.t, hit.barycentric);
+                            skipped = Some((t, tri, weights, prim.index_offset));
                         }
                     }
                 }
             }
         }
-        // A masked face found before a nearer kept one lies behind it.
-        let skipped = skipped.filter(|&(s, ..)| best.is_none_or(|(d, ..)| s < d));
+        // A skipped face found before a kept one that precedes it lies
+        // behind that kept face.
+        let skipped =
+            skipped.filter(|first| best.is_none_or(|kept| hit_order(first) < hit_order(&kept)));
         (best, skipped)
     }
 
@@ -364,5 +418,7 @@ fn texel_density(positions: [[f32; 3]; 3], uvs: [[f32; 2]; 3]) -> f32 {
 }
 
 #[cfg(test)]
+// The module's tests sit beside it, as its siblings' `*_tests.rs` do; a
+// plain `mod tests;` in a non-`mod.rs` file resolves to `hit/tests.rs`.
 #[path = "hit_tests.rs"]
 mod tests;

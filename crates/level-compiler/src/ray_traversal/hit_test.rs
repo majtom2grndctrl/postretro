@@ -284,8 +284,9 @@ impl TraceRay {
 
 /// Squared distance from `point` to the closed triangle `[a, b, c]`: to its
 /// [`closest_point_on_triangle`]. For a point in the triangle's plane it is
-/// the in-plane distance, rounded at the corners. Not finite for a
-/// degenerate triangle whose region test lands in its interior.
+/// the in-plane distance, rounded at the corners. NaN for a degenerate
+/// (zero-area) triangle: its edge arms divide `0 / 0` (coincident corners
+/// reach it through edge AB), and its interior arm divides by a zero sum.
 pub(super) fn distance_squared_to_triangle(point: DVec3, corners: [DVec3; 3]) -> f64 {
     (point - closest_point_on_triangle(point, corners).0).length_squared()
 }

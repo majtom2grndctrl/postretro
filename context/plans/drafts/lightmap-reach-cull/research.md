@@ -8,7 +8,8 @@ Derivation behind the brief's Decisions. Read at 343ff98b6. Evidence:
 | `leak-diagnosis-findings.md` (here) | same branch: why rays cross solid, the epsilon fix, the span classifier |
 | `drafts/lightmap-stage-sizing/findings.md` | `main`: the earlier study that led to the exact skips |
 | `done/lightmap-exact-skips/` | `main`: the shaft and chart culls, and the exactness standard this brief matches |
-| `fix/face-extract-split-epsilon` contract | in flight: the prerequisite fix |
+| `fix/face-extract-split-epsilon` contract | in flight: the split-epsilon prerequisite |
+| `watertight-tracer` | planned: the tracer prerequisite |
 
 ## Exactness argument
 
@@ -17,9 +18,9 @@ The ball holds every segment the sampler traces for a lit texel: from any emitte
 - the boundary has no face there (a hole). The precondition, checked by the hole check.
 - the ray enters solid inside its skipped first millimetre (`RAY_EPSILON`). Only texels within that reach of a closed leaf can do this, and the per-texel rule traces them.
 - it starts in solid (a buried texel). Traced, as above.
-- it slips through a crease crack at entry *and* exit. Named gap 1. Cracks are 1–250 µm wide, on non-axial creases only.
-- it lies in a wall's plane. Named gap 2. The spike found one such ray on hallway-mini.
-- it crosses from one open leaf to a diagonal neighbour through a shared edge with no portal. When the leaves beside the edge are open, the flood reaches the neighbour through them. When they are solid, the ray grazes an edge between solids, which rounding decides. Not observed.
+- it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. Named gap 1.
+- it crosses from one open leaf to a diagonal neighbour through a shared edge with no portal. When the leaves beside the edge are open, the flood reaches the neighbour through them. When they are solid, the ray grazes an edge between solids, which rounding decides: named gap 1. Not observed.
+- it lies in a face's plane. Named gap 2. The spike found one such ray on hallway-mini.
 
 The exterior is never entered. A ray into exterior space from inside crosses solid through an interior-facing face, which exterior culling keeps.
 
@@ -29,12 +30,12 @@ Movers, fluid, trigger and other peeled-off brushes are in neither the tree nor 
 
 `segment_clear_remembering` tests the remembered triangle before traversing. Its doc says the answer is unchanged "barring a hit the traversal's box test misses by rounding, which the cache then reports as blocked". The shaft cull kept bytes because a clear tile's rays never hit, so the caches end a skipped tile as they began.
 
-Here, the unculled walk's skipped texels are dark: their rays hit, and each hit writes `last_occluder` (and `clip_occluder` on the clip path). With the cull, those writes do not happen. The next traced texel in the pair tests a different cached triangle first. The answers differ only when one of the two cached triangles catches a hit the traversal's box test misses by rounding: the same edge case the exact skips accepted, now reachable by a new path. The prototype skipped every texel of a culled pair, so it could not meet it. Verify mode, comparing whole pairs, does.
+Here, the unculled walk's skipped texels are dark: their rays hit, and each hit writes `last_occluder` (and `clip_occluder` on the clip path). With the cull, those writes do not happen. The next traced texel in the pair tests a different cached triangle first. On `main` the answers differ when one of the two cached triangles catches a hit the traversal misses: by box-test rounding, or by the distance prune near a grazing sliver's end (`ray_traversal` prune limit). The prototype skipped every texel of a culled pair, so it could not meet this. Verify mode, comparing whole pairs, does.
 
 Exact alternatives, and why they lose:
 - *Cull only pairs with no traced texel.* Charts border the walls their light is behind, so almost every culled pair has a traced border. Close to the strict rule's 4% of the win.
 - *Replay the cache writes without tracing.* The triangle a skipped texel's ray would hit is unknown without the trace.
-- *Make the traversal conservative (chosen, owner 2026-10-31).* Pad the bounds the traversal tests so it reaches every triangle the direct test would hit. The answer then no longer depends on the cached triangle, so skipping cache writes can't change it. It moves bytes once wherever the old traversal missed a hit by rounding. Its cost is a slightly wider traversal, gated at 2% of hallway Lightmap Bake; past the gate, the fallback is the owner's call.
+- *A watertight tracer (chosen, the `watertight-tracer` prerequisite).* The traversal reaches every triangle the watertight hit test would hit, and the remembered triangle is tested only when its leaf box passes the traversal's own predicate. The answer then no longer depends on the cached triangle, so skipping cache writes can't change it. Its byte move, cache epoch and cost belong to that plan.
 
 ## Other consumers
 
@@ -73,3 +74,13 @@ The chart slab is the spike's: the chart's padded texel rectangle at lifts 0.25,
 - The epsilon fix restores faces, so the shaft cull clears less: instrumented Lightmap Bake +5–8% on the small maps. The hallway's post-fix baseline is unmeasured. The wall-time gate is a ratio against that baseline.
 - Hole check: span classification ran under 3 s on the hallway at 557 spans; post-fix the hallway has 26.
 - Memory: a per-light bitset over the hallway's 9,624 leaves is 757 × 1.2 KB, under 1 MB, alive from before Lightmap Bake to its end.
+
+## Pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Verify mode re-walks a culled pair | The re-walk runs after the culled walk of the same pair. It starts both occluder caches empty at the pair's first texel and takes every exact skip production takes except the reach cull. Traced texels inside the culled walk take the same skips. | Records equal bit for bit. A difference can come only from the reach cull, never from the shaft cull or the clip pre-pass. |
+| P2 | Verify mode on, one governor permit, a map with culled pairs | The re-walk runs inside the culled walk's permit and does not enter the governor again. The per-chart texel mask builds inside the first walk that needs it, takes no lock or permit, and serves later lights read-only. | The bake completes. Each culled pair holds one permit and advances progress once. |
+| P3 | Per-chart texel mask shared across lights | Lights walk the same chart on different workers in any order. Whichever walk comes first builds the mask. | The mask is a function of the chart alone. Bytes and cull tallies are identical at one worker and many, cold and warm. |
+| P4 | Traced texel after skipped ones in a culled pair | Skipped texels write no occluder. The next traced texel tests the cache the culled walk holds, which differs from the unculled walk's. | The two walks' remembered occluders differ at that texel, and its record equals both the unculled walk's and a brute-force test of every triangle. |
+| P5 | Verify mode on over a filled cache | The baseline binary fills every lightmap layer and section entry. The new binary then builds warm with verify on. | No lightmap layer or section entry is read. Every culled pair is re-walked, pairs re-walked equal pairs culled, and the PRL equals the cold bake. |

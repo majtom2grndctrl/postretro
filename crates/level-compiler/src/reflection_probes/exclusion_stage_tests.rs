@@ -85,9 +85,15 @@ fn stage_key(room: &CaptureFixture, constants: &ExclusionConstants) -> String {
             .zip(&excluded)
             .map(|(probe, set)| ProbeExclusion::new(&tracer, room.brushes(), set, probe))
             .collect();
-        cache_key(inputs, &probes, &exclusions, constants)
-            .unwrap()
-            .as_filename()
+        cache_key(
+            inputs,
+            &probes,
+            &exclusions,
+            constants,
+            crate::ray_traversal::TRACER_EPOCH,
+        )
+        .unwrap()
+        .as_filename()
     })
 }
 

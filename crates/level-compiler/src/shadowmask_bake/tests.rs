@@ -12,6 +12,7 @@ use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{BlockLayout, CellBlock, Chart, CutParent};
 use crate::lightmap_layer::LayerTexel;
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
+use crate::ray_traversal::TRACER_EPOCH;
 use ownership::{DropSite, LIT_TEXEL_FLOOR, OwnerDrop};
 
 const E: u16 = SHADOWMASK_OWNER_EMPTY;
@@ -1064,6 +1065,7 @@ fn the_memo_key_covers_spec_indices_promotion_faces_and_estimate_parameters() {
             8,
             2,
             estimate,
+            TRACER_EPOCH,
         )
     };
     let base = [eligible(&light, 0, false)];
@@ -1073,6 +1075,25 @@ fn the_memo_key_covers_spec_indices_promotion_faces_and_estimate_parameters() {
     assert_ne!(reference, key(&base, 5, &[]));
     assert_ne!(reference, key(&base, 4, &[4]));
     assert_eq!(reference, key(&base, 4, &[]));
+}
+
+#[test]
+fn shadowmask_atlas_key_changes_with_tracer_epoch() {
+    let light = light_over(0, 1.0);
+    let base = [eligible(&light, 0, false)];
+    let key = |tracer_epoch| {
+        shadowmask_atlas_input_hash(
+            &base,
+            &|_, layer| [layer as u8; 32],
+            4,
+            8,
+            8,
+            2,
+            &[],
+            tracer_epoch,
+        )
+    };
+    assert_ne!(key(TRACER_EPOCH), key(TRACER_EPOCH + 1));
 }
 
 // The raw fill lives only through the walk: one allocation, released before

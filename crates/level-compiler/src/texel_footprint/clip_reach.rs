@@ -20,8 +20,12 @@ const FOOTPRINT_REACH_TEXELS: f32 = 1.0;
 /// The slab about a chart's raised plane, the receiver's plane lifted
 /// `RAY_EPSILON` along its normal, that a triangle must reach to block a
 /// footprint's clip segments or lead-ins: it has corners on both sides of the
-/// raised plane, within a tolerance far above rounding. The receiver and its
-/// coplanar neighbours lie wholly below it.
+/// raised plane, within a tolerance. A clip segment lies in the raised plane,
+/// and the hit test accepts a crossing within τ of a triangle
+/// (`ray_traversal::TRACER_TOLERANCE_METERS`), so a triangle up to τ off the
+/// plane can block one; the tolerance is τ plus a quarter of `RAY_EPSILON`,
+/// far above rounding. The receiver and its coplanar neighbours lie a whole
+/// `RAY_EPSILON` below the plane, outside it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ClipBand {
     normal: Vec3,
@@ -40,7 +44,7 @@ impl ClipBand {
             normal,
             origin: chart.origin,
             height: RAY_EPSILON * normal.dot(chart.normal),
-            tolerance: 0.5 * RAY_EPSILON,
+            tolerance: crate::ray_traversal::TRACER_TOLERANCE_METERS + 0.25 * RAY_EPSILON,
         }
     }
 

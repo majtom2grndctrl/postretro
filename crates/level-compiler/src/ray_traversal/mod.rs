@@ -21,11 +21,19 @@ pub(crate) use occlusion::{
 };
 #[cfg(test)]
 pub(crate) use occlusion::{ray_clear_brute_force, segment_clear_brute_force, without_cache_gate};
-#[cfg(all(test, debug_assertions))]
+#[cfg(test)]
 pub(crate) use pad::assert_parents_contain_children;
 pub(crate) use pad::pad_bake_tree;
 #[cfg(test)]
 pub(crate) use pad::{assert_padded, box_pad};
+
+/// Epoch of the answers this tracer gives: the hit test, τ, the box test,
+/// the bake tree's padding and the occluder-cache gate. Bump it on any
+/// change that can move a shadow or closest-hit answer. Every cached stage
+/// whose computation reaches the tracer takes it as a key input, as the
+/// residency stage folds `PORTAL_WALK_EPOCH`, so one bump re-keys them all
+/// (`build_pipeline.md` §Build Cache).
+pub(crate) const TRACER_EPOCH: u32 = 1;
 
 /// The first index-buffer offsets of a BVH primitive's triangles.
 pub(crate) fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {
@@ -72,6 +80,7 @@ const FAR_SCALE: f32 = 1.0 + 4.0 * f32::EPSILON;
 impl BoundedRay {
     /// The query for a ray from `origin` along `direction`, the hit test's
     /// own: the inverse is taken here, never re-normalized.
+    #[inline]
     pub(crate) fn new(origin: Vec3, direction: Vec3, bound: f32) -> Self {
         Self {
             origin: origin.to_array(),

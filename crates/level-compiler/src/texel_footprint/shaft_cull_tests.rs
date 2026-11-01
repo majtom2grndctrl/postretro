@@ -2,8 +2,6 @@
 // walk orderings it must survive, its margins at authored angles, and verify mode.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
-use std::f64::consts::SQRT_2;
-
 use glam::{DVec3, Vec3};
 
 use super::test_fixtures::*;
@@ -336,7 +334,7 @@ fn place(
     for _ in 0..8 {
         let (gap, margin) = measure(at(offset));
         let wanted = ratio * margin;
-        if (gap / margin - ratio).abs() < 0.05 * ratio {
+        if (gap / margin - ratio).abs() < 0.02 * ratio {
             return (at(offset), (gap, margin));
         }
         offset += wanted - gap;
@@ -361,27 +359,30 @@ fn hull_box(shaft: &ShaftCull, tile: (i32, i32)) -> (DVec3, DVec3) {
 /// An independent `f64` recomputation of the axis margin the cull asks of
 /// `points` (index order) against a hull with box `(lo, hi)`:
 ///
-/// m_A = κ·[5√2·u·ρ·(3·S_T + L + ‖e1‖ + ‖e2‖) / sin θ0 + u·(S_T + 5·e_T) + e_H]
+/// m_A = κ·[τ + w·4e_T·(6e_T·A + R·(5.2A + 256e_T)) / (‖e1 × e2‖·sin θ0) + e_H],
+/// A = 24R + 16e_T,
 ///
-/// with κ = 2, θ0 = 2°, u = 2⁻²⁴, e1 = b − a, e2 = c − a, ρ = ‖e1‖‖e2‖ /
-/// ‖e1 × e2‖, e_T = max(‖e1‖, ‖e2‖), L the box's diagonal, S_T = ‖a −
-/// centre‖ + L/2, and e_H the axis-weighted sum of 10u·R + 6u·L per world
-/// axis. R is taken from the box alone: the chart's own coordinate terms stay
-/// under a metre here, and e_H is under one percent of the margin.
+/// with κ = 2, θ0 = 2°, w = 2⁻⁵³, e1 = b − a, e2 = c − a, e_T = max(‖e1‖,
+/// ‖e2‖), L the box's diagonal, R = ‖a − centre‖ + L/2 + e_T, and e_H the
+/// axis-weighted sum of 10u·R + 6u·L per world axis (u = 2⁻²⁴). R is taken
+/// from the box alone: the chart's own coordinate terms stay under a metre
+/// here. The point-rounding term is far below a percent and left out.
 fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3) -> f64 {
     let u = 2.0_f64.powi(-24);
+    let w = 2.0_f64.powi(-53);
+    let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
     let sin_floor = 2.0_f64.to_radians().sin();
     let [a, b, c] = points.map(|p| p.as_dvec3());
     let (e1, e2) = (b - a, c - a);
-    let (l1, l2) = (e1.length(), e2.length());
-    let rho = l1 * l2 / e1.cross(e2).length();
+    let e_t = e1.length().max(e2.length());
     let diag = (hi - lo).length();
-    let s_t = a.distance((lo + hi) * 0.5) + 0.5 * diag;
+    let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
+    let big_a = 24.0 * r + 16.0 * e_t;
+    let strict = w * 4.0 * e_t * (6.0 * e_t * big_a + r * (5.2 * big_a + 256.0 * e_t))
+        / (e1.cross(e2).length() * sin_floor);
     let epsilon = lo.abs().max(hi.abs()) * (10.0 * u) + DVec3::splat(6.0 * u * diag);
     let e_h = axis.abs().dot(epsilon);
-    2.0 * (5.0 * SQRT_2 * u * rho * (3.0 * s_t + diag + l1 + l2) / sin_floor
-        + u * (s_t + 5.0 * l1.max(l2))
-        + e_h)
+    2.0 * (tau + strict + e_h)
 }
 
 /// Floor bakes of a margin fixture: the occluder triangle beside tile B.

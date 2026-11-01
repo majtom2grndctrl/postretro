@@ -352,7 +352,7 @@ fn compile(mut geometry: GeometryResult, lights: &[MapLight], run: Run) -> Compi
         step_threshold: run.threshold,
     };
     if let (Some(corrupt), Some(cache)) = (run.corrupt, run.cache) {
-        let key = weight_map_cache_key(&inputs, DENSITY);
+        let key = weight_map_cache_key(&inputs, DENSITY, crate::ray_traversal::TRACER_EPOCH);
         let entry = cache.get(&key).expect("an entry to corrupt");
         cache.put(&key, &corrupt(&entry));
     }
@@ -694,6 +694,47 @@ fn toggling_the_floor_misses_the_weight_map_entry_and_never_serves_the_other_set
     }
     drop(cache);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn animated_lm_weight_maps_key_changes_with_tracer_epoch() {
+    let mut geometry = contact_geometry();
+    let lights = with_placing_light(vec![animated([3.3, 3.0, 2.7], 8.0)]);
+    let static_lights = StaticBakedLights::from_lights(&lights);
+    let animated_lights = AnimatedBakedLights::from_lights(&lights);
+    let prepared = crate::lightmap_bake::prepare_atlas(&mut geometry, &static_lights, DENSITY, &[])
+        .expect("fixture atlas prepares");
+    let (bvh, primitives, bvh_section) = build_bvh(&geometry).expect("fixture BVH builds");
+    let (chunks, _) = build_placed_animated_light_chunks(
+        &bvh_section,
+        &animated_lights,
+        &prepared.charts,
+        &prepared.placements,
+        &geometry.face_index_ranges,
+        DENSITY,
+    );
+    let (animated_list, _) = animated_lights.to_parallel_vecs();
+    let inputs = WeightMapInputs {
+        bvh: &bvh,
+        primitives: &primitives,
+        geometry: &geometry,
+        chunk_section: &chunks,
+        lights: &animated_list,
+        face_charts: &prepared.charts,
+        face_placements: &prepared.placements,
+        layout: &prepared.layout,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        static_atlas_layer_count: prepared.layer_count,
+        area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
+        cut_parents: &prepared.cut_parents,
+        penumbra_floor: true,
+        step_threshold: TEXEL_STEP_THRESHOLD,
+    };
+    let key = |tracer_epoch| weight_map_cache_key(&inputs, DENSITY, tracer_epoch).as_filename();
+
+    let epoch = crate::ray_traversal::TRACER_EPOCH;
+    assert_ne!(key(epoch), key(epoch + 1));
 }
 
 // AC 15 (P9): weight maps, and with the floor off their warnings and order,

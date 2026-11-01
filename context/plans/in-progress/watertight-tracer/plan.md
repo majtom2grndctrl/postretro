@@ -1,7 +1,7 @@
 # watertight-tracer — plan of record
 
 mode: compact
-status: active
+status: blocked
 read at: 26ab6c534
 
 ## Corrections
@@ -12,6 +12,24 @@ read at: 26ab6c534
 - Möller–Trumbore is exactly watertight on an axis-aligned shared edge when both triangles list it in the same corner slot (the edge tests are exact negatives). The shared-edge fixture rotates each triangle's corners, as face fans do, so the MT-restored run slips (AC 2).
 - Reflection-probe consumers of the hit test: the capture's masked re-trace stores `f32` distances and passes them back as `min_distance`, so `SceneTracer::nearest` bounds the `f32` distance too; the exclusion trace treats a tolerance hit on an excluded face whose hull the ray never enters as no crossing. Two probe tests read τ: the open-top distance test skips texels whose rays cross a wall's plane within 2τ above its top, and the placement-invariance test's precondition moves from the derived box (which differed under MT only by `f32` rounding noise, 3.2511997 vs 3.2512) to the capture point, which deleting the pillar genuinely moves.
 - The cache stores today a triangle offset only. The gated cache needs the leaf the traversal tests, so it stores the leaf's node index with the triangle (`BvhPrimitive::bh_node_index`); the leaf box is the parent's stored child box, or a root leaf's primitive box.
+
+## Block — cost gate (Task 5)
+
+The first-slice cost read breaches the ~10% gate on warren-mini; per the cost Decision the build stops for the owner before any fallback or hallway run. Cold `--release --no-tui` bakes on the Intel Mac, `/usr/bin/time -l` (instruction counts are clock-independent; the wall times are not):
+
+| Build | Lightmap Bake | SH Bake | Delta SH | Direct SH | Total | Instructions retired |
+|---|---|---|---|---|---|---|
+| baseline (a443aecfe, MT) | 222.55 s | 23.68 s | 6.51 s | 1.16 s | 306.07 s | 10.03 T |
+| f64 watertight (92b6da145) | 283.45 s (+27%) | 32.66 s (+38%) | 9.51 s | 1.36 s | 385.42 s | 14.03 T (+40%) |
+| plain f32, same algorithm | 283.06 s (+27%) | 33.90 s | 10.07 s | 1.38 s | 389.00 s | 14.00 T |
+| baseline, rerun | 238.93 s | 21.90 s | 6.12 s | 1.09 s | 331.02 s | 10.03 T |
+| f64 + per-ray rows, inlined ray setup, leaf box stored in the occluder | 404.65 s (throttled: CPU_Speed_Limit 52 at exit) | 50.01 s | 15.27 s | 2.08 s | 547.90 s | 14.33 T |
+
+- `f32` ≈ `f64`: precision is not the cost, so the plain-`f32` fallback buys no time.
+- Sampled profile of Lightmap Bake (30 s each, symbolized): tracer share of busy samples 21.8% at baseline (`segment_clear_remembering` + closure 11.1%, MT 5.4%, traversal 5.3%) against 34.4% after (`segment_clear_remembering` 16.4%, `TraceRay::hit` 10.7%, traversal 5.9%, corner fetch 1.3%): the shadow tracer costs about 1.9× baseline. The hit test is ~2× MT (MT rejects most misses after one barycentric; the watertight test computes all three edge functions and runs the τ reach check on every miss). Two overheads found and fixed in the working tree: a 128-byte `TraceRay` moved out of `segment_ray` by `rep movsq` per ray, and the cache gate's two dependent node loads (the leaf box now rides in `Occluder`). Neither moved the instruction count; the per-ray row vectors add a multiply-add per projection over the indexed form and may cost more than they save.
+- hallway-mini not timed (stopped before it to profile).
+
+Options for the owner: an optimization round on the same answers (per-ray monomorphized axis permutation instead of rows or runtime indexing; a cheaper miss path), with no promise it reaches 10%; accept the cost; or restate the gate.
 
 ## Delegated answers
 - None; the brief has no open questions.
@@ -56,9 +74,9 @@ read at: 26ab6c534
 | 2 | Move the lightmap tracer functions into a `ray_traversal/` module, behavior-preserving | integrating executor | 1 | done 66e05981f |
 | 3 | Shared watertight f64 hit test with τ in `ray_traversal`; every tracer calls it; brute-force reference; AC 1–7 tests | integrating executor | 2 | done with 6 and 7: `ray_traversal/{hit_test,occlusion,pad}.rs`, tests in `hit_test_tests.rs`, `tree_tests.rs` (33 tests) |
 | 4 | Shared-edge census harness; set τ (AC 26) | integrating executor | 3 | |
-| 5 | First-slice cost read: counters after, warren-mini and hallway-mini cold Lightmap Bake f64 and plain f32 against baseline (AC 23, 24 first read); stop if >~10% | integrating executor | 3, 4 | |
+| 5 | First-slice cost read: counters after, warren-mini and hallway-mini cold Lightmap Bake f64 and plain f32 against baseline (AC 23, 24 first read); stop if >~10% | integrating executor | 3, 4 | blocked: warren-mini +27% Lightmap, +38% SH; see Block |
 | 6 | Conservative box test from the hit test's ray; padded bake trees with containment assertion; flat-box witness (AC 9–16) | integrating executor | 3 | done with 3 |
 | 7 | Gated occluder cache (AC 8, 12) | integrating executor | 6 | done with 3 |
-| 8 | Shaft-cull margins re-derived for the f64 test and τ (AC 18) | integrating executor | 6 | |
-| 9 | `TRACER_EPOCH` folded into every tracing stage key; key tests; landing value last (AC 17, 22) | integrating executor | 7, 8 | |
+| 8 | Shaft-cull margins re-derived for the f64 test and τ (AC 18) | integrating executor | 6 | done: `shaft_cull/margin.rs` re-derivation; `place` window tightened to ±2% (τ puts margins near its 1 mm start); 55 `shaft_cull`/`texel_footprint` tests pass |
+| 9 | `TRACER_EPOCH` folded into every tracing stage key; key tests; landing value last (AC 17, 22) | integrating executor | 7, 8 | folded at all 12 research-table keys as a builder input (chunk light list: the parameterized builder; its wrapper supplies the constant, as it does the stage version); 12 `*_key_changes_with_tracer_epoch` tests; landing value still pending (AC 22) |
 | 10 | Gate runs: parity suites, PRL diffs, warm-over-old-cache, landing timings, grep gates (AC 19–27) | integrating executor; owner for hallway | 9 | |

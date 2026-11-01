@@ -1,4 +1,4 @@
-// Shaft-cull margins against the hit test: a randomized f32 Möller–Trumbore search.
+// Shaft-cull margins against the hit test: a randomized search of the watertight f64 test.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use glam::{DVec3, Vec3};
@@ -112,8 +112,8 @@ fn lead_in_hit(from: Vec3, to: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
         .is_some()
 }
 
-/// Sine of the angle between the `f32` ray `from → to` and the plane of the
-/// triangle's `f32` edges.
+/// Sine of the angle between the `f32` ray `from → to` and the triangle's
+/// plane.
 fn sin_grazing(from: Vec3, to: Vec3, candidate: &Candidate) -> f64 {
     let dir = (to - from).as_dvec3().normalize();
     dir.dot(candidate.normal.normalize()).abs()
@@ -155,8 +155,9 @@ impl Search {
 // The normal margin is sound against the hit test: a segment that stops short
 // of a triangle's plane, from either side and at any grazing angle, is never
 // hit once its gap along the triangle's own normal reaches m_N. Segments end a
-// random multiple of the hit test's rounding scale from the plane, over a
-// triangle's interior, at coordinates up to 4 km.
+// random multiple of their own `f32` ends' rounding scale from the plane,
+// which bounds the hit test's height error, over a triangle's interior, at
+// coordinates up to 4 km.
 #[test]
 fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
     let mut stream = Stream(0x5348_4146_545f_4e31);
@@ -189,8 +190,8 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
             .normalize_or(normal.any_orthonormal_vector());
         let toward_plane = along * (1.0 - sin * sin).sqrt() - normal * side * sin;
         let length = stream.log_range(0.01, 30.0);
-        let scale = UNIT_ROUNDOFF * candidate.shape * (foot.distance(a) + 2.0 * length + offset);
-        let height = scale * stream.log_range(1.0e-2, 60.0);
+        let scale = UNIT_ROUNDOFF * (foot.abs().max_element() + offset + 6.0 * length);
+        let height = scale * stream.log_range(1.0e-2, 1.0e3);
         let to = foot + normal * side * height;
         let from = to - toward_plane * length;
         let (from, to) = (from.as_vec3(), to.as_vec3());
@@ -210,9 +211,10 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
 // The axis margin is sound against the hit test above the angle floor: a
 // segment at or above the floor that crosses a triangle's plane just outside
 // one of its edges is never hit once its gap reaches m_A, along that edge's
-// in-plane outward normal or along any other unit axis, N′ components
-// included. Steeper rays than the floor only; a ray below it is the accepted
-// gap and is not asserted.
+// in-plane outward normal or along any other unit axis, N components
+// included. Crossings land a random multiple of τ outside the edge, so the
+// tolerance's hits are the phantom ones. Steeper rays than the floor only; a
+// ray below it is the accepted gap and is not asserted.
 #[test]
 fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     let mut stream = Stream(0x5348_4146_545f_4131);
@@ -250,8 +252,7 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         // At or a little below the floor, mostly above it.
         let sin = stream.range(0.8 * SIN_ANGLE_FLOOR, 1.0);
         let length = stream.log_range(0.01, 30.0);
-        let reach = p0.distance(corners[0]) + 2.0 * length + offset;
-        let scale = UNIT_ROUNDOFF * candidate.shape * (3.0 * reach + candidate.edge_sum) / sin;
+        let scale = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
         let along_edge = stream.range(0.05, 0.95);
         let beyond = stream.log_range(1.0e-2, 60.0);
         let crossing = p0 + (p1 - p0) * along_edge + outward * scale * beyond;
@@ -277,7 +278,7 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         let axis = if axis_stream.unit() < 0.125 {
             axis_stream.direction()
         } else {
-            let open = scale * beyond / (length + candidate.edge_sum);
+            let open = scale * beyond / (length + 2.0 * candidate.longest_edge);
             outward + axis_stream.direction() * open * axis_stream.log_range(1.0e-3, 3.0)
         };
         if let Some(certificate) = bounds.axis_certificate(&candidate, axis) {
@@ -339,11 +340,8 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         "the probe sits just inside the cap: ρ = {}",
         probe.shape
     );
-    let scene = ShaftScene {
-        shape: probe.shape,
-        shape_edge: probe.shape * probe.longest_edge,
-        edge: probe.longest_edge,
-    };
+    let mut scene = ShaftScene::default();
+    scene.include(&probe);
     let growth = scene.query_growth(&bounds).unwrap();
     let candidate = Candidate::of(at(bounds.hi.x + growth)).unwrap();
     let (gap, margin) = bounds
@@ -353,10 +351,11 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         gap >= margin,
         "growth {growth}: a triangle that far has gap {gap} under its margin {margin}"
     );
-    // About 8 cm: the capped sliver's 8ρe_T term dominates.
+    // About 1 mm: κτ dominates; the capped sliver's rounding terms are far
+    // below it.
     assert!(
-        (0.05..0.1).contains(&growth),
-        "growth {growth}: a capped 3 m sliver sets it near 8 cm, far below the hull's size"
+        (0.001..0.0011).contains(&growth),
+        "growth {growth}: κτ sets it near 1 mm, far below the hull's size"
     );
 }
 

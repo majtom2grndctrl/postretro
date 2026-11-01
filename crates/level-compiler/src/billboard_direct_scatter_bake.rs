@@ -95,6 +95,7 @@ pub fn bake_billboard_direct_scatter_volume_cached_controlled(
         &direct_lights,
         &global_indices,
         config.probe_spacing,
+        crate::ray_traversal::TRACER_EPOCH,
     );
     if let Some(cache) = cache {
         if let Some(bytes) = cache.get(&key) {
@@ -211,7 +212,13 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
         return None;
     }
 
-    let key = animated_cache_key(inputs, &layout, config.probe_spacing, direct_deltas);
+    let key = animated_cache_key(
+        inputs,
+        &layout,
+        config.probe_spacing,
+        direct_deltas,
+        crate::ray_traversal::TRACER_EPOCH,
+    );
     if let Some(cache) = cache {
         if let Some(bytes) = cache.get(&key) {
             match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&bytes) {
@@ -536,8 +543,9 @@ fn static_cache_key(
     lights: &[&MapLight],
     global_indices: &[u64],
     probe_spacing: f32,
+    tracer_epoch: u32,
 ) -> CacheKey {
-    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing);
+    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing, tracer_epoch);
     hasher.update(&(lights.len() as u32).to_le_bytes());
     for (light, &global_index) in lights.iter().zip(global_indices) {
         hasher.update(&global_index.to_le_bytes());
@@ -560,8 +568,9 @@ fn animated_cache_key(
     layout: &ProbeGridLayout,
     probe_spacing: f32,
     direct_deltas: &AnimatedDirectShDeltaVolumesSection,
+    tracer_epoch: u32,
 ) -> CacheKey {
-    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing);
+    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing, tracer_epoch);
     hasher.update(&(inputs.animated_lights.len() as u32).to_le_bytes());
     for entry in inputs.animated_lights.entries() {
         hasher.update(&(entry.source_index as u64).to_le_bytes());
@@ -591,10 +600,14 @@ fn animated_cache_key(
     )
 }
 
+/// What both scatter keys fold first: geometry, the probe grid, the portal
+/// adjacency, then `tracer_epoch` (`ray_traversal::TRACER_EPOCH`), since
+/// scatter visibility traces.
 fn common_cache_hasher(
     inputs: &BillboardDirectScatterBakeInputs<'_, '_>,
     layout: &ProbeGridLayout,
     probe_spacing: f32,
+    tracer_epoch: u32,
 ) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&geometry_content_hash(inputs.sh_ctx.geometry));
@@ -614,6 +627,7 @@ fn common_cache_hasher(
         hasher.update(&(portal.front_leaf as u64).to_le_bytes());
         hasher.update(&(portal.back_leaf as u64).to_le_bytes());
     }
+    hasher.update(&tracer_epoch.to_le_bytes());
     hasher
 }
 
@@ -997,6 +1011,81 @@ mod tests {
                 .any(|rgba| rgba[..3].iter().any(|&channel| channel != 0)),
             "unit-scale animated scatter must retain visible transport"
         );
+    }
+
+    /// Run `check` over a one-light cube scene's scatter inputs, its probe
+    /// layout and a one-entry id-45 section.
+    fn with_key_inputs(
+        check: impl FnOnce(
+            &BillboardDirectScatterBakeInputs<'_, '_>,
+            &ProbeGridLayout,
+            &AnimatedDirectShDeltaVolumesSection,
+        ),
+    ) {
+        let lights = vec![light(LightType::Point)];
+        let geometry = cube_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture geometry must build a BVH");
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = BillboardDirectScatterBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            animated_lights: &animated_lights,
+            static_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        };
+        let layout = probe_grid_layout(&sh_ctx, &ShConfig { probe_spacing: 1.0 });
+        let direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: Vec::new(),
+        };
+        check(&inputs, &layout, &direct);
+    }
+
+    #[test]
+    fn billboard_direct_scatter_key_changes_with_tracer_epoch() {
+        with_key_inputs(|inputs, layout, _| {
+            let static_lights = static_light_refs(inputs.sh_ctx);
+            let (lights, global_indices) = static_direct_lights(&static_lights);
+            let key = |tracer_epoch| {
+                static_cache_key(inputs, layout, &lights, &global_indices, 1.0, tracer_epoch)
+                    .as_filename()
+            };
+            let epoch = crate::ray_traversal::TRACER_EPOCH;
+            assert_ne!(key(epoch), key(epoch + 1));
+        });
+    }
+
+    #[test]
+    fn animated_billboard_direct_scatter_key_changes_with_tracer_epoch() {
+        with_key_inputs(|inputs, layout, direct| {
+            let key = |tracer_epoch| {
+                animated_cache_key(inputs, layout, 1.0, direct, tracer_epoch).as_filename()
+            };
+            let epoch = crate::ray_traversal::TRACER_EPOCH;
+            assert_ne!(key(epoch), key(epoch + 1));
+        });
     }
 
     #[test]

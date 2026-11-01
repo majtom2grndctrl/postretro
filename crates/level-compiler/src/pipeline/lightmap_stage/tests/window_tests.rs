@@ -6,6 +6,7 @@
 //! Governing context: `context/lib/build_pipeline.md` §Build Cache and §Progress reporting, controls, and logging.
 
 use super::*;
+use crate::ray_traversal::TRACER_EPOCH;
 use crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT;
 use std::sync::mpsc;
 use std::sync::{Condvar, Mutex};
@@ -533,6 +534,7 @@ fn cull_bake_matches_unculled(
                     config.lightmap_density,
                     args.soft_shadow_samples,
                     config.penumbra_floor,
+                    TRACER_EPOCH,
                     layer,
                 ),
             );

@@ -162,6 +162,29 @@ fn geometry_mean_and_saturation_edits_rekey_every_layer_and_the_volume() {
     }
 }
 
+// The volume key folds the tracer epoch itself, not only through the
+// layer keys' shared fingerprint, which stays at the shipped epoch here.
+#[test]
+fn sh_base_volume_key_changes_with_tracer_epoch() {
+    let scene = Scene::new();
+    let lights = room_lights();
+    let key = |tracer_epoch| {
+        scene
+            .volume_key_under(
+                &lights,
+                1.0,
+                super::DEFAULT_BOUNCE_FILL,
+                &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+                tracer_epoch,
+            )
+            .as_filename()
+    };
+
+    let epoch = crate::ray_traversal::TRACER_EPOCH;
+    assert_eq!(key(epoch), scene.volume_key(&lights).as_filename());
+    assert_ne!(key(epoch), key(epoch + 1));
+}
+
 // The fill is not in any layer key but is in the volume's, so a
 // fill change misses the volume, re-shades no layer and moves id 34, warm
 // as cold; −0.0 and 0.0 are one fill.

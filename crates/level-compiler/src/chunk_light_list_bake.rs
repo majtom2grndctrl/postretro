@@ -160,8 +160,9 @@ fn update_bsp_fingerprint(
 /// The fold order is explicit and only includes data that can affect emitted
 /// section bytes: geometry for ray tracing/grid bounds, the point-location BSP
 /// partition and leaf state, portal leaf-pair adjacency, compacted static
-/// lights, and the two bake controls. Dynamic lights and AlphaLights source
-/// indices are excluded because the bake never reads them for its output.
+/// lights, the two bake controls and the tracer epoch, since sample visibility
+/// traces. Dynamic lights and AlphaLights source indices are excluded because
+/// the bake never reads them for its output.
 ///
 /// In the pipeline the BSP tree is the cell view, so cell grouping re-keys the
 /// result and the portal endpoints are cell ids.
@@ -175,16 +176,19 @@ pub(crate) fn chunk_light_list_cache_key(
         cell_size_meters,
         per_chunk_cap,
         CHUNK_LIGHT_LIST_STAGE_VERSION,
+        crate::ray_traversal::TRACER_EPOCH,
     )
 }
 
-/// Version-parameterized key builder used by the cache-epoch regression test.
-/// The production wrapper always supplies the current stage version.
+/// Version- and epoch-parameterized key builder used by the cache-epoch
+/// regression tests. The production wrapper always supplies the current stage
+/// version and `ray_traversal::TRACER_EPOCH`.
 pub(crate) fn chunk_light_list_cache_key_with_version(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,
     per_chunk_cap: u32,
     stage_version: u32,
+    tracer_epoch: u32,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
 
@@ -209,6 +213,7 @@ pub(crate) fn chunk_light_list_cache_key_with_version(
 
     hasher.update(&cell_size_meters.to_le_bytes());
     hasher.update(&per_chunk_cap.to_le_bytes());
+    hasher.update(&tracer_epoch.to_le_bytes());
 
     CacheKey::new(
         CHUNK_LIGHT_LIST_STAGE_ID,
@@ -1585,6 +1590,43 @@ mod tests {
             chunk_light_list_cache_key(&portal_inputs, 8.0, 64).as_filename(),
             "portal leaf-pair adjacency must invalidate the reachability bake"
         );
+    }
+
+    #[test]
+    fn chunk_light_list_key_changes_with_tracer_epoch() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha = AlphaLightsNs::from_lights(&lights);
+        let tree = two_leaf_tree_no_portals();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let key = |tracer_epoch| {
+            chunk_light_list_cache_key_with_version(
+                &inputs,
+                8.0,
+                64,
+                CHUNK_LIGHT_LIST_STAGE_VERSION,
+                tracer_epoch,
+            )
+            .as_filename()
+        };
+
+        let epoch = crate::ray_traversal::TRACER_EPOCH;
+        assert_eq!(
+            key(epoch),
+            chunk_light_list_cache_key(&inputs, 8.0, 64).as_filename(),
+            "the production key folds the shipped epoch"
+        );
+        assert_ne!(key(epoch), key(epoch + 1));
     }
 
     #[test]

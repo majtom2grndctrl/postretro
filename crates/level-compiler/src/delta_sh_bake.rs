@@ -249,6 +249,7 @@ pub(crate) fn bake_delta_sh_volumes_with_visibility(
             probe_spacing,
             light_seed_axes: &light_seed_axes,
             expected_subblock_f16_len: PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE,
+            tracer_epoch: crate::ray_traversal::TRACER_EPOCH,
         },
         &keyed_lights,
         cache,
@@ -1194,6 +1195,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 0,
                 light: &unit,
+                tracer_epoch: crate::ray_traversal::TRACER_EPOCH,
             },
         );
         let mut recolored = authored;
@@ -1211,6 +1213,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 0,
                 light: &unit_radiance_light(&recolored),
+                tracer_epoch: crate::ray_traversal::TRACER_EPOCH,
             },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
@@ -1225,6 +1228,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 0,
                 light: &unit,
+                tracer_epoch: crate::ray_traversal::TRACER_EPOCH,
             },
         );
 

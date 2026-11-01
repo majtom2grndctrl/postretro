@@ -82,7 +82,7 @@ fn grow_box(aabb: &mut Aabb<f32, 3>, pad: f32) {
 /// box holds its primitive's box. The traversal reaches a leaf only through
 /// its ancestors' boxes, so a remembered occluder gated on its leaf box is
 /// one of the traversal's own candidates only while this holds.
-#[cfg(debug_assertions)]
+#[cfg(any(test, debug_assertions))]
 pub(crate) fn assert_parents_contain_children(bvh: &Bvh<f32, 3>, primitives: &[BvhPrimitive]) {
     let holds = |outer: &Aabb<f32, 3>, inner: &Aabb<f32, 3>| {
         (0..3).all(|axis| outer.min[axis] <= inner.min[axis] && inner.max[axis] <= outer.max[axis])

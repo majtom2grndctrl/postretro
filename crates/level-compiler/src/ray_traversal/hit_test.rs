@@ -15,23 +15,24 @@ use super::BoundedRay;
 pub(crate) const TRACER_TOLERANCE_METERS: f32 = 5.0e-4;
 
 /// A bake ray as the watertight test sees it (Woop, Benthin and Wald 2013):
-/// the `f32` origin and direction widened to `f64`, the axis permutation
-/// that makes the direction's largest component z, and the shear that maps
-/// the ray onto that axis. Built once per ray; every triangle test reads it.
+/// the `f32` origin and direction widened to `f64`, and the shear that maps
+/// the ray onto the axis of its direction's largest component. Built once
+/// per ray; every triangle test reads it.
 pub(crate) struct TraceRay {
     origin: Vec3,
     direction: Vec3,
     origin_f64: DVec3,
-    /// Axis indices: `kz` the direction's largest-magnitude component, `kx`
-    /// and `ky` the other two, swapped when that component is negative so a
-    /// triangle's determinant keeps its winding's sign.
-    kx: usize,
-    ky: usize,
-    kz: usize,
-    /// Shear: `d[kx] / d[kz]`, `d[ky] / d[kz]`, `1 / d[kz]`.
-    sx: f64,
-    sy: f64,
-    sz: f64,
+    /// The permutation and shear as three rows: with `kz` the direction's
+    /// largest-magnitude axis and `kx`, `ky` the other two (swapped when that
+    /// component is negative, so a triangle's determinant keeps its
+    /// winding's sign), `e[kx] − (d[kx]/d[kz])·e[kz]`, the same for `ky`, and
+    /// `e[kz]/d[kz]`. A corner's sheared coordinate is its offset from the
+    /// origin dotted with a row: the one and zero coefficients are exact, so
+    /// it rounds as `v[kx] − s·v[kz]` would, and both triangles of a shared
+    /// edge see the same values.
+    row_x: DVec3,
+    row_y: DVec3,
+    row_z: DVec3,
     tolerance: f64,
 }
 
@@ -51,31 +52,46 @@ pub(crate) struct TriangleHit {
 
 impl TraceRay {
     /// `direction` must be non-zero; callers pass a unit vector.
+    #[inline]
     pub(crate) fn new(origin: Vec3, direction: Vec3) -> Self {
         let d = direction.as_dvec3();
         let abs = d.abs();
-        let kz = if abs.x >= abs.y && abs.x >= abs.z {
-            0
-        } else if abs.y >= abs.z {
-            1
-        } else {
-            2
+        // Rows in the permuted frame (x, y, z) = (d[kx], d[ky], d[kz]), then
+        // placed back on the world axes; one arm per `kz`.
+        let rows = |dx: f64, dy: f64, dz: f64| {
+            let (dx, dy) = if dz < 0.0 { (dy, dx) } else { (dx, dy) };
+            [
+                DVec3::new(1.0, 0.0, -(dx / dz)),
+                DVec3::new(0.0, 1.0, -(dy / dz)),
+                DVec3::new(0.0, 0.0, 1.0 / dz),
+            ]
         };
-        let mut kx = (kz + 1) % 3;
-        let mut ky = (kx + 1) % 3;
-        if d[kz] < 0.0 {
-            std::mem::swap(&mut kx, &mut ky);
-        }
+        let swap = |row: DVec3, negative: bool| {
+            if negative {
+                DVec3::new(row.y, row.x, row.z)
+            } else {
+                row
+            }
+        };
+        // kz = x: (kx, ky) = (y, z); kz = y: (z, x); kz = z: (x, y).
+        let [row_x, row_y, row_z] = if abs.x >= abs.y && abs.x >= abs.z {
+            rows(d.y, d.z, d.x)
+                .map(|r| swap(r, d.x < 0.0))
+                .map(|r| DVec3::new(r.z, r.x, r.y))
+        } else if abs.y >= abs.z {
+            rows(d.z, d.x, d.y)
+                .map(|r| swap(r, d.y < 0.0))
+                .map(|r| DVec3::new(r.y, r.z, r.x))
+        } else {
+            rows(d.x, d.y, d.z).map(|r| swap(r, d.z < 0.0))
+        };
         Self {
             origin,
             direction,
             origin_f64: origin.as_dvec3(),
-            kx,
-            ky,
-            kz,
-            sx: d[kx] / d[kz],
-            sy: d[ky] / d[kz],
-            sz: 1.0 / d[kz],
+            row_x,
+            row_y,
+            row_z,
             tolerance: f64::from(tolerance()),
         }
     }
@@ -90,6 +106,7 @@ impl TraceRay {
 
     /// The box query the traversal walks for this ray: the same origin and
     /// direction the hit test reads, bounded at `bound`.
+    #[inline]
     pub(crate) fn query(&self, bound: f32) -> BoundedRay {
         BoundedRay::new(self.origin, self.direction, bound)
     }
@@ -115,16 +132,11 @@ impl TraceRay {
                 barycentric: [1.0 / 3.0; 3],
             });
         }
-        let (kx, ky, kz) = (self.kx, self.ky, self.kz);
-        let a = a.as_dvec3() - self.origin_f64;
-        let b = b.as_dvec3() - self.origin_f64;
-        let c = c.as_dvec3() - self.origin_f64;
-        let ax = a[kx] - self.sx * a[kz];
-        let ay = a[ky] - self.sy * a[kz];
-        let bx = b[kx] - self.sx * b[kz];
-        let by = b[ky] - self.sy * b[kz];
-        let cx = c[kx] - self.sx * c[kz];
-        let cy = c[ky] - self.sy * c[kz];
+        let corners = [a, b, c].map(Vec3::as_dvec3);
+        let [a, b, c] = corners.map(|p| p - self.origin_f64);
+        let (ax, ay) = (a.dot(self.row_x), a.dot(self.row_y));
+        let (bx, by) = (b.dot(self.row_x), b.dot(self.row_y));
+        let (cx, cy) = (c.dot(self.row_x), c.dot(self.row_y));
         // Edge functions, each twice the signed area the ray's projection
         // spans with one edge: u for b→c, v for c→a, w for a→b.
         let u = cx * by - cy * bx;
@@ -140,7 +152,7 @@ impl TraceRay {
             crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
             return None;
         }
-        let scaled_t = self.sz * (u * a[kz] + v * b[kz] + w * c[kz]);
+        let scaled_t = u * a.dot(self.row_z) + v * b.dot(self.row_z) + w * c.dot(self.row_z);
         let (signed_t, abs_det) = if det > 0.0 {
             (scaled_t, det)
         } else {
@@ -152,7 +164,6 @@ impl TraceRay {
         let t = scaled_t / det;
         if !inside {
             let crossing = self.origin_f64 + self.direction.as_dvec3() * t;
-            let corners = [a, b, c].map(|p| p + self.origin_f64);
             if distance_squared_to_triangle(crossing, corners) > self.tolerance * self.tolerance {
                 return None;
             }

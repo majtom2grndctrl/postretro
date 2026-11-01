@@ -3,32 +3,43 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 //! Margin derivation, compact enough to re-check each coefficient. Notation:
-//! u = 2⁻²⁴; a, e1 = fl₃₂(b − a), e2 = fl₃₂(c − a) in index order, as
-//! Möller–Trumbore forms them; N′ = e1 × e2, exact; ρ = ‖e1‖‖e2‖/‖N′‖;
-//! e_T = max(‖e1‖, ‖e2‖); B the hull's box, L = diag(B) ≥ every t_max;
-//! S_T = ‖a − centre(B)‖ + ½L ≥ ‖x − a‖ for every hull point x; θ the ray's
-//! angle to plane(T′), T′ = (a, a + e1, a + e2).
+//! u = 2⁻²⁴ and w = 2⁻⁵³ (`f32` and `f64` unit roundoff); a, b, c the stored
+//! `f32` corners in index order, e1 = b − a, e2 = c − a in `f64`, exact;
+//! N = e1 × e2; ρ = ‖e1‖‖e2‖/‖N‖; e_T = max(‖e1‖, ‖e2‖); q = e_T/‖N‖;
+//! B the hull's box, L = diag(B) ≥ every t_max; S_T = ‖a − centre(B)‖ + ½L ≥
+//! ‖x − a‖ for every hull point x, and R_T = S_T + e_T ≥ ‖v − o‖ for every
+//! corner v and ray origin o in the hull; θ the ray's angle to plane(T); τ
+//! the tracer tolerance ([`TRACER_TOLERANCE_METERS`]).
 //!
-//! - **Accepted-hit residual.** The hit test's det and u, v, t numerators are
-//!   Cramer's rule for o + t·d = a + u·e1 + v·e2, each an `f32` cross then
-//!   dot, off by at most γ₅·Σ|xᵢ|(|y_j z_k| + |y_k z_j|) ≤ γ₅√2‖x‖‖y‖‖z‖
-//!   (Cauchy–Schwarz; any summation order, FMA or not): [`HIT_TEST_ULPS`].
-//!   On an accepted hit (u, v ≥ 0, u + v ≤ 1, 0 < t < t_max), the residual
-//!   r from the triangle point to the ray point has |N′·r| ≤
-//!   5√2u‖e1‖‖e2‖(S_T + L), and |(d × e2)·r|, |(d × e1)·r| bounded alike with
-//!   ‖s‖ ≤ S_T. Forming s = o − a moves o by ≤ u·S_T. Off the normal, the
-//!   triangle point also strays ≤ 4u·e_T past T′ (u + v ≤ 1 + 4u), and T′
-//!   lies within u·e_T of the stored corners.
-//! - **m_N: no ray-angle term, but ρ.** |N′·r|/‖N′‖ bounds the hit point's
-//!   height off plane(T′) by 5√2uρ(S_T + L) + u·S_T. It bounds height, not t,
-//!   so t's 1/sin θ error cancels the 1/sin θ run along the ray. ρ stays: the
-//!   products scale as ‖e1‖‖e2‖, not as ‖N′‖.
-//! - **m_A: the 2° floor.** On any other axis, write r = α·d + β·e1 + γ·e2;
-//!   each coefficient is a residual over |det| = ‖N′‖ sin θ, so the hit point
-//!   lies within 5√2uρ(3S_T + L + ‖e1‖ + ‖e2‖)/sin θ + u(S_T + 5e_T) of the
-//!   stored triangle. That grows without bound as θ → 0 (all three residual
-//!   normals turn perpendicular to d, pinning the line, not the point), so
-//!   it is taken at θ0 ([`SIN_ANGLE_FLOOR`]).
+//! The hit test (`ray_traversal::TraceRay`, Woop et al. 2013 in `f64`)
+//! projects each corner along the ray and shears it onto the ray's axis. An
+//! accepted hit has the ray within 2τ of the projected triangle, whose
+//! diameter the shear stretches at most twice, so every projected coordinate
+//! is at most P = 4e_T + 2τ (P_s = 4e_T for a strict hit, the ray inside).
+//!
+//! - **Rounding.** Each projected coordinate is off by at most 6w·R_T (v − o,
+//!   the shear and its product); an edge function, a 2×2 cross of them, by
+//!   δE ≤ w·P·A with A = 24R_T + 4P; det = ΣE by δdet ≤ w·P(3A + 12P); the
+//!   scaled distance T = s_z·ΣE·v_z by w·√3·R_T·P(3A + 30P). |det| ≥
+//!   ‖N‖ sin θ, the projected area.
+//! - **The accepted point.** Y = o + t·d at the computed t, a point of the
+//!   tested segment. Its height off plane(T) is |t − t*| sin θ, the crossing
+//!   t* exact: H ≤ w·R_T·P(5.2A + 64P)/‖N‖, with no ray-angle term (the
+//!   1/sin θ in t's error cancels the 1/sin θ along the ray), and no τ: a
+//!   tolerance hit still crosses the plane at t*. A strict hit's crossing
+//!   lies within 6e_T·δE/|det| of T in its plane (negative barycentrics
+//!   sum at most 3δE/|det|), and Y within that plus H/sin θ. A tolerance hit
+//!   is accepted only when the computed Y lies within τ of T, so Y lies
+//!   within τ + δ_r, δ_r = 4w(M + R_T) + 20w(e_T + τ)²/τ the rounding of
+//!   Y's coordinates (magnitude M) and of the squared distance.
+//! - **m_N.** Height alone: m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)], H_s at
+//!   P_s for strict hits, H at P (capped by the tolerance check) for
+//!   tolerance hits.
+//! - **m_A: τ and the 2° floor.** On any other axis the in-plane reach adds:
+//!   m_A(a) = κ[τ + δ_r + w·P_s(6e_T·A_s + R_T(5.2A_s + 64P_s))/(‖N‖ sin θ0) +
+//!   e_H(a)], A_s = 24R_T + 4P_s, taken at θ0 ([`SIN_ANGLE_FLOOR`]): the
+//!   strict term grows without bound as θ → 0. With P_s = 4e_T it is
+//!   (w·q/sin θ0)(500R_T² + 2000e_T·R_T + 400e_T²), coefficients rounded up.
 //! - **Sampler endpoints.** The hull is exact over the sampler's `f32`
 //!   inputs. The `f32` segment ends stray per world axis by ε_i = 10u·R_i +
 //!   6u·L ([`POSITION_ULPS`], [`LENGTH_ULPS`]): 7u·R_i for the texel centre,
@@ -37,50 +48,48 @@
 //!   larger of the chart frame's terms ([`Hull::terms`]) and B's coordinates.
 //!   Along a unit axis this adds e_H(a) = Σ|aᵢ|ε_i ≤ ‖ε‖. A sampler change
 //!   that adds an `f32` operation to a segment end re-counts ε_i.
-//! - **κ.** [`KAPPA`] multiplies each sum, for second-order terms (relative
-//!   < 1e-6), ‖d‖ ≠ 1 and the `f64` evaluation of gaps and margins. The
-//!   proven factor is 1 + 1e-5; the rest guards an operation miscount.
+//! - **κ.** [`KAPPA`] multiplies each sum, for second-order terms, ‖d‖ ≠ 1
+//!   and the `f64` evaluation of gaps and margins. The rest guards an
+//!   operation miscount.
 //!
-//! So m_N = κ[5√2uρ(S_T + L) + u·S_T + e_H(n̂′)] and m_A(a) = κ[5√2uρ(3S_T +
-//! L + ‖e1‖ + ‖e2‖)/sin θ0 + u(S_T + 5e_T) + e_H(a)], and a gap at or past
-//! its margin admits no accepted hit.
+//! A gap at or past its margin admits no accepted hit.
 //!
-//! **Query growth.** A triangle at box distance D has S_T ≤ D + 2e_T + diag.
-//! With L = diag, 3S_T + L + ‖e1‖ + ‖e2‖ ≤ 3D + 4·diag + 8e_T and S_T + 5e_T
-//! ≤ D + diag + 7e_T. With P = 5√2u/sin θ0, m_A ≤ D once D ≥ κ[P(4ρ·diag +
-//! 8ρe_T) + u(diag + 7e_T) + ‖ε‖] / (1 − κ(3Pρ + u)), the `shrink`
-//! denominator. That is monotone in ρ, ρe_T and e_T, so the map's maxima
-//! bound every triangle under the cap.
+//! **Query growth.** A triangle at box distance D has R_T ≤ D + K, K =
+//! 3e_T + diag. So m_A ≤ κ[c₀ + c₁R + c₂R²], R = D + K, with the map's
+//! maxima of q, q·e_T, q·e_T² and e_T: c₂ = 500w·q/sin θ0, c₁ = 4w +
+//! 2000w·(q·e_T)/sin θ0, c₀ = τ + 4wM + 20w(e_T + τ)²/τ + 400w·(q·e_T²)/sin θ0 +
+//! ‖ε‖. m_A ≤ D between the roots of κc₂R² + (κc₁ − 1)R + κc₀ + K; the
+//! lower is the growth, and the upper must reach past every triangle the
+//! map holds, or the query cannot bound the candidates and the cull stays
+//! off for the light.
 //!
 //! **Accepted gaps.** Rays under θ0 fall outside m_A, and a sliver past
-//! [`SHAPE_CAP`] (or with N′ = 0) outside the query is never tested; inside
+//! [`SHAPE_CAP`] (or with N = 0) outside the query is never tested; inside
 //! it, such a sliver blocks. Verify mode in tests, which re-traces every
 //! clear tile, is the oracle.
-
-use std::f64::consts::SQRT_2;
 
 use glam::{DVec3, Vec3};
 
 use super::{primitive_triangles, triangle_points};
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
+use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 /// `f32` unit roundoff, 2⁻²⁴.
 pub(super) const UNIT_ROUNDOFF: f64 = 1.0 / 16_777_216.0;
+
+/// `f64` unit roundoff, 2⁻⁵³.
+pub(super) const F64_ROUNDOFF: f64 = f64::EPSILON / 2.0;
 
 /// Safety factor on every margin. It covers second-order rounding terms, a
 /// ray direction a few ulps off unit length, and the `f64` evaluation of
 /// gaps and margins, with room for an operation miscount.
 const KAPPA: f64 = 2.0;
 
-/// Ulps per Möller–Trumbore numerator: γ₅ for its cross-then-dot, and √2
-/// from bounding that product's terms by Cauchy–Schwarz.
-const HIT_TEST_ULPS: f64 = 5.0 * SQRT_2;
-
-/// Sine of the ray-angle floor, 2°. Off a triangle's own normal, a hit's
-/// in-plane reach grows as 1/sin θ, so margins on other axes hold only for
-/// rays at least this steep against the triangle's plane; shallower rays are
-/// the cull's accepted gap.
+/// Sine of the ray-angle floor, 2°. Off a triangle's own normal, a strict
+/// hit's in-plane reach grows as 1/sin θ, so margins on other axes hold only
+/// for rays at least this steep against the triangle's plane; shallower rays
+/// are the cull's accepted gap.
 pub(super) const SIN_ANGLE_FLOOR: f64 = 0.034_899_496_702_500_97;
 
 /// Largest shape term ρ = ‖e1‖‖e2‖ / ‖e1 × e2‖ (one over the sine of the
@@ -98,15 +107,22 @@ const POSITION_ULPS: f64 = 10.0;
 /// length, direction, origin, `max_distance`, t) adds to the same bound.
 const LENGTH_ULPS: f64 = 6.0;
 
-/// Map-wide shape maxima the candidate query reads: ρ, ρ·e_T and e_T (e_T
-/// the longer of a triangle's first two edges) over every BVH triangle with
-/// ρ ≤ [`SHAPE_CAP`]. Built once per bake and shared read-only; no cache
-/// key holds it, since the cull changes no byte.
+/// The tolerance τ, as the margins read it.
+fn tolerance() -> f64 {
+    f64::from(TRACER_TOLERANCE_METERS)
+}
+
+/// Map-wide maxima the candidate query reads, over every BVH triangle with
+/// ρ ≤ [`SHAPE_CAP`]: q = e_T/‖N‖, q·e_T, q·e_T² and e_T, and the largest
+/// coordinate magnitude of any corner. Built once per bake and shared
+/// read-only; no cache key holds it, since the cull changes no byte.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct ShaftScene {
-    pub(super) shape: f64,
-    pub(super) shape_edge: f64,
+    pub(super) reach: f64,
+    pub(super) reach_edge: f64,
+    pub(super) reach_edge2: f64,
     pub(super) edge: f64,
+    pub(super) extent: f64,
 }
 
 impl ShaftScene {
@@ -117,32 +133,57 @@ impl ShaftScene {
                 if let Some(candidate) = Candidate::of(triangle_points(geometry, tri))
                     && candidate.shape <= SHAPE_CAP
                 {
-                    scene.shape = scene.shape.max(candidate.shape);
-                    scene.shape_edge = scene
-                        .shape_edge
-                        .max(candidate.shape * candidate.longest_edge);
-                    scene.edge = scene.edge.max(candidate.longest_edge);
+                    scene.include(&candidate);
                 }
             }
         }
         scene
     }
 
+    pub(super) fn include(&mut self, candidate: &Candidate) {
+        let q = candidate.reach;
+        let e = candidate.longest_edge;
+        self.reach = self.reach.max(q);
+        self.reach_edge = self.reach_edge.max(q * e);
+        self.reach_edge2 = self.reach_edge2.max(q * e * e);
+        self.edge = self.edge.max(e);
+        for corner in candidate.corners {
+            self.extent = self.extent.max(corner.abs().max_element());
+        }
+    }
+
     /// G: how far past the hull's box a triangle can lie and still lack the
-    /// separation its axis margin asks. A triangle at box distance D has
-    /// S_T ≤ D + 2e_T + diag, so D ≥ m_A once D clears this bound with the
-    /// map's largest shape terms. A triangle past the cap is the accepted
-    /// sliver gap outside the query.
+    /// separation its axis margin asks, or `None` when no finite query
+    /// bounds the candidates. A triangle at box distance D has R_T ≤ D + K,
+    /// and m_A ≤ D between the roots of the module docs' quadratic; the upper
+    /// root must lie past the farthest any corner of the map can be from the
+    /// box. A triangle past the cap is the accepted sliver gap outside the
+    /// query.
     pub(super) fn query_growth(&self, bounds: &HullBounds) -> Option<f64> {
-        let per_shape = HIT_TEST_ULPS * UNIT_ROUNDOFF / SIN_ANGLE_FLOOR;
-        let shrink = 1.0 - KAPPA * (3.0 * per_shape * self.shape + UNIT_ROUNDOFF);
-        let diag = bounds.diag;
-        let growth = KAPPA
-            * (per_shape * (4.0 * self.shape * diag + 8.0 * self.shape_edge)
-                + UNIT_ROUNDOFF * (diag + 7.0 * self.edge)
-                + bounds.sampler_error.length())
-            / shrink;
-        (shrink > 0.0 && growth.is_finite()).then_some(growth)
+        let (w, tau) = (F64_ROUNDOFF, tolerance());
+        let k = 3.0 * self.edge + bounds.diag;
+        let c2 = 500.0 * w * self.reach / SIN_ANGLE_FLOOR;
+        let c1 = 4.0 * w + 2000.0 * w * self.reach_edge / SIN_ANGLE_FLOOR;
+        let c0 = tau
+            + 4.0 * w * bounds.magnitude
+            + 20.0 * w * (self.edge + tau).powi(2) / tau
+            + 400.0 * w * self.reach_edge2 / SIN_ANGLE_FLOOR
+            + bounds.sampler_error.length();
+        let (a, b, c) = (KAPPA * c2, 1.0 - KAPPA * c1, KAPPA * c0 + k);
+        let disc = b * b - 4.0 * a * c;
+        if !(b > 0.0 && disc >= 0.0 && disc.is_finite()) {
+            return None;
+        }
+        // The lower root, in the form that keeps precision as a → 0.
+        let low = 2.0 * c / (b + disc.sqrt());
+        let high = if a > 0.0 {
+            (b + disc.sqrt()) / (2.0 * a)
+        } else {
+            f64::INFINITY
+        };
+        let farthest = 3.0_f64.sqrt() * (self.extent + bounds.magnitude) + k;
+        let growth = low - k;
+        (growth.is_finite() && high >= farthest).then_some(growth.max(0.0))
     }
 }
 
@@ -222,6 +263,9 @@ pub(super) struct HullBounds {
     /// ε_i: how far, per world axis, an `f32` segment end the sampler forms
     /// can stray from its exact place in the hull.
     sampler_error: DVec3,
+    /// M: the largest coordinate magnitude of the hull's terms and box, the
+    /// scale of a ray point's own `f64` rounding.
+    magnitude: f64,
     /// The mean of the slab's eight corners: the spine's start, the edge
     /// planes' first point and the shaft direction's base. Computed once
     /// per tile.
@@ -249,6 +293,7 @@ impl HullBounds {
             hi,
             diag,
             sampler_error,
+            magnitude: magnitude.max_element(),
             slab_centre,
         }
     }
@@ -287,21 +332,36 @@ impl HullBounds {
         tri.corners[0].distance((self.lo + self.hi) * 0.5) + 0.5 * self.diag
     }
 
-    /// (g_N, m_N): the gap between the hull and the plane of the triangle's
-    /// `f32` edges along its own normal, and the margin that gap must reach,
-    /// with `reach` its [`Self::reach`]. The hit test's height error along
-    /// N′ carries no ray-angle term: the 1/sin θ in its distance error
-    /// cancels the 1/sin θ along the ray.
+    /// (g_N, m_N): the gap between the hull and the plane of the triangle
+    /// along its own normal, and the margin that gap must reach, with
+    /// `reach` its [`Self::reach`]. The accepted point's height off the plane
+    /// comes from t's error alone, whose 1/sin θ cancels the 1/sin θ along
+    /// the ray, so no ray-angle term enters, and τ only caps an
+    /// ill-conditioned tolerance hit's height.
     pub(super) fn normal_certificate(&self, tri: &Candidate, reach: f64) -> (f64, f64) {
         let axis = tri.normal / tri.normal.length();
         let offset = axis.dot(tri.corners[0]);
         let (lo, hi) = self.hull.range(axis);
         let gap = (offset - hi).max(lo - offset);
-        let margin = KAPPA
-            * (HIT_TEST_ULPS * UNIT_ROUNDOFF * tri.shape * (reach + self.diag)
-                + UNIT_ROUNDOFF * reach
-                + self.spread(axis));
+        let r_t = reach + tri.longest_edge;
+        let tau = tolerance();
+        let height = |p: f64| {
+            let a = 24.0 * r_t + 4.0 * p;
+            F64_ROUNDOFF * r_t * p * (5.2 * a + 64.0 * p) / tri.area
+        };
+        let strict = height(4.0 * tri.longest_edge);
+        let tolerant =
+            height(4.0 * tri.longest_edge + 2.0 * tau).min(tau + self.point_rounding(tri, r_t));
+        let margin = KAPPA * (strict + tolerant + self.spread(axis));
         (gap, margin)
+    }
+
+    /// δ_r: how far the hit test's computed point and its squared distance
+    /// to the triangle can round, for a triangle `r_t` from the origin.
+    fn point_rounding(&self, tri: &Candidate, r_t: f64) -> f64 {
+        let tau = tolerance();
+        F64_ROUNDOFF
+            * (4.0 * (self.magnitude + r_t) + 20.0 * (tri.longest_edge + tau).powi(2) / tau)
     }
 
     /// (g_a, m_A) along `axis`, normalized here; `None` for a zero or
@@ -332,11 +392,16 @@ impl HullBounds {
     }
 
     /// m_A(T, a) less its e_H(a) term, which alone depends on the axis, with
-    /// `reach` its [`Self::reach`].
+    /// `reach` its [`Self::reach`]: τ, the accepted point's rounding, and a
+    /// strict hit's in-plane reach at the angle floor.
     pub(super) fn axis_margin_base(&self, tri: &Candidate, reach: f64) -> f64 {
-        HIT_TEST_ULPS * UNIT_ROUNDOFF * tri.shape * (3.0 * reach + self.diag + tri.edge_sum)
-            / SIN_ANGLE_FLOOR
-            + UNIT_ROUNDOFF * (reach + 5.0 * tri.longest_edge)
+        let r_t = reach + tri.longest_edge;
+        let e = tri.longest_edge;
+        let p = 4.0 * e;
+        let a = 24.0 * r_t + 4.0 * p;
+        let strict = F64_ROUNDOFF * p * (6.0 * e * a + r_t * (5.2 * a + 64.0 * p))
+            / (tri.area * SIN_ANGLE_FLOOR);
+        tolerance() + self.point_rounding(tri, r_t) + strict
     }
 
     /// Whether some tested axis separates `tri` from the hull by at least
@@ -423,35 +488,41 @@ impl HullAxis {
 }
 
 /// One candidate triangle as the hit test sees it: its stored `f32`
-/// corners in index order, and the edges Möller–Trumbore forms from them.
+/// corners in index order, widened to `f64`, and its edges and normal,
+/// exact there.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Candidate {
     pub(super) corners: [DVec3; 3],
-    /// N′ = e1 × e2, exact over the `f32`-rounded edges.
+    /// N = e1 × e2.
     pub(super) normal: DVec3,
-    /// ‖e1‖ + ‖e2‖.
-    pub(super) edge_sum: f64,
+    /// ‖N‖.
+    pub(super) area: f64,
     /// e_T = max(‖e1‖, ‖e2‖).
     pub(super) longest_edge: f64,
-    /// ρ = ‖e1‖‖e2‖ / ‖N′‖.
+    /// ρ = ‖e1‖‖e2‖ / ‖N‖.
     pub(super) shape: f64,
+    /// q = e_T / ‖N‖: the strict hit's in-plane reach per unit of rounding.
+    pub(super) reach: f64,
 }
 
 impl Candidate {
-    /// `None` when the triangle has no certificate: a zero or non-finite N′.
+    /// `None` when the triangle has no certificate: a zero or non-finite N.
     pub(super) fn of([a, b, c]: [Vec3; 3]) -> Option<Self> {
-        let e1 = (b - a).as_dvec3();
-        let e2 = (c - a).as_dvec3();
+        let corners = [a, b, c].map(Vec3::as_dvec3);
+        let e1 = corners[1] - corners[0];
+        let e2 = corners[2] - corners[0];
         let normal = e1.cross(e2);
         let area = normal.length();
         let (l1, l2) = (e1.length(), e2.length());
         let shape = l1 * l2 / area;
+        let longest_edge = l1.max(l2);
         (area > 0.0 && area.is_finite() && shape.is_finite()).then_some(Self {
-            corners: [a.as_dvec3(), b.as_dvec3(), c.as_dvec3()],
+            corners,
             normal,
-            edge_sum: l1 + l2,
-            longest_edge: l1.max(l2),
+            area,
+            longest_edge,
             shape,
+            reach: longest_edge / area,
         })
     }
 }

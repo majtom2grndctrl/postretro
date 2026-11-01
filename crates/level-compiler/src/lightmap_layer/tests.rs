@@ -10,6 +10,7 @@ use crate::lightmap_bake::{
     BlockLayout, CutParent, bake_monolithic_atlas, bake_monolithic_atlas_controlled, prepare_atlas,
 };
 use crate::map_data::{FalloffModel, ShadowType};
+use crate::ray_traversal::TRACER_EPOCH;
 use crate::reporter::StageProgress;
 use crate::texel_footprint::{PENUMBRA_FLOOR_DEFAULT, TexelFrame, TexelSampler};
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
@@ -898,6 +899,7 @@ fn layer_input_hash_changes_when_light_moves() {
         DENSITY,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        TRACER_EPOCH,
         0,
     );
     let h_moved = layer_input_hash(
@@ -908,6 +910,7 @@ fn layer_input_hash_changes_when_light_moves() {
         DENSITY,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        TRACER_EPOCH,
         0,
     );
     assert_ne!(
@@ -947,10 +950,12 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
         expected.update(&AREA_SAMPLES.to_le_bytes());
         expected.update(&[0]);
         expected.update(&atlas_layout_fingerprint(&shared));
+        expected.update(&TRACER_EPOCH.to_le_bytes());
         expected.update(&target_layer.to_le_bytes());
         let expected = *expected.finalize().as_bytes();
 
-        let context = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
+        let context =
+            LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false, TRACER_EPOCH);
         let prefix = context.light_prefix(&light, &prims, &geo);
         assert_eq!(LayerKeyContext::layer_hash(&prefix, target_layer), expected);
         assert_eq!(
@@ -962,6 +967,7 @@ fn layer_key_context_reproduces_the_layer_input_hash_layout() {
                 DENSITY,
                 AREA_SAMPLES,
                 false,
+                TRACER_EPOCH,
                 target_layer
             ),
             expected
@@ -1035,6 +1041,7 @@ fn target_layer_partitions_are_disjoint_and_rekeyed() {
                 DENSITY,
                 AREA_SAMPLES,
                 PENUMBRA_FLOOR_DEFAULT,
+                TRACER_EPOCH,
                 target_layer,
             ),
         )
@@ -1345,8 +1352,19 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
         atlas_height: prepared.atlas_height,
         layout: &prepared.layout,
     };
-    let hash =
-        |on: bool| layer_input_hash(&light, &shared, &prims, &geo, DENSITY, AREA_SAMPLES, on, 0);
+    let hash = |on: bool| {
+        layer_input_hash(
+            &light,
+            &shared,
+            &prims,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+            on,
+            TRACER_EPOCH,
+            0,
+        )
+    };
     assert_ne!(hash(true), hash(false));
     let section = |on: bool| {
         section_input_hash(
@@ -1357,9 +1375,72 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
             1,
             TEXEL_STEP_THRESHOLD,
             &[],
+            TRACER_EPOCH,
         )
     };
     assert_ne!(section(true), section(false));
+}
+
+#[test]
+fn lightmap_layer_key_changes_with_tracer_epoch() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let (_, prims, _) = build_bvh(&geo).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    let hash = |tracer_epoch| {
+        layer_input_hash(
+            &light,
+            &shared,
+            &prims,
+            &geo,
+            DENSITY,
+            AREA_SAMPLES,
+            PENUMBRA_FLOOR_DEFAULT,
+            tracer_epoch,
+            0,
+        )
+    };
+    assert_ne!(hash(TRACER_EPOCH), hash(TRACER_EPOCH + 1));
+}
+
+#[test]
+fn lightmap_section_key_changes_with_tracer_epoch() {
+    let mut geo = two_quad_geometry();
+    let light = point_light([0.5, 1.0, 0.5], 5.0);
+    let static_lights =
+        crate::light_namespaces::StaticBakedLights::from_lights(std::slice::from_ref(&light));
+    let prepared = prepare_atlas(&mut geo, &static_lights, DENSITY, &[]).unwrap();
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+    // The same layer hashes on both sides: the section folds the epoch
+    // itself, not only through them.
+    let section = |tracer_epoch| {
+        section_input_hash(
+            [[0x5a; 32]].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            1,
+            TEXEL_STEP_THRESHOLD,
+            &[],
+            tracer_epoch,
+        )
+    };
+    assert_ne!(section(TRACER_EPOCH), section(TRACER_EPOCH + 1));
 }
 
 // Regression: the cut-face estimate let a zero-range light reach every box,
@@ -1409,6 +1490,7 @@ fn section_key_folds_the_cut_map() {
             1,
             TEXEL_STEP_THRESHOLD,
             cut_parents,
+            TRACER_EPOCH,
         )
     };
     let cut = CutParent {
@@ -1465,11 +1547,11 @@ fn footprint_padding_follows_the_charts_each_light_reaches() {
     assert_eq!(radius(0), DENSITY);
     assert_eq!(radius(1), 2.0 * DENSITY);
 
-    let on = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, true);
+    let on = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, true, TRACER_EPOCH);
     assert_eq!(on.footprint_radius(&fine_only), radius(0));
     assert_eq!(on.footprint_radius(&coarse_only), radius(1));
     assert_eq!(on.footprint_radius(&both), radius(1));
-    let off = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false);
+    let off = LayerKeyContext::new(&shared, &geo, DENSITY, AREA_SAMPLES, false, TRACER_EPOCH);
     for light in &lights {
         assert_eq!(off.footprint_radius(light), 0.0);
     }
@@ -1509,6 +1591,7 @@ fn layer_key(
         DENSITY,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        TRACER_EPOCH,
         0,
     );
     CacheKey::new("lightmap_layer", LAYER_FORMAT_VERSION, &h)
@@ -1980,6 +2063,7 @@ fn section_key(
         crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
         TEXEL_STEP_THRESHOLD,
         &[],
+        TRACER_EPOCH,
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
 }
@@ -2026,6 +2110,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             2,
             TEXEL_STEP_THRESHOLD,
             &[],
+            TRACER_EPOCH,
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -2039,6 +2124,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             1,
             TEXEL_STEP_THRESHOLD,
             &[],
+            TRACER_EPOCH,
         ),
     );
     assert_ne!(
@@ -2182,6 +2268,7 @@ fn layer_input_hashes(
                     DENSITY,
                     AREA_SAMPLES,
                     PENUMBRA_FLOOR_DEFAULT,
+                    TRACER_EPOCH,
                     target_layer,
                 )
             })
@@ -2551,6 +2638,7 @@ fn section_key_changes_on_add_remove_and_reorder() {
         DENSITY,
         AREA_SAMPLES,
         PENUMBRA_FLOOR_DEFAULT,
+        TRACER_EPOCH,
         0,
     ));
     assert_ne!(
@@ -2614,6 +2702,7 @@ fn section_key_changes_when_soft_shadow_samples_change() {
                 DENSITY,
                 samples_a,
                 PENUMBRA_FLOOR_DEFAULT,
+                TRACER_EPOCH,
                 0,
             )
         })
@@ -2629,6 +2718,7 @@ fn section_key_changes_when_soft_shadow_samples_change() {
                 DENSITY,
                 samples_b,
                 PENUMBRA_FLOOR_DEFAULT,
+                TRACER_EPOCH,
                 0,
             )
         })

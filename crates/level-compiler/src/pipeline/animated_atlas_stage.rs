@@ -35,7 +35,11 @@ pub(super) fn bake_or_load_weight_maps(
 ) -> anyhow::Result<WeightMapBake> {
     debug_assert_eq!(animated_lights.len(), wm_inputs.lights.len());
     let animated_light_chunks_section = wm_inputs.chunk_section;
-    let wm_key = weight_map_cache_key(wm_inputs, final_lightmap_density);
+    let wm_key = weight_map_cache_key(
+        wm_inputs,
+        final_lightmap_density,
+        crate::ray_traversal::TRACER_EPOCH,
+    );
     // Tested every compile, warm or cold, on the cut geometry the stage
     // bakes, and warned here once per light: the flags read only the keyed
     // lights and geometry, so a cached entry was baked under the same ones.
@@ -153,10 +157,12 @@ pub(super) fn warn_embedded_emitters(
 /// block-local texels, so the layout fingerprint (placements and the
 /// cell-block table) is folded too. The stored report names a cut face by its
 /// pre-cut index and owns pairs by cut segment, so the cut map is folded as
-/// well.
+/// well. Last comes `tracer_epoch` (`ray_traversal::TRACER_EPOCH`): the face
+/// bake and the stored report's texel-step check both trace.
 fn weight_map_cache_key(
     wm_inputs: &WeightMapInputs<'_>,
     final_lightmap_density: f32,
+    tracer_epoch: u32,
 ) -> cache::CacheKey {
     let layout_fingerprint = atlas_layout_fingerprint(&SharedAtlas {
         charts: wm_inputs.face_charts,
@@ -180,6 +186,7 @@ fn weight_map_cache_key(
     buf.push(u8::from(wm_inputs.penumbra_floor));
     buf.extend_from_slice(&wm_inputs.step_threshold.to_bits().to_le_bytes());
     buf.extend_from_slice(&cut_map_key_bytes(wm_inputs.cut_parents));
+    buf.extend_from_slice(&tracer_epoch.to_le_bytes());
     cache::CacheKey::new(
         "animated_lm_weight_maps",
         animated_light_weight_maps::STAGE_VERSION,

@@ -3,7 +3,7 @@
 
 use std::cell::Cell;
 
-use bvh::aabb::IntersectsAabb;
+use bvh::aabb::{Aabb, IntersectsAabb};
 use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::Bvh;
 use glam::Vec3;
@@ -32,18 +32,24 @@ pub(crate) fn segment_clear(
 }
 
 /// A remembered occluder: the triangle that last blocked a segment, by its
-/// first index-buffer offset, and the BVH leaf node that holds it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// first index-buffer offset, and the box the tree stores for the leaf that
+/// holds it, copied when it is remembered so the gate reads no tree nodes.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Occluder {
-    leaf: u32,
+    leaf_box: Aabb<f32, 3>,
     triangle: u32,
 }
 
 impl Occluder {
-    /// Triangle `triangle` of `prim`, a primitive of the tree it was built in.
-    pub(crate) fn new(prim: &BvhPrimitive, triangle: usize) -> Self {
+    /// Triangle `triangle` of `prim`, a primitive of `bvh`.
+    pub(crate) fn new(
+        bvh: &Bvh<f32, 3>,
+        primitives: &[BvhPrimitive],
+        prim: &BvhPrimitive,
+        triangle: usize,
+    ) -> Self {
         Self {
-            leaf: prim.bh_node_index() as u32,
+            leaf_box: leaf_box(bvh, primitives, prim.bh_node_index()),
             triangle: triangle as u32,
         }
     }
@@ -82,8 +88,7 @@ pub(crate) fn segment_clear_remembering(
     };
     let query = ray.query(max_distance);
     if let Some(occluder) = last_occluder.get()
-        && (cache_gate_off()
-            || query.intersects_aabb(&leaf_box(bvh, primitives, occluder.leaf as usize)))
+        && (cache_gate_off() || query.intersects_aabb(&occluder.leaf_box))
         && blocks(occluder.triangle as usize)
     {
         return false;
@@ -92,7 +97,7 @@ pub(crate) fn segment_clear_remembering(
         #[cfg(test)]
         crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
         if let Some(tri) = primitive_triangles(prim).find(|&tri| blocks(tri)) {
-            last_occluder.set(Some(Occluder::new(prim, tri)));
+            last_occluder.set(Some(Occluder::new(bvh, primitives, prim, tri)));
             return false;
         }
     }
@@ -148,6 +153,7 @@ pub(crate) fn without_cache_gate<R>(work: impl FnOnce() -> R) -> R {
 
 /// The ray [`segment_clear`] traces for `from → to` and its far bound, or
 /// `None` for a segment too short to hold one.
+#[inline]
 fn segment_ray(from: Vec3, to: Vec3) -> Option<(TraceRay, f32)> {
     let delta = to - from;
     let length = delta.length();

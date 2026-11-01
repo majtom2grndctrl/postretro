@@ -191,7 +191,6 @@ fn a_fixture_map_with_no_cut_traces_a_padded_tree() {
 }
 
 /// A parent whose stored box omits a sliver of one child's contents.
-#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "does not hold")]
 fn a_parent_box_omitting_a_child_sliver_trips_the_containment_assertion() {
@@ -273,7 +272,12 @@ fn assert_cache_independent(scene: &Scene, from: Vec3, to: Vec3) -> bool {
     );
     for prim in &scene.primitives {
         for tri in primitive_triangles(prim) {
-            let cached = Cell::new(Some(Occluder::new(prim, tri)));
+            let cached = Cell::new(Some(Occluder::new(
+                &scene.bvh,
+                &scene.primitives,
+                prim,
+                tri,
+            )));
             assert_eq!(
                 segment_clear_remembering(
                     &scene.bvh,
@@ -397,6 +401,8 @@ fn cached_sliver_past_the_prune_limit_answers_as_an_empty_cache() {
             .expect("the sliver's primitive");
         let cached = || {
             Cell::new(Some(Occluder::new(
+                &scene.bvh,
+                &scene.primitives,
                 sliver_prim,
                 sliver_prim.index_offset as usize,
             )))
@@ -465,7 +471,12 @@ fn segment_short_of_a_box_tests_none_of_its_triangles() {
         });
         counts.shadow_trace.triangle_tests
     };
-    let far_cached = Some(Occluder::new(far_prim, far_prim.index_offset as usize));
+    let far_cached = Some(Occluder::new(
+        &scene.bvh,
+        &scene.primitives,
+        far_prim,
+        far_prim.index_offset as usize,
+    ));
     assert_eq!(tests(None, true), 0);
     assert_eq!(tests(far_cached, true), 0);
     assert_eq!(tests(far_cached, false), 1, "ungated, the cache tests it");

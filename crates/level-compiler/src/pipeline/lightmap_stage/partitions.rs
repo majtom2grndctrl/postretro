@@ -88,6 +88,7 @@ pub(super) fn layer_key_prefixes(
         density,
         area_sample_count,
         penumbra_floor,
+        crate::ray_traversal::TRACER_EPOCH,
     );
     let mut prefixes = Vec::with_capacity(layer_lights.len());
     for lights in layer_lights.chunks(window.max(1)) {

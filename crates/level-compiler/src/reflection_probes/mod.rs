@@ -347,7 +347,13 @@ fn bake_or_load_with(
     }
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(inputs, &probes, &exclusions, constants)?;
+    let key = cache_key(
+        inputs,
+        &probes,
+        &exclusions,
+        constants,
+        crate::ray_traversal::TRACER_EPOCH,
+    )?;
     if let Some((section, reports)) =
         stage_cache
             .and_then(|cache| cache.get(&key))

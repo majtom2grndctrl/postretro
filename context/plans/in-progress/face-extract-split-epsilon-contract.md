@@ -15,7 +15,7 @@ Evidence is in `context/plans/drafts/lightmap-stage-sizing/leak-diagnosis-findin
 
 ## Invariants
 
-- A cached bake must not serve geometry extracted at the old tolerance. Whatever cache key covers face extraction gets bumped.
+- A cached bake must not serve geometry extracted at the old tolerance. *Amended after review:* face extraction itself is uncached, and every downstream cache key folds the extracted geometry (or, for cell visibility and residency, everything it reads), so old-tolerance entries miss on their own. No epoch bump is needed.
 - No spike instrumentation lands. The spike's `POSTRETRO_FACE_SPLIT_EPS` override and counters stay on the spike branch.
 - The epsilon at the polygon-clipping site that "must not round off real edges" (`face_extract.rs`, the comment near the second epsilon) keeps its meaning. Don't merge the two constants unless they are the same quantity.
 
@@ -27,7 +27,7 @@ Single track: `crates/level-compiler/` (face extraction, its tests, the cache ke
 
 | # | Check | Expected |
 |---|---|---|
-| 1 | `cargo test -p postretro-level-compiler --bin prl-build face_extract` | New fixture(s) pass with N > 0 tests; at least one fixture fails against the 0.1 m tolerance (a brush side with a sub-10 cm exposed strip keeps its face) |
+| 1 | `cargo test -p postretro-level-compiler --bin prl-build face_extract` | New fixture(s) pass with N > 0 tests; the axis-aligned and sloped strip fixtures both fail against the 0.1 m tolerance (a brush side with a sub-10 cm exposed strip keeps its face) |
 | 2 | `grep -rn '0\.1' crates/level-compiler/src/partition/face_extract.rs` | No split-tolerance literal remains |
 | 3 | Cold `--release` bakes of `movement-feel` and `stress-warren-hallway-inspection-mini`: compare the watertightness open-edge warning count to `main` | Count drops; report before and after |
 | 4 | Manual-visual (owner) | On movement-feel, where the sloped brushes meet the wall under the ceiling, no see-through gap |

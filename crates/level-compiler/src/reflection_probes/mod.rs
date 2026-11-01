@@ -84,7 +84,7 @@ use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
-use hit::SceneTracer;
+pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
 use roster::{check_roster, references};

@@ -102,9 +102,9 @@ fn pillar_room(top: f64) -> CaptureFixture {
 // Stage flow
 // ---------------------------------------------------------------------------
 
-// Placement and the cap never see exclusion. The pillar fixture's derived box
-// changes when the pillar is deleted, yet the filtered and unfiltered builds
-// place the same probes, boxes, points and bindings; only the capture
+// Placement and the cap never see exclusion. The pillar fixture's capture
+// point changes when the pillar is deleted, yet the filtered and unfiltered
+// builds place the same probes, boxes, points and bindings; only the capture
 // differs.
 #[test]
 fn placed_probes_are_identical_with_the_filter_on_and_off() {
@@ -115,9 +115,8 @@ fn placed_probes_are_identical_with_the_filter_on_and_off() {
         only_probe(&deleted.world.place().unwrap()).clone(),
     );
     assert_ne!(
-        (with.box_min, with.box_max),
-        (without.box_min, without.box_max),
-        "deleting the pillar moves the derived box"
+        with.capture_point, without.capture_point,
+        "deleting the pillar moves the capture point"
     );
     let pillar = room.brush_at(IN_PILLAR);
     assert_eq!(stage_sets(&room), vec![vec![pillar]]);

@@ -424,7 +424,13 @@ impl<'a> ProbeExclusion<'a> {
     ) -> Crossing {
         let volumes = self.brushes.volumes;
         let mut reached = entry;
-        let mut leaves = self.span(self.excluded[slot], origin, direction).1;
+        let (enters, mut leaves) = self.span(self.excluded[slot], origin, direction);
+        // A tolerance hit on a face the ray passes beside, within τ of the
+        // hull but never inside it (`ray_traversal::TRACER_TOLERANCE_METERS`):
+        // there is no hull to cross, so the ray goes on past the hit.
+        if enters > leaves {
+            return Crossing::Exit(entry);
+        }
         for _ in 0..self.excluded.len() {
             let exit = leaves.max(reached);
             if !exit.is_finite() {

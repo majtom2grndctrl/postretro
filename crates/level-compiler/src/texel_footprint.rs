@@ -616,6 +616,8 @@ fn footprint_visibility(
 mod clip_reach;
 mod embedded_emitter;
 mod pairing;
+#[cfg(test)]
+pub(crate) use clip_reach::front_faces_clear;
 pub(crate) use clip_reach::{ClipBand, ClipReach, lead_in_clear};
 #[cfg(test)]
 pub(crate) use embedded_emitter::has_embedded_emitter;

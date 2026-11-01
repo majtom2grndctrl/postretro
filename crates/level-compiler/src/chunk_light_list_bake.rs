@@ -2,9 +2,7 @@
 // See: context/lib/build_pipeline.md (PRL sections table)
 
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::{DVec3, IVec3, Vec3};
-use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
 };
@@ -20,7 +18,7 @@ use crate::lightmap_bake;
 use crate::map_data::{LightType, MapLight, ShadowType};
 use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
-use crate::ray_traversal::BoundedRay;
+use crate::ray_traversal::TraceRay;
 
 /// Default chunk edge length in meters. Small enough that per-chunk buckets
 /// stay sparse; large enough that the grid does not explode on larger maps.
@@ -981,7 +979,7 @@ fn sample_points(
     ]
 }
 
-fn segment_clear(
+pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
@@ -990,6 +988,23 @@ fn segment_clear(
 ) -> bool {
     #[cfg(test)]
     crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
+    sample_ray(light, sample).is_none_or(|(ray, max_distance)| {
+        crate::ray_traversal::ray_clear(bvh, primitives, geometry, &ray, max_distance)
+    })
+}
+
+/// The brute-force reference: [`segment_clear`]'s answer with every triangle
+/// tested by the shipped hit test, no BVH and no box test.
+#[cfg(test)]
+fn segment_clear_brute_force(geometry: &GeometryResult, light: &MapLight, sample: Vec3) -> bool {
+    sample_ray(light, sample).is_none_or(|(ray, max_distance)| {
+        crate::ray_traversal::ray_clear_brute_force(geometry, &ray, 0.0, max_distance)
+    })
+}
+
+/// The shadow ray from `light` to `sample` and its far bound, or `None`
+/// when the segment is too short to trace.
+fn sample_ray(light: &MapLight, sample: Vec3) -> Option<(TraceRay, f32)> {
     let (from, to) = match light.light_type {
         LightType::Point | LightType::Spot => (
             Vec3::new(
@@ -1010,139 +1025,17 @@ fn segment_clear(
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
-        return true;
+        return None;
     }
     let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
     // Stop counting hits a couple of centimeters short of the sample: a graze
     // at the endpoint is the receiving surface itself, not an occluder (see
     // `SAMPLE_END_TOLERANCE_METERS`).
     let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
     if max_distance <= 0.0 {
-        return true;
-    }
-    let geom = &geometry.geometry;
-    let query = BoundedRay::new(&ray, max_distance);
-    for prim in bvh.traverse_iterator(&query, primitives) {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
-/// match.
-#[cfg(test)]
-fn segment_clear_full_scan(
-    bvh: &Bvh<f32, 3>,
-    primitives: &[BvhPrimitive],
-    geometry: &GeometryResult,
-    light: &MapLight,
-    sample: Vec3,
-) -> bool {
-    let (from, to) = match light.light_type {
-        LightType::Point | LightType::Spot => (
-            Vec3::new(
-                light.origin.x as f32,
-                light.origin.y as f32,
-                light.origin.z as f32,
-            ),
-            sample,
-        ),
-        LightType::Directional => {
-            let aim =
-                Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
-            let to_light = -aim;
-            (sample + to_light * 10_000.0, sample)
-        }
-    };
-
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
-    if max_distance <= 0.0 {
-        return true;
-    }
-    let geom = &geometry.geometry;
-    for prim in bvh.traverse_iterator(&ray, primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    #[cfg(test)]
-    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
-    let edge1 = b - a;
-    let edge2 = c - a;
-    let h = dir.cross(edge2);
-    let det = edge1.dot(h);
-    if det.abs() < 1.0e-8 {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
         return None;
     }
-    let inv_det = 1.0 / det;
-    let s = origin - a;
-    let u = inv_det * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge1);
-    let v = inv_det * dir.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = inv_det * edge2.dot(q);
-    if t <= 0.0 { None } else { Some(t) }
+    Some((TraceRay::new(from + dir * RAY_EPSILON, dir), max_distance))
 }
 
 #[cfg(test)]
@@ -3436,8 +3329,9 @@ mod tests {
                                         let c = Vec3::from(
                                             vertices[occluder_indices[2] as usize].position,
                                         );
-                                        ray_triangle_hit(ray_origin, direction, a, b, c)
-                                            .is_some_and(|distance| distance < max_distance)
+                                        TraceRay::new(ray_origin, direction)
+                                            .hit([a, b, c], 0.0, max_distance)
+                                            .is_some()
                                     });
                                 if !blocked {
                                     clear_receiver_found = true;
@@ -3517,7 +3411,7 @@ mod tests {
                     -11.0,
                 ] {
                     let sample = Vec3::new(x, y, z);
-                    let full = segment_clear_full_scan(&bvh, &prims, &geo, light, sample);
+                    let full = segment_clear_brute_force(&geo, light, sample);
                     assert_eq!(
                         segment_clear(&bvh, &prims, &geo, light, sample),
                         full,

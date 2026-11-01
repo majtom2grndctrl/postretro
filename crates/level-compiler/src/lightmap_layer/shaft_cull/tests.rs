@@ -5,7 +5,7 @@ use glam::{DVec3, Vec3};
 
 use super::margin::*;
 use super::*;
-use crate::ray_traversal::ray_triangle_hit;
+use crate::ray_traversal::TraceRay;
 
 /// SplitMix64: a fixed, dependency-free stream, so the search is the same on
 /// every run.
@@ -93,7 +93,9 @@ fn traced_hit(from: Vec3, to: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
     let dir = delta / length;
     let origin = from + dir * RAY_EPSILON;
     let max_distance = length - RAY_EPSILON;
-    ray_triangle_hit(origin, dir, a, b, c).is_some_and(|dist| dist > 0.0 && dist < max_distance)
+    TraceRay::new(origin, dir)
+        .hit([a, b, c], 0.0, max_distance)
+        .is_some()
 }
 
 /// Whether a lead-in test of this triangle on `from → to` reports a hit:
@@ -105,7 +107,9 @@ fn lead_in_hit(from: Vec3, to: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
         return false;
     }
     let dir = delta / length;
-    ray_triangle_hit(from, dir, a, b, c).is_some_and(|dist| dist < length)
+    TraceRay::new(from, dir)
+        .hit([a, b, c], 0.0, length)
+        .is_some()
 }
 
 /// Sine of the angle between the `f32` ray `from → to` and the plane of the

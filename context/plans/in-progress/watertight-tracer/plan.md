@@ -7,6 +7,10 @@ read at: 26ab6c534
 ## Corrections
 - Brief read at 343ff98b6 → since then only `partition/face_extract.rs`, `brush_bsp.rs`, `surface_materials.rs` and the residency dry run changed in `level-compiler` (#636, the brief's prerequisite). No tracer, cache, BVH or margin source moved; the brief's Decision reads stand.
 - "hallway" → `content/dev/maps/stress-warren-hallway-inspection.map`; "hallway-mini" → `stress-warren-hallway-inspection-mini.map`; "warren-mini" → `stress-warren-mini.map`. A cold hallway bake runs for hours (bake-parallelism-large-maps R0: Lightmap 6,311 s on Windows before its levers), so hallway runs are the owner's (the gate-runs preamble allows it). Planning around it by reading hallway-mini and warren-mini at the first slice as the early cost read; a breach of ~10% there stops the build for the owner before any hallway run.
+- Tasks 3, 6 and 7 land as one milestone: a tolerance hit lies up to τ outside its triangle's exact box, so brute-force parity holds only once the boxes are padded and the box test conservative.
+- The flat-box witness pinned at baseline (`sh_bake/trace_tests.rs`) was rejected only through `bvh::Ray`'s re-normalized direction, which the box-query Decision removes. Re-found by search for the query built from the hit test's own ray, crossing the edge at τ = 0. On it the conservative factor alone and the pad alone each block it (AC 9's PR record).
+- Möller–Trumbore is exactly watertight on an axis-aligned shared edge when both triangles list it in the same corner slot (the edge tests are exact negatives). The shared-edge fixture rotates each triangle's corners, as face fans do, so the MT-restored run slips (AC 2).
+- Reflection-probe consumers of the hit test: the capture's masked re-trace stores `f32` distances and passes them back as `min_distance`, so `SceneTracer::nearest` bounds the `f32` distance too; the exclusion trace treats a tolerance hit on an excluded face whose hull the ray never enters as no crossing. Two probe tests read τ: the open-top distance test skips texels whose rays cross a wall's plane within 2τ above its top, and the placement-invariance test's precondition moves from the derived box (which differed under MT only by `f32` rounding noise, 3.2511997 vs 3.2512) to the capture point, which deleting the pillar genuinely moves.
 - The cache stores today a triangle offset only. The gated cache needs the leaf the traversal tests, so it stores the leaf's node index with the triangle (`BvhPrimitive::bh_node_index`); the leaf box is the parent's stored child box, or a root leaf's primitive box.
 
 ## Delegated answers
@@ -48,13 +52,13 @@ read at: 26ab6c534
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Counters (byte-neutral): box tests, leaf visits, triangle tests, MT det rejections per shadow / gather ray; hallway-mini `#[ignore]` report; baseline numbers | integrating executor | — | |
-| 2 | Move the lightmap tracer functions into a `ray_traversal/` module, behavior-preserving | integrating executor | 1 | |
-| 3 | Shared watertight f64 hit test with τ in `ray_traversal`; every tracer calls it; brute-force reference; AC 1–7 tests | integrating executor | 2 | |
+| 1 | Counters (byte-neutral): box tests, leaf visits, triangle tests, MT det rejections per shadow / gather ray; hallway-mini `#[ignore]` report; baseline numbers | integrating executor | — | done a443aecfe. Before (MT, hallway-mini, `trace_counts_on_a_map`): shadow 10,621,462,554 rays, 13.895 box tests, 0.013 leaf visits, 0.732 triangle tests, 0.000467 det rejections per ray; gather 368,646,144 rays, 49.269 / 1.778 / 3.576 / 0 |
+| 2 | Move the lightmap tracer functions into a `ray_traversal/` module, behavior-preserving | integrating executor | 1 | done 66e05981f |
+| 3 | Shared watertight f64 hit test with τ in `ray_traversal`; every tracer calls it; brute-force reference; AC 1–7 tests | integrating executor | 2 | done with 6 and 7: `ray_traversal/{hit_test,occlusion,pad}.rs`, tests in `hit_test_tests.rs`, `tree_tests.rs` (33 tests) |
 | 4 | Shared-edge census harness; set τ (AC 26) | integrating executor | 3 | |
 | 5 | First-slice cost read: counters after, warren-mini and hallway-mini cold Lightmap Bake f64 and plain f32 against baseline (AC 23, 24 first read); stop if >~10% | integrating executor | 3, 4 | |
-| 6 | Conservative box test from the hit test's ray; padded bake trees with containment assertion; flat-box witness (AC 9–16) | integrating executor | 5 | |
-| 7 | Gated occluder cache (AC 8, 12) | integrating executor | 6 | |
+| 6 | Conservative box test from the hit test's ray; padded bake trees with containment assertion; flat-box witness (AC 9–16) | integrating executor | 3 | done with 3 |
+| 7 | Gated occluder cache (AC 8, 12) | integrating executor | 6 | done with 3 |
 | 8 | Shaft-cull margins re-derived for the f64 test and τ (AC 18) | integrating executor | 6 | |
 | 9 | `TRACER_EPOCH` folded into every tracing stage key; key tests; landing value last (AC 17, 22) | integrating executor | 7, 8 | |
 | 10 | Gate runs: parity suites, PRL diffs, warm-over-old-cache, landing timings, grep gates (AC 19–27) | integrating executor; owner for hallway | 9 | |

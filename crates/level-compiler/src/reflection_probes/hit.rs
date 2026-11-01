@@ -2,14 +2,12 @@
 // See: context/lib/build_pipeline.md §Ray traversal · resource_management.md §5
 
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
 use postretro_level_format::octahedral;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
-use crate::ray_traversal::BoundedRay;
+use crate::ray_traversal::{TraceRay, primitive_triangles, triangle_points};
 
 /// Hits nearer than this are the ray's own origin surface, as in the SH bake.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
@@ -188,42 +186,35 @@ impl<'a> SceneTracer<'a> {
     ) -> (Option<Candidate>, Option<Candidate>) {
         #[cfg(test)]
         crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Gather);
-        let ray = Ray::new(
-            Point3::new(origin.x, origin.y, origin.z),
-            Vector3::new(direction.x, direction.y, direction.z),
-        );
-        let query = BoundedRay::new(&ray, max_distance);
-        let geom = &self.geometry.geometry;
+        let ray = TraceRay::new(origin, direction);
+        let query = ray.query(max_distance);
         let mut best: Option<Candidate> = None;
         let mut skipped: Option<Candidate> = None;
         for prim in self.bvh.traverse_iterator(&query, self.primitives) {
             #[cfg(test)]
             crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
             let masked = mask.skips(prim.index_offset);
-            let start = prim.index_offset as usize;
-            let end = start + prim.index_count as usize;
-            let mut tri = start;
-            while tri + 3 <= end {
-                let corners = [
-                    geom.indices[tri],
-                    geom.indices[tri + 1],
-                    geom.indices[tri + 2],
-                ];
-                let [p0, p1, p2] = corners.map(|i| Vec3::from(geom.vertices[i as usize].position));
-                if let Some((t, u, v)) = front_face_hit(origin, direction, p0, p1, p2)
-                    && t > min_distance
-                    && t < max_distance
-                    && best.is_none_or(|(d, ..)| t < d)
+            for tri in primitive_triangles(prim) {
+                let points = triangle_points(self.geometry, tri);
+                if let Some(hit) = ray.hit(points, min_distance, max_distance)
+                    && hit.front
                 {
-                    let candidate = (t, tri, [1.0 - u - v, u, v], prim.index_offset);
-                    if !masked {
-                        best = Some(candidate);
-                        query.shrink_to(t);
-                    } else if skipped.is_none_or(|(d, ..)| t < d) {
-                        skipped = Some(candidate);
+                    // Distances are kept in `f32`, and a re-trace passes a
+                    // kept distance back as `min_distance`: bound the `f32`
+                    // value too, so a hit at that distance is never found
+                    // again past it.
+                    let t = hit.t as f32;
+                    if t > min_distance && t < max_distance && best.is_none_or(|(d, ..)| t < d) {
+                        let candidate =
+                            (t, tri, clamped_weights(hit.barycentric), prim.index_offset);
+                        if !masked {
+                            best = Some(candidate);
+                            query.shrink_to(t);
+                        } else if skipped.is_none_or(|(d, ..)| t < d) {
+                            skipped = Some(candidate);
+                        }
                     }
                 }
-                tri += 3;
             }
         }
         // A masked face found before a nearer kept one lies behind it.
@@ -327,43 +318,13 @@ impl<'a> SceneTracer<'a> {
     }
 }
 
-/// Möller–Trumbore against the triangle's front side only: `(t, u, v)` where
-/// `u` and `v` weight `p1` and `p2`. Front is counter-clockwise, the winding
-/// geometry extraction fans faces in around their normal.
-fn front_face_hit(
-    origin: Vec3,
-    dir: Vec3,
-    p0: Vec3,
-    p1: Vec3,
-    p2: Vec3,
-) -> Option<(f32, f32, f32)> {
-    #[cfg(test)]
-    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
-    let edge1 = p1 - p0;
-    let edge2 = p2 - p0;
-    if edge1.cross(edge2).dot(dir) >= 0.0 {
-        return None;
-    }
-    let h = dir.cross(edge2);
-    let det = edge1.dot(h);
-    if det.abs() < 1.0e-8 {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
-        return None;
-    }
-    let inv_det = 1.0 / det;
-    let s = origin - p0;
-    let u = inv_det * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge1);
-    let v = inv_det * dir.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = inv_det * edge2.dot(q);
-    (t > 0.0).then_some((t, u, v))
+/// A hit's corner weights clamped onto the triangle: a tolerance hit's lie
+/// up to τ outside it, and its attributes interpolate as the nearest point
+/// on the triangle's own.
+fn clamped_weights(barycentric: [f64; 3]) -> [f32; 3] {
+    let clamped = barycentric.map(|w| w.max(0.0));
+    let sum: f64 = clamped.iter().sum();
+    clamped.map(|w| (w / sum) as f32)
 }
 
 /// Texels per meter from the triangle's UV-to-world area ratio. Texture

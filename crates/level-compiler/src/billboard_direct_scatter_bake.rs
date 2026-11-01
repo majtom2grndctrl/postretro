@@ -1,9 +1,7 @@
 // Normal-free direct scatter baker for billboard shading.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
     AnimatedBillboardDirectScatterDeltaVolumesSection,
     BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT,
@@ -27,7 +25,6 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_early_out};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
-use crate::ray_traversal::BoundedRay;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, incident_radiance_at_point,
     probe_grid_layout, static_light_refs, vec3_from,
@@ -44,7 +41,8 @@ pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard
 /// Bump only when the animated scatter calculation or its cached payload changes.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
 
-const RAY_EPSILON: f32 = 1.0e-3;
+#[cfg(test)]
+use crate::ray_traversal::RAY_EPSILON;
 // Matches `sh_bake`'s direct-light seed with its ray axis fixed at zero, so a
 // soft penumbra samples the same emitter lattice in normal-free scatter and
 // direct-SH transport.
@@ -628,105 +626,8 @@ fn scatter_visibility_seed(probe_index: u64, light_index: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
-    #[cfg(test)]
-    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let direction = delta / length;
-    let origin = from + direction * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(direction.x, direction.y, direction.z),
-    );
-    let max_distance = length - RAY_EPSILON;
-    let geometry = &ctx.geometry.geometry;
-    let query = BoundedRay::new(&ray, max_distance);
-    for primitive in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
-        let mut triangle = primitive.index_offset as usize;
-        let end = triangle + primitive.index_count as usize;
-        while triangle + 3 <= end {
-            let a = Vec3::from(geometry.vertices[geometry.indices[triangle] as usize].position);
-            let b = Vec3::from(geometry.vertices[geometry.indices[triangle + 1] as usize].position);
-            let c = Vec3::from(geometry.vertices[geometry.indices[triangle + 2] as usize].position);
-            triangle += 3;
-            if let Some(distance) = ray_triangle_distance(origin, direction, a, b, c)
-                && distance > 0.0
-                && distance < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
-/// match.
-#[cfg(test)]
-fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let direction = delta / length;
-    let origin = from + direction * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(direction.x, direction.y, direction.z),
-    );
-    let max_distance = length - RAY_EPSILON;
-    let geometry = &ctx.geometry.geometry;
-    for primitive in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
-        let mut triangle = primitive.index_offset as usize;
-        let end = triangle + primitive.index_count as usize;
-        while triangle + 3 <= end {
-            let a = Vec3::from(geometry.vertices[geometry.indices[triangle] as usize].position);
-            let b = Vec3::from(geometry.vertices[geometry.indices[triangle + 1] as usize].position);
-            let c = Vec3::from(geometry.vertices[geometry.indices[triangle + 2] as usize].position);
-            triangle += 3;
-            if let Some(distance) = ray_triangle_distance(origin, direction, a, b, c)
-                && distance > 0.0
-                && distance < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn ray_triangle_distance(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    #[cfg(test)]
-    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
-    let edge_one = b - a;
-    let edge_two = c - a;
-    let h = direction.cross(edge_two);
-    let determinant = edge_one.dot(h);
-    if determinant.abs() < 1.0e-8 {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
-        return None;
-    }
-    let inverse = 1.0 / determinant;
-    let s = origin - a;
-    let u = inverse * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge_one);
-    let v = inverse * direction.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let distance = inverse * edge_two.dot(q);
-    (distance > 0.0).then_some(distance)
+pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    crate::ray_traversal::segment_clear(ctx.bvh, ctx.primitives, ctx.geometry, from, to)
 }
 
 #[cfg(test)]
@@ -1225,7 +1126,7 @@ mod tests {
                     -13.0,
                 ] {
                     let to = Vec3::new(x, end_y, z);
-                    let full = segment_clear_full_scan(&ctx, from, to);
+                    let full = crate::ray_traversal::segment_clear_brute_force(&geometry, from, to);
                     assert_eq!(segment_clear(&ctx, from, to), full, "{from} -> {to}");
                     if full {
                         clear += 1;

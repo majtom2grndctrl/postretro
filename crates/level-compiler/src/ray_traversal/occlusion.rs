@@ -3,12 +3,13 @@
 
 use std::cell::Cell;
 
+use bvh::aabb::IntersectsAabb;
+use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
 
-use super::BoundedRay;
+use super::pad::leaf_box;
+use super::{TraceRay, primitive_triangles, triangle_points};
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 
@@ -17,6 +18,9 @@ use crate::geometry::GeometryResult;
 /// weight-map bakers share it; they must agree or chunk boundaries show seams.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
+/// Whether nothing blocks the segment `from → to`, either face of a triangle
+/// counting. The trace starts [`RAY_EPSILON`] along the segment and stops
+/// that far short of its end.
 pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
@@ -27,140 +31,167 @@ pub(crate) fn segment_clear(
     segment_clear_remembering(bvh, primitives, geometry, from, to, &Cell::new(None))
 }
 
-/// [`segment_clear`] that tests `last_occluder` first and records the triangle
-/// that blocks this segment. Neighbouring texels lit by one light are mostly
-/// blocked by the same triangle, so a sequential walk over one `(light, chart)`
-/// skips most traversals in shadow. The cached triangle is tested with the same
-/// ray and hit predicate as the traversal, so it changes only which triangle is
-/// found first, not the answer — barring a hit the traversal's box test misses
-/// by rounding, which the cache then reports as blocked. That miss needs the
-/// hit on the box's boundary: at an axis-aligned edge or a vertex of the
-/// triangle, at any ray angle. `last_occluder` holds the triangle's first
-/// index-buffer offset into `geometry`.
+/// A remembered occluder: the triangle that last blocked a segment, by its
+/// first index-buffer offset, and the BVH leaf node that holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Occluder {
+    leaf: u32,
+    triangle: u32,
+}
+
+impl Occluder {
+    /// Triangle `triangle` of `prim`, a primitive of the tree it was built in.
+    pub(crate) fn new(prim: &BvhPrimitive, triangle: usize) -> Self {
+        Self {
+            leaf: prim.bh_node_index() as u32,
+            triangle: triangle as u32,
+        }
+    }
+}
+
+/// [`segment_clear`] that tests `last_occluder` first and records the
+/// triangle that blocks this segment. Neighbouring texels lit by one light
+/// are mostly blocked by the same triangle, so a sequential walk over one
+/// `(light, chart)` skips most traversals in shadow.
+///
+/// The remembered triangle is tested only when its leaf box passes the
+/// traversal's own query, the box the iterator tests before yielding that
+/// leaf. A leaf box that passes has ancestors that pass (each stored box
+/// holds the ones below it, and the predicate is monotone in containment),
+/// so the triangle is one of the traversal's own candidates: the cache
+/// reorders the traversal's work and never changes the answer.
 pub(crate) fn segment_clear_remembering(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     from: Vec3,
     to: Vec3,
-    last_occluder: &Cell<Option<usize>>,
+    last_occluder: &Cell<Option<Occluder>>,
 ) -> bool {
     #[cfg(test)]
     {
         crate::bake_counters::bump(|counts| counts.shadow_rays += 1);
         crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
     }
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
+    let Some((ray, max_distance)) = segment_ray(from, to) else {
         return true;
-    }
-    let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let max_distance = length - RAY_EPSILON;
-    let geom = &geometry.geometry;
-    let blocks = |tri: usize| {
-        let p0 = Vec3::from(geom.vertices[geom.indices[tri] as usize].position);
-        let p1 = Vec3::from(geom.vertices[geom.indices[tri + 1] as usize].position);
-        let p2 = Vec3::from(geom.vertices[geom.indices[tri + 2] as usize].position);
-        ray_triangle_hit(origin, dir, p0, p1, p2)
-            .is_some_and(|dist| dist > 0.0 && dist < max_distance)
     };
-    if last_occluder.get().is_some_and(blocks) {
+    let blocks = |tri: usize| {
+        ray.hit(triangle_points(geometry, tri), 0.0, max_distance)
+            .is_some()
+    };
+    let query = ray.query(max_distance);
+    if let Some(occluder) = last_occluder.get()
+        && (cache_gate_off()
+            || query.intersects_aabb(&leaf_box(bvh, primitives, occluder.leaf as usize)))
+        && blocks(occluder.triangle as usize)
+    {
         return false;
     }
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let query = BoundedRay::new(&ray, max_distance);
     for prim in bvh.traverse_iterator(&query, primitives) {
         #[cfg(test)]
         crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            if blocks(tri) {
-                last_occluder.set(Some(tri));
-                return false;
-            }
-            tri += 3;
+        if let Some(tri) = primitive_triangles(prim).find(|&tri| blocks(tri)) {
+            last_occluder.set(Some(Occluder::new(prim, tri)));
+            return false;
         }
     }
     true
 }
 
-/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
-/// match.
-#[cfg(test)]
-pub(crate) fn segment_clear_full_scan(
+/// Whether no triangle crosses `ray` strictly between 0 and `max_distance`,
+/// either face counting: the occlusion walk behind every segment tracer whose
+/// segment is not [`segment_clear`]'s.
+pub(crate) fn ray_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
-    from: Vec3,
-    to: Vec3,
+    ray: &TraceRay,
+    max_distance: f32,
 ) -> bool {
+    let query = ray.query(max_distance);
+    !bvh.traverse_iterator(&query, primitives).any(|prim| {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
+        primitive_triangles(prim).any(|tri| {
+            ray.hit(triangle_points(geometry, tri), 0.0, max_distance)
+                .is_some()
+        })
+    })
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn cache_gate_off() -> bool {
+    false
+}
+
+#[cfg(test)]
+thread_local! {
+    static CACHE_GATE_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn cache_gate_off() -> bool {
+    CACHE_GATE_OFF.with(Cell::get)
+}
+
+/// Run `work` with the remembered occluder tested before its leaf box: the
+/// cache as it was before the gate, for tests that show what the gate fixes.
+#[cfg(test)]
+pub(crate) fn without_cache_gate<R>(work: impl FnOnce() -> R) -> R {
+    let previous = CACHE_GATE_OFF.with(|cell| cell.replace(true));
+    let result = work();
+    CACHE_GATE_OFF.with(|cell| cell.set(previous));
+    result
+}
+
+/// The ray [`segment_clear`] traces for `from → to` and its far bound, or
+/// `None` for a segment too short to hold one.
+fn segment_ray(from: Vec3, to: Vec3) -> Option<(TraceRay, f32)> {
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
-        return true;
+        return None;
     }
     let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let max_distance = length - RAY_EPSILON;
-    let geom = &geometry.geometry;
-    for prim in bvh.traverse_iterator(&ray, primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
+    Some((
+        TraceRay::new(from + dir * RAY_EPSILON, dir),
+        length - RAY_EPSILON,
+    ))
 }
 
-/// Double-sided Möller-Trumbore intersection.
-pub(crate) fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    #[cfg(test)]
-    crate::bake_counters::bump_trace(|trace| trace.triangle_tests += 1);
-    let edge1 = b - a;
-    let edge2 = c - a;
-    let h = dir.cross(edge2);
-    let det = edge1.dot(h);
-    if det.abs() < 1.0e-8 {
-        #[cfg(test)]
-        crate::bake_counters::bump_trace(|trace| trace.det_rejections += 1);
-        return None;
-    }
-    let inv_det = 1.0 / det;
-    let s = origin - a;
-    let u = inv_det * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge1);
-    let v = inv_det * dir.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = inv_det * edge2.dot(q);
-    if t <= 0.0 { None } else { Some(t) }
+/// The brute-force reference: [`segment_clear`]'s answer with every triangle
+/// of `geometry` tested by the shipped hit test, no BVH and no box test.
+#[cfg(test)]
+pub(crate) fn segment_clear_brute_force(geometry: &GeometryResult, from: Vec3, to: Vec3) -> bool {
+    segment_ray(from, to)
+        .is_none_or(|(ray, max_distance)| ray_clear_brute_force(geometry, &ray, 0.0, max_distance))
+}
+
+/// [`ray_clear`]'s brute-force reference, from `t_min` on.
+#[cfg(test)]
+pub(crate) fn ray_clear_brute_force(
+    geometry: &GeometryResult,
+    ray: &TraceRay,
+    t_min: f32,
+    max_distance: f32,
+) -> bool {
+    !every_triangle(geometry).any(|tri| {
+        ray.hit(triangle_points(geometry, tri), t_min, max_distance)
+            .is_some()
+    })
+}
+
+/// Every triangle of `geometry`'s faces, by first index-buffer offset, in
+/// index order: the set the BVH holds.
+#[cfg(test)]
+pub(crate) fn every_triangle(geometry: &GeometryResult) -> impl Iterator<Item = usize> + '_ {
+    geometry.face_index_ranges.iter().flat_map(|range| {
+        let start = range.index_offset as usize;
+        let end = start + range.index_count as usize;
+        (start..end)
+            .step_by(3)
+            .take_while(move |&tri| tri + 3 <= end)
+    })
 }

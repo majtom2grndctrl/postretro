@@ -4,16 +4,14 @@
 
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Point3;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
-use crate::ray_traversal::BoundedRay;
-use crate::ray_traversal::ray_triangle_hit;
+use crate::ray_traversal::{TraceRay, primitive_triangles, triangle_points};
 
 /// Footprint reach covered by the pre-pass, in texels: every sample offset is
 /// under one texel from the centre at any count.
@@ -101,30 +99,14 @@ pub(crate) fn front_faces_clear(
     if length <= 0.0 {
         return true;
     }
-    let dir = delta / length;
-    let ray = Ray::new(
-        Point3::new(from.x, from.y, from.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let query = BoundedRay::new(&ray, length);
-    let geom = &geometry.geometry;
+    let ray = TraceRay::new(from, delta / length);
+    let query = ray.query(length);
     for prim in bvh.traverse_iterator(&query, primitives) {
         #[cfg(test)]
         crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
-            let points = [0, 1, 2]
-                .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
-            let front = (points[1] - points[0])
-                .cross(points[2] - points[0])
-                .dot(dir)
-                < 0.0;
-            if front
-                && admits(points)
-                && ray_triangle_hit(from, dir, points[0], points[1], points[2])
-                    .is_some_and(|dist| dist < length)
-            {
+        for tri in primitive_triangles(prim) {
+            let points = triangle_points(geometry, tri);
+            if admits(points) && ray.hit(points, 0.0, length).is_some_and(|hit| hit.front) {
                 return false;
             }
         }

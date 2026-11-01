@@ -1,29 +1,57 @@
-// Bounded BVH traversal for bake rays: skip nodes entered beyond a distance bound.
+// The bake tracer: the watertight hit test, bounded BVH traversal and occlusion segments.
 // See: context/lib/build_pipeline.md §Ray traversal
 
 use std::cell::Cell;
 
 use bvh::aabb::{Aabb, IntersectsAabb};
-use bvh::ray::Ray;
+use glam::Vec3;
 
+use crate::bvh_build::BvhPrimitive;
+use crate::geometry::GeometryResult;
+
+mod hit_test;
 mod occlusion;
+mod pad;
 
+pub(crate) use hit_test::{TRACER_TOLERANCE_METERS, TraceRay};
 #[cfg(test)]
-pub(crate) use occlusion::segment_clear_full_scan;
+pub(crate) use hit_test::{with_planted_t, with_tolerance};
 pub(crate) use occlusion::{
-    RAY_EPSILON, ray_triangle_hit, segment_clear, segment_clear_remembering,
+    Occluder, RAY_EPSILON, ray_clear, segment_clear, segment_clear_remembering,
 };
+#[cfg(test)]
+pub(crate) use occlusion::{ray_clear_brute_force, segment_clear_brute_force, without_cache_gate};
+#[cfg(all(test, debug_assertions))]
+pub(crate) use pad::assert_parents_contain_children;
+pub(crate) use pad::pad_bake_tree;
+#[cfg(test)]
+pub(crate) use pad::{assert_padded, box_pad};
 
-/// A ray query for `Bvh::traverse_iterator` that accepts exactly the boxes
-/// the stock ray accepts, minus those it enters clearly beyond `bound`. The
-/// iterator's visit order is unchanged, so the hit a caller keeps on a distance
-/// tie is unchanged too. A closest-hit caller shrinks the bound as nearer hits
-/// land; an occlusion caller fixes it at the segment end.
-///
-/// A box is pruned only past [`prune_limit`]'s slack, so the answer should
-/// equal the unbounded traversal's. That equality is verified by the fixture
-/// digest gate and the full-scan parity tests, not proven for every float
-/// input: a pathological grazing sliver can exceed any finite slack.
+/// The first index-buffer offsets of a BVH primitive's triangles.
+pub(crate) fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {
+    let start = prim.index_offset as usize;
+    let end = start + prim.index_count as usize;
+    (start..end)
+        .step_by(3)
+        .take_while(move |&tri| tri + 3 <= end)
+}
+
+/// The stored `f32` corners of the triangle at index `tri`, in index order.
+pub(crate) fn triangle_points(geometry: &GeometryResult, tri: usize) -> [Vec3; 3] {
+    let geom = &geometry.geometry;
+    [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position))
+}
+
+/// A ray query for `Bvh::traverse_iterator`: a conservative slab test,
+/// minus boxes the ray enters clearly beyond `bound`. It accepts every box
+/// the stock ray test accepts and more: the far slab distance grows by
+/// [`FAR_SCALE`] (pbrt-v4, Ize 2013), so rounding never rejects a box the
+/// exact ray meets, and an axis whose slab is NaN (the ray lies in a face
+/// plane of the box) constrains nothing. With the bake tree's padded boxes
+/// (`pad_bake_tree`), every box holding a hit the hit test accepts passes.
+/// The iterator's visit order is unchanged, so the hit a caller keeps on a
+/// distance tie is unchanged too. A closest-hit caller shrinks the bound as
+/// nearer hits land; an occlusion caller fixes it at the segment end.
 ///
 /// Faster on large maps than a near-child-first walk, whose extra child-entry
 /// work outweighs its earlier pruning. A walk over a packed copy of the nodes,
@@ -33,18 +61,23 @@ pub(crate) struct BoundedRay {
     origin: [f32; 3],
     inv_direction: [f32; 3],
     bound: Cell<f32>,
+    far_scale: f32,
 }
 
+/// 1 + 2γ₃ (γₙ = nu / (1 − nu), u = 2⁻²⁴), rounded up to the next `f32`:
+/// a slab distance's rounding is within γ₃ of exact, so a far distance
+/// scaled by it is no nearer than the exact one (pbrt-v4 `Bounds3::IntersectP`).
+const FAR_SCALE: f32 = 1.0 + 4.0 * f32::EPSILON;
+
 impl BoundedRay {
-    pub(crate) fn new(ray: &Ray<f32, 3>, bound: f32) -> Self {
+    /// The query for a ray from `origin` along `direction`, the hit test's
+    /// own: the inverse is taken here, never re-normalized.
+    pub(crate) fn new(origin: Vec3, direction: Vec3, bound: f32) -> Self {
         Self {
-            origin: [ray.origin.x, ray.origin.y, ray.origin.z],
-            inv_direction: [
-                ray.inv_direction.x,
-                ray.inv_direction.y,
-                ray.inv_direction.z,
-            ],
+            origin: origin.to_array(),
+            inv_direction: direction.recip().to_array(),
             bound: Cell::new(bound),
+            far_scale: far_scale(),
         }
     }
 
@@ -57,25 +90,25 @@ impl BoundedRay {
         }
     }
 
-    /// The stock slab test alone: the entry distance when the stock ray
-    /// accepts the box `[min, max]`, `None` when it rejects it. A NaN slab
-    /// value (the ray lies in a box face plane) rejects, as the stock test
-    /// does; with NaN excluded, the per-axis min and max are unambiguous up to
-    /// the sign of zero, which no comparison here distinguishes. Entry is
-    /// negative when the origin is inside.
+    /// The conservative slab test alone: the entry distance when the ray may
+    /// meet the box `[min, max]`, `None` when it cannot. An axis whose slab
+    /// value is NaN, `0 · ∞` for a ray lying in that face plane, is dropped
+    /// whole for either sign of zero: the closed box holds the ray's line on
+    /// that axis. Entry is negative when the origin is inside.
     #[inline]
-    fn stock_entry(&self, min: &[f32; 3], max: &[f32; 3]) -> Option<f32> {
+    fn conservative_entry(&self, min: &[f32; 3], max: &[f32; 3]) -> Option<f32> {
         let mut entry = f32::NEG_INFINITY;
         let mut exit = f32::INFINITY;
-        let mut nan = false;
         for axis in 0..3 {
             let a = (min[axis] - self.origin[axis]) * self.inv_direction[axis];
             let b = (max[axis] - self.origin[axis]) * self.inv_direction[axis];
-            nan |= a.is_nan() | b.is_nan();
+            if a.is_nan() || b.is_nan() {
+                continue;
+            }
             entry = entry.max(a.min(b));
-            exit = exit.min(a.max(b));
+            exit = exit.min(a.max(b) * self.far_scale);
         }
-        (!nan && exit >= entry.max(0.0)).then_some(entry)
+        (exit >= entry.max(0.0)).then_some(entry)
     }
 
     /// Whether a box entered at `entry` lies within the current bound.
@@ -86,47 +119,85 @@ impl BoundedRay {
 }
 
 impl IntersectsAabb<f32, 3> for BoundedRay {
-    /// The stock test and the bound prune in one pass over the six slab values.
+    /// The conservative test and the bound prune in one pass over the six
+    /// slab values.
     #[inline]
     fn intersects_aabb(&self, aabb: &Aabb<f32, 3>) -> bool {
         #[cfg(test)]
         crate::bake_counters::bump_trace(|trace| trace.box_tests += 1);
         let min = [aabb.min.x, aabb.min.y, aabb.min.z];
         let max = [aabb.max.x, aabb.max.y, aabb.max.z];
-        self.stock_entry(&min, &max)
+        self.conservative_entry(&min, &max)
             .is_some_and(|entry| self.within_bound(entry))
     }
 }
 
-/// Bound used for pruning. A box is skipped only when it starts clearly beyond
-/// the bound, because two rounding errors can put a hit's computed distance
-/// below the computed entry of the box holding it: the slab test's entry
-/// rounding (a few ulps, covered by the relative term), and Möller–Trumbore's
-/// own `t` error, which grows with the distance from the ray origin to the
-/// triangle, as the ray grazes it, and as its narrowest angle shrinks. The
-/// 1 cm absolute term covers that error for well-shaped triangles at ordinary
-/// angles, at little pruning cost: it keeps only boxes that start within about
-/// 1 cm plus 0.01% of the bound. Long grazing rays near a sliver's ends can exceed it. An
-/// infinite bound prunes nothing.
+/// Bound used for pruning. A box is skipped only when it starts clearly
+/// beyond the bound. The padded box holds every point the hit test accepts,
+/// so its exact entry is no later than an accepted hit's exact distance; two
+/// rounding errors remain between the computed values: the slab test's entry
+/// (a few ulps, covered by the relative term) and the hit test's `t`, which
+/// in `f64` grows only as a ray turns into a triangle's plane. The 1 cm
+/// absolute term covers both at little pruning cost: it keeps only boxes that
+/// start within about 1 cm plus 0.01% of the bound. An infinite bound prunes
+/// nothing.
 fn prune_limit(bound: f32) -> f32 {
     bound + bound.abs() * 1e-4 + 1e-2
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn far_scale() -> f32 {
+    FAR_SCALE
+}
+
+#[cfg(test)]
+thread_local! {
+    static STOCK_FAR_BOUND: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn far_scale() -> f32 {
+    if STOCK_FAR_BOUND.with(Cell::get) {
+        1.0
+    } else {
+        FAR_SCALE
+    }
+}
+
+/// Run `work` with box queries built on this thread unscaled: the
+/// conservative factor removed, for tests that show what it catches.
+#[cfg(test)]
+pub(crate) fn without_far_scale<R>(work: impl FnOnce() -> R) -> R {
+    let previous = STOCK_FAR_BOUND.with(|cell| cell.replace(true));
+    let result = work();
+    STOCK_FAR_BOUND.with(|cell| cell.set(previous));
+    result
 }
 
 #[cfg(test)]
 mod cost_tests;
 
 #[cfg(test)]
+mod hit_test_tests;
+#[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
+mod tree_tests;
+
+#[cfg(test)]
 mod tests {
     use bvh::aabb::{Aabb, IntersectsAabb};
     use bvh::ray::Ray;
+    use glam::Vec3;
     use nalgebra::{Point3, Vector3};
     use proptest::prelude::*;
 
     use super::{BoundedRay, prune_limit};
 
-    /// The two-pass test the fused one replaced: the stock slab test, then the
-    /// entry distance recomputed against the bound.
-    fn two_pass_accepts(ray: &Ray<f32, 3>, aabb: &Aabb<f32, 3>, bound: f32) -> bool {
+    /// The stock test with the bound prune: the slab test the conservative
+    /// one replaced, then the entry distance against the bound.
+    fn stock_accepts(ray: &Ray<f32, 3>, aabb: &Aabb<f32, 3>, bound: f32) -> bool {
         let mut entry = f32::NEG_INFINITY;
         for axis in 0..3 {
             let near = (aabb.min[axis] - ray.origin[axis]) * ray.inv_direction[axis];
@@ -134,6 +205,15 @@ mod tests {
             entry = entry.max(near.min(far));
         }
         ray.intersects_aabb(aabb) && entry <= prune_limit(bound)
+    }
+
+    /// The conservative query for the stock ray's own origin and direction.
+    fn query(ray: &Ray<f32, 3>, bound: f32) -> BoundedRay {
+        BoundedRay::new(
+            Vec3::new(ray.origin.x, ray.origin.y, ray.origin.z),
+            Vec3::new(ray.direction.x, ray.direction.y, ray.direction.z),
+            bound,
+        )
     }
 
     /// Coordinates drawn from a small lattice so origins land on box faces and
@@ -163,21 +243,41 @@ mod tests {
         ]
     }
 
+    /// A ray lying in a box face plane, parallel to it: its slab on that axis
+    /// is `0 · ∞ = NaN`. The stock test rejects the box; the conservative one
+    /// drops that axis, for either sign of zero, on the min and the max face,
+    /// on a flat box and on one with extent on that axis.
     #[test]
-    fn ray_in_a_box_face_plane_is_rejected_like_the_stock_test() {
-        // Origin on the box's x = 0 face, direction along +y: the x slab is
-        // 0 * inf = NaN.
-        let ray = Ray::new(Point3::new(0.0, -1.0, 0.5), Vector3::new(0.0, 1.0, 0.0));
-        let aabb = Aabb::with_bounds(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
-        assert!(!ray.intersects_aabb(&aabb));
-        assert!(!BoundedRay::new(&ray, f32::INFINITY).intersects_aabb(&aabb));
+    fn ray_in_a_box_face_plane_is_accepted_for_either_zero_and_face() {
+        for (min_x, max_x) in [(0.0f32, 0.0f32), (0.0, 1.0)] {
+            let aabb =
+                Aabb::with_bounds(Point3::new(min_x, 0.0, 0.0), Point3::new(max_x, 1.0, 1.0));
+            for face_x in [min_x, max_x] {
+                for zero in [0.0f32, -0.0] {
+                    let origin = Vec3::new(face_x, -1.0, 0.5);
+                    let direction = Vec3::new(zero, 1.0, 0.0);
+                    let stock = Ray::new(
+                        Point3::new(origin.x, origin.y, origin.z),
+                        Vector3::new(direction.x, direction.y, direction.z),
+                    );
+                    assert!(
+                        !stock.intersects_aabb(&aabb),
+                        "stock accepts x = {face_x}, {zero:?}"
+                    );
+                    assert!(
+                        BoundedRay::new(origin, direction, f32::INFINITY).intersects_aabb(&aabb),
+                        "conservative rejects x = {face_x} on [{min_x}, {max_x}], {zero:?}"
+                    );
+                }
+            }
+        }
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(20_000))]
 
         #[test]
-        fn fused_test_accepts_exactly_the_two_pass_set(
+        fn conservative_test_accepts_every_box_the_stock_test_accepts(
             origin in (coord(), coord(), coord()),
             dir in direction(),
             corner_a in (coord(), coord(), coord()),
@@ -189,8 +289,9 @@ mod tests {
                 Point3::new(corner_a.0.min(corner_b.0), corner_a.1.min(corner_b.1), corner_a.2.min(corner_b.2)),
                 Point3::new(corner_a.0.max(corner_b.0), corner_a.1.max(corner_b.1), corner_a.2.max(corner_b.2)),
             );
-            let fused = BoundedRay::new(&ray, bound).intersects_aabb(&aabb);
-            prop_assert_eq!(fused, two_pass_accepts(&ray, &aabb, bound));
+            if stock_accepts(&ray, &aabb, bound) {
+                prop_assert!(query(&ray, bound).intersects_aabb(&aabb));
+            }
         }
     }
 }

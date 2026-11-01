@@ -21,6 +21,8 @@ use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
 use crate::map_data::{LightType, MapLight};
+#[cfg(test)]
+use crate::ray_traversal::Occluder;
 use crate::ray_traversal::segment_clear_remembering;
 use crate::texel_footprint::{
     ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
@@ -257,7 +259,7 @@ fn verify_clear_texel(
     sampler: &TexelSampler,
     (bvh, primitives, geometry): (&bvh::bvh::Bvh<f32, 3>, &[BvhPrimitive], &GeometryResult),
     band: &ClipBand,
-    [last_occluder, clip_occluder]: [&Cell<Option<usize>>; 2],
+    [last_occluder, clip_occluder]: [&Cell<Option<Occluder>>; 2],
 ) {
     let shadow = Cell::new(last_occluder.get());
     let clip = Cell::new(clip_occluder.get());

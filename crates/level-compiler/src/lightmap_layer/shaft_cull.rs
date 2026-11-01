@@ -6,7 +6,9 @@ use std::cell::{Cell, OnceCell};
 
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
+#[cfg(test)]
+use glam::Vec3;
 use nalgebra::Point3;
 
 use super::chart_cull::exact_texel_local;
@@ -15,6 +17,7 @@ use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
 use crate::map_data::{LightType, MapLight};
+use crate::ray_traversal::{primitive_triangles, triangle_points};
 use crate::texel_footprint::{TexelFrame, TexelSampler};
 pub(crate) use margin::ShaftScene;
 use margin::{Candidate, Hull, HullAxis, HullBounds};
@@ -352,21 +355,6 @@ impl<'a> ShaftCull<'a> {
 /// Axes [`ShaftCull::hull_axes`] builds per tile: the receiver normal, then
 /// at each of the two slab heights the four sides and four corners.
 const HULL_AXES: usize = 1 + 2 * (4 + 4);
-
-/// The first index of each whole triangle in `prim`'s index range.
-fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {
-    let start = prim.index_offset as usize;
-    let end = start + prim.index_count as usize;
-    (start..end)
-        .step_by(3)
-        .take_while(move |&tri| tri + 3 <= end)
-}
-
-/// The stored `f32` corners of the triangle at index `tri`, in index order.
-fn triangle_points(geometry: &GeometryResult, tri: usize) -> [Vec3; 3] {
-    let geom = &geometry.geometry;
-    [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position))
-}
 
 /// The largest `f32` at or below `x`.
 fn f32_below(x: f64) -> f32 {

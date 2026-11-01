@@ -156,8 +156,8 @@ pub(super) fn bake_face_chart(
     let padding = CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = crate::chart_raster::chart_interior_dims(chart);
     // One occluder cache per light, walked in texel order: each light sees the
-    // ray sequence its `(light, chart)` layer bake traces, so the cache answers
-    // match and the composite stays bit-for-bit. The footprint's wall-clip
+    // ray sequence its `(light, chart)` layer bake traces, so the cache hit rate
+    // stays comparable; no answer depends on it. The footprint's wall-clip
     // segments keep their own per-light cache for the same reason.
     let last_occluders: Vec<Cell<Option<Occluder>>> =
         static_lights.iter().map(|_| Cell::new(None)).collect();

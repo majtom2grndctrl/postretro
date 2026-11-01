@@ -6,6 +6,7 @@ use std::cell::Cell;
 use bvh::aabb::{Aabb, Bounded};
 use bvh::bvh::{Bvh, BvhNode};
 use glam::{DVec3, Vec3};
+use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
 use super::test_fixtures::{Scene, XorShift, triangles_geometry};
 use super::{
@@ -15,6 +16,8 @@ use super::{
 };
 use crate::bake_counters::counted;
 use crate::bvh_build::{BvhPrimitive, build_bvh, build_bvh_exact};
+use crate::light_namespaces::StaticBakedLights;
+use crate::lightmap_bake::{DEFAULT_TEXEL_DENSITY_METERS, plan_cut_charts};
 
 /// Two crossing creased faces, a far floor, a wall and scattered tiles: a
 /// tree several levels deep, with shared crease edges.
@@ -177,15 +180,35 @@ fn padded_boxes_hold_every_point_the_hit_test_accepts() {
 }
 
 #[test]
-fn every_tree_the_bvh_constructor_returns_is_padded() {
+fn bvh_constructor_returns_padded_tree() {
     let geometry = triangles_geometry(&crease_scene_triangles());
     let (_, prims, _) = build_bvh(&geometry).unwrap();
     assert_padded(&prims, &geometry);
 }
 
+/// The pipeline's no-cut branch (`rebuilt == None` in `prepare_atlas_stage`)
+/// keeps the BVH built before the atlas stage. Run the same cut planner over
+/// the fixture's geometry and lights, assert it cuts nothing, then check that
+/// pre-atlas tree.
 #[test]
-fn a_fixture_map_with_no_cut_traces_a_padded_tree() {
-    let fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+fn fixture_map_without_cut_traces_padded_tree() {
+    let mut fixture = crate::fixture_pipeline::load_fixture("soft_shadow_test");
+    let static_lights = StaticBakedLights::from_lights(&fixture.lights);
+    assert!(
+        !static_lights.is_empty(),
+        "the planner must see static lights, or it returns early without planning"
+    );
+    let cut = plan_cut_charts(
+        &mut fixture.geometry,
+        &static_lights,
+        DEFAULT_TEXEL_DENSITY_METERS,
+        &[],
+        LIGHTMAP_POOL_LAYER_EDGE,
+        crate::working_set::DEFAULT_MAX_BYTES,
+        false,
+    )
+    .expect("fixture charts plan");
+    assert!(cut.face_remap.is_none(), "the fixture map has a cut face");
     assert_padded(&fixture.primitives, &fixture.geometry);
     super::assert_parents_contain_children(&fixture.bvh, &fixture.primitives);
 }
@@ -321,7 +344,11 @@ fn cached_occluders_never_change_the_shadow_answer() {
 
 /// Hits exactly on the crease's axis-aligned shared edge and at its shared
 /// vertices, at τ = 0 and at the shipped τ: the cached answers equal the
-/// empty cache's, which equals the brute-force reference.
+/// empty cache's, which equals the brute-force reference. A segment through
+/// the edge's interior crosses the surface, so each is blocked: the edge is
+/// watertight at τ = 0 as well. The vertices at z = ±1 end the surface, and a
+/// segment grazing one from outside need not hit at τ = 0, so they check
+/// parity alone.
 #[test]
 fn cached_occluders_agree_with_brute_force_at_shared_edges_and_vertices() {
     let scene = Scene::new(&crease_scene_triangles());
@@ -341,6 +368,10 @@ fn cached_occluders_agree_with_brute_force_at_shared_edges_and_vertices() {
                     assert_eq!(
                         answer,
                         segment_clear_brute_force(&scene.geometry, origin, to)
+                    );
+                    assert!(
+                        z.abs() == 1.0 || !answer,
+                        "{origin} -> {to} crosses the shared edge at z = {z} and is blocked (tau {tau})"
                     );
                 }
             }

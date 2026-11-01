@@ -10,8 +10,10 @@ use super::BoundedRay;
 /// cracks and T-junctions narrower than about 2τ, for at most τ of extra
 /// shadow past a silhouette edge. Sized to the widest crease crack the
 /// shared-edge census finds, and never above face extraction's split
-/// tolerance (`REGION_CLASSIFICATION_EPSILON`). The bake trees' box pad and
-/// every crack-width bound read it.
+/// tolerance (`REGION_CLASSIFICATION_EPSILON`). The census is test-only
+/// (`census.rs`); re-check τ against it with `shared_edge_census_on_gate_maps`
+/// after any change to face extraction or the cut. The bake trees' box pad
+/// and every crack-width bound read it.
 pub(crate) const TRACER_TOLERANCE_METERS: f32 = 5.0e-4;
 
 /// A bake ray as the watertight test sees it (Woop, Benthin and Wald 2013):
@@ -60,9 +62,12 @@ pub(crate) struct TriangleHit {
     /// The ray meets the triangle's front, the side its counter-clockwise
     /// winding faces: the determinant is positive.
     pub(crate) front: bool,
-    /// Weights of the triangle's three corners at the crossing; they sum to
-    /// one. A tolerance hit's lie up to τ outside the triangle, so a weight
-    /// can be slightly negative.
+    /// Weights of the triangle's three corners at the plane crossing; they
+    /// sum to one. A tolerance hit's crossing lies up to τ outside the
+    /// triangle, so a weight is negative, and on a sliver far outside
+    /// `[0, 1]`: a crossing 0.3 mm off a 20 µm-wide sliver weights a corner
+    /// by about 15. A caller that interpolates attributes reads them at the
+    /// nearest point on the triangle instead ([`closest_point_on_triangle`]).
     pub(crate) barycentric: [f64; 3],
 }
 
@@ -252,9 +257,9 @@ impl TraceRay {
         {
             return false;
         }
-        // Orient by the larger-magnitude sum: an edge function of the
-        // opposite sign is a side the ray lies outside of, by its value over
-        // that edge's projected length.
+        // Orient by the determinant's sign, u + v + w: an edge function of
+        // the opposite sign is a side the ray lies outside of, by its value
+        // over that edge's projected length.
         let positive = u + v + w > 0.0;
         let within = |e: f64, px: f64, py: f64, qx: f64, qy: f64| {
             let outside = if positive { e < 0.0 } else { e > 0.0 };
@@ -270,54 +275,66 @@ impl TraceRay {
     fn crossing_within_tolerance(&self, corners: [Vec3; 3], t: f64) -> bool {
         let crossing = self.origin_f64 + self.direction.as_dvec3() * t;
         let distance_squared = distance_squared_to_triangle(crossing, corners.map(Vec3::as_dvec3));
-        // Only a distance past τ rejects, so a NaN distance keeps the hit.
-        distance_squared.is_nan() || distance_squared <= self.tolerance * self.tolerance
+        // A NaN distance comes only from a degenerate triangle, which has no
+        // area to hit, and its crossing can lie anywhere: rejecting it keeps
+        // every accepted point inside its padded box (`ray_traversal::pad`).
+        distance_squared <= self.tolerance * self.tolerance
     }
 }
 
-/// Squared distance from `point` to the closed triangle `[a, b, c]`
-/// (Ericson, *Real-Time Collision Detection* §5.1.5). For a point in the
-/// triangle's plane it is the in-plane distance, rounded at the corners.
-pub(super) fn distance_squared_to_triangle(point: DVec3, [a, b, c]: [DVec3; 3]) -> f64 {
+/// Squared distance from `point` to the closed triangle `[a, b, c]`: to its
+/// [`closest_point_on_triangle`]. For a point in the triangle's plane it is
+/// the in-plane distance, rounded at the corners. Not finite for a
+/// degenerate triangle whose region test lands in its interior.
+pub(super) fn distance_squared_to_triangle(point: DVec3, corners: [DVec3; 3]) -> f64 {
+    (point - closest_point_on_triangle(point, corners).0).length_squared()
+}
+
+/// The point of the closed triangle `[a, b, c]` nearest `point`, and its
+/// corner weights, each in `[0, 1]` up to rounding (Ericson, *Real-Time
+/// Collision Detection* §5.1.5): a corner, the foot on an edge, or the
+/// projection into the interior, by the Voronoi region `point` lies in.
+#[inline]
+pub(crate) fn closest_point_on_triangle(point: DVec3, [a, b, c]: [DVec3; 3]) -> (DVec3, [f64; 3]) {
     let ab = b - a;
     let ac = c - a;
     let ap = point - a;
     let d1 = ab.dot(ap);
     let d2 = ac.dot(ap);
     if d1 <= 0.0 && d2 <= 0.0 {
-        return ap.length_squared();
+        return (a, [1.0, 0.0, 0.0]);
     }
     let bp = point - b;
     let d3 = ab.dot(bp);
     let d4 = ac.dot(bp);
     if d3 >= 0.0 && d4 <= d3 {
-        return bp.length_squared();
+        return (b, [0.0, 1.0, 0.0]);
     }
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
         let along = d1 / (d1 - d3);
-        return (point - (a + ab * along)).length_squared();
+        return (a + ab * along, [1.0 - along, along, 0.0]);
     }
     let cp = point - c;
     let d5 = ab.dot(cp);
     let d6 = ac.dot(cp);
     if d6 >= 0.0 && d5 <= d6 {
-        return cp.length_squared();
+        return (c, [0.0, 0.0, 1.0]);
     }
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
         let along = d2 / (d2 - d6);
-        return (point - (a + ac * along)).length_squared();
+        return (a + ac * along, [1.0 - along, 0.0, along]);
     }
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
         let along = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return (point - (b + (c - b) * along)).length_squared();
+        return (b + (c - b) * along, [0.0, 1.0 - along, along]);
     }
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
-    (point - (a + ab * v + ac * w)).length_squared()
+    (a + ab * v + ac * w, [1.0 - v - w, v, w])
 }
 
 /// The tolerance a ray built on this thread uses: [`TRACER_TOLERANCE_METERS`],

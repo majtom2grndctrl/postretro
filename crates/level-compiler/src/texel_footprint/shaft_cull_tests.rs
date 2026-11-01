@@ -312,7 +312,7 @@ const TILE_B: (i32, i32) = (1, 0);
 
 /// Place the triangle `at(offset)` builds so its gap from tile B's hull,
 /// along its own normal (`normal`) or along `axis`, is `ratio` times its
-/// margin, to within 5%. Returns the triangle and its (gap, margin).
+/// margin, to within 2%. Returns the triangle and its (gap, margin).
 fn place(
     fixture: &Fixture,
     light: &MapLight,
@@ -357,17 +357,21 @@ fn hull_box(shaft: &ShaftCull, tile: (i32, i32)) -> (DVec3, DVec3) {
 }
 
 /// An independent `f64` recomputation of the axis margin the cull asks of
-/// `points` (index order) against a hull with box `(lo, hi)`:
+/// `points` (index order) against a hull with box `(lo, hi)`, from the
+/// expanded form the derivation states (`lightmap_layer/shaft_cull/margin.rs`):
 ///
-/// m_A = κ·[τ + w·4e_T·(6e_T·A + R·(5.2A + 256e_T)) / (‖e1 × e2‖·sin θ0) + e_H],
-/// A = 24R + 16e_T,
+/// m_A = κ·[τ + δ_r + (w·q / sin θ0)·(864R² + 2016e_T·R + 384e_T²) + e_H],
+/// δ_r = w·(4(M + R) + 20(e_T + τ)² / τ),
 ///
-/// with κ = 2, θ0 = 2°, w = 2⁻⁵³, e1 = b − a, e2 = c − a, e_T = max(‖e1‖,
-/// ‖e2‖), L the box's diagonal, R = ‖a − centre‖ + L/2 + e_T, and e_H the
-/// axis-weighted sum of 10u·R + 6u·L per world axis (u = 2⁻²⁴). R is taken
-/// from the box alone: the chart's own coordinate terms stay under a metre
-/// here. The point-rounding term is far below a percent and left out.
-fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3) -> f64 {
+/// with κ = 2, θ0 = 2°, w = 2⁻⁵³, u = 2⁻²⁴, e1 = b − a, e2 = c − a, e_T =
+/// max(‖e1‖, ‖e2‖), q = e_T / ‖e1 × e2‖, L the box's diagonal, R = ‖a −
+/// centre‖ + L/2 + e_T, M the box's largest coordinate magnitude, and e_H
+/// the axis-weighted sum of 10u·M_i + 6u·L per world axis, M_i the box's
+/// magnitude on axis i. The box alone sets M and M_i here: the chart's own
+/// coordinate terms (0.64 m on x, 0.32 m on z) lie inside it. Returns m_A
+/// and its strict term, κ·(w·q / sin θ0)·(…).
+fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3) -> (f64, f64) {
+    let kappa = 2.0;
     let u = 2.0_f64.powi(-24);
     let w = 2.0_f64.powi(-53);
     let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
@@ -375,15 +379,25 @@ fn expected_axis_margin(points: [Vec3; 3], (lo, hi): (DVec3, DVec3), axis: DVec3
     let [a, b, c] = points.map(|p| p.as_dvec3());
     let (e1, e2) = (b - a, c - a);
     let e_t = e1.length().max(e2.length());
+    let q = e_t / e1.cross(e2).length();
     let diag = (hi - lo).length();
     let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
-    let big_a = 24.0 * r + 16.0 * e_t;
-    let strict = w * 4.0 * e_t * (6.0 * e_t * big_a + r * (5.2 * big_a + 256.0 * e_t))
-        / (e1.cross(e2).length() * sin_floor);
-    let epsilon = lo.abs().max(hi.abs()) * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+    let magnitude = lo.abs().max(hi.abs());
+    let strict = w * q / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
+    let point_rounding =
+        w * (4.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
+    let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
     let e_h = axis.abs().dot(epsilon);
-    2.0 * (tau + strict + e_h)
+    (
+        kappa * (tau + point_rounding + strict + e_h),
+        kappa * strict,
+    )
 }
+
+/// How closely a margin must match [`expected_axis_margin`], relative: far
+/// above the `f64` evaluation's own rounding, far below the strict term's
+/// share of a margin near the origin.
+const MARGIN_AGREEMENT: f64 = 1.0e-12;
 
 /// Floor bakes of a margin fixture: the occluder triangle beside tile B.
 fn margin_fixture(occluder: [Vec3; 3]) -> Fixture {
@@ -453,9 +467,13 @@ fn shaft_cull_blocks_a_triangle_inside_its_margin_and_clears_one_outside_it() {
 // Margins near the origin: a wall the tile's rays meet at about 10°,
 // and a trim triangle whose narrowest angle (at its first corner) is 5°, each
 // with an edge along the chart's u axis, crossing B's shaft only if extended,
-// separated from B's hull along the v axis by 1.05 of that axis's margin.
-// Tile B clears, and each margin is within a quarter of an independent
-// recomputation from the triangle and the hull's box.
+// separated from B's hull along the v axis by 0.95 and by 1.05 of that axis's
+// margin. Tile B stays blocked at 0.95, since that gap bounds the hull's
+// distance to the triangle and so every axis's gap, and clears at 1.05. Each
+// margin matches an independent recomputation from the triangle and the
+// hull's box to within `MARGIN_AGREEMENT`: τ dominates it, but the match is
+// tight enough to see the strict `f64` term, so a coefficient error there
+// fails it.
 #[test]
 fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_margins() {
     let light = default_point([0.48, 2.0, 0.16]);
@@ -488,26 +506,34 @@ fn shaft_cull_clears_beside_a_grazing_wall_and_a_narrow_trim_just_past_their_mar
                 let a = DVec3::new(0.48 - 1.5, 2.0, reach + gap);
                 shape(a, rise).map(|p| p.as_vec3())
             };
-            let (occluder, (gap, margin)) = place(&bare, &light, floor, 1.05, Some(DVec3::Z), at);
-            let expected = expected_axis_margin(occluder, hull, DVec3::Z);
-            assert!(
-                (0.75..=1.25).contains(&(margin / expected)),
-                "{label}, floor {floor}: margin {margin}, recomputed {expected}"
-            );
-            // Its own plane crosses the hull: only the off-normal axis
-            // separates it.
-            let (normal, _) = shaft.certificates(TILE_B, occluder, DVec3::Z);
-            assert!(
-                normal.0 < 0.0,
-                "{label}: the plane cuts the shaft: {normal:?}"
-            );
-            let fixture = margin_fixture(occluder);
-            let stats = culled_matches_unculled(&fixture, &light, floor, label);
-            assert_eq!(
-                only_chart(stats).tiles[1].clear,
-                Some(true),
-                "{label}, floor {floor}: gap {gap}, margin {margin}"
-            );
+            for (ratio, expect_clear) in [(0.95, false), (1.05, true)] {
+                let (occluder, (gap, margin)) =
+                    place(&bare, &light, floor, ratio, Some(DVec3::Z), at);
+                let case = format!("{label} at {:.3} of its margin", gap / margin);
+                let (expected, strict) = expected_axis_margin(occluder, hull, DVec3::Z);
+                assert!(
+                    strict > 1.0e4 * MARGIN_AGREEMENT * expected,
+                    "{case}: the strict term {strict} is too small for the match to see"
+                );
+                assert!(
+                    ((margin - expected) / expected).abs() < MARGIN_AGREEMENT,
+                    "{case}, floor {floor}: margin {margin}, recomputed {expected}"
+                );
+                // Its own plane crosses the hull: only an off-normal axis
+                // can separate it.
+                let (normal, _) = shaft.certificates(TILE_B, occluder, DVec3::Z);
+                assert!(
+                    normal.0 < 0.0,
+                    "{case}: the plane cuts the shaft: {normal:?}"
+                );
+                let fixture = margin_fixture(occluder);
+                let stats = culled_matches_unculled(&fixture, &light, floor, &case);
+                assert_eq!(
+                    only_chart(stats).tiles[1].clear,
+                    Some(expect_clear),
+                    "{case}, floor {floor}: gap {gap}, margin {margin}"
+                );
+            }
         }
     }
 }

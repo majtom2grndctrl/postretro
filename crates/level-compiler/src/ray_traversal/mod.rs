@@ -13,7 +13,7 @@ mod hit_test;
 mod occlusion;
 mod pad;
 
-pub(crate) use hit_test::{TRACER_TOLERANCE_METERS, TraceRay};
+pub(crate) use hit_test::{TRACER_TOLERANCE_METERS, TraceRay, closest_point_on_triangle};
 #[cfg(test)]
 pub(crate) use hit_test::{with_planted_t, with_tolerance};
 pub(crate) use occlusion::{
@@ -33,7 +33,7 @@ pub(crate) use pad::{assert_padded, box_pad};
 /// whose computation reaches the tracer takes it as a key input, as the
 /// residency stage folds `PORTAL_WALK_EPOCH`, so one bump re-keys them all
 /// (`build_pipeline.md` §Build Cache).
-pub(crate) const TRACER_EPOCH: u32 = 1;
+pub(crate) const TRACER_EPOCH: u32 = 2;
 
 /// The first index-buffer offsets of a BVH primitive's triangles.
 pub(crate) fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {

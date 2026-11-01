@@ -412,9 +412,10 @@ impl TexelSampler {
     /// The texel's raw visibility in `[0, 1]`. `trace(from, to)`,
     /// `reach(from, to)` and `lead_in(from, to)` all return true for a clear
     /// segment. `trace` and `reach` skip their segment's first `RAY_EPSILON`,
-    /// as [`segment_clear`](crate::lightmap_bake::segment_clear) does, which
+    /// as [`segment_clear`](crate::ray_traversal::segment_clear) does, which
     /// the footprint relies on. `reach` tests the footprint's wall clip and
-    /// should keep its own occluder cache; `lead_in` is [`lead_in_clear`]
+    /// should keep its own occluder cache, for speed only: the cache never
+    /// changes an answer; `lead_in` is [`lead_in_clear`]
     /// against the chart's [`ClipBand`].
     pub(crate) fn visibility(
         &self,
@@ -626,6 +627,8 @@ pub(crate) use embedded_emitter::{EmbeddedEmitters, has_emitter_sphere};
 pub(crate) use embedded_emitter::{NO_EMBEDDED_EMITTERS, embedded_emitter_fraction};
 use pairing::EmitterPairing;
 
+#[cfg(test)]
+mod front_face_parity_tests;
 #[cfg(test)]
 mod shaft_cull_tests;
 #[cfg(test)]

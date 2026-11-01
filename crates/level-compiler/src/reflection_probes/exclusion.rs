@@ -149,9 +149,10 @@ pub(crate) fn classify_probes(scene: &ExclusionScene<'_>, probes: &[PlacedProbe]
 }
 
 /// [`classify_probes`], each probe's set restricted to brushes whose hulls
-/// touch its projection box (floor ignored, within `PLANE_TOLERANCE_M`): the
-/// stage's sets. The capture is the same either way: a ray reaching a hull
-/// off the box has left the box for good, so it ends outside it or misses
+/// touch its projection box (floor ignored, within `PLANE_TOLERANCE_M` and
+/// τ, `ProjectionBox::touches`): the stage's sets. The capture is the same
+/// either way: a ray reaching a hull off the box, a tolerance hit beside it
+/// included, has left the box for good, so it ends outside it or misses
 /// whether that hull is kept or excluded. Behind an earlier excluded brush
 /// both take the leak guard on that brush; with none, the kept hull's hit
 /// and the leak guard on the excluded hull read the same face at the same

@@ -41,8 +41,6 @@ pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard
 /// Bump only when the animated scatter calculation or its cached payload changes.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
 
-#[cfg(test)]
-use crate::ray_traversal::RAY_EPSILON;
 // Matches `sh_bake`'s direct-light seed with its ray axis fixed at zero, so a
 // soft penumbra samples the same emitter lattice in normal-free scatter and
 // direct-SH transport.
@@ -658,6 +656,7 @@ mod tests {
     use crate::light_namespaces::StaticBakedLights;
     use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
+    use crate::ray_traversal::RAY_EPSILON;
 
     fn light(light_type: LightType) -> MapLight {
         MapLight {
@@ -1167,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+    fn bounded_segment_clear_matches_brute_force_around_a_blocker() {
         // A blocker quad at y = 0 (x, z in [-1, 1]) split on its x = z
         // diagonal, plus tiles and a far floor below it: tree nodes past the
         // segment ends for the bound to prune.

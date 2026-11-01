@@ -14,12 +14,12 @@ use super::capture::{
 };
 use super::capture_exclusion::RayOutcome;
 use super::capture_exclusion_test_fixtures::{
-    BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, TRIM_TEXTURE, exclusion,
-    pool_entity, textured_room, toward,
+    BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE,
+    exclusion, pool_entity, textured_room, toward,
 };
-use super::hit::SceneTracer;
+use super::hit::{RAY_EPSILON, SceneTracer};
 use super::placement::PlacedProbe;
-use super::placement_test_fixtures::{engine, textured_box_brush};
+use super::placement_test_fixtures::{engine, engine_box, textured_box_brush};
 use super::shading::{CaptureScene, ShadeScratch};
 use super::tests::{alpha_light, tile_texel};
 use crate::bake_control::BakeControl;
@@ -35,8 +35,8 @@ pub(super) const IN_CEILING: [f64; 3] = [0.0, 0.0, 136.0];
 
 /// Points on the wall behind the pillar that the capture point sees only
 /// through the pillar's body, whose sides they leave into empty space. Test
-/// rays keep off the axis planes through the capture point: the BVH's slab
-/// test rejects a ray lying in a box face plane (`ray_traversal.rs`).
+/// rays keep off the axis planes through the capture point, so none runs
+/// along a fixture face's edge or plane.
 fn wall_behind_the_pillar() -> Vec<[f64; 3]> {
     let mut points = Vec::new();
     for y in [-4.5, 0.5, 4.5] {
@@ -617,4 +617,192 @@ fn oversize_cut_remaps_each_sub_face_to_its_parent_brush_and_the_mask_follows() 
         tracer.face_mask(by_table),
         tracer.face_mask(on_pillar.iter().copied())
     );
+}
+
+/// The pillar's top for the tolerance-hit rows, in map units: half the
+/// room's height, so its top face and back edge stand clear of the ceiling.
+const LOW_PILLAR_TOP: f64 = 64.0;
+
+/// A point inside the pillar topped at [`LOW_PILLAR_TOP`].
+const IN_LOW_PILLAR: [f64; 3] = [48.0, 0.0, 32.0];
+
+/// Map units per metre.
+const UNITS_PER_METER: f64 = 1.0 / 0.0254;
+
+/// `probe` with its projection box the map-unit box `min`..`max`.
+fn boxed(probe: &PlacedProbe, min: [f64; 3], max: [f64; 3]) -> PlacedProbe {
+    let (lo, hi) = engine_box(min, max);
+    PlacedProbe {
+        box_min: lo.as_vec3().to_array(),
+        box_max: hi.as_vec3().to_array(),
+        ..probe.clone()
+    }
+}
+
+/// A ray crossing the low pillar's top plane 0.3 mm past its back edge,
+/// within τ of the top face, and descending away from the pillar toward the
+/// wall behind: it passes 0.15 mm over the back edge and never enters the
+/// hull. Its origin, 1 m before the crossing; its direction; and the
+/// distance from the origin to the wall behind, about 3 m.
+fn past_the_pillar_top() -> (Vec3, Vec3, f32) {
+    let crossing = engine([
+        PILLAR_MAX[0] + 0.0003 * UNITS_PER_METER,
+        0.5,
+        LOW_PILLAR_TOP,
+    ]);
+    let direction = engine([1.0, 0.0, -0.5]).normalize();
+    let wall = engine([BACK_WALL_X, 0.0, 0.0]).z;
+    let to_wall = 1.0 + (wall - crossing.z) / direction.z;
+    (
+        (crossing - direction).as_vec3(),
+        direction.as_vec3(),
+        to_wall as f32,
+    )
+}
+
+// A tolerance hit on an excluded pillar's top, from a ray that passes beside
+// the hull, crosses nothing: the ray reads the wall behind as plainly hit,
+// with no leak guard. The projection box stops short of that wall, so a
+// ray that had skipped the pillar would take the guard there instead.
+#[test]
+fn a_tolerance_hit_beside_an_excluded_pillar_skips_nothing_and_reads_the_wall_behind() {
+    let room = CaptureFixture::pool_room(Some(LOW_PILLAR_TOP));
+    let pillar = room.brush_at(IN_LOW_PILLAR);
+    let back_wall = room.brush_at(IN_BACK_WALL);
+    let (origin, direction, to_wall) = past_the_pillar_top();
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, [96.0, ROOM_MAX[1], ROOM_MAX[2]]);
+        let none = exclusion(scene, &probe, &[]);
+        let first = *scene
+            .trace(origin, direction, &none)
+            .surface()
+            .expect("the top faces the ray");
+        assert_eq!(room.face_brush(first.face), Some(pillar), "{first:?}");
+        assert!((first.distance - 1.0).abs() < 1e-3, "{first:?}");
+        let filter = exclusion(scene, &probe, &[pillar]);
+        match scene.trace(origin, direction, &filter) {
+            RayOutcome::Hit(hit) => {
+                assert_eq!(room.face_brush(hit.face), Some(back_wall), "{hit:?}");
+                assert!((hit.distance - to_wall).abs() < 1e-3, "{hit:?}");
+            }
+            other => panic!("reads the wall behind, not {other:?}"),
+        }
+    });
+}
+
+// The same ray ending short of the wall reaches nothing past the tolerance
+// hit: it skipped no excluded brush, so it stays a miss.
+#[test]
+fn a_tolerance_hit_beside_an_excluded_pillar_then_nothing_stays_a_miss() {
+    let room = CaptureFixture::pool_room(Some(LOW_PILLAR_TOP));
+    let pillar = room.brush_at(IN_LOW_PILLAR);
+    let (origin, direction, to_wall) = past_the_pillar_top();
+    // Past the tolerance hit at 1 m, short of the wall.
+    let reach = 1.5;
+    assert!(to_wall > reach + 1.0, "{to_wall}");
+    room.with_scene(|scene, probes| {
+        let none = exclusion(scene, &probes[0], &[]);
+        let first = none.trace(&scene.tracer, origin, direction, reach);
+        assert_eq!(
+            first.surface().map(|hit| room.face_brush(hit.face)),
+            Some(Some(pillar)),
+            "{first:?}"
+        );
+        let filter = exclusion(scene, &probes[0], &[pillar]);
+        assert_eq!(
+            filter.trace(&scene.tracer, origin, direction, reach),
+            RayOutcome::Miss
+        );
+    });
+}
+
+// The same tolerance hit with the projection box stopping short of the
+// pillar: past a point outside the box the ray can only end outside it, so
+// it takes the leak guard on the pillar's top, the face the kept pillar
+// shows, rather than reading the wall behind. A brush off the box captures
+// the same kept or excluded.
+#[test]
+fn a_tolerance_hit_beside_an_excluded_pillar_off_the_box_takes_the_leak_guard_on_it() {
+    let room = CaptureFixture::pool_room(Some(LOW_PILLAR_TOP));
+    let pillar = room.brush_at(IN_LOW_PILLAR);
+    let (origin, direction, _) = past_the_pillar_top();
+    room.with_scene(|scene, probes| {
+        let probe = boxed(
+            &probes[0],
+            ROOM_MIN,
+            [PILLAR_MIN[0] - 8.0, ROOM_MAX[1], ROOM_MAX[2]],
+        );
+        let none = exclusion(scene, &probe, &[]);
+        let kept = scene.trace(origin, direction, &none);
+        let RayOutcome::Hit(first) = kept else {
+            panic!("the top faces the ray, not {kept:?}");
+        };
+        assert_eq!(room.face_brush(first.face), Some(pillar), "{first:?}");
+        let filter = exclusion(scene, &probe, &[pillar]);
+        assert_eq!(
+            scene.trace(origin, direction, &filter),
+            RayOutcome::LeakGuard(first)
+        );
+    });
+}
+
+// A ray within τ of the low pillar's top back corner, outside the hull,
+// takes a tolerance hit on both front faces that meet there, the top and
+// the side, and never enters the hull. Neither is a crossing, so neither
+// spends the hull passes (one per excluded brush, plus one): the ray still
+// reaches the floor past the pillar.
+#[test]
+fn two_tolerance_hits_at_an_excluded_pillars_corner_still_reach_the_kept_hit() {
+    let room = CaptureFixture::pool_room(Some(LOW_PILLAR_TOP));
+    let pillar = room.brush_at(IN_LOW_PILLAR);
+    let floor = room.brush_at([72.0, 24.0, -8.0]);
+    // 0.2 mm past the back, 0.1 mm off the side and 0.1 mm over the top.
+    let near_corner = engine([
+        PILLAR_MAX[0] + 0.0002 * UNITS_PER_METER,
+        PILLAR_MIN[1] - 0.0001 * UNITS_PER_METER,
+        LOW_PILLAR_TOP + 0.0001 * UNITS_PER_METER,
+    ]);
+    // Down through the top's plane, then into the side's (map +y), heading
+    // away from the back (map +x): the top's crossing lies 0.23 mm off the
+    // top and the side's 0.25 mm off the side.
+    let direction = engine([0.5, 1.0, -2.0]).normalize();
+    let to_floor = (1.0 + near_corner.y / -direction.y) as f32;
+    let (origin, direction) = ((near_corner - direction).as_vec3(), direction.as_vec3());
+    room.with_scene(|scene, probes| {
+        let mask = scene
+            .tracer
+            .face_mask(room.brush_faces.of(pillar).iter().copied());
+        let mut min = RAY_EPSILON;
+        let mut beside = Vec::new();
+        let kept = loop {
+            let masked =
+                scene
+                    .tracer
+                    .closest_hit_masked(origin, direction, min, scene.max_distance, &mask);
+            let Some(skipped) = masked.skipped else {
+                break masked.hit;
+            };
+            assert_eq!(room.face_brush(skipped.face), Some(pillar), "{skipped:?}");
+            assert!((skipped.distance - 1.0).abs() < 1e-3, "{skipped:?}");
+            beside.push(skipped.face);
+            min = skipped.distance;
+        };
+        beside.sort_unstable();
+        beside.dedup();
+        assert!(
+            beside.len() >= 2,
+            "two faces take tolerance hits: {beside:?}"
+        );
+        assert_eq!(kept.map(|hit| room.face_brush(hit.face)), Some(Some(floor)));
+
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let filter = exclusion(scene, &probe, &[pillar]);
+        match scene.trace(origin, direction, &filter) {
+            RayOutcome::Hit(hit) => {
+                assert_eq!(room.face_brush(hit.face), Some(floor), "{hit:?}");
+                assert!((hit.distance - to_floor).abs() < 1e-3, "{hit:?}");
+            }
+            other => panic!("reaches the floor, not {other:?}"),
+        }
+    });
 }

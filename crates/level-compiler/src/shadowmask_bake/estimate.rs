@@ -32,9 +32,7 @@ pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
 /// Each sample runs the walk's own visibility sampler (receiver footprint,
 /// seed and sample count), so a sample reads what the walk bakes at that
-/// texel, barring the occluder cache's documented rounding catch
-/// (`segment_clear_remembering`): the estimate's caches remember other
-/// triangles at a texel than the walk's do. A thin own segment with no lattice
+/// texel, whatever its caches hold. A thin own segment with no lattice
 /// coordinate is sampled at its centre; the tag names that placement so a
 /// build without it never shares a memo entry.
 const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";

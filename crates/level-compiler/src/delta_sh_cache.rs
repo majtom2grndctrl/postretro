@@ -67,8 +67,7 @@ pub(crate) struct DeltaShEntryKeyInputs<'a> {
     pub(crate) valid_probe_mask: u64,
     pub(crate) seed_axis: u64,
     pub(crate) light: &'a MapLight,
-    /// Folded last. Only the indirect delta caches; the direct-delta stages'
-    /// dormant test keys pass 0, having no entry to re-key.
+    /// Folded last. Production keys pass `TRACER_EPOCH`; test keys may pass 0.
     pub(crate) tracer_epoch: u32,
 }
 

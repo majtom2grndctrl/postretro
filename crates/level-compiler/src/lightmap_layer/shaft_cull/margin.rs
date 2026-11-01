@@ -7,39 +7,48 @@
 //! `f32` corners in index order, e1 = b − a, e2 = c − a in `f64`, exact;
 //! N = e1 × e2; ρ = ‖e1‖‖e2‖/‖N‖; e_T = max(‖e1‖, ‖e2‖); q = e_T/‖N‖;
 //! B the hull's box, L = diag(B) ≥ every t_max; S_T = ‖a − centre(B)‖ + ½L ≥
-//! ‖x − a‖ for every hull point x, and R_T = S_T + e_T ≥ ‖v − o‖ for every
-//! corner v and ray origin o in the hull; θ the ray's angle to plane(T); τ
-//! the tracer tolerance ([`TRACER_TOLERANCE_METERS`]).
+//! ‖x − a‖ for every hull point x, and R_T = S_T + e_T ≥ ‖v − x‖ for every
+//! corner v and hull point x, ray origins included; θ the ray's angle to
+//! plane(T); τ the tracer tolerance ([`TRACER_TOLERANCE_METERS`]). A star
+//! marks an exact value; d is the ray's direction, k_z its largest axis.
 //!
 //! The hit test (`ray_traversal::TraceRay`, Woop et al. 2013 in `f64`)
-//! projects each corner along the ray and shears it onto the ray's axis. An
+//! projects each corner along the ray, a shear onto the plane across k_z. An
 //! accepted hit has the ray within 2τ of the projected triangle, whose
 //! diameter the shear stretches at most twice, so every projected coordinate
 //! is at most P = 4e_T + 2τ (P_s = 4e_T for a strict hit, the ray inside).
 //!
-//! - **Rounding.** Each projected coordinate is off by at most 6w·R_T (v − o,
-//!   the shear and its product); an edge function, a 2×2 cross of them, by
-//!   δE ≤ w·P·A with A = 24R_T + 4P; det = ΣE by δdet ≤ w·P(3A + 12P); the
-//!   scaled distance T = s_z·ΣE·v_z by w·√3·R_T·P(3A + 30P). |det| ≥
-//!   ‖N‖ sin θ, the projected area.
-//! - **The accepted point.** Y = o + t·d at the computed t, a point of the
-//!   tested segment. Its height off plane(T) is |t − t*| sin θ, the crossing
-//!   t* exact: H ≤ w·R_T·P(5.2A + 64P)/‖N‖, with no ray-angle term (the
-//!   1/sin θ in t's error cancels the 1/sin θ along the ray), and no τ: a
-//!   tolerance hit still crosses the plane at t*. A strict hit's crossing
-//!   lies within 6e_T·δE/|det| of T in its plane (negative barycentrics
-//!   sum at most 3δE/|det|), and Y within that plus H/sin θ. A tolerance hit
-//!   is accepted only when the computed Y lies within τ of T, so Y lies
-//!   within τ + δ_r, δ_r = 4w(M + R_T) + 20w(e_T + τ)²/τ the rounding of
-//!   Y's coordinates (magnitude M) and of the squared distance.
+//! - **Rounding.** Each projected coordinate is off by at most δp = 6w·R_T
+//!   (v − o, the shear ratio, its product, the difference). An edge function
+//!   E, a 2×2 cross of them with |E| ≤ 2P², is off by δE ≤ 4P·δp + 4wP² =
+//!   w·P·A, A = 24R_T + 4P; det = ΣE, two sums, by δdet ≤ 3δE + 10wP² =
+//!   w·P(3A + 10P). Each depth z = s_z·(v − o)_kz rounds three times, with
+//!   |z| ≤ R_T/|d_kz|, so the scaled distance T = Σ E·z is off by δT ≤
+//!   (R_T/|d_kz|)·w·P(3A + 34P): 3δE from the edge functions, 18wP² from the
+//!   depths, 16wP² from three products and two sums. |det*| =
+//!   ‖N‖ sin θ/|d_kz| ≥ ‖N‖ sin θ, the projected area.
+//! - **The accepted point.** Y = o + t·d at t = T/det, which acceptance puts
+//!   below t_max ≤ L ≤ 2R_T. Its height off plane(T) is H = |t − t*| sin θ =
+//!   |(t − t*)·det*|·|d_kz|/‖N‖, with no ray-angle term, and
+//!   (t − t*)·det* = δT − t·δdet exactly. So H ≤ w·R_T·P(9A + 54P)/‖N‖:
+//!   3A + 34P from δT, whose 1/|d_kz| cancels, and 2(3A + 10P) from t·δdet.
+//!   No τ enters: a tolerance hit still crosses the plane at t*. The two
+//!   parts are bounded apart; their partial cancellation (the δE parts sum
+//!   to Σ δE·(z − t)) is left unclaimed, as the cull only gains speed from
+//!   it. A strict hit's crossing lies within 6e_T·δE/|det*| of T in its
+//!   plane (negative barycentrics sum at most 3δE/|det*|, each corner within
+//!   e_T of a), and Y within that plus H/sin θ. A tolerance hit is accepted
+//!   only when the computed Y lies within τ of T, so Y lies within τ + δ_r,
+//!   δ_r = 4w(M + R_T) + 20w(e_T + τ)²/τ the rounding of Y's coordinates
+//!   (magnitude M) and of the squared distance.
 //! - **m_N.** Height alone: m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)], H_s at
 //!   P_s for strict hits, H at P (capped by the tolerance check) for
 //!   tolerance hits.
 //! - **m_A: τ and the 2° floor.** On any other axis the in-plane reach adds:
-//!   m_A(a) = κ[τ + δ_r + w·P_s(6e_T·A_s + R_T(5.2A_s + 64P_s))/(‖N‖ sin θ0) +
+//!   m_A(a) = κ[τ + δ_r + w·P_s(6e_T·A_s + R_T(9A_s + 54P_s))/(‖N‖ sin θ0) +
 //!   e_H(a)], A_s = 24R_T + 4P_s, taken at θ0 ([`SIN_ANGLE_FLOOR`]): the
 //!   strict term grows without bound as θ → 0. With P_s = 4e_T it is
-//!   (w·q/sin θ0)(500R_T² + 2000e_T·R_T + 400e_T²), coefficients rounded up.
+//!   exactly (w·q/sin θ0)(864R_T² + 2016e_T·R_T + 384e_T²).
 //! - **Sampler endpoints.** The hull is exact over the sampler's `f32`
 //!   inputs. The `f32` segment ends stray per world axis by ε_i = 10u·R_i +
 //!   6u·L ([`POSITION_ULPS`], [`LENGTH_ULPS`]): 7u·R_i for the texel centre,
@@ -48,16 +57,17 @@
 //!   larger of the chart frame's terms ([`Hull::terms`]) and B's coordinates.
 //!   Along a unit axis this adds e_H(a) = Σ|aᵢ|ε_i ≤ ‖ε‖. A sampler change
 //!   that adds an `f32` operation to a segment end re-counts ε_i.
-//! - **κ.** [`KAPPA`] multiplies each sum, for second-order terms, ‖d‖ ≠ 1
-//!   and the `f64` evaluation of gaps and margins. The rest guards an
-//!   operation miscount.
+//! - **κ.** [`KAPPA`] multiplies each sum, for second-order terms, ‖d‖ ≠ 1,
+//!   Y past t_max by the rounding of t_max·|det| (w·L), and the `f64`
+//!   evaluation of gaps and margins. Together they need a negligible share
+//!   of it, so nearly a factor of 2 is left for an operation miscount.
 //!
 //! A gap at or past its margin admits no accepted hit.
 //!
 //! **Query growth.** A triangle at box distance D has R_T ≤ D + K, K =
 //! 3e_T + diag. So m_A ≤ κ[c₀ + c₁R + c₂R²], R = D + K, with the map's
-//! maxima of q, q·e_T, q·e_T² and e_T: c₂ = 500w·q/sin θ0, c₁ = 4w +
-//! 2000w·(q·e_T)/sin θ0, c₀ = τ + 4wM + 20w(e_T + τ)²/τ + 400w·(q·e_T²)/sin θ0 +
+//! maxima of q, q·e_T, q·e_T² and e_T: c₂ = 864w·q/sin θ0, c₁ = 4w +
+//! 2016w·(q·e_T)/sin θ0, c₀ = τ + 4wM + 20w(e_T + τ)²/τ + 384w·(q·e_T²)/sin θ0 +
 //! ‖ε‖. m_A ≤ D between the roots of κc₂R² + (κc₁ − 1)R + κc₀ + K; the
 //! lower is the growth, and the upper must reach past every triangle the
 //! map holds, or the query cannot bound the candidates and the cull stays
@@ -82,9 +92,10 @@ pub(super) const UNIT_ROUNDOFF: f64 = 1.0 / 16_777_216.0;
 pub(super) const F64_ROUNDOFF: f64 = f64::EPSILON / 2.0;
 
 /// Safety factor on every margin. It covers second-order rounding terms, a
-/// ray direction a few ulps off unit length, and the `f64` evaluation of
-/// gaps and margins, with room for an operation miscount.
-const KAPPA: f64 = 2.0;
+/// ray direction a few ulps off unit length, an accepted point up to w·L
+/// past the segment end, and the `f64` evaluation of gaps and margins, with
+/// room for an operation miscount.
+pub(super) const KAPPA: f64 = 2.0;
 
 /// Sine of the ray-angle floor, 2°. Off a triangle's own normal, a strict
 /// hit's in-plane reach grows as 1/sin θ, so margins on other axes hold only
@@ -162,12 +173,12 @@ impl ShaftScene {
     pub(super) fn query_growth(&self, bounds: &HullBounds) -> Option<f64> {
         let (w, tau) = (F64_ROUNDOFF, tolerance());
         let k = 3.0 * self.edge + bounds.diag;
-        let c2 = 500.0 * w * self.reach / SIN_ANGLE_FLOOR;
-        let c1 = 4.0 * w + 2000.0 * w * self.reach_edge / SIN_ANGLE_FLOOR;
+        let c2 = 864.0 * w * self.reach / SIN_ANGLE_FLOOR;
+        let c1 = 4.0 * w + 2016.0 * w * self.reach_edge / SIN_ANGLE_FLOOR;
         let c0 = tau
             + 4.0 * w * bounds.magnitude
             + 20.0 * w * (self.edge + tau).powi(2) / tau
-            + 400.0 * w * self.reach_edge2 / SIN_ANGLE_FLOOR
+            + 384.0 * w * self.reach_edge2 / SIN_ANGLE_FLOOR
             + bounds.sampler_error.length();
         let (a, b, c) = (KAPPA * c2, 1.0 - KAPPA * c1, KAPPA * c0 + k);
         let disc = b * b - 4.0 * a * c;
@@ -345,10 +356,7 @@ impl HullBounds {
         let gap = (offset - hi).max(lo - offset);
         let r_t = reach + tri.longest_edge;
         let tau = tolerance();
-        let height = |p: f64| {
-            let a = 24.0 * r_t + 4.0 * p;
-            F64_ROUNDOFF * r_t * p * (5.2 * a + 64.0 * p) / tri.area
-        };
+        let height = |p: f64| height_times_area(r_t, p) / tri.area;
         let strict = height(4.0 * tri.longest_edge);
         let tolerant =
             height(4.0 * tri.longest_edge + 2.0 * tau).min(tau + self.point_rounding(tri, r_t));
@@ -398,8 +406,7 @@ impl HullBounds {
         let r_t = reach + tri.longest_edge;
         let e = tri.longest_edge;
         let p = 4.0 * e;
-        let a = 24.0 * r_t + 4.0 * p;
-        let strict = F64_ROUNDOFF * p * (6.0 * e * a + r_t * (5.2 * a + 64.0 * p))
+        let strict = (6.0 * e * edge_rounding(r_t, p) + height_times_area(r_t, p))
             / (tri.area * SIN_ANGLE_FLOOR);
         tolerance() + self.point_rounding(tri, r_t) + strict
     }
@@ -461,6 +468,22 @@ impl HullBounds {
             })
         })
     }
+}
+
+/// δE = w·P·A, A = 24R_T + 4P: how far an edge function can round, for
+/// corners within `r_t` of the ray's origin and projected coordinates up to
+/// `p`.
+fn edge_rounding(r_t: f64, p: f64) -> f64 {
+    F64_ROUNDOFF * p * (24.0 * r_t + 4.0 * p)
+}
+
+/// ‖N‖·H, the accepted point's height off the plane times ‖N‖, for the
+/// same `r_t` and `p`: R_T·[(3δE + 34wP²) from δT + 2(3δE + 10wP²) from
+/// t·δdet], which is w·R_T·P(9A + 54P).
+fn height_times_area(r_t: f64, p: f64) -> f64 {
+    let delta_e = edge_rounding(r_t, p);
+    let product = F64_ROUNDOFF * p * p;
+    r_t * ((3.0 * delta_e + 34.0 * product) + 2.0 * (3.0 * delta_e + 10.0 * product))
 }
 
 /// One unit separating axis with the hull's range and e_H along it. The

@@ -1,4 +1,4 @@
-// Tests for SH ray generation and bounded BVH traversal against full scans.
+// Tests for SH ray generation and bounded BVH traversal against brute force.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use bvh::bvh::Bvh;
@@ -208,12 +208,14 @@ fn bounded_segment_clear_matches_brute_force_at_segment_end() {
 
 #[test]
 fn bounded_traversal_matches_brute_force_on_face_plane_rays() {
-    // Rays lying in a box face plane, parallel to it: the floor's flat box
-    // (y = -6), the wall's (x = 8), and the crease leaf's top face (y = 1).
-    // The slab is NaN there; the conservative test drops that axis and the
-    // padded box holds the ray, so the traversal reaches the triangles and
-    // answers as the brute-force reference does. A ray in a triangle's own
-    // plane hits it nowhere (`det == 0`).
+    // Rays lying exactly in a face plane of the padded tree's own boxes:
+    // the origin coordinate equals the box's min or max on an axis and the
+    // direction component there is +0 or -0, so `(face - o) * +-inf` is NaN
+    // in the slab test. The conservative test drops that axis and the
+    // padded box holds the ray, so the traversal still reaches the
+    // triangles and answers as the brute-force reference does. (On the
+    // padded tree no box face lies in a triangle's plane, so this is the
+    // only way a NaN slab arises during traversal.)
     let geo = crease_geometry(true);
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
@@ -222,27 +224,96 @@ fn bounded_traversal_matches_brute_force_on_face_plane_rays() {
         primitives: &prims,
         geometry: &geo,
     };
-    let rays = [
-        (Vec3::new(-30.0, -6.0, 0.0), Vec3::X),
-        (Vec3::new(8.0, 2.0, -30.0), Vec3::Z),
-        (Vec3::new(-5.0, 1.0, 0.0), Vec3::X),
-        (Vec3::new(0.0, 1.0, -5.0), Vec3::Z),
-    ];
-    for (origin, dir) in rays {
-        for max in [f32::INFINITY, 12.0] {
-            assert_eq!(
-                hit_parts(closest_hit(&ctx, origin, dir, max)),
-                hit_parts(closest_hit_brute_force(&ctx, origin, dir, max)),
-                "ray {origin} {dir}, max {max}"
-            );
+    let mut boxes = Vec::new();
+    for node in &bvh.nodes {
+        if let bvh::bvh::BvhNode::Node {
+            child_l_aabb,
+            child_r_aabb,
+            ..
+        } = node
+        {
+            boxes.push(*child_l_aabb);
+            boxes.push(*child_r_aabb);
         }
-        let to = origin + dir * 40.0;
-        assert_eq!(
-            segment_clear(&ctx, origin, to),
-            segment_clear_brute_force(&ctx, origin, to),
-            "segment {origin} -> {to}"
-        );
     }
+    assert!(!boxes.is_empty(), "the tree has interior nodes");
+
+    let zeros = [0.0f32, -0.0f32];
+    let (mut vertical, mut vertical_blocked) = (0, 0);
+    for aabb in &boxes {
+        let min = [aabb.min.x, aabb.min.y, aabb.min.z];
+        let max = [aabb.max.x, aabb.max.y, aabb.max.z];
+        let center = Vec3::new(
+            0.5 * (min[0] + max[0]),
+            0.5 * (min[1] + max[1]),
+            0.5 * (min[2] + max[2]),
+        );
+        for axis in 0..3 {
+            for face in [min[axis], max[axis]] {
+                for zero_x in zeros {
+                    for zero_z in zeros {
+                        let (origin, dir) = if axis == 1 {
+                            // In a y face plane, along +X at the box's z:
+                            // reaches the wall when it is in range.
+                            (
+                                Vec3::new(-30.0, face, center.z.clamp(-19.0, 19.0)),
+                                Vec3::new(1.0, zero_x, zero_z),
+                            )
+                        } else {
+                            // In an x or z face plane, straight down from
+                            // above: the floor at y = -6 is always in the
+                            // way when the ray is over it.
+                            let mut origin = Vec3::new(center.x, 30.0, center.z);
+                            origin[axis] = face;
+                            (origin, Vec3::new(zero_x, -1.0, zero_z))
+                        };
+                        assert_eq!(origin[axis], face);
+                        assert_eq!(dir[axis], 0.0);
+                        let to = origin + dir * 40.0;
+                        let bounded_segment = segment_clear(&ctx, origin, to);
+                        assert_eq!(
+                            bounded_segment,
+                            segment_clear_brute_force(&ctx, origin, to),
+                            "segment {origin} -> {to}"
+                        );
+                        for max_distance in [f32::INFINITY, 45.0] {
+                            let bounded = hit_parts(closest_hit(&ctx, origin, dir, max_distance));
+                            assert_eq!(
+                                bounded,
+                                hit_parts(closest_hit_brute_force(&ctx, origin, dir, max_distance)),
+                                "ray {origin} {dir}, max {max_distance}"
+                            );
+                            if axis != 1 {
+                                // Over the floor (|x|, |z| < 19.9), so the
+                                // ray lands on it or on a nearer tile: a
+                                // hit within 36 m, and a blocked segment.
+                                let over_floor = origin.x.abs() < 19.9 && origin.z.abs() < 19.9;
+                                if over_floor {
+                                    let (distance, _) =
+                                        bounded.expect("a ray over the floor hits something");
+                                    assert!(distance <= 36.0 + 1e-3, "hit at {distance}");
+                                    assert!(
+                                        !bounded_segment,
+                                        "segment {origin} -> {to} is blocked"
+                                    );
+                                    if max_distance.is_infinite() {
+                                        vertical_blocked += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if axis != 1 {
+                            vertical += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        vertical > 0 && vertical_blocked > 0,
+        "{vertical} vertical rays, {vertical_blocked} hit"
+    );
 }
 
 #[test]
@@ -459,7 +530,7 @@ fn conservative_box_test_accepts_the_flat_witness_leaf_box() {
 /// Möller–Trumbore, whose `t` error near a sliver's ends reached metres; the
 /// `f64` test's stays far inside the slack here.
 #[test]
-fn bounded_queries_match_full_scan_on_random_rounding_stress() {
+fn bounded_queries_match_brute_force_on_random_rounding_stress() {
     let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
     let last_occluder = std::cell::Cell::new(None);
     let centre = Vec3::new(210.0, 190.0, -260.0);

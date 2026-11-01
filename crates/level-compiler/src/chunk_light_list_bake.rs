@@ -38,8 +38,9 @@ pub const CHUNK_LIGHT_LIST_STAGE_VERSION: u32 = 3;
 /// Cap total `offset table + index list` memory at 16 MB.
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
-/// Offset along ray direction to avoid self-intersection on the emitting surface.
-const RAY_EPSILON: f32 = 1.0e-3;
+// Offset along ray direction to avoid self-intersection on the emitting surface;
+// the tracer's shared offset.
+use crate::ray_traversal::RAY_EPSILON;
 
 /// Move a receiver sample slightly into the light-facing side of its surface
 /// before tracing, so the receiving triangle is not mistaken for an occluder.
@@ -3400,7 +3401,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+    fn bounded_segment_clear_matches_brute_force_around_a_blocker() {
         // A blocker quad at y = 2 split on its x = z diagonal, plus tiles and a
         // far floor below it: tree nodes past the segment ends to prune.
         let mut triangles = Vec::new();

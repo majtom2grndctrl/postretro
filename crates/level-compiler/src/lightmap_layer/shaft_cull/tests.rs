@@ -210,11 +210,14 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
 
 // The axis margin is sound against the hit test above the angle floor: a
 // segment at or above the floor that crosses a triangle's plane just outside
-// one of its edges is never hit once its gap reaches m_A, along that edge's
-// in-plane outward normal or along any other unit axis, N components
-// included. Crossings land a random multiple of τ outside the edge, so the
-// tolerance's hits are the phantom ones. Steeper rays than the floor only; a
-// ray below it is the accepted gap and is not asserted.
+// one of its edges, or past one of its corners, is never hit once its gap
+// reaches m_A, along the direction from the triangle to the crossing or
+// along any other unit axis, N components included. Crossings land a random
+// multiple of τ outside the edge, or past its first corner in that corner's
+// normal cone, where the tolerance's region is round; so the tolerance's
+// hits are the phantom ones, and the worst ratio shows they reach τ itself.
+// Steeper rays than the floor only; a ray below it is the accepted gap and
+// is not asserted.
 #[test]
 fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     let mut stream = Stream(0x5348_4146_545f_4131);
@@ -222,6 +225,8 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     // are the ones a search without them would draw.
     let mut axis_stream = Stream(0x5348_4146_545f_4132);
     let mut search = Search::default();
+    // The corner cases alone, also recorded in `search`.
+    let mut round_corners = Search::default();
     let mut other_axes = Search::default();
     let mut below_floor = 0;
     for _ in 0..150_000 {
@@ -253,9 +258,24 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         let sin = stream.range(0.8 * SIN_ANGLE_FLOOR, 1.0);
         let length = stream.log_range(0.01, 30.0);
         let scale = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
-        let along_edge = stream.range(0.05, 0.95);
         let beyond = stream.log_range(1.0e-2, 60.0);
-        let crossing = p0 + (p1 - p0) * along_edge + outward * scale * beyond;
+        // A quarter of the crossings lie past p0 instead, along a direction
+        // in its normal cone, between the outward normals of its two edges:
+        // the triangle's nearest point is p0 itself, so the gap along that
+        // direction is the crossing's distance. The ray runs across it.
+        let at_corner = stream.unit() < 0.25;
+        let (foot, outward, run) = if at_corner {
+            let mut other = normal.cross((opposite - p0).normalize());
+            if other.dot(p1 - p0) > 0.0 {
+                other = -other;
+            }
+            let mix = stream.unit();
+            let toward = (outward * mix + other * (1.0 - mix)).normalize_or(outward);
+            (p0, toward, normal.cross(toward))
+        } else {
+            (p0 + (p1 - p0) * stream.range(0.05, 0.95), outward, run)
+        };
+        let crossing = foot + outward * scale * beyond;
         let sign = if stream.unit() < 0.5 { 1.0 } else { -1.0 };
         let dir = run * sign * (1.0 - sin * sin).sqrt() + normal * sin;
         let before = stream.range(0.1, 0.9);
@@ -270,11 +290,14 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         if let Some(certificate) = bounds.axis_certificate(&candidate, outward) {
             for hit in hits {
                 search.record(hit, certificate);
+                if at_corner {
+                    round_corners.record(hit, certificate);
+                }
             }
         }
-        // Mostly the edge normal tipped toward a random direction, N′
-        // included, by up to a few times the angle that still keeps the gap
-        // open; now and then a direction drawn at random.
+        // Mostly that direction tipped toward a random one, N included, by
+        // up to a few times the angle that still keeps the gap open; now and
+        // then a direction drawn at random.
         let axis = if axis_stream.unit() < 0.125 {
             axis_stream.direction()
         } else {
@@ -292,7 +315,19 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         search.phantom_hits > 100 && search.certified > 10_000,
         "the search must reach the rounding regime and the margin: {search:?}"
     );
-    assert!(search.worst_ratio > 0.01, "{search:?}");
+    // m_A ≥ κτ, so a worst ratio past 0.9/κ means some accepted hit lay at
+    // least 0.9τ from the triangle: the search reaches the tolerance's
+    // boundary, not only its inside. Near the origin m_A is within a few
+    // percent of κτ, so the best ratio approaches 1/κ.
+    let boundary = 0.9 / KAPPA;
+    assert!(
+        search.worst_ratio > boundary,
+        "tolerance hits must reach near τ: {search:?}"
+    );
+    assert!(
+        round_corners.phantom_hits > 100 && round_corners.worst_ratio > boundary,
+        "the corner cases must reach near τ too: {round_corners:?}"
+    );
     assert_eq!(other_axes.violations, 0, "{other_axes:?}");
     assert!(
         other_axes.certified > 2_000,
@@ -356,6 +391,74 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
     assert!(
         (0.001..0.0011).contains(&growth),
         "growth {growth}: κτ sets it near 1 mm, far below the hull's size"
+    );
+}
+
+// The strict `f64` terms match their derivation where they dominate: a 1 cm
+// triangle 3 km from a 1 m segment at the origin, where R_T² carries the hit
+// test's rounding past τ and the sampler's endpoint terms stay small. Both
+// margins are recomputed from the forms margin.rs states, H as
+// w·R_T·P(9A + 54P)/‖N‖ and the in-plane reach expanded in R_T, not from the
+// margin code's own expressions, so a coefficient error in either fails.
+#[test]
+fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
+    let kappa = 2.0;
+    let (w, u) = (2.0_f64.powi(-53), 2.0_f64.powi(-24));
+    let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
+    let sin_floor = 2.0_f64.to_radians().sin();
+    let (from, to) = (Vec3::ZERO, Vec3::Y);
+    let bounds = segment_bounds(from, to);
+    let points = [
+        Vec3::new(3000.0, 0.5, 0.5),
+        Vec3::new(3000.0, 0.51, 0.5),
+        Vec3::new(3000.0, 0.5, 0.51),
+    ];
+    let candidate = Candidate::of(points).unwrap();
+    let [a, b, c] = points.map(Vec3::as_dvec3);
+    let (e1, e2) = (b - a, c - a);
+    let e_t = e1.length().max(e2.length());
+    let area = e1.cross(e2).length();
+    let (lo, hi) = (from.as_dvec3(), to.as_dvec3());
+    let diag = (hi - lo).length();
+    let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
+    let magnitude = lo.abs().max(hi.abs());
+    let point_rounding =
+        w * (4.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
+    let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+    let relative = |margin: f64, expected: f64| ((margin - expected) / expected).abs();
+
+    // m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)].
+    let height = |p: f64| w * r * p * (9.0 * (24.0 * r + 4.0 * p) + 54.0 * p) / area;
+    let strict_height = height(4.0 * e_t);
+    let expected = kappa
+        * (strict_height
+            + height(4.0 * e_t + 2.0 * tau).min(tau + point_rounding)
+            + (candidate.normal / area).abs().dot(epsilon));
+    let (_, margin) = bounds.normal_certificate(&candidate, bounds.reach(&candidate));
+    assert!(
+        strict_height > 0.1 * tau,
+        "H_s {strict_height} must be a large share of m_N {expected}"
+    );
+    assert!(
+        relative(margin, expected) < 1.0e-12,
+        "m_N {margin}, derived {expected}"
+    );
+
+    // m_A = κ[τ + δ_r + (w·q/sin θ0)(864R² + 2016e_T·R + 384e_T²) + e_H(a)],
+    // along an in-plane axis.
+    let reach =
+        w * (e_t / area) / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
+    let expected = kappa * (tau + point_rounding + reach + epsilon.y);
+    let (_, margin) = bounds
+        .axis_certificate(&candidate, DVec3::Y)
+        .expect("a unit axis");
+    assert!(
+        reach > tau,
+        "the strict reach {reach} must outgrow τ here: m_A {expected}"
+    );
+    assert!(
+        relative(margin, expected) < 1.0e-12,
+        "m_A {margin}, derived {expected}"
     );
 }
 

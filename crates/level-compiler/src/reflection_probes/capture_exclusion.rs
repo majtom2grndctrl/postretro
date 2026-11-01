@@ -9,6 +9,7 @@ use super::placement::{PLANE_TOLERANCE_M, PlacedProbe};
 use crate::map_data::BrushVolume;
 use crate::partition::Aabb;
 use crate::partition::brush_bsp::REGION_CLASSIFICATION_EPSILON;
+use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 /// A point this far outside an excluded hull, off its planes, touches it.
 /// Brush CSG cuts both facing faces across a gap up to its 1 mm epsilon,
@@ -163,6 +164,12 @@ enum Crossing {
     Exit(f64),
     /// Into kept solid, or past the crossing bound.
     LeakGuard,
+    /// Never into the hull: the skipped face took a tolerance hit, within τ
+    /// of it in its plane, from a ray that passes beside the hull
+    /// (`ray_traversal::TRACER_TOLERANCE_METERS`). Nothing was crossed, so
+    /// inside the projection box the ray traces on past that hit as if it had
+    /// not skipped the face.
+    Beside,
 }
 
 impl<'a> ProbeExclusion<'a> {
@@ -313,8 +320,11 @@ impl<'a> ProbeExclusion<'a> {
     /// crosses into a kept brush inside the hull or in contact with it,
     /// through a side with surviving faces, fills there. A ray that skipped
     /// any excluded brush and then misses, or ends (traced or filled) outside
-    /// the projection box, takes the leak guard. Every distance is from
-    /// `origin`.
+    /// the projection box, takes the leak guard. A tolerance hit on an
+    /// excluded face whose hull the ray never enters is no crossing: inside
+    /// the box the ray traces on past it, and it neither counts as skipping
+    /// that brush nor spends a hull pass; outside the box it takes the leak
+    /// guard, as a crossing there would. Every distance is from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -330,10 +340,20 @@ impl<'a> ProbeExclusion<'a> {
         let (origin64, direction64) = (origin.as_dvec3(), direction.as_dvec3());
         let mut min_distance = RAY_EPSILON;
         let mut first_skipped: Option<SurfaceHit> = None;
-        // Each pass moves past one excluded hull, so the excluded set bounds
-        // them; a ray re-entering hulls past that takes the guard, as does a
-        // grazing ray that spends its passes re-entering the same hull.
-        for _ in 0..=self.excluded.len() {
+        // Each hull pass moves past one excluded hull, so the excluded set
+        // bounds them; a ray re-entering hulls past that takes the guard, as
+        // does a grazing ray that spends its passes re-entering the same
+        // hull. A pass beside a hull spends none of that budget, yet the loop
+        // still ends: every pass that goes on raises `min_distance` to at
+        // least its skipped hit's distance, and the next accepts only hits
+        // strictly past it. A triangle's distance along one ray is fixed, so
+        // each pass skips a different masked triangle, and the mask's
+        // triangles bound the passes.
+        let mut hull_passes = 0;
+        loop {
+            if hull_passes > self.excluded.len() {
+                return first_skipped.map_or(RayOutcome::Miss, RayOutcome::LeakGuard);
+            }
             let MaskedHit { hit, skipped } = tracer.closest_hit_masked(
                 origin,
                 direction,
@@ -344,7 +364,13 @@ impl<'a> ProbeExclusion<'a> {
             let Some(skipped) = skipped else {
                 return self.settle(hit, first_skipped, origin, direction);
             };
-            let first = *first_skipped.get_or_insert(skipped);
+            debug_assert!(
+                skipped.distance > min_distance,
+                "a skipped hit lies past the bound"
+            );
+            // Recorded only on a crossing: a pass beside the hull leaves it
+            // unset.
+            let first = first_skipped.unwrap_or(skipped);
             let slot = self.slot_of_face(skipped.face);
             debug_assert!(
                 slot.is_some(),
@@ -360,9 +386,24 @@ impl<'a> ProbeExclusion<'a> {
                 direction64,
                 f64::from(skipped.distance),
             ) {
+                // Outside the box the ray can only end outside it too, as
+                // the box is convex and holds the capture point: the leak
+                // guard's case. It reads `first`, the surface the kept brush
+                // shows there, so a brush off the box captures the same kept
+                // or excluded.
+                Crossing::Beside
+                    if !self
+                        .projection_box
+                        .holds(origin64 + direction64 * f64::from(skipped.distance)) =>
+                {
+                    return RayOutcome::LeakGuard(first);
+                }
+                // No hull crossed: trace on past the tolerance hit, which
+                // skips no excluded brush.
+                Crossing::Beside => min_distance = skipped.distance,
                 // A kept front face nearer than the fill hides it.
                 Crossing::Fill(fill) if hit.is_some_and(|hit| hit.distance < fill.distance) => {
-                    return self.settle(hit, first_skipped, origin, direction);
+                    return self.settle(hit, Some(first), origin, direction);
                 }
                 Crossing::Fill(fill) => {
                     let point = origin64 + direction64 * f64::from(fill.distance);
@@ -375,10 +416,13 @@ impl<'a> ProbeExclusion<'a> {
                 Crossing::LeakGuard => return RayOutcome::LeakGuard(first),
                 // Never at or before the skipped face itself, so each pass
                 // advances even when f32 rounds the exit below it.
-                Crossing::Exit(exit) => min_distance = (exit as f32).max(skipped.distance),
+                Crossing::Exit(exit) => {
+                    first_skipped = Some(first);
+                    min_distance = (exit as f32).max(skipped.distance);
+                    hull_passes += 1;
+                }
             }
         }
-        first_skipped.map_or(RayOutcome::Miss, RayOutcome::LeakGuard)
     }
 
     /// The ray's resolved hit, checked against the leak guard's miss and box
@@ -413,7 +457,8 @@ impl<'a> ProbeExclusion<'a> {
     /// CSG cut the facing faces across a gap that small, so no entry face
     /// would stop a re-trace. A level or gently rising ray leaving a
     /// pillar's side just under the ceiling enters the ceiling, if at all,
-    /// far from the pillar, so it re-traces onto the intact ceiling.
+    /// far from the pillar, so it re-traces onto the intact ceiling. A ray
+    /// that never enters the hull, its entry a tolerance hit, passes beside.
     fn cross(
         &self,
         tracer: &SceneTracer<'_>,
@@ -425,11 +470,9 @@ impl<'a> ProbeExclusion<'a> {
         let volumes = self.brushes.volumes;
         let mut reached = entry;
         let (enters, mut leaves) = self.span(self.excluded[slot], origin, direction);
-        // A tolerance hit on a face the ray passes beside, within τ of the
-        // hull but never inside it (`ray_traversal::TRACER_TOLERANCE_METERS`):
-        // there is no hull to cross, so the ray goes on past the hit.
+        // The ray misses the hull: its hit on the face was a tolerance hit.
         if enters > leaves {
-            return Crossing::Exit(entry);
+            return Crossing::Beside;
         }
         for _ in 0..self.excluded.len() {
             let exit = leaves.max(reached);
@@ -575,11 +618,13 @@ impl ProjectionBox {
             && point.y <= self.max.y + tolerance
     }
 
-    /// Whether `aabb` touches the box under [`Self::holds`]'s rule: within
-    /// [`PLANE_TOLERANCE_M`], its floor ignored. A hull that does not touch
-    /// it holds no point the box holds.
+    /// Whether `aabb` touches the box under [`Self::holds`]'s rule, its floor
+    /// ignored: within [`PLANE_TOLERANCE_M`], and τ more for a tolerance
+    /// hit, which lies up to τ off its triangle
+    /// ([`TRACER_TOLERANCE_METERS`]). A hull that does not touch it holds no
+    /// point the box holds, and no tolerance hit on its faces lands in it.
     pub(crate) fn touches(&self, aabb: &Aabb) -> bool {
-        let tolerance = PLANE_TOLERANCE_M;
+        let tolerance = PLANE_TOLERANCE_M + f64::from(TRACER_TOLERANCE_METERS);
         aabb.min.x <= self.max.x + tolerance
             && aabb.max.x >= self.min.x - tolerance
             && aabb.min.z <= self.max.z + tolerance

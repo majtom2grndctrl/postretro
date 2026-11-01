@@ -143,7 +143,8 @@ pub(super) fn bake_light_layer_chart_clipped(
     // One chart's texels are walked in order on one thread, so the occluder
     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
     // their own: they run between the light's rays and would otherwise evict
-    // the triangle that shadows the next texel.
+    // the triangle that shadows the next texel. The caches only reorder work;
+    // no answer depends on them.
     let last_occluder = Cell::new(None);
     let clip_occluder = Cell::new(None);
     for_each_light_layer_chart_texel(atlas, face_idx, |sample| {

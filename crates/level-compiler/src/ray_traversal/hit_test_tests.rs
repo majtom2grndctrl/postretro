@@ -61,7 +61,7 @@ fn f32_point(p: DVec3) -> Vec3 {
 }
 
 /// Two triangles in different faces sharing an axis-aligned edge, creased
-/// at a random dihedral (flat included), and a point exactly on the edge.
+/// at a random dihedral (flat included), and a point on the edge's interior.
 fn shared_edge(rng: &mut XorShift) -> SharedCase {
     let axis = rng.index(3);
     let (_, side_b, side_c) = axis_frame(axis);
@@ -97,9 +97,17 @@ fn shared_vertex(rng: &mut XorShift) -> SharedCase {
     SharedCase::new(rng, triangles, apex)
 }
 
-/// A segment through `case.target` that crosses every triangle's plane the
-/// same way, so it passes from one side of the shared surface to the other,
-/// from 3 mm to 10 km out; and whether every triangle's front faces it.
+/// A segment aimed at `case.target` from any direction that crosses every
+/// triangle's plane the same way, so it passes from one side of the shared
+/// surface to the other, from 3 mm to 10 km out; and whether every
+/// triangle's front faces it.
+///
+/// Rounding the endpoints to f32 moves the crossing off the target by up to
+/// half an ulp of the coordinate, 15 µm at 500 m: the ray crosses within
+/// rounding of the edge or vertex, not exactly on it. An f32 ray cannot pass
+/// exactly through a point at an arbitrary angle. The triangles cover that
+/// neighbourhood together, so the crossing still lies on one of them, and
+/// the watertight test must hit it at τ = 0.
 fn crossing_segment(rng: &mut XorShift, case: &SharedCase) -> (Vec3, Vec3, bool) {
     loop {
         let dir = rng.unit_vec();

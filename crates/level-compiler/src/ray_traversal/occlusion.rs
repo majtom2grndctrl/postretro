@@ -14,13 +14,13 @@ use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 
 /// Shadow ray self-intersection offset: a segment's trace starts this far
-/// along it and stops this far short of its end. The lightmap and animated
+/// along it and tests to its end. The lightmap and animated
 /// weight-map bakers share it; they must agree or chunk boundaries show seams.
 pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
 
 /// Whether nothing blocks the segment `from → to`, either face of a triangle
-/// counting. The trace starts [`RAY_EPSILON`] along the segment and stops
-/// that far short of its end.
+/// counting. The trace starts [`RAY_EPSILON`] along the segment and tests to
+/// its end.
 pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],

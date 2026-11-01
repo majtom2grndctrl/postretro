@@ -1,4 +1,4 @@
-# light-reach-cull — research
+# lightmap-reach-cull — research
 
 Derivation behind the brief's Decisions. Read at 343ff98b6. Evidence:
 
@@ -34,15 +34,20 @@ Here, the unculled walk's skipped texels are dark: their rays hit, and each hit 
 Exact alternatives, and why they lose:
 - *Cull only pairs with no traced texel.* Charts border the walls their light is behind, so almost every culled pair has a traced border. Close to the strict rule's 4% of the win.
 - *Replay the cache writes without tracing.* The triangle a skipped texel's ray would hit is unknown without the trace.
-- *Make the traversal conservative (chosen, owner 2026-10-31).* Pad the bounds the traversal tests so it reaches every triangle the direct test would hit. The answer then no longer depends on the cached triangle, so skipping cache writes can't change it. It moves bytes once wherever the old traversal missed a hit by rounding. Its cost is a slightly wider traversal, gated at 2% of hallway Lightmap Bake.
+- *Make the traversal conservative (chosen, owner 2026-10-31).* Pad the bounds the traversal tests so it reaches every triangle the direct test would hit. The answer then no longer depends on the cached triangle, so skipping cache writes can't change it. It moves bytes once wherever the old traversal missed a hit by rounding. Its cost is a slightly wider traversal, gated at 2% of hallway Lightmap Bake; past the gate, the fallback is the owner's call.
 
-## Consumers of the unbounded flood
+## Other consumers
 
 `affinity_grid::light_portal_reach` floods runtime cells from the light's cell, unbounded. Callers:
 - `affinity_grid::decompose_affinity_for_lights_with_policies`, behind `decompose_affinity` (delta SH), `decompose_affinity_for_lights` (direct SH via `direct_sh_bake::build_reach_index` → `ReachIndex`; billboard scatter; the entity-shadow selected-direct plan in `pipeline.rs`), and animated direct SH.
 - `chunk_light_list_bake`, directly. Its output is a runtime light list, not an SH bake.
 
-All read `runtime.cells.tree`, `runtime.cells.exterior_cells` and `runtime.portals` (`pipeline.rs`). The roadmap's mover light-flow line ("light → cell reach … filtered by `blocked_portals`") is another future reader of per-light reach.
+All read `runtime.cells.tree`, `runtime.cells.exterior_cells` and `runtime.portals` (`pipeline.rs`). Moving any of them onto the lightmap index is a non-goal, because each needs a different bound:
+- *Delta SH bounce (id 27)* traces from gather-ray hits to the light (`build_pipeline.md` step 12, Soft-shadow bake cost). A probe outside the ball can see a lit surface inside it, so a direct-light ball is not conservative. It needs a bound grown outward from the surfaces the light reaches.
+- *Direct SH, billboard scatter and the probe-point deltas* receive at probes read trilinearly, so their R drops the texel footprint and widens by about one probe spacing (`drafts/lighting-scale--sh-delta-receiver-reach-cull/`).
+- *Runtime filtering* (chunk light lists, and portal-gated reach for runtime lights and fog) needs the runtime-cell graph and runtime portal ids. Runtime never holds the full tree, and id 43's closed-mover associations name runtime portals. `done/occluder-first-partition` put light floods on runtime cells for this reason.
+
+Mover and door reach is `ready/mover-light-flow--foundation/`'s research step 3 (`research/gi-rtx-lite/index.md` §Build order), which redefines light → cell reach to cover direct-SH receivers (§Bake-only artefacts). The lightmap index serves none of it. Its natural second consumer is the animated weight-map walk (`drafts/anim-weightmap-exact-skips/`): same charts and R, and no occluder cache, so §Occluder caches does not arise there.
 
 ## Graph choice
 

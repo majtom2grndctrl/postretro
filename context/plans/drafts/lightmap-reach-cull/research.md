@@ -18,8 +18,8 @@ The ball holds every segment the sampler traces for a lit texel: from any emitte
 - the boundary has no face there (a hole). The precondition, checked by the hole check.
 - the ray enters solid inside its skipped first millimetre (`RAY_EPSILON`). Only texels within that reach of a closed leaf can do this, and the per-texel rule traces them.
 - it starts in solid (a buried texel). Traced, as above.
-- it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. Named gap 1.
-- it crosses from one open leaf to a diagonal neighbour through a shared edge with no portal. When the leaves beside the edge are open, the flood reaches the neighbour through them. When they are solid, the ray grazes an edge between solids, which rounding decides: named gap 1. Not observed.
+- it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. The tracer's tolerance τ closes those narrower than it (`watertight-tracer`); a wider one is a hole. Named gap 1.
+- it crosses from one open leaf to a diagonal neighbour through a shared edge with no portal. When the leaves beside the edge are open, the flood reaches the neighbour through them. When they are solid, the ray grazes an edge between solids, which the tracer's watertight test and tolerance close. Not observed.
 - it lies in a face's plane. Named gap 2. The spike found one such ray on hallway-mini.
 
 The exterior is never entered. A ray into exterior space from inside crosses solid through an interior-facing face, which exterior culling keeps.

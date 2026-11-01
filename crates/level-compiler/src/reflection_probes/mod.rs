@@ -115,7 +115,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// with fill and leak guard; the key gains the override table, the rule's
 /// constants, each probe's excluded set with its hulls and contacts, and
 /// each kept contact candidate's faces, planes and sides.
-const STAGE_VERSION: u32 = 11;
+/// 12: an excluded hull's exit reads the neighbour the ray is inside first,
+/// kept solid winning a tie, not the first excluded one in brush order.
+const STAGE_VERSION: u32 = 12;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {

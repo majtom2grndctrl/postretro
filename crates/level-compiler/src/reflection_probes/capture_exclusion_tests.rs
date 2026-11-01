@@ -12,7 +12,7 @@ use super::capture::{
     RowCapture, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, capture_row, encode_tile, octahedral_direction,
     sample_angle,
 };
-use super::capture_exclusion::RayOutcome;
+use super::capture_exclusion::{CONTACT_TOLERANCE_M, Held, RayOutcome, nearest_held};
 use super::capture_exclusion_test_fixtures::{
     BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE,
     exclusion, pool_entity, textured_room, toward,
@@ -876,17 +876,27 @@ fn a_ray_through_the_contact_gap_under_an_excluded_block_fills_the_floor() {
 /// one and its whole top against the block, so where a ray through the gap
 /// under the block meets the far brush, none of its faces survive.
 fn platform_under_a_block(height: f64) -> CaptureFixture {
+    split_platform_under_a_block(height, &[[100.0, 116.0]])
+}
+
+/// [`platform_under_a_block`] with the far brush replaced by one brush per
+/// map-x span of `far`, in that order after the near brush, each `height` u
+/// tall from the floor. CSG removes a brush's side where it butts another
+/// and its top under the block.
+fn split_platform_under_a_block(height: f64, far: &[[f64; 2]]) -> CaptureFixture {
     let mut world = textured_room();
     world.push(textured_box_brush(
         [84.0, -8.0, 0.0],
         [100.0, 8.0, height],
         TRIM_TEXTURE,
     ));
-    world.push(textured_box_brush(
-        [100.0, -8.0, 0.0],
-        [116.0, 8.0, height],
-        TRIM_TEXTURE,
-    ));
+    for &[x0, x1] in far {
+        world.push(textured_box_brush(
+            [x0, -8.0, 0.0],
+            [x1, 8.0, height],
+            TRIM_TEXTURE,
+        ));
+    }
     world.push(textured_box_brush(
         [100.0, -8.0, height + CONTACT_GAP],
         [116.0, 8.0, 40.0],
@@ -966,6 +976,280 @@ fn a_ray_through_the_contact_gap_over_a_platform_with_no_face_left_never_passes_
             }
         });
     }
+}
+
+/// The split-platform rows' platform height, in map units.
+const PLATFORM_HEIGHT: f64 = 8.0;
+
+/// A ray across the block's front (map x = 100) `over` metres above a
+/// [`PLATFORM_HEIGHT`] platform, descending at `slope` (map z per map x),
+/// its origin 1 m before the crossing, past the pool.
+fn over_the_platform(over: f64, slope: f64) -> (Vec3, Vec3) {
+    let crossing = engine([100.0, 0.5, PLATFORM_HEIGHT + over * UNITS_PER_METER]);
+    let direction = engine([1.0, 0.0, -slope]).normalize();
+    ((crossing - direction).as_vec3(), direction.as_vec3())
+}
+
+/// The map x where that ray meets the platform's top plane.
+fn meets_the_platform_top(over: f64, slope: f64) -> f64 {
+    100.0 + over * UNITS_PER_METER / slope
+}
+
+/// How far that ray lies under the block's bottom at map x `x`, in metres.
+fn under_the_block(over: f64, slope: f64, x: f64) -> f64 {
+    CONTACT_GAP / UNITS_PER_METER - over + slope * (x - 100.0) / UNITS_PER_METER
+}
+
+/// How far along that ray map x `x` lies from its origin.
+fn reaching(slope: f64, x: f64) -> f32 {
+    (1.0 + (x - 100.0) / UNITS_PER_METER * (1.0 + slope * slope).sqrt()) as f32
+}
+
+/// The far brush split at map x = 108 into a kept brush in front and an
+/// excluded one behind, both under the excluded block, and the ray of
+/// [`over_the_platform`] meeting the kept brush's top before x = 108 and
+/// entering the excluded one there within contact of the block. Both hold
+/// the block's exit; the kept one is met first, so the ray takes the leak
+/// guard on the block's front, the same as with only the block excluded.
+fn a_kept_brush_met_first_takes_the_leak_guard(over: f64, slope: f64) {
+    assert!(
+        meets_the_platform_top(over, slope) < 108.0,
+        "the kept top is met first"
+    );
+    assert!(
+        under_the_block(over, slope, 108.0) <= CONTACT_TOLERANCE_M,
+        "the excluded brush is entered within contact of the block"
+    );
+    let h = PLATFORM_HEIGHT;
+    let room = split_platform_under_a_block(h, &[[100.0, 108.0], [108.0, 116.0]]);
+    let kept = room.brush_at([104.0, 0.0, h / 2.0]);
+    let excluded = room.brush_at([112.0, 0.0, h / 2.0]);
+    let block = room.brush_at([108.0, 0.0, 24.0]);
+    assert_eq!(
+        room.faces_on_plane(kept, 0, [100.0, 0.0, 0.0]),
+        0,
+        "CSG removes the kept brush's front against the near one"
+    );
+    assert_eq!(
+        room.faces_on_plane(kept, 2, [0.0, 0.0, h]),
+        0,
+        "CSG removes the kept brush's top under the block"
+    );
+    let (origin, direction) = over_the_platform(over, slope);
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let none = exclusion(scene, &probe, &[]);
+        let unmasked = scene.trace(origin, direction, &none);
+        let RayOutcome::Hit(front) = unmasked else {
+            panic!("the block's front faces the ray, not {unmasked:?}");
+        };
+        assert_eq!(room.face_brush(front.face), Some(block), "{front:?}");
+        assert!((front.distance - 1.0).abs() < 1e-3, "{front:?}");
+        let filter = exclusion(scene, &probe, &[block, excluded]);
+        let slot = filter.excluded().binary_search(&block).unwrap();
+        let (kept_contacts, excluded_contacts) = filter.contacts_of(slot);
+        assert!(kept_contacts.contains(&kept), "{kept_contacts:?}");
+        assert_eq!(excluded_contacts, vec![excluded]);
+        let outcome = scene.trace(origin, direction, &filter);
+        assert_eq!(outcome, RayOutcome::LeakGuard(front));
+        let block_only = exclusion(scene, &probe, &[block]);
+        assert_eq!(
+            scene.trace(origin, direction, &block_only),
+            outcome,
+            "excluding the brush behind changes nothing"
+        );
+    });
+}
+
+// Regression: a ray through the contact gap under an excluded block, over a
+// kept brush whose front and top CSG removed and an excluded brush behind
+// it, went on through the excluded brush, the first to hold the exit in
+// brush order, though the ray met the kept top first. The re-trace from the
+// excluded brush's far side read the wall behind through the kept solid.
+// The ray passes 0.2 mm under the block's front edge, a tolerance hit
+// beside the hull, at a slope of 0.004: it meets the kept top at map x ≈
+// 105.9 and enters the excluded brush at 108, 1.01 mm under the block.
+#[test]
+fn a_pass_beside_a_block_meeting_a_kept_brush_before_an_excluded_one_takes_the_leak_guard() {
+    let over = 0.0006;
+    assert!(over * UNITS_PER_METER < CONTACT_GAP, "under the block");
+    a_kept_brush_met_first_takes_the_leak_guard(over, 0.004);
+}
+
+// Regression: the real crossing's half of the same ordering. The ray enters
+// the block's front 0.2 mm over its bottom edge and leaves its bottom 1.3 u
+// on, at a slope of 0.006: it meets the kept top at map x ≈ 106.6 and enters
+// the excluded brush at 108, 1.02 mm under the block. Brush order went on
+// through the excluded brush and read the wall behind.
+#[test]
+fn a_ray_crossing_a_block_meeting_a_kept_brush_before_an_excluded_one_takes_the_leak_guard() {
+    let over = 0.001;
+    assert!(over * UNITS_PER_METER > CONTACT_GAP, "inside the block");
+    a_kept_brush_met_first_takes_the_leak_guard(over, 0.006);
+}
+
+// Kept solid behind an excluded brush, both under the excluded block and
+// holding its exit: the excluded brush is entered first, so the ray goes on
+// through it and reads the kept brush's front past its far side, as
+// `resource_management.md` §5.2 allows. Checking kept solid first, at any
+// depth, would take the leak guard here. A 1 u kept sliver at the block's
+// front, its front removed against the near brush, is the fill's first
+// crossing, so no face fills and the exit is classified. The ray passes
+// 0.2 mm under the block's front edge at a slope of 0.006: it enters the
+// excluded brush (map x 101 to 105) through its top at x ≈ 103.9, and the
+// kept brush from x = 106 holds the block's exit 1.11 mm under it.
+#[test]
+fn a_kept_brush_behind_an_excluded_one_reads_its_front_past_the_excluded_far_side() {
+    let (over, slope) = (0.0006, 0.006);
+    let top = meets_the_platform_top(over, slope);
+    assert!(
+        top > 101.0 + CONTACT_TOLERANCE_M * UNITS_PER_METER && top < 105.0,
+        "the ray enters the excluded brush's top, never the sliver: {top}"
+    );
+    assert!(
+        under_the_block(over, slope, 106.0) <= CONTACT_TOLERANCE_M,
+        "the kept brush holds the block's exit"
+    );
+    let h = PLATFORM_HEIGHT;
+    let room = split_platform_under_a_block(h, &[[100.0, 101.0], [101.0, 105.0], [106.0, 116.0]]);
+    let sliver = room.brush_at([100.5, 0.0, h / 2.0]);
+    let excluded = room.brush_at([103.0, 0.0, h / 2.0]);
+    let kept = room.brush_at([111.0, 0.0, h / 2.0]);
+    let block = room.brush_at([108.0, 0.0, 24.0]);
+    assert_eq!(
+        room.faces_on_plane(sliver, 0, [100.0, 0.0, 0.0]),
+        0,
+        "CSG removes the sliver's front against the near brush"
+    );
+    assert!(
+        room.faces_on_plane(kept, 0, [106.0, 0.0, 0.0]) > 0,
+        "the kept brush's front faces the gap"
+    );
+    let (origin, direction) = over_the_platform(over, slope);
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let none = exclusion(scene, &probe, &[]);
+        let unmasked = scene.trace(origin, direction, &none);
+        let RayOutcome::Hit(front) = unmasked else {
+            panic!("the block's front faces the ray, not {unmasked:?}");
+        };
+        assert_eq!(room.face_brush(front.face), Some(block), "{front:?}");
+        assert!((front.distance - 1.0).abs() < 1e-3, "{front:?}");
+        let filter = exclusion(scene, &probe, &[block, excluded]);
+        let slot = |brush: u32| filter.excluded().binary_search(&brush).unwrap();
+        let (kept_contacts, excluded_contacts) = filter.contacts_of(slot(block));
+        assert!(
+            kept_contacts.contains(&sliver) && kept_contacts.contains(&kept),
+            "{kept_contacts:?}"
+        );
+        assert_eq!(excluded_contacts, vec![excluded]);
+        // So the kept brush is read by the re-trace, not as kept solid
+        // behind the excluded brush's exit.
+        let (behind, _) = filter.contacts_of(slot(excluded));
+        assert!(!behind.contains(&kept), "{behind:?}");
+        match scene.trace(origin, direction, &filter) {
+            RayOutcome::Hit(hit) => {
+                assert_eq!(room.face_brush(hit.face), Some(kept), "{hit:?}");
+                assert!(
+                    (hit.distance - reaching(slope, 106.0)).abs() < 1e-3,
+                    "{hit:?}"
+                );
+            }
+            other => panic!("reads the kept brush's front, not {other:?}"),
+        }
+    });
+}
+
+// Regression: a kept brush and an excluded one overlapping where a ray
+// leaves an excluded block both hold its exit at the exit itself, an exact
+// tie; the excluded one won it and the ray went on through it. The kept
+// brush ends inside the excluded one along the ray, so its exit lay past
+// the kept solid, and the re-trace read the wall behind through it. Kept
+// solid wins the tie: the leak guard. The kept brush is pushed before the
+// excluded one, so `brush_at` names it inside both; its front lies inside
+// the block, and its top shows only past the block, over the excluded one.
+#[test]
+fn kept_and_excluded_brushes_overlapping_at_a_blocks_exit_tie_to_the_leak_guard() {
+    let mut world = textured_room();
+    world.push(textured_box_brush(
+        [100.0, -8.0, 16.0],
+        [116.0, 8.0, 40.0],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [112.0, -6.0, 20.0],
+        [120.0, 6.0, 39.5],
+        TRIM_TEXTURE,
+    ));
+    world.push(textured_box_brush(
+        [110.0, -7.0, 18.0],
+        [124.0, 7.0, 38.0],
+        TRIM_TEXTURE,
+    ));
+    let room = CaptureFixture::compile(&world, &[pool_entity()]);
+    let block = room.brush_at([105.0, 0.0, 28.0]);
+    let kept = room.brush_at([118.0, 0.0, 28.0]);
+    let excluded = room.brush_at([122.0, 0.0, 28.0]);
+    assert_eq!(
+        room.brush_at([118.0, 0.0, 39.0]),
+        kept,
+        "the kept brush, not the excluded one"
+    );
+    assert_eq!(
+        room.faces_on_plane(kept, 0, [112.0, 0.0, 0.0]),
+        0,
+        "the kept brush's front lies in solid, so no face fills"
+    );
+    // Level but for a 1e-5 descent across the block's front; its origin lies
+    // 1 m before the crossing.
+    let crossing = engine([100.0, 0.5, 28.0]);
+    let direction = engine([1.0, 0.0, -1.0e-5]).normalize();
+    let (origin, direction) = ((crossing - direction).as_vec3(), direction.as_vec3());
+    room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let none = exclusion(scene, &probe, &[]);
+        let unmasked = scene.trace(origin, direction, &none);
+        let RayOutcome::Hit(front) = unmasked else {
+            panic!("the block's front faces the ray, not {unmasked:?}");
+        };
+        assert_eq!(room.face_brush(front.face), Some(block), "{front:?}");
+        assert!((front.distance - 1.0).abs() < 1e-3, "{front:?}");
+        let filter = exclusion(scene, &probe, &[block, excluded]);
+        let slot = filter.excluded().binary_search(&block).unwrap();
+        let (kept_contacts, excluded_contacts) = filter.contacts_of(slot);
+        assert!(kept_contacts.contains(&kept), "{kept_contacts:?}");
+        assert_eq!(excluded_contacts, vec![excluded]);
+        assert_eq!(
+            scene.trace(origin, direction, &filter),
+            RayOutcome::LeakGuard(front)
+        );
+    });
+}
+
+// An exit's held neighbours decide by depth: the nearest wins whatever its
+// slot, kept solid wins an exact tie, and excluded brushes order by depth,
+// not slot (brush order).
+#[test]
+fn the_nearest_held_neighbour_decides_and_kept_solid_wins_a_tie() {
+    let excluded = |slot, leaves| Some(Held::Excluded { slot, leaves });
+    assert_eq!(nearest_held([2.0], [(2.0, 0, 3.0)]), Some(Held::Kept));
+    assert_eq!(nearest_held([1.5], [(2.0, 0, 3.0)]), Some(Held::Kept));
+    assert_eq!(nearest_held([2.5], [(2.0, 0, 3.0)]), excluded(0, 3.0));
+    assert_eq!(
+        nearest_held([9.0], [(5.0, 0, 6.0), (4.0, 1, 7.0)]),
+        excluded(1, 7.0)
+    );
+    assert_eq!(
+        nearest_held([3.0, 1.0], std::iter::empty::<(f64, usize, f64)>()),
+        Some(Held::Kept)
+    );
+    assert_eq!(
+        nearest_held(
+            std::iter::empty::<f64>(),
+            std::iter::empty::<(f64, usize, f64)>()
+        ),
+        None
+    );
 }
 
 // A pass beside an excluded hull that drops it spends none of the trace's

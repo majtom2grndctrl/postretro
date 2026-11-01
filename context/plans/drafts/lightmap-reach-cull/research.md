@@ -16,6 +16,7 @@ Derivation behind the brief's Decisions. Read at 343ff98b6. Evidence:
 The ball holds every segment the sampler traces for a lit texel: from any emitter point (within `light_size` of the centre) to any footprint point (within the footprint radius of a texel centre within `falloff_range`). A segment starting in an open leaf leaves it only through a portal or into solid. Inside the ball, a portal within R is crossed by the flood. So a receiver leaf outside the flood is reached only through solid, and the ray hits a face on the way in, unless:
 
 - the boundary has no face there (a hole). The precondition, checked by the coverage proof.
+- a whole solid region has no faces. A missing closed shell leaves no unmatched edge, so no edge-based proof sees it. Named gap 3; no known cause drops every face of a shell, and verify mode guards it.
 - the ray enters solid inside its skipped first millimetre (`RAY_EPSILON`). Only texels within that reach of a closed leaf can do this, and the per-texel rule traces them.
 - it starts in solid (a buried texel). Traced, as above.
 - it slips, at entry *and* exit, where edges share no exact vertex: a crease crack (1–250 µm wide, on non-axial creases only) or a T-junction. The tracer's tolerance τ closes those narrower than it (`watertight-tracer`). The coverage proof reads any crack it cannot prove within τ as a hole, which switches the cull off. Named gap 1.

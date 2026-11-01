@@ -174,7 +174,7 @@ Adjacent work discovered during implementation gets a follow-up task, not a scop
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
 - **Unmeasured micro-optimizations** (instruction tuning, hand-vectorizing, cache tricks) → file a follow-up. Structural levers under **Performance** (bounding, culling, baking) are part of the task.
-- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative; land it with its first consumer.
+- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative: land it with its first consumer. Shape it to that feature's definition, not a guess. If another plan owns the decision, leave it to that plan.
 
 **Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
 

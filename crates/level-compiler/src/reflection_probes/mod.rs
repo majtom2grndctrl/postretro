@@ -7,6 +7,7 @@ mod animated_direct;
 mod authored;
 mod box_fit;
 mod capture;
+mod capture_bounds;
 mod capture_exclusion;
 mod capture_fill;
 mod capture_point;

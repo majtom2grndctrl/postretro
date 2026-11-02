@@ -8,7 +8,7 @@ use crate::geometry::GeometryResult;
 use crate::map_data::{BrushVolume, ReflectionCapture};
 use crate::partition::Aabb;
 
-use super::capture_exclusion::ProjectionBox;
+use super::capture_bounds::ProjectionBox;
 use super::exclusion_underside::{PlaneBasis, bound_water, downward_faces, has_underside};
 use super::placement::PlacedProbe;
 

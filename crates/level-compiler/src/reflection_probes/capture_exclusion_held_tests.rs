@@ -2,9 +2,7 @@
 // See: context/lib/resource_management.md §5.2 (Exclusion)
 
 use super::capture_exclusion::{CONTACT_TOLERANCE_M, RayOutcome};
-use super::capture_exclusion_test_fixtures::{
-    CaptureFixture, ROOM_MAX, ROOM_MIN, exclusion,
-};
+use super::capture_exclusion_test_fixtures::{CaptureFixture, ROOM_MAX, ROOM_MIN, exclusion};
 use super::capture_exclusion_tests::{
     CONTACT_GAP, IN_BACK_WALL, PLATFORM_HEIGHT, UNITS_PER_METER, boxed, over_the_platform,
     platform_under_a_block_with,

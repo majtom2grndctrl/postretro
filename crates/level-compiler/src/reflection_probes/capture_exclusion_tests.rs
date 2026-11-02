@@ -12,7 +12,8 @@ use super::capture::{
     RowCapture, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, capture_row, encode_tile, octahedral_direction,
     sample_angle,
 };
-use super::capture_exclusion::{CONTACT_TOLERANCE_M, Held, RayOutcome, nearest_held};
+use super::capture_bounds::{Held, nearest_held};
+use super::capture_exclusion::{CONTACT_TOLERANCE_M, RayOutcome};
 use super::capture_exclusion_test_fixtures::{
     BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE,
     exclusion, pool_entity, textured_room, toward,

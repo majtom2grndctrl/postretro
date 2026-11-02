@@ -1,4 +1,4 @@
-// Coverage proof tests: the end-stub rule's counterexamples, a hinge missing a face behind axis skew and behind sub-τ edge chains.
+// Coverage proof tests: the end-stub rule's counterexamples, and overlaps at corners the surface does and does not close round.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use glam::DVec3;
@@ -208,4 +208,92 @@ fn coverage_proof_reports_a_hinge_missing_a_face_beside_staggered_sub_tau_strips
     let bottom = bottom_strips(&stations(LENGTH, 0.0002, 0.0004));
     let (polygons, dropped, line) = chained_hinge(frame, LENGTH, top, bottom);
     assert_hinge_hole_found(polygons, dropped, line);
+}
+
+/// `corners` (local) in `frame` as one face of `brush`, wound
+/// counter-clockwise about `outward`.
+fn facing(frame: Frame, mut corners: Vec<DVec3>, outward: DVec3, brush: u32) -> Polygon {
+    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[1]);
+    if normal.dot(outward) < 0.0 {
+        corners.reverse();
+    }
+    Polygon {
+        corners: corners.iter().map(|&p| frame.point(p)).collect(),
+        brush: Some(brush),
+    }
+}
+
+/// A wall block [−1, 0] × [−1, 1] × [−1, 1] with a beam against its +X face
+/// above the line x = y = 0 (local): the beam's flat bottom (y = 0) and
+/// sloped face meet the wall at P = origin. The wall face splits along that
+/// line, as a cell boundary splits it. The wall's copy of P and the
+/// bottom's land `apart` metres apart along the line, overlapping, while
+/// the sloped face keeps P; the sloped face closes the corner between them.
+/// Returns the faces, the sloped face's slot, and P in world space.
+fn beam_corner(frame: Frame, apart: f64) -> (Vec<Polygon>, usize, DVec3) {
+    let (p, a, c, e) = (
+        DVec3::ZERO,
+        DVec3::new(0.0, 0.0, -1.0),
+        DVec3::new(0.0, 1.0, -1.0),
+        DVec3::new(1.0, 0.0, -1.0),
+    );
+    let (wall_p, bottom_p) = (DVec3::Z * -0.5 * apart, DVec3::Z * 0.5 * apart);
+    let mut polygons = closed_box(frame, DVec3::splat(-1.0), DVec3::new(0.0, 1.0, 1.0), 0.0, 0);
+    // Order −X, +X, …: the wall's +X face is slot 1.
+    polygons.remove(1);
+    polygons.push(facing(
+        frame,
+        vec![
+            DVec3::new(0.0, -1.0, -1.0),
+            DVec3::new(0.0, 0.0, -1.0),
+            DVec3::new(0.0, 0.0, 1.0),
+            DVec3::new(0.0, -1.0, 1.0),
+        ],
+        DVec3::X,
+        0,
+    ));
+    polygons.push(facing(
+        frame,
+        vec![wall_p, DVec3::Z, DVec3::new(0.0, 1.0, 1.0), c],
+        DVec3::X,
+        0,
+    ));
+    polygons.push(facing(frame, vec![bottom_p, a, e], DVec3::NEG_Y, 1));
+    polygons.push(facing(frame, vec![a, c, e], DVec3::NEG_Z, 1));
+    let sloped = polygons.len();
+    polygons.push(facing(frame, vec![p, c, e], DVec3::ONE, 1));
+    (polygons, sloped, frame.point(p).as_dvec3())
+}
+
+// The movement-feel corners: three faces meet where a wall meets a beam's
+// flat bottom and sloped face, and the wall's and the bottom's copies of
+// the corner land micrometres apart along the wall line. The edges where
+// the two turn off the line meet through the sloped face, not directly.
+#[test]
+fn coverage_proof_proves_an_overlap_at_a_corner_the_surface_closes_round() {
+    let frame = Frame::oblique(DVec3::new(-3.0, 4.0, 1.0));
+    let (polygons, _, _) = beam_corner(frame, 10e-6);
+    let report = prove(&polygons);
+    assert!(
+        report.unproven.is_empty(),
+        "a closed corner: {:#?}",
+        report.unproven
+    );
+}
+
+// Without the face closing the corner, the overlap there has no fan to
+// explain it.
+#[test]
+fn coverage_proof_reports_an_overlap_at_a_corner_missing_its_closing_face() {
+    let frame = Frame::oblique(DVec3::new(-3.0, 4.0, 1.0));
+    let (mut polygons, sloped, corner) = beam_corner(frame, 10e-6);
+    polygons.remove(sloped);
+    let report = prove(&polygons);
+    assert!(
+        report.unproven.iter().any(|span| {
+            span.length < 1e-4 && span.endpoints.iter().all(|&p| (p - corner).length() < 1e-4)
+        }),
+        "no unproven overlap at the corner: {:#?}",
+        report.unproven
+    );
 }

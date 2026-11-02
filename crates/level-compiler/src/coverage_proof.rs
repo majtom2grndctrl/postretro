@@ -25,9 +25,10 @@
 //   partner. Where they overlap, two same-way edges both run over the
 //   stretch: one may go unmatched only at a seam (`seams`), an overlap no
 //   longer than τ in 3D between one edge's end and the other's start, with
-//   the edges where their faces turn off the line running opposite ways
-//   within τ of each other. A chain of short edges turns nowhere, so it
-//   excuses nothing.
+//   the surface closing round that corner between the edges where their
+//   faces turn off the line: those two run opposite ways within τ of each
+//   other, or meet through a short fan of faces whose corners land within
+//   τ of it. A chain of short edges turns nowhere, so it excuses nothing.
 
 use std::time::{Duration, Instant};
 
@@ -138,15 +139,17 @@ pub(crate) fn prove_coverage(
         .fold(0.0f64, |m, c| m.max(f64::from(c).abs()));
     let limit = tau - ROUNDING_EPSILONS * f64::EPSILON * (1.0 + extent);
     let edges = edges::boundary_edges(geometry, face_brushes);
-    let turns = Turns::new(&edges);
+    let link_radius = LINK_RADIUS_TAUS * tau;
+    let turns = Turns::new(&edges, link_radius);
     let measure = Measure {
         geometry,
         edges: &edges,
         turns: &turns,
         limit_squared: limit * limit,
         end_reach: tau,
+        link_radius,
     };
-    let clusters = clusters::clusters(&edges, LINK_RADIUS_TAUS * tau);
+    let clusters = clusters::clusters(&edges, link_radius);
     let settled: Vec<Settled> = clusters
         .par_iter()
         .map(|members| settle::settle(&edges, members, &measure))

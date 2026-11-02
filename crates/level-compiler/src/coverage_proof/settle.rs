@@ -27,6 +27,9 @@ pub(super) struct Measure<'a> {
     /// the partner's whole stretch within τ of its face, in 3D, and it is used
     /// up like any partner.
     pub(super) end_reach: f64,
+    /// How far off a line an edge may lie and still link to it (2τ): an
+    /// edge reaching farther turns off the line.
+    pub(super) link_radius: f64,
 }
 
 impl Measure<'_> {

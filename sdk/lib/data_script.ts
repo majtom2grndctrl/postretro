@@ -357,6 +357,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "setLifeState"; target: "@impact.source"; args: { state: string } }
   | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
   | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
@@ -388,16 +389,25 @@ export interface SourceHandle {
   readonly [sourceBrand]: true;
   /**
    * Add health to the impact damager. A fire with no damager skips this effect;
-   * app-drain impacts run no policy in v1. Amount expressions read impact-target
-   * facts and state only: v1 has no source-scoped fact vocabulary.
+   * app-drain impacts run no policy in v1.
    */
   grantHealth(amount: NumberValue): Effect;
   /**
    * Add an ammo-pool balance to the impact damager. A fire with no damager
-   * skips this effect; app-drain impacts run no policy in v1. Amount expressions
-   * remain impact-target scoped; v1 has no source facts.
+   * skips this effect; app-drain impacts run no policy in v1.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
+  /**
+   * Whether the damager is a player pawn in life state `name` at this fire.
+   * False for a damager that is not a player. An unknown name skips the policy.
+   */
+  inLifeState(name: string): BoolRef;
+  /**
+   * Put the damager player pawn into life state `name` in-tick, as `setLifeState`:
+   * a change restarts its elapsed time, the current state is a no-op. A fire with
+   * no damager skips it; a damager lacking the state warns and skips.
+   */
+  setLifeState(name: string): Effect;
   /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
   adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
 }
@@ -502,6 +512,9 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
 const impactSource = {
   grantHealth: (amount: NumberValue) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
   grantAmmo: (type: string, amount: NumberValue) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  inLifeState: (name: string) =>
+    boolRef({ op: "input", owner: "@impact.source", name: `player.inLifeState:${name}` }),
+  setLifeState: (name: string) => sourceImpactEffect("setLifeState", { state: name }),
   adjustSentimentToward: (toward: TargetHandle | SourceHandle, delta: NumberValue) =>
     sentimentImpactEffect("@impact.source", toward, delta),
 };

@@ -25,6 +25,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
+
+mod source_life_state;
+#[cfg(test)]
+mod source_life_state_ordering_tests;
+#[cfg(test)]
+mod source_life_state_tests;
 use postretro_foundation::FACTION_STATE_FIELD;
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
@@ -209,6 +215,9 @@ enum BoundEffect {
         from_recipient: CommandRecipient,
         to_recipient: CommandRecipient,
         delta: BoundProgram<EntityScope>,
+    },
+    SetLifeState {
+        state: String,
     },
 }
 
@@ -615,7 +624,8 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
                         | BoundEffect::GrantAmmo { .. }
-                        | BoundEffect::AdjustSentiment { .. } => self.consequential.push(planned),
+                        | BoundEffect::AdjustSentiment { .. }
+                        | BoundEffect::SetLifeState { .. } => self.consequential.push(planned),
                     }
                 }
             }
@@ -672,6 +682,23 @@ impl ImpactPolicyRuntime {
                                 Self::resolve_command_recipient(registry, dispatch, recipient)
                             {
                                 Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
+                            }
+                        }
+                        (
+                            CommandRecipients::One(recipient),
+                            ImpactEffect::SetLifeState { state },
+                        ) => {
+                            // No live source (a pawnless hazard, a removed
+                            // damager) skips silently.
+                            if let Some(recipient) =
+                                Self::resolve_command_recipient(registry, dispatch, recipient)
+                            {
+                                crate::life_state_commands::set_life_state(
+                                    &ctx,
+                                    registry,
+                                    &[recipient],
+                                    &state,
+                                );
                             }
                         }
                         (CommandRecipients::One(recipient), effect) => {
@@ -1281,6 +1308,7 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 delta,
             })
         }
+        "setLifeState" => source_life_state::bind_set_life_state(target, args, scope),
         "setState" if target == Some("@impact.target") => {
             let name = required_string(args, "name", "target setState args")?;
             let value = args
@@ -1442,6 +1470,12 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 delta: number(eval_value(delta, scope)),
             },
         },
+        BoundEffect::SetLifeState { state } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Source),
+            effect: ImpactEffect::SetLifeState {
+                state: state.clone(),
+            },
+        },
     }
 }
 
@@ -1532,7 +1566,7 @@ mod tests {
         );
     }
 
-    fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
+    pub(super) fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
             id: id.to_string(),
             is_override: false,
@@ -1548,15 +1582,15 @@ mod tests {
         descriptor
     }
 
-    fn input(name: &str) -> Value {
+    pub(super) fn input(name: &str) -> Value {
         json!({ "op": "input", "name": name })
     }
 
-    fn owned_input(name: &str) -> Value {
+    pub(super) fn owned_input(name: &str) -> Value {
         json!({ "op": "input", "name": name, "owner": IMPACT_SOURCE_TOKEN })
     }
 
-    fn number(value: f32) -> Value {
+    pub(super) fn number(value: f32) -> Value {
         json!({ "op": "const", "value": value })
     }
 
@@ -1583,7 +1617,7 @@ mod tests {
         })
     }
 
-    fn grant_health(amount: Value) -> Value {
+    pub(super) fn grant_health(amount: Value) -> Value {
         json!({
             "primitive": "grantHealth",
             "target": "@impact.source",
@@ -1694,7 +1728,7 @@ mod tests {
         record
     }
 
-    fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
+    pub(super) fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let target = registry.spawn(Transform::default());
         registry
@@ -1765,7 +1799,7 @@ mod tests {
             .expect("target is live");
     }
 
-    fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
+    pub(super) fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let source = registry.spawn(Transform::default());
         if with_health {
@@ -1792,7 +1826,7 @@ mod tests {
         hit_from(ctx, target, None, producer);
     }
 
-    fn hit_from(
+    pub(super) fn hit_from(
         ctx: &ScriptCtx,
         target: EntityId,
         source: Option<EntityId>,
@@ -1811,7 +1845,7 @@ mod tests {
         );
     }
 
-    fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
+    pub(super) fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
         runtime.evaluate_pending_in_registry(&mut ctx.registry.borrow_mut());
     }
 

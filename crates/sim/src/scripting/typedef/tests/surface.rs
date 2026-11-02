@@ -813,6 +813,11 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
         ),
         (
+            "source.setLifeState",
+            "setLifeState(name: string): Effect;",
+            "setLifeState: (self: SourceHandle, name: string) -> Effect,",
+        ),
+        (
             "source.adjustSentimentToward",
             "adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;",
             "adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,",
@@ -840,14 +845,17 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        11,
-        "TypeScript must expose exactly the eleven closed impact-effect builders"
+        12,
+        "TypeScript must expose exactly the twelve closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        9,
-        "Luau must expose exactly the nine receiver-method impact-effect builders; set/update are global functions"
+        10,
+        "Luau must expose exactly the ten receiver-method impact-effect builders; set/update are global functions"
     );
+    // The source's life-state read is a BoolRef, not an Effect.
+    assert!(ts.contains("inLifeState(name: string): BoolRef;"));
+    assert!(luau.contains("inLifeState: (self: SourceHandle, name: string) -> BoolRef,"));
     // TypeScript intentionally keeps the wire union private behind the opaque
     // Effect brand; the SourceHandle signatures above are its public contract.
     for wire in [
@@ -855,6 +863,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
         "grantAmmo\", target: \"@impact.source",
         "adjustSentiment\", target: \"@impact.target\" | \"@impact.source",
         "slot.set\", target: \"@impact.source",
+        "setLifeState\", target: \"@impact.source",
     ] {
         assert!(luau.contains(wire), "Luau grant wire must target source");
     }

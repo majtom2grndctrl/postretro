@@ -77,6 +77,11 @@ pub(crate) enum ImpactEffect {
     AdjustSentiment {
         delta: f32,
     },
+    /// `source.setLifeState` reads the descriptor table and the
+    /// group-command gate through the policy runtime's ScriptCtx.
+    SetLifeState {
+        state: String,
+    },
 }
 
 /// Apply one command-buffer effect to the resolved target id.
@@ -108,6 +113,9 @@ pub(crate) fn apply_effect(registry: &mut EntityRegistry, target: EntityId, effe
         }
         ImpactEffect::AdjustSentiment { .. } => {
             unreachable!("faction sentiment writes are intercepted by ImpactPolicyRuntime")
+        }
+        ImpactEffect::SetLifeState { .. } => {
+            unreachable!("life-state writes are intercepted by ImpactPolicyRuntime")
         }
     }
 }

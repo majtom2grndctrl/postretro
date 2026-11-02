@@ -2015,3 +2015,6 @@ mod addressing_sdk;
 
 #[path = "member_builder_sdk_tests.rs"]
 mod member_builder_sdk;
+
+#[path = "impact_source_sdk_tests.rs"]
+mod impact_source_sdk;

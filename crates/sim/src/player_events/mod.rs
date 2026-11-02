@@ -5,7 +5,7 @@
 mod evaluate;
 mod install;
 #[cfg(test)]
-mod life_state_ordering_tests;
+pub(crate) mod life_state_ordering_tests;
 #[cfg(test)]
 mod semantics_tests;
 #[cfg(test)]

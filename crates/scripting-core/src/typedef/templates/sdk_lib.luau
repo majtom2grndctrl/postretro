@@ -730,6 +730,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
@@ -759,13 +760,19 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1. Amount expressions read
-  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  --- effect; app-drain impacts run no policy in v1.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1. Amount
-  --- expressions remain impact-target scoped; v1 has no source facts.
+  --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Whether the damager is a player pawn in life state `name` at this fire.
+  --- False for a damager that is not a player. An unknown name skips the policy.
+  inLifeState: (self: SourceHandle, name: string) -> BoolRef,
+  --- Put the damager player pawn into life state `name` in-tick, as
+  --- `setLifeState`: a change restarts its elapsed time, the current state is a
+  --- no-op. A fire with no damager skips it; a damager lacking the state warns
+  --- and skips.
+  setLifeState: (self: SourceHandle, name: string) -> Effect,
   --- Adjust this faction's sentiment toward another impact recipient. Negative
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,

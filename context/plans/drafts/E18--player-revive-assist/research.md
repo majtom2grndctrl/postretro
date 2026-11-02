@@ -4,7 +4,7 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 
 ## Owner decisions (2026-11-02)
 
-- The client learns a teammate's assistability from a per-pawn `assistable` stamp replicated on the movement state, not from `TuningPayload`.
+- The client learns a teammate's assistability from a per-pawn `assistable` stamp replicated on the movement state, not from `TuningPayload`. The payload carries the pawn's own profiles, `assistable` included: it serializes `LifeStateProfile` verbatim, so `TUNING_PAYLOAD_EPOCH` bumps (review round 1).
 - The shared-key press-time resolution (old AC8 / I4 Phase 3) moves to `input-contextual-priority` (its open question 2). This spec exposes `assist_candidate` for it.
 - Interim binding: the dev mod's `input.ts` binds `assist` as a `hold` on Use's inputs (`KeyE`, gamepad `west`), the same pattern as its hold-Shift sprint beside tap-Shift dash. No engine default; engine defaults stay all `press` (decided after `/validate-plan`).
 - `input-contextual-priority` is reconciled in the same session: its open question 2 is decided, and the duration split is revive's interim.
@@ -26,7 +26,7 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 - `TickEvents.trigger_exit_fires` is filled in the Triggers stage and consumed by `scheduler.evaluate`.
 - Tick stages: Movers → Movement → Triggers → Projectiles → Ai → Traps → Steering → Weapons, then `run_death_sweep`.
 - `players()` order: `extend_with_player_pawns` (`group_resolution.rs`), registry slot order [M on slot order].
-- Respawn: `ScriptCtx::pending_respawns`, drained by `sim::respawn::drain` from `begin_tick`. `PlayerMovementComponent` holds `life_state: u8`, `life_state_elapsed_ticks`, `life_state_table_revision` and derived stamps (`life_use`, `life_touch`, …); no generation counter.
+- Respawn: `ScriptCtx::pending_respawns`, drained by `sim::respawn::drain` from `begin_tick`. `drain` takes only `ctx` and the registry, so it cannot reach session-owned accumulator state. `enter_life_state` zeroes `life_state_elapsed_ticks`; the movement step and `advance_unstepped_life_state_time` advance it once per host tick for every pawn, so a respawn or a same-state re-entry shows as elapsed failing to advance. `clear_for_level_unload` (`respawn_placements.rs`) clears the respawn queue at level unload. `touch_system` is session-owned tick state (`session/mod.rs`). `PlayerMovementComponent` holds `life_state: u8`, `life_state_elapsed_ticks`, `life_state_table_revision` and derived stamps (`life_use`, `life_touch`, …); no generation counter.
 - Capability: `player_life::permits(registry, pawn, Capability)`.
 - Disconnect: `host_handle_transport_disconnect` → `SeatTable::harvest_pawn`, from `net_poll_and_apply` before the tick loop.
 - Two-player test: `player_death_two_player_policy_bleeds_out_on_tick_900_then_respawns_next_tick` (`startup/player_death_surface_tests.rs`).
@@ -44,13 +44,13 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 
 - Interpolated remote Transforms: `ClientReplication::sample_into_registry`.
 - `WirePlayerMovementState` carries `life_state`, `life_state_elapsed_ticks`, `life_state_table_revision` for every pawn (`collect_payloads`). The client drops it for remote pawns: `IgnoredPayload::MovementWithoutLocalComponent`.
-- `tuning_payload_for_pawn` (`netcode/src/lib.rs`) fills `life_state_profiles` from that pawn's descriptor only; `life_state_names` is shared.
+- `tuning_payload_for_pawn` (`netcode/src/lib.rs`) fills `life_state_profiles` from that pawn's descriptor only, cloning `LifeStateProfile` itself; `life_state_names` is shared. `LifeStateProfile` denies unknown fields; `validate_life_states` (`netcode/src/tuning_payload.rs`) checks received profiles.
 
 ## Slots and HUD
 
 - `PlayerSlot::ALL` has 15 entries; `warned_owned_engine` is `Cell<u16>` with a `<= u16::BITS` assert.
 - `LifeStateMs` touched: `player_slots.rs`, `engine_state_catalog.rs` (`OwnerPrivatePlayer`), `light_membership.rs` `MIRRORED_GAME_STATE_LEAVES`, `ui_proxy.rs`, `netcode/src/state_slots.rs`, generated `sdk/types/postretro.d.*`, typedef `expected.d.*` fixtures.
-- Owner-private values reach clients through `owner_private_source_value` on the host and the state-slot wire channel; the value need only be readable on the host.
-- Timed-slot projection: `timed_slot_targets.rs` `NAMES: [&str; 4]` (reloadProgress, weaponCooldownMs, heat, cell), fed by `ReplicatedWeaponProjection`; upward ramp per index via `Ramp::accept`. `LifeStateMs` has its own `LifeStateDisplay` / `LifeStateClock`, applied in `App::build_ui_display_slot_snapshot`.
+- Owner-private values reach clients through `owner_private_source_value` on the host and the state-slot wire channel. Every non-weapon `PlayerSlot` resolves through `player_slot_value`, which reads pawn components only; a value outside a component reads absent to every consumer.
+- Timed-slot projection: `netcode/src/state_slots/timed_slot_targets.rs` `NAMES: [&str; 4]` (reloadProgress, weaponCooldownMs, heat, cell), fed by `ReplicatedWeaponProjection`; upward ramp per index via `Ramp::accept`. `Ramp` is `pub(super)` in that private module and ramps only once successive interval slopes agree, so it shows the first samples raw. `LifeStateMs` has its own `LifeStateDisplay` / `LifeStateClock`, applied in `App::build_ui_display_slot_snapshot`.
 - HUD: `bleedOutMeterTree` and `reloadMeterTree` in `content/dev/scripts/hud.ts`.
 - Stale docs confirmed in `docs/scripting-reference.md` (per-owner + persist rejected; no source-scoped fact vocabulary) and `SourceHandle.grantHealth`'s doc comment.

@@ -63,6 +63,19 @@ impl ClientWeaponFrame {
         let alive = !slots.get("player.health").is_some_and(|slot| {
             matches!(slot.value, Some(postretro_entities::SlotValue::Number(health)) if health <= 0.0 || !health.is_finite())
         });
+        let alive = registry
+            .local_player_movement_pawn()
+            .and_then(|pawn| {
+                let movement = registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()?;
+                postretro_foundation::player_capability(
+                    movement,
+                    postretro_foundation::Capability::Fire,
+                )
+                .map(|_| postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn))
+            })
+            .unwrap_or(alive);
         if !alive
             && let Some((_, weapon)) = crate::local_active_wieldable(registry)
             && let Ok(ComponentValue::Weapon(component)) =
@@ -124,17 +137,15 @@ impl ClientWeaponFrame {
             std::sync::Arc::clone(&component.descriptor_identity)
         };
         command.firing_slot = u8::try_from(slot).ok()?;
-        let alive = owner_alive
-            && registry.exists(pawn)
-            && !postretro_sim::scripting_systems::health::is_terminally_committed_to_removal(
-                registry, pawn,
-            )
-            && !registry
-                .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
-                .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite());
+        let alive = owner_alive && postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn);
         // Judged before this tick's movement is predicted: the pawn as the tick
         // starts, the state every fire path reads.
         let fire_blocked = postretro_sim::weapon::pawn_gate::pawn_fire_blocked(registry, pawn);
+        let reload_allowed = postretro_sim::sim::player_life::permits(
+            registry,
+            pawn,
+            postretro_foundation::Capability::Reload,
+        );
         let ComponentValue::Weapon(component) = registry
             .get_component_value_mut(id, ComponentKind::Weapon)
             .ok()?
@@ -171,21 +182,23 @@ impl ClientWeaponFrame {
             self.records.request(token, id);
         }
         let before = component.cooldown_remaining_ms;
-        let advanced = weapon::activation_prediction::advance_predicted_weapon_tick(
-            component,
-            weapon::execution::ActivationCommand {
-                tick,
-                pawn: pawn_network,
-                real_command: true,
-                input: command.activation,
-                controller_starts: true,
-                primary: command.fire_button,
-                secondary: command.secondary_button,
-            },
-            command.reload,
-            dt_ms,
-            alive && !fire_blocked,
-        );
+        let advanced =
+            weapon::activation_prediction::advance_predicted_weapon_tick_with_reload_gate(
+                component,
+                weapon::execution::ActivationCommand {
+                    tick,
+                    pawn: pawn_network,
+                    real_command: true,
+                    input: command.activation,
+                    controller_starts: true,
+                    primary: command.fire_button,
+                    secondary: command.secondary_button,
+                },
+                command.reload,
+                dt_ms,
+                alive && !fire_blocked,
+                reload_allowed,
+            );
         if let Some(token) = advanced.initiated {
             command.activation.initiation = Some(token);
             self.records.request(token, id);

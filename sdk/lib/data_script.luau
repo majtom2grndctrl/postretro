@@ -131,11 +131,20 @@ export type NpcGroup = {
   damage: (self: NpcGroup, amount: number) -> GroupCommand,
 }
 
+--- Options for relocating a player to its seat placement on the next tick.
+--- `health` lies in (0, max] and defaults to the pawn's maximum; a value
+--- outside that range, or a non-finite one, warns and restores the maximum.
+--- `lifeState` names the state to enter at elapsed zero and defaults to the
+--- descriptor's `initial`.
+export type RespawnOptions = { health: number?, lifeState: string? }
+
 --- Every seat-bound player pawn. Opaque: no members, no length; indexing
 --- anything but a verb raises.
 export type PlayerGroup = {
   damage: (self: PlayerGroup, amount: number) -> GroupCommand,
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
+  setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
+  respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
@@ -354,6 +363,8 @@ export type TickParams = { dt: RuntimeRead }
 export type ActivatorsTarget = {
   damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
+  respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -363,6 +374,8 @@ export type PlayerTarget = {
   __playerTarget: true,
   damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
+  respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -579,6 +592,11 @@ local numberNode = expressionRefs.numberNode
 local boolNode = expressionRefs.boolNode
 local numberRef = expressionRefs.numberRef
 local boolRef = expressionRefs.boolRef
+
+--- Test the evaluated player in player events, or the local player in crossings.
+function DataScriptSdk.inLifeState(name: string): BoolRef
+  return boolRef({ op = "input", name = "player.inLifeState:" .. name })
+end
 
 function DataScriptSdk.read(ref: ComputedRef<number> | ComputedRef<boolean>): NumberRef | BoolRef
   local node = { op = "input", name = ref.slot }

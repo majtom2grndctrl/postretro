@@ -50,10 +50,12 @@ use postretro_foundation::PlayerMovementComponent;
 ///    compose a smoothed correction onto the in-flight presentation offset; for a
 ///    teleport, clear the offset, report a [`LocalTeleportAdoption`], and clear
 ///    history only for a plain teleport-floor correction (an identity change keeps
-///    it). A composed offset at or past the teleport floor snaps as well: offset
-///    cleared, an eye-cut-only adoption reported, history kept, and the class
-///    returned is [`CorrectionClass::Teleport`]. The newly armed pawn's first merged
-///    record skips this: it adopts silently and clears the offset.
+///    it). Outside a protected finite life-state glide, a composed offset at or
+///    past the teleport floor also clears the offset, reports an eye-only cut,
+///    keeps history and returns [`CorrectionClass::Teleport`]. Life-state glides
+///    remain smoothed above that floor; non-finite offsets and genuine teleport
+///    mismatches still cut. The newly armed pawn's first merged record adopts
+///    silently and clears the offset.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) fn reconcile_local_pawn(
@@ -79,6 +81,7 @@ pub(crate) fn reconcile_local_pawn(
         collision,
         environment,
         dt,
+        &Default::default(),
     )
 }
 
@@ -101,6 +104,7 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
     collision: &impl MovementCollisionSource,
     environment: EnvironmentView<'_>,
     dt: f32,
+    life_state_tables: &crate::life_state_tables::LifeStateTables,
 ) -> Option<CorrectionClass> {
     // Only reconcile the armed local pawn, and only the entity it maps to. A record
     // for a stale/other entity is ignored (the caller filters by NetworkId, but the
@@ -117,6 +121,15 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         .get_component::<PlayerMovementComponent>(entity_id)
         .ok()?
         .clone();
+    let previous_life_state = registry
+        .get_component::<PlayerMovementComponent>(entity_id)
+        .ok()?;
+    // Compare the received identity before the table-history gate: a new table
+    // may still be in flight, but its movement correction must already glide.
+    let life_state_changed = movement.is_some_and(|wire| {
+        (wire.life_state, wire.life_state_table_revision)
+            != (component.life_state, component.life_state_table_revision)
+    });
     let predicted_teleport = (
         component.teleport.generation,
         component.teleport.accumulated_yaw,
@@ -163,6 +176,14 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         prediction.clear_history();
     } else if let Some(tick) = acked_tick {
         prediction.prune_through_ack(tick);
+    }
+
+    if movement.is_some() {
+        life_state_tables.gate_merged(
+            &mut component,
+            previous_life_state,
+            prediction.history().len(),
+        );
     }
 
     // 4. Replay the remaining (unacked) commands on top of the authoritative baseline.
@@ -257,6 +278,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
         );
     let class = if teleport_changed {
         CorrectionClass::Teleport
+    } else if life_state_changed
+        && magnitude.is_finite()
+        && magnitude >= crate::netcode::prediction::TELEPORT_CORRECTION_MIN_M
+    {
+        CorrectionClass::OversizedSmoothed
     } else {
         classify_correction(magnitude, included_dash)
     };
@@ -297,10 +323,11 @@ pub(crate) fn reconcile_local_pawn_with_mover_history(
             // pose over a few ticks.
             if matches!(class, CorrectionClass::OversizedSmoothed) {
                 log::debug!(
-                    "[Net] oversized local correction {magnitude:.3} m smoothed (above the ordinary cap, below the teleport floor)"
+                    "[Net] oversized local correction {magnitude:.3} m smoothed (above the ordinary cap)"
                 );
             }
-            if prediction.seed_presentation_offset(correction) {
+            if prediction.seed_presentation_offset_with_life_change(correction, life_state_changed)
+            {
                 // The composed offset reached the teleport floor (or was non-finite):
                 // the eye snaps, by the rule a single correction there follows. Only
                 // the eye cuts. The reconcile was ordinary, so history stays, the
@@ -347,6 +374,7 @@ impl MovementCollisionSource for ReplayCollisionSource<'_> {
 
 #[cfg(test)]
 mod tests {
+    mod life_states;
     use super::*;
 
     use crate::collision::CollisionWorld;
@@ -1336,6 +1364,7 @@ mod tests {
             &world,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
+            &Default::default(),
         )
         .unwrap();
 
@@ -1441,6 +1470,7 @@ mod tests {
             &live_collision,
             postretro_collision::EnvironmentView::level_only(GRAVITY),
             DT,
+            &Default::default(),
         )
         .unwrap();
 
@@ -1661,5 +1691,125 @@ mod tests {
             .is_none(),
             "a record for a non-armed entity is ignored"
         );
+    }
+    #[test]
+    fn o26_reconcile_missing_table_preserves_life_stamps_and_counts_replay_once() {
+        use crate::life_state_tables::LifeStateTables;
+        use postretro_combat_model::{EnvironmentTuning, FluidMovementTable, TuningPayload};
+        use postretro_foundation::{LifeStateMovementProfile, LifeStateProfile, enter_life_state};
+        let world = floor_world();
+        let mut registry = EntityRegistry::new();
+        let mut prediction = ClientPrediction::new();
+        let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(7));
+        let profile = LifeStateProfile {
+            fire: false,
+            movement: LifeStateMovementProfile {
+                speed_scale: 0.3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut previous = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .clone();
+        enter_life_state(&mut previous, 1, &profile, 7);
+        previous.life_state_elapsed_ticks = 40;
+        registry.set_component(id, previous).unwrap();
+        let mut current = (
+            *registry.get_component::<Transform>(id).unwrap(),
+            registry
+                .get_component::<PlayerMovementComponent>(id)
+                .unwrap()
+                .clone(),
+        );
+        for tick in 0..6 {
+            current = prediction
+                .predict_tick(
+                    forward_command(tick, false),
+                    current,
+                    &world,
+                    postretro_collision::EnvironmentView::level_only(GRAVITY),
+                    DT,
+                )
+                .expect("armed prediction");
+        }
+        registry.set_component(id, current.0).unwrap();
+        registry.set_component(id, current.1).unwrap();
+        let before_elapsed = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap()
+            .life_state_elapsed_ticks;
+        let mut payload = TuningPayload::new(
+            None,
+            std::array::from_fn(|_| None),
+            EnvironmentTuning {
+                level_gravity: GRAVITY,
+                fluids: FluidMovementTable::default(),
+            },
+        );
+        payload.life_state_names = vec!["alive".into(), "down".into()];
+        payload.life_state_profiles = vec![(1, profile)];
+        payload.life_state_table_revision = 7;
+        let mut tables = LifeStateTables::default();
+        tables.install(&payload, Some(7));
+        let mut wire = authoritative_movement();
+        wire.life_state = 0;
+        wire.life_state_table_revision = 8;
+        wire.life_state_elapsed_ticks = 2;
+        let authoritative_transform = *registry.get_component::<Transform>(id).unwrap();
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            authoritative_transform,
+            Some(&wire),
+            Some(2),
+            10,
+            None,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+            &tables,
+        )
+        .unwrap();
+        let kept = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap();
+        assert_eq!((kept.life_state, kept.life_state_table_revision), (1, 7));
+        assert_eq!(kept.life_state_elapsed_ticks, before_elapsed);
+        assert!(!kept.life_fire);
+        assert_eq!(kept.life_speed_scale, 0.3);
+        payload.life_state_table_revision = 8;
+        payload.life_state_profiles = vec![(0, LifeStateProfile::default())];
+        tables.install(&payload, Some(7));
+        wire.life_state_elapsed_ticks = 6;
+        reconcile_local_pawn_with_mover_history(
+            &mut registry,
+            &mut prediction,
+            id,
+            authoritative_transform,
+            Some(&wire),
+            Some(5),
+            11,
+            None,
+            &world,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+            &tables,
+        )
+        .unwrap();
+        let adopted = registry
+            .get_component::<PlayerMovementComponent>(id)
+            .unwrap();
+        assert_eq!(
+            (
+                adopted.life_state,
+                adopted.life_state_table_revision,
+                adopted.life_state_elapsed_ticks
+            ),
+            (0, 8, 6)
+        );
+        assert!(adopted.life_fire);
     }
 }

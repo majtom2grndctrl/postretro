@@ -381,6 +381,10 @@
     damage(amount: number): SubjectTokenCommand;
     /** Add health to this fire's activators. */
     grantHealth(amount: number): SubjectTokenCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): SubjectTokenCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
@@ -411,6 +415,10 @@
     damage(amount: number): SubjectTokenCommand;
     /** Add health to this event's player. */
     grantHealth(amount: number): SubjectTokenCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): SubjectTokenCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this event's player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
@@ -648,12 +656,18 @@
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number): GroupCommand;
   }
+  /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
+  export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {
     /** Damage each player by a finite, non-negative amount. */
     damage(amount: number): GroupCommand;
     /** Add health to each player. */
     grantHealth(amount: number): GroupCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): GroupCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): GroupCommand;
     /** Add `amount` to each player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
@@ -672,6 +686,8 @@
   export type PlayerEventOptions = { levels?: string[] };
   /** One `playerEvents` entry, as `players().on` builds it. */
   export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** Test the evaluated player in player events, or the local player in crossings. */
+  export function inLifeState(name: string): BoolRef;
   /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
   export function becomes(cond: BoolRef): PlayerEventEdge;
   /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */

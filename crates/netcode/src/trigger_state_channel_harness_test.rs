@@ -821,6 +821,7 @@ impl ReplicatedStateFrame for PersistentAtmosphereHarness {
                 &mut crate::netcode::client::NoPresentationBindings,
                 0.0,
                 None,
+                &Default::default(),
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;

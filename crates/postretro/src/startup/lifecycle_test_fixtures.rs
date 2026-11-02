@@ -168,6 +168,7 @@ pub(crate) fn test_app() -> App {
         nav_stick_tracker: input::StickNavTrackers::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
+        life_state_eye: Default::default(),
         view_feel_followed_pawn: None,
         view_feel_descriptor: None,
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -197,6 +198,7 @@ pub(crate) fn test_app() -> App {
         fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(
         ),
         fluid_eye: Default::default(),
+        life_state_display: Default::default(),
         planar_render: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
@@ -282,6 +284,7 @@ pub(super) fn slot_snapshot(app: &App) -> BTreeMap<String, SlotRecord> {
 
 pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

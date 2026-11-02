@@ -145,6 +145,7 @@ pub(crate) struct LoopbackHarness {
     /// The client's installed host tuning and its generation, replaced through the
     /// production `replace_client_tuning` install path.
     pub(crate) client_tuning: Option<Box<TuningPayload>>,
+    pub(crate) life_state_tables: crate::life_state_tables::LifeStateTables,
     pub(crate) client_tuning_generation: u64,
     /// Tuning payloads the client installed, in arrival order.
     pub(crate) client_tuning_installs: u32,
@@ -303,6 +304,7 @@ impl LoopbackHarness {
             client_replication: ClientReplication::new(),
             prediction: ClientPrediction::new(),
             client_tuning: None,
+            life_state_tables: Default::default(),
             sent_refresh_requests: Vec::new(),
             client_tuning_generation: 0,
             client_tuning_installs: 0,
@@ -773,6 +775,7 @@ impl LoopbackHarness {
                     &combined_collision,
                     environment,
                     DT,
+                    &self.life_state_tables,
                 );
                 self.latest_reconcile_windows
                     .push((reconcile.acked_tick, self.last_sent_client_tick));
@@ -838,6 +841,8 @@ impl LoopbackHarness {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
             },
+            &[],
+            0,
         );
         send_tuning_if_changed(
             &mut self.server,
@@ -889,6 +894,13 @@ impl LoopbackHarness {
                 &mut self.client_tuning,
                 &mut self.client_tuning_generation,
                 &bytes,
+                &mut self.life_state_tables,
+                self.client_pawn.and_then(|pawn| {
+                    self.client_registry
+                        .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                        .ok()
+                        .map(|pawn| pawn.life_state_table_revision)
+                }),
             )
             .expect("host tuning payload installs");
             self.client_tuning_installs += 1;
@@ -916,6 +928,7 @@ impl LoopbackHarness {
             &mut applied_generation,
             &self.descriptors,
             &mut self.client_registry,
+            &self.life_state_tables,
         );
     }
 

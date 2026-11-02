@@ -173,6 +173,9 @@ pub(super) fn apply_vault_entry(
     dt: f32,
     events: &mut MovementEvents,
 ) {
+    if crate::movement::life_capabilities::forced_crouch(component) {
+        return;
+    }
     let Some(next) = vault_entry(
         component,
         input,

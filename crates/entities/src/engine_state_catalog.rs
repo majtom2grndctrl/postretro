@@ -720,6 +720,29 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.lifeStateMs",
+        sdk_path: &["player", "lifeStateMs"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange {
+            min: 0.0,
+            max: f32::INFINITY,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.lifeState",
+        sdk_path: &["player", "lifeState"],
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.weapon.current",
         sdk_path: &["player", "weapon", "current"],
         value_type: EngineStateValueType::String,
@@ -1431,6 +1454,8 @@ mod tests {
                 "player.health",
                 "player.heat",
                 "player.immersion",
+                "player.lifeState",
+                "player.lifeStateMs",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",
@@ -1868,6 +1893,8 @@ mod tests {
                 "player.cellCapacity",
                 "player.swimming",
                 "player.immersion",
+                "player.lifeState",
+                "player.lifeStateMs",
             ]
             .contains(&entry.wire_name)
             {

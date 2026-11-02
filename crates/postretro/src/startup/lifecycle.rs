@@ -25,6 +25,9 @@ mod lifecycle_install_presentation;
 mod lifecycle_install_tests;
 #[path = "lifecycle_install_world.rs"]
 mod lifecycle_install_world;
+#[cfg(test)]
+#[path = "lifecycle_life_state_tests.rs"]
+mod lifecycle_life_state_tests;
 #[path = "lifecycle_load.rs"]
 mod lifecycle_load;
 #[cfg(test)]

@@ -329,6 +329,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -450,6 +451,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

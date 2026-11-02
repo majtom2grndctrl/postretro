@@ -151,6 +151,7 @@ pub(super) fn materialize_armed_local_pawn(
     host_movement: Option<&postretro_foundation::PlayerMovementDescriptor>,
     host_tuning: Option<&TuningPayload>,
     rebuild_movement: bool,
+    life_state_tables: &crate::life_state_tables::LifeStateTables,
 ) -> bool {
     let entity_class = armed.entity_class.as_deref().unwrap_or("player");
     let entity_class = decode_replicated_descriptor_class(entity_class).canonical_name();
@@ -192,6 +193,7 @@ pub(super) fn materialize_armed_local_pawn(
         {
             let mut rebuilt = rebuilt.clone();
             super::movement_state::carry_live_tick_state(&mut rebuilt, &live);
+            life_state_tables.restamp_carried(&mut rebuilt);
             let _ = registry.set_component(armed.entity_id, rebuilt);
         }
     } else {
@@ -378,6 +380,7 @@ mod tests {
             },
         );
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1026,6 +1029,7 @@ mod tests {
             descriptors[0].movement.as_ref(),
             None,
             false,
+            &Default::default(),
         );
 
         assert!(
@@ -1055,13 +1059,22 @@ mod tests {
             descriptors[0].movement.as_ref(),
             None,
             false,
+            &Default::default(),
         );
         assert!(
             reg.has_component_kind(id, ComponentKind::PlayerMovement)
                 .unwrap()
         );
 
-        materialize_armed_local_pawn(&armed, &descriptors, &mut reg, None, None, true);
+        materialize_armed_local_pawn(
+            &armed,
+            &descriptors,
+            &mut reg,
+            None,
+            None,
+            true,
+            &Default::default(),
+        );
 
         assert_eq!(
             reg.has_component_kind(id, ComponentKind::PlayerMovement),

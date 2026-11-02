@@ -138,7 +138,9 @@ The platform foundation, visual parity, trigger/command surface, rotation, and d
 
 Trigger fan-out, activation policy, dispatch parameters, enemy groups, spawning, trap pools, timed reactions, and projectile traps have shipped. The load-bearing E18-A decisions — effect-based dispatch split, bind-at-install, the co-op atmosphere channel — are recorded in the Q3 archive; later specs inherit them. Design intent: `context/research/co-op-triggers-trap-pools.md`.
 
-- [ ] **R — Respawn + player-leave policy.** The co-op respawn and player-leave handling the capstone encounter needs — charter-named, unspecified elsewhere.
+- [x] **R — Respawn + player-leave policy.** Author-named player life states, capability gates, respawn and the rejoin map; player-leave keeps the harvest-and-hold contract. Shipped: `plans/done/E18--player-life-states/`.
+- [ ] **Player revive and second wind.** Teammate assist and impact-policy life-state reads and effects. Drafted: `drafts/E18--player-revive-assist/`.
+- [ ] **Life-state drop capability.** A `drop` profile key, separate from `switchWeapon`. Today `switchWeapon: false` also refuses drop, because drop repoints the active slot, so an author can't let a downed player drop a weapon while switching stays refused.
 - [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
 
 ---
@@ -291,6 +293,7 @@ Features below are intended but not yet sequenced. Rough priority ordering withi
 - **Composable archetypes via `@BaseClass` mixins** — `@BaseClass` declarations map to component lists; property bags drive behavior instead of proliferating archetype names. Reference patterns from `bevy_trenchbroom`: `Default::default()` as the property-fallback source, recursive depth-first base spawn with TypeId dedup, two-phase spawn (component insertion at load, subsystem registration at lifecycle hook).
 - **Property-driven editor previews** — TrenchBroom expression-language helpers (`model({{ ... }})`, `iconsprite({{ ... }})`) drive per-instance preview variation. One canonical name can display different models or icons based on property values, reducing pressure to multiply archetype names.
 - **Entity pitch sign vs TrenchBroom** — engine positive pitch is nose-up, while TrenchBroom draws non-MDL models nose-down; reconcile at the one angle converter. Near-zero content exposure today.
+- **Resume reinstalls the level without unload** — resume (`splash_lifecycle` → `start_boot_destination`) reinstalls the level, but `drain_level_requests` sees no installed level, so unload never runs. The old local pawn survives beside a fresh non-local one: both count in `players()`, player events fire for the orphan, and queued respawns move it. Run unload on resume, then re-prove the life-state suspend tests through the real resume path.
 - **Multi-format map support** — UDMF and others via `format/<name>.rs` sibling modules. All formats normalize to the canonical-name vocabulary at compile time, so runtime sees one identifier shape regardless of source.
 
 ### Dropped

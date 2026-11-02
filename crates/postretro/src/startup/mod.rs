@@ -18,10 +18,13 @@ mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
 pub(crate) mod level_loads;
+mod life_state_validation;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]
 mod movement_vault_surface_tests;
+#[cfg(test)]
+mod player_death_surface_tests;
 #[cfg(test)]
 mod player_events_surface_tests;
 #[cfg(test)]

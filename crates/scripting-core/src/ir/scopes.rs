@@ -14,6 +14,7 @@ use crate::ctx::ScriptCtx;
 use crate::group_resolution::is_player_pawn;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
+use crate::life_state_inputs::{LIFE_STATE_INPUT_PREFIX, resolve_life_state_id};
 use crate::player_event_scope::EVENT_PLAYER_TOKEN;
 use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::registry::{EntityId, EntityRegistry};
@@ -45,6 +46,7 @@ pub enum StoreCapability {
 pub struct StoreHandle {
     name: String,
     ir_type: IrType,
+    life_state: Option<String>,
 }
 
 impl StoreHandle {
@@ -60,6 +62,13 @@ impl StoreHandle {
 /// Binds and evaluates IR against the engine-global [`SlotTable`] via a captured
 /// [`ScriptCtx`]. Cloning the ctx is cheap (it bumps `Rc`s); the scope owns its
 /// clone so it can read and write the live table without an external borrow.
+///
+/// Bound directly, it is the local crossing scope, so it resolves
+/// `inLifeState` against this machine's own state. [`DispatchScope`] refuses
+/// that read before delegating here, and [`PlayerConditionScope`] binds it to
+/// the evaluated player first.
+///
+/// [`PlayerConditionScope`]: crate::ir_player_scope::PlayerConditionScope
 pub struct StoreScope {
     ctx: ScriptCtx,
     mode: StoreCapability,
@@ -118,6 +127,10 @@ impl StoreScope {
         }
     }
 
+    pub(crate) fn life_state_id(&self, name: &str) -> Option<u8> {
+        resolve_life_state_id(&self.ctx, name)
+    }
+
     /// Resolve the addressable half of an owner store. Only a scope that
     /// publishes an owner — the impact source, the evaluated or event player —
     /// exposes this handle after it validates the owner token.
@@ -132,6 +145,7 @@ impl StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -334,6 +348,15 @@ impl BindingScope for DispatchScope {
     type OutputHandle = StoreHandle;
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        // The ambient store answers `inLifeState` with this machine's own
+        // state. That is a local crossing's meaning; in an impact, trigger,
+        // system or player-event body it would silently test the host.
+        if name.starts_with(LIFE_STATE_INPUT_PREFIX) {
+            log::error!(
+                "[Scripting] cannot bind `{name}`: inLifeState reads only in player-event conditions (the evaluated player) and onStateCrossing predicates (this machine's player)"
+            );
+            return None;
+        }
         if name.starts_with('@') {
             let handle = self
                 .inputs
@@ -786,6 +809,17 @@ impl BindingScope for StoreScope {
     type OutputHandle = StoreHandle;
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<StoreHandle>> {
+        if let Some(state) = name.strip_prefix(LIFE_STATE_INPUT_PREFIX) {
+            self.life_state_id(state)?;
+            return Some(ResolvedInput {
+                handle: StoreHandle {
+                    name: name.to_string(),
+                    ir_type: IrType::Bool,
+                    life_state: Some(state.to_string()),
+                },
+                ir_type: IrType::Bool,
+            });
+        }
         let table = self.ctx.slot_table.borrow();
         let record = table.get(name)?;
         // Bare reads are scalar projections. A per-owner slot has no
@@ -799,6 +833,7 @@ impl BindingScope for StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -824,6 +859,7 @@ impl BindingScope for StoreScope {
             handle: StoreHandle {
                 name: name.to_string(),
                 ir_type,
+                life_state: None,
             },
             ir_type,
         })
@@ -832,6 +868,12 @@ impl BindingScope for StoreScope {
     fn read(&self, handle: &StoreHandle) -> IrValue {
         // Alloc-free re-hash through the existing `get(&str)`; no new store API.
         let table = self.ctx.slot_table.borrow();
+        if let Some(state) = &handle.life_state {
+            let matches = table.get("player.lifeState").is_some_and(|record| {
+                matches!(&record.value, Some(SlotValue::String(current)) if current == state)
+            });
+            return IrValue::Bool(matches);
+        }
         let value = table
             .get(&handle.name)
             .and_then(|record| record.value.as_ref());

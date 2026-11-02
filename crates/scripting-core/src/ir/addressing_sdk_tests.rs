@@ -375,3 +375,50 @@ fn teleport_subject_commands_emit_identical_wire_in_both_runtimes() {
     assert_eq!(ts[1]["primitive"], "armTeleporter");
     assert_eq!(ts[2]["target"], "@activators");
 }
+
+#[test]
+fn life_state_verbs_and_predicates_lower_identically_in_both_sdks() {
+    let ts = quickjs_fixture_value(
+        r#"
+        import { defineReaction, inLifeState, becomes, players, type PlayerEventParams,
+          type TriggerEventParams } from "postretro";
+        const down = defineReaction("down", (on: PlayerEventParams) => on.player.setLifeState("down"));
+        const respawn = defineReaction("respawn", players().respawn());
+        const revive = defineReaction("revive", (on: TriggerEventParams) =>
+          on.activators.respawn({ health: 25, lifeState: "alive" }));
+        const allDown = defineReaction("allDown", players().setLifeState("down"));
+        const selectedRespawn = defineReaction("selectedRespawn", (on: PlayerEventParams) => on.player.respawn({ lifeState: "alive" }));
+        const touchDown = defineReaction("touchDown", (on: TriggerEventParams) => on.activators.setLifeState("down"));
+        JSON.stringify({ reactions: [down, respawn, revive, allDown, selectedRespawn, touchDown],
+          event: players().on(becomes(inLifeState("down")), [respawn]) });
+        "#,
+    );
+    let luau = luau_fixture_value(
+        r#"
+        local P = require("postretro")
+        local down = P.defineReaction("down", function(on) return on.player:setLifeState("down") end)
+        local respawn = P.defineReaction("respawn", P.players():respawn())
+        local revive = P.defineReaction("revive", function(on)
+          return on.activators:respawn({ health = 25, lifeState = "alive" }) end)
+        local allDown = P.defineReaction("allDown", P.players():setLifeState("down"))
+        local selectedRespawn = P.defineReaction("selectedRespawn", function(on) return on.player:respawn({ lifeState = "alive" }) end)
+        local touchDown = P.defineReaction("touchDown", function(on) return on.activators:setLifeState("down") end)
+        return { reactions = { down, respawn, revive, allDown, selectedRespawn, touchDown },
+          event = P.players():on(P.becomes(P.inLifeState("down")), { respawn }) }
+        "#,
+    );
+    assert_eq!(ts, luau, "life-state SDK wire diverged");
+    assert_eq!(
+        ts["reactions"][0]["args"],
+        serde_json::json!({ "state": "down" })
+    );
+    assert_eq!(ts["reactions"][1]["args"], serde_json::json!({}));
+    assert_eq!(
+        ts["reactions"][2]["args"],
+        serde_json::json!({ "health": 25, "state": "alive" })
+    );
+    assert_eq!(
+        ts["event"]["condition"],
+        serde_json::json!({ "op": "input", "name": "player.inLifeState:down" })
+    );
+}

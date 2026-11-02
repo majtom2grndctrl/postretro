@@ -3328,6 +3328,9 @@ mod tests {
         movement_state: WireMovementState,
     ) -> ComponentPayload {
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            life_state: 255,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

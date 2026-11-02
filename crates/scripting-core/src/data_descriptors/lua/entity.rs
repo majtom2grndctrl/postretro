@@ -4,7 +4,7 @@
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
-/// `{ canonicalName?: string, ghost?: boolean, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
+/// `{ canonicalName?: string, ghost?: boolean, components?: { inventory?: { loadout?: string[] }, mesh?: MeshDescriptor, movement?: PlayerMovementDescriptor, lifeStates?: LifeStatesDescriptor, weapon?: WeaponDescriptor, touchable?: TouchableDescriptor, health?: HealthDescriptor, faction?: string, tolerance?: number, behavior?: BehaviorGraphDescriptor, light?: LightDescriptor, emitter?: BillboardEmitterComponent } }`.
 ///
 /// `canonicalName` is optional; absence means the descriptor has no direct
 /// map-placement form (see `EntityTypeDescriptor`).
@@ -45,6 +45,7 @@ pub fn entity_descriptor_from_lua(
     let mut light = None;
     let mut emitter = None;
     let mut movement = None;
+    let mut life_states = None;
     let mut weapon = None;
     let mut touchable = None;
     let mut mesh = None;
@@ -108,6 +109,15 @@ pub fn entity_descriptor_from_lua(
                         }
                     };
                     movement = Some(movement_descriptor_from_lua(&m_table)?);
+                }
+            }
+            if components_table
+                .contains_key("lifeStates")
+                .map_err(lua_err)?
+            {
+                let raw: LuaValue = components_table.get("lifeStates").map_err(lua_err)?;
+                if !matches!(raw, LuaValue::Nil) {
+                    life_states = Some(life_states_from_lua(raw, movement.as_ref())?);
                 }
             }
             if components_table.contains_key("weapon").map_err(lua_err)? {
@@ -214,6 +224,7 @@ pub fn entity_descriptor_from_lua(
         light,
         emitter,
         movement,
+        life_states,
         weapon,
         touchable,
         mesh,

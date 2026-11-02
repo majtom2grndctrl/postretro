@@ -26,6 +26,7 @@ impl Fixture {
                 None,
                 client_id,
                 None,
+                &[],
             );
         }
     }
@@ -113,6 +114,7 @@ impl Fixture {
                         &mut self.switch_receive.as_mut().unwrap().last_tuning,
                         None,
                         std::slice::from_ref(event),
+                        &[],
                     );
                 }
                 SlotEvent::Participating { client_id }

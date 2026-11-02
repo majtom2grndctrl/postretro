@@ -185,6 +185,55 @@ declare module "postretro" {
     component: FogVolumeComponent;
   };
 
+  /** Posture imposed by a player life state. Omission leaves crouch under input control. Valid values: `stand`, `crouch`. */
+  export type LifeStatePosture =
+    /** Normal crouch input control; the default. */
+    | "stand"
+    /** Hold the existing crouch posture. Requires components.movement.crouch. */
+    | "crouch";
+
+  /** Movement capabilities for one life state. Omitted keys preserve full movement; no new movement state is registered. */
+  export type LifeStateMovementProfile = {
+    /** Finite locomotion speed multiplier in [0, 1]. Defaults to 1. */
+    speedScale?: number;
+    /** Allow movement abilities, including vault entry. Defaults to true; false breaks an active vault. */
+    abilities?: boolean;
+    /** Forced posture. Defaults to stand, which keeps normal crouch input and stand-up clearance. */
+    posture?: LifeStatePosture;
+  };
+
+  /** Closed engine capabilities for one author-named player life state. Every boolean defaults to true. Declaring life states hands zero-HP behavior to authored transitions; HP never changes the life state automatically. */
+  export type LifeStateProfile = {
+    /** Movement scaling, abilities and posture. Omission permits full movement. */
+    movement?: LifeStateMovementProfile;
+    /** Allow the owning player's look input. Defaults to true. */
+    look?: boolean;
+    /** Allow weapon activations at any HP. Defaults to true; false cancels existing activations and charge. */
+    fire?: boolean;
+    /** Allow new weapon-switch requests and weapon drops, since a drop changes the active weapon. Defaults to true. */
+    switchWeapon?: boolean;
+    /** Allow new reload requests. Defaults to true. */
+    reload?: boolean;
+    /** Allow trigger Use activation. Defaults to true. */
+    use?: boolean;
+    /** Allow new trigger Touch entries, pickups and teleporter entry. Defaults to true; disabling it preserves volume membership and paired Exit behavior. */
+    touch?: boolean;
+    /** Include this pawn in trigger occupant counts. Defaults to true. */
+    occupancy?: boolean;
+    /** Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior. */
+    damageable?: boolean;
+  };
+
+  /** Author-named player life states; requires components.movement. Names use the engine ASCII identifier syntax. At most 255 distinct names may appear across the mod. Unknown profile keys reject content. */
+  export type LifeStatesDescriptor = {
+    /** Declared state entered on spawn, level restart and ordinary respawn. */
+    initial: string;
+    /** State name to capability profile. An empty profile permits every capability. */
+    states: { readonly [state: string]: LifeStateProfile };
+    /** Leaving state to return state after disconnect or slot demotion. Both names must be declared here. A missing entry enters initial; level change always enters initial. */
+    rejoin?: { readonly [state: string]: string };
+  };
+
   /** Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads. */
   export type EntityTypeComponents = {
     /** Dynamic-light preset materialized on each spawned instance. */
@@ -193,6 +242,8 @@ declare module "postretro" {
     emitter?: BillboardEmitterComponent | null;
     /** Player movement, collision capsule, and first-person view-feel preset. */
     movement?: PlayerMovementDescriptor | null;
+    /** Author-named player life states with engine capability profiles and optional rejoin policy. Requires player movement. */
+    lifeStates?: LifeStatesDescriptor | null;
     /** Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here. */
     inventory?: InventoryDescriptor | null;
     /** Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`. */
@@ -1755,6 +1806,8 @@ declare module "postretro" {
       readonly health: PlayerComputedRef<number>;
       readonly heat: PlayerComputedRef<number>;
       readonly immersion: PlayerComputedRef<number>;
+      readonly lifeState: ComputedRef<string>;
+      readonly lifeStateMs: PlayerComputedRef<number>;
       readonly maxHealth: PlayerComputedRef<number>;
       readonly overheatAt: PlayerComputedRef<number>;
       readonly overheated: PlayerComputedRef<boolean>;
@@ -2182,6 +2235,10 @@ declare module "postretro" {
     damage(amount: number): SubjectTokenCommand;
     /** Add health to this fire's activators. */
     grantHealth(amount: number): SubjectTokenCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): SubjectTokenCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
@@ -2212,6 +2269,10 @@ declare module "postretro" {
     damage(amount: number): SubjectTokenCommand;
     /** Add health to this event's player. */
     grantHealth(amount: number): SubjectTokenCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): SubjectTokenCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this event's player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
@@ -2449,12 +2510,18 @@ declare module "postretro" {
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number): GroupCommand;
   }
+  /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
+  export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {
     /** Damage each player by a finite, non-negative amount. */
     damage(amount: number): GroupCommand;
     /** Add health to each player. */
     grantHealth(amount: number): GroupCommand;
+    /** Enter an authored life state. */
+    setLifeState(name: string): GroupCommand;
+    /** Respawn on the next authoritative tick, preserving inventory. */
+    respawn(options?: RespawnOptions): GroupCommand;
     /** Add `amount` to each player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
@@ -2473,6 +2540,8 @@ declare module "postretro" {
   export type PlayerEventOptions = { levels?: string[] };
   /** One `playerEvents` entry, as `players().on` builds it. */
   export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** Test the evaluated player in player events, or the local player in crossings. */
+  export function inLifeState(name: string): BoolRef;
   /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
   export function becomes(cond: BoolRef): PlayerEventEdge;
   /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */

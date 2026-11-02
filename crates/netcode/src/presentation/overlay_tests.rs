@@ -76,6 +76,7 @@ fn authored_client_config(cap: usize, linger_ms: u32, template_id: &str) -> Clie
 
 fn descriptor() -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

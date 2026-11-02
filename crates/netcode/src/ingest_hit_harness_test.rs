@@ -317,6 +317,7 @@ fn projectile_weapon(source: &str) -> WeaponComponent {
 
 fn descriptor(name: &str, placement: WeaponPlacementDescriptor) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

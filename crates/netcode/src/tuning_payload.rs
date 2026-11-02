@@ -18,6 +18,8 @@ pub(crate) enum TuningPayloadError {
     },
     #[error("tuning payload has invalid weapon data: {0}")]
     InvalidWeapon(postretro_foundation::DescriptorError),
+    #[error("tuning payload has invalid life states: {0}")]
+    InvalidLifeStates(&'static str),
     #[error("tuning payload epoch mismatch: expected {expected}, received {received}")]
     EpochMismatch { expected: u32, received: u32 },
 }
@@ -37,12 +39,15 @@ fn payload_json_error(source: serde_json::Error) -> TuningPayloadError {
 
 /// Serialize a payload in its canonical JSON form.
 pub(crate) fn encode_tuning_payload(payload: &TuningPayload) -> Vec<u8> {
-    let canonical = TuningPayload::new(
+    let mut canonical = TuningPayload::new(
         payload.movement.clone(),
         payload.wieldables.clone(),
         payload.environment.clone(),
     )
     .with_spawn_active_slot(payload.spawn_active_slot);
+    canonical.life_state_names = payload.life_state_names.clone();
+    canonical.life_state_profiles = payload.life_state_profiles.clone();
+    canonical.life_state_table_revision = payload.life_state_table_revision;
     serde_json::to_vec(&canonical)
         .expect("tuning payload only contains validated descriptor values")
 }
@@ -62,6 +67,7 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
         });
     }
     let mut payload: TuningPayload = serde_json::from_slice(data).map_err(payload_json_error)?;
+    validate_life_states(&payload)?;
     if let Some(descriptor) = payload.movement.as_mut() {
         descriptor.view_feel = None;
         descriptor.sounds = None;
@@ -73,6 +79,37 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
             .map_err(TuningPayloadError::InvalidWeapon)?;
     }
     Ok(payload)
+}
+
+fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadError> {
+    if payload.life_state_names.len() > 255
+        || payload
+            .life_state_names
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(TuningPayloadError::InvalidLifeStates(
+            "names must be sorted, unique and at most 255",
+        ));
+    }
+    let mut seen = [false; 255];
+    for (id, profile) in &payload.life_state_profiles {
+        let id = usize::from(*id);
+        if id >= payload.life_state_names.len() || seen[id] {
+            return Err(TuningPayloadError::InvalidLifeStates(
+                "profile ids must be unique and name an installed state",
+            ));
+        }
+        seen[id] = true;
+        if !profile.movement.speed_scale.is_finite()
+            || !(0.0..=1.0).contains(&profile.movement.speed_scale)
+        {
+            return Err(TuningPayloadError::InvalidLifeStates(
+                "movement speedScale must be finite and within [0, 1]",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -303,6 +340,45 @@ mod tests {
             host_environment(),
         )
         .with_spawn_active_slot(2)
+    }
+
+    #[test]
+    fn life_state_names_profiles_and_revision_survive_canonical_codec() {
+        let mut payload = full_payload();
+        payload.life_state_names = vec!["alive".into(), "down".into()];
+        let mut profile = postretro_foundation::LifeStateProfile::default();
+        profile.movement.speed_scale = 0.3;
+        profile.fire = false;
+        payload.life_state_profiles = vec![(1, profile)];
+        payload.life_state_table_revision = 231;
+        let encoded = encode_tuning_payload(&payload);
+        assert_eq!(decode_tuning_payload(&encoded).unwrap(), payload);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["epoch"],
+            16
+        );
+    }
+
+    #[test]
+    fn life_state_codec_rejects_unbounded_names_and_unresolvable_profiles() {
+        let mut payload = full_payload();
+        payload.life_state_names = (0..256).map(|index| format!("state{index:03}")).collect();
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload)),
+            Err(TuningPayloadError::InvalidLifeStates(_))
+        ));
+        payload.life_state_names = vec!["alive".into()];
+        payload.life_state_profiles = vec![(1, postretro_foundation::LifeStateProfile::default())];
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload)),
+            Err(TuningPayloadError::InvalidLifeStates(_))
+        ));
+        payload.life_state_profiles =
+            vec![(0, postretro_foundation::LifeStateProfile::default()); 2];
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload)),
+            Err(TuningPayloadError::InvalidLifeStates(_))
+        ));
     }
 
     // The client composes its install selection from this slot, so it must

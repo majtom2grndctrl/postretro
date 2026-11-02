@@ -115,6 +115,10 @@ a room whose lighting is still streaming in.
 
 ## When a teleporter fires
 
+- **Life states gate entry through `touch`.** A player whose descriptor
+  declares life states can enter while at any HP when the current profile
+  permits `touch`. A `touch: false` profile refuses entry. A player without
+  life states skips teleporters at zero HP, preserving the original behavior.
 - **The body point decides.** After the player moves each tick, a teleporter
   fires when the point the player's gravity and push are measured at is inside
   its region. Brushing the region with a shoulder does not.
@@ -190,12 +194,22 @@ player teleports, after the move. Its reactions receive `TeleportEventParams`:
 
 | Field | What it is |
 |-------|------------|
-| `on.activators` | The player who teleported: `damage`, `grantHealth`, `grantAmmo`, `addSlot`. |
+| `on.activators` | The player who teleported: `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`. |
 | `on.teleporter` | The teleporter that fired: `arm`, `disarm`. |
 
 There is no `on.occupancy`. Like other subject tokens, `on.activators` and
 `on.teleporter` are usable only before any `wait`. A brush's `on_teleport` key
 runs its reaction on the same event.
+
+`on.activators:setLifeState("down")` changes the subject's authored life state
+in the reaction (TypeScript: `on.activators.setLifeState("down")`).
+`on.activators:respawn()` queues a return to the player's seat placement at
+the start of the next tick, restoring max health and the descriptor's initial
+state. Optional `{ health, lifeState }` fields override those defaults.
+Respawn cuts the owner's and observers' views and plays no teleporter arrival
+sound, including after a prior teleport. These verbs are host-authoritative;
+see [Player life states](scripting-reference.md#player-life-states) for profiles,
+rejoin rules and elapsed-time reads.
 
 ### A one-way gate
 

@@ -42,6 +42,9 @@ pub mod ir {
 #[path = "ir/scopes.rs"]
 pub mod ir_scopes;
 
+#[path = "ir/life_state_inputs.rs"]
+mod life_state_inputs;
+
 #[path = "ir/player_scope.rs"]
 pub mod ir_player_scope;
 
@@ -68,6 +71,7 @@ pub mod data_descriptors;
 pub mod game_state_refs;
 pub mod group_resolution;
 pub mod level_data_context;
+mod life_state_remap;
 pub mod luau;
 pub mod luau_prelude;
 pub mod luau_require;

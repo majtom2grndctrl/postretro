@@ -378,7 +378,7 @@ impl Level {
                 .assign_joiner_placement(
                     &ctx.registry.borrow(),
                     seat,
-                    &crate::scripting::builtins::player_spawn::joinable_spawns(
+                    &crate::scripting::builtins::player_spawn::joinable_sites(
                         &products.spawn_points,
                         &manifest.entities,
                     ),

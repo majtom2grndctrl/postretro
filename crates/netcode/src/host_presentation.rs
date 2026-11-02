@@ -321,6 +321,10 @@ pub fn presented_client_pawn_transform(
 }
 
 #[cfg(test)]
+#[path = "host_presentation_discontinuity_tests.rs"]
+mod discontinuity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Quat, Vec3};

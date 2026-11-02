@@ -8,6 +8,8 @@ mod input_block;
 mod loading_screen;
 mod mod_init;
 mod mod_init_exec;
+#[cfg(debug_assertions)]
+mod staged_preflight;
 mod types;
 
 pub use input_block::{ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs};

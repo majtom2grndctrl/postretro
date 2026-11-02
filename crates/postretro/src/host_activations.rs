@@ -2,6 +2,7 @@
 //! Host activation admission and reliable settlement around the shared machine.
 
 use crate::{App, netcode, sim};
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::weapon::WeaponComponent;
@@ -38,23 +39,17 @@ fn recovery_ticks(registry: &EntityRegistry, weapon: EntityId) -> u32 {
         })
 }
 
-/// Whether the execution `id` binds may continue: its pawn lives, still holds
-/// the weapon, and the weapon still runs it. A dead pawn's execution is
-/// cancelled before its next command, as the client cancels its own
-/// prediction.
+/// Whether the execution `id` binds may continue: its pawn is fire-eligible,
+/// still holds the weapon, and the weapon still runs it. Declared life-state
+/// profiles decide fire eligibility; undeclared pawns fall back to HP. The
+/// vault gate is checked separately for each command tick.
 fn binding_is_live(
     registry: &EntityRegistry,
     pawn: EntityId,
     id: ActivationId,
     weapon: EntityId,
 ) -> bool {
-    registry.exists(pawn)
-        && !registry
-            .get_component::<HealthComponent>(pawn)
-            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
-        && !postretro_sim::scripting_systems::health::is_terminally_committed_to_removal(
-            registry, pawn,
-        )
+    postretro_sim::weapon::pawn_gate::pawn_can_fire(registry, pawn)
         && registry
             .get_component::<Inventory>(pawn)
             .is_ok_and(|inventory| inventory.wieldables.contains(&Some(weapon)))
@@ -79,7 +74,8 @@ fn binding_is_live(
 /// fires at the release the client held past the vault. Each stopped
 /// execution stops where its own clock reaches the tick, not at the host's
 /// delivery of it (`HostCommandQueues::close_start_fire_gate`); one already
-/// there stops now. Death stops the live execution at once, spared or not.
+/// there stops now. A declared pawn can keep firing at zero HP when its life
+/// state permits it; an undeclared pawn's zero HP makes it ineligible.
 pub(super) fn observe_lifecycle(
     registry: &mut EntityRegistry,
     allocator: &mut netcode::NetworkIdAllocator,

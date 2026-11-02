@@ -295,6 +295,7 @@ pub(crate) const ENTITY_CLASS: &str = "player";
 /// `"player"` descriptor wraps the harness `player_descriptor()` movement block.
 pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
     vec![EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

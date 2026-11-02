@@ -4,9 +4,9 @@
 use postretro_entities::components::inventory::WIELDABLE_SLOT_CAPACITY;
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::{
-    KnockbackDescriptor, PlayerMovementDescriptor, ProjectileDescriptor, ResolutionMode,
-    SplashDescriptor, WeaponActivationDescriptor, WeaponDescriptor, WeaponPlacementDescriptor,
-    WeaponResource,
+    KnockbackDescriptor, LifeStateProfile, PlayerMovementDescriptor, ProjectileDescriptor,
+    ResolutionMode, SplashDescriptor, WeaponActivationDescriptor, WeaponDescriptor,
+    WeaponPlacementDescriptor, WeaponResource,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,8 @@ use crate::FluidMovementTable;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CarriedState {
     pub health_current: Option<f32>,
+    /// Host-local authored name, independent of reload-lowered numeric ids.
+    pub life_state: Option<String>,
     pub reserve: AmmoReserve,
     pub wieldables: [Option<String>; WIELDABLE_SLOT_CAPACITY],
     pub magazines: [Option<u32>; WIELDABLE_SLOT_CAPACITY],
@@ -28,6 +30,7 @@ impl Default for CarriedState {
     fn default() -> Self {
         Self {
             health_current: None,
+            life_state: None,
             reserve: AmmoReserve::new(),
             wieldables: std::array::from_fn(|_| None),
             magazines: [None; WIELDABLE_SLOT_CAPACITY],
@@ -67,7 +70,9 @@ pub fn restore_carried_health(
 /// `ground` gains `friction` and `stop_speed`, and ground friction runs every
 /// grounded tick. An epoch-14 client would predict the old friction model
 /// against a host running the new one; the epoch check rejects it instead.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 15;
+/// 16: sorted life-state names, per-pawn capability profiles and table revision
+/// supply the client prediction and reconcile gates.
+pub const TUNING_PAYLOAD_EPOCH: u32 = 16;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///
@@ -199,6 +204,9 @@ pub struct TuningPayload {
     /// ignores it.
     pub spawn_active_slot: usize,
     pub environment: EnvironmentTuning,
+    pub life_state_names: Vec<String>,
+    pub life_state_profiles: Vec<(u8, LifeStateProfile)>,
+    pub life_state_table_revision: u8,
 }
 
 /// Host level state a connected client resolves environment volumes against.
@@ -236,6 +244,9 @@ impl TuningPayload {
             movement,
             wieldables,
             spawn_active_slot: 0,
+            life_state_names: Vec::new(),
+            life_state_profiles: Vec::new(),
+            life_state_table_revision: 0,
             environment,
         }
     }
@@ -247,11 +258,16 @@ impl TuningPayload {
         self
     }
 
-    /// Whether `other` carries the same pawn-scoped tuning (movement and
-    /// wieldables), whatever its environment. A client keeps its live
+    /// Whether `other` carries the same pawn-scoped tuning (movement,
+    /// wieldables and life-state names/profiles/revision), whatever its
+    /// environment. A client keeps its live
     /// descriptor-derived pawn state across an environment-only change.
     pub fn same_pawn_tuning(&self, other: &Self) -> bool {
-        self.movement == other.movement && self.wieldables == other.wieldables
+        self.movement == other.movement
+            && self.wieldables == other.wieldables
+            && self.life_state_names == other.life_state_names
+            && self.life_state_profiles == other.life_state_profiles
+            && self.life_state_table_revision == other.life_state_table_revision
     }
 
     /// Construct the only intentionally non-canonical payload shape used by
@@ -268,6 +284,9 @@ impl TuningPayload {
             movement,
             wieldables,
             spawn_active_slot: 0,
+            life_state_names: Vec::new(),
+            life_state_profiles: Vec::new(),
+            life_state_table_revision: 0,
             environment,
         }
     }
@@ -336,5 +355,20 @@ mod tests {
             assert!(before.same_pawn_tuning(&after));
         }
         assert_eq!(before, payload_with(-9.81, &water));
+    }
+    #[test]
+    fn each_life_state_payload_field_changes_pawn_tuning() {
+        let before = payload_with(-9.81, &[]);
+        let mut changed = before.clone();
+        changed.life_state_names.push("alive".into());
+        assert!(!before.same_pawn_tuning(&changed));
+        let mut changed = before.clone();
+        changed
+            .life_state_profiles
+            .push((0, LifeStateProfile::default()));
+        assert!(!before.same_pawn_tuning(&changed));
+        let mut changed = before.clone();
+        changed.life_state_table_revision = 1;
+        assert!(!before.same_pawn_tuning(&changed));
     }
 }

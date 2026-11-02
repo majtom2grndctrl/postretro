@@ -919,3 +919,5 @@ fn two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_correctio
         late.join("\n")
     );
 }
+
+mod life_states;

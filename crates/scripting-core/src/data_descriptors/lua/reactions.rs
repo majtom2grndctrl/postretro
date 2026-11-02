@@ -1,6 +1,7 @@
 // Data-context descriptors: Lua reaction/crossing converters.
 // See: context/lib/scripting.md
 
+use super::super::reaction_args::reaction_args_from_lua;
 use super::super::*;
 
 // --- Lua deserialization ----------------------------------------------------
@@ -158,8 +159,8 @@ pub fn primitive_descriptor_from_lua(
         target.is_some(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })?;
-    if kind.is_some() {
-        validate_group_kind_primitive(reaction, "primitive", &primitive)
+    if let Some(kind) = kind {
+        validate_group_kind_primitive(reaction, "primitive", &primitive, kind)
             .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
     if primitive == "spawnFromSpawner"
@@ -190,7 +191,7 @@ pub fn primitive_descriptor_from_lua(
         let raw: LuaValue = table.get("args").map_err(lua_err)?;
         match raw {
             LuaValue::Nil => nullish_primitive_args(&primitive),
-            other => conv::lua_to_json(other).map_err(lua_err)?,
+            other => reaction_args_from_lua(&primitive, other)?,
         }
     } else {
         nullish_primitive_args(&primitive)
@@ -301,13 +302,13 @@ pub fn sequence_steps_from_lua(
             validate_subject_token_primitive(reaction, &site, token, &primitive)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
-        if matches!(id, SequenceTarget::Group(_)) {
-            validate_group_kind_primitive(reaction, &site, &primitive)
+        if let SequenceTarget::Group(group) = &id {
+            validate_group_kind_primitive(reaction, &site, &primitive, group.kind)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         let args = if step_table.contains_key("args").map_err(lua_err)? {
             let raw: LuaValue = step_table.get("args").map_err(lua_err)?;
-            conv::lua_to_json(raw).map_err(lua_err)?
+            reaction_args_from_lua(&primitive, raw)?
         } else {
             serde_json::Value::Null
         };

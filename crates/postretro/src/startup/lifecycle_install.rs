@@ -187,6 +187,7 @@ impl App {
         // `install_level_payload` keeps it installed.
         self.install_environment_volumes(world);
         self.view_feel_state = crate::view_feel::ViewFeelState::default();
+        self.life_state_eye = Default::default();
         self.view_feel_followed_pawn = None;
         self.view_feel_descriptor = None;
         self.retain_active_level_tags_for_install();

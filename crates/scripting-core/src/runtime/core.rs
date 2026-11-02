@@ -647,18 +647,25 @@ impl ScriptRuntime {
             };
 
             let incoming_descriptors = next_descriptors.clone();
-            if defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors) {
-                // Preserve the unmodified, latest snapshot. A subsequent staged
-                // reload replaces it, so the next level sees the final authored
-                // presentation asset additions, removals, and path changes.
-                self.deferred_mesh_descriptors = Some(incoming_descriptors);
-            } else {
-                // A later reload can revert every previously deferred presentation
-                // change. Its snapshot is now safe for the active level, so do
-                // not let an older deferred snapshot override it at install.
-                self.deferred_mesh_descriptors = None;
+            let deferred =
+                defer_visual_asset_descriptor_refreshes(&old_descriptors, &mut next_descriptors);
+            // Presentation retention can add removed descriptors. Validate the
+            // exact active union and the separate next-level snapshot before
+            // changing deferred state, live components, or stores.
+            if let Err(reason) = super::staged_preflight::validate_life_state_snapshots(
+                &incoming_descriptors,
+                &next_descriptors,
+            ) {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
             }
-            let refresh_plan = {
+            let mut refresh_plan = {
                 let registry = ctx.registry.borrow();
                 crate::refresh_plan::plan_descriptor_refresh(
                     &old_descriptors,
@@ -666,6 +673,22 @@ impl ScriptRuntime {
                     &registry,
                 )
             };
+            if crate::group_resolution::group_commands_apply_here(ctx)
+                && let Err(reason) = super::staged_preflight::plan_retained_crouch_support(
+                    &next_descriptors,
+                    &ctx.registry.borrow(),
+                    &mut refresh_plan,
+                )
+            {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
+            }
             for diagnostic in &refresh_plan.diagnostics {
                 log::debug!(
                     "[Scripting] descriptor refresh diagnostic for entity {} `{}`: {}",
@@ -696,6 +719,10 @@ impl ScriptRuntime {
                 }
             };
 
+            // Keep the authored next-level snapshot only after every preflight
+            // and the live refresh have succeeded. A reverted reload
+            // clears any older deferred snapshot.
+            self.deferred_mesh_descriptors = deferred.then_some(incoming_descriptors);
             ctx.slot_table.borrow_mut().apply_reconcile_plan(store_plan);
             if self.cfg.skip_identity_enforcement {
                 self.store_identity = None;
@@ -723,6 +750,7 @@ impl ScriptRuntime {
             // One mutable registry borrow commits the staged whole snapshot, so
             // a render frame cannot observe new descriptors without their
             // matching mod-global weapon-placement default.
+            let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
                 let mut faction_sentiment = ctx.faction_sentiment.borrow_mut();
@@ -742,6 +770,7 @@ impl ScriptRuntime {
                 data_registry.replace_global_trigger_pools(next_global_trigger_pools);
                 data_registry.replace_global_player_events(next_global_player_events);
             }
+            crate::life_state_remap::remap_live_life_states(ctx, &previous_life_state_names);
             let dependency_count = next_dependencies.len();
             self.active_mod_init_dependencies = Some(next_dependencies);
 
@@ -1702,6 +1731,7 @@ mod tests {
         inventory_weapon: Option<&str>,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

@@ -62,12 +62,11 @@ pub(crate) const ORDINARY_CORRECTION_MAX_M: f32 = 0.5;
 /// states can legitimately produce a bigger visible delta than ordinary locomotion.
 pub(crate) const DASH_CORRECTION_MAX_M: f32 = 2.0;
 
-/// Teleport threshold: a correction at or above this (in metres) is too large to
-/// smooth without a visible rubber-band slide. It is snapped — history and the
-/// presentation offset are cleared and the registry transform stamps prev == current
-/// — so the pawn appears at the authoritative pose immediately. The same floor bounds
-/// the composed presentation offset: a smoothed correction whose sum with the
-/// in-flight remainder reaches it snaps the eye too (history kept).
+/// Ordinary teleport threshold (metres): a correction at or above this snaps,
+/// clearing history and presentation offset and stamping prev == current. The
+/// composed offset reaching this floor also cuts the eye (history kept).
+/// Protected finite life-state glides bypass both magnitude-based cuts;
+/// non-finite offsets and genuine teleport mismatches still cut.
 pub(crate) const TELEPORT_CORRECTION_MIN_M: f32 = 3.0;
 
 /// Fraction of the presentation offset retained per decay step as it decays to
@@ -99,18 +98,18 @@ pub(crate) enum CorrectionClass {
     /// Snapped, not smoothed. Taken at any distance when the post-replay teleport
     /// record (generation, accumulated yaw or last teleporter) differs from the
     /// prediction: that identity change keeps the unacked history, since stamped
-    /// rotation keeps its replay valid. A plain correction at or past
-    /// `TELEPORT_CORRECTION_MIN_M` takes it too, and clears the history. So does a
-    /// smoothed-class correction whose composition with the in-flight presentation
-    /// offset reaches that floor; it keeps the history, since the reconcile itself
-    /// was ordinary. Every way, reconcile reports a [`LocalTeleportAdoption`] for the
-    /// app's camera hold.
+    /// rotation keeps its replay valid. Outside a protected finite life-state
+    /// glide, a plain correction at or past `TELEPORT_CORRECTION_MIN_M` also
+    /// takes it and clears history. A composed offset reaching that floor cuts
+    /// under the same condition, keeping history. Protected finite life-state
+    /// glides bypass those magnitude cuts; non-finite offsets still cut.
+    /// Reconcile reports a [`LocalTeleportAdoption`] for the app's camera hold.
     Teleport,
-    /// In the gap between the smoothed caps and the teleport floor (or a dash-sized
-    /// correction on a non-dash tick): smoothed like an ordinary correction, but the
-    /// magnitude is logged as out-of-band. Kept distinct so the harness can see the
-    /// engine took the seed-and-smooth path on a correction larger than the ordinary
-    /// cap rather than silently widening `Ordinary`.
+    /// Finite correction outside the ordinary smoothed bands. Magnitude-based
+    /// classification uses this below the teleport floor; a life-state identity
+    /// or revision change also selects it above the floor. The magnitude is
+    /// logged as out-of-band. Kept distinct so the harness can assert smoothing
+    /// without widening `Ordinary`.
     OversizedSmoothed,
 }
 
@@ -237,6 +236,8 @@ pub struct ClientPrediction {
     /// lying to the simulation.
     /// Owned here, never on `App`/`main.rs` — the source-layout gate.
     presentation_offset: Vec3,
+    /// Keep a life-transition glide smooth while its large offset decays.
+    life_state_glide: bool,
     /// Off-by-default client input send-rate diagnostics (see `netdiag`). Inert
     /// unless `postretro::netdiag=debug`; observability only.
     send_diag: crate::netcode::netdiag::ClientSendDiag,
@@ -255,7 +256,7 @@ impl ClientPrediction {
         self.first_record_hold = None;
         self.armed = None;
         self.history.clear();
-        self.presentation_offset = Vec3::ZERO;
+        self.clear_presentation_offset();
     }
 
     /// Arm (or re-arm) prediction with the local pawn baseline. Called by
@@ -332,6 +333,12 @@ impl ClientPrediction {
     /// walks this to prune the acked prefix and replay the remaining commands.
     pub(crate) fn history(&self) -> &VecDeque<PredictedTick> {
         &self.history
+    }
+
+    /// Read-only ack/replay evidence for cross-crate conditioned-link tests.
+    #[cfg(feature = "test-support")]
+    pub fn pending_command_ticks_for_test(&self) -> Vec<u32> {
+        self.history.iter().map(|tick| tick.client_tick).collect()
     }
 
     /// Advance the local pawn one predicted fixed tick: run the movement-only
@@ -499,20 +506,34 @@ impl ClientPrediction {
     /// correction landing before the previous one decayed, and for two in one frame.
     /// Smoothing only — the caller has already snapped the registry.
     ///
-    /// Returns `true` when the composed offset reaches [`TELEPORT_CORRECTION_MIN_M`]:
-    /// too far to glide, so the offset is cleared and the caller cuts the camera, the
-    /// same rule a single teleport-floor correction follows. A teleport-class
-    /// correction, a first-record adoption and a level unload clear the offset
-    /// instead, so nothing composes across them. A non-finite composed offset snaps
-    /// the same way: kept, it would never decay or settle.
-    #[must_use = "a composed offset at the teleport floor snaps; the caller emits the camera cut"]
+    /// Returns `true` when the composed offset reaches [`TELEPORT_CORRECTION_MIN_M`]
+    /// outside a retained finite life-state glide, or is non-finite. The offset
+    /// is then cleared and the caller cuts the camera. A teleport-class correction,
+    /// first-record adoption or level unload clears the offset separately, so
+    /// nothing composes across those resets. A retained life-state glide stays
+    /// smooth above the floor; a non-finite offset always cuts.
+    #[must_use = "check whether offset composition requires a camera cut"]
+    #[cfg(test)]
     pub(crate) fn seed_presentation_offset(&mut self, correction: Vec3) -> bool {
+        self.seed_presentation_offset_with_life_change(correction, false)
+    }
+
+    /// A received life transition may remove more than the ordinary teleport
+    /// floor of predicted travel. Preserve its finite glide, including subsequent
+    /// compositions while that offset remains above the floor.
+    pub(crate) fn seed_presentation_offset_with_life_change(
+        &mut self,
+        correction: Vec3,
+        life_state_changed: bool,
+    ) -> bool {
         let composed = self.presentation_offset + correction;
-        if !composed.is_finite() || composed.length() >= TELEPORT_CORRECTION_MIN_M {
-            self.presentation_offset = Vec3::ZERO;
+        let glide = life_state_changed || self.life_state_glide;
+        if !composed.is_finite() || (!glide && composed.length() >= TELEPORT_CORRECTION_MIN_M) {
+            self.clear_presentation_offset();
             return true;
         }
         self.presentation_offset = composed;
+        self.life_state_glide = glide && composed.length() >= TELEPORT_CORRECTION_MIN_M;
         false
     }
 
@@ -522,6 +543,7 @@ impl ClientPrediction {
     /// discarded too, and the next correction composes from zero.
     pub(crate) fn clear_presentation_offset(&mut self) {
         self.presentation_offset = Vec3::ZERO;
+        self.life_state_glide = false;
     }
 
     /// The current local-pawn presentation offset (decaying toward zero). Added to the
@@ -562,6 +584,9 @@ impl ClientPrediction {
             return;
         }
         self.presentation_offset *= DECAY_PER_STEP;
+        if self.presentation_offset.length() < TELEPORT_CORRECTION_MIN_M {
+            self.life_state_glide = false;
+        }
         if self.presentation_offset.length() < OFFSET_SETTLED_EPSILON_M {
             self.presentation_offset = Vec3::ZERO;
         }

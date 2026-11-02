@@ -195,7 +195,21 @@ fn dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_
     assert_eq!(dev.fluids.names(), ["water", "sludge"]);
     assert_eq!(swim_of(&dev, "player"), swim_of(&twin, "player"));
     assert!(swim_of(&dev, "player").is_some(), "the dev player can swim");
-    assert_eq!(dev.player_events, twin.player_events);
+    // content/dev also authors other player events (life-state recipes), so
+    // assert containment. `authored_index` is diagnostics-only and shifts
+    // with the dev mod's array order, so match on the entry's content.
+    for event in &twin.player_events {
+        assert!(
+            dev.player_events.iter().any(|dev_event| {
+                dev_event.edge == event.edge
+                    && dev_event.condition == event.condition
+                    && dev_event.fire == event.fire
+                    && dev_event.levels == event.levels
+            }),
+            "content/dev carries the swim player event firing {:?}",
+            event.fire
+        );
+    }
     assert!(
         twin.crossings
             .iter()

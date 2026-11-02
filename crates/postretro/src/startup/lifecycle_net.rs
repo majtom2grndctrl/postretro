@@ -49,11 +49,13 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        let (descriptors, default_weapon_placement) = {
+        let (descriptors, default_weapon_placement, life_state_names, life_state_table_revision) = {
             let registry = session.scripting.script_ctx.data_registry.borrow();
             (
                 registry.entities.clone(),
                 registry.default_weapon_placement.clone(),
+                registry.life_state_names.clone(),
+                registry.life_state_table_revision,
             )
         };
         let environment = crate::netcode::host_environment_tuning(&session.scripting.script_ctx);
@@ -75,6 +77,8 @@ impl App {
             &descriptors,
             default_weapon_placement.as_ref(),
             &environment,
+            &life_state_names,
+            life_state_table_revision,
         );
     }
 
@@ -148,13 +152,14 @@ impl App {
     /// | `self.level` (LevelWorld) | renderer device/queue, window |
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
     /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
-    /// | level sounds (world-anchored voices fade out), sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store`, seat pawn bindings | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`), carried per-seat state |
+    /// | level sounds (world-anchored voices fade out), sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store`, seat pawn bindings | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`), carried per-seat health and inventory |
     /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     /// | level parity, published level identity, this peer's reveal | |
     /// | settle state and its timer, the active loading screen, undispatched system commands | |
+    /// | respawn requests and placements, carried life-state names (held seats too) | |
     pub(crate) fn unload_level(&mut self) {
         let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
@@ -180,6 +185,7 @@ impl App {
         // the issuer and SH's workers go now, not at the next install.
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
+            crate::respawn_placements::clear_for_level_unload(&session.scripting.script_ctx);
             session
                 .scripting
                 .script_ctx
@@ -244,9 +250,20 @@ impl App {
                 .borrow_mut()
                 .clear();
             {
+                // Carries health and inventory. The state names it records are
+                // discarded by the unload clear below; the next level enters
+                // `initial`.
                 let registry = session.scripting.script_ctx.registry.borrow();
                 if let Some(seats) = session.seat_table.as_mut() {
-                    seats.harvest_bound_pawns(&registry);
+                    seats.harvest_bound_pawns(
+                        &registry,
+                        &session
+                            .scripting
+                            .script_ctx
+                            .data_registry
+                            .borrow()
+                            .life_state_names,
+                    );
                 }
             }
             {

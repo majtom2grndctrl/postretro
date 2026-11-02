@@ -2577,13 +2577,14 @@ mod tests {
     // A PRLB / wire-32 peer predates the gameplay channel layout, and a wire-33
     // peer predates the ghost-link record. A wire-34 peer lacks the switch
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
-    // wire-36 peer the host level life on `Relevel` and `Revealed`. The admission gate refuses
-    // each declaration with a typed cause and admits a PRLC / 37 one.
+    // wire-36 peer the host level life on `Relevel` and `Revealed`, and a wire-37
+    // peer the player life-state record. The admission gate refuses each
+    // declaration with a typed cause and admits a PRLC / 38 one.
     #[test]
-    fn admission_refuses_prlb_or_wire_32_to_36_and_admits_prlc_37() {
+    fn admission_refuses_prlb_or_wire_32_to_37_and_admits_prlc_38() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C43,
-            wire_version: 37,
+            wire_version: 38,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -2625,6 +2626,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 36,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 37,
                     ..current
                 },
                 false,

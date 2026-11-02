@@ -86,6 +86,7 @@
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
+- **Player life states / capability profiles / zero-HP policy / `setLifeState` / `respawn` / rejoin and reload remap** → `scripting.md` §12; elapsed/HUD clock: §5 · movement/posture: `movement.md` §2, §6 · host profile tables/replay: `networking.md` §What gates, and what replicates instead
 - **Player movement / movement states / FPS feel / slide camera dip and FOV / sustained view pose (`viewFeel.pose`) / ledge focus** → `movement.md` (§1 for view feel)
 - **Vault / mantle / ledge probe and its cast bound / vault path / leaving water by a ledge / vault camera pose (`pose.vault`, ledge focus)** → `movement.md` §4 (Vault), §1 · wire and correction band: `networking.md` §Snapshot apply ordering
 - **Fire blocked by movement state / vault fire gate / vault entry cancelling a burst or charge / `charge.interruptedBy` / held presses and releases over a vault** → `movement.md` §4 (Vault, Firing) · host-remote ordering: `networking.md` §Combat authority · charge vocabulary: `entity_model.md` §Components (Weapon vocabulary)

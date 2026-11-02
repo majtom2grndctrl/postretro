@@ -189,6 +189,9 @@ pub struct WirePlayerMovementState {
     /// Camera pitch from the movement owner's latest resolved input. It is
     /// presentation state for remote avatars, not a movement-simulation value.
     pub aim_pitch: f32,
+    pub life_state: u8,
+    pub life_state_elapsed_ticks: u32,
+    pub life_state_table_revision: u8,
 }
 
 impl WireMovementState {

@@ -14,6 +14,27 @@ use postretro_foundation::{
 use super::FireButtonState;
 use super::execution::action_descriptor;
 
+/// Life-state fire policy replaces only the HP test; retirement always wins.
+/// Kept separate from the vault gate so a vault-spared charge cannot bypass it.
+pub fn pawn_can_fire(registry: &EntityRegistry, pawn: EntityId) -> bool {
+    registry.exists(pawn)
+        && !crate::scripting_systems::health::is_terminally_committed_to_removal(registry, pawn)
+        && registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .ok()
+            .and_then(|movement| {
+                postretro_foundation::player_capability(
+                    movement,
+                    postretro_foundation::Capability::Fire,
+                )
+            })
+            .unwrap_or_else(|| {
+                !registry
+                    .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
+                    .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
+            })
+}
+
 /// Whether `movement` refuses activation starts this tick: it starts the tick
 /// vaulting with `allowFire` off and `elapsed_ms < duration_ms`. The gate opens
 /// on the first tick that starts with `elapsed_ms >= duration_ms`, which is the

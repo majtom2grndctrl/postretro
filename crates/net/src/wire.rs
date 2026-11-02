@@ -372,7 +372,8 @@ impl WeaponCuesMessage {
 /// ramps). Both are unreleased additions under the one bump.
 /// Bumped to 23 for the envelope's host `level_tick`, the fixed-tick level
 /// clock a client's `levelLoad` `wait` tails land on.
-pub const SNAPSHOT_VERSION: u16 = 23;
+/// Bumped to 24 for player life-state id, elapsed ticks and table revision.
+pub const SNAPSHOT_VERSION: u16 = 24;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -1454,6 +1455,9 @@ mod tests {
 
     fn sample_movement() -> WirePlayerMovementState {
         WirePlayerMovementState {
+            life_state: 255,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
@@ -1475,6 +1479,29 @@ mod tests {
             capsule_eye_height: 1.5,
             aim_pitch: -0.45,
         }
+    }
+
+    #[test]
+    fn player_life_state_wire_round_trips_and_rejects_pre_life_snapshot_version() {
+        const PRE_LIFE_STATE_SNAPSHOT_VERSION: u16 = 23;
+        const {
+            assert!(SNAPSHOT_VERSION > PRE_LIFE_STATE_SNAPSHOT_VERSION);
+            assert!(crate::handshake::WIRE_VERSION >= 38);
+        }
+        let mut movement = sample_movement();
+        movement.life_state = 17;
+        movement.life_state_elapsed_ticks = u32::MAX;
+        movement.life_state_table_revision = 249;
+        assert!(round_trips(&movement));
+        let mut raw = raw_snapshot(1, 2, Vec::new());
+        raw.version = PRE_LIFE_STATE_SNAPSHOT_VERSION;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: PRE_LIFE_STATE_SNAPSHOT_VERSION
+            })
+        );
     }
 
     fn raw_transform_payload() -> RawComponentPayload {
@@ -4180,7 +4207,7 @@ mod tests {
         assert_eq!(decoded.validate().unwrap().level_tick, u32::MAX);
 
         const PRE_LEVEL_TICK_SNAPSHOT_VERSION: u16 = 22;
-        assert_eq!(SNAPSHOT_VERSION, PRE_LEVEL_TICK_SNAPSHOT_VERSION + 1);
+        const { assert!(SNAPSHOT_VERSION > PRE_LEVEL_TICK_SNAPSHOT_VERSION) };
         raw.version = PRE_LEVEL_TICK_SNAPSHOT_VERSION;
         assert_eq!(
             raw.validate(),

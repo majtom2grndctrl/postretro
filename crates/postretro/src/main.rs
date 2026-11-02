@@ -14,8 +14,12 @@ mod frame_eye;
 mod frame_loop;
 mod host_activations;
 mod host_overlays;
+mod life_state_clock;
+mod life_state_display;
+mod life_state_eye;
 #[cfg(test)]
 mod presentation_budget_measurement_tests;
+mod respawn_placements;
 #[cfg(test)]
 mod candidate_cull {
     pub use postretro_renderer::{GatherStatus, gather_candidate_leaves};
@@ -877,6 +881,9 @@ pub(crate) struct App {
     /// fixed-tick `InterpolableState` (movement.md D5). Inert until a pawn
     /// carries `view_feel`. See: context/lib/movement.md
     view_feel_state: view_feel::ViewFeelState,
+    /// Render-only eye-height easing across authoritative life-state posture
+    /// corrections. See: context/lib/movement.md §2
+    life_state_eye: life_state_eye::LifeStateEye,
     /// Pawn currently owning the app-level view-feel integrator. A change
     /// clears all state so no motion continuity leaks between camera drivers.
     view_feel_followed_pawn: Option<postretro_entities::EntityId>,
@@ -992,6 +999,9 @@ pub(crate) struct App {
     fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector,
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
+    /// Eased `player.lifeStateMs` HUD projection, applied at the frozen UI
+    /// boundary. See: context/lib/scripting.md §5; context/lib/networking.md (life-state HUD time)
+    life_state_display: life_state_display::LifeStateDisplay,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the
     /// cell sets its demand joins.
@@ -1967,7 +1977,10 @@ fn maybe_save_connected_client_per_owner_state(
 impl App {
     /// The platform suspend: everything `suspended` does, which needs no
     /// event loop, so tests drive it too. The renderer, its window and every
-    /// renderer-held level resource go; the session survives.
+    /// renderer-held level resource go; the session survives. Harvest runs
+    /// while live bindings exist; parity then demotes remote slots for the
+    /// resumed lifecycle drain. Held seats, `pending_respawns` and
+    /// `respawn_placements` stay intact.
     pub(crate) fn suspend_platform(&mut self) {
         self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
         // Audit which boot phase a suspend interrupts. The resume path resets to
@@ -2003,7 +2016,15 @@ impl App {
             if let Some(seats) = session.seat_table.as_mut() {
                 // Harvest state but retain bindings until lifecycle events drain
                 // after resume; their durable fallback resolves the old pawn.
-                seats.harvest_bound_pawns(&registry);
+                seats.harvest_bound_pawns(
+                    &registry,
+                    &session
+                        .scripting
+                        .script_ctx
+                        .data_registry
+                        .borrow()
+                        .life_state_names,
+                );
             }
         }
         self.clear_net_level_parity();
@@ -2741,6 +2762,7 @@ impl App {
                     seat_table.as_deref_mut(),
                     *client_id,
                     durable_pawn,
+                    &script_ctx.data_registry.borrow().life_state_names,
                 );
                 // Mirror the client's per-despawn buffer forget: drop the disconnected
                 // pawn's delayed presentation samples so they do not leak across the
@@ -2827,6 +2849,7 @@ impl App {
                     last_sent_tuning,
                     seat_table.as_deref_mut(),
                     std::slice::from_ref(event),
+                    &script_ctx.data_registry.borrow().life_state_names,
                 );
                 // Mirror the client's per-despawn buffer forget: drop each closed
                 // pawn's delayed presentation samples so they do not leak across the
@@ -3133,8 +3156,10 @@ impl App {
         ui_input_mode: input::InputMode,
         ui_focused_id: Option<String>,
         frontend_menu_is_present: bool,
+        life_state_projection: Option<life_state_display::UiProjection<'_>>,
     ) -> postretro_ui::UiReadSnapshot {
-        let slot_values = Self::build_ui_display_slot_snapshot(slot_table, net_endpoint);
+        let slot_values =
+            Self::build_ui_display_slot_snapshot(slot_table, net_endpoint, life_state_projection);
         let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
@@ -3429,6 +3454,7 @@ impl App {
             session.ui_input_mode,
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
+            None,
         );
         ui_snapshot.wheel = self.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
@@ -3477,10 +3503,16 @@ impl App {
     pub(crate) fn build_ui_display_slot_snapshot(
         slot_table: &postretro_entities::SlotTable,
         net_endpoint: Option<&netcode::NetEndpoint>,
+        life_state_projection: Option<life_state_display::UiProjection<'_>>,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
         let mut values = Self::build_ui_slot_snapshot(slot_table);
         if let Some(netcode::NetEndpoint::Client { state_slots, .. }) = net_endpoint {
             state_slots.apply_timed_slot_targets(&mut values);
+        }
+        if let Some(projection) = life_state_projection {
+            projection
+                .display
+                .project(&mut values, projection.sample, projection.frame_dt);
         }
         values
     }
@@ -4077,6 +4109,7 @@ impl App {
                                     seat_table.as_deref_mut(),
                                     *client_id,
                                     durable_pawn,
+                                    &script_ctx.data_registry.borrow().life_state_names,
                                 );
                                 // Mirror the client's per-despawn buffer forget: drop
                                 // the disconnected pawn's delayed presentation samples
@@ -4188,6 +4221,7 @@ impl App {
                                     last_sent_tuning,
                                     seat_table.as_deref_mut(),
                                     std::slice::from_ref(event),
+                                    &script_ctx.data_registry.borrow().life_state_names,
                                 );
                                 // Mirror the client's per-despawn buffer forget: drop
                                 // each closed pawn's delayed presentation samples so
@@ -4255,14 +4289,23 @@ impl App {
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
                                     let joinable =
-                                        crate::scripting::builtins::player_spawn::joinable_spawns(
+                                        crate::scripting::builtins::player_spawn::joinable_sites(
                                             &host_spawn_points,
                                             &net_descriptors,
                                         );
                                     let Some(placement_index) =
                                         seat_table.as_deref_mut().and_then(|seats| {
-                                            seats
-                                                .assign_joiner_placement(&registry, seat, &joinable)
+                                            let placement = seats.assign_joiner_placement(
+                                                &registry, seat, &joinable,
+                                            );
+                                            crate::respawn_placements::publish(
+                                                &script_ctx,
+                                                &host_spawn_points,
+                                                &net_descriptors,
+                                                Some(seats),
+                                                None,
+                                            );
+                                            placement
                                         })
                                     else {
                                         log::warn!(
@@ -4327,6 +4370,8 @@ impl App {
                                     &net_descriptors,
                                     net_default_weapon_placement.as_ref(),
                                     &netcode::host_environment_tuning(&script_ctx),
+                                    &script_ctx.data_registry.borrow().life_state_names,
+                                    script_ctx.data_registry.borrow().life_state_table_revision,
                                 );
                                 netcode::host_send_tuning_if_changed(
                                     server,
@@ -4387,6 +4432,7 @@ impl App {
                 prediction,
                 state_slots,
                 tuning,
+                life_state_tables,
                 tuning_generation,
                 applied_movement_tuning_generation,
                 session_status,
@@ -4517,6 +4563,7 @@ impl App {
                         &mut presentation_bindings,
                         script_ctx.presentation_script_time.get(),
                         time_sync.rtt_micros(),
+                        life_state_tables,
                     )
                 };
                 crate::runtime_teleporters::apply_local_adoptions(
@@ -4913,6 +4960,8 @@ impl App {
                     &data_registry.entities,
                     data_registry.default_weapon_placement.as_ref(),
                     &netcode::host_environment_tuning(&script_ctx),
+                    &data_registry.life_state_names,
+                    data_registry.life_state_table_revision,
                 );
             }
             let slot_table = script_ctx.slot_table.borrow();
@@ -7355,6 +7404,7 @@ mod tests {
         placement: Option<WeaponPlacementDescriptor>,
     ) -> postretro_entities::EntityTypeDescriptor {
         postretro_entities::EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -8895,6 +8945,7 @@ mod tests {
         .expect("weapon parses");
         let table = sound_events::DescriptorSoundTable::build(&[
             postretro_entities::EntityTypeDescriptor {
+                life_states: None,
                 ghost: false,
                 faction: None,
                 tolerance: None,
@@ -12172,6 +12223,7 @@ mod tests {
         states.insert("attack".to_string(), unresolved("Attack", false));
 
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -12421,6 +12473,18 @@ mod tests {
             Some(&SlotValue::Number(0.0)),
             "engine-owned player.immersion defaults 0 and is cloned",
         );
+        // The life-state slots default to 0 ms and "" (undeclared), so both
+        // are value-bearing.
+        assert_eq!(
+            snapshot.get("player.lifeStateMs"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.lifeStateMs defaults 0 and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.lifeState"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned player.lifeState defaults to \"\" and is cloned",
+        );
         assert!(
             !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
@@ -12449,7 +12513,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            63,
+            65,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
@@ -12742,6 +12806,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         cells.write(
             "title".to_string(),
@@ -12759,6 +12824,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         assert_eq!(
             occluded
@@ -12786,6 +12852,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
         );
         assert_eq!(restored.trees[0].name, "title");
         assert_eq!(

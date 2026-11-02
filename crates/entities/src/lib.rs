@@ -8,6 +8,7 @@ pub mod ctx;
 pub mod data_descriptors;
 pub mod data_registry;
 pub mod engine_state_catalog;
+mod life_state_table;
 pub mod presentation_binding;
 pub mod presentation_overrides;
 pub mod provenance;
@@ -66,3 +67,6 @@ pub use registry::{
 };
 pub use scripting::error::ScriptError;
 pub use slot_table::*;
+
+pub mod respawn;
+pub use respawn::{RespawnPlacement, RespawnPlacements, RespawnRequest};

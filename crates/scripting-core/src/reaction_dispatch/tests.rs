@@ -77,6 +77,12 @@ fn spawn_from_spawner_stays_in_trigger_consequential_mirror() {
     assert!(is_trigger_consequential_primitive("spawnFromSpawner"));
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn respawn_stays_in_trigger_consequential_mirror() {
+    assert!(is_trigger_consequential_primitive("respawn"));
+}
+
 #[test]
 fn progress_threshold_fires_when_all_dead_at_full_ratio() {
     let mut data = DataRegistry::new();
@@ -628,6 +634,7 @@ fn progress_with_zero_install_members_warns_once() {
 fn resolve_entity_type_finds_registered_classname() {
     let mut data = DataRegistry::new();
     data.upsert_entity_type(EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -647,6 +654,7 @@ fn resolve_entity_type_finds_registered_classname() {
     assert_eq!(
         resolved,
         Some(&EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

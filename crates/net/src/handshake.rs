@@ -44,10 +44,12 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C43; // "PRLC"
 /// and the snapshot envelope the level-scoped ghost-audio record (`SNAPSHOT_VERSION` 22).
 /// Projectile traps reserve component discriminant 25 but never replicate, so
 /// they need no bump of their own; the ghost-link record takes discriminant 26.
-/// A declaration kind separates a timed switch from an immediate active-slot resync.
+/// A declaration kind separates a timed switch from an immediate active-slot resync at 35.
 /// The snapshot envelope's host level tick advances it to 36 (`SNAPSHOT_VERSION` 23).
 /// The host level life, on `Relevel` and on the client's `Revealed`, advances it to 37.
-pub const WIRE_VERSION: u32 = 37;
+/// Player life-state id, elapsed ticks and table revision in player movement state
+/// advance it to 38 (`SNAPSHOT_VERSION` 24).
+pub const WIRE_VERSION: u32 = 38;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -719,7 +721,7 @@ mod switch_tick_epoch_tests {
                 "the snapshot envelope gained the host level tick"
             );
         };
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 23);
+        const { assert!(crate::wire::SNAPSHOT_VERSION >= 23) };
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,
             "no vocabulary change: still PRLC"
@@ -752,10 +754,12 @@ mod switch_tick_epoch_tests {
     // reveal of the previous install would promote into the restart. Both
     // gates refuse it; the snapshot layout and the vocabulary are unchanged.
     #[test]
-    fn relevel_level_life_refuses_wire_36_peers_and_admits_wire_37() {
+    fn relevel_level_life_refuses_wire_36_peers_and_admits_current_wire() {
         const PRE_LEVEL_LIFE_WIRE_VERSION: u32 = 36;
-        assert_eq!(WIRE_VERSION, 37);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 23);
+        const {
+            assert!(WIRE_VERSION > PRE_LEVEL_LIFE_WIRE_VERSION);
+            assert!(crate::wire::SNAPSHOT_VERSION >= 23);
+        }
         assert_eq!(
             PROTOCOL_ID, 0x_5052_4C43,
             "no vocabulary change: still PRLC"
@@ -780,6 +784,41 @@ mod switch_tick_epoch_tests {
             transport_protocol_id(),
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_LEVEL_LIFE_WIRE_VERSION),
             "gate 1 refuses the pre-level-life Relevel before decode"
+        );
+    }
+
+    // A wire-37 player movement record lacks the life-state id, elapsed ticks
+    // and table revision, so a client could neither gate prediction nor present
+    // a teammate's life state: both gates refuse it; the vocabulary is unchanged.
+    #[test]
+    fn life_state_refuses_wire_37_peers_and_admits_wire_38() {
+        const PRE_LIFE_STATE_WIRE_VERSION: u32 = 37;
+        assert_eq!(WIRE_VERSION, 38);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 24);
+        assert_eq!(
+            PROTOCOL_ID, 0x_5052_4C43,
+            "no vocabulary change: still PRLC"
+        );
+        let old_peer = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_LIFE_STATE_WIRE_VERSION,
+        };
+        assert_eq!(
+            validate_handshake(protocol_version(), protocol_version()),
+            Ok(())
+        );
+        assert!(matches!(
+            validate_handshake(protocol_version(), old_peer),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert!(matches!(
+            validate_handshake(old_peer, protocol_version()),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_LIFE_STATE_WIRE_VERSION),
+            "gate 1 refuses the pre-life-state movement record before decode"
         );
     }
 

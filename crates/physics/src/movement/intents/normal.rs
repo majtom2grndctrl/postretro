@@ -89,7 +89,7 @@ pub(crate) fn normal_intent(
         component.ground_params.speed.run
     } else {
         component.ground_params.speed.walk
-    };
+    } * component.life_speed_scale;
     let input_dir_3d = wish_dir_from_input(input.wish_dir, input.facing_yaw);
     // A slide banks the speed the pawn arrived with, before this tick's ground
     // friction trims it (the slide gate below reads it).
@@ -111,7 +111,7 @@ pub(crate) fn normal_intent(
         } else {
             input_dir_3d
         };
-        let wish_speed = component.air.max_control_speed;
+        let wish_speed = component.air.max_control_speed * component.life_speed_scale;
         pm_accelerate(
             &mut component.velocity,
             wish_dir_3d,
@@ -155,7 +155,7 @@ pub(crate) fn normal_intent(
     // the `Crouching` intent; seed `eye_current` at the standing eye so the first
     // tick begins the descent. The carry is `KEEP_ALL`: crouch is a resize, not a
     // velocity reset, so momentum is preserved unchanged (the §6 parity no-op).
-    if input.crouch_intent {
+    if input.crouch_intent || crate::movement::life_capabilities::forced_crouch(component) {
         if component.is_grounded() {
             let moved = component.velocity;
             component.velocity.x = arrival.x;

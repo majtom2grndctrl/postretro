@@ -151,15 +151,7 @@ fn run_local_weapon_command_inner(
     else {
         return LocalWeaponCommandResult::default();
     };
-    let pawn_alive = pawn.is_some_and(|pawn| {
-        registry.exists(pawn)
-            && !crate::scripting_systems::health::is_terminally_committed_to_removal(
-                &registry, pawn,
-            )
-            && !registry
-                .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
-                .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
-    });
+    let pawn_alive = pawn.is_some_and(|pawn| weapon::pawn_gate::pawn_can_fire(&registry, pawn));
     // Death and a fire-blocking vault both stop an execution in progress and
     // refuse new starts; a vault holds a fresh press for its exit. A charge
     // whose action opts out of vault interruption keeps charging, its release
@@ -216,7 +208,13 @@ fn run_local_weapon_command_inner(
     let block_during_reload = weapon_component
         .block_during_reload
         .unwrap_or(mod_block_during_reload);
-    let begin_lower = inventory.as_ref().is_some_and(|inventory| {
+    let begin_lower = pawn.is_none_or(|pawn| {
+        crate::sim::player_life::permits(
+            &registry,
+            pawn,
+            postretro_foundation::Capability::SwitchWeapon,
+        )
+    }) && inventory.as_ref().is_some_and(|inventory| {
         select_slot.is_some_and(|slot| {
             slot < inventory.wieldables.len()
                 && slot != inventory.active_slot

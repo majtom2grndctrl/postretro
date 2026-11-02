@@ -386,6 +386,7 @@ mod tests {
 
     fn pawn_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -409,6 +410,7 @@ mod tests {
         reserve: u32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

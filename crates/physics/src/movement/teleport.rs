@@ -44,7 +44,9 @@ pub(super) fn resolve(
         .teleport
         .arrival_latches
         .retain(|index| teleporters.regions.contains(usize::from(*index), position));
-    if component.vault_barred {
+    if postretro_foundation::player_capability(component, postretro_foundation::Capability::Touch)
+        .map_or(component.vault_barred, |touch| !touch)
+    {
         return position;
     }
     let Some(index) = teleporters.regions.winner(position, |index| {
@@ -107,24 +109,51 @@ pub(super) fn resolve(
     component.velocity = rotation * component.velocity;
     component.knockback_velocity = rotation * component.knockback_velocity;
     component.push_velocity = rotation * component.push_velocity;
-    settle_arrival_ground(component, collision, arrival);
-    component.teleport.generation = component.teleport.generation.wrapping_add(1);
-    component.teleport.accumulated_yaw =
-        wrap_teleport_yaw(component.teleport.accumulated_yaw + yaw_delta);
-    component.teleport.last_teleporter = index as u16;
-    component.teleport.arrival_latches.clear();
-    teleporters.regions.visit_containing(arrival, |index| {
-        if armed(index) {
-            component.teleport.arrival_latches.push(index as u16);
-        }
-    });
-    component.teleport.arrival_latches.sort_unstable();
+    settle_arrival(
+        component,
+        collision,
+        arrival,
+        yaw_delta,
+        index as u16,
+        armed,
+    );
     events.teleport = Some(TeleportEvent {
         teleporter: index as u16,
         yaw_delta,
         arrival,
     });
     arrival
+}
+
+/// Finish a validated relocation at its exact body point. Teleporters and
+/// respawn share this ground classification, cut identity and arrival latches.
+/// The caller owns position, facing, movement resets and any presentation event;
+/// this function neither moves the capsule nor rotates its velocity channels.
+/// `NO_TELEPORTER` records a silent cut rather than a teleporter arrival cue.
+pub fn settle_arrival(
+    component: &mut PlayerMovementComponent,
+    collision: &CombinedCollisionWorld<'_>,
+    arrival: Vec3,
+    yaw_delta: f32,
+    last_teleporter: u16,
+    mut armed: impl FnMut(usize) -> bool,
+) {
+    settle_arrival_ground(component, collision, arrival);
+    component.teleport.generation = component.teleport.generation.wrapping_add(1);
+    component.teleport.accumulated_yaw =
+        wrap_teleport_yaw(component.teleport.accumulated_yaw + yaw_delta);
+    component.teleport.last_teleporter = last_teleporter;
+    component.teleport.arrival_latches.clear();
+    collision
+        .static_world
+        .teleporters
+        .regions
+        .visit_containing(arrival, |index| {
+            if armed(index) {
+                component.teleport.arrival_latches.push(index as u16);
+            }
+        });
+    component.teleport.arrival_latches.sort_unstable();
 }
 
 /// How far an arrival may sit above its resting height on a floor and still
@@ -188,3 +217,7 @@ fn settle_arrival_ground(
 #[cfg(test)]
 #[path = "teleport_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "teleport_arrival_tests.rs"]
+mod arrival_tests;

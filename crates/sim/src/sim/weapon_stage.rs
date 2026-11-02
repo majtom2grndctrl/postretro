@@ -327,6 +327,7 @@ mod tests {
         placement: WeaponPlacementDescriptor,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

@@ -68,6 +68,32 @@ who earns XP or receives private player feedback. Swap host/client roles.
 
 ## Player events and accommodations
 
+The mod-wide `scripts/player-death.ts` policy downs a zero-HP player, permits
+crawling and firing, and respawns that player after 15 seconds. Its Luau twin
+has the same policy. The room has three player placements for a host and two
+clients. Two repeatable stations make the life-state checks quick:
+
+- **Red down pad** `(352..416,160..288)`: run through it to zero only the
+  entrant's HP. Keep moving and firing: the owner should ease into a crawl and
+  crouched eye height, see the bleed-out bar and red vignette, and retain fire.
+  Switch, Use and new Touch interactions are refused while down. The other
+  players keep their own state and health.
+- **Blue recovery Use pad** `(352..416,416..480)`: an alive teammate stands
+  inside and presses Use to heal everyone and enter `alive`. This is a fixture
+  control, not a revive mechanic. Recover the downed runner before 15 seconds
+  to check ordinary easing back to full speed. In a separate run, leave the
+  runner down for the full timer: only respawn should cut to the seat placement,
+  with no teleporter arrival sound. Leave the down pad before respawn so it
+  can fire again on the next visit.
+
+For 150 ms round-trip delay, launch the owning client with
+`POSTRETRO_NET_LAG=75`; condition only that endpoint. Repeat with
+`POSTRETRO_NET_LAG=45,60,5` for jitter and loss. On the owner's screen, verify
+that the bar keeps advancing between simulation ticks and through network
+corrections. Compare eye-height changes to an ordinary crouch-key press.
+Record the build, impairment, roles and observations; automated CPU checks do
+not certify the visual result.
+
 The map includes `player-events.ts`: the guarded XP milestone (`XP >= 100` and
 `level < 2`) gives only that player the fanfare, gold flash and shake. Its Luau
 twin carries the same named reactions and fire lists. The complete map setup

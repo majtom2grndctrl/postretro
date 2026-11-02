@@ -8,7 +8,7 @@ use glam::Vec3;
 use crate::movement::carry::CarryRule;
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_collision::ResolvedEnvironment;
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::PlayerMovementComponent;
 use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 
 /// Default level gravity's magnitude, m/s². `swim.sink_speed` is authored at
@@ -37,7 +37,8 @@ pub(crate) fn fluid_jump_input(input: &MovementInput, environment: &ResolvedEnvi
 ///    of both protected layers, the drift layer's current and knockback, are
 ///    discarded, so the jump leaves at exactly the velocity the seam's
 ///    clearance test assumed), the re-entry latch is armed, and the
-///    state leaves to airborne `Normal` with no solid needed.
+///    state leaves airborne with no solid needed, retaining `Crouching`
+///    when the capsule still needs its standing-clearance retry.
 /// 2. Drag: the fluid's viscosity removes a linear fraction of locomotion per
 ///    tick, `max(0, 1 - viscosity * dt)`, on all three axes. It is the only
 ///    drag while swimming; a swimmer touching the pool floor gets no ground
@@ -78,9 +79,9 @@ pub(crate) fn swim_intent(
     // The tick seam leaves swim when the block is gone (a descriptor hot swap);
     // stay total here regardless.
     let Some(swim) = component.swim.as_ref() else {
-        return Some(leave_swim());
+        return Some(leave_swim(component));
     };
-    let speed = swim.speed;
+    let speed = swim.speed * component.life_speed_scale;
     let accel = swim.accel;
     let sink_speed = swim.sink_speed;
     // The seam sets `fluid_jump` only when the velocity is `Some`.
@@ -92,7 +93,7 @@ pub(crate) fn swim_intent(
         component.jump_spent = true;
         component.swim_reentry_latched = true;
         events.jumped = true;
-        return Some(leave_swim());
+        return Some(leave_swim(component));
     }
 
     let drag = (1.0 - environment.viscosity * dt).max(0.0);
@@ -118,11 +119,15 @@ pub(crate) fn swim_intent(
     None
 }
 
-/// `Swim` → `Normal`, momentum unchanged: swim carries no boost layer. Dispatch
-/// folds the drift layer's vertical part into locomotion on the edge.
-pub(crate) fn leave_swim() -> Transition {
+/// Leave `Swim`, momentum unchanged: swim carries no boost layer. A capsule
+/// that is not standing size, shorter or taller, keeps `Crouching` ownership
+/// of the resize back to standing even if forced posture opens after this
+/// step; a taller crouch's shrink to standing is always clear, so it stands on
+/// the first unforced tick. Dispatch folds vertical drift into locomotion on
+/// the edge.
+pub(crate) fn leave_swim(component: &PlayerMovementComponent) -> Transition {
     Transition {
-        next: MovementState::Normal,
+        next: component.capsule_posture_state(),
         carry: CarryRule::KEEP_ALL,
     }
 }

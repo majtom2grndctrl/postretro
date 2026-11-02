@@ -21,12 +21,12 @@ const LABEL: &str = "room";
 /// Every stage that caches an entry for the red-wall room. Each existed, and
 /// cached its entries, before coloured bounce, which added none; the SH
 /// base's patch layers and gathered volume have since replaced its grouped
-/// entries.
-const PRE_CHANGE_CACHED_STAGES: [&str; 15] = [
+/// entries. The cell residency set is absent: the room is one cell with no
+/// portals, so that stage omits id 51 before it reads or writes the cache.
+const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
     "animated_billboard_direct_scatter",
     "animated_lm_weight_maps",
     "billboard_direct_scatter",
-    "cell_residency_set",
     "cell_visibility",
     "chunk_light_list",
     "direct_sh_volume",

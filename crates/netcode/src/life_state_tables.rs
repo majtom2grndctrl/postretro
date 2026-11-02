@@ -244,6 +244,44 @@ mod tests {
     }
 
     #[test]
+    fn assistable_stamp_follows_the_profile_and_survives_the_preserve_path() {
+        let down = LifeStateProfile {
+            assistable: Some(Default::default()),
+            ..Default::default()
+        };
+        let mut tables = LifeStateTables::default();
+        tables.install(
+            &payload(3, vec![(0, LifeStateProfile::default()), (1, down.clone())]),
+            Some(3),
+        );
+        let previous = pawn(1, 3, 20, &down);
+        assert!(previous.assistable);
+
+        // A known table restamps from the profile, whatever the merged copy held.
+        let mut merged = pawn(0, 3, 0, &LifeStateProfile::default());
+        merged.assistable = true;
+        tables.gate_merged(&mut merged, &previous, 0);
+        assert!(!merged.assistable);
+        let mut merged = pawn(1, 3, 21, &LifeStateProfile::default());
+        tables.gate_merged(&mut merged, &previous, 0);
+        assert!(merged.assistable);
+
+        // A record whose table is unavailable keeps the pre-merge stamp.
+        let mut outran = pawn(0, 4, 0, &LifeStateProfile::default());
+        tables.gate_merged(&mut outran, &previous, 0);
+        assert!(outran.assistable);
+
+        // A tuning rebuild carries it, then restamps from the same profile.
+        let mut rebuilt = crate::predict_reconcile_harness_test_fixtures::component();
+        crate::movement_state::carry_live_tick_state(&mut rebuilt, &previous);
+        assert!(rebuilt.assistable);
+        tables.restamp_carried(&mut rebuilt);
+        assert!(rebuilt.assistable);
+        postretro_foundation::clear_life_state(&mut rebuilt, 3);
+        assert!(!rebuilt.assistable);
+    }
+
+    #[test]
     fn history_keeps_four_recent_plus_pin_and_replaces_same_revision() {
         let mut tables = LifeStateTables::default();
         for revision in 0..10 {

@@ -424,6 +424,11 @@ pub struct PlayerMovementComponent {
     pub life_speed_scale: f32,
     #[serde(skip)]
     pub life_posture: super::LifeStatePosture,
+    /// The current profile declares `assistable`. Like the other stamps it is
+    /// derived from the installed profile; only remote retention reads the
+    /// replicated copy.
+    #[serde(skip)]
+    pub assistable: bool,
 }
 
 impl PlayerMovementComponent {
@@ -529,6 +534,7 @@ impl PlayerMovementComponent {
             life_damageable: false,
             life_speed_scale: 1.0,
             life_posture: super::LifeStatePosture::Stand,
+            assistable: false,
         }
     }
 

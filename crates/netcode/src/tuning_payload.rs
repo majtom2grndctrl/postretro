@@ -4,6 +4,7 @@
 //! avoids a wire mirror that would make the transport registry-aware.
 
 use postretro_combat_model::{TUNING_PAYLOAD_EPOCH, TuningPayload};
+use postretro_foundation::Assistable;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -108,9 +109,30 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
                 "movement speedScale must be finite and within [0, 1]",
             ));
         }
+        // Literal fields only: the client never binds or evaluates payload IR.
+        match profile
+            .assistable
+            .as_ref()
+            .and_then(Assistable::literal_fault)
+        {
+            None => {}
+            Some(("radius", _)) => {
+                return Err(TuningPayloadError::InvalidLifeStates(
+                    "assistable radius must be finite and within (0, 16]",
+                ));
+            }
+            Some(_) => {
+                return Err(TuningPayloadError::InvalidLifeStates(
+                    "assistable holdMs must be finite and within [0, 60000]",
+                ));
+            }
+        }
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod assistable_tests;
 
 #[cfg(test)]
 mod tests {
@@ -333,7 +355,7 @@ mod tests {
         }
     }
 
-    fn full_payload() -> TuningPayload {
+    pub(super) fn full_payload() -> TuningPayload {
         TuningPayload::new(
             Some(movement_descriptor()),
             weapon_slots(),
@@ -355,7 +377,7 @@ mod tests {
         assert_eq!(decode_tuning_payload(&encoded).unwrap(), payload);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["epoch"],
-            16
+            TUNING_PAYLOAD_EPOCH
         );
     }
 

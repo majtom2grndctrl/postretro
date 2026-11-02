@@ -182,7 +182,10 @@ mod ingest_hit_harness_test;
 #[cfg(test)]
 mod snapshot_regression_harness_test;
 
-pub use client::{ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection};
+pub use client::{
+    ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection,
+    RemoteAssistFacts,
+};
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{
@@ -7307,6 +7310,7 @@ mod tests {
                 life_state: 255,
                 life_state_elapsed_ticks: 0,
                 life_state_table_revision: 0,
+                assistable: false,
                 teleport: Default::default(),
                 knockback_velocity: [0.0; 3],
                 push_velocity: [0.0; 3],
@@ -7928,6 +7932,7 @@ mod tests {
                                     life_state: 255,
                                     life_state_elapsed_ticks: 0,
                                     life_state_table_revision: 0,
+                                    assistable: false,
                                     teleport: Default::default(),
                                     knockback_velocity: [0.0; 3],
                                     push_velocity: [0.0; 3],

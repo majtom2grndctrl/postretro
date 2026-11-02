@@ -373,7 +373,10 @@ impl WeaponCuesMessage {
 /// Bumped to 23 for the envelope's host `level_tick`, the fixed-tick level
 /// clock a client's `levelLoad` `wait` tails land on.
 /// Bumped to 24 for player life-state id, elapsed ticks and table revision.
-pub const SNAPSHOT_VERSION: u16 = 24;
+/// Bumped to 25 for teammate assist: player movement state gained the
+/// `assistable` bool, and the local-pawn record its assist pair table and
+/// received required ticks, all under the one bump.
+pub const SNAPSHOT_VERSION: u16 = 25;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -1458,6 +1461,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

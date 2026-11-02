@@ -14,6 +14,7 @@ mod ghost_styles;
 mod health;
 mod input_block;
 mod knockback;
+mod life_state_assistable;
 mod life_state_commands;
 mod life_states;
 mod loading_manifest;

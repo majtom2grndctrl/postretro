@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::PlayerMovementComponent;
+use crate::NumberOrIr;
 
 pub const UNDECLARED_LIFE_STATE: u8 = u8::MAX;
 
@@ -41,6 +42,75 @@ impl Default for LifeStateMovementProfile {
     }
 }
 
+/// Assist reach when `assistable.radius` is omitted, in metres.
+pub const ASSIST_DEFAULT_RADIUS_M: f32 = 1.5;
+/// Assist hold when `assistable.holdMs` is omitted, in milliseconds.
+pub const ASSIST_DEFAULT_HOLD_MS: f32 = 3000.0;
+/// Largest literal radius a profile may author; evaluated radii clamp to it.
+pub const ASSIST_MAX_RADIUS_M: f32 = 16.0;
+/// Largest literal hold a profile may author; evaluated holds clamp to it.
+pub const ASSIST_MAX_HOLD_MS: f32 = 60000.0;
+
+fn default_assist_radius() -> NumberOrIr {
+    NumberOrIr::Literal(ASSIST_DEFAULT_RADIUS_M)
+}
+
+fn default_assist_hold_ms() -> NumberOrIr {
+    NumberOrIr::Literal(ASSIST_DEFAULT_HOLD_MS)
+}
+
+/// A teammate may assist a pawn in this state. Each field is a literal or a
+/// Number expression over the helper and the target, evaluated on the host
+/// per pair; an omitted field is filled with its default at parse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Assistable {
+    #[serde(default = "default_assist_radius")]
+    pub radius: NumberOrIr,
+    #[serde(default = "default_assist_hold_ms")]
+    pub hold_ms: NumberOrIr,
+}
+
+impl Default for Assistable {
+    fn default() -> Self {
+        Self {
+            radius: default_assist_radius(),
+            hold_ms: default_assist_hold_ms(),
+        }
+    }
+}
+
+/// Whether a literal `radius` is authorable: finite, above 0, at most the cap.
+pub fn assist_radius_literal_valid(radius: f32) -> bool {
+    radius.is_finite() && radius > 0.0 && radius <= ASSIST_MAX_RADIUS_M
+}
+
+/// Whether a literal `holdMs` is authorable: finite, from 0, at most the cap.
+pub fn assist_hold_ms_literal_valid(hold_ms: f32) -> bool {
+    hold_ms.is_finite() && (0.0..=ASSIST_MAX_HOLD_MS).contains(&hold_ms)
+}
+
+pub const ASSIST_RADIUS_LITERAL_RULE: &str = "must be a finite number in (0, 16]";
+pub const ASSIST_HOLD_MS_LITERAL_RULE: &str = "must be a finite number in [0, 60000]";
+
+impl Assistable {
+    /// The first literal field outside its authorable range, as its camelCase
+    /// key and rule. Expression fields are not checked here.
+    pub fn literal_fault(&self) -> Option<(&'static str, &'static str)> {
+        if let NumberOrIr::Literal(radius) = self.radius
+            && !assist_radius_literal_valid(radius)
+        {
+            return Some(("radius", ASSIST_RADIUS_LITERAL_RULE));
+        }
+        if let NumberOrIr::Literal(hold_ms) = self.hold_ms
+            && !assist_hold_ms_literal_valid(hold_ms)
+        {
+            return Some(("holdMs", ASSIST_HOLD_MS_LITERAL_RULE));
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct LifeStateProfile {
@@ -54,6 +124,8 @@ pub struct LifeStateProfile {
     pub touch: bool,
     pub occupancy: bool,
     pub damageable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistable: Option<Assistable>,
 }
 
 impl Default for LifeStateProfile {
@@ -68,6 +140,7 @@ impl Default for LifeStateProfile {
             touch: true,
             occupancy: true,
             damageable: true,
+            assistable: None,
         }
     }
 }
@@ -116,6 +189,7 @@ pub fn restamp_life_state(pawn: &mut PlayerMovementComponent, profile: Option<&L
     pawn.life_damageable = profile.is_some_and(|p| p.damageable);
     pawn.life_speed_scale = profile.map_or(1.0, |p| p.movement.speed_scale);
     pawn.life_posture = profile.map_or(LifeStatePosture::Stand, |p| p.movement.posture);
+    pawn.assistable = profile.is_some_and(|p| p.assistable.is_some());
     if let Some(profile) = profile {
         pawn.vault_barred = !profile.movement.abilities;
         // An edgeless early end: no `vault_ended`, which only an abort, the
@@ -160,5 +234,63 @@ pub fn carry_life_state_stamps(from: &PlayerMovementComponent, to: &mut PlayerMo
     to.life_damageable = from.life_damageable;
     to.life_speed_scale = from.life_speed_scale;
     to.life_posture = from.life_posture;
+    to.assistable = from.assistable;
     to.vault_barred = from.vault_barred;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IrNode;
+
+    #[test]
+    fn assistable_omitted_fields_take_their_defaults_and_unknown_keys_fail() {
+        let empty: Assistable = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, Assistable::default());
+        assert_eq!(empty.radius, NumberOrIr::Literal(ASSIST_DEFAULT_RADIUS_M));
+        assert_eq!(empty.hold_ms, NumberOrIr::Literal(ASSIST_DEFAULT_HOLD_MS));
+        let profile: LifeStateProfile =
+            serde_json::from_str(r#"{"assistable":{"holdMs":{"op":"const","value":500}}}"#)
+                .unwrap();
+        let assistable = profile.assistable.unwrap();
+        assert_eq!(assistable.radius, NumberOrIr::Literal(1.5));
+        assert!(matches!(
+            assistable.hold_ms,
+            NumberOrIr::Ir(IrNode::Const { .. })
+        ));
+        assert!(serde_json::from_str::<Assistable>(r#"{"range":2}"#).is_err());
+    }
+
+    #[test]
+    fn assistable_literal_fault_names_the_first_out_of_range_literal() {
+        let at = |radius: f32, hold_ms: f32| Assistable {
+            radius: NumberOrIr::Literal(radius),
+            hold_ms: NumberOrIr::Literal(hold_ms),
+        };
+        for valid in [at(16.0, 0.0), at(0.01, 60000.0), at(1.5, -0.0)] {
+            assert_eq!(valid.literal_fault(), None, "{valid:?}");
+        }
+        for (radius, hold_ms, field) in [
+            (0.0, 3000.0, "radius"),
+            (16.01, 3000.0, "radius"),
+            (f32::NAN, 3000.0, "radius"),
+            (f32::INFINITY, 3000.0, "radius"),
+            (1.5, -1.0, "holdMs"),
+            (1.5, 60000.5, "holdMs"),
+            (1.5, f32::NAN, "holdMs"),
+        ] {
+            assert_eq!(
+                at(radius, hold_ms).literal_fault().map(|f| f.0),
+                Some(field)
+            );
+        }
+        let expression = Assistable {
+            radius: NumberOrIr::Ir(IrNode::Input {
+                name: "x".into(),
+                owner: None,
+            }),
+            hold_ms: NumberOrIr::Literal(3000.0),
+        };
+        assert_eq!(expression.literal_fault(), None);
+    }
 }

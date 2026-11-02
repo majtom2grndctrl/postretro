@@ -68,6 +68,9 @@ use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
 
+mod assist_retention;
+#[cfg(test)]
+mod assist_retention_tests;
 mod bindings;
 #[cfg(test)]
 mod ghost_link_tests;
@@ -81,6 +84,8 @@ mod replay_poses;
 #[cfg(test)]
 mod teleporter_tests;
 mod teleporters;
+pub use assist_retention::RemoteAssistFacts;
+use assist_retention::RemoteAssistRetention;
 use bindings::{ClientBindings, RegionBinding, is_presentation_payload};
 pub use ghost_links::GhostLinkUpdate;
 use late_baselines::LateBaselineHistory;
@@ -436,6 +441,9 @@ pub struct ClientReplication {
     /// Presence is also the durable signal that a transform-only remote mesh is a
     /// player avatar rather than an AI presentation.
     remote_player_locomotion: HashMap<NetworkId, RemotePlayerLocomotion>,
+    /// Remote pawns' life-state id and `assistable` bool from their movement
+    /// payloads; see [`Self::remote_assist_facts`].
+    remote_assist: RemoteAssistRetention,
     /// Current-frame aim and lower-body heading extracted from the exact presented
     /// interpolation poses. Cleared before each sample pass and copied to App after
     /// interpolation so the later pose-input pass shares this frame's trajectory.
@@ -806,6 +814,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.clear();
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
+        self.remote_assist.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
@@ -857,6 +866,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.clear();
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
+        self.remote_assist.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
@@ -1840,6 +1850,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.remote_assist.forget(network_id);
         self.bindings.mover_network_ids.remove(&network_id);
         self.bindings.region_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
@@ -1945,6 +1956,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.remote_assist.forget(network_id);
         self.presented_player_inputs.aim_pitches.remove(&network_id);
         self.presented_player_inputs
             .heading_yaws
@@ -2180,7 +2192,7 @@ impl ClientReplication {
                         );
                     }
                 }
-                ComponentPayload::PlayerMovementState(_) => {
+                ComponentPayload::PlayerMovementState(wire) => {
                     // Merge ONLY onto an entity that already has a descriptor-derived
                     // PlayerMovementComponent. The wire subset is not a full component
                     // and must never construct one (entity_model.md §7b: movement is
@@ -2200,6 +2212,7 @@ impl ClientReplication {
                         "movement payload discriminant drifted"
                     );
                     if !has_local && !is_local {
+                        self.remote_assist.retain(network_id, wire);
                         outcome
                             .ignored
                             .push(IgnoredPayload::MovementWithoutLocalComponent {
@@ -3331,6 +3344,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

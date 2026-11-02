@@ -1186,8 +1186,10 @@ epoch to 16: player movement state gains the life-state id, elapsed ticks and ta
 revision, and the tuning payload gains the sorted life-state name table with the receiving
 pawn's capability profiles. Peers at 37 are refused at handshake. PRLC is unchanged.
 
-Decided, not yet built: player revive/assist advances `WIRE_VERSION` to 39,
-`SNAPSHOT_VERSION` to 25 and the tuning epoch to 17. Input gains the held `assist` level,
+Player revive/assist advances `WIRE_VERSION` to 39, `SNAPSHOT_VERSION` to 25 and the
+tuning epoch to 17, one bump each for every field below; the movement bool and the payload
+key are built, the input level and the local-pawn facts land under the same bump. Input
+gains the held `assist` level,
 player movement state gains the `assistable` bool, the local-pawn record gains the assist
 pair table and received required ticks, and life-state profiles in the tuning payload gain
 `assistable`, which an old-epoch reader rejects as an unknown field. Validation refuses a

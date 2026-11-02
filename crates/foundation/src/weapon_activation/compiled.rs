@@ -280,10 +280,21 @@ fn invalid(path: &str, reason: &str) -> DescriptorError {
         reason: format!("`{path}` {reason}"),
     }
 }
+/// The rejection every capped scalar expression shares once it nests past
+/// [`MAX_ACTIVATION_IR_DEPTH`] or holds more than [`MAX_ACTIVATION_IR_NODES`].
+pub const ACTIVATION_IR_CAP_REASON: &str = "expression exceeds depth 32 or 256 nodes";
+
+/// Apply the activation expression caps (depth, node count, finite constants)
+/// to a scalar expression that is not an action step, such as a life state's
+/// `assistable` field.
+pub fn check_activation_ir_caps(node: &IrNode) -> Result<(), &'static str> {
+    check_ir(node, 1, &mut 0)
+}
+
 fn check_ir(node: &IrNode, depth: usize, nodes: &mut usize) -> Result<(), &'static str> {
     *nodes += 1;
     if depth > MAX_ACTIVATION_IR_DEPTH || *nodes > MAX_ACTIVATION_IR_NODES {
-        return Err("expression exceeds depth 32 or 256 nodes");
+        return Err(ACTIVATION_IR_CAP_REASON);
     }
     let mut visit = |child: &IrNode| check_ir(child, depth + 1, nodes);
     match node {

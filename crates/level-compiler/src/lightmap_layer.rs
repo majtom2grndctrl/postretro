@@ -55,7 +55,7 @@ pub(crate) use shaft_cull::ShaftScene;
 #[cfg(test)]
 pub(crate) use shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull};
 #[cfg(test)]
-pub(crate) use skip_stats::{ChartTally, SkipStats};
+pub(crate) use skip_stats::{ChartTally, ReachPhase, SkipStats};
 
 /// Bump when the per-light layer payload format or the single-light bake math
 /// changes. Folded into every `"lightmap_layer"` cache key, so a bump

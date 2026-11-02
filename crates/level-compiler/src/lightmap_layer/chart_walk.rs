@@ -13,7 +13,7 @@ use super::chart_cull::ExactSkips;
 use super::reach_walk::{ReachTally, ReachWalk, check_rewalk};
 use super::shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull, ShaftScene};
 #[cfg(test)]
-use super::skip_stats::{ChartTally, TileTally};
+use super::skip_stats::{ChartTally, ReachPhase, TexelTally, TileTally};
 use super::{LayerTexel, SharedAtlas, bake_sparse_layer_texel};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
@@ -169,10 +169,22 @@ pub(super) fn bake_light_layer_chart_clipped(
             tally,
         )
     };
+    #[cfg(test)]
+    let note = |phase| {
+        if let Some(stats) = exact_skips.stats {
+            stats.note_reach(phase, face_idx);
+        }
+    };
+    #[cfg(test)]
+    if culled.is_some() {
+        note(ReachPhase::CulledWalk);
+    }
     let mut texels = walk(culled, reach.as_ref().map(|reach| reach.tally));
     if let (Some(reach), Some(_)) = (&reach, culled) {
         ReachTally::add(&reach.tally.pairs_culled, 1);
         if reach.verify {
+            #[cfg(test)]
+            note(ReachPhase::Rewalk);
             // Fresh occluder caches, every other production skip on.
             let kept = walk(None, None);
             if check_rewalk(reach, light.origin, atlas, face_idx, &texels, &kept) {
@@ -241,6 +253,8 @@ fn walk_chart(
     let mut tallies = exact_skips
         .stats
         .map(|_| vec![TileTally::default(); tile_count]);
+    #[cfg(test)]
+    let mut texel_tallies = Vec::new();
     // One chart's texels are walked in order on one thread, so the occluder
     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
     // their own: they run between the light's rays and would otherwise evict
@@ -265,6 +279,8 @@ fn walk_chart(
         let traced = TracedSegments::default();
         #[cfg(test)]
         let tested = Cell::new(false);
+        #[cfg(test)]
+        let (occluders, skipped_before) = ([last_occluder.get(), clip_occluder.get()], skipped);
         let trace = |from, to| {
             #[cfg(test)]
             traced.shadow.set(traced.shadow.get() + 1);
@@ -332,6 +348,12 @@ fn walk_chart(
             tally.shadow += traced.shadow.get();
             tally.clip += traced.clip.get();
             tally.lead_in += traced.lead_in.get();
+            texel_tallies.push(TexelTally {
+                texel: (sample.tx, sample.ty),
+                occluders,
+                skipped: skipped > skipped_before,
+                visibility: record.as_ref().map(|texel| texel.raw_visibility),
+            });
         }
         if let Some(texel) = record {
             texels.push(texel);
@@ -345,6 +367,8 @@ fn walk_chart(
             dims: (width, height),
             tiles_wide,
             tiles,
+            culled: culled.is_some(),
+            texels: texel_tallies,
         });
     }
     if let Some(tally) = tally {

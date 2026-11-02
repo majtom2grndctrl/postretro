@@ -149,14 +149,17 @@ impl<'t> StageReach<'t> {
         if self.index.is_some() || self.switched_off || !wanted {
             return;
         }
-        self.index = Some(LightmapReachIndex::build(
+        let index = LightmapReachIndex::build(
             self.tree,
             self.closed.clone(),
             &self.lights,
             charts,
             penumbra_floor,
             control,
-        ));
+        );
+        #[cfg(test)]
+        let index = index.with_seams(exact_skips);
+        self.index = Some(index);
     }
 
     /// The light's walk context, when the index may cull its pairs.

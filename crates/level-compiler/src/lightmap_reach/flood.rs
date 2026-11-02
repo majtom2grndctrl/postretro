@@ -60,6 +60,11 @@ impl PortalGraph {
         }
         Self { portals, adjacency }
     }
+
+    #[cfg(test)]
+    pub(super) fn portals(&self) -> &[Portal] {
+        &self.portals
+    }
 }
 
 /// A point or spot light's emitter as the walk traces to it: the `f32`

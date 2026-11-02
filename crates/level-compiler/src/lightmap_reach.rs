@@ -119,6 +119,12 @@ impl ChartReach {
     pub(crate) fn skips_all(&self) -> bool {
         self.traced.iter().all(|&word| word == 0)
     }
+
+    /// The open full-tree leaves the chart's slab touches, ascending.
+    #[cfg(test)]
+    pub(crate) fn open_leaves(&self) -> &[u32] {
+        &self.open_leaves
+    }
 }
 
 /// A chart's frame and reach, built once, by the first walk that asks.
@@ -131,6 +137,18 @@ struct ChartEntry {
 struct LightReach {
     emitter: Emitter,
     reached: LeafSet,
+    /// The flood's R.
+    #[cfg(test)]
+    reach: f64,
+}
+
+/// Test seams on the index: where its probe notes go, and the charts its
+/// slabs are built from in place of the walk's.
+#[cfg(test)]
+#[derive(Default)]
+struct IndexSeams {
+    stats: Option<&'static crate::lightmap_layer::SkipStats>,
+    slab_charts: Option<&'static [Chart]>,
 }
 
 /// The lightmap reach index over one bake's lights (by position in the
@@ -141,6 +159,8 @@ pub(crate) struct LightmapReachIndex<'t> {
     lights: Vec<Option<LightReach>>,
     charts: Vec<OnceLock<ChartEntry>>,
     penumbra_floor: bool,
+    #[cfg(test)]
+    seams: IndexSeams,
 }
 
 impl<'t> LightmapReachIndex<'t> {
@@ -188,8 +208,12 @@ impl<'t> LightmapReachIndex<'t> {
                     .fold(0.0, f64::max);
                 let emitter = Emitter::of(light.light);
                 let reach = reach_radius(light.light, emitter, footprint);
-                ball_flood(tree, &closed, &graph, emitter, reach)
-                    .map(|reached| LightReach { emitter, reached })
+                ball_flood(tree, &closed, &graph, emitter, reach).map(|reached| LightReach {
+                    emitter,
+                    reached,
+                    #[cfg(test)]
+                    reach,
+                })
             })
             .collect();
         drop(graph);
@@ -199,7 +223,20 @@ impl<'t> LightmapReachIndex<'t> {
             lights: floods,
             charts: (0..charts.len()).map(|_| OnceLock::new()).collect(),
             penumbra_floor,
+            #[cfg(test)]
+            seams: IndexSeams::default(),
         }
+    }
+
+    /// Take the test seams `exact_skips` carries: its tally receives a note
+    /// at every chart mask build, and its slab charts replace the walk's.
+    #[cfg(test)]
+    pub(crate) fn with_seams(mut self, exact_skips: crate::lightmap_layer::ExactSkips) -> Self {
+        self.seams = IndexSeams {
+            stats: exact_skips.stats,
+            slab_charts: exact_skips.slab_charts,
+        };
+        self
     }
 
     /// Lights whose pairs the index may cull.
@@ -212,14 +249,27 @@ impl<'t> LightmapReachIndex<'t> {
     /// or permit: walks that need it while another builds it wait holding
     /// their permits, as for the shaft scene.
     fn chart(&self, chart_idx: usize, chart: &Chart) -> Option<(&ChartFrame, &ChartReach)> {
-        let entry = self.charts[chart_idx].get_or_init(|| ChartEntry {
-            frame: ChartFrame::new(chart, self.penumbra_floor),
-            reach: OnceLock::new(),
+        let entry = self.charts[chart_idx].get_or_init(|| {
+            #[cfg(test)]
+            let chart = self
+                .seams
+                .slab_charts
+                .map_or(chart, |charts| &charts[chart_idx]);
+            ChartEntry {
+                frame: ChartFrame::new(chart, self.penumbra_floor),
+                reach: OnceLock::new(),
+            }
         });
         let frame = entry.frame.as_ref()?;
         let reach = entry
             .reach
-            .get_or_init(|| Some(frame.reach(self.tree, &self.closed)))
+            .get_or_init(|| {
+                #[cfg(test)]
+                if let Some(stats) = self.seams.stats {
+                    stats.note_reach(crate::lightmap_layer::ReachPhase::MaskBuild, chart_idx);
+                }
+                Some(frame.reach(self.tree, &self.closed))
+            })
             .as_ref()?;
         Some((frame, reach))
     }
@@ -250,6 +300,12 @@ impl<'t> LightmapReachIndex<'t> {
         self.chart(chart_idx, chart).map(|(_, reach)| reach)
     }
 
+    /// `light`'s R; `None` for a light the index never culls.
+    #[cfg(test)]
+    pub(crate) fn reach_radius(&self, light: usize) -> Option<f64> {
+        Some(self.lights.get(light)?.as_ref()?.reach)
+    }
+
     /// Whether `light`'s flood reached full-tree leaf `leaf`; `None` for a
     /// light the index never culls.
     #[cfg(test)]
@@ -258,6 +314,8 @@ impl<'t> LightmapReachIndex<'t> {
     }
 }
 
+#[cfg(test)]
+mod seed_tests;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 #[cfg(test)]

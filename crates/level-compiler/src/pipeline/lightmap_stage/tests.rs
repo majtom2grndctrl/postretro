@@ -1701,3 +1701,13 @@ mod texel_step_tests;
 mod cut_skip_tests;
 
 mod reach_cull_tests;
+
+mod reach_bake;
+
+mod reach_fixture_tests;
+
+mod reach_drift_tests;
+
+mod reach_verify_walk_tests;
+
+mod reach_warm_tests;

@@ -2,92 +2,11 @@
 //! bytes, verify mode's planted fault, and the verify switch.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
+use super::reach_bake::{reach_bake, reach_off};
 use super::*;
 use crate::lightmap_reach::test_fixtures::{ReachFixture, Wall, point_light, room_a_centre};
 
 use super::super::reach_verify::resolve_reach_verify;
-
-/// One fused stage run of a reach fixture.
-struct ReachBake {
-    lightmap: Vec<u8>,
-    shadowmask: Option<Vec<u8>>,
-    counts: ReachCounts,
-}
-
-/// Bake `lights` over `fixture` with the reach inputs, `exact_skips` and
-/// `workers` threads and permits, uncached.
-fn reach_bake(
-    fixture: &ReachFixture,
-    lights: &[MapLight],
-    penumbra_floor: bool,
-    exact_skips: lightmap_layer::ExactSkips,
-    workers: usize,
-) -> anyhow::Result<ReachBake> {
-    let args = test_args();
-    let config = LightmapConfig {
-        penumbra_floor,
-        ..config(false)
-    };
-    let window = PartitionWindow {
-        exact_skips,
-        ..PartitionWindow::default()
-    };
-    let progress = StageProgress::indeterminate();
-    let control = BakeControl::new(Arc::new(Governor::new(workers, false)), &progress);
-    let static_lights = StaticBakedLights::from_lights(lights);
-    let alpha_lights = AlphaLightsNs::from_lights(lights);
-    let compiled = &fixture.compiled;
-    let mut geometry = compiled.geometry.clone();
-    ThreadPoolBuilder::new()
-        .num_threads(workers)
-        .build()
-        .expect("reach fixture pool")
-        .install(|| {
-            let prepared = lightmap_bake::prepare_atlas(
-                &mut geometry,
-                &static_lights,
-                config.lightmap_density,
-                &[],
-            )
-            .expect("reach fixture atlas");
-            let output = bake_fused_windowed(
-                &args,
-                None,
-                &control,
-                &BakeControl::unrestricted(),
-                &mut geometry,
-                &static_lights,
-                &alpha_lights,
-                None,
-                &[],
-                &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
-                &compiled.bvh,
-                &compiled.primitives,
-                &config,
-                prepared,
-                Some(ReachInputs {
-                    tree: fixture.tree(),
-                    exterior: fixture.exterior(),
-                    holes: 0,
-                }),
-                &window,
-            )?;
-            Ok(ReachBake {
-                lightmap: output.lightmap.section.to_bytes(),
-                shadowmask: output.shadowmask.map(|section| section.to_bytes()),
-                counts: LAST_REACH_COUNTS
-                    .with(|last| last.get())
-                    .expect("the stage logs its reach line"),
-            })
-        })
-}
-
-fn reach_off() -> lightmap_layer::ExactSkips {
-    lightmap_layer::ExactSkips {
-        reach_cull: false,
-        ..lightmap_layer::ExactSkips::ON
-    }
-}
 
 // Two rooms split by a solid wall, the light in room A: the stage culls
 // room B's pairs, skips texels and, floored, traces the ones whose footprint

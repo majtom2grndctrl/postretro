@@ -26,6 +26,9 @@ const ROOMS_MAX: [f64; 3] = [528.0, 256.0, 128.0];
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Wall {
     Solid,
+    /// A solid wall built of `(along y, along z)` box brushes, so each of its
+    /// faces is split into that many faces.
+    Grid(u32, u32),
     /// A rectangular opening through the wall, centred on the wall's middle
     /// unless placed: `(y0, y1, z0, z1)` in map units.
     Opening([f64; 4]),
@@ -53,27 +56,64 @@ impl Wall {
     }
 }
 
-/// The two rooms' world brushes.
-pub(crate) fn two_rooms(wall: Wall) -> Vec<String> {
-    let mut world = sealed_room([0.0, 0.0, 0.0], ROOMS_MAX);
-    let [x0, x1] = WALL_X;
-    match wall {
-        Wall::Solid => world.push(box_brush([x0, 0.0, 0.0], [x1, 256.0, 128.0])),
-        Wall::Opening([y0, y1, z0, z1]) => {
-            if z0 > 0.0 {
-                world.push(box_brush([x0, 0.0, 0.0], [x1, 256.0, z0]));
-            }
-            world.push(box_brush([x0, 0.0, z1], [x1, 256.0, 128.0]));
-            world.push(box_brush([x0, 0.0, z0], [x1, y0, z1]));
-            world.push(box_brush([x0, y1, z0], [x1, 256.0, z1]));
-        }
-    }
-    world
+/// Where the two rooms and their wall lie, in map units: room A spans x
+/// `0..wall_x[0]`, the wall `wall_x[0]..wall_x[1]`, room B `wall_x[1]..max.x`;
+/// both span y `0..max.y` and z `0..max.z`, sealed by 16 u slabs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Rooms {
+    pub(crate) wall_x: [f64; 2],
+    pub(crate) max: [f64; 3],
 }
 
-/// Room B's interior, in engine space.
+impl Rooms {
+    pub(crate) const STANDARD: Self = Self {
+        wall_x: WALL_X,
+        max: ROOMS_MAX,
+    };
+
+    /// The two rooms' world brushes.
+    pub(crate) fn world(self, wall: Wall) -> Vec<String> {
+        let max = self.max;
+        let mut world = sealed_room([0.0, 0.0, 0.0], max);
+        let [x0, x1] = self.wall_x;
+        let (y_max, z_max) = (max[1], max[2]);
+        match wall {
+            Wall::Solid => world.push(box_brush([x0, 0.0, 0.0], [x1, y_max, z_max])),
+            Wall::Grid(along_y, along_z) => {
+                let (dy, dz) = (y_max / f64::from(along_y), z_max / f64::from(along_z));
+                for j in 0..along_y {
+                    for k in 0..along_z {
+                        let (y, z) = (f64::from(j) * dy, f64::from(k) * dz);
+                        world.push(box_brush([x0, y, z], [x1, y + dy, z + dz]));
+                    }
+                }
+            }
+            Wall::Opening([y0, y1, z0, z1]) => {
+                if z0 > 0.0 {
+                    world.push(box_brush([x0, 0.0, 0.0], [x1, y_max, z0]));
+                }
+                world.push(box_brush([x0, 0.0, z1], [x1, y_max, z_max]));
+                world.push(box_brush([x0, 0.0, z0], [x1, y0, z1]));
+                world.push(box_brush([x0, y1, z0], [x1, y_max, z1]));
+            }
+        }
+        world
+    }
+
+    /// Room B's interior, in engine space.
+    pub(crate) fn room_b(self) -> (DVec3, DVec3) {
+        engine_box([self.wall_x[1], 0.0, 0.0], self.max)
+    }
+}
+
+/// The standard rooms' world brushes.
+pub(crate) fn two_rooms(wall: Wall) -> Vec<String> {
+    Rooms::STANDARD.world(wall)
+}
+
+/// The standard room B's interior, in engine space.
 pub(crate) fn room_b() -> (DVec3, DVec3) {
-    engine_box([WALL_X[1], 0.0, 0.0], ROOMS_MAX)
+    Rooms::STANDARD.room_b()
 }
 
 /// The centre of room A, where the fixtures' light sits by default.
@@ -118,8 +158,13 @@ pub(crate) struct ReachFixture {
 
 impl ReachFixture {
     pub(crate) fn two_rooms(wall: Wall) -> Self {
+        Self::compile(&two_rooms(wall), &[])
+    }
+
+    /// Worldspawn with `world` brushes, then `entities` as map entities.
+    pub(crate) fn compile(world: &[String], entities: &[String]) -> Self {
         Self {
-            compiled: PlacementFixture::compile(&two_rooms(wall), &[]),
+            compiled: PlacementFixture::compile(world, entities),
         }
     }
 

@@ -49,6 +49,11 @@ pub(crate) struct ExactSkips {
     /// Where the walk and planning tally what they skipped.
     #[cfg(test)]
     pub stats: Option<&'static SkipStats>,
+    /// The reach index builds each chart's slab from this list's chart at
+    /// the same atlas index instead of the walk's: the negative control that
+    /// a slab off the walk's texel positions misses trace starts.
+    #[cfg(test)]
+    pub slab_charts: Option<&'static [Chart]>,
 }
 
 impl ExactSkips {
@@ -64,6 +69,8 @@ impl ExactSkips {
         force_reach_cull: false,
         #[cfg(test)]
         stats: None,
+        #[cfg(test)]
+        slab_charts: None,
     };
     #[cfg(test)]
     pub(crate) const OFF: Self = Self {
@@ -74,6 +81,7 @@ impl ExactSkips {
         force_clear: false,
         force_reach_cull: false,
         stats: None,
+        slab_charts: None,
     };
 
     /// These skips, tallied into `stats`.

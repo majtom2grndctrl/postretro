@@ -26,6 +26,8 @@ mod atlas_stage;
 mod cell_partition;
 mod coverage_proof_stage;
 mod delta_working_set;
+#[cfg(test)]
+pub(crate) mod face_removal_seam;
 mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
@@ -578,6 +580,8 @@ fn run_after_parsing(
         &runtime.cells.tree,
         &runtime.cells.exterior_cells,
     );
+    #[cfg(test)]
+    face_removal_seam::remove_faces(&mut geo_result);
     let carried_lights_by_mover = kinematic_geometry::member_lights_by_mover(
         &map_data.kinematic_movers,
         &map_data.carried_light_links,

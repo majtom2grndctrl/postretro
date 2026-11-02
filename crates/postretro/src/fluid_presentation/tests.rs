@@ -921,7 +921,7 @@ fn suspend_clears_the_fluid_eye_presentation() {
     // the clear is read where that body lives.
     assert!(
         body.contains("self.suspend_platform();"),
-        "suspended() runs the platform suspend"
+        "suspended() delegates to suspend_platform()"
     );
     let start = main
         .find("pub(crate) fn suspend_platform(")
@@ -930,7 +930,7 @@ fn suspend_clears_the_fluid_eye_presentation() {
     let platform = &platform[..platform.find("\n    }\n").unwrap_or(platform.len())];
     assert!(
         platform.contains("self.clear_fluid_eye_presentation();"),
-        "suspended() clears the fluid eye presentation"
+        "suspend_platform() clears the fluid eye presentation"
     );
 
     let mut app = test_app();

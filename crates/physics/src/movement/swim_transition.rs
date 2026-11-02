@@ -54,19 +54,22 @@ impl SwimSeam {
 ///   the surface does nothing beyond treading.
 /// - **Exit.** `Swim` leaves when immersion is below `exit_depth` (exactly at
 ///   it stays), unless a fluid jump qualifies: the jump wins the tie. Every
-///   exit selects `Crouching` while the capsule is shorter than standing, so
-///   normal clearance retries survive a later posture change; otherwise `Normal`.
+///   exit selects `Crouching` while the capsule is not standing size, shorter
+///   or taller, so the resize back to standing survives a later posture
+///   change; otherwise `Normal`.
 /// - **Entry.** Any other state enters `Swim` when the swimming capsule's
 ///   immersion is at or above `enter_depth`, the component has a `swim` block,
 ///   and the latch is clear. Between the two thresholds nothing toggles.
 /// - **Forced crouch.** Entry uses the current crouched capsule and its
 ///   immersion, without standing growth. Swim keeps that posture.
-/// - **Ordinary standing entry.** An unforced crouched capsule (crouch or slide)
-///   stands through the resize crouch stand-up uses, about the anchor its crouch
-///   entered with: feet planted when grounded, head pinned when airborne (D4).
-///   Feet-anchoring an airborne crouch would lift the standing capsule by twice
-///   the crouch shrink, so a diver crouching out of the bottom of a floating
-///   block would stand straight back up into it. Entry is tested against that
+/// - **Ordinary standing entry.** An unforced capsule that is not standing size
+///   (crouch or slide, shorter or taller than standing) stands through the
+///   resize crouch stand-up uses, about the anchor its crouch entered with:
+///   feet planted when grounded, head pinned when airborne (D4).
+///   Feet-anchoring an airborne crouch would lift the standing capsule by
+///   twice the crouch shrink, so a diver crouching out of the bottom of a
+///   floating block would stand straight back up into it. A taller crouch's
+///   shrink to standing is always clear. Entry is tested against that
 ///   STANDING capsule's immersion, after a clearance sweep in the direction it
 ///   grows, and on entry `resolved` is replaced by that resolve so the swim
 ///   intent reads the eye it will swim with. A blocked growth (a flooded
@@ -128,7 +131,7 @@ pub(super) fn environment_transition(
     }
     let crouched_half_height = component.capsule.half_height;
     let standing_half_height = component.standing_half_height;
-    if crouched_half_height >= standing_half_height {
+    if component.capsule_is_standing() {
         return SwimSeam {
             transition: (resolved.immersion >= enter_depth).then_some(enter_swim(fluid)),
             fluid_jump: false,

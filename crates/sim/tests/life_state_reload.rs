@@ -65,10 +65,15 @@ struct World {
 
 impl World {
     fn new(declared: bool) -> Self {
+        Self::from_manifest(&manifest(declared, None, false), 0.0)
+    }
+
+    /// A pawn materialized from `initial`, settled on a floor at `floor_y`.
+    fn from_manifest(initial: &Value, floor_y: f32) -> Self {
         let root = tempfile::tempdir().unwrap();
         let ctx = ScriptCtx::new();
         let pawn = ctx.registry.borrow_mut().spawn(Transform {
-            position: Vec3::new(0.0, 1.26, 0.0),
+            position: Vec3::new(0.0, floor_y + 1.26, 0.0),
             ..Default::default()
         });
         let runtime = ScriptRuntime::new(
@@ -87,16 +92,16 @@ impl World {
             pawn,
             collision: CollisionWorld::from_triangles_for_test(
                 vec![
-                    Vec3::new(-50.0, 0.0, -50.0),
-                    Vec3::new(50.0, 0.0, -50.0),
-                    Vec3::new(50.0, 0.0, 50.0),
-                    Vec3::new(-50.0, 0.0, 50.0),
+                    Vec3::new(-50.0, floor_y, -50.0),
+                    Vec3::new(50.0, floor_y, -50.0),
+                    Vec3::new(50.0, floor_y, 50.0),
+                    Vec3::new(-50.0, floor_y, 50.0),
                 ],
                 vec![[0, 2, 1], [0, 3, 2]],
             ),
         };
         assert!(matches!(
-            world.reload(&manifest(declared, None, false)),
+            world.reload(initial),
             StagedManifestCommitOutcome::Committed { .. }
         ));
         let descriptor = world.ctx.data_registry.borrow().entities[0].clone();
@@ -180,6 +185,21 @@ impl World {
             .get_component::<PlayerMovementComponent>(self.pawn)
             .unwrap()
             .clone()
+    }
+
+    fn position(&self) -> Vec3 {
+        self.ctx
+            .registry
+            .borrow()
+            .get_component::<Transform>(self.pawn)
+            .unwrap()
+            .position
+    }
+
+    /// The capsule's lowest point.
+    fn feet(&self) -> f32 {
+        let movement = self.movement();
+        self.position().y - movement.capsule.half_height - movement.capsule.radius
     }
 
     fn tick(&mut self) {
@@ -366,7 +386,7 @@ fn life_state_reload_unsafe_retained_crouch_support_rejects_before_any_commit_mu
         panic!("oversized retained crouch must reject: {outcome:?}");
     };
     assert!(
-        reason.contains("entities[0].components.lifeStates.states.alive.movement.posture"),
+        reason.contains("descriptor `player` components.lifeStates.states.alive.movement.posture"),
         "{reason}"
     );
     assert!(reason.contains("retained standing half-height"));
@@ -396,4 +416,62 @@ fn life_state_reload_unsafe_retained_crouch_support_rejects_before_any_commit_mu
         committed_generation
     );
     assert!(!world.runtime.install_deferred_mesh_descriptors(&world.ctx));
+}
+
+/// A crouch-capable pawn whose standing capsule passes the refresh's
+/// floor-plane check, so a reload replaces its movement in full.
+fn crouch_capable_manifest(accel: f32) -> Value {
+    let mut manifest = manifest(true, Some(0.4), false);
+    let movement = &mut manifest["entities"][0]["components"]["movement"];
+    movement["capsule"]["halfHeight"] = json!(0.9);
+    movement["ground"]["accel"] = json!(accel);
+    manifest
+}
+
+// Regression: a full movement refresh rebuilt a downed pawn standing about its
+// crouched centre, sinking its feet below the floor, and the next forced
+// shrink pinned them there while the client kept its crouched capsule.
+#[test]
+fn life_state_reload_while_downed_keeps_the_crouched_capsule_and_feet_on_the_floor() {
+    const FLOOR_Y: f32 = 5.0;
+    let mut world = World::from_manifest(&crouch_capable_manifest(12.0), FLOOR_Y);
+    world.enter("down");
+    for _ in 0..30 {
+        world.tick();
+    }
+    let downed = world.movement();
+    assert!(matches!(
+        downed.movement_state,
+        MovementState::Crouching { .. }
+    ));
+    assert!((downed.capsule.half_height - 0.4).abs() < EPS);
+    let feet = world.feet();
+    assert!((feet - FLOOR_Y).abs() < 0.05, "fixture rests on the floor");
+
+    assert!(matches!(
+        world.reload(&crouch_capable_manifest(13.0)),
+        StagedManifestCommitOutcome::Committed { .. }
+    ));
+    let reloaded = world.movement();
+    assert!(
+        (reloaded.ground_params.accel - 13.0).abs() < EPS,
+        "the movement component was replaced, not kept"
+    );
+    // A client's tuning rebuild carries the live capsule, eye and state; the
+    // host's refresh lands on the same values.
+    assert_eq!(reloaded.movement_state, downed.movement_state);
+    assert_eq!(reloaded.capsule.half_height, downed.capsule.half_height);
+    assert_eq!(reloaded.capsule.eye_height, downed.capsule.eye_height);
+    assert_eq!(reloaded.life_posture, LifeStatePosture::Crouch);
+    assert!((world.feet() - feet).abs() < EPS);
+
+    for _ in 0..10 {
+        world.tick();
+        assert!(
+            (world.feet() - feet).abs() < 0.01,
+            "feet stay on the floor: {} vs {feet}",
+            world.feet()
+        );
+    }
+    assert!((world.movement().capsule.half_height - 0.4).abs() < EPS);
 }

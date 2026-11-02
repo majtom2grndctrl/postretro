@@ -1929,7 +1929,7 @@ pub use reload::{
 };
 pub use weapon_stage::apply_authorized_weapon_impact_damage;
 
-pub use host_movement::drop_vault_if_dead;
+pub use host_movement::drop_vault_if_barred;
 #[cfg(any(test, feature = "test-support"))]
 pub use host_movement::run_host_movement_tick;
 pub use movement_overlap::report_static_overlap;

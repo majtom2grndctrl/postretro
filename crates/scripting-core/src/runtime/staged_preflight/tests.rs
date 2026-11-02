@@ -156,12 +156,19 @@ fn life_state_staged_commit_rejects_retained_name_overflow_before_any_mutation()
     let StagedManifestCommitOutcome::Rejected { reason, .. } = outcome else {
         panic!("effective 256-name union must reject: {outcome:?}");
     };
+    // The union has no manifest index; name the retained descriptor and the
+    // remedy instead.
+    assert!(!reason.contains("entities["), "{reason}");
     assert!(
-        reason.contains("entities[2].components.lifeStates.states.oldOnly"),
+        reason.contains("descriptor `old_player`, retained from the previous snapshot"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("components.lifeStates.states.oldOnly"),
         "{reason}"
     );
     assert!(reason.contains("255"));
-    assert!(reason.contains("retained presentation descriptors"));
+    assert!(reason.contains("reload the level"), "{reason}");
     let data = ctx.data_registry.borrow();
     assert_eq!(data.entities, before_descriptors);
     assert_eq!(data.life_state_names, before_names);

@@ -139,6 +139,19 @@ fn player_death_twins_emit_identical_policy_and_down_vignette_wire() {
         &wire["playerEvents"][0],
         &json!({"op":"le","a":{"op":"input","name":"player.health"},"b":{"op":"const","value":0}})
     ));
+    // The SDK lowers `.not()` to a select, not the `not` opcode.
+    assert!(
+        contains(
+            &wire["playerEvents"][0],
+            &json!({
+                "op":"select",
+                "cond":{"op":"input","name":"player.inLifeState:down"},
+                "a":{"op":"const","value":false},
+                "b":{"op":"const","value":true}
+            })
+        ),
+        "the zero-HP edge guards itself once the pawn is down"
+    );
     assert!(contains(
         &wire["playerEvents"][1],
         &json!({"op":"input","name":"player.inLifeState:down"})
@@ -391,7 +404,12 @@ impl Consumer {
             .unwrap()
             .current
     }
-    fn tick(&mut self, mut command: SimCommand) -> TickEvents {
+    fn tick(&mut self, command: SimCommand) -> TickEvents {
+        self.tick_then(command, |_| {})
+    }
+    /// Runs one tick, calling `between` after the simulation (and its respawn
+    /// drain) but before player events evaluate, as same-tick damage would land.
+    fn tick_then(&mut self, mut command: SimCommand, between: impl FnOnce(&Self)) -> TickEvents {
         command.input_tick = self.next_tick;
         self.next_tick += 1;
         let mut triggers = TriggerSystem::default();
@@ -452,6 +470,7 @@ impl Consumer {
             |_| {},
             postretro_sim::sim::TimingGate::OFF,
         );
+        between(self);
         let mut residuals = Vec::new();
         self.table.run_tick(&self.ctx, &mut residuals);
         assert!(
@@ -591,6 +610,33 @@ fn player_death_two_player_policy_bleeds_out_on_tick_900_then_respawns_next_tick
     assert_eq!(h.name(h.other), "alive");
     assert_eq!(h.health(h.other), 100.0);
     assert_eq!(h.pose(h.other), other_pose);
+}
+
+// Regression: lethal damage in the respawn tick left the pawn alive at zero HP,
+// because the death edge still remembered the downed life's zero health.
+#[test]
+fn player_death_lethal_damage_in_the_respawn_tick_downs_the_pawn_again() {
+    let mut h = Consumer::new();
+    set_health_absolute(&mut h.ctx.registry.borrow_mut(), h.host, 0.0);
+    h.tick(command());
+    assert_eq!(h.name(h.host), "down");
+    for _ in 1..=900 {
+        h.tick(command());
+    }
+    assert_eq!(h.ctx.pending_respawns.borrow().len(), 1);
+    let host = h.host;
+    h.tick_then(command(), |h| {
+        assert_eq!(h.name(host), "alive", "respawn drained at tick start");
+        assert_eq!(h.health(host), 100.0);
+        set_health_absolute(&mut h.ctx.registry.borrow_mut(), host, 0.0);
+    });
+    assert_eq!(
+        h.name(h.host),
+        "down",
+        "the death edge fires for the new life"
+    );
+    assert_eq!(h.movement(h.host).life_state_elapsed_ticks, 0);
+    assert_eq!(h.name(h.other), "alive");
 }
 
 #[test]

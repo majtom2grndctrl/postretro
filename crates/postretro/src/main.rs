@@ -1000,7 +1000,7 @@ pub(crate) struct App {
     /// The camera eye's fluid presentation: view tint and world muffle.
     fluid_eye: fluid_presentation::FluidEye,
     /// Eased `player.lifeStateMs` HUD projection, applied at the frozen UI
-    /// boundary. See: context/lib/ui.md §3
+    /// boundary. See: context/lib/scripting.md §5; context/lib/networking.md (life-state HUD time)
     life_state_display: life_state_display::LifeStateDisplay,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the
@@ -1979,7 +1979,8 @@ impl App {
     /// event loop, so tests drive it too. The renderer, its window and every
     /// renderer-held level resource go; the session survives. Harvest runs
     /// while live bindings exist; parity then demotes remote slots for the
-    /// resumed lifecycle drain. Held seats and queued respawns stay intact.
+    /// resumed lifecycle drain. Held seats, `pending_respawns` and
+    /// `respawn_placements` stay intact.
     pub(crate) fn suspend_platform(&mut self) {
         self.apply_display_mode_action(postretro_ui::actions::DisplayModeAction::Revert);
         // Audit which boot phase a suspend interrupts. The resume path resets to
@@ -4288,7 +4289,7 @@ impl App {
                                     slot_pawns.pawn_for(*client_id)
                                 } else {
                                     let joinable =
-                                        crate::scripting::builtins::player_spawn::joinable_spawns(
+                                        crate::scripting::builtins::player_spawn::joinable_sites(
                                             &host_spawn_points,
                                             &net_descriptors,
                                         );

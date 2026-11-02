@@ -64,7 +64,7 @@ fn frozen_display(
 }
 
 #[test]
-fn life_state_o24_actual_backlog_trim_ack_replay_keeps_240hz_display_advancing_and_converges() {
+fn life_state_actual_backlog_trim_ack_replay_keeps_240hz_display_advancing_and_converges() {
     let mut life = LifeFixture::new(descriptor(false, false, 1, "press"), false);
     life.zero_shooter(false);
     for _ in 0..32 {

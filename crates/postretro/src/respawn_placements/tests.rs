@@ -187,7 +187,11 @@ fn respawn_placements_publish_assigned_seats_and_keep_actual_first_spawn_after_j
     for client in 1..=5 {
         let seat = seats.admit_or_reclaim(client, None, false).unwrap().seat;
         let assigned = seats
-            .assign_joiner_placement(&registry, seat, &[0, 1, 2, 3, 4, 5, 6])
+            .assign_joiner_placement(
+                &registry,
+                seat,
+                &crate::scripting::builtins::player_spawn::joinable_sites(&points, &descriptors),
+            )
             .unwrap();
         publish(&ctx, &points, &descriptors, Some(&seats), None);
         assert_eq!(
@@ -258,6 +262,12 @@ fn respawn_placements_republish_when_a_committed_reload_changes_spawn_eligibilit
         spawn("large", Vec3::X * 4.0, 0.0, false),
     ];
     app.host_spawn_points = points.clone();
+    // Install bound the first player at spawn 1, as the level's seat zero.
+    let mut seats = SeatTable::local_only();
+    let host = ctx.registry.borrow_mut().spawn(Transform::default());
+    seats.bind_level_spawn_placement(host, 1);
+    seats.bind_pawn(&mut ctx.registry.borrow_mut(), Seat(0), host);
+    app.session.as_mut().unwrap().seat_table = Some(seats);
     let both = || vec![descriptor("small", 0.4, 0.8), descriptor("large", 0.7, 2.0)];
     let published = |ctx: &ScriptCtx| -> Vec<usize> {
         ctx.respawn_placements
@@ -272,22 +282,23 @@ fn respawn_placements_republish_when_a_committed_reload_changes_spawn_eligibilit
         &ctx,
         &points,
         &ctx.data_registry.borrow().entities,
-        None,
+        app.session.as_ref().unwrap().seat_table.as_ref(),
         Some(1),
     );
     assert_eq!(published(&ctx), [0, 1]);
+    assert_eq!(ctx.respawn_placements.borrow().first_player, Some(1));
 
     // The reload drops `large`, so the join path now refuses spawn 1.
     ctx.data_registry
         .borrow_mut()
         .replace_entity_types(vec![descriptor("small", 0.4, 0.8)]);
     app.refresh_respawn_placements();
-    assert_eq!(
-        published(&ctx),
-        joinable_spawns(&points, &ctx.data_registry.borrow().entities),
-        "respawn and join agree on the reloaded spawn set"
-    );
     assert_eq!(published(&ctx), [0]);
+    assert_eq!(
+        ctx.respawn_placements.borrow().seats.get(&Seat(0)),
+        None,
+        "respawn never targets the seat placement a join now refuses"
+    );
     assert_eq!(
         ctx.respawn_placements.borrow().first_player,
         Some(0),
@@ -300,5 +311,16 @@ fn respawn_placements_republish_when_a_committed_reload_changes_spawn_eligibilit
         published(&ctx),
         [0, 1],
         "a restored class is eligible again"
+    );
+    // Regression: the filtered fallback fed back in as the installed placement,
+    // so the restore kept spawn 0.
+    assert_eq!(
+        ctx.respawn_placements.borrow().first_player,
+        Some(1),
+        "the restored installed first player is preferred again"
+    );
+    assert_eq!(
+        ctx.respawn_placements.borrow().seats.get(&Seat(0)),
+        Some(&1)
     );
 }

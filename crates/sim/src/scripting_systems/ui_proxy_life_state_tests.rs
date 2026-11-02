@@ -105,3 +105,54 @@ fn life_state_client_hud_name_uses_host_history_and_keeps_replicated_elapsed() {
         Some(SlotValue::Number(123.0))
     );
 }
+
+// Regression: a pawn removed while downed (level change, demotion, digest hold)
+// left `player.lifeState` at "down", so the bleed-out HUD showed in the next level.
+#[test]
+fn life_state_hud_clears_name_on_every_role_when_the_own_pawn_is_gone() {
+    let slot =
+        |ctx: &ScriptCtx, name: &str| ctx.slot_table.borrow().get(name).unwrap().value.clone();
+    // Host and single player own both slots.
+    let (ctx, pawn) = fixture();
+    let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+    publisher.tick(None);
+    assert_eq!(
+        slot(&ctx, "player.lifeState"),
+        Some(SlotValue::String("down".into()))
+    );
+    ctx.registry.borrow_mut().despawn(pawn).unwrap();
+    publisher.tick(None);
+    assert_eq!(
+        slot(&ctx, "player.lifeState"),
+        Some(SlotValue::String(String::new()))
+    );
+    assert_eq!(
+        slot(&ctx, "player.lifeStateMs"),
+        Some(SlotValue::Number(0.0))
+    );
+
+    // A connected client clears its local name; elapsed stays replicated and the
+    // UI projection zeroes what it displays.
+    let (ctx, pawn) = fixture();
+    ctx.slot_table
+        .borrow_mut()
+        .get_mut("player.lifeStateMs")
+        .unwrap()
+        .write_value(Some(SlotValue::Number(9_000.0)));
+    let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+    publisher.tick_for_role_and_report_sampled_weapon(true, Some("down"));
+    assert_eq!(
+        slot(&ctx, "player.lifeState"),
+        Some(SlotValue::String("down".into()))
+    );
+    ctx.registry.borrow_mut().despawn(pawn).unwrap();
+    publisher.tick_for_role_and_report_sampled_weapon(true, None);
+    assert_eq!(
+        slot(&ctx, "player.lifeState"),
+        Some(SlotValue::String(String::new()))
+    );
+    assert_eq!(
+        slot(&ctx, "player.lifeStateMs"),
+        Some(SlotValue::Number(9_000.0))
+    );
+}

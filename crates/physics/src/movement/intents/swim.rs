@@ -8,7 +8,7 @@ use glam::Vec3;
 use crate::movement::carry::CarryRule;
 use crate::movement::{MovementEvents, MovementInput, Transition};
 use postretro_collision::ResolvedEnvironment;
-use postretro_foundation::{MovementState, PlayerMovementComponent};
+use postretro_foundation::PlayerMovementComponent;
 use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 
 /// Default level gravity's magnitude, m/s². `swim.sink_speed` is authored at
@@ -119,20 +119,15 @@ pub(crate) fn swim_intent(
     None
 }
 
-/// Leave `Swim`, momentum unchanged: swim carries no boost layer. A shorter
-/// capsule keeps `Crouching` ownership of the standing-clearance retry even if
-/// forced posture opens after this step. Dispatch folds vertical drift into
-/// locomotion on the edge.
+/// Leave `Swim`, momentum unchanged: swim carries no boost layer. A capsule
+/// that is not standing size, shorter or taller, keeps `Crouching` ownership
+/// of the resize back to standing even if forced posture opens after this
+/// step; a taller crouch's shrink to standing is always clear, so it stands on
+/// the first unforced tick. Dispatch folds vertical drift into locomotion on
+/// the edge.
 pub(crate) fn leave_swim(component: &PlayerMovementComponent) -> Transition {
-    let next = if component.capsule.half_height < component.standing_half_height {
-        MovementState::Crouching {
-            eye_current: component.capsule.eye_height,
-        }
-    } else {
-        MovementState::Normal
-    };
     Transition {
-        next,
+        next: component.capsule_posture_state(),
         carry: CarryRule::KEEP_ALL,
     }
 }

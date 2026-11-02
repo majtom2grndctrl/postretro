@@ -17,10 +17,13 @@ function setupLevel(_ctx)
   local isDown = Postretro.inLifeState("down")
   local expired = isDown["and"](isDown, Postretro.read(player.lifeStateMs):ge(BLEED_OUT_MS))
   local isUp = isDown["not"](isDown)
+  -- Not-down guard: the edge goes false while down, so lethal damage in the respawn tick still fires it.
+  local zeroHp = Postretro.read(player.health):le(0)
+  local lethal = zeroHp["and"](zeroHp, isUp)
   return {
     reactions = {down, respawn, downedVignette, clearVignette},
     playerEvents = {
-      Postretro.players():on(Postretro.becomes(Postretro.read(player.health):le(0)), {down}),
+      Postretro.players():on(Postretro.becomes(lethal), {down}),
       Postretro.players():on(Postretro.becomes(expired), {respawn}),
     },
     crossings = {

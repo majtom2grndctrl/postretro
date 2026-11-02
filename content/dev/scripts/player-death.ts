@@ -15,7 +15,8 @@ export function setupPlayerDeath() {
   return {
     reactions: [down, respawn, downedVignette, clearVignette],
     playerEvents: [
-      players().on(becomes(read(player.health).le(0)), [down]),
+      // Not-down guard: the edge goes false while down, so lethal damage in the respawn tick still fires it.
+      players().on(becomes(read(player.health).le(0).and(inLifeState("down").not())), [down]),
       players().on(becomes(inLifeState("down").and(read(player.lifeStateMs).ge(BLEED_OUT_MS))), [respawn]),
     ],
     crossings: [

@@ -1,4 +1,4 @@
-//! E18 AC17/O9: authoritative profile transitions through the production relay.
+//! Authoritative profile transitions through the production relay.
 use super::super::predict_reconcile_harness_test_fixtures::{
     NO_CORRECTION_M, production_snapshot_stamp,
 };
@@ -212,7 +212,7 @@ fn transition_run(speed: f32) -> RelayHarness {
         h.frame(&idle_command());
     }
     assert!(h.position_error().unwrap() < SETTLED_PAWN_TOLERANCE_M);
-    // The inverse transition is the second AC17 case, under the same live link.
+    // The inverse transition is the second profile-transition case, under the same live link.
     let down_baseline = baseline(&h);
     let alive_stamp = production_snapshot_stamp(h.host_tick.wrapping_add(1));
     postretro_sim::life_state_commands::set_life_state(
@@ -325,7 +325,7 @@ fn life_state_vault_event_write_clears_t_record_and_next_snapshot_matches_baseli
         let wire = movement_state_to_wire(movement, 0.0);
         assert!(
             !matches!(wire.movement_state, WireMovementState::Vault { .. }),
-            "O43: the production state verb ends the active vault before T serializes"
+            "the production state verb ends the active vault before T serializes"
         );
         assert_eq!(
             wire.life_state_elapsed_ticks, 0,
@@ -384,7 +384,7 @@ fn life_state_vault_event_write_clears_t_record_and_next_snapshot_matches_baseli
         .expect("paired baseline has snapshot k+1");
     assert!(
         next.sample.magnitude <= control_next.sample.magnitude + NO_CORRECTION_M,
-        "O43/O13: k+1 exceeds the matched no-transition snapshot baseline"
+        "k+1 exceeds the matched no-transition snapshot baseline"
     );
     assert!(
         samples

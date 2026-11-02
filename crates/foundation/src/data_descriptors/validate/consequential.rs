@@ -4,6 +4,13 @@
 use super::super::DescriptorError;
 use super::foundation::validate_ascii_identifier;
 
+/// The value a respawn step's non-finite `health` lowers to before JSON,
+/// which cannot carry NaN or infinities. Zero is always invalid health, so
+/// the authoritative drain warns and restores the pawn's maximum. The VM
+/// converters and the build-time light pass both lower through this value,
+/// so the two agree on which reactions survive load.
+pub const INVALID_RESPAWN_HEALTH: i32 = 0;
+
 /// Primitives whose `args` are fixed author-time payloads checked at load.
 /// Downstream command dispatch assumes these checks ran.
 pub fn is_consequential_primitive(primitive: &str) -> bool {
@@ -48,15 +55,22 @@ pub fn validate_consequential_args(
         .as_object()
         .ok_or_else(|| fail(format!("`{primitive}` `args` must be an object")))?;
     if matches!(primitive, "setLifeState" | "respawn") {
+        // Authors never write `args.state`: the SDK maps `setLifeState(name)`
+        // and `respawn({ lifeState })` onto it, so name the authored spelling.
+        let authored = if primitive == "respawn" {
+            "the `lifeState` option"
+        } else {
+            "the state name"
+        };
         let state = object.get("state");
         if primitive == "setLifeState" || state.is_some() {
             let name = state.and_then(serde_json::Value::as_str).ok_or_else(|| {
                 fail(format!(
-                    "`{primitive}` `args.state` must be a string identifier"
+                    "`{primitive}` {authored} (`args.state`) must be a string identifier"
                 ))
             })?;
             validate_ascii_identifier(&format!("{primitive}.args.state"), name)
-                .map_err(|error| fail(error.to_string()))?;
+                .map_err(|error| fail(format!("{error} ({authored})")))?;
         }
         // Respawn normalizes non-positive, non-finite or out-of-range health
         // at execution. Load-time validation checks the authored type only.

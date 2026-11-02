@@ -173,6 +173,10 @@ impl App {
                 }
             },
         );
+        // Publish after the first-player bind, so seat zero's respawn placement
+        // is the spawn its pawn actually took and respawn agrees with the join
+        // placement. The captured index also keeps the actual spawn when no
+        // seat records it.
         crate::respawn_placements::publish(
             script_ctx,
             &products.spawn_points,

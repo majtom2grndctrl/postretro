@@ -280,7 +280,11 @@ impl World {
         let seats = session.seat_table.as_mut().unwrap();
         let seat = seats.seat_for_client(self.client_id).unwrap();
         let placement = seats
-            .assign_joiner_placement(&ctx.registry.borrow(), seat, &[0, 1])
+            .assign_joiner_placement(
+                &ctx.registry.borrow(),
+                seat,
+                &crate::scripting::builtins::player_spawn::joinable_sites(&points, &descriptors),
+            )
             .unwrap();
         let carried = seats.carried_state(seat).cloned();
         let NetEndpoint::Host {

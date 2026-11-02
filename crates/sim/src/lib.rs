@@ -26,6 +26,7 @@ pub mod life_state_commands;
 pub mod mover_commands;
 pub mod nav;
 pub mod particle_pool;
+pub mod placement_occupancy;
 pub mod player_events;
 pub mod residual_drain;
 pub mod respawn_commands;

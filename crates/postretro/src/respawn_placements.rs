@@ -1,6 +1,7 @@
 //! Installed map foot poses and durable seat assignments for authoritative respawn.
 //! A fallback keeps the existing pawn archetype, so its centre is derived later
 //! from this foot anchor and that pawn's current capsule, never the spawn class's.
+//! See: context/lib/scripting.md §12
 
 use postretro_entities::{EntityTypeDescriptor, RespawnPlacement, RespawnPlacements, ScriptCtx};
 
@@ -46,10 +47,11 @@ pub(crate) fn build(
     }
 }
 
-/// Publish on install, a changed seat assignment, or a committed reload. Retain
-/// the installed first-player placement when a later publish rebuilds the
-/// assignment projection. No registry borrow is needed: the participation
-/// caller already holds one.
+/// Publish on install, a changed seat assignment, or a committed reload. Only
+/// install passes the first player; later publishes derive it from seat zero's
+/// unfiltered install record, so a reload that drops and then restores its
+/// class returns to it rather than keeping the fallback. No registry borrow is
+/// needed: the participation caller already holds one.
 pub(crate) fn publish(
     ctx: &ScriptCtx,
     spawn_points: &[MapEntity],
@@ -60,7 +62,6 @@ pub(crate) fn publish(
     if !ctx.owner_slot_writes_enabled.get() {
         return;
     }
-    let first_player = first_player.or(ctx.respawn_placements.borrow().first_player);
     let placements = build(spawn_points, descriptors, seats, first_player);
     *ctx.respawn_placements.borrow_mut() = placements;
 }

@@ -34,7 +34,13 @@ export type NpcGroupFilter = { tag?: string };
 /** Typed, additive partial for NPC state updates. */
 export type NpcStateUpdateArgs = { aggro?: boolean };
 
-/** Options for relocating a player to its seat placement on the next tick. */
+/**
+ * Options for relocating a player to its seat placement on the next tick.
+ * `health` lies in (0, max] and defaults to the pawn's maximum; a value
+ * outside that range, or a non-finite one, warns and restores the maximum.
+ * `lifeState` names the state to enter at elapsed zero and defaults to the
+ * descriptor's `initial`.
+ */
 export type RespawnOptions = { health?: number; lifeState?: string };
 
 /**

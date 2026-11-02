@@ -62,6 +62,13 @@ impl StoreHandle {
 /// Binds and evaluates IR against the engine-global [`SlotTable`] via a captured
 /// [`ScriptCtx`]. Cloning the ctx is cheap (it bumps `Rc`s); the scope owns its
 /// clone so it can read and write the live table without an external borrow.
+///
+/// Bound directly, it is the local crossing scope, so it resolves
+/// `inLifeState` against this machine's own state. [`DispatchScope`] refuses
+/// that read before delegating here, and [`PlayerConditionScope`] binds it to
+/// the evaluated player first.
+///
+/// [`PlayerConditionScope`]: crate::ir_player_scope::PlayerConditionScope
 pub struct StoreScope {
     ctx: ScriptCtx,
     mode: StoreCapability,
@@ -341,6 +348,15 @@ impl BindingScope for DispatchScope {
     type OutputHandle = StoreHandle;
 
     fn resolve_input(&self, name: &str) -> Option<ResolvedInput<Self::InputHandle>> {
+        // The ambient store answers `inLifeState` with this machine's own
+        // state. That is a local crossing's meaning; in an impact, trigger,
+        // system or player-event body it would silently test the host.
+        if name.starts_with(LIFE_STATE_INPUT_PREFIX) {
+            log::error!(
+                "[Scripting] cannot bind `{name}`: inLifeState reads only in player-event conditions (the evaluated player) and onStateCrossing predicates (this machine's player)"
+            );
+            return None;
+        }
         if name.starts_with('@') {
             let handle = self
                 .inputs

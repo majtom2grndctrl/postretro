@@ -576,6 +576,8 @@ fn plan_movement_replace(
     // early end (`break_off_vault`), as death and an abort do: the path
     // velocity goes, and so does a swim-entered vault's latch, or a pawn still
     // in deep water could never swim again.
+    //
+    // A crouched capsule is live geometry too (`carry_live_posture`).
     refreshed.movement_state = match live.movement_state {
         state @ (MovementState::Swim { .. } | MovementState::Vault { .. }) => state,
         _ => MovementState::Normal,
@@ -583,8 +585,58 @@ fn plan_movement_replace(
     refreshed.swim_reentry_latched = live.swim_reentry_latched;
     refreshed.teleport = live.teleport.clone();
     refreshed.break_off_vault();
+    carry_live_posture(
+        &mut refreshed,
+        live,
+        descriptor.crouch.as_ref().map(|crouch| crouch.half_height),
+    );
     refreshed.leave_swim_without_swim_block();
     Ok(ComponentValue::PlayerMovement(Box::new(refreshed)))
+}
+
+/// Keep a crouched pawn's live capsule across a movement refresh. The rebuilt
+/// component is standing size about the same centre, so a pawn crouched on a
+/// floor would come back with its feet `standing − crouched` half-heights
+/// below it; a forced crouch then shrinks about those feet on the next tick
+/// and pins them there. A client's tuning rebuild carries the live capsule,
+/// so the host must too or the two diverge.
+///
+/// Applies while the live pawn is `Crouching` or `Sliding`, or holds any
+/// non-standing capsule (a forced-crouch swimmer). The half-height is bounded
+/// by the new crouch block's, a shrink about the centre that never overlaps;
+/// the eye stays where its easing was, bounded by the capsule top. `Swim`
+/// keeps its medium; any other state becomes `Crouching`, as a slide handoff
+/// does, so the next tick eases the eye and owns the stand-up retry. A capsule
+/// that bounds to standing size leaves the rebuilt standing one untouched.
+fn carry_live_posture(
+    refreshed: &mut PlayerMovementComponent,
+    live: &PlayerMovementComponent,
+    crouch_half_height: Option<f32>,
+) {
+    let crouched = matches!(
+        live.movement_state,
+        MovementState::Crouching { .. } | MovementState::Sliding { .. }
+    ) || !live.capsule_is_standing();
+    if !crouched {
+        return;
+    }
+    let half_height = crouch_half_height.map_or(live.capsule.half_height, |bound| {
+        live.capsule.half_height.min(bound)
+    });
+    refreshed.capsule.half_height = half_height;
+    if refreshed.capsule_is_standing() {
+        refreshed.capsule.half_height = refreshed.standing_half_height;
+        return;
+    }
+    refreshed.capsule.eye_height = live
+        .capsule
+        .eye_height
+        .min(half_height + refreshed.capsule.radius);
+    if !matches!(refreshed.movement_state, MovementState::Swim { .. }) {
+        refreshed.movement_state = MovementState::Crouching {
+            eye_current: refreshed.capsule.eye_height,
+        };
+    }
 }
 
 fn plan_light_replace(
@@ -1667,6 +1719,62 @@ mod tests {
         assert!(component.swim_reentry_latched);
         assert_eq!(component.dash.as_ref().unwrap().air_dashes, 2);
         assert_eq!(component.air.jumps, 3, "tuning still reseeds");
+    }
+
+    // Regression: a reload rebuilt a crouched pawn standing about its centre,
+    // so a pawn crouched on a floor came back with its feet sunk into it; and a
+    // crouched swimmer losing its swim block left as `Normal`, a state that
+    // never resizes, holding the crouched capsule.
+    #[test]
+    fn movement_refresh_keeps_a_crouched_capsule_bounded_by_the_new_crouch() {
+        let crouch = |half_height| postretro_foundation::CrouchParams {
+            half_height,
+            eye_height: 0.3,
+            transition_rate: 8.0,
+        };
+        let mut old = vec![movement_descriptor_with_dash("player", 2, 2)];
+        old[0].movement.as_mut().unwrap().crouch = Some(crouch(0.4));
+        old[0].movement.as_mut().unwrap().swim = Some(swim_params());
+        let mut new = old.clone();
+        new[0].movement.as_mut().unwrap().air.jumps = 3;
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.capsule.half_height = 0.4;
+        live.capsule.eye_height = 0.5;
+        live.movement_state = MovementState::Sliding {
+            elapsed_ms: 120.0,
+            boost: Vec3::new(6.0, 0.0, 0.0),
+            eye_current: 0.5,
+        };
+
+        let component = refreshed_movement(&old, &new, live.clone());
+        assert_eq!(component.air.jumps, 3, "tuning still reseeds");
+        assert_eq!(
+            component.movement_state,
+            MovementState::Crouching { eye_current: 0.5 }
+        );
+        assert_eq!(component.capsule.half_height, 0.4);
+        assert_eq!(component.capsule.eye_height, 0.5);
+
+        // A smaller new crouch bounds the carried capsule: a shrink about the
+        // centre, which never overlaps.
+        let mut smaller = new.clone();
+        smaller[0].movement.as_mut().unwrap().crouch = Some(crouch(0.3));
+        let component = refreshed_movement(&old, &smaller, live.clone());
+        assert_eq!(component.capsule.half_height, 0.3);
+
+        // A crouched swimmer keeps `Swim` while the new descriptor swims, and
+        // leaves it into `Crouching` when it does not.
+        live.movement_state = MovementState::Swim { fluid: 3 };
+        let component = refreshed_movement(&old, &new, live.clone());
+        assert_eq!(component.movement_state, MovementState::Swim { fluid: 3 });
+        assert_eq!(component.capsule.half_height, 0.4);
+        new[0].movement.as_mut().unwrap().swim = None;
+        let component = refreshed_movement(&old, &new, live);
+        assert_eq!(
+            component.movement_state,
+            MovementState::Crouching { eye_current: 0.5 }
+        );
+        assert_eq!(component.capsule.half_height, 0.4);
     }
 
     // A reload mid-vault ends it early, as death does: `Normal`, the path

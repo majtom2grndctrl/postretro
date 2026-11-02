@@ -12,6 +12,7 @@ use postretro_entities::{
     AmmoReserve, ComponentKind, DeferredEffectComponent, DescriptorProvenance, EntityId,
     EntityRegistry, EntityTypeDescriptor, TouchMode, Transform,
 };
+use postretro_foundation::Capability;
 
 use crate::collision::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_ray, sphere_fits_world};
 use crate::scripting::builtins::data_archetype::{descriptor_mesh_component, find_descriptor};
@@ -297,6 +298,11 @@ impl TouchSystem {
 
         for (&player, &(pawn, center, capsule_radius, capsule_half_height)) in player_capsules {
             if !drop_pressed.get(&player).copied().unwrap_or(false) {
+                continue;
+            }
+            // Dropping repoints the active slot, so it takes the switch gate.
+            // An undeclared pawn keeps its existing drop behavior.
+            if !super::player_life::permits(registry, pawn, Capability::SwitchWeapon) {
                 continue;
             }
             let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
@@ -2653,6 +2659,60 @@ mod tests {
             Some(item)
         );
         capture.assert_logged_once(Level::Warn, "descriptor has no touchable block");
+    }
+
+    // Regression: drop repointed the active slot while the pawn's declared
+    // profile refused weapon switching.
+    #[test]
+    fn drop_takes_the_switch_weapon_gate_and_undeclared_pawns_still_drop() {
+        for switch_weapon in [Some(false), Some(true), None] {
+            let mut registry = EntityRegistry::new();
+            let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+            if let Some(switch_weapon) = switch_weapon {
+                let mut movement = registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap()
+                    .clone();
+                let profile = postretro_foundation::LifeStateProfile {
+                    switch_weapon,
+                    ..Default::default()
+                };
+                postretro_foundation::enter_life_state(&mut movement, 0, &profile, 0);
+                registry.set_component(pawn, movement).unwrap();
+            }
+            let item = spawn_item(
+                &mut registry,
+                "ion",
+                Vec3::new(10.0, 2.0, 0.0),
+                TouchMode::Auto,
+                7,
+            );
+            held_item(&mut registry, pawn, item);
+            let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+            let players = players(&[(PlayerId::Local(pawn), pawn)]);
+
+            let events = tick_with_edges(
+                &mut TouchSystem::default(),
+                &mut registry,
+                &floor_world(),
+                &descriptors,
+                &players,
+                &[],
+                &[(PlayerId::Local(pawn), true)],
+            );
+
+            let held = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0];
+            if switch_weapon == Some(false) {
+                assert_eq!(held, Some(item), "a refused drop keeps the weapon held");
+                assert!(events.repointed_pawns.is_empty());
+            } else {
+                assert_eq!(held, None, "switchWeapon {switch_weapon:?} drops");
+                assert_eq!(events.repointed_pawns, vec![pawn]);
+            }
+        }
     }
 
     #[test]

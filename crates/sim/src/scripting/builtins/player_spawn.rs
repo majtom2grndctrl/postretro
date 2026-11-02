@@ -8,6 +8,7 @@ use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 
 use super::MapEntity;
 use super::data_archetype::{find_descriptor, spawn_origin_shift};
+use crate::placement_occupancy::PlacementSite;
 
 /// `player_spawn` key: `1` keeps the spawn for co-op joiners only, so the first
 /// player (single player, or a co-op host) never starts there. Default `0`.
@@ -69,6 +70,29 @@ pub fn joinable_spawns(
         .enumerate()
         .filter(|(_, spawn)| spawn_descriptor(spawn, descriptors).is_some())
         .map(|(index, _)| index)
+        .collect()
+}
+
+/// [`joinable_spawns`] with each spawn's foot anchor and the standing capsule
+/// its class arrives with, for the shared placement occupancy rule.
+pub fn joinable_sites(
+    spawn_points: &[MapEntity],
+    descriptors: &[EntityTypeDescriptor],
+) -> Vec<PlacementSite> {
+    spawn_points
+        .iter()
+        .enumerate()
+        .filter_map(|(map_index, spawn)| {
+            let descriptor = spawn_descriptor(spawn, descriptors)?;
+            Some(PlacementSite {
+                map_index,
+                foot_anchor: spawn.origin,
+                capsule: descriptor
+                    .movement
+                    .as_ref()
+                    .map(|movement| movement.capsule.clone()),
+            })
+        })
         .collect()
 }
 

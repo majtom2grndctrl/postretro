@@ -32,3 +32,14 @@ fn life_state_payloads_validate_names_and_leave_health_normalization_to_respawn(
         assert!(error.contains(path), "{error}");
     }
 }
+
+// Regression: a bad `respawn({ lifeState })` named only the internal
+// `args.state`, a key the author never wrote.
+#[test]
+fn respawn_state_errors_name_the_authored_life_state_option() {
+    for args in [json!({ "state": "bad name" }), json!({ "state": 12 })] {
+        let error =
+            validate_consequential_args("revive", "primitive", "respawn", &args).unwrap_err();
+        assert!(error.contains("`lifeState`"), "{error}");
+    }
+}

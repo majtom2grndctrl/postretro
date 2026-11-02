@@ -3,12 +3,12 @@
 
 use serde_json::Value;
 
+use super::validate::INVALID_RESPAWN_HEALTH;
 use super::{Ctx, DescriptorError, JsValue, LuaValue, conv, js_err, lua_err};
 
-// JSON cannot carry NaN or infinities. Only respawn.health lowers them to 0:
-// it is always invalid health, so the authoritative drain still warns and
-// restores the pawn's current maximum. Other fields keep generic rejection.
-const INVALID_RESPAWN_HEALTH: i32 = 0;
+// JSON cannot carry NaN or infinities. Only respawn.health lowers them, to
+// `INVALID_RESPAWN_HEALTH`; other fields keep generic rejection. The build
+// light pass mirrors this lowering.
 
 pub(super) fn reaction_args_from_js<'js>(
     ctx: &Ctx<'js>,

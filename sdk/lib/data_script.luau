@@ -132,6 +132,10 @@ export type NpcGroup = {
 }
 
 --- Options for relocating a player to its seat placement on the next tick.
+--- `health` lies in (0, max] and defaults to the pawn's maximum; a value
+--- outside that range, or a non-finite one, warns and restores the maximum.
+--- `lifeState` names the state to enter at elapsed zero and defaults to the
+--- descriptor's `initial`.
 export type RespawnOptions = { health: number?, lifeState: string? }
 
 --- Every seat-bound player pawn. Opaque: no members, no length; indexing

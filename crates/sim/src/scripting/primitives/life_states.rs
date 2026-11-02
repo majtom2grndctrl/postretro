@@ -26,7 +26,7 @@ pub(super) fn register_types(registry: &mut PrimitiveRegistry) {
         .field("movement?", "LifeStateMovementProfile", "Movement scaling, abilities and posture. Omission permits full movement.")
         .field("look?", "bool", "Allow the owning player's look input. Defaults to true.")
         .field("fire?", "bool", "Allow weapon activations at any HP. Defaults to true; false cancels existing activations and charge.")
-        .field("switchWeapon?", "bool", "Allow new weapon-switch requests. Defaults to true.")
+        .field("switchWeapon?", "bool", "Allow new weapon-switch requests and weapon drops, since a drop changes the active weapon. Defaults to true.")
         .field("reload?", "bool", "Allow new reload requests. Defaults to true.")
         .field("use?", "bool", "Allow trigger Use activation. Defaults to true.")
         .field("touch?", "bool", "Allow new trigger Touch entries, pickups and teleporter entry. Defaults to true; disabling it preserves volume membership and paired Exit behavior.")

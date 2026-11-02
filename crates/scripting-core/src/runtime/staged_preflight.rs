@@ -7,12 +7,50 @@ use postretro_foundation::{LifeStatePosture, PlayerMovementComponent};
 
 use crate::refresh_plan::{DescriptorRefreshAction, DescriptorRefreshPlan};
 
-pub(super) fn validate_life_state_names(
-    descriptors: &[EntityTypeDescriptor],
-    snapshot: &str,
+/// Check the 255-name limit on the authored next-level snapshot, then on the
+/// active level's union, which also keeps removed presentation-bearing
+/// descriptors until the next level load. Neither slice is the manifest
+/// array, so errors name descriptors, never indexes.
+pub(super) fn validate_life_state_snapshots(
+    incoming: &[EntityTypeDescriptor],
+    active: &[EntityTypeDescriptor],
 ) -> Result<(), String> {
-    crate::data_descriptors::validate_life_state_name_limit(descriptors)
-        .map_err(|error| format!("{snapshot}: {error}"))
+    use crate::data_descriptors::{LIFE_STATE_NAME_LIMIT, first_life_state_name_overflow};
+
+    if let Some((index, name)) = first_life_state_name_overflow(incoming) {
+        return Err(format!(
+            "next-level descriptor snapshot: {} `components.lifeStates.states.{name}` {LIFE_STATE_NAME_LIMIT}",
+            descriptor_label(&incoming[index]),
+        ));
+    }
+    let Some((index, name)) = first_life_state_name_overflow(active) else {
+        return Ok(());
+    };
+    let descriptor = &active[index];
+    let retained = descriptor
+        .canonical_name
+        .as_deref()
+        .is_some_and(|canonical| {
+            !incoming
+                .iter()
+                .any(|next| next.canonical_name.as_deref() == Some(canonical))
+        });
+    let origin = if retained {
+        ", retained from the previous snapshot until the next level load,"
+    } else {
+        ""
+    };
+    Err(format!(
+        "active-level descriptor snapshot (including retained presentation descriptors): {}{origin} keeps `components.lifeStates.states.{name}`, which {LIFE_STATE_NAME_LIMIT}; reload the level to drop retained descriptors",
+        descriptor_label(descriptor),
+    ))
+}
+
+fn descriptor_label(descriptor: &EntityTypeDescriptor) -> String {
+    match descriptor.canonical_name.as_deref() {
+        Some(name) => format!("descriptor `{name}`"),
+        None => "an unnamed descriptor".to_string(),
+    }
 }
 
 /// A rejected or skipped movement refresh still adopts the committed profiles.
@@ -29,7 +67,7 @@ pub(super) fn plan_retained_crouch_support(
         let Ok(provenance) = registry.get_component::<DescriptorProvenance>(pawn) else {
             continue;
         };
-        let Some((index, descriptor)) = descriptors.iter().enumerate().find(|(_, descriptor)| {
+        let Some(descriptor) = descriptors.iter().find(|descriptor| {
             descriptor.canonical_name.as_deref() == Some(provenance.canonical_name.as_str())
         }) else {
             continue;
@@ -64,16 +102,19 @@ pub(super) fn plan_retained_crouch_support(
         if effective.crouch.is_some() {
             continue;
         }
-        let path =
-            format!("entities[{index}].components.lifeStates.states.{state}.movement.posture");
+        // The descriptor list is the active union, not the manifest array, so
+        // name the descriptor rather than an index into it.
+        let path = format!(
+            "descriptor `{}` components.lifeStates.states.{state}.movement.posture",
+            provenance.canonical_name,
+        );
         let Some(crouch) = descriptor
             .movement
             .as_ref()
             .and_then(|movement| movement.crouch.as_ref())
         else {
             return Err(format!(
-                "{path}: pawn {pawn} `{}` retains movement without crouch support; declare components.movement.crouch",
-                provenance.canonical_name,
+                "{path}: pawn {pawn} retains movement without crouch support; declare components.movement.crouch or reload the level"
             ));
         };
         if crouch.half_height > effective.standing_half_height
@@ -81,8 +122,7 @@ pub(super) fn plan_retained_crouch_support(
             || crouch.eye_height > crouch.half_height + effective.capsule.radius
         {
             return Err(format!(
-                "{path}: pawn {pawn} `{}` retains its previous movement; components.movement.crouch must fit its retained standing half-height {}, eye-height {}, and radius {} (incoming crouch: {}, {}); reduce the crouch dimensions or reload the level",
-                provenance.canonical_name,
+                "{path}: pawn {pawn} retains its previous movement; components.movement.crouch must fit its retained standing half-height {}, eye-height {}, and radius {} (incoming crouch: {}, {}); reduce the crouch dimensions or reload the level",
                 effective.standing_half_height,
                 effective.standing_eye_height,
                 effective.capsule.radius,

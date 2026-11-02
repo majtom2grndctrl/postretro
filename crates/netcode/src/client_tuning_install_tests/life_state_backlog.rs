@@ -1,4 +1,4 @@
-//! O14: payload ordering matters when snapshots replay a real predicted tail.
+//! Payload ordering matters when snapshots replay a real predicted tail.
 use super::*;
 use crate::predict_reconcile_harness_test_fixtures::{
     DT, GRAVITY, NO_CORRECTION_M, START, floor_world, forward_command, player_descriptor,

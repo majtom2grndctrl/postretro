@@ -1,4 +1,5 @@
 //! One closed life-state validator for both authoring VMs.
+//! See: context/lib/scripting.md §12
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -155,10 +156,7 @@ fn validate(
         }
     }
     if profiles.len() > usize::from(u8::MAX) {
-        return Err(invalid(
-            &states_path,
-            "exceeds the mod limit of 255 distinct life-state names",
-        ));
+        return Err(invalid(&states_path, LIFE_STATE_NAME_LIMIT));
     }
     let state_ids = profiles
         .keys()
@@ -174,75 +172,46 @@ fn validate(
     })
 }
 
-/// Validate across the whole parsed manifest before any startup/reload commit.
-pub(crate) fn validate_life_state_name_limit(
+/// The first name past the 255-name id space, walking descriptors in order:
+/// the holding descriptor's index and the name.
+pub(crate) fn first_life_state_name_overflow(
     entities: &[EntityTypeDescriptor],
-) -> Result<(), DescriptorError> {
+) -> Option<(usize, &str)> {
     let mut names = BTreeSet::new();
     for (index, descriptor) in entities.iter().enumerate() {
-        if let Some(block) = descriptor.life_states.as_ref() {
-            for name in block.states.keys() {
-                names.insert(name);
-                if names.len() > usize::from(u8::MAX) {
-                    return Err(invalid(
-                        &format!("entities[{index}].{ROOT}.states.{name}"),
-                        "exceeds the mod limit of 255 distinct life-state names",
-                    ));
-                }
+        let Some(block) = descriptor.life_states.as_ref() else {
+            continue;
+        };
+        for name in block.states.keys() {
+            names.insert(name);
+            if names.len() > usize::from(u8::MAX) {
+                return Some((index, name.as_str()));
             }
         }
     }
-    Ok(())
+    None
+}
+
+pub(crate) const LIFE_STATE_NAME_LIMIT: &str =
+    "exceeds the mod limit of 255 distinct life-state names";
+
+/// Validate a parsed manifest's `entities` before any startup/reload commit.
+/// Indexes name the manifest array, so pass the authored list only.
+pub(crate) fn validate_life_state_name_limit(
+    entities: &[EntityTypeDescriptor],
+) -> Result<(), DescriptorError> {
+    match first_life_state_name_overflow(entities) {
+        None => Ok(()),
+        Some((index, name)) => Err(invalid(
+            &format!("entities[{index}].{ROOT}.states.{name}"),
+            LIFE_STATE_NAME_LIMIT,
+        )),
+    }
 }
 
 // The raw adapters keep empty Luau tables as objects and reject invalid/nonfinite
 // values with their full path before JSON can lose their authored shape.
-#[derive(Clone, Copy)]
-enum LifeStateShape {
-    Block,
-    States,
-    Profile,
-    Movement,
-    Other,
-}
-
-impl LifeStateShape {
-    fn child(self, key: &str) -> Self {
-        match (self, key) {
-            (Self::Block, "states") => Self::States,
-            (Self::States, _) => Self::Profile,
-            (Self::Profile, "movement") => Self::Movement,
-            _ => Self::Other,
-        }
-    }
-
-    fn optional(self, key: &str) -> bool {
-        match self {
-            Self::Block => key == "rejoin",
-            Self::Profile => matches!(
-                key,
-                "movement"
-                    | "look"
-                    | "fire"
-                    | "switchWeapon"
-                    | "reload"
-                    | "use"
-                    | "touch"
-                    | "occupancy"
-                    | "damageable"
-            ),
-            Self::Movement => matches!(key, "speedScale" | "abilities" | "posture"),
-            Self::States | Self::Other => false,
-        }
-    }
-}
-
-fn raw_js(
-    value: JsValue<'_>,
-    path: &str,
-    depth: u8,
-    shape: LifeStateShape,
-) -> Result<Value, DescriptorError> {
+fn raw_js(value: JsValue<'_>, path: &str, depth: u8) -> Result<Value, DescriptorError> {
     if depth > 6 {
         return Err(invalid(path, "exceeds the life-state object depth"));
     }
@@ -273,15 +242,14 @@ fn raw_js(
     }
     let mut out = Map::new();
     for (key, value) in entries {
-        // Luau nil removes an optional field. Keep unknown undefined keys so
-        // the closed-schema validator still rejects misspellings.
-        if value.is_undefined() && shape.optional(&key) {
+        // `undefined` is absence, as a Luau nil key is: an omitted optional,
+        // never a value for the closed schema to reject.
+        if value.is_undefined() {
             continue;
         }
-        let child_shape = shape.child(&key);
         out.insert(
             key.clone(),
-            raw_js(value, &format!("{path}.{key}"), depth + 1, child_shape)?,
+            raw_js(value, &format!("{path}.{key}"), depth + 1)?,
         );
     }
     Ok(Value::Object(out))
@@ -325,7 +293,7 @@ pub(crate) fn life_states_from_js(
     value: JsValue<'_>,
     movement: Option<&PlayerMovementDescriptor>,
 ) -> Result<LifeStatesDescriptor, DescriptorError> {
-    validate(raw_js(value, ROOT, 0, LifeStateShape::Block)?, movement)
+    validate(raw_js(value, ROOT, 0)?, movement)
 }
 
 pub(crate) fn life_states_from_lua(

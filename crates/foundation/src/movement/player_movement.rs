@@ -24,6 +24,10 @@ use crate::data_descriptors::{
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
 
+/// Capsule half-heights within this many metres are the same size. Resizes
+/// write the standing reference exactly; the band only absorbs float noise.
+const CAPSULE_SIZE_EPSILON: f32 = 1.0e-4;
+
 /// Live player ground reference. `Mover` stores the compile-time PRL mover id,
 /// not a network id, so the foundation component stays net-agnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -193,7 +197,8 @@ pub enum MovementState {
     /// swimmer is in, set on entry and followed while it swims, so the exit edge
     /// still names the fluid left after the pawn is already dry. Presentation
     /// reads it; movement never does (drag comes from each tick's resolve). The
-    /// capsule is always standing size, and the re-entry latch outlives the
+    /// capsule is standing size unless forced posture holds it crouched or a
+    /// blocked growth has not yet restored it. The re-entry latch outlives the
     /// state, so it lives on the component.
     Swim { fluid: u16 },
     /// Mantling onto a ledge along a timed path whose move over the top
@@ -584,13 +589,36 @@ impl PlayerMovementComponent {
         self.coyote_timer_ms = 0.0;
     }
 
+    /// Whether the live capsule is the standing one. Any other size, shorter or
+    /// taller (an authored crouch capsule may be the larger one), still owes a
+    /// resize back to standing.
+    pub fn capsule_is_standing(&self) -> bool {
+        (self.capsule.half_height - self.standing_half_height).abs() <= CAPSULE_SIZE_EPSILON
+    }
+
+    /// The state a pawn leaving `Swim` lands in: `Crouching` while its capsule
+    /// is not standing size, so released crouch retries the resize through the
+    /// ordinary clearance check even after forced posture opens; `Normal`
+    /// otherwise. `Normal` never resizes, so a non-standing capsule left there
+    /// would keep its size and eye for good.
+    pub fn capsule_posture_state(&self) -> MovementState {
+        if self.capsule_is_standing() {
+            MovementState::Normal
+        } else {
+            MovementState::Crouching {
+                eye_current: self.capsule.eye_height,
+            }
+        }
+    }
+
     /// Settle swim state on a component rebuilt from a descriptor (hot reload, a
     /// client's tuning rebuild) after the live tick state was carried onto it.
     /// Without a `swim` block the pawn cannot swim, so a carried `Swim` leaves
-    /// as a swim exit does: `Normal`, the drift layer's vertical part folded
-    /// into locomotion, the re-entry latch cleared. `velocity` is total here
-    /// (protected layers included), so the fold zeroes only the layer's `y`;
-    /// total vertical velocity is unchanged. With a `swim` block nothing changes.
+    /// as a swim exit does: into [`Self::capsule_posture_state`], the drift
+    /// layer's vertical part folded into locomotion, the re-entry latch
+    /// cleared. `velocity` is total here (protected layers included), so the
+    /// fold zeroes only the layer's `y`; total vertical velocity is unchanged.
+    /// With a `swim` block nothing changes.
     ///
     /// The state changes with no exit edge: no `swim_ended` (or any other state
     /// edge) is emitted on this path. It only follows a dev-time descriptor swap,
@@ -600,7 +628,7 @@ impl PlayerMovementComponent {
             return;
         }
         if matches!(self.movement_state, MovementState::Swim { .. }) {
-            self.movement_state = MovementState::Normal;
+            self.movement_state = self.capsule_posture_state();
         }
         self.push_velocity.y = 0.0;
         self.swim_reentry_latched = false;

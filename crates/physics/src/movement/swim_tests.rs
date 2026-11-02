@@ -857,6 +857,51 @@ fn crouching_dashing_and_sliding_players_enter_swim_with_a_standing_capsule() {
     });
 }
 
+// Regression: a crouch capsule taller than standing entered swim at its
+// crouched size instead of standing first.
+#[test]
+fn a_crouch_taller_than_standing_enters_swim_with_a_standing_capsule() {
+    let world = floor_world();
+    let pool = EnvironmentVolumes::build(vec![floor_pool(2.0)]);
+    let mut desc = full_descriptor();
+    desc.crouch = Some(CrouchParams {
+        half_height: 1.0,
+        eye_height: 0.7,
+        transition_rate: 15.0,
+    });
+    let crouch = input(|i| i.crouch_intent = true);
+    let (mut component, mut position) = grounded_pawn(&desc, &world);
+    step(
+        &mut component,
+        &world,
+        EnvironmentView::level_only(LEVEL_GRAVITY),
+        &crouch,
+        &mut position,
+    );
+    assert_eq!(component.movement_state.kind(), MovementStateKind::Crouch);
+    assert!((component.capsule.half_height - 1.0).abs() < 1e-6);
+    let feet = position.y - component.capsule.half_height - component.capsule.radius;
+    position.x = 30.0;
+    let events = step(
+        &mut component,
+        &world,
+        water_view(&pool),
+        &crouch,
+        &mut position,
+    );
+    assert_eq!(
+        events.state_edges.first(),
+        Some(&edge(MovementStateKind::Crouch, MovementStateKind::Swim))
+    );
+    assert!((component.capsule.half_height - 0.8).abs() < 1e-6);
+    assert!((component.capsule.eye_height - 0.5).abs() < 1e-6);
+    let new_feet = position.y - component.capsule.half_height - component.capsule.radius;
+    assert!(
+        new_feet > feet - 0.05,
+        "the shrink keeps the feet planted: {new_feet} vs {feet}"
+    );
+}
+
 // Blocked headroom keeps the crouch; swim waits for standing room.
 #[test]
 fn crouched_pawn_in_a_flooded_crawlspace_stays_crouched_until_it_can_stand() {
@@ -2158,10 +2203,16 @@ fn life_state_forced_crouch_swims_with_scaled_wish_and_keeps_its_capsule() {
 /// Run a forced-crouch fluid jump, then the post-movement profile recovery
 /// before another movement tick can restore standing geometry.
 fn fluid_jump_then_recover(world: &CollisionWorld) -> (PlayerMovementComponent, Vec3) {
+    fluid_jump_then_recover_with(world, full_descriptor())
+}
+
+fn fluid_jump_then_recover_with(
+    world: &CollisionWorld,
+    descriptor: PlayerMovementDescriptor,
+) -> (PlayerMovementComponent, Vec3) {
     use postretro_foundation::{
         LifeStateMovementProfile, LifeStatePosture, LifeStateProfile, enter_life_state,
     };
-    let descriptor = full_descriptor();
     let mut pawn = swimming(&descriptor);
     pawn.knockback.air_drag = 0.0;
     enter_life_state(
@@ -2239,6 +2290,36 @@ fn life_state_fluid_jump_recovery_stands_on_the_next_tick_with_clearance() {
     assert!((pawn.capsule.eye_height - pawn.standing_eye_height).abs() < POS_EPS);
     assert!((pawn.velocity.y - (6.5 + LEVEL_GRAVITY * DT)).abs() < VEL_EPS);
     assert!(!events.jumped);
+    assert_eq!(
+        events.state_edges,
+        [edge(MovementStateKind::Crouch, MovementStateKind::Normal)]
+    );
+}
+
+// Regression: an authored crouch taller than standing left swim as `Normal`
+// with the taller capsule, which no later tick ever resized back to standing.
+#[test]
+fn life_state_fluid_jump_recovery_shrinks_a_taller_crouch_to_standing() {
+    let mut descriptor = full_descriptor();
+    descriptor.crouch = Some(CrouchParams {
+        half_height: 1.0,
+        eye_height: 0.7,
+        transition_rate: 15.0,
+    });
+    assert!(descriptor.crouch.as_ref().unwrap().half_height > descriptor.capsule.half_height);
+    let world = CollisionWorld::new();
+    let (mut pawn, mut position) = fluid_jump_then_recover_with(&world, descriptor);
+    let volumes = open_water(1.0);
+    let events = step(
+        &mut pawn,
+        &world,
+        water_view(&volumes),
+        &idle_input(),
+        &mut position,
+    );
+    assert_eq!(pawn.movement_state, MovementState::Normal);
+    assert!((pawn.capsule.half_height - pawn.standing_half_height).abs() < POS_EPS);
+    assert!((pawn.capsule.eye_height - pawn.standing_eye_height).abs() < POS_EPS);
     assert_eq!(
         events.state_edges,
         [edge(MovementStateKind::Crouch, MovementStateKind::Normal)]

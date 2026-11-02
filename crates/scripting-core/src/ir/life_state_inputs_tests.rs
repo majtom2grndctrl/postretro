@@ -126,3 +126,33 @@ fn life_state_unknown_names_fail_both_binds_with_the_state_in_the_diagnostic() {
     assert!(bind(&predicate("missing"), &StoreScope::script(ctx)).is_err());
     capture.assert_logged(log::Level::Error, "unknown life state `missing`");
 }
+
+// Regression: impact, trigger, system and player-event bodies passed
+// `inLifeState` through to the ambient store, which tested the host's own
+// state instead of failing the bind.
+#[test]
+fn life_state_reads_refuse_dispatch_and_impact_bodies_and_name_where_they_bind() {
+    use crate::ir_scopes::{DispatchScope, EntityScope};
+
+    let ctx = seeded_ctx();
+    let capture = postretro_test_log_capture::LogCapture::start();
+    assert!(bind(&predicate("down"), &DispatchScope::script(ctx.clone(), &[])).is_err());
+    assert!(
+        bind(
+            &predicate("down"),
+            &DispatchScope::player_event(ctx.clone(), &[])
+        )
+        .is_err()
+    );
+    assert!(bind(&predicate("down"), &EntityScope::impact(ctx.clone())).is_err());
+    capture.assert_logged(
+        log::Level::Error,
+        "inLifeState reads only in player-event conditions (the evaluated player) and onStateCrossing predicates",
+    );
+
+    let condition = PlayerConditionScope::new(ctx.clone());
+    condition.begin_condition();
+    assert!(bind(&predicate("down"), &condition).is_ok());
+    condition.finish_condition();
+    assert!(bind(&predicate("down"), &StoreScope::script(ctx)).is_ok());
+}

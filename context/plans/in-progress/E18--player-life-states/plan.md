@@ -27,7 +27,13 @@ findings remained after repairs.
 Review reports and batch summaries stay on local disk, uncommitted, at the
 owner's request. They are not linked from this plan.
 
-Remaining before landing: merge `main`, full preflight, AC17/AC18 manual visual
+Second panel (2026-11-01, 10 lenses at f4c55a82f after both main merges): no 🔴.
+Its 🟡 findings — respawn-tick death edge in the recipes, stale life-state HUD
+after pawn loss, placement republish regression, tall-crouch swim exit, reload
+while downed, `inLifeState` scope, build-side respawn health — are fixed in the
+following commit.
+
+Remaining before landing: full preflight, AC17/AC18 manual visual
 proof per [manual-playtest.md](manual-playtest.md).
 
 Every build checks for an active `rustc` or `prl-build` first (owner rule, below).
@@ -65,6 +71,11 @@ and recheck before starting; continue independent reads/edits in the meantime.
 
 ## Corrections
 
+- **O18 restated by owner (2026-11-01).** Original: "the lowest placement still free … No two
+  respawned pawns share a placement while one is free." Respawn judged occupancy by live
+  positions, join and reconnect by the seat ledger, so a respawn could take a held seat's
+  placement and the reconnecting player spawned inside it. Owner chose one occupancy rule
+  for join, reconnect and respawn: free means no live pawn overlaps and no other seat holds it.
 - **O44 restated by owner (2026-11-01, resolves B03-F1).** Original: "draws the pawn at the
   placement at every alpha of T+1." The production host presenter renders connected-client
   pawns on a delayed timeline, as teleporter arrivals already do (`networking.md`). A respawn
@@ -118,6 +129,12 @@ and recheck before starting; continue independent reads/edits in the meantime.
 
 ## Delegated answers and source findings
 
+- Owner (2026-11-01): JS `undefined` is absent in life-state descriptor maps, matching Luau
+  `nil` and the existing `conv.rs` convention. A misspelled key with a real value still rejects.
+- Owner (2026-11-01): weapon drop is refused when `switchWeapon` is false, because drop
+  repoints the active slot. Undeclared pawns keep the HP rule.
+- Owner (2026-11-01): main's resume reinstall runs no unload, leaving an orphan player pawn.
+  Out of scope; tracked in the roadmap. E18's suspend proofs stop before resume.
 - Respawn with no resolvable `player_spawn` — logs a `[Respawn]` warning and leaves
   the pawn unchanged; no fallback. Owner (2026-11-01): a map without a spawn cannot
   boot, so this state is upstream of respawn and unreachable in practice.
@@ -389,7 +406,7 @@ listed boundaries; no allocation is a passing result.
   the prior value, while a present undeclared/unknown state clears it.
 - Level unload clears names on live and held records. Suspend retains them.
   The native callback delegates its existing CPU sequence unchanged through
-  `App::suspend_level_state`, enabling production lifecycle tests without a GPU.
+  `App::suspend_platform`, enabling production lifecycle tests without a GPU.
 - Both actual spawn routes restore the current descriptor's rejoin target or
   initial at elapsed zero, before net-slot seat binding. Spawn/respawn share
   posture shaping so a forced crouch begins at the correct foot anchor even

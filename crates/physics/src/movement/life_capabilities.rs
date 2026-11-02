@@ -46,7 +46,7 @@ pub(super) fn posture(
     events: &mut MovementEvents,
 ) -> bool {
     let forced = forced_crouch(component);
-    let from = component.movement_state.kind();
+    let mut from = component.movement_state.kind();
     if forced {
         match component.movement_state {
             MovementState::Dash { .. } => component.movement_state = MovementState::Normal,
@@ -59,6 +59,12 @@ pub(super) fn posture(
                 // already peeled both protected layers; discard the path base
                 // here and let the normal recomposition add those layers once.
                 component.velocity = Vec3::ZERO;
+                // A life-state break is an edgeless early end, like the
+                // ability bar's break in `restamp_life_state`: only an abort,
+                // the exit and a swim pre-emption emit `vault_ended`. Read
+                // the break as already `Normal`, so a crouch that fits emits
+                // only `crouch_started`, as the barred path does a tick later.
+                from = component.movement_state.kind();
             }
             _ => {}
         }

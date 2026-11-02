@@ -209,14 +209,7 @@ fn life_state_forced_crouch_breaks_vault_without_doubling_protected_velocity() {
     let mut descriptor = crouch_descriptor();
     descriptor.vault = Some(super::super::vault_tests::vault_params(Default::default()));
     descriptor.knockback.air_drag = 0.0;
-    let mut pawn = PlayerMovementComponent::from_descriptor(&descriptor);
-    pawn.movement_state = MovementState::Vault {
-        elapsed_ms: 48.0,
-        target: Vec3::new(1.0, 12.0, 0.0),
-        start_offset: Vec3::new(-0.8, -0.7, 0.0),
-        mover: None,
-        entry_speed: 4.0,
-    };
+    let mut pawn = vaulting_pawn(&descriptor);
     let knockback = Vec3::new(3.0, 0.0, -2.0);
     let push = Vec3::new(-1.0, 0.0, 4.0);
     pawn.knockback_velocity = knockback;
@@ -253,8 +246,79 @@ fn life_state_forced_crouch_breaks_vault_without_doubling_protected_velocity() {
     assert_eq!(
         events.state_edges,
         [MovementStateEdge {
-            from: MovementStateKind::Vault,
+            from: MovementStateKind::Normal,
             to: MovementStateKind::Crouch,
         }]
     );
+}
+
+fn vaulting_pawn(descriptor: &PlayerMovementDescriptor) -> PlayerMovementComponent {
+    let mut pawn = PlayerMovementComponent::from_descriptor(descriptor);
+    pawn.movement_state = MovementState::Vault {
+        elapsed_ms: 48.0,
+        target: Vec3::new(1.0, 12.0, 0.0),
+        start_offset: Vec3::new(-0.8, -0.7, 0.0),
+        mover: None,
+        entry_speed: 4.0,
+    };
+    pawn
+}
+
+// Regression: forced crouch with abilities on broke a vault through a
+// Vault -> Crouch edge and emitted `vault_ended`, while abilities off broke it
+// edgelessly at adoption. Both are life-state early ends: neither emits it.
+#[test]
+fn life_state_forced_crouch_vault_break_emits_no_vault_ended_with_or_without_abilities() {
+    let mut descriptor = crouch_descriptor();
+    descriptor.vault = Some(super::super::vault_tests::vault_params(Default::default()));
+    let named_events = |abilities: bool| {
+        let mut pawn = vaulting_pawn(&descriptor);
+        enter_life_state(
+            &mut pawn,
+            1,
+            &profile(1.0, abilities, LifeStatePosture::Crouch),
+            2,
+        );
+        let (_, events) = tick(
+            &mut pawn,
+            &idle_input(),
+            &CollisionWorld::new(),
+            ENV,
+            DT,
+            Vec3::new(0.0, 10.0, 0.0),
+        );
+        assert!(is_crouching(&pawn), "abilities {abilities}");
+        let mut addresses = Vec::new();
+        events.append_named_events(&mut addresses);
+        addresses
+    };
+    assert_eq!(named_events(true), ["crouch_started"]);
+    assert_eq!(named_events(false), ["crouch_started"]);
+}
+
+// Regression: forced crouch outranks vault, yet a forced pawn still standing
+// (no crouched capsule applied) entered a vault from `Normal`.
+#[test]
+fn life_state_forced_crouch_refuses_vault_entry_while_still_standing() {
+    use super::super::vault_tests::{
+        forward, ground_auto, grounded_at_riser, ledge_world, vault_descriptor,
+    };
+    // No crouch block, so forced posture cannot shrink the capsule and the
+    // pawn stays in `Normal`, where vault entry would otherwise read it.
+    let descriptor = vault_descriptor(ground_auto());
+    assert!(descriptor.crouch.is_none());
+    let world = ledge_world(1.2, None);
+    for (posture, vaults) in [
+        (LifeStatePosture::Stand, true),
+        (LifeStatePosture::Crouch, false),
+    ] {
+        let (mut pawn, position) = grounded_at_riser(&descriptor, &world, 0.05);
+        enter_life_state(&mut pawn, 1, &profile(1.0, true, posture), 2);
+        tick(&mut pawn, &forward(), &world, ENV, DT, position);
+        assert_eq!(
+            pawn.movement_state.kind() == MovementStateKind::Vault,
+            vaults,
+            "{posture:?}"
+        );
+    }
 }

@@ -65,7 +65,7 @@ pub fn run_host_movement_tick(
             registry.get_component::<Transform>(*id),
         ) {
             let mut component = component.clone();
-            drop_vault_if_dead(registry, *id, &mut component);
+            drop_vault_if_barred(registry, *id, &mut component);
             snapshots.push((*id, component, transform.position, input.clone()));
         }
     }
@@ -113,17 +113,17 @@ pub fn run_host_movement_tick(
     events_out
 }
 
-/// Settle vault state from the movement component's current capability stamp
-/// before its movement tick. Host movement and client prediction call this at
-/// that same point. A declared life-state profile owns vault admission, even
-/// at zero HP; only an undeclared pawn falls back to `is_quiescent` for its
-/// vault bar.
+/// Settle the vault bar before a pawn's movement tick and break off a barred
+/// vault. Host movement and client prediction call this at that same point. A
+/// declared life-state profile owns the bar (refused abilities, stamped at
+/// adoption), even at zero HP; only an undeclared pawn derives it here, from
+/// `is_quiescent`.
 ///
 /// When barred, `break_off_vault` drops path velocity so the pawn falls under
 /// gravity instead of finishing the climb. The bar also prevents vault entry
 /// during this tick. Breaking off emits no `vault_ended` edge: death, a
 /// life-state transition, or removal owns that moment.
-pub fn drop_vault_if_dead(
+pub fn drop_vault_if_barred(
     registry: &EntityRegistry,
     pawn: EntityId,
     movement: &mut PlayerMovementComponent,
@@ -297,7 +297,7 @@ mod tests {
             .get_component::<PlayerMovementComponent>(pawn)
             .unwrap()
             .clone();
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert!(
             matches!(live.movement_state, MovementState::Vault { .. }),
             "a live pawn keeps vaulting"
@@ -339,14 +339,14 @@ mod tests {
         live.velocity = Vec3::new(1.0, 9.0, 0.0) + knockback;
         live.swim_reentry_latched = true;
 
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert_eq!(live.movement_state, MovementState::Normal);
         assert_eq!(live.velocity, knockback, "only the knockback stays");
         assert!(!live.swim_reentry_latched);
         assert!(live.vault_barred, "a dead pawn may not start a vault");
 
         set_health(&mut registry, pawn, 50.0);
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert!(!live.vault_barred, "a live pawn may vault again");
     }
 

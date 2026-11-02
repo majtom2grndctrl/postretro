@@ -447,24 +447,28 @@ impl PlayerHudStatePublisher {
 
     /// Publish the local pawn's life-state name; the host also publishes its
     /// gameplay-tick elapsed milliseconds. Undeclared or unknown states
-    /// publish `""`; a missing pawn or movement component leaves prior slots
-    /// unchanged. Connected clients pass the name resolved from the matching
+    /// publish `""`. Connected clients pass the name resolved from the matching
     /// host table; their elapsed value comes from the presentation clock.
+    ///
+    /// With no own pawn (level change, demotion, a digest hold) the name reads
+    /// `""` on every role and the host's elapsed reads 0, so a downed HUD never
+    /// carries into the next level. A client's elapsed slot stays replicated;
+    /// the UI projection zeroes the displayed value.
     fn publish_life_state(&mut self, is_connected_client: bool, client_name: Option<&str>) {
-        let (name, elapsed) = {
+        let (name, elapsed) = 'read: {
             let registry = self.ctx.registry.borrow();
             let pawn = if is_connected_client {
                 registry.local_player_pawn()
             } else {
                 registry.local_player_movement_pawn()
             };
-            let Some(pawn) = pawn else {
-                return;
-            };
-            let Ok(movement) =
-                registry.get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
-            else {
-                return;
+            let Some((pawn, movement)) = pawn.and_then(|pawn| {
+                registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()
+                    .map(|movement| (pawn, movement))
+            }) else {
+                break 'read (String::new(), Some(SlotValue::Number(0.0)));
             };
             let name = if is_connected_client {
                 client_name.unwrap_or("").to_owned()

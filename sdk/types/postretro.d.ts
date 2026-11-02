@@ -210,7 +210,7 @@ declare module "postretro" {
     look?: boolean;
     /** Allow weapon activations at any HP. Defaults to true; false cancels existing activations and charge. */
     fire?: boolean;
-    /** Allow new weapon-switch requests. Defaults to true. */
+    /** Allow new weapon-switch requests and weapon drops, since a drop changes the active weapon. Defaults to true. */
     switchWeapon?: boolean;
     /** Allow new reload requests. Defaults to true. */
     reload?: boolean;
@@ -2510,7 +2510,7 @@ declare module "postretro" {
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number): GroupCommand;
   }
-  /** Options for relocating a player to its seat placement on the next tick. */
+  /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {

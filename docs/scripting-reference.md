@@ -3009,6 +3009,8 @@ export function setupLevel(): LevelManifest {
 | `grantHealth` / `grantAmmo` amount, or `addSlot` delta, is not a finite `f32`-representable JSON number | Rejected while its descriptor loads (see below). |
 | `grantAmmo` pool key is malformed | Rejected while its descriptor loads, using the weapon-resource identifier grammar (see below). |
 | A grant recipient lacks the required component | The chokepoint emits one `log::warn!` and skips that recipient; sibling targets still receive their grants. |
+| A `setLifeState` / `respawn` state name is malformed, or `respawn` `health` is not a number | Rejects the manifest while the descriptor loads. |
+| A `setLifeState` / `respawn` reaction names a state no player descriptor declares | Logs an error at load and the reaction becomes an empty no-op. |
 
 The amount and pool-key rules apply to the command whether it is a reaction body or a sequence step, for group and subject-token commands alike. What a failure rejects depends on where the command sits:
 
@@ -3064,11 +3066,11 @@ Every omitted capability permits its action. Omitted movement values mean
 | `movement.posture` | `"stand"` leaves crouch to normal input and clearance; `"crouch"` forces crouch and requires a crouch configuration in `movement`. |
 | `look` | Allows view input on the owning machine. |
 | `fire` | Allows weapon activations, including held, burst and charge actions, at any HP. Vault's separate fire gate still applies. |
-| `switchWeapon`, `reload` | Allow weapon switching and reload input respectively. |
+| `switchWeapon`, `reload` | Allow weapon switching and reload input respectively. `switchWeapon: false` also refuses weapon drop. |
 | `use` | Allows Use interactions. |
 | `touch` | Allows new Touch entries, pickups and teleporter entry. Refusal keeps existing physical volume membership and emits no artificial Exit. |
 | `occupancy` | Includes the pawn in trigger occupant counts. |
-| `damageable` | Includes the pawn in spatial damage eligibility, including projectile/splash targets, AI attack checks and hitscan knockback. It does not filter AI target selection or block direct scripted damage. |
+| `damageable` | Includes the pawn in spatial damage eligibility, including projectile/splash targets, AI attack checks and hitscan knockback. It does not filter AI target selection. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior. |
 
 A descriptor with no life states keeps the original zero-HP behavior: fire
 stops and activations cancel, vault and teleporter entry are barred, and the
@@ -3085,7 +3087,7 @@ switching, reload, Use, Touch and pickups keep their ordinary behavior.
 | `players().setLifeState(name)`, `players().respawn(options?)` | Apply to all participating players, including from a reaction's `wait` tail. |
 
 These commands run only on the host or in single player. A reaction naming a
-state absent from the mod fails installation, naming the reaction and state.
+state absent from the mod logs an error naming the reaction and state, and becomes an empty no-op. A malformed state name or non-number `health` rejects the manifest.
 A runtime target whose descriptor lacks a requested state, or declares none,
 warns and skips that named-state command. Plain `respawn()` also works on an
 undeclared player. Subject tokens are legal only before `wait`;
@@ -3094,10 +3096,11 @@ use a group for a delayed operation. A hot reload cancels parked reaction tails.
 Respawn preserves inventory, resets velocity and movement boosts, cancels
 weapon activations and vault, restores the target posture, re-arms the death
 latch and faces the seat placement's yaw. If another pawn overlaps that
-placement, the engine picks the first free placement in map order. Requests
-on the same tick resolve in seat order against positions left by earlier
-picks. If none is free, the seat placement is used with a warning. Invalid or
-out-of-range `health` warns and clamps to max. Several requests for one pawn
+placement, the engine picks the first free placement in map order. A
+placement is free when no pawn stands on it and no other player holds it, the
+same rule joining and reconnecting players use. Requests on the same tick
+resolve in seat order against positions left by earlier picks. If none is free, the seat placement is used with a warning. Any non-finite,
+zero-or-negative or above-max `health` warns and uses max health. Several requests for one pawn
 before the drain coalesce to the last request.
 
 The owner snaps to the respawn and observers cut to it. Respawn plays no
@@ -3110,7 +3113,7 @@ and forced-crouch eye height on connected clients.
 |------|-------|
 | `inLifeState("down")` | Boolean expression for the player being checked in a player-event condition, or the local player in an `onStateCrossing` predicate. Unknown names fail binding. |
 | `getGameState().player.lifeStateMs` | Readonly Number of whole milliseconds in the state. Player-event conditions read the exact host tick count; the 15,000 ms threshold first holds at tick 900. |
-| `getGameState().player.lifeState` | Readonly local String for HUD visibility and labels; `""` for an undeclared pawn. |
+| `getGameState().player.lifeState` | Readonly local String for HUD visibility and labels; `""` for an undeclared pawn or when you have no pawn (between levels, while joining). |
 
 The HUD's elapsed value advances every positive-duration game frame through
 network delay, loss and backlog corrections. Its playback rate adjusts smoothly
@@ -3120,11 +3123,15 @@ presentation clock does not change gameplay conditions. No authored tween is
 needed for a bleed-out bar:
 
 ```typescript
+import { Bar, bindState, getGameState, stateEquals } from "postretro/ui";
+
+const { player } = getGameState();
+
 Bar({
   bind: bindState(player.lifeStateMs),
   max: 15000,
-  fill: color.critical,
-  background: color.hud.panel,
+  fill: [0.9, 0.15, 0.1, 1],
+  background: [0.1, 0.1, 0.1, 1],
   visibleWhen: stateEquals(player.lifeState, "down"),
 });
 ```
@@ -3162,10 +3169,13 @@ digest change follows the rejoin rule when it returns.
 
 - **Doom restart:** bind the legacy `playerDied` reaction to `restartLevel()`
   as below. In co-op this restarts the level for everyone.
-- **Quake co-op:** use `players().on(becomes(read(player.health).le(0)),
-  [respawn])`, where the named `respawn` reaction calls
-  `on.player.respawn()`. Each affected player returns next tick without
-  restarting the level.
+- **Quake co-op:** declare a `dead` state (for example `dead: { fire: false }`),
+  then register
+  `players().on(becomes(read(player.health).le(0).and(inLifeState("dead").not())), [dead])`
+  and `players().on(becomes(inLifeState("dead")), [respawn])`. The named
+  `dead` reaction calls `on.player.setLifeState("dead")` and `respawn` calls
+  `on.player.respawn()`. Each affected player returns two ticks later
+  without restarting the level.
 - **Borderlands-lite:** declare the `down` crawl profile above, then register
   the following host decisions. Use local crossings for a downed vignette,
   and bind the bleed-out bar to the reads above. The dev mod's
@@ -3182,12 +3192,18 @@ export function setupLevel() {
   return {
     reactions: [down, respawn],
     playerEvents: [
-      players().on(becomes(read(player.health).le(0)), [down]),
+      players().on(becomes(read(player.health).le(0).and(inLifeState("down").not())), [down]),
       players().on(becomes(inLifeState("down").and(read(player.lifeStateMs).ge(15000))), [respawn]),
     ],
   };
 }
 ```
+
+Guard each zero-health edge with the state it leads to, as both recipes do.
+A plain `becomes(read(player.health).le(0))` edge stays true from the last
+death, so lethal damage in the tick a respawn lands never fires it and the
+player stays up at zero health. Respawn from the guarding state's own edge,
+never from the health edge, so the guard holds for at least one tick.
 
 ### The `playerDied` event
 

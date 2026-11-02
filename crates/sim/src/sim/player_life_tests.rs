@@ -529,7 +529,7 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
         let tick = run(&mut touch, true);
         assert!(
             tick.weapon.is_empty() && tick.authorized_shots.is_empty(),
-            "O16: the later Weapons stage reads fire:false"
+            "the later Weapons stage reads fire:false"
         );
         assert!(
             ctx.registry
@@ -538,7 +538,7 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                 .unwrap()
                 .wieldables
                 .contains(&Some(first)),
-            "O35: same-stage pickup reads the captured touch:true"
+            "same-stage pickup reads the captured touch:true"
         );
         let (after_transition, closed) = {
             let registry = ctx.registry.borrow();

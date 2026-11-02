@@ -508,6 +508,34 @@ fn respawn_seat_order_counts_later_queued_pawns_then_earlier_relocations() {
     );
 }
 
+// Regression: the fallback judged only live pawn positions, so a respawn could
+// take a held seat's placement and that player's reconnect spawned inside it.
+#[test]
+fn respawn_fallback_skips_other_seats_placements_while_an_unowned_one_is_free() {
+    let rig = Rig::new();
+    rig.ctx
+        .respawn_placements
+        .borrow_mut()
+        .map_order
+        .push(RespawnPlacement {
+            map_index: 3,
+            foot_anchor: Vec3::X * 24.0,
+            yaw: std::f32::consts::FRAC_PI_2,
+        });
+    let (pawn, _) = rig.spawn(0, Vec3::new(60.0, 1.2, 0.0), true);
+    // Seat 3 owns placement 2 but stands on seat zero's placement 0.
+    rig.spawn(3, Vec3::new(0.0, 1.2, 0.0), false);
+    // Seat 1 is held with no pawn; its placement 1 is physically free.
+    rig.ctx
+        .respawn_placements
+        .borrow_mut()
+        .seats
+        .insert(Seat(1), 1);
+    rig.enqueue(pawn, None, None);
+    rig.start(|_| None);
+    assert_eq!(rig.pose(pawn).position, Vec3::new(24.0, 1.2, 0.0));
+}
+
 #[test]
 fn respawn_last_request_wins_and_adjacent_state_write_does_not_resurrect_early() {
     let rig = Rig::new();
@@ -770,7 +798,8 @@ fn respawn_target_posture_keeps_spawn_feet_and_drops_active_dash_or_vault() {
 #[path = "respawn_boundary_tests.rs"]
 mod boundaries;
 
-// Regression: VM NaN/infinities failed load before AC13's drain normalization.
+// Regression: VM NaN/infinities failed load instead of warning at the drain and
+// restoring max health.
 #[test]
 fn respawn_true_vm_nonfinite_health_warns_once_at_drain_restores_max_and_rearms_death() {
     use postretro_entities::ReactionDescriptor;

@@ -26,7 +26,9 @@ const UPRIGHT_MIN_UP_Y: f32 = 0.9999;
 /// context, a trigger that fires, horizontal wish, and a ledge the probe finds.
 /// Any entry clears the jump buffer, so a jump pressed before the vault never
 /// fires on its exit landing; a jump trigger also spends the jump, as a jump
-/// would. A pawn the caller barred (`vault_barred`: dead) never enters.
+/// would. A pawn the caller barred (`vault_barred`) never enters, and neither
+/// does one under forced crouch posture, even standing where the crouched
+/// capsule could not yet fit: posture outranks vault.
 ///
 /// Contexts: airborne or grounded `Normal` and `Dash` read `from.air` or
 /// `from.ground`; `Swim` reads `from.swim` once the tick eye is out of the
@@ -48,7 +50,7 @@ pub(super) fn vault_entry(
     carry_ground: GroundRef,
     dt: f32,
 ) -> Option<MovementState> {
-    if component.vault_barred {
+    if component.vault_barred || crate::movement::life_capabilities::forced_crouch(component) {
         return None;
     }
     let vault = component.vault.as_ref()?;

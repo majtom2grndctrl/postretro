@@ -390,7 +390,7 @@ fn conditioned_player_event_down_refuses_remote_fire_and_reaches_its_owner() {
         assert_eq!(pawn.life_state, life.down_id);
         assert_eq!(
             pawn.life_state_elapsed_ticks, 0,
-            "O15: the player-event entry pass ends at zero"
+            "the player-event entry pass ends at zero"
         );
     }
     let attempted = token(life.next_tick, ActivationLane::Primary);
@@ -403,7 +403,7 @@ fn conditioned_player_event_down_refuses_remote_fire_and_reaches_its_owner() {
             .unwrap()
             .life_state_elapsed_ticks,
         1,
-        "O15: the next host movement tick advances the new state's clock once"
+        "the next host movement tick advances the new state's clock once"
     );
     for _ in 0..100 {
         life.step(neutral());

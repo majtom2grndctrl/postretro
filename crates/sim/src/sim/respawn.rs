@@ -3,10 +3,10 @@
 use glam::{EulerRot, Quat, Vec3};
 use postretro_entities::components::health::{HealthComponent, set_health_absolute};
 use postretro_entities::provenance::DescriptorProvenance;
-use postretro_entities::{
-    ComponentKind, EntityId, EntityRegistry, RespawnPlacement, ScriptCtx, Transform,
-};
+use postretro_entities::{EntityId, EntityRegistry, RespawnPlacement, ScriptCtx, Transform};
 use postretro_foundation::{PlayerMovementComponent, enter_life_state};
+
+use crate::placement_occupancy::{PlacementOccupancy, standing_centre};
 
 pub(super) struct Arrival {
     pub pawn: EntityId,
@@ -79,9 +79,8 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
             }
         }
         crate::sim::player_life::apply_spawn_life_posture(&mut movement);
-        let seat_placement = registry
-            .seat_for_pawn(pawn)
-            .and_then(|seat| placements.seats.get(&seat).copied());
+        let seat = registry.seat_for_pawn(pawn);
+        let seat_placement = seat.and_then(|seat| placements.seats.get(&seat).copied());
         let preferred_index = seat_placement.or(placements.first_player);
         let preferred = preferred_index
             .and_then(|index| {
@@ -99,26 +98,36 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
             );
             continue;
         };
-        let position_for = |placement: &RespawnPlacement| {
-            placement.foot_anchor
-                + Vec3::Y * (movement.capsule.radius + movement.capsule.half_height)
+        let chosen = {
+            let held_elsewhere = placements
+                .seats
+                .iter()
+                .filter(|(other, _)| Some(**other) != seat)
+                .map(|(_, &index)| index);
+            let occupancy = PlacementOccupancy::new(registry, Some(pawn), held_elsewhere);
+            let capsule = Some(&movement.capsule);
+            let free = |placement: &&RespawnPlacement| {
+                occupancy.is_free(placement.map_index, placement.foot_anchor, capsule)
+            };
+            let live_unoccupied = |placement: &&RespawnPlacement| {
+                !occupancy.live_pawn_overlaps(placement.foot_anchor, capsule)
+            };
+            // Degraded: with every placement held or occupied, a held seat's
+            // empty placement still beats landing inside a live pawn.
+            if let Some(chosen) = Some(preferred)
+                .filter(free)
+                .or_else(|| placements.map_order.iter().find(free))
+                .or_else(|| placements.map_order.iter().find(live_unoccupied))
+            {
+                chosen
+            } else {
+                log::warn!(
+                    "[Respawn] no free placement for pawn {pawn:?}; using its seat placement"
+                );
+                preferred
+            }
         };
-        let free = |placement: &RespawnPlacement| {
-            !overlaps_pawn(registry, pawn, position_for(placement), &movement)
-        };
-        let chosen = if free(preferred) {
-            preferred
-        } else if let Some(free) = placements
-            .map_order
-            .iter()
-            .find(|placement| free(placement))
-        {
-            free
-        } else {
-            log::warn!("[Respawn] no free placement for pawn {pawn:?}; using its seat placement");
-            preferred
-        };
-        let position = position_for(chosen);
+        let position = standing_centre(chosen.foot_anchor, &movement.capsule);
         let old_yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
         let pose = Transform {
             position,
@@ -135,8 +144,13 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
             let max = health.max;
             let health = match request.health {
                 Some(value) if value.is_finite() && value > 0.0 && value <= max => value,
-                Some(value) => {
-                    log::warn!("[Respawn] pawn {pawn:?} invalid health {value}; using max {max}");
+                Some(_) => {
+                    // Loading may lower the authored number (a non-finite
+                    // value arrives as 0), so name the rule, not the value.
+                    log::warn!(
+                        "[Respawn] pawn {pawn:?} invalid health (non-finite or out of range); \
+                         using max {max}"
+                    );
                     max
                 }
                 None => max,
@@ -152,37 +166,6 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
         });
     }
     arrivals
-}
-
-fn overlaps_pawn(
-    registry: &EntityRegistry,
-    subject: EntityId,
-    position: Vec3,
-    movement: &PlayerMovementComponent,
-) -> bool {
-    registry
-        .query_by_component_and_tag(ComponentKind::PlayerMovement, None)
-        .any(|(pawn, _)| {
-            if pawn == subject
-                || crate::scripting_systems::health::is_terminally_committed_to_removal(
-                    registry, pawn,
-                )
-            {
-                return false;
-            }
-            let (Ok(other), Ok(transform)) = (
-                registry.get_component::<PlayerMovementComponent>(pawn),
-                registry.get_component::<Transform>(pawn),
-            ) else {
-                return false;
-            };
-            let radius = movement.capsule.radius + other.capsule.radius;
-            let lower = movement.capsule.half_height + movement.capsule.radius;
-            let other_lower = other.capsule.half_height + other.capsule.radius;
-            let delta = position - transform.position;
-            delta.x * delta.x + delta.z * delta.z < radius * radius
-                && delta.y.abs() < lower + other_lower
-        })
 }
 
 #[cfg(test)]

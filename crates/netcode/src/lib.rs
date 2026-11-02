@@ -1286,12 +1286,14 @@ pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
         (Ok(transform), Ok(movement)) => {
-            // Death is host-authoritative; a client that predicts past its own
-            // death takes one correction, inside the vault tolerance. The same
-            // verdict bars vault entry this tick, as on the host; reconcile
-            // replay has no registry and keeps the verdict this call leaves.
+            // The vault bar comes from the pawn's declared profile stamp, or for
+            // an undeclared pawn from its HP, as on the host. Death and profile
+            // changes are host-authoritative; a client that predicts past one
+            // takes one correction, inside the vault tolerance. The bar also
+            // refuses vault entry this tick; reconcile replay has no registry
+            // and keeps the bar this call leaves.
             let mut movement = movement.clone();
-            crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
+            crate::sim::drop_vault_if_barred(registry, armed.entity_id, &mut movement);
             (*transform, movement)
         }
         _ => {

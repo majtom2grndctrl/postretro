@@ -270,23 +270,70 @@ fn life_state_parser_twins_keep_required_fields_and_profile_shapes_invalid() {
     }
 }
 
+// Regression: JS kept undefined-valued unknown keys, state entries and rejoin
+// entries, so the closed schema rejected blocks that Luau nil loaded.
 #[test]
-fn life_state_parser_preserves_unknown_undefined_keys_and_explicit_null_errors() {
-    for (block, path) in [
-        ("{initial:'alive',states:{alive:{}},typo:undefined}", "typo"),
-        ("{initial:'alive',states:{alive:undefined}}", "states.alive"),
+fn life_state_parser_twins_treat_undefined_and_nil_map_values_as_absent() {
+    for (js, lua) in [
+        (
+            "{initial:'alive',states:{alive:{}},typo:undefined}",
+            "{initial='alive',states={alive={}},typo=nil}",
+        ),
+        (
+            "{initial:'alive',states:{alive:{},gone:undefined}}",
+            "{initial='alive',states={alive={},gone=nil}}",
+        ),
         (
             "{initial:'alive',states:{alive:{}},rejoin:{alive:undefined}}",
-            "rejoin.alive",
+            "{initial='alive',states={alive={}},rejoin={alive=nil}}",
         ),
         (
             "{initial:'alive',states:{alive:{typo:undefined}}}",
-            "states.alive.typo",
+            "{initial='alive',states={alive={typo=nil}}}",
         ),
         (
             "{initial:'alive',states:{alive:{movement:{typo:undefined}}}}",
-            "states.alive.movement.typo",
+            "{initial='alive',states={alive={movement={typo=nil}}}}",
         ),
+    ] {
+        let (js, lua) = parse(js, lua, true);
+        let js = js.unwrap().life_states.unwrap();
+        assert_eq!(js, lua.unwrap().life_states.unwrap());
+        assert_eq!(js.states.len(), 1);
+        assert!(js.rejoin.is_empty());
+    }
+    for (js, lua, path) in [
+        (
+            "{initial:'alive',states:{alive:{}},typo:true}",
+            "{initial='alive',states={alive={}},typo=true}",
+            "typo",
+        ),
+        (
+            "{initial:'alive',states:{alive:{fyre:false}}}",
+            "{initial='alive',states={alive={fyre=false}}}",
+            "states.alive.fyre",
+        ),
+        (
+            "{initial:'alive',states:{alive:{movement:{speed:1}}}}",
+            "{initial='alive',states={alive={movement={speed=1}}}}",
+            "states.alive.movement.speed",
+        ),
+    ] {
+        let (js, lua) = parse(js, lua, true);
+        for error in [js.unwrap_err(), lua.unwrap_err()] {
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("components.lifeStates.{path}")),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn life_state_parser_rejects_explicit_js_null_with_its_path() {
+    for (block, path) in [
         ("{initial:'alive',states:{alive:{}},rejoin:null}", "rejoin"),
         (
             "{initial:'alive',states:{alive:{movement:null}}}",

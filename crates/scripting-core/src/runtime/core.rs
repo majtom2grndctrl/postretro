@@ -652,17 +652,10 @@ impl ScriptRuntime {
             // Presentation retention can add removed descriptors. Validate the
             // exact active union and the separate next-level snapshot before
             // changing deferred state, live components, or stores.
-            let names_valid = super::staged_preflight::validate_life_state_names(
+            if let Err(reason) = super::staged_preflight::validate_life_state_snapshots(
                 &incoming_descriptors,
-                "next-level descriptor snapshot",
-            )
-            .and_then(|()| {
-                super::staged_preflight::validate_life_state_names(
-                    &next_descriptors,
-                    "active-level descriptor snapshot (including retained presentation descriptors)",
-                )
-            });
-            if let Err(reason) = names_valid {
+                &next_descriptors,
+            ) {
                 log::error!(
                     "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
                     result.generation,

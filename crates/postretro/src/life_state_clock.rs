@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn life_state_clock_o25_rendered_value_advances_above_tick_rate_for_fifteen_seconds() {
+    fn life_state_clock_rendered_value_advances_above_tick_rate_for_fifteen_seconds() {
         for fps in [30, 60, 144, 240, 360] {
             let dt = Duration::from_secs_f64(1.0 / f64::from(fps));
             let mut clock = LifeStateClock::default();
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn life_state_clock_o24_trim_and_delay_corrections_use_positive_bounded_rates() {
+    fn life_state_clock_trim_and_delay_corrections_use_positive_bounded_rates() {
         for fps in [30, 60, 144, 240] {
             let dt = Duration::from_secs_f64(1.0 / f64::from(fps));
             let dt_ms = dt.as_secs_f64() * 1000.0;

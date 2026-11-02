@@ -118,6 +118,9 @@ pub fn restamp_life_state(pawn: &mut PlayerMovementComponent, profile: Option<&L
     pawn.life_posture = profile.map_or(LifeStatePosture::Stand, |p| p.movement.posture);
     if let Some(profile) = profile {
         pawn.vault_barred = !profile.movement.abilities;
+        // An edgeless early end: no `vault_ended`, which only an abort, the
+        // exit and a swim pre-emption emit. Forced crouch with abilities on
+        // breaks the vault on the next movement tick instead, also edgeless.
         if pawn.vault_barred {
             pawn.break_off_vault();
         }

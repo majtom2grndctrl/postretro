@@ -1,5 +1,5 @@
 //! Life-state HUD projection at the frozen UI boundary; gameplay keeps tick facts.
-//! See: context/lib/ui.md §3
+//! See: context/lib/scripting.md §5 · context/lib/networking.md §What gates, and what replicates instead
 use crate::life_state_clock::{LifeStateClock, predicted_target_ms};
 use postretro_entities::{EntityId, ScriptCtx, SlotValue};
 use postretro_foundation::{PlayerMovementComponent, UNDECLARED_LIFE_STATE};
@@ -41,10 +41,14 @@ impl LifeStateDisplay {
         frame_dt: Duration,
     ) {
         let Some(sample) = sample else {
+            // No declared own pawn: show zero over whatever the store or a
+            // client's timed target last held, so a gone pawn's clock never
+            // freezes on screen.
             self.identity = None;
             self.authoritative_ticks = None;
             self.reset_witness = 0;
             self.clock.clear();
+            write_elapsed(values, 0.0);
             return;
         };
         let reset = self.identity.as_ref() != Some(&sample.identity)
@@ -62,12 +66,16 @@ impl LifeStateDisplay {
         let display = self
             .clock
             .advance(frame_dt, sample.target_ms, self.reset_serial);
-        let value = SlotValue::Number(display as f32);
-        if let Some(slot) = values.get_mut("player.lifeStateMs") {
-            *slot = value;
-        } else {
-            values.insert("player.lifeStateMs".into(), value);
-        }
+        write_elapsed(values, display as f32);
+    }
+}
+
+fn write_elapsed(values: &mut HashMap<String, SlotValue>, elapsed_ms: f32) {
+    let value = SlotValue::Number(elapsed_ms);
+    if let Some(slot) = values.get_mut("player.lifeStateMs") {
+        *slot = value;
+    } else {
+        values.insert("player.lifeStateMs".into(), value);
     }
 }
 
@@ -190,6 +198,37 @@ mod tests {
             slots.get("player.lifeStateMs").unwrap().value,
             Some(SlotValue::Number(100.0))
         );
+    }
+
+    // Regression: a client's own pawn removed while downed (level change,
+    // demotion, digest hold) froze the bleed-out clock on screen.
+    #[test]
+    fn life_state_ui_projection_shows_zero_once_the_own_pawn_is_gone() {
+        let ctx = ScriptCtx::new();
+        let pawn = ctx.registry.borrow_mut().spawn(Transform::default());
+        let mut slots = SlotTable::new();
+        slots
+            .get_mut("player.lifeStateMs")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(9_000.0)));
+        let mut display = LifeStateDisplay::default();
+        let dt = Duration::from_millis(8);
+        let mut project = |sample| {
+            App::build_ui_display_slot_snapshot(
+                &slots,
+                None,
+                Some(UiProjection {
+                    display: &mut display,
+                    sample,
+                    frame_dt: dt,
+                }),
+            )
+        };
+        let downed = project(Some(sample(pawn, "down", 9_000.0, None, 0, 0)));
+        assert_eq!(downed["player.lifeStateMs"], SlotValue::Number(9_000.0));
+        ctx.registry.borrow_mut().despawn(pawn).unwrap();
+        let gone = project(super::sample(&ctx, None, 0.0));
+        assert_eq!(gone["player.lifeStateMs"], SlotValue::Number(0.0));
     }
 
     #[test]

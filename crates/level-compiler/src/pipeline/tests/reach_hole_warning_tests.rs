@@ -240,6 +240,13 @@ fn coverage_proof_holes_past_the_sample_cap_switch_the_cull_off_and_warn() {
         warm_counts.baked == 0 && warm_counts.walked == 0,
         "{warm_counts:?}"
     );
+    assert!(
+        warm.iter().any(|record| record.level == Level::Info
+            && record.message
+                == "[Compiler] Lightmap reach cull: stage served from the lightmap_section \
+                    memo, no pair walked; switched off for the whole map by coverage-proof holes"),
+        "the warm stage line names the memo that served it"
+    );
 
     let intact = tempfile::tempdir().expect("temp root");
     let (records, counts) = compile(intact.path(), &map);

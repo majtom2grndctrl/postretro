@@ -1,20 +1,19 @@
 // Stage wiring of the lightmap reach cull: the coverage proof's switch and
-// hole warnings, the reach index's lifetime, and the stage's one info line.
+// cull-off warning, the reach index's lifetime, and the stage's one info line.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use std::collections::HashSet;
 
 use crate::bake_control::BakeControl;
-use crate::coverage_proof::CoverageReport;
 use crate::light_namespaces::StaticBakedEntry;
 use crate::lightmap_bake::Chart;
-use crate::lightmap_layer::{ExactSkips, ReachMismatchSlot, ReachTally, ReachWalk};
+use crate::lightmap_layer::{ReachMismatchSlot, ReachTally, ReachWalk};
 use crate::lightmap_reach::{LightmapReachIndex, ReachLight, closed_leaves, eligible_light_count};
-use crate::map_data::MapAssembly;
 use crate::partition::BspTree;
-use crate::pipeline::watertight_open_edge_provenance;
 use crate::texel_footprint::EmbeddedEmitters;
 
+use super::PartitionWindow;
+use super::partitions::stage_exact_skips;
 use super::reach_verify::reach_verify_enabled;
 
 /// What the stage needs to cull by reach: the full compiler BSP, its
@@ -29,51 +28,11 @@ pub(crate) struct ReachInputs<'t> {
     pub(crate) holes: usize,
 }
 
-/// Warn about every hole the coverage proof found: the only author-facing
-/// hole warning. Each sample names its location and brush, up to the sample
-/// cap, after the total. Runs every build; never fails it.
-pub(crate) fn warn_coverage_holes(
-    report: &CoverageReport,
-    brush_assembly: &[Option<usize>],
-    assemblies: &[MapAssembly],
-) {
-    if report.unproven.is_empty() {
-        return;
-    }
-    let samples = report.samples();
-    log::warn!(
-        "[Compiler] Coverage proof: {} hole(s) in world geometry ({:.3} m of face edge no \
-         face closes within the tracer's tolerance). The build still succeeds. Locations \
-         (world-space meters, showing {} of {}):",
-        report.unproven.len(),
-        report.unproven_length(),
-        samples.len(),
-        report.unproven.len(),
-    );
-    for span in samples {
-        let at = span.midpoint;
-        let brush = match span.open_edge() {
-            Some(edge) => {
-                match watertight_open_edge_provenance(&edge, brush_assembly, assemblies) {
-                    Some(group) => format!("brush {} in group {group}", edge.brush_index),
-                    None => format!("brush {}", edge.brush_index),
-                }
-            }
-            None => "no source brush".to_string(),
-        };
-        log::warn!(
-            "[Compiler]   hole near ({:.3}, {:.3}, {:.3}), {:.3} m long — {brush}",
-            at.x,
-            at.y,
-            at.z,
-            span.length,
-        );
-    }
-}
-
 /// The reach cull over one stage run.
 pub(super) struct StageReach<'t> {
     tree: &'t BspTree,
+    /// Per full-tree leaf, whether the flood treats it as closed: a solid
+    /// leaf, or one the exterior flood reached.
     closed: Vec<bool>,
     /// The stage's layer lights, in its order, with its embedded-emitter
     /// flags: the cull follows the stage's flag at either floor setting and
@@ -134,14 +93,16 @@ impl<'t> StageReach<'t> {
         }
     }
 
-    /// Build the index before a pass walks, once, unless the cull is off.
+    /// Build the index before a pass walks, once, unless the cull is off or
+    /// `window`'s exact skips leave it out.
     pub(super) fn build_index(
         &mut self,
         charts: &[Chart],
         penumbra_floor: bool,
-        exact_skips: ExactSkips,
+        window: &PartitionWindow,
         control: &BakeControl,
     ) {
+        let exact_skips = stage_exact_skips(window);
         #[cfg(test)]
         let wanted = exact_skips.reach_cull || exact_skips.force_reach_cull;
         #[cfg(not(test))]
@@ -174,54 +135,29 @@ impl<'t> StageReach<'t> {
     }
 
     /// Log the stage line, then fail on a verify mismatch, naming the light
-    /// by its source label.
-    pub(super) fn finish(&self, light_source_labels: &[String]) -> anyhow::Result<()> {
+    /// by its source label. `section_memo_hit` says whether the
+    /// `lightmap_section` memo served the composed section.
+    pub(super) fn finish(
+        &self,
+        light_source_labels: &[String],
+        section_memo_hit: bool,
+    ) -> anyhow::Result<()> {
         let read = ReachTally::read;
         let tally = &self.tally;
-        #[cfg(test)]
-        LAST_REACH_COUNTS.with(|last| {
-            last.set(Some(ReachCounts {
-                walked: read(&tally.pairs_walked),
-                culled: read(&tally.pairs_culled),
-                skipped: read(&tally.texels_skipped),
-                traced_in_culled: read(&tally.texels_traced_in_culled),
-                rewalked: read(&tally.pairs_rewalked),
-                baked: read(&tally.partitions_baked),
-                loaded: read(&tally.partitions_loaded),
-                switched_off: self.switched_off,
-                verify: self.verify,
-            }))
-        });
-        let (baked, loaded) = (
-            read(&tally.partitions_baked),
-            read(&tally.partitions_loaded),
-        );
-        let off = if self.switched_off {
-            "; switched off for the whole map by coverage-proof holes"
-        } else {
-            ""
+        let counts = ReachCounts {
+            walked: read(&tally.pairs_walked),
+            culled: read(&tally.pairs_culled),
+            skipped: read(&tally.texels_skipped),
+            traced_in_culled: read(&tally.texels_traced_in_culled),
+            rewalked: read(&tally.pairs_rewalked),
+            baked: read(&tally.partitions_baked),
+            loaded: read(&tally.partitions_loaded),
+            switched_off: self.switched_off,
+            verify: self.verify,
         };
-        if baked == 0 {
-            log::info!(
-                "[Compiler] Lightmap reach cull: stage served from cache ({loaded} partition(s) \
-                 loaded, no pair walked){off}"
-            );
-        } else {
-            let verify = if self.verify {
-                format!(", {} re-walked by verify mode", read(&tally.pairs_rewalked))
-            } else {
-                String::new()
-            };
-            log::info!(
-                "[Compiler] Lightmap reach cull: {} pair(s) walked, {} culled{verify}; {} texel(s) \
-                 skipped, {} traced inside culled pairs; {baked} partition(s) walked this build, \
-                 {loaded} from cache{off}",
-                read(&tally.pairs_walked),
-                read(&tally.pairs_culled),
-                read(&tally.texels_skipped),
-                read(&tally.texels_traced_in_culled),
-            );
-        }
+        #[cfg(test)]
+        LAST_REACH_COUNTS.with(|last| last.set(Some(counts)));
+        log::info!("{}", stage_line(&counts, section_memo_hit));
         match self.mismatch.take() {
             Some(mismatch) => {
                 let label = self
@@ -236,8 +172,43 @@ impl<'t> StageReach<'t> {
     }
 }
 
+/// The stage's one info line. A stage that walked no partition says where
+/// its section came from instead of printing zeros, and names a cache only
+/// when one served it.
+pub(super) fn stage_line(counts: &ReachCounts, section_memo_hit: bool) -> String {
+    let off = if counts.switched_off {
+        "; switched off for the whole map by coverage-proof holes"
+    } else {
+        ""
+    };
+    let (baked, loaded) = (counts.baked, counts.loaded);
+    if baked > 0 {
+        let verify = if counts.verify {
+            format!(", {} re-walked by verify mode", counts.rewalked)
+        } else {
+            String::new()
+        };
+        return format!(
+            "[Compiler] Lightmap reach cull: {} pair(s) walked, {} culled{verify}; {} texel(s) \
+             skipped, {} traced inside culled pairs; {baked} partition(s) walked this build, \
+             {loaded} from cache{off}",
+            counts.walked, counts.culled, counts.skipped, counts.traced_in_culled,
+        );
+    }
+    if !section_memo_hit && loaded == 0 {
+        return format!(
+            "[Compiler] Lightmap reach cull: no pair walked, no partition baked or loaded{off}"
+        );
+    }
+    let source = match (section_memo_hit, loaded) {
+        (true, 0) => "the lightmap_section memo".to_string(),
+        (true, loaded) => format!("the lightmap_section memo and {loaded} cached partition(s)"),
+        (false, loaded) => format!("cache ({loaded} partition(s) loaded)"),
+    };
+    format!("[Compiler] Lightmap reach cull: stage served from {source}, no pair walked{off}")
+}
+
 /// The stage's reach totals, as its line reports them.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReachCounts {
     pub(crate) walked: u64,

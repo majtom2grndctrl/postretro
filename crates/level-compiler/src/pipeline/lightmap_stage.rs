@@ -35,16 +35,14 @@ use crate::lightmap_layer::chart_texel_bounds;
 use crate::texel_step_detector::StepSite;
 use crate::texel_step_detector::{CutSites, TexelStepReport};
 pub(super) use metadata::MetadataCounts;
-use partitions::{
-    LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes, stage_exact_skips,
-};
+use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
+pub(crate) use reach::ReachInputs;
 use reach::StageReach;
 #[cfg(test)]
 pub(crate) use reach::{LAST_REACH_COUNTS, ReachCounts};
-pub(crate) use reach::{ReachInputs, warn_coverage_holes};
 #[cfg(test)]
 pub(crate) use reach_verify::with_reach_verify;
 use texel_steps::StepDetector;
@@ -453,10 +451,14 @@ pub(crate) fn bake_fused_windowed(
         });
     let compose_lightmap = cached_section.is_none();
     if let Some(cache) = stage_cache {
-        log::info!(
-            "[cache] lightmap_section {}",
-            if compose_lightmap { "miss" } else { "hit" }
-        );
+        let outcome = if bypass_reads {
+            "bypassed (reach verify)"
+        } else if compose_lightmap {
+            "miss"
+        } else {
+            "hit"
+        };
+        log::info!("[cache] lightmap_section {outcome}");
         if !compose_lightmap {
             // The memo stands in for every partition it summarizes; the next
             // prune must keep them as the recompose fallback for a light edit.
@@ -512,11 +514,10 @@ pub(crate) fn bake_fused_windowed(
                 &prepared.cut_parents,
             );
             if let Some(reach) = stage_reach.as_mut() {
-                let skips = stage_exact_skips(window);
                 reach.build_index(
                     &prepared.charts,
                     config.penumbra_floor,
-                    skips,
+                    window,
                     lightmap_control,
                 );
             }
@@ -618,11 +619,10 @@ pub(crate) fn bake_fused_windowed(
             .collect();
         let items = LayerItems::selected(prepared.layer_count, &selected);
         if let Some(reach) = stage_reach.as_mut().filter(|_| !selected.is_empty()) {
-            let skips = stage_exact_skips(window);
             reach.build_index(
                 &prepared.charts,
                 config.penumbra_floor,
-                skips,
+                window,
                 lightmap_control,
             );
         }
@@ -672,7 +672,7 @@ pub(crate) fn bake_fused_windowed(
     // The stage line, then a verify mismatch fails the bake before the
     // section memo is written.
     if let Some(reach) = &stage_reach {
-        reach.finish(light_source_labels)?;
+        reach.finish(light_source_labels, !compose_lightmap)?;
     }
     if compose_lightmap && let (Some(cache), Some(key)) = (stage_cache, section_key.as_ref()) {
         #[cfg(test)]

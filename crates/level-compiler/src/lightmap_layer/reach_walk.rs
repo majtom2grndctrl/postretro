@@ -136,7 +136,7 @@ impl ReachMismatchSlot {
 }
 
 /// Verify mode: compare a culled walk's records with the kept walk's, bit
-/// for bit, and record the first difference. Whether they differ.
+/// for bit, and record the first difference. Returns whether they differ.
 pub(super) fn check_rewalk(
     walk: &ReachWalk<'_>,
     light_origin: DVec3,
@@ -145,7 +145,6 @@ pub(super) fn check_rewalk(
     culled: &[LayerTexel],
     kept: &[LayerTexel],
 ) -> bool {
-    ReachTally::add(&walk.tally.pairs_rewalked, 1);
     let same = |a: &LayerTexel, b: &LayerTexel| {
         a.idx == b.idx && a.raw_visibility.to_bits() == b.raw_visibility.to_bits()
     };

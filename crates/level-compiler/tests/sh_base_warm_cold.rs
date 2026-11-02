@@ -7,13 +7,16 @@
 //! context doc calls warm indirect light approximate.
 //! See: context/lib/build_pipeline.md §Build Cache
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 const WALL: &str = "test/sh_base_wall";
 
@@ -220,7 +223,7 @@ fn build(
     let map = temp.0.join("maps").join(format!("{name}.map"));
     std::fs::write(&map, corridor.map()).expect("write fixture map");
     let output_path = temp.0.join(format!("{name}.prl"));
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .env("RUST_LOG", "info")
         .arg(&map)
@@ -716,7 +719,7 @@ const RETIRED_SH_PHRASES: [&str; 11] = [
 // per-group SH entries, or exempt them from determinism.
 #[test]
 fn help_and_context_docs_no_longer_describe_approximate_warm_sh() {
-    let help = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let help = prl_build()
         .arg("--help")
         .output()
         .expect("spawn prl-build --help");

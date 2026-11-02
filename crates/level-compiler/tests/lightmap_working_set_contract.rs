@@ -1,12 +1,16 @@
 //! Shared CLI working-set budget, from projection through warm memo admission.
 //! See: context/plans/done/lighting-scale--lightmap-layer-budget-gate.
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::{REACH_VERIFY_ENV, prl_build};
 
 const SH_ADMITTED: &str = "SH delta working-set gate: estimated peak ";
 const SH_REFUSED: &str = "SH delta working-set gate refused before dense baking: estimated peak ";
@@ -38,7 +42,7 @@ fn diagnostic(output: &Output) -> String {
 }
 
 fn command(input: &Path, output: &Path, scratch: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .current_dir(workspace())
         .env("RUST_LOG", "info")
@@ -74,7 +78,12 @@ fn build(
     let output_path = scratch.join(format!("{label}.prl"));
     let mut command = command(input, &output_path, scratch);
     if let Some(cache) = cache {
-        command.arg("--cache-dir").arg(cache);
+        // Cached builds assert `lightmap_section` misses and hits, which
+        // verify mode never reads.
+        command
+            .env(REACH_VERIFY_ENV, "0")
+            .arg("--cache-dir")
+            .arg(cache);
     } else {
         command.arg("--no-cache");
     }
@@ -394,7 +403,7 @@ fn retired_working_set_flag_is_rejected() {
         vec!["input.map", retired.as_str(), "1GiB"],
         vec![retired.as_str()],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        let output = prl_build()
             .current_dir(scratch.path())
             .env("NO_COLOR", "1")
             .args(args)

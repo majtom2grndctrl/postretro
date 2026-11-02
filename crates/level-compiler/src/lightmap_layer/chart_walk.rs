@@ -1,5 +1,6 @@
 // Per-chart light-layer walk: the clipped `(light, chart)` bake with its tile
-// shaft cull, and the shared chart texel iterator.
+// shaft cull, the reach-culled walk and verify mode's re-walk, and the shared
+// chart texel iterator.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use std::cell::Cell;
@@ -187,6 +188,7 @@ pub(super) fn bake_light_layer_chart_clipped(
             note(ReachPhase::Rewalk);
             // Fresh occluder caches, every other production skip on.
             let kept = walk(None, None);
+            ReachTally::add(&reach.tally.pairs_rewalked, 1);
             if check_rewalk(reach, light.origin, atlas, face_idx, &texels, &kept) {
                 // The stage fails; the layer cache keeps the kept walk's
                 // records, so no later build reads the culled ones.

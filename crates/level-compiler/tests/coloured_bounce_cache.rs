@@ -328,7 +328,9 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
 #[test]
 #[ignore = "focused cold/warm stage-cache contents gate"]
 fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
-    let fixture = Fixture::red_wall();
+    let mut fixture = Fixture::red_wall();
+    // Tallies every stage's cache lines, the lightmap ones included.
+    fixture.reach_verify = false;
     // `-v` logs the lightmap layer partitions' own cache lines.
     let cold = run(&fixture, true, 1, &["-v"]).into_bake();
     let cold_tally = cache_tally(&cold.log);
@@ -387,7 +389,9 @@ fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
     else {
         return;
     };
-    let fixture = Fixture::red_wall();
+    let mut fixture = Fixture::red_wall();
+    // Every stage colour left alone, the lightmap ones included, must hit.
+    fixture.reach_verify = false;
     let old = run_with(&fixture, &grey, true, 1, &[]).into_bake();
     let old_entries = cache_entries(&cache_dir(&fixture));
     let (_, old_groups) = tally(&old.log, "sh_group");

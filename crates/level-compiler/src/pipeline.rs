@@ -1618,7 +1618,11 @@ fn run_after_parsing(
         !prepared_atlas.charts.is_empty(),
     );
     let coverage = coverage_proof_stage::run_coverage_proof(&geo_result, &face_brushes);
-    lightmap_stage::warn_coverage_holes(&coverage, &map_data.brush_assembly, &map_data.assemblies);
+    coverage_proof_stage::warn_coverage_holes(
+        &coverage,
+        &map_data.brush_assembly,
+        &map_data.assemblies,
+    );
 
     // Lightmap residency set (id 51): reads the partition plan's Cells and
     // Portals, the encoded locator, and for teleporter routes the id-55 section

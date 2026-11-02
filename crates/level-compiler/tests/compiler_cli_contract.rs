@@ -1,15 +1,19 @@
 // Compiler subprocess contracts for reporter selection, plain output, and deterministic bakes.
 // See: context/lib/build_pipeline.md §Progress reporting, controls, and logging
 
+mod prl_build_support;
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::{REACH_VERIFY_ENV, prl_build};
 
 const SUMMARY_LABELS: &[&str] = &[
     "Parsing",
@@ -223,7 +227,7 @@ fn compile_fixture_with_irradiance_format(
     uncompressed_irradiance: bool,
     forced_scale: Option<u8>,
 ) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .arg(input)
         .arg("-o")
@@ -249,8 +253,11 @@ fn compile_fixture_for_layer_cache_order(
     cache_dir: Option<&Path>,
     uncompressed_irradiance: bool,
 ) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
+        // The warm build asserts lightmap layer hits, which verify mode
+        // never reads.
+        .env(REACH_VERIFY_ENV, "0")
         .env("RUST_LOG", "info")
         .arg(input)
         .arg("-o")
@@ -314,7 +321,7 @@ fn sh_analysis_is_byte_preserving_for_compiled_prl() {
     let analyzed = temp.0.join("analyzed.prl");
     let analysis_json = temp.0.join("analysis.json");
     let common = |output: &Path| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        let mut command = prl_build();
         command
             .arg(&input)
             .arg("-o")
@@ -413,7 +420,7 @@ fn forced_hierarchy_output_round_trips_through_production_loader() {
         );
     std::fs::write(&input, map).expect("write hierarchy fixture without static delta lights");
     let output = temp.0.join("forced-hierarchy.prl");
-    let build = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let build = prl_build()
         .env("RUST_LOG", "info")
         .arg(&input)
         .arg("-o")
@@ -457,10 +464,7 @@ fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
 }
 
 fn run_compiler(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_prl-build"))
-        .args(args)
-        .output()
-        .expect("spawn prl-build")
+    prl_build().args(args).output().expect("spawn prl-build")
 }
 
 fn count_occurrences(haystack: &str, needle: &str) -> usize {
@@ -567,7 +571,7 @@ fn successful_plain_cache_budget_warning_precedes_exact_final_tally() {
 
     let run = |name: &str, cache_budget: &str, build_mode: Option<&str>| {
         let output_path = temp.0.join(format!("{name}.prl"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+        let mut command = prl_build();
         command
             // Isolate the cache-reporting contract from fixture diagnostics
             // such as the warm-SH approximation and missing-light warnings.
@@ -705,7 +709,7 @@ fn warren_zero_budget_projects_current_membership_before_base_sh_bake() {
 
     let temp = TempBuildDir::new();
     let output_path = temp.0.join("must-not-be-written.prl");
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "info")
         .arg(&input)
         .arg("-o")
@@ -1052,7 +1056,7 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
 }
 
 fn compile_overlap_fixture(output: &Path, cache_dir: &Path, verbose: bool) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .env("RUST_LOG", "info")
         .arg(workspace_root().join("content/dev/maps/shadowmask-groups-capture.map"))

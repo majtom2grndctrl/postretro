@@ -139,6 +139,7 @@ The platform foundation, visual parity, trigger/command surface, rotation, and d
 Trigger fan-out, activation policy, dispatch parameters, enemy groups, spawning, trap pools, timed reactions, and projectile traps have shipped. The load-bearing E18-A decisions — effect-based dispatch split, bind-at-install, the co-op atmosphere channel — are recorded in the Q3 archive; later specs inherit them. Design intent: `context/research/co-op-triggers-trap-pools.md`.
 
 - [ ] **R — Respawn + player-leave policy.** The co-op respawn and player-leave handling the capstone encounter needs — charter-named, unspecified elsewhere.
+- [ ] **Life-state drop capability.** A `drop` profile key, separate from `switchWeapon`. Today `switchWeapon: false` also refuses drop, because drop repoints the active slot, so an author can't let a downed player drop a weapon while switching stays refused.
 - [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
 
 ---

@@ -136,7 +136,8 @@ and recheck before starting; continue independent reads/edits in the meantime.
 - Owner (2026-11-01): JS `undefined` is absent in life-state descriptor maps, matching Luau
   `nil` and the existing `conv.rs` convention. A misspelled key with a real value still rejects.
 - Owner (2026-11-01): weapon drop is refused when `switchWeapon` is false, because drop
-  repoints the active slot. Undeclared pawns keep the HP rule.
+  repoints the active slot. Undeclared pawns keep the HP rule. A dedicated `drop` key is
+  planned separately (roadmap, Epic 18).
 - Owner (2026-11-01): main's resume reinstall runs no unload, leaving an orphan player pawn.
   Out of scope; tracked in the roadmap. E18's suspend proofs stop before resume.
 - Respawn with no resolvable `player_spawn` — logs a `[Respawn]` warning and leaves

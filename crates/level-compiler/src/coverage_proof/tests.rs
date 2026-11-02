@@ -4,10 +4,10 @@
 use glam::{DVec3, Vec3};
 
 use super::test_fixtures::{
-    Frame, Polygon, clip_polygon, closed_box, extracted_room, face_polygons, hinge, lies_along,
-    prove, room_interior, tau, to_segment,
+    Frame, Polygon, clip_polygon, closed_box, delta, extracted_room, face_polygons, hinge,
+    lies_along, permutations, prove, reorder, room_interior, spans_by_origin, tau, to_segment,
 };
-use super::{CoverageReport, UnprovenSpan, prove_coverage};
+use super::{UnprovenSpan, prove_coverage};
 use crate::map_data::{Face, TextureProjection};
 use crate::partition::{OPEN_EDGE_SAMPLE_CAP, check_watertight};
 
@@ -270,45 +270,6 @@ fn coverage_proof_finds_a_far_crack_the_watertightness_weld_hides() {
     }
 }
 
-fn permutations(n: usize) -> Vec<Vec<usize>> {
-    if n == 0 {
-        return vec![Vec::new()];
-    }
-    let mut out = Vec::new();
-    for rest in permutations(n - 1) {
-        for slot in 0..=rest.len() {
-            let mut order = rest.clone();
-            order.insert(slot, n - 1);
-            out.push(order);
-        }
-    }
-    out
-}
-
-/// `polygons` with the faces at `slots` reordered by `order`, and each
-/// output face's original index.
-fn reorder(polygons: &[Polygon], slots: &[usize], order: &[usize]) -> (Vec<Polygon>, Vec<usize>) {
-    let mut out = polygons.to_vec();
-    let mut origin: Vec<usize> = (0..polygons.len()).collect();
-    for (k, &slot) in slots.iter().enumerate() {
-        out[slot] = polygons[slots[order[k]]].clone();
-        origin[slot] = slots[order[k]];
-    }
-    (out, origin)
-}
-
-/// The report's spans with each face named by its original index.
-fn spans_by_origin(report: &CoverageReport, origin: &[usize]) -> Vec<UnprovenSpan> {
-    report
-        .unproven
-        .iter()
-        .map(|span| UnprovenSpan {
-            face: origin[span.face as usize] as u32,
-            ..span.clone()
-        })
-        .collect()
-}
-
 // P8: the four faces on a hinge cancel in pairs in every order.
 #[test]
 fn coverage_proof_balances_a_hinge_in_every_face_order() {
@@ -469,13 +430,14 @@ fn split_top_box(frame: Frame, shift: f64) -> Vec<Polygon> {
 }
 
 // Edge ends meeting at one point land apart along their line, by rounding
-// or a crack's ends: a stub one edge reaches and its partner does not, or
-// two same-way edges both cover. Within τ the proof reads them closed;
-// past it, a gap or a coplanar same-winding double cover is a hole.
+// or a crack's ends: a gap or an overlap. Within δ the copies weld and the
+// proof reads them closed. A gap within τ is closed by a stand-in. An
+// overlap past δ is a coplanar same-winding double cover, and reads as a
+// hole, a named cost; past τ so does a gap.
 #[test]
-fn coverage_proof_proves_split_ends_landing_apart_within_tau_and_not_past_it() {
+fn coverage_proof_proves_split_ends_welded_within_delta_and_gaps_within_tau() {
     let frame = Frame::oblique(DVec3::new(0.5, -1.0, 2.0));
-    for shift in [0.5 * tau(), -0.5 * tau()] {
+    for shift in [0.5 * delta(), -0.5 * delta(), 0.5 * tau()] {
         let report = prove(&split_top_box(frame, shift));
         assert!(
             report.unproven.is_empty(),
@@ -483,7 +445,7 @@ fn coverage_proof_proves_split_ends_landing_apart_within_tau_and_not_past_it() {
             report.unproven
         );
     }
-    for shift in [3.0 * tau(), -3.0 * tau()] {
+    for shift in [-0.5 * tau(), 3.0 * tau(), -3.0 * tau()] {
         let report = prove(&split_top_box(frame, shift));
         assert!(
             !report.unproven.is_empty(),

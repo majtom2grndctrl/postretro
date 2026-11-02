@@ -5,7 +5,8 @@ use glam::{DQuat, DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
-use super::{CoverageReport, UnprovenSpan, prove_coverage};
+use super::weld::{Cluster, WeldRule, clusters};
+use super::{CoverageReport, UnprovenSpan, WELD_RADIUS_METERS, prove_coverage, prove_welded};
 use crate::geometry::{FaceIndexRange, GeometryResult, extract_geometry_with_brushes};
 use crate::light_namespaces::StaticBakedLights;
 use crate::ray_traversal::TRACER_TOLERANCE_METERS;
@@ -19,6 +20,28 @@ pub(super) fn tau() -> f64 {
 pub(super) fn prove(polygons: &[Polygon]) -> CoverageReport {
     let (geometry, brushes) = polygon_geometry(polygons);
     prove_coverage(&geometry, &brushes)
+}
+
+/// δ, the production weld radius.
+pub(super) fn delta() -> f64 {
+    WELD_RADIUS_METERS
+}
+
+/// The proof with corners welded by `rule` instead of production's.
+pub(super) fn prove_with(polygons: &[Polygon], rule: WeldRule) -> CoverageReport {
+    let (geometry, brushes) = polygon_geometry(polygons);
+    prove_welded(&geometry, &brushes, rule)
+}
+
+/// The proof with the weld off (δ = 0): plain strict balance.
+pub(super) fn prove_unwelded(polygons: &[Polygon]) -> CoverageReport {
+    prove_with(
+        polygons,
+        WeldRule {
+            radius: 0.0,
+            keep_triangles_whole: true,
+        },
+    )
 }
 
 /// Distance from `p` to the segment `a`–`b`.
@@ -350,4 +373,308 @@ pub(super) fn clip_polygon(polygon: &[Vec3], origin: DVec3, normal: DVec3) -> Ve
         }
     }
     out
+}
+
+/// Total length of the unproven spans lying along the segment `a`–`b`.
+pub(super) fn unproven_along(report: &CoverageReport, (a, b): (DVec3, DVec3)) -> f64 {
+    report
+        .unproven
+        .iter()
+        .filter(|span| lies_along(span, a, b, 1e-6))
+        .map(|span| span.length)
+        .sum()
+}
+
+/// Two brushes meeting on the hinge x = z = 0, 0 ≤ y ≤ `length` (local):
+/// brush 0 = [−1, 0] × [0, length] × [−1, 0] and brush 1 = [0, 1] ×
+/// [0, length] × [0, 1]. Brush 0's top (z = 0) is replaced by `top` and
+/// brush 1's bottom by `bottom`, each a list of local loops. Returns the
+/// faces, brush 1's −X slot (a hinge face) and the hinge's ends.
+pub(super) fn chained_hinge(
+    frame: Frame,
+    length: f64,
+    top: Vec<Vec<DVec3>>,
+    bottom: Vec<Vec<DVec3>>,
+) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
+    let face = |brush: u32| {
+        move |corners: Vec<DVec3>| Polygon {
+            corners: corners.iter().map(|&p| frame.point(p)).collect(),
+            brush: Some(brush),
+        }
+    };
+    let mut polygons = closed_box(
+        frame,
+        DVec3::new(-1.0, 0.0, -1.0),
+        DVec3::new(0.0, length, 0.0),
+        0.0,
+        0,
+    );
+    // Order −X, +X, −Y, +Y, −Z, +Z: brush 0's top is slot 5.
+    polygons.remove(5);
+    polygons.extend(top.into_iter().map(face(0)));
+    let mut second = closed_box(frame, DVec3::ZERO, DVec3::new(1.0, length, 1.0), 0.0, 1);
+    second.remove(4);
+    let dropped = polygons.len();
+    polygons.extend(second);
+    polygons.extend(bottom.into_iter().map(face(1)));
+    let line = (
+        frame.point(DVec3::ZERO).as_dvec3(),
+        frame.point(DVec3::Y * length).as_dvec3(),
+    );
+    (polygons, dropped, line)
+}
+
+/// Hinge stations: 0, then every `step` from `first`, then `length`.
+pub(super) fn stations(length: f64, first: f64, step: f64) -> Vec<f64> {
+    let mut ys = vec![0.0];
+    let mut k = 0.0;
+    while first + step * k < length - 1e-9 {
+        ys.push(first + step * k);
+        k += 1.0;
+    }
+    ys.push(length);
+    ys.dedup();
+    ys
+}
+
+/// Brush 0's top as strips between consecutive `ys`.
+pub(super) fn top_strips(ys: &[f64]) -> Vec<Vec<DVec3>> {
+    ys.windows(2)
+        .map(|w| {
+            vec![
+                DVec3::new(-1.0, w[0], 0.0),
+                DVec3::new(0.0, w[0], 0.0),
+                DVec3::new(0.0, w[1], 0.0),
+                DVec3::new(-1.0, w[1], 0.0),
+            ]
+        })
+        .collect()
+}
+
+/// Brush 1's bottom as strips between consecutive `ys`.
+pub(super) fn bottom_strips(ys: &[f64]) -> Vec<Vec<DVec3>> {
+    ys.windows(2)
+        .map(|w| {
+            vec![
+                DVec3::new(0.0, w[0], 0.0),
+                DVec3::new(0.0, w[1], 0.0),
+                DVec3::new(1.0, w[1], 0.0),
+                DVec3::new(1.0, w[0], 0.0),
+            ]
+        })
+        .collect()
+}
+
+/// Assert `polygons` prove closed, and that without the face at `dropped`
+/// the hinge `line` reads unproven along all but `slack` of its length.
+pub(super) fn assert_hinge_hole_found(
+    polygons: Vec<Polygon>,
+    dropped: usize,
+    line: (DVec3, DVec3),
+    slack: f64,
+) {
+    let length = (line.1 - line.0).length();
+    let intact = prove(&polygons);
+    assert!(
+        intact.unproven.is_empty(),
+        "closed brushes: {:#?}",
+        intact.unproven
+    );
+    let mut open = polygons;
+    open.remove(dropped);
+    let report = prove(&open);
+    let along = unproven_along(&report, line);
+    assert!(
+        along >= length - slack,
+        "{along} m of the {length} m hinge unproven ({} spans)",
+        report.unproven.len()
+    );
+}
+
+/// `corners` (local) in `frame` as one face of `brush`, wound
+/// counter-clockwise about `outward`.
+pub(super) fn facing(frame: Frame, mut corners: Vec<DVec3>, outward: DVec3, brush: u32) -> Polygon {
+    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[1]);
+    if normal.dot(outward) < 0.0 {
+        corners.reverse();
+    }
+    Polygon {
+        corners: corners.iter().map(|&p| frame.point(p)).collect(),
+        brush: Some(brush),
+    }
+}
+
+pub(super) fn permutations(n: usize) -> Vec<Vec<usize>> {
+    if n == 0 {
+        return vec![Vec::new()];
+    }
+    let mut out = Vec::new();
+    for rest in permutations(n - 1) {
+        for slot in 0..=rest.len() {
+            let mut order = rest.clone();
+            order.insert(slot, n - 1);
+            out.push(order);
+        }
+    }
+    out
+}
+
+/// `polygons` with the faces at `slots` reordered by `order`, and each
+/// output face's original index.
+pub(super) fn reorder(
+    polygons: &[Polygon],
+    slots: &[usize],
+    order: &[usize],
+) -> (Vec<Polygon>, Vec<usize>) {
+    let mut out = polygons.to_vec();
+    let mut origin: Vec<usize> = (0..polygons.len()).collect();
+    for (k, &slot) in slots.iter().enumerate() {
+        out[slot] = polygons[slots[order[k]]].clone();
+        origin[slot] = slots[order[k]];
+    }
+    (out, origin)
+}
+
+/// The report's spans with each face named by its original index.
+pub(super) fn spans_by_origin(report: &CoverageReport, origin: &[usize]) -> Vec<UnprovenSpan> {
+    report
+        .unproven
+        .iter()
+        .map(|span| UnprovenSpan {
+            face: origin[span.face as usize] as u32,
+            ..span.clone()
+        })
+        .collect()
+}
+
+/// Total length of the unproven spans lying within `tolerance` of the
+/// segment `a`–`b`.
+pub(super) fn unproven_near(
+    report: &CoverageReport,
+    (a, b): (DVec3, DVec3),
+    tolerance: f64,
+) -> f64 {
+    report
+        .unproven
+        .iter()
+        .filter(|span| lies_along(span, a, b, tolerance))
+        .map(|span| span.length)
+        .sum()
+}
+
+/// The weld's clusters over `polygons` under production's rule.
+pub(super) fn weld_clusters(polygons: &[Polygon]) -> Vec<Cluster> {
+    let (geometry, _) = polygon_geometry(polygons);
+    clusters(
+        &geometry,
+        WeldRule {
+            radius: delta(),
+            keep_triangles_whole: true,
+        },
+    )
+}
+
+/// A wall block [−1, 0] × [−1, 1] × [−1, 1] with a beam against its +X face
+/// above the line x = y = 0 (local): the beam's flat bottom (y = 0) and
+/// sloped face meet the wall at the corner P = origin. The wall face splits
+/// along that line, as a cell boundary splits it. Each of the three faces
+/// at P carries its own copy, at local z = `copies` (wall, sloped,
+/// bottom): the wall's upper face from its copy up, the bottom from its
+/// copy down. `tee` adds a collinear corner at that z on the wall's upper
+/// face, a T-junction of its own.
+pub(super) struct BeamCorner {
+    pub(super) polygons: Vec<Polygon>,
+    /// Slots of the wall's upper face, the bottom and the sloped face.
+    pub(super) slots: [usize; 3],
+    /// P in world space.
+    pub(super) corner: DVec3,
+    /// The sloped face's rims in world space.
+    pub(super) sloped_rims: [(DVec3, DVec3); 3],
+}
+
+pub(super) fn beam_corner(frame: Frame, copies: [f64; 3], tee: Option<f64>) -> BeamCorner {
+    let (a, c, e) = (
+        DVec3::new(0.0, 0.0, -1.0),
+        DVec3::new(0.0, 1.0, -1.0),
+        DVec3::new(1.0, 0.0, -1.0),
+    );
+    let [wall_p, p, bottom_p] = copies.map(|z| DVec3::Z * z);
+    let mut polygons = closed_box(frame, DVec3::splat(-1.0), DVec3::new(0.0, 1.0, 1.0), 0.0, 0);
+    // Order −X, +X, …: the wall's +X face is slot 1.
+    polygons.remove(1);
+    polygons.push(facing(
+        frame,
+        vec![
+            DVec3::new(0.0, -1.0, -1.0),
+            DVec3::new(0.0, 0.0, -1.0),
+            DVec3::new(0.0, 0.0, 1.0),
+            DVec3::new(0.0, -1.0, 1.0),
+        ],
+        DVec3::X,
+        0,
+    ));
+    let wall = polygons.len();
+    let mut upper = vec![wall_p];
+    upper.extend(tee.map(|z| DVec3::Z * z));
+    upper.extend([DVec3::Z, DVec3::new(0.0, 1.0, 1.0), c]);
+    polygons.push(facing(frame, upper, DVec3::X, 0));
+    let bottom = polygons.len();
+    polygons.push(facing(frame, vec![bottom_p, a, e], DVec3::NEG_Y, 1));
+    polygons.push(facing(frame, vec![a, c, e], DVec3::NEG_Z, 1));
+    let sloped = polygons.len();
+    polygons.push(facing(frame, vec![p, c, e], DVec3::ONE, 1));
+    let world = |q: DVec3| frame.point(q).as_dvec3();
+    BeamCorner {
+        polygons,
+        slots: [wall, bottom, sloped],
+        corner: world(p),
+        sloped_rims: [
+            (world(p), world(c)),
+            (world(c), world(e)),
+            (world(e), world(p)),
+        ],
+    }
+}
+
+/// One face of the box `min`..`max` in `frame`: the side on `axis` at
+/// `max` when `high`, wound outward. With `cut`, it is strips across that
+/// axis between consecutive stations, each spanning the third axis whole.
+pub(super) fn box_face(
+    frame: Frame,
+    (min, max): (DVec3, DVec3),
+    (axis, high): (usize, bool),
+    cut: Option<(usize, &[f64])>,
+    brush: u32,
+) -> Vec<Polygon> {
+    let value = if high { max[axis] } else { min[axis] };
+    let others: Vec<usize> = (0..3).filter(|&k| k != axis).collect();
+    let (across, windows): (usize, Vec<[f64; 2]>) = match cut {
+        Some((across, stations)) => (across, stations.windows(2).map(|w| [w[0], w[1]]).collect()),
+        None => (others[0], vec![[min[others[0]], max[others[0]]]]),
+    };
+    let long = others
+        .into_iter()
+        .find(|&k| k != across)
+        .expect("a third axis");
+    let mut outward = DVec3::ZERO;
+    outward[axis] = if high { 1.0 } else { -1.0 };
+    windows
+        .into_iter()
+        .map(|[s0, s1]| {
+            let point = |s: f64, l: f64| {
+                let mut p = DVec3::ZERO;
+                p[axis] = value;
+                p[across] = s;
+                p[long] = l;
+                p
+            };
+            let (l0, l1) = (min[long], max[long]);
+            facing(
+                frame,
+                vec![point(s0, l0), point(s1, l0), point(s1, l1), point(s0, l1)],
+                outward,
+                brush,
+            )
+        })
+        .collect()
 }

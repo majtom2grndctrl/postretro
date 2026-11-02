@@ -1,34 +1,35 @@
 // Coverage proof: every traced face edge matched one-for-one, within the tracer's τ, by an edge running the other way.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 //
-// Why a proven span is sound, in the terms of step 12's contract:
+// The rule, and why a proven span is sound:
 // - Edges come from the stored `f32` triangles the bake BVH holds, widened
-//   to `f64`; a fan diagonal is matched inside its own face and left out.
-// - Each cluster of near-collinear opposed edges is cut into pieces at every
-//   edge's projection onto one axis (`settle`). An edge's pieces are its own
-//   sub-segments between computed points that run monotonically from one
-//   stored corner to the other, so they tile it.
-// - A pair is proven on a piece only when both ends of each one's piece lie
-//   within τ of a single triangle of the other's face. Distance to a
-//   triangle is convex along a segment, so the whole piece is too. Pieces
-//   break only at edge ends: a piece no single triangle covers stays
-//   unproven rather than splitting where the nearest face changes.
-// - The limit is τ less a margin for `f64` rounding of the evaluated points
-//   and distances, scaled by the geometry's extent: rounding counts toward a
-//   hole, and no quantum merges edges, so the proof holds at any coordinate.
-// - Every edge running over a piece enters one maximum bipartite matching,
-//   which pairs edges one-for-one whatever the input order (edges are
-//   sorted by geometry first); an edge it leaves out is an unproven span.
-// - Edge ends meeting at one point land apart along their line (rounding,
-//   or a crack's ends). Where they leave a gap, an edge stands in with its
-//   end point on pieces within τ past that end, and is used up like any
-//   partner. Where they overlap, two same-way edges both run over the
-//   stretch: one may go unmatched only at a seam (`seams`), an overlap no
-//   longer than τ in 3D between one edge's end and the other's start, with
-//   the surface closing round that corner between the edges where their
-//   faces turn off the line: those two run opposite ways within τ of each
-//   other, or meet through a short fan of faces whose corners land within
-//   τ of it. A chain of short edges turns nowhere, so it excuses nothing.
+//   to `f64`.
+// - Weld (`weld`): stored corners within δ link, single linkage over all
+//   pairs. A cluster wider than δ, or holding two corners of one triangle,
+//   stays apart; an accepted one takes its smallest-bit member's identity.
+//   The map moves no corner more than δ and keeps every triangle's corners
+//   distinct, so it maps a closed oriented surface to a closed one, and
+//   copies of one corner computed from different brushes stop leaving stubs.
+// - Welded identity only cancels a face's fan diagonals and places edge
+//   ends on a cluster axis. Every distance is measured on stored geometry:
+//   a piece end is the edge's stored point at that fraction of its welded
+//   span.
+// - Each cluster of near-collinear opposed edges is cut into pieces at
+//   every welded end's projection onto one axis (`settle`). Every edge
+//   running over a piece must be matched one-for-one by the other
+//   direction's edges; nothing is excused. Where copies farther apart than
+//   δ leave a gap, an edge ending within τ may stand in with its stored
+//   end, capped so a direction never counts more edges than it has present
+//   within τ (`settle`). A pair needs each one's stretch within τ of one
+//   triangle of the other's face, and distance to a triangle is convex
+//   along a segment, so the ends settle the piece. An edge left out is an
+//   unproven span.
+// - The limit is τ less a margin for `f64` rounding scaled by the
+//   geometry's extent, with no δ in it: rounding counts toward a hole, and
+//   no quantum merges edges, so the proof holds at any coordinate.
+// - Beyond strict balance, the weld hides only a stretch no longer than δ
+//   between two copies of one corner that no edge joins, and a stand-in
+//   only a dip in one direction's count within τ of where it is present.
 
 use std::time::{Duration, Instant};
 
@@ -41,13 +42,14 @@ use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 mod clusters;
 mod edges;
+mod face_boxes;
 mod matching;
-mod seams;
 mod settle;
+mod weld;
 
 use edges::DirectedEdge;
-use seams::Turns;
 use settle::{Measure, Settled};
+use weld::{Weld, WeldRule};
 
 /// Edges link into one cluster when each overlaps the other within this
 /// many τ of its line, room for every crease and T-junction partner, which
@@ -59,6 +61,16 @@ const LINK_RADIUS_TAUS: f64 = 2.0;
 /// above the few roundings an evaluated point and its distance to a
 /// triangle take.
 const ROUNDING_EPSILONS: f64 = 256.0;
+
+/// δ: stored corners this close, from different triangles, weld into one
+/// vertex. A named literal, not derived from τ: the copies come from face
+/// extraction's `f64` arithmetic, not from the tracer. Twice the measured
+/// δ_min, 50 µm: the smallest ladder δ at which the gate maps (hallway,
+/// hallway-mini, movement-feel, post-cut) read no unproven span, by the
+/// weld-consensus δ procedure with capped stand-ins
+/// (`context/plans/in-progress/lightmap-reach-cull/weld-sweep.md`;
+/// `gate_map_tests` re-checks the maps). At most τ/4.
+const WELD_RADIUS_METERS: f64 = 100e-6;
 
 /// A stretch of a face edge no edge running the other way matches within τ:
 /// a hole.
@@ -129,6 +141,21 @@ pub(crate) fn prove_coverage(
     geometry: &GeometryResult,
     face_brushes: &[Option<u32>],
 ) -> CoverageReport {
+    prove_welded(
+        geometry,
+        face_brushes,
+        WeldRule {
+            radius: WELD_RADIUS_METERS,
+            keep_triangles_whole: true,
+        },
+    )
+}
+
+fn prove_welded(
+    geometry: &GeometryResult,
+    face_brushes: &[Option<u32>],
+    rule: WeldRule,
+) -> CoverageReport {
     let started = Instant::now();
     let tau = f64::from(TRACER_TOLERANCE_METERS);
     let extent = geometry
@@ -138,18 +165,21 @@ pub(crate) fn prove_coverage(
         .flat_map(|v| v.position)
         .fold(0.0f64, |m, c| m.max(f64::from(c).abs()));
     let limit = tau - ROUNDING_EPSILONS * f64::EPSILON * (1.0 + extent);
-    let edges = edges::boundary_edges(geometry, face_brushes);
-    let link_radius = LINK_RADIUS_TAUS * tau;
-    let turns = Turns::new(&edges, link_radius);
+    let weld = Weld::new(geometry, rule);
+    let edges = edges::boundary_edges(geometry, face_brushes, &weld);
+    // Grown past τ by a rounding slack, so the box test prunes no pair the
+    // limit would prove.
+    let boxes = face_boxes::face_boxes(
+        geometry,
+        tau + ROUNDING_EPSILONS * f64::EPSILON * (1.0 + extent),
+    );
     let measure = Measure {
         geometry,
-        edges: &edges,
-        turns: &turns,
+        boxes: &boxes,
         limit_squared: limit * limit,
-        end_reach: tau,
-        link_radius,
+        stand_in_reach: tau,
     };
-    let clusters = clusters::clusters(&edges, link_radius);
+    let clusters = clusters::clusters(&edges, LINK_RADIUS_TAUS * tau);
     let settled: Vec<Settled> = clusters
         .par_iter()
         .map(|members| settle::settle(&edges, members, &measure))
@@ -185,8 +215,10 @@ pub(crate) fn prove_coverage(
 #[cfg(test)]
 mod gate_map_tests;
 #[cfg(test)]
-mod stub_tests;
+mod hinge_tests;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod weld_tests;

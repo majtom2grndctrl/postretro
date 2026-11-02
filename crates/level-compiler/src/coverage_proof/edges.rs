@@ -3,16 +3,17 @@
 
 use glam::DVec3;
 
+use super::weld::{Bits, Weld, corner_bits, position};
 use crate::geometry::{FaceIndexRange, GeometryResult};
-use crate::ray_traversal::triangle_points;
-
-/// A stored `f32` corner, by its bits.
-type Bits = [u32; 3];
 
 /// One directed edge of a traced face's boundary, running as the face winds.
 pub(super) struct DirectedEdge {
+    /// Its stored corners: every distance is measured from these.
     pub(super) from: DVec3,
     pub(super) to: DVec3,
+    /// Its corners' weld representatives: where it sits on its line.
+    pub(super) weld_from: DVec3,
+    pub(super) weld_to: DVec3,
     /// The edge's face, an index into the geometry's faces.
     pub(super) face: u32,
     /// Index-buffer offset of the triangle the edge bounds.
@@ -21,13 +22,15 @@ pub(super) struct DirectedEdge {
 }
 
 impl DirectedEdge {
+    /// Welded length. Never zero: the weld keeps a triangle's corners
+    /// apart.
     pub(super) fn length(&self) -> f64 {
-        (self.to - self.from).length()
+        (self.weld_to - self.weld_from).length()
     }
 
-    /// Unit direction. Edges are never degenerate: their corners differ.
+    /// Welded unit direction.
     pub(super) fn direction(&self) -> DVec3 {
-        (self.to - self.from) / self.length()
+        (self.weld_to - self.weld_from) / self.length()
     }
 }
 
@@ -40,40 +43,47 @@ pub(super) fn face_triangles(range: &FaceIndexRange) -> impl Iterator<Item = usi
         .take_while(move |&tri| tri + 3 <= end)
 }
 
+/// A triangle edge within one face: its welded corners, then its stored
+/// corners and triangle.
+type FaceEdge = (Bits, Bits, Bits, Bits, usize);
+
 /// Every face's triangle edges, wound as the triangles are, less each pair
-/// inside one face that runs both ways between the same two stored corners:
-/// a fan diagonal, which lies on both its triangles and so is matched exactly.
-/// Edges with bit-identical corners bound nothing and are left out. Sorted
-/// by their corners, the corners of the triangle they bound, their brush and
-/// their face, so the order depends on the geometry, and only geometry-identical
-/// edges fall back to face order.
+/// inside one face that runs both ways between the same two welded corners:
+/// a fan diagonal, which lies on both its triangles and so is matched
+/// exactly. Edges whose welded corners coincide bound nothing and are left
+/// out. Sorted by their stored corners, the corners of the triangle they
+/// bound, their brush and their face, so the order depends on the geometry,
+/// and only geometry-identical edges fall back to face order.
 pub(super) fn boundary_edges(
     geometry: &GeometryResult,
     face_brushes: &[Option<u32>],
+    weld: &Weld,
 ) -> Vec<DirectedEdge> {
     type Key = ([Bits; 2], [Bits; 3], Option<u32>, u32);
     let mut keyed: Vec<(Key, DirectedEdge)> = Vec::new();
-    let mut face_edges: Vec<(Bits, Bits, usize)> = Vec::new();
+    let mut face_edges: Vec<FaceEdge> = Vec::new();
     for (face, range) in geometry.face_index_ranges.iter().enumerate() {
         face_edges.clear();
         for tri in face_triangles(range) {
             let corners = corner_bits(geometry, tri);
             for k in 0..3 {
                 let (a, b) = (corners[k], corners[(k + 1) % 3]);
-                if a != b {
-                    face_edges.push((a, b, tri));
+                let (wa, wb) = (weld.of(a), weld.of(b));
+                if wa != wb {
+                    face_edges.push((wa, wb, a, b, tri));
                 }
             }
         }
         cancel_reversed_pairs(&mut face_edges);
         let brush = face_brushes.get(face).copied().flatten();
-        for &(a, b, tri) in &face_edges {
-            let corners = corner_bits(geometry, tri);
+        for &(wa, wb, a, b, tri) in &face_edges {
             keyed.push((
-                ([a, b], corners, brush, face as u32),
+                ([a, b], corner_bits(geometry, tri), brush, face as u32),
                 DirectedEdge {
                     from: position(a),
                     to: position(b),
+                    weld_from: position(wa),
+                    weld_to: position(wb),
                     face: face as u32,
                     triangle: tri,
                     brush,
@@ -85,22 +95,11 @@ pub(super) fn boundary_edges(
     keyed.into_iter().map(|(_, edge)| edge).collect()
 }
 
-/// A triangle's stored corners by their bits, `-0.0` read as `0.0`, so two
-/// corners share bits exactly when they share a position.
-fn corner_bits(geometry: &GeometryResult, tri: usize) -> [Bits; 3] {
-    triangle_points(geometry, tri).map(|c| c.to_array().map(|v| (v + 0.0).to_bits()))
-}
-
-fn position(bits: Bits) -> DVec3 {
-    let [x, y, z] = bits.map(|b| f64::from(f32::from_bits(b)));
-    DVec3::new(x, y, z)
-}
-
-/// Drop, between each two corners, as many edges running one way as run the
-/// other, keeping the surplus direction's last edges in face order.
-fn cancel_reversed_pairs(edges: &mut Vec<(Bits, Bits, usize)>) {
+/// Drop, between each two welded corners, as many edges running one way as
+/// run the other, keeping the surplus direction's last edges in face order.
+fn cancel_reversed_pairs(edges: &mut Vec<FaceEdge>) {
     let mut order: Vec<usize> = (0..edges.len()).collect();
-    let undirected = |(a, b, _): &(Bits, Bits, usize)| if a <= b { (*a, *b) } else { (*b, *a) };
+    let undirected = |&(a, b, ..): &FaceEdge| if a <= b { (a, b) } else { (b, a) };
     order.sort_by_key(|&i| (undirected(&edges[i]), i));
     let mut keep = vec![false; edges.len()];
     let mut group = 0;

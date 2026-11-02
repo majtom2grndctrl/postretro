@@ -21,7 +21,7 @@ pub(super) fn opposed(a: &DirectedEdge, b: &DirectedEdge) -> bool {
 
 /// The edges sharing a line, near enough: groups linked by opposed,
 /// overlapping pairs whose shorter edge lies within `link_radius` of the
-/// longer's line. Each group lists its edges ascending;
+/// longer's line, all read at their welded corners. Each group lists its edges ascending;
 /// groups come in order of their first edge. Linking only decides which
 /// edges a matching considers together, never whether a pair is proven.
 pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usize>> {
@@ -32,7 +32,7 @@ pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usiz
         .iter()
         .enumerate()
         .map(|(edge, e)| EdgeBox {
-            aabb: outward_box(e.from.min(e.to), e.from.max(e.to)),
+            aabb: outward_box(e.weld_from.min(e.weld_to), e.weld_from.max(e.weld_to)),
             edge,
             node_index: 0,
         })
@@ -43,7 +43,10 @@ pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usiz
         .flat_map_iter(|i| {
             let e = &edges[i];
             let pad = DVec3::splat(link_radius);
-            let query = outward_box(e.from.min(e.to) - pad, e.from.max(e.to) + pad);
+            let query = outward_box(
+                e.weld_from.min(e.weld_to) - pad,
+                e.weld_from.max(e.weld_to) + pad,
+            );
             let mut found: Vec<usize> = index
                 .traverse(&query, &boxes)
                 .into_iter()
@@ -87,10 +90,9 @@ fn root(parent: &mut [usize], mut node: usize) -> usize {
 }
 
 /// Opposed, overlapping along each other's lines, and on one line: the
-/// shorter edge lies wholly within `radius` of the longer's line. Two edges
-/// meeting at a corner overlap only by the stub their rounded ends leave,
-/// and the shorter one's far end leaves the line, so they never merge two
-/// lines into one cluster.
+/// shorter edge lies wholly within `radius` of the longer's line. A chain
+/// of links can still join two lines into one cluster; that only costs
+/// pairs, since every pair is checked in 3D.
 fn linked(a: &DirectedEdge, b: &DirectedEdge, radius: f64) -> bool {
     let (long, short) = if a.length() >= b.length() {
         (a, b)
@@ -99,20 +101,23 @@ fn linked(a: &DirectedEdge, b: &DirectedEdge, radius: f64) -> bool {
     };
     let axis = long.direction();
     let off_line = |p: DVec3| {
-        let v = p - long.from;
+        let v = p - long.weld_from;
         (v - axis * v.dot(axis)).length()
     };
     opposed(a, b)
         && overlaps(a, b)
         && overlaps(b, a)
-        && off_line(short.from) <= radius
-        && off_line(short.to) <= radius
+        && off_line(short.weld_from) <= radius
+        && off_line(short.weld_to) <= radius
 }
 
 /// `b` projects onto `a`'s line over a stretch of `a` of positive length.
 fn overlaps(a: &DirectedEdge, b: &DirectedEdge) -> bool {
     let (axis, length) = (a.direction(), a.length());
-    let (t0, t1) = ((b.from - a.from).dot(axis), (b.to - a.from).dot(axis));
+    let (t0, t1) = (
+        (b.weld_from - a.weld_from).dot(axis),
+        (b.weld_to - a.weld_from).dot(axis),
+    );
     t0.max(t1).min(length) > t0.min(t1).max(0.0)
 }
 

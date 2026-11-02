@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use glam::{DVec3, Vec3};
 
+use super::weld::WeldRule;
 use super::{UnprovenSpan, prove_coverage};
 use crate::gate_map_geometry::map_geometries;
 use crate::geometry::GeometryResult;
@@ -57,6 +58,20 @@ fn map_report(map: &str) -> String {
         winding.flipped,
         winding.off_plane,
         winding.widest_off_plane * 1e6,
+    );
+    let unwelded = super::prove_welded(
+        geometry,
+        brushes,
+        WeldRule {
+            radius: 0.0,
+            keep_triangles_whole: true,
+        },
+    );
+    let _ = writeln!(
+        out,
+        "weld off: unproven spans {} totalling {:.6} m",
+        unwelded.unproven.len(),
+        unwelded.unproven_length(),
     );
     let report = prove_coverage(geometry, brushes);
     let _ = writeln!(

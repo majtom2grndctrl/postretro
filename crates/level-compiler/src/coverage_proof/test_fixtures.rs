@@ -8,6 +8,7 @@ use postretro_level_format::texture_names::TextureNamesSection;
 use super::weld::{Cluster, WeldRule, clusters};
 use super::{CoverageReport, UnprovenSpan, WELD_RADIUS_METERS, prove_coverage, prove_welded};
 use crate::geometry::{FaceIndexRange, GeometryResult, extract_geometry_with_brushes};
+use crate::governor::Governor;
 use crate::light_namespaces::StaticBakedLights;
 use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 use crate::reflection_probes::placement_test_fixtures::{box_brush, entity, parse_inline};
@@ -17,9 +18,15 @@ pub(super) fn tau() -> f64 {
     f64::from(TRACER_TOLERANCE_METERS)
 }
 
+/// A governor with one permit: every proof test runs under it, so a permit
+/// held while waiting on another would deadlock the test.
+pub(super) fn one_permit() -> Governor {
+    Governor::new(1, false)
+}
+
 pub(super) fn prove(polygons: &[Polygon]) -> CoverageReport {
     let (geometry, brushes) = polygon_geometry(polygons);
-    prove_coverage(&geometry, &brushes)
+    prove_coverage(&geometry, &brushes, &one_permit())
 }
 
 /// δ, the production weld radius.
@@ -30,7 +37,7 @@ pub(super) fn delta() -> f64 {
 /// The proof with corners welded by `rule` instead of production's.
 pub(super) fn prove_with(polygons: &[Polygon], rule: WeldRule) -> CoverageReport {
     let (geometry, brushes) = polygon_geometry(polygons);
-    prove_welded(&geometry, &brushes, rule)
+    prove_welded(&geometry, &brushes, rule, &one_permit())
 }
 
 /// The proof with the weld off (δ = 0): plain strict balance.

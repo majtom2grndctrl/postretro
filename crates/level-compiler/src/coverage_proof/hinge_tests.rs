@@ -222,12 +222,12 @@ fn coverage_proof_reports_every_rim_of_a_box_missing_both_x_faces_beside_strips(
     }
 }
 
-/// The chained hinge with brush 0's x = 0 side face replaced by `r1`, loops
+/// The chained hinge with brush 0's x = 0 side face replaced by `side`, loops
 /// in local coordinates. The dropped face is the one `chained_hinge`
 /// removes to make the hole.
-fn hinge_with_r1(
+fn hinge_with_side_face(
     length: f64,
-    r1: Vec<Vec<DVec3>>,
+    side: Vec<Vec<DVec3>>,
     bottom: Vec<Vec<DVec3>>,
 ) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
     let (mut polygons, dropped, line) =
@@ -236,7 +236,7 @@ fn hinge_with_r1(
     polygons.remove(1);
     let dropped = dropped - 1;
     polygons.extend(
-        r1.into_iter()
+        side.into_iter()
             .map(|corners| facing(frame(), corners, DVec3::X, 0)),
     );
     (polygons, dropped, line)
@@ -247,9 +247,10 @@ fn hinge_with_r1(
 // each link's neighbours partner the second +y edge.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_whose_deficit_side_is_a_chain() {
-    let mut r1 = vec![DVec3::new(0.0, 0.0, -1.0), DVec3::new(0.0, 1.0, -1.0)];
-    r1.extend((0..=2500).map(|k| DVec3::new(0.0, 1.0 - f64::from(k) / 2500.0, 0.0)));
-    let (polygons, dropped, line) = hinge_with_r1(1.0, vec![r1], bottom_strips(&[0.0, 1.0]));
+    let mut side = vec![DVec3::new(0.0, 0.0, -1.0), DVec3::new(0.0, 1.0, -1.0)];
+    side.extend((0..=2500).map(|k| DVec3::new(0.0, 1.0 - f64::from(k) / 2500.0, 0.0)));
+    let (polygons, dropped, line) =
+        hinge_with_side_face(1.0, vec![side], bottom_strips(&[0.0, 1.0]));
     assert_hinge_hole_found(polygons, dropped, line, 2.0 * delta());
 }
 
@@ -270,7 +271,7 @@ fn slotted_hinge(
     strips: &[[f64; 2]],
     bottom: &[[f64; 2]],
 ) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
-    let r1 = strips
+    let side = strips
         .iter()
         .map(|&[y0, y1]| {
             vec![
@@ -285,7 +286,7 @@ fn slotted_hinge(
         .iter()
         .flat_map(|&[y0, y1]| bottom_strips(&[y0, y1]))
         .collect();
-    hinge_with_r1(length, r1, bottom)
+    hinge_with_side_face(length, side, bottom)
 }
 
 // The side face cut into 0.4 mm strips with 0.1 mm slots, brush 1's bottom

@@ -5,7 +5,8 @@ use glam::{DVec3, Vec3};
 
 use super::test_fixtures::{
     Frame, Polygon, clip_polygon, closed_box, delta, extracted_room, face_polygons, hinge,
-    lies_along, permutations, prove, reorder, room_interior, spans_by_origin, tau, to_segment,
+    lies_along, one_permit, permutations, prove, reorder, room_interior, spans_by_origin, tau,
+    to_segment,
 };
 use super::{UnprovenSpan, prove_coverage};
 use crate::map_data::{Face, TextureProjection};
@@ -25,7 +26,7 @@ fn polygon_normal(corners: &[Vec3]) -> DVec3 {
 fn coverage_proof_proves_an_extracted_room_with_cut_t_junctions_and_overlaps() {
     let (geometry, brushes, added) = extracted_room();
     assert!(added > 0, "the small pool edge cuts the room's long faces");
-    let report = prove_coverage(&geometry, &brushes);
+    let report = prove_coverage(&geometry, &brushes, &one_permit());
     assert!(
         report.unproven.is_empty(),
         "unproven spans on a closed extracted room: {:#?}",
@@ -490,5 +491,50 @@ fn coverage_proof_proves_split_ends_welded_within_delta_and_gaps_within_tau() {
             });
             assert!(on_split || on_rim, "shift {shift}: {span:?} off the split");
         }
+    }
+}
+
+// The rounding margin grows with the geometry's extent. Past about 8.8e9 m
+// it leaves nothing of τ, and a non-finite coordinate (NaN included) has no
+// extent to bound it: either way no distance proves anything, so even a
+// closed box reads every edge unproven. At 1e9 m the margin still fits.
+#[test]
+fn coverage_proof_fails_closed_where_rounding_can_reach_tau() {
+    let far_box = |at: f64, size: f64| {
+        closed_box(
+            Frame {
+                rotation: glam::DQuat::IDENTITY,
+                offset: DVec3::splat(at),
+            },
+            DVec3::ZERO,
+            DVec3::splat(size),
+            0.0,
+            0,
+        )
+    };
+    let with_corner = |corner: Vec3| {
+        let mut polygons = closed_box(Frame::IDENTITY, DVec3::ZERO, DVec3::ONE, 0.0, 0);
+        polygons.push(Polygon {
+            corners: vec![Vec3::new(3.0, 0.0, 0.0), Vec3::new(4.0, 0.0, 0.0), corner],
+            brush: Some(1),
+        });
+        polygons
+    };
+
+    let report = prove(&far_box(1e9, 128.0));
+    assert!(report.unproven.is_empty(), "{:#?}", report.unproven);
+
+    for (case, polygons) in [
+        ("box at 1e10 m", far_box(1e10, 4096.0)),
+        (
+            "infinite corner",
+            with_corner(Vec3::new(3.0, f32::INFINITY, 0.0)),
+        ),
+        ("NaN corner", with_corner(Vec3::new(3.0, f32::NAN, 0.0))),
+    ] {
+        let report = prove(&polygons);
+        assert!(report.edges > 0, "{case}");
+        assert_eq!(report.edges_proven, 0, "{case}");
+        assert_eq!(report.unproven.len(), report.edges, "{case}");
     }
 }

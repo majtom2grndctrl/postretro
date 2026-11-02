@@ -28,9 +28,16 @@ impl DirectedEdge {
         (self.weld_to - self.weld_from).length()
     }
 
-    /// Welded unit direction.
+    /// Welded unit direction: for placing edges on a line only.
     pub(super) fn direction(&self) -> DVec3 {
         (self.weld_to - self.weld_from) / self.length()
+    }
+
+    /// Stored unit direction: which way the edge runs. Never zero: corners
+    /// sharing a position share bits, so they weld as one and the edge is
+    /// left out.
+    pub(super) fn stored_direction(&self) -> DVec3 {
+        (self.to - self.from).normalize()
     }
 }
 

@@ -1617,7 +1617,7 @@ fn run_after_parsing(
         stage_start,
         !prepared_atlas.charts.is_empty(),
     );
-    let coverage = coverage_proof_stage::run_coverage_proof(&geo_result, &face_brushes);
+    let coverage = coverage_proof_stage::run_coverage_proof(&geo_result, &face_brushes, &governor);
     coverage_proof_stage::warn_coverage_holes(
         &coverage,
         &map_data.brush_assembly,

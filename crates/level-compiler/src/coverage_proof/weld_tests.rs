@@ -4,9 +4,9 @@
 use glam::DVec3;
 
 use super::test_fixtures::{
-    Frame, Polygon, beam_corner, closed_box, delta, facing, hinge, lies_along, permutations,
-    polygon_geometry, prove, prove_unwelded, reorder, spans_by_origin, tau, unproven_along,
-    unproven_near, weld_clusters,
+    Frame, Polygon, beam_corner, closed_box, delta, facing, hinge, lies_along, one_permit,
+    permutations, polygon_geometry, prove, prove_unwelded, reorder, spans_by_origin, tau,
+    unproven_along, unproven_near, weld_clusters,
 };
 use super::weld::Verdict;
 use super::{CoverageReport, UnprovenSpan, WELD_RADIUS_METERS, prove_coverage};
@@ -387,7 +387,7 @@ fn coverage_proof_hinge_verdict_ignores_face_order_vertex_order_and_translation(
                     .unzip();
                 let (geometry, brushes) = polygon_geometry(&faces);
                 for geometry in [reversed_vertices(&geometry), geometry] {
-                    let report = prove_coverage(&geometry, &brushes);
+                    let report = prove_coverage(&geometry, &brushes, &one_permit());
                     assert_eq!(report.unproven.is_empty(), removed.is_none());
                     let mut spans = spans_by_origin(&report, &origin);
                     for span in &mut spans {

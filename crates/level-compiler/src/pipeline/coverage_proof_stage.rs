@@ -4,17 +4,20 @@
 
 use crate::coverage_proof::{CoverageReport, prove_coverage};
 use crate::geometry::GeometryResult;
+use crate::governor::Governor;
 use crate::map_data::MapAssembly;
 
 use super::watertight_open_edge_provenance;
 
 /// Prove the post-cut geometry's coverage and log one info line. Hole
-/// warnings and the reach cull's switch read the returned report.
+/// warnings and the reach cull's switch read the returned report. The
+/// caller holds no governor permit.
 pub(super) fn run_coverage_proof(
     geometry: &GeometryResult,
     face_brushes: &[Option<u32>],
+    governor: &Governor,
 ) -> CoverageReport {
-    let report = prove_coverage(geometry, face_brushes);
+    let report = prove_coverage(geometry, face_brushes, governor);
     log::info!(
         "[Compiler] Coverage proof: {} of {} edge(s) proven, {} unproven span(s) ({:.3} m) in {:.3} s",
         report.edges_proven,

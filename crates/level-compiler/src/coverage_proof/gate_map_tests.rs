@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use glam::{DVec3, Vec3};
 
+use super::test_fixtures::one_permit;
 use super::weld::WeldRule;
 use super::{UnprovenSpan, prove_coverage};
 use crate::gate_map_geometry::map_geometries;
@@ -66,6 +67,7 @@ fn map_report(map: &str) -> String {
             radius: 0.0,
             keep_triangles_whole: true,
         },
+        &one_permit(),
     );
     let _ = writeln!(
         out,
@@ -73,7 +75,7 @@ fn map_report(map: &str) -> String {
         unwelded.unproven.len(),
         unwelded.unproven_length(),
     );
-    let report = prove_coverage(geometry, brushes);
+    let report = prove_coverage(geometry, brushes, &one_permit());
     let _ = writeln!(
         out,
         "edges {}, proven {}, unproven spans {} totalling {:.6} m; proof time {:.3} s",

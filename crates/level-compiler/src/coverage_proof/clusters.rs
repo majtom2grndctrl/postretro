@@ -8,23 +8,33 @@ use glam::DVec3;
 use nalgebra::Point3;
 use rayon::prelude::*;
 
+use super::ITEMS_PER_PERMIT;
 use super::edges::DirectedEdge;
+use crate::governor::Governor;
 
 /// Two edges run opposite ways when their directions' dot product is at
 /// most minus this (120° apart or more). A pair matches only then, so a
 /// matched pair never runs the same way, whatever the rounding.
 const MIN_OPPOSITION: f64 = 0.5;
 
+/// Read on stored directions, not welded ones: welding moves each corner
+/// up to δ, which can turn an edge under 2δ long through any angle, even
+/// end for end, so two sub-mm edges running one way could read as opposed.
 pub(super) fn opposed(a: &DirectedEdge, b: &DirectedEdge) -> bool {
-    a.direction().dot(b.direction()) <= -MIN_OPPOSITION
+    a.stored_direction().dot(b.stored_direction()) <= -MIN_OPPOSITION
 }
 
 /// The edges sharing a line, near enough: groups linked by opposed,
 /// overlapping pairs whose shorter edge lies within `link_radius` of the
-/// longer's line, all read at their welded corners. Each group lists its edges ascending;
-/// groups come in order of their first edge. Linking only decides which
-/// edges a matching considers together, never whether a pair is proven.
-pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usize>> {
+/// longer's line, all read at their welded corners. Each group lists its
+/// edges ascending; groups come in order of their first edge. Linking only
+/// decides which edges a matching considers together, never whether a pair
+/// is proven. Each batch of edges links under one `governor` permit.
+pub(super) fn clusters(
+    edges: &[DirectedEdge],
+    link_radius: f64,
+    governor: &Governor,
+) -> Vec<Vec<usize>> {
     if edges.is_empty() {
         return Vec::new();
     }
@@ -38,23 +48,29 @@ pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usiz
         })
         .collect();
     let index = Bvh::build(&mut boxes);
-    let links: Vec<(usize, usize)> = (0..edges.len())
+    let links: Vec<(usize, usize)> = (0..edges.len().div_ceil(ITEMS_PER_PERMIT))
         .into_par_iter()
-        .flat_map_iter(|i| {
-            let e = &edges[i];
-            let pad = DVec3::splat(link_radius);
-            let query = outward_box(
-                e.weld_from.min(e.weld_to) - pad,
-                e.weld_from.max(e.weld_to) + pad,
-            );
-            let mut found: Vec<usize> = index
-                .traverse(&query, &boxes)
-                .into_iter()
-                .map(|shape| shape.edge)
-                .filter(|&j| j > i && linked(e, &edges[j], link_radius))
-                .collect();
-            found.sort_unstable();
-            found.into_iter().map(move |j| (i, j))
+        .flat_map_iter(|batch| {
+            let _permit = governor.enter();
+            let first = batch * ITEMS_PER_PERMIT;
+            let mut batch_links = Vec::new();
+            for i in first..edges.len().min(first + ITEMS_PER_PERMIT) {
+                let e = &edges[i];
+                let pad = DVec3::splat(link_radius);
+                let query = outward_box(
+                    e.weld_from.min(e.weld_to) - pad,
+                    e.weld_from.max(e.weld_to) + pad,
+                );
+                let mut found: Vec<usize> = index
+                    .traverse(&query, &boxes)
+                    .into_iter()
+                    .map(|shape| shape.edge)
+                    .filter(|&j| j > i && linked(e, &edges[j], link_radius))
+                    .collect();
+                found.sort_unstable();
+                batch_links.extend(found.into_iter().map(|j| (i, j)));
+            }
+            batch_links
         })
         .collect();
 

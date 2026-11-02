@@ -16,8 +16,10 @@
 //   one edge has ended and the next not yet begun; a direction short on
 //   every piece within τ, as a dropped face leaves it, stays short, and so
 //   does a same-way surplus (an overlap). Closed shells stacked within τ
-//   raise both counts and can still carry a deficit along a line: inside
-//   named gap 3 as `plan.md` row 1c widens it, which verify mode guards.
+//   raise both counts and can still carry a deficit along a line. That is
+//   inside the proof's named gap 3: a solid region whose remaining faces
+//   are missing, narrower than τ, or close within τ without enclosing it
+//   (deliberately built sub-mm shells). Verify mode guards it.
 // - Distances are along the edges, not the axis: an edge at angle θ to the
 //   axis covers |cos θ| of axis per metre, so a skewed member would stretch
 //   an axis-unit τ to metres of real edge (a cluster linked across lines by
@@ -44,7 +46,8 @@ use crate::ray_traversal::{distance_squared_to_triangle, triangle_points};
 /// Whether a stretch of edge lies within τ of a partner's face.
 pub(super) struct Measure<'a> {
     pub(super) geometry: &'a GeometryResult,
-    /// Each face's box grown by τ (`face_boxes`).
+    /// Each face's box grown by τ plus the rounding margin (`face_boxes`),
+    /// so it prunes no pair the limit would prove.
     pub(super) boxes: &'a [Option<FaceBox>],
     /// (τ less the rounding margin)², so a computed distance that clears it
     /// proves the exact one is within τ.
@@ -60,7 +63,11 @@ impl Measure<'_> {
     /// Both `ends` lie within the limit of one triangle of `partner`'s face,
     /// tried from the triangle `partner` bounds. Distance to a triangle is
     /// convex along a segment, so the whole stretch between them does too.
-    /// A degenerate triangle's distance is NaN and covers nothing.
+    /// A degenerate triangle measures as its segment or point, mostly
+    /// finite: its corners are its face's, so that segment lies on the face
+    /// and proves nothing the face does not hold. Where the closest-point
+    /// routine divides 0/0 the distance is NaN and covers nothing. A face
+    /// whose triangles all collapse has no edges, so it is never a partner.
     fn covers(&self, partner: &DirectedEdge, ends: [DVec3; 2]) -> bool {
         let within = |tri: usize| {
             let corners = triangle_points(self.geometry, tri).map(|c| c.as_dvec3());
@@ -116,6 +123,10 @@ struct Placed<'a> {
     /// Axis per metre along the edge: |direction · axis|, at most 1. An
     /// axis distance over this is the 3D distance along the edge.
     scale: f64,
+    /// Which way it runs along the axis by its stored direction (0 along,
+    /// 1 against), or `None` when no piece carries it: its welded ends
+    /// project to one point, or its stored run is square to the axis.
+    side: Option<usize>,
 }
 
 impl Placed<'_> {
@@ -158,10 +169,11 @@ impl Placed<'_> {
 /// axis breaks at every edge's projected welded ends. Between two breaks,
 /// every edge running over the piece must be matched one-for-one, by an
 /// edge running over it the other way or by a capped stand-in: a pair
-/// needs each one's stored stretch within τ of the other's face. An edge
-/// left out is unproven there. The axis only shapes the
-/// pieces: every check reads the edges' stored stretches in 3D, so a poor
-/// axis can cost a pair and never prove one.
+/// needs each one's stored stretch within τ of the other's face. Which way
+/// an edge runs is read from its stored direction. An edge left out is
+/// unproven there. The axis only shapes the pieces: every check reads the
+/// edges' stored stretches in 3D, so a poor axis can cost a pair and never
+/// prove one.
 pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measure<'_>) -> Settled {
     let reference = members
         .iter()
@@ -183,11 +195,19 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
                 (edge.weld_from - origin).dot(axis),
                 (edge.weld_to - origin).dot(axis),
             );
+            let run = edge.stored_direction().dot(axis);
             Placed {
                 edge,
                 t_from,
                 t_to,
                 scale: ((t_to - t_from).abs() / edge.length()).min(1.0),
+                side: if t_from == t_to || run == 0.0 {
+                    None
+                } else if run > 0.0 {
+                    Some(0)
+                } else {
+                    Some(1)
+                },
             }
         })
         .collect();
@@ -213,12 +233,7 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     };
     for (index, p) in placed.iter().enumerate() {
         let (lo, hi) = p.span();
-        let side = if p.t_to > p.t_from {
-            0
-        } else if p.t_to < p.t_from {
-            1
-        } else {
-            // Square to the axis: no piece carries it.
+        let Some(side) = p.side else {
             settled
                 .spans
                 .push(UnprovenSpan::new([p.edge.from, p.edge.to], p.edge));
@@ -256,13 +271,12 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     });
 
     // Per edge, the edges running the other way it may pair with on some
-    // piece.
+    // piece. All pairs: a cluster holds the few edges along one line.
     let mut partners: Vec<Vec<usize>> = vec![Vec::new(); placed.len()];
     for a in 0..placed.len() {
         for b in a + 1..placed.len() {
             let (ta, tb) = (&placed[a], &placed[b]);
-            let opposite = (ta.t_to > ta.t_from && tb.t_to < tb.t_from)
-                || (ta.t_to < ta.t_from && tb.t_to > tb.t_from);
+            let opposite = matches!((ta.side, tb.side), (Some(x), Some(y)) if x != y);
             if opposite && measure.may_pair(ta.edge, tb.edge) {
                 partners[a].push(b);
                 partners[b].push(a);
@@ -332,7 +346,7 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     }
 
     for (index, p) in placed.iter().enumerate() {
-        if p.t_from == p.t_to {
+        if p.side.is_none() {
             continue;
         }
         let runs = &unproven[index];

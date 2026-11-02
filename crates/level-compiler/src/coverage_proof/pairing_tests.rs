@@ -1,10 +1,12 @@
-// Coverage proof tests: which edges may pair — never two of one face, and stand-ins only within τ measured along the edges in 3D.
+// Coverage proof tests: which edges may pair — opposed as stored, never two of one face, and stand-ins only within τ measured along the edges in 3D.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use glam::DVec3;
 
+use super::clusters::opposed;
+use super::edges::DirectedEdge;
 use super::test_fixtures::{
-    Frame, axis_skew_hinge, closed_box, facing, lies_along, prove, tau, unproven_along,
+    Frame, axis_skew_hinge, closed_box, delta, facing, lies_along, prove, tau, unproven_along,
 };
 
 fn frame() -> Frame {
@@ -126,4 +128,37 @@ fn coverage_proof_window_is_measured_along_the_edges_not_the_cluster_axis() {
             "{unproven} m of the shell piece at z = {lo} unproven"
         );
     }
+}
+
+// Welding moves each corner up to δ, so an edge under 2δ long can turn
+// round: 150 µm running +x, its ends welded 100 µm inward past each other,
+// runs −x welded. Beside a stored +x edge it read opposed, and two sub-mm
+// edges running one way could pair. Which way an edge runs is read from
+// its stored corners.
+#[test]
+fn coverage_proof_reads_opposition_from_stored_directions_not_welded() {
+    let edge = |from: DVec3, to: DVec3, weld_from: DVec3, weld_to: DVec3, face: u32| DirectedEdge {
+        from,
+        to,
+        weld_from,
+        weld_to,
+        face,
+        triangle: 0,
+        brush: None,
+    };
+    let length = 1.5 * delta();
+    let x = |at: f64| DVec3::new(at, 0.0, 0.0);
+    let turned = edge(x(0.0), x(length), x(delta()), x(length - delta()), 0);
+    assert!(
+        turned.direction().dot(DVec3::X) < 0.0,
+        "the weld turns the edge round"
+    );
+    let along = edge(x(0.0), x(length), x(0.0), x(length), 1);
+    let against = edge(x(length), x(0.0), x(length), x(0.0), 1);
+    assert!(
+        turned.direction().dot(along.direction()) <= -0.5,
+        "welded, the same-way edges read opposed"
+    );
+    assert!(!opposed(&turned, &along));
+    assert!(opposed(&turned, &against));
 }

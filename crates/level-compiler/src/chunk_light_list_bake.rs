@@ -2,9 +2,7 @@
 // See: context/lib/build_pipeline.md (PRL sections table)
 
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::{DVec3, IVec3, Vec3};
-use nalgebra::{Point3, Vector3};
 use postretro_level_format::chunk_light_list::{
     ChunkEntry, ChunkLightListSection, DEFAULT_PER_CHUNK_CAP,
 };
@@ -20,7 +18,7 @@ use crate::lightmap_bake;
 use crate::map_data::{LightType, MapLight, ShadowType};
 use crate::partition::{BspChild, BspTree, find_leaf_for_point};
 use crate::portals::Portal;
-use crate::ray_traversal::BoundedRay;
+use crate::ray_traversal::TraceRay;
 
 /// Default chunk edge length in meters. Small enough that per-chunk buckets
 /// stay sparse; large enough that the grid does not explode on larger maps.
@@ -40,8 +38,9 @@ pub const CHUNK_LIGHT_LIST_STAGE_VERSION: u32 = 3;
 /// Cap total `offset table + index list` memory at 16 MB.
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
-/// Offset along ray direction to avoid self-intersection on the emitting surface.
-const RAY_EPSILON: f32 = 1.0e-3;
+// Offset along ray direction to avoid self-intersection on the emitting surface;
+// the tracer's shared offset.
+use crate::ray_traversal::RAY_EPSILON;
 
 /// Move a receiver sample slightly into the light-facing side of its surface
 /// before tracing, so the receiving triangle is not mistaken for an occluder.
@@ -162,8 +161,9 @@ fn update_bsp_fingerprint(
 /// The fold order is explicit and only includes data that can affect emitted
 /// section bytes: geometry for ray tracing/grid bounds, the point-location BSP
 /// partition and leaf state, portal leaf-pair adjacency, compacted static
-/// lights, and the two bake controls. Dynamic lights and AlphaLights source
-/// indices are excluded because the bake never reads them for its output.
+/// lights, the two bake controls and the tracer epoch, since sample visibility
+/// traces. Dynamic lights and AlphaLights source indices are excluded because
+/// the bake never reads them for its output.
 ///
 /// In the pipeline the BSP tree is the cell view, so cell grouping re-keys the
 /// result and the portal endpoints are cell ids.
@@ -177,16 +177,19 @@ pub(crate) fn chunk_light_list_cache_key(
         cell_size_meters,
         per_chunk_cap,
         CHUNK_LIGHT_LIST_STAGE_VERSION,
+        crate::ray_traversal::TRACER_EPOCH,
     )
 }
 
-/// Version-parameterized key builder used by the cache-epoch regression test.
-/// The production wrapper always supplies the current stage version.
+/// Version- and epoch-parameterized key builder used by the cache-epoch
+/// regression tests. The production wrapper always supplies the current stage
+/// version and `ray_traversal::TRACER_EPOCH`.
 pub(crate) fn chunk_light_list_cache_key_with_version(
     inputs: &ChunkLightListInputs<'_>,
     cell_size_meters: f32,
     per_chunk_cap: u32,
     stage_version: u32,
+    tracer_epoch: u32,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
 
@@ -211,6 +214,7 @@ pub(crate) fn chunk_light_list_cache_key_with_version(
 
     hasher.update(&cell_size_meters.to_le_bytes());
     hasher.update(&per_chunk_cap.to_le_bytes());
+    hasher.update(&tracer_epoch.to_le_bytes());
 
     CacheKey::new(
         CHUNK_LIGHT_LIST_STAGE_ID,
@@ -981,13 +985,32 @@ fn sample_points(
     ]
 }
 
-fn segment_clear(
+pub(crate) fn segment_clear(
     bvh: &Bvh<f32, 3>,
     primitives: &[BvhPrimitive],
     geometry: &GeometryResult,
     light: &MapLight,
     sample: Vec3,
 ) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
+    sample_ray(light, sample).is_none_or(|(ray, max_distance)| {
+        crate::ray_traversal::ray_clear(bvh, primitives, geometry, &ray, max_distance)
+    })
+}
+
+/// The brute-force reference: [`segment_clear`]'s answer with every triangle
+/// tested by the shipped hit test, no BVH and no box test.
+#[cfg(test)]
+fn segment_clear_brute_force(geometry: &GeometryResult, light: &MapLight, sample: Vec3) -> bool {
+    sample_ray(light, sample).is_none_or(|(ray, max_distance)| {
+        crate::ray_traversal::ray_clear_brute_force(geometry, &ray, 0.0, max_distance)
+    })
+}
+
+/// The shadow ray from `light` to `sample` and its far bound, or `None`
+/// when the segment is too short to trace.
+fn sample_ray(light: &MapLight, sample: Vec3) -> Option<(TraceRay, f32)> {
     let (from, to) = match light.light_type {
         LightType::Point | LightType::Spot => (
             Vec3::new(
@@ -1008,133 +1031,17 @@ fn segment_clear(
     let delta = to - from;
     let length = delta.length();
     if length < RAY_EPSILON {
-        return true;
+        return None;
     }
     let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
     // Stop counting hits a couple of centimeters short of the sample: a graze
     // at the endpoint is the receiving surface itself, not an occluder (see
     // `SAMPLE_END_TOLERANCE_METERS`).
     let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
     if max_distance <= 0.0 {
-        return true;
-    }
-    let geom = &geometry.geometry;
-    let query = BoundedRay::new(&ray, max_distance);
-    for prim in bvh.traverse_iterator(&query, primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
-/// match.
-#[cfg(test)]
-fn segment_clear_full_scan(
-    bvh: &Bvh<f32, 3>,
-    primitives: &[BvhPrimitive],
-    geometry: &GeometryResult,
-    light: &MapLight,
-    sample: Vec3,
-) -> bool {
-    let (from, to) = match light.light_type {
-        LightType::Point | LightType::Spot => (
-            Vec3::new(
-                light.origin.x as f32,
-                light.origin.y as f32,
-                light.origin.z as f32,
-            ),
-            sample,
-        ),
-        LightType::Directional => {
-            let aim =
-                Vec3::from(light.cone_direction.unwrap_or([0.0, -1.0, 0.0])).normalize_or_zero();
-            let to_light = -aim;
-            (sample + to_light * 10_000.0, sample)
-        }
-    };
-
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let dir = delta / length;
-    let origin = from + dir * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let max_distance = length - SAMPLE_END_TOLERANCE_METERS.max(RAY_EPSILON);
-    if max_distance <= 0.0 {
-        return true;
-    }
-    let geom = &geometry.geometry;
-    for prim in bvh.traverse_iterator(&ray, primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        let mut tri = start;
-        while tri + 3 <= end {
-            let i0 = geom.indices[tri] as usize;
-            let i1 = geom.indices[tri + 1] as usize;
-            let i2 = geom.indices[tri + 2] as usize;
-            tri += 3;
-            let p0 = Vec3::from(geom.vertices[i0].position);
-            let p1 = Vec3::from(geom.vertices[i1].position);
-            let p2 = Vec3::from(geom.vertices[i2].position);
-            if let Some(dist) = ray_triangle_hit(origin, dir, p0, p1, p2)
-                && dist > 0.0
-                && dist < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn ray_triangle_hit(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    let edge1 = b - a;
-    let edge2 = c - a;
-    let h = dir.cross(edge2);
-    let det = edge1.dot(h);
-    if det.abs() < 1.0e-8 {
         return None;
     }
-    let inv_det = 1.0 / det;
-    let s = origin - a;
-    let u = inv_det * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge1);
-    let v = inv_det * dir.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = inv_det * edge2.dot(q);
-    if t <= 0.0 { None } else { Some(t) }
+    Some((TraceRay::new(from + dir * RAY_EPSILON, dir), max_distance))
 }
 
 #[cfg(test)]
@@ -1684,6 +1591,43 @@ mod tests {
             chunk_light_list_cache_key(&portal_inputs, 8.0, 64).as_filename(),
             "portal leaf-pair adjacency must invalidate the reachability bake"
         );
+    }
+
+    #[test]
+    fn chunk_light_list_key_changes_with_tracer_epoch() {
+        let geo = single_quad_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let lights = vec![point_light(DVec3::new(0.0, 1.0, 0.0), 4.0)];
+        let alpha = AlphaLightsNs::from_lights(&lights);
+        let tree = two_leaf_tree_no_portals();
+        let exterior = HashSet::new();
+        let inputs = ChunkLightListInputs {
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            lights: &alpha,
+            tree: &tree,
+            portals: &[],
+            exterior_leaves: &exterior,
+        };
+        let key = |tracer_epoch| {
+            chunk_light_list_cache_key_with_version(
+                &inputs,
+                8.0,
+                64,
+                CHUNK_LIGHT_LIST_STAGE_VERSION,
+                tracer_epoch,
+            )
+            .as_filename()
+        };
+
+        let epoch = crate::ray_traversal::TRACER_EPOCH;
+        assert_eq!(
+            key(epoch),
+            chunk_light_list_cache_key(&inputs, 8.0, 64).as_filename(),
+            "the production key folds the shipped epoch"
+        );
+        assert_ne!(key(epoch), key(epoch + 1));
     }
 
     #[test]
@@ -3428,8 +3372,9 @@ mod tests {
                                         let c = Vec3::from(
                                             vertices[occluder_indices[2] as usize].position,
                                         );
-                                        ray_triangle_hit(ray_origin, direction, a, b, c)
-                                            .is_some_and(|distance| distance < max_distance)
+                                        TraceRay::new(ray_origin, direction)
+                                            .hit([a, b, c], 0.0, max_distance)
+                                            .is_some()
                                     });
                                 if !blocked {
                                     clear_receiver_found = true;
@@ -3456,7 +3401,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+    fn bounded_segment_clear_matches_brute_force_around_a_blocker() {
         // A blocker quad at y = 2 split on its x = z diagonal, plus tiles and a
         // far floor below it: tree nodes past the segment ends to prune.
         let mut triangles = Vec::new();
@@ -3509,7 +3454,7 @@ mod tests {
                     -11.0,
                 ] {
                     let sample = Vec3::new(x, y, z);
-                    let full = segment_clear_full_scan(&bvh, &prims, &geo, light, sample);
+                    let full = segment_clear_brute_force(&geo, light, sample);
                     assert_eq!(
                         segment_clear(&bvh, &prims, &geo, light, sample),
                         full,

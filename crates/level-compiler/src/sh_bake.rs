@@ -79,7 +79,8 @@ const BOUNCE_ALBEDO: f32 = crate::surface_materials::stats::GREY_BOUNCE_ALBEDO;
 pub(crate) const SKY_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// Offset to avoid self-intersections at the probe origin and shadow-ray hit points.
-pub(crate) const RAY_EPSILON: f32 = 1.0e-3;
+/// This is the tracer's shared offset, re-exported so existing `sh_bake::RAY_EPSILON` paths resolve.
+pub(crate) use crate::ray_traversal::RAY_EPSILON;
 
 /// Rotates the Fibonacci lattice off the (0,0,1) axis so axis-aligned light directions
 /// don't land on a degenerate sample. No RNG — identical input yields byte-identical output.

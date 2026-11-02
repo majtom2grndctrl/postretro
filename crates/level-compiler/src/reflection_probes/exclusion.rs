@@ -149,14 +149,17 @@ pub(crate) fn classify_probes(scene: &ExclusionScene<'_>, probes: &[PlacedProbe]
 }
 
 /// [`classify_probes`], each probe's set restricted to brushes whose hulls
-/// touch its projection box (floor ignored, within `PLANE_TOLERANCE_M`): the
-/// stage's sets. The capture is the same either way: a ray reaching a hull
-/// off the box has left the box for good, so it ends outside it or misses
+/// touch its projection box (floor ignored, within `PLANE_TOLERANCE_M` and
+/// 2τ, `ProjectionBox::touches`): the stage's sets. The capture is the same
+/// either way: a ray reaching a hull off the box, a tolerance hit beside it
+/// included, has left the box for good, so it ends outside it or misses
 /// whether that hull is kept or excluded. Behind an earlier excluded brush
 /// both take the leak guard on that brush; with none, the kept hull's hit
 /// and the leak guard on the excluded hull read the same face at the same
-/// distance. So the work, and the key's share of the brushes, shrink to what
-/// each box holds. The rule reads `constants`, the instance the stage keys.
+/// distance. Hits at one distance are taken in triangle order either way, so
+/// a tie with a kept face at a seam reads the same face too. So the work,
+/// and the key's share of the brushes, shrink to what each box holds. The
+/// rule reads `constants`, the instance the stage keys.
 pub(crate) fn classify_probes_within_boxes(
     scene: &ExclusionScene<'_>,
     probes: &[PlacedProbe],

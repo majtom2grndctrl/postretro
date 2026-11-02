@@ -391,6 +391,7 @@ pub(crate) fn bake_fused_windowed(
             config.direction_texel_scale,
             step_threshold,
             &prepared.cut_parents,
+            crate::ray_traversal::TRACER_EPOCH,
         );
         CacheKey::new(
             "lightmap_section",

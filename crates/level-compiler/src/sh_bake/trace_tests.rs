@@ -1,4 +1,4 @@
-// Tests for SH ray generation and bounded BVH traversal against full scans.
+// Tests for SH ray generation and bounded BVH traversal against brute force.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
 use bvh::bvh::Bvh;
@@ -7,8 +7,11 @@ use glam::Vec3;
 use super::test_fixtures::*;
 use super::trace::*;
 use super::*;
-use crate::bvh_build::{BvhPrimitive, build_bvh, collect_primitives};
+use crate::bvh_build::{build_bvh, build_bvh_exact, collect_primitives};
 use crate::geometry::GeometryResult;
+use crate::ray_traversal::{
+    TraceRay, segment_clear_brute_force as lightmap_brute_force, without_far_scale,
+};
 
 #[test]
 fn sphere_directions_are_unit_and_stable() {
@@ -86,8 +89,11 @@ fn crease_geometry(shared_leaf: bool) -> GeometryResult {
     geometry
 }
 
-fn hit_parts(hit: Option<Hit>) -> Option<(f32, Vec3, Vec3)> {
-    hit.map(|h| (h.distance, h.normal, h.point))
+/// A hit's distance and point. On a distance tie the traversal and the
+/// brute-force reference may name different triangles, so the normal is
+/// left out.
+fn hit_parts(hit: Option<Hit>) -> Option<(f32, Vec3)> {
+    hit.map(|h| (h.distance, h.point))
 }
 
 /// Rays aimed at points on the crease edge from several origins.
@@ -108,7 +114,7 @@ fn crease_edge_rays() -> Vec<(Vec3, Vec3)> {
 }
 
 #[test]
-fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
+fn bounded_closest_hit_matches_brute_force_on_shared_crease_edges() {
     for shared_leaf in [true, false] {
         let geo = crease_geometry(shared_leaf);
         let (bvh, prims, _) = build_bvh(&geo).unwrap();
@@ -120,13 +126,13 @@ fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
         };
         let mut edge_hits = 0;
         for (origin, dir) in crease_edge_rays() {
-            let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+            let full = hit_parts(closest_hit_brute_force(&ctx, origin, dir, f32::INFINITY));
             let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
             assert_eq!(
                 bounded, full,
                 "shared_leaf {shared_leaf}, ray {origin} {dir}"
             );
-            let Some((distance, _, point)) = full else {
+            let Some((distance, point)) = full else {
                 panic!("ray {origin} {dir} must hit the crease");
             };
             if point.x.abs() < 1e-4 && point.y.abs() < 1e-4 {
@@ -141,14 +147,13 @@ fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
             ] {
                 assert_eq!(
                     hit_parts(closest_hit(&ctx, origin, dir, max)),
-                    hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                    hit_parts(closest_hit_brute_force(&ctx, origin, dir, max)),
                     "shared_leaf {shared_leaf}, ray {origin} {dir}, max {max}"
                 );
             }
         }
-        // A ray exactly on the shared edge can slip between the two
-        // triangles and hit something farther; most must land on the edge so
-        // the tie is exercised.
+        // Most rays land within a hair of the shared edge, so the tie is
+        // exercised; the watertight test lets none slip between the two.
         assert!(
             edge_hits * 2 > crease_edge_rays().len(),
             "{edge_hits} rays landed on the edge"
@@ -157,7 +162,7 @@ fn bounded_closest_hit_matches_full_scan_on_shared_crease_edges() {
 }
 
 #[test]
-fn bounded_segment_clear_matches_full_scan_at_segment_end() {
+fn bounded_segment_clear_matches_brute_force_at_segment_end() {
     let geo = crease_geometry(false);
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
@@ -184,11 +189,11 @@ fn bounded_segment_clear_matches_full_scan_at_segment_end() {
             -7.0,
         ] {
             let to = Vec3::new(x, end_y, 0.3);
-            let full = segment_clear_full_scan(&ctx, from, to);
+            let full = segment_clear_brute_force(&ctx, from, to);
             assert_eq!(segment_clear(&ctx, from, to), full, "sh: {from} -> {to}");
             assert_eq!(
-                crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
-                crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, from, to),
+                crate::ray_traversal::segment_clear(&bvh, &prims, &geo, from, to),
+                lightmap_brute_force(&geo, from, to),
                 "lightmap: {from} -> {to}"
             );
             if full {
@@ -202,11 +207,15 @@ fn bounded_segment_clear_matches_full_scan_at_segment_end() {
 }
 
 #[test]
-fn bounded_traversal_matches_stock_rejection_of_undefined_slab() {
-    // Rays lying in a box face plane, parallel to it: the floor's flat box
-    // (y = -6), the wall's (x = 8), and the crease leaf's top face (y = 1).
-    // The stock slab test sees NaN there and rejects the box; the bounded
-    // query must answer as the unbounded reference scan does.
+fn bounded_traversal_matches_brute_force_on_face_plane_rays() {
+    // Rays lying exactly in a face plane of the padded tree's own boxes:
+    // the origin coordinate equals the box's min or max on an axis and the
+    // direction component there is +0 or -0, so `(face - o) * +-inf` is NaN
+    // in the slab test. The conservative test drops that axis and the
+    // padded box holds the ray, so the traversal still reaches the
+    // triangles and answers as the brute-force reference does. (On the
+    // padded tree no box face lies in a triangle's plane, so this is the
+    // only way a NaN slab arises during traversal.)
     let geo = crease_geometry(true);
     let (bvh, prims, _) = build_bvh(&geo).unwrap();
     let ctx = RaytracingCtx {
@@ -215,27 +224,96 @@ fn bounded_traversal_matches_stock_rejection_of_undefined_slab() {
         primitives: &prims,
         geometry: &geo,
     };
-    let rays = [
-        (Vec3::new(-30.0, -6.0, 0.0), Vec3::X),
-        (Vec3::new(8.0, 2.0, -30.0), Vec3::Z),
-        (Vec3::new(-5.0, 1.0, 0.0), Vec3::X),
-        (Vec3::new(0.0, 1.0, -5.0), Vec3::Z),
-    ];
-    for (origin, dir) in rays {
-        for max in [f32::INFINITY, 12.0] {
-            assert_eq!(
-                hit_parts(closest_hit(&ctx, origin, dir, max)),
-                hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
-                "ray {origin} {dir}, max {max}"
-            );
+    let mut boxes = Vec::new();
+    for node in &bvh.nodes {
+        if let bvh::bvh::BvhNode::Node {
+            child_l_aabb,
+            child_r_aabb,
+            ..
+        } = node
+        {
+            boxes.push(*child_l_aabb);
+            boxes.push(*child_r_aabb);
         }
-        let to = origin + dir * 40.0;
-        assert_eq!(
-            segment_clear(&ctx, origin, to),
-            segment_clear_full_scan(&ctx, origin, to),
-            "segment {origin} -> {to}"
-        );
     }
+    assert!(!boxes.is_empty(), "the tree has interior nodes");
+
+    let zeros = [0.0f32, -0.0f32];
+    let (mut vertical, mut vertical_blocked) = (0, 0);
+    for aabb in &boxes {
+        let min = [aabb.min.x, aabb.min.y, aabb.min.z];
+        let max = [aabb.max.x, aabb.max.y, aabb.max.z];
+        let center = Vec3::new(
+            0.5 * (min[0] + max[0]),
+            0.5 * (min[1] + max[1]),
+            0.5 * (min[2] + max[2]),
+        );
+        for axis in 0..3 {
+            for face in [min[axis], max[axis]] {
+                for zero_x in zeros {
+                    for zero_z in zeros {
+                        let (origin, dir) = if axis == 1 {
+                            // In a y face plane, along +X at the box's z:
+                            // reaches the wall when it is in range.
+                            (
+                                Vec3::new(-30.0, face, center.z.clamp(-19.0, 19.0)),
+                                Vec3::new(1.0, zero_x, zero_z),
+                            )
+                        } else {
+                            // In an x or z face plane, straight down from
+                            // above: the floor at y = -6 is always in the
+                            // way when the ray is over it.
+                            let mut origin = Vec3::new(center.x, 30.0, center.z);
+                            origin[axis] = face;
+                            (origin, Vec3::new(zero_x, -1.0, zero_z))
+                        };
+                        assert_eq!(origin[axis], face);
+                        assert_eq!(dir[axis], 0.0);
+                        let to = origin + dir * 40.0;
+                        let bounded_segment = segment_clear(&ctx, origin, to);
+                        assert_eq!(
+                            bounded_segment,
+                            segment_clear_brute_force(&ctx, origin, to),
+                            "segment {origin} -> {to}"
+                        );
+                        for max_distance in [f32::INFINITY, 45.0] {
+                            let bounded = hit_parts(closest_hit(&ctx, origin, dir, max_distance));
+                            assert_eq!(
+                                bounded,
+                                hit_parts(closest_hit_brute_force(&ctx, origin, dir, max_distance)),
+                                "ray {origin} {dir}, max {max_distance}"
+                            );
+                            if axis != 1 {
+                                // Over the floor (|x|, |z| < 19.9), so the
+                                // ray lands on it or on a nearer tile: a
+                                // hit within 36 m, and a blocked segment.
+                                let over_floor = origin.x.abs() < 19.9 && origin.z.abs() < 19.9;
+                                if over_floor {
+                                    let (distance, _) =
+                                        bounded.expect("a ray over the floor hits something");
+                                    assert!(distance <= 36.0 + 1e-3, "hit at {distance}");
+                                    assert!(
+                                        !bounded_segment,
+                                        "segment {origin} -> {to} is blocked"
+                                    );
+                                    if max_distance.is_infinite() {
+                                        vertical_blocked += 1;
+                                    }
+                                }
+                            }
+                        }
+                        if axis != 1 {
+                            vertical += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        vertical > 0 && vertical_blocked > 0,
+        "{vertical} vertical rays, {vertical_blocked} hit"
+    );
 }
 
 #[test]
@@ -261,10 +339,10 @@ fn sub_epsilon_start_hit_never_tightens_bound() {
         let bounded = hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY));
         assert_eq!(
             bounded,
-            hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY)),
+            hit_parts(closest_hit_brute_force(&ctx, origin, dir, f32::INFINITY)),
             "ray {origin} {dir}"
         );
-        let (distance, _, _) = bounded.expect("the ray reaches the floor or a tile");
+        let (distance, _) = bounded.expect("the ray reaches the floor or a tile");
         assert!(
             distance > 1.0,
             "kept hit {distance} is past the start triangle"
@@ -370,72 +448,89 @@ impl SlopedFace {
     }
 }
 
-/// The lightmap occlusion answer with no box test: each triangle in turn is
-/// handed to the occluder cache, which tests it before any traversal.
-fn lightmap_clear_by_every_triangle(
-    bvh: &Bvh<f32, 3>,
-    prims: &[BvhPrimitive],
-    geo: &GeometryResult,
-    from: Vec3,
-    to: Vec3,
-) -> bool {
-    (0..geo.geometry.indices.len()).step_by(3).all(|tri| {
-        crate::lightmap_bake::segment_clear_remembering(
-            bvh,
-            prims,
-            geo,
-            from,
-            to,
-            &std::cell::Cell::new(Some(tri)),
-        )
-    })
-}
-
-/// A flat triangle's box is flat, and the stock box test can reject it, by
-/// rounding, for a ray the triangle test hits at the triangle's edge. The
-/// traversal then reports the segment clear; the occluder cache, holding
-/// that triangle, reports it blocked. The ray is steep: the rounding is in
-/// the slab bounds, not the angle.
-#[test]
-fn lightmap_segment_clear_occluder_cache_catches_flat_box_rounding_leak() {
+/// A flat triangle's box is flat, and the stock box test rejects it, by
+/// rounding, for a ray the hit test crosses at the triangle's x = 1 edge,
+/// even at τ = 0. The ray is steep: the rounding is in the slab bounds, not
+/// the angle. Found by search for the query built from the hit test's own
+/// ray; the witness pinned before this test was rejected only through the
+/// `bvh` ray's re-normalized direction. The conservative factor and the pad
+/// each catch it alone.
+fn flat_box_witness() -> (GeometryResult, Vec3, Vec3) {
     let geo = multi_triangle_geometry(&[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]]);
-    let (bvh, prims, _) = build_bvh(&geo).unwrap();
-    // Crosses z = 0 at the triangle's x = 1 edge.
-    let from = Vec3::from_array([1068354961, 1063499892, 1065798143].map(f32::from_bits));
-    let to = Vec3::from_array([1059964654, 1061407677, 3211917106].map(f32::from_bits));
-
-    assert!(
-        crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, from, to),
-        "the stock box test must reject this ray's box for the leak to exist"
-    );
-    let empty = std::cell::Cell::new(None);
-    assert!(crate::lightmap_bake::segment_clear_remembering(
-        &bvh, &prims, &geo, from, to, &empty
-    ));
-    assert_eq!(empty.get(), None, "a clear traversal records no occluder");
-    let holding = std::cell::Cell::new(Some(0));
-    assert!(!crate::lightmap_bake::segment_clear_remembering(
-        &bvh, &prims, &geo, from, to, &holding
-    ));
-    assert_eq!(holding.get(), Some(0));
+    let from = Vec3::from_array([1071858135, 1062063766, 1076205789].map(f32::from_bits));
+    let to = Vec3::from_array([1060375431, 3186569383, 3212669162].map(f32::from_bits));
+    (geo, from, to)
 }
 
-/// Randomized parity against the unbounded reference scans, on geometry
-/// that stresses Möller–Trumbore rounding: vertices 100–500 m from the
+// Regression: the stock box test rejected this leaf by rounding, so the
+// answer depended on whether the occluder cache held the triangle.
+#[test]
+fn flat_box_rounding_witness_blocks_with_an_empty_cache() {
+    let (geo, from, to) = flat_box_witness();
+    let (bvh, prims, _) = build_bvh(&geo).unwrap();
+    let (exact_bvh, exact_prims, _) = build_bvh_exact(&geo).unwrap();
+    let clear = |bvh: &Bvh<f32, 3>, prims: &[crate::bvh_build::BvhPrimitive]| {
+        crate::ray_traversal::segment_clear(bvh, prims, &geo, from, to)
+    };
+    assert!(
+        !crate::ray_traversal::with_tolerance(0.0, || lightmap_brute_force(&geo, from, to)),
+        "the hit test crosses the edge"
+    );
+    assert!(!clear(&bvh, &prims), "padded tree, conservative test");
+    assert!(
+        without_far_scale(|| clear(&exact_bvh, &exact_prims)),
+        "with both the factor and the pad removed, rounding rejects the leaf"
+    );
+    assert!(
+        !clear(&exact_bvh, &exact_prims),
+        "the conservative factor alone blocks it"
+    );
+    assert!(
+        !without_far_scale(|| clear(&bvh, &prims)),
+        "the pad alone blocks it"
+    );
+}
+
+/// On the exact, unpadded leaf box the conservative test accepts the
+/// witness ray, and only through its factor.
+#[test]
+fn conservative_box_test_accepts_the_flat_witness_leaf_box() {
+    use bvh::aabb::{Bounded, IntersectsAabb};
+
+    let (geo, from, to) = flat_box_witness();
+    let (_, exact_prims, _) = build_bvh_exact(&geo).unwrap();
+    let leaf = exact_prims[0].aabb();
+    let delta = to - from;
+    let length = delta.length();
+    let dir = delta / length;
+    let ray = TraceRay::new(from + dir * RAY_EPSILON, dir);
+    let max_distance = length - RAY_EPSILON;
+    let stock = bvh::ray::Ray::new(
+        nalgebra::Point3::new(ray.origin().x, ray.origin().y, ray.origin().z),
+        nalgebra::Vector3::new(dir.x, dir.y, dir.z),
+    );
+    assert!(!stock.intersects_aabb(&leaf), "the stock test rejects it");
+    assert!(ray.query(max_distance).intersects_aabb(&leaf));
+    assert!(!without_far_scale(|| ray
+        .query(max_distance)
+        .intersects_aabb(&leaf)));
+}
+
+/// Randomized parity against the brute-force references, on geometry that
+/// stresses the hit test's rounding: vertices 100–500 m from the
 /// origin, large rotated triangles, and two crossing sloped faces cut into
 /// strips along axis-aligned planes, as BSP splits leave them, with 3 cm
 /// slivers sharing the cut edges. Rays graze toward shared edges, the
 /// faces' crossing line (two hits millimetres apart) and large triangles;
 /// segments end just short of, at and just past the nearest hit.
 ///
-/// The rays stay inside the prune slack's envelope. On a sliver, MT's `t`
-/// error grows with ray length over graze, so rays toward the sloped faces
-/// keep `length <= 100 m * graze`, and near misses past a strip's outer end
-/// aim only at wide strips: near a sliver's ends the error reaches metres,
-/// past any finite slack. That is the open case the fixture digest gate
-/// watches.
+/// The rays stay inside the prune slack's envelope: rays toward the sloped
+/// faces keep `length <= 100 m * graze`, and near misses past a strip's
+/// outer end aim only at wide strips. The envelope dates from
+/// Möller–Trumbore, whose `t` error near a sliver's ends reached metres; the
+/// `f64` test's stays far inside the slack here.
 #[test]
-fn bounded_queries_match_full_scan_on_random_rounding_stress() {
+fn bounded_queries_match_brute_force_on_random_rounding_stress() {
     let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
     let last_occluder = std::cell::Cell::new(None);
     let centre = Vec3::new(210.0, 190.0, -260.0);
@@ -526,18 +621,18 @@ fn bounded_queries_match_full_scan_on_random_rounding_stress() {
             (target - dir * rng.range(1.0, 200.0), dir)
         };
 
-        let full = hit_parts(closest_hit_full_scan(&ctx, origin, dir, f32::INFINITY));
+        let full = hit_parts(closest_hit_brute_force(&ctx, origin, dir, f32::INFINITY));
         assert_eq!(
             hit_parts(closest_hit(&ctx, origin, dir, f32::INFINITY)),
             full,
             "ray {i}: {origin} {dir}"
         );
-        let ends = if let Some((distance, _, _)) = full {
+        let ends = if let Some((distance, _)) = full {
             hits += 1;
             for max in [distance, distance.next_up()] {
                 assert_eq!(
                     hit_parts(closest_hit(&ctx, origin, dir, max)),
-                    hit_parts(closest_hit_full_scan(&ctx, origin, dir, max)),
+                    hit_parts(closest_hit_brute_force(&ctx, origin, dir, max)),
                     "ray {i}: {origin} {dir}, max {max}"
                 );
             }
@@ -548,38 +643,33 @@ fn bounded_queries_match_full_scan_on_random_rounding_stress() {
         };
         for end in ends {
             let to = origin + dir * end;
-            let full_clear = segment_clear_full_scan(&ctx, origin, to);
+            let full_clear = segment_clear_brute_force(&ctx, origin, to);
             assert_eq!(
                 segment_clear(&ctx, origin, to),
                 full_clear,
                 "sh, ray {i}: {origin} -> {to}"
             );
-            let lightmap_full =
-                crate::lightmap_bake::segment_clear_full_scan(&bvh, &prims, &geo, origin, to);
+            let lightmap_full = lightmap_brute_force(&geo, origin, to);
             assert_eq!(
-                crate::lightmap_bake::segment_clear(&bvh, &prims, &geo, origin, to),
+                crate::ray_traversal::segment_clear(&bvh, &prims, &geo, origin, to),
                 lightmap_full,
                 "lightmap, ray {i}: {origin} -> {to}"
             );
             // The occluder cache carries across rays, so later queries test
-            // an unrelated triangle first. It may only add a blocked answer
-            // the box test lost to rounding, so a disagreement must be a
-            // real hit by some triangle.
-            let remembered = crate::lightmap_bake::segment_clear_remembering(
-                &bvh,
-                &prims,
-                &geo,
-                origin,
-                to,
-                &last_occluder,
+            // an unrelated triangle first; it only reorders the traversal's
+            // candidates, so the answer is the same.
+            assert_eq!(
+                crate::ray_traversal::segment_clear_remembering(
+                    &bvh,
+                    &prims,
+                    &geo,
+                    origin,
+                    to,
+                    &last_occluder,
+                ),
+                lightmap_full,
+                "lightmap remembering, ray {i}: {origin} -> {to}"
             );
-            if remembered != lightmap_full {
-                assert!(
-                    lightmap_full
-                        && !lightmap_clear_by_every_triangle(&bvh, &prims, &geo, origin, to),
-                    "lightmap remembering, ray {i}: {origin} -> {to}"
-                );
-            }
             if full_clear {
                 clear += 1;
             } else {

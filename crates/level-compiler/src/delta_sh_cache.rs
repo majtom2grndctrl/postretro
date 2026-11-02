@@ -44,6 +44,9 @@ pub(crate) struct DeltaShCacheInputs<'a> {
     /// and its light axis is a digest of the keyed light the key already folds.
     pub(crate) light_seed_axes: &'a [u64],
     pub(crate) expected_subblock_f16_len: usize,
+    /// `ray_traversal::TRACER_EPOCH`: the indirect delta traces probe
+    /// visibility.
+    pub(crate) tracer_epoch: u32,
 }
 
 /// Build one `(affinity cell, light)` key.
@@ -64,6 +67,8 @@ pub(crate) struct DeltaShEntryKeyInputs<'a> {
     pub(crate) valid_probe_mask: u64,
     pub(crate) seed_axis: u64,
     pub(crate) light: &'a MapLight,
+    /// Folded last. Production keys pass `TRACER_EPOCH`; test keys may pass 0.
+    pub(crate) tracer_epoch: u32,
 }
 
 pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> CacheKey {
@@ -90,6 +95,7 @@ pub(crate) fn delta_sh_entry_cache_key(inputs: &DeltaShEntryKeyInputs<'_>) -> Ca
     hasher.update(&inputs.seed_axis.to_le_bytes());
     hasher.update(&light_len.to_le_bytes());
     hasher.update(&encoded_light);
+    hasher.update(&inputs.tracer_epoch.to_le_bytes());
 
     CacheKey::new(
         inputs.stage_id,
@@ -184,6 +190,7 @@ where
                 valid_probe_mask,
                 seed_axis,
                 light,
+                tracer_epoch: inputs.tracer_epoch,
             });
 
             let loaded = stage_cache
@@ -321,6 +328,7 @@ mod tests {
     use super::*;
     use crate::governor::Governor;
     use crate::map_data::{FalloffModel, LightType, ShadowType};
+    use crate::ray_traversal::TRACER_EPOCH;
     use crate::reporter::StageProgress;
 
     const TEST_STAGE_ID: &str = "delta_sh_cache_test";
@@ -378,6 +386,7 @@ mod tests {
             probe_spacing: 1.0,
             light_seed_axes: seed_axes,
             expected_subblock_f16_len: 2,
+            tracer_epoch: TRACER_EPOCH,
         }
     }
 
@@ -398,6 +407,7 @@ mod tests {
             valid_probe_mask: u64::MAX,
             seed_axis: 0,
             light,
+            tracer_epoch: TRACER_EPOCH,
         }
     }
 
@@ -408,6 +418,20 @@ mod tests {
         let key_b = delta_sh_entry_cache_key(&key_inputs(2, &light));
 
         assert_ne!(key_a.as_filename(), key_b.as_filename());
+    }
+
+    #[test]
+    fn indirect_delta_sh_key_changes_with_tracer_epoch() {
+        let light = light(0.0);
+        let key = |tracer_epoch| {
+            delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
+                tracer_epoch,
+                ..key_inputs(TEST_STAGE_VERSION, &light)
+            })
+            .as_filename()
+        };
+
+        assert_ne!(key(TRACER_EPOCH), key(TRACER_EPOCH + 1));
     }
 
     #[test]

@@ -575,6 +575,15 @@ fn capture_is_byte_identical_across_worker_counts() {
 /// The stage's cache key for `room` and `environment`, placement run as the
 /// stage runs it.
 fn stage_key(room: &LitFloorRoom, environment: &EnvironmentVolumesSection) -> String {
+    stage_key_under(room, environment, crate::ray_traversal::TRACER_EPOCH)
+}
+
+/// [`stage_key`] under `tracer_epoch`.
+fn stage_key_under(
+    room: &LitFloorRoom,
+    environment: &EnvironmentVolumesSection,
+    tracer_epoch: u32,
+) -> String {
     with_inputs(room, environment, |inputs| {
         let tracer = SceneTracer::new(inputs.bvh, inputs.primitives, inputs.geometry);
         let bounds = WorldBounds::from_positions(
@@ -610,6 +619,7 @@ fn stage_key(room: &LitFloorRoom, environment: &EnvironmentVolumesSection) -> St
             &probes,
             &exclusions,
             &ExclusionConstants::PRODUCTION,
+            tracer_epoch,
         )
         .unwrap()
         .as_filename()
@@ -780,6 +790,17 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
         stage_key(&room, &environment)
     });
     assert_eq!(misses, 12);
+}
+
+#[test]
+fn reflection_probes_key_changes_with_tracer_epoch() {
+    let room = every_term_room();
+    let environment = pool();
+    let epoch = crate::ray_traversal::TRACER_EPOCH;
+    assert_ne!(
+        stage_key_under(&room, &environment, epoch),
+        stage_key_under(&room, &environment, epoch + 1)
+    );
 }
 
 #[test]

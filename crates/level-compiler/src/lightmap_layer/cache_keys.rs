@@ -181,7 +181,9 @@ fn bytemuck_f32x3(v: &[f32; 3]) -> Vec<u8> {
 /// - the influence-bounded geometry slice hash,
 /// - `lightmap_density` + `area_sample_count`,
 /// - the receiver-footprint switch (`--no-penumbra-floor`),
-/// - the atlas layout descriptor (dims + per-chart placements).
+/// - the atlas layout descriptor (dims + per-chart placements),
+/// - `tracer_epoch` (u32 LE): the chart walk, clip, lead-in and
+///   embedded-emitter test all trace (`ray_traversal::TRACER_EPOCH`),
 /// - `target_layer`, so partitions with the same light and layout cannot alias.
 ///
 /// Consumers pass this digest to `CacheKey::new("lightmap_layer",
@@ -197,6 +199,7 @@ pub fn layer_input_hash(
     lightmap_density: f32,
     area_sample_count: u32,
     penumbra_floor: bool,
+    tracer_epoch: u32,
     target_layer: u32,
 ) -> [u8; 32] {
     let context = LayerKeyContext::new(
@@ -205,6 +208,7 @@ pub fn layer_input_hash(
         lightmap_density,
         area_sample_count,
         penumbra_floor,
+        tracer_epoch,
     );
     LayerKeyContext::layer_hash(
         &context.light_prefix(light, primitives, geometry),
@@ -219,6 +223,7 @@ pub struct LayerKeyContext {
     lightmap_density: f32,
     area_sample_count: u32,
     penumbra_floor: bool,
+    tracer_epoch: u32,
     /// With the floor on, each chart's padded texel bounds and footprint
     /// radius, largest radius first; empty with it off.
     footprint_reach: Vec<(Option<(Vec3, Vec3)>, f32)>,
@@ -233,6 +238,7 @@ impl LayerKeyContext {
         lightmap_density: f32,
         area_sample_count: u32,
         penumbra_floor: bool,
+        tracer_epoch: u32,
     ) -> Self {
         let mut footprint_reach: Vec<_> = if penumbra_floor {
             atlas
@@ -256,6 +262,7 @@ impl LayerKeyContext {
             lightmap_density,
             area_sample_count,
             penumbra_floor,
+            tracer_epoch,
             footprint_reach,
         }
     }
@@ -294,6 +301,7 @@ impl LayerKeyContext {
         hasher.update(&self.area_sample_count.to_le_bytes());
         hasher.update(&[u8::from(self.penumbra_floor)]);
         hasher.update(&self.atlas_fingerprint);
+        hasher.update(&self.tracer_epoch.to_le_bytes());
         hasher
     }
 
@@ -472,8 +480,8 @@ pub fn validate_cached_lightmap_section(
 ///    layer-major then global-static-light order (`ShadowType::Sdf` dropped).
 ///    Folding the input hashes mirrors folding the full cache keys: any
 ///    per-light input change (light params, geometry slice, density, sample
-///    count, footprint switch, atlas layout, or target layer) flows through
-///    here.
+///    count, footprint switch, atlas layout, tracer epoch, or target layer)
+///    flows through here.
 /// 4. the complete prepared atlas layout fingerprint. This is required even
 ///    when the filtered light set is empty, because the all-Sdf fallback bytes
 ///    still depend on atlas dimensions.
@@ -492,9 +500,13 @@ pub fn validate_cached_lightmap_section(
 /// 9. the cut map ([`cut_map_key_bytes`]) — the report names a cut face by its
 ///    pre-cut index and counts each pair in the sub-face that owns it, which
 ///    the cut geometry in the layer hashes does not pin.
+/// 10. `tracer_epoch` (u32 LE) — the stored texel-step report traces the
+///     segment between stepped texels (`ray_traversal::TRACER_EPOCH`). Each
+///     layer hash folds it too; folding it here keeps the dependency direct.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
+#[allow(clippy::too_many_arguments)]
 pub fn section_input_hash(
     layer_input_hashes: impl ExactSizeIterator<Item = [u8; 32]>,
     atlas: &SharedAtlas<'_>,
@@ -503,6 +515,7 @@ pub fn section_input_hash(
     direction_texel_scale: u32,
     step_threshold: f32,
     cut_parents: &[CutParent],
+    tracer_epoch: u32,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -516,5 +529,6 @@ pub fn section_input_hash(
     hasher.update(&direction_texel_scale.to_le_bytes());
     hasher.update(&step_threshold.to_bits().to_le_bytes());
     hasher.update(&cut_map_key_bytes(cut_parents));
+    hasher.update(&tracer_epoch.to_le_bytes());
     *hasher.finalize().as_bytes()
 }

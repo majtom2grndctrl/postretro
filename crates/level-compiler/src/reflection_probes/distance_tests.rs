@@ -57,6 +57,28 @@ fn room_inverse_l1(direction: Vec3, open_top: bool) -> f32 {
     1.0 / (t * direction.abs().element_sum())
 }
 
+/// Whether some supersample of interior texel `(x, y)` leaves through the
+/// open top crossing a wall's plane within 2τ above the wall's 3 m top edge,
+/// where the tracer's tolerance may count it a hit on the wall.
+fn grazes_a_wall_top(x: u32, y: u32) -> bool {
+    let interior = TILE_INTERIOR as f32;
+    let reach = 2.0 * crate::ray_traversal::TRACER_TOLERANCE_METERS;
+    SUPERSAMPLE_OFFSETS.iter().any(|[dx, dy]| {
+        let d = octahedral_direction(
+            (x as f32 + 0.5 + dx) / interior,
+            (y as f32 + 0.5 + dy) / interior,
+        );
+        [0, 2].into_iter().any(|axis| {
+            if d[axis] == 0.0 {
+                return false;
+            }
+            let wall = 3.0f32.copysign(d[axis]);
+            let crossing = CAPTURE + d * ((wall - CAPTURE[axis]) / d[axis]);
+            crossing.y > 3.0 && crossing.y <= 3.0 + reach
+        })
+    })
+}
+
 /// The capture's analytic value for interior texel `(x, y)`: the mean over
 /// its supersamples.
 fn analytic_texel(x: u32, y: u32, open_top: bool) -> f32 {
@@ -129,7 +151,7 @@ fn distance_tile_stores_zero_where_the_capture_hits_nothing() {
     let mut misses = 0;
     for y in 0..TILE_INTERIOR {
         for x in 0..TILE_INTERIOR {
-            if analytic_texel(x, y, true) == 0.0 {
+            if analytic_texel(x, y, true) == 0.0 && !grazes_a_wall_top(x, y) {
                 assert_eq!(distance_texel(&section, 0, x + 1, y + 1), 0.0, "({x}, {y})");
                 misses += 1;
             }

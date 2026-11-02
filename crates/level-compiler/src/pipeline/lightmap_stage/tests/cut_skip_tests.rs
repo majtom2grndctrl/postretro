@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use super::*;
 use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_layer::{ExactSkips, LightmapLayer, SkipStats};
+use crate::ray_traversal::TRACER_EPOCH;
 
 /// A sub-chart's face and one of its interior texels.
 type SubTexel = (usize, [i32; 2]);
@@ -138,6 +139,7 @@ impl CutAtlas {
                         config.lightmap_density,
                         test_args().soft_shadow_samples,
                         config.penumbra_floor,
+                        TRACER_EPOCH,
                         layer,
                     ),
                 );

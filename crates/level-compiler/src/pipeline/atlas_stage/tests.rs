@@ -167,6 +167,8 @@ fn rebuilt_face_identity_agrees_with_cut_geometry() {
     let partition_before = partition_over(&leaves, &bvh_before);
     let (charts, rebuilt) = cut_and_rebuild(&mut geometry, &mut leaves, 64);
     let rebuilt = rebuilt.expect("the 9 m quad is cut");
+    crate::ray_traversal::assert_padded(&rebuilt.primitives, &geometry);
+    crate::ray_traversal::assert_parents_contain_children(&rebuilt.bvh, &rebuilt.primitives);
     let faces = geometry.face_index_ranges.len();
     assert!(faces > 3);
     assert_eq!(charts.len(), faces);

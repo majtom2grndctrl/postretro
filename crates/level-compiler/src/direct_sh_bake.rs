@@ -855,7 +855,9 @@ fn pack_atlas(
 /// the geometry hash), and the static-direct light set (postcard-encoded, in
 /// global order, each paired with its global index). A grid/geometry/static-light
 /// change invalidates this entry in lockstep with the indirect SH entries; the
-/// indirect entry is otherwise untouched (distinct `stage_id`).
+/// indirect entry is otherwise untouched (distinct `stage_id`). Last comes
+/// `tracer_epoch` (`ray_traversal::TRACER_EPOCH`): probe direct traces shadow
+/// rays.
 fn direct_cache_key(
     inputs: &DirectBakeInputs<'_, '_>,
     layout: &ProbeGridLayout,
@@ -863,6 +865,7 @@ fn direct_cache_key(
     global_indices: &[u64],
     probe_spacing: f32,
     geom_hash: &[u8; 32],
+    tracer_epoch: u32,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
 
@@ -911,6 +914,8 @@ fn direct_cache_key(
     // flagged set itself is folded: toggling the floor re-keys a map that
     // flags a light, and no other.
     inputs.embedded_emitters.hash_keys(&mut hasher);
+
+    hasher.update(&tracer_epoch.to_le_bytes());
 
     let digest = hasher.finalize();
     CacheKey::new(
@@ -962,6 +967,7 @@ pub fn bake_direct_sh_volume_cached_controlled(
         &global_indices,
         config.probe_spacing,
         &geom_hash,
+        crate::ray_traversal::TRACER_EPOCH,
     );
 
     if let Some(bytes) = cache.get(&key) {
@@ -2082,6 +2088,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 9,
                 light: &light,
+                tracer_epoch: 0,
             },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
@@ -2096,6 +2103,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 9,
                 light: &light,
+                tracer_epoch: 0,
             },
         );
 
@@ -2651,6 +2659,7 @@ mod tests {
             &global_indices,
             config_a.probe_spacing,
             &geom_hash,
+            crate::ray_traversal::TRACER_EPOCH,
         );
 
         let layout_b = probe_grid_layout(inputs.sh_ctx, &config_b);
@@ -2661,6 +2670,7 @@ mod tests {
             &global_indices,
             config_b.probe_spacing,
             &geom_hash,
+            crate::ray_traversal::TRACER_EPOCH,
         );
 
         assert_ne!(
@@ -2687,6 +2697,57 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn direct_sh_volume_key_changes_with_tracer_epoch() {
+        let geo = floor_and_walls_geometry();
+        let (bvh, prims, _) = build_bvh(&geo).unwrap();
+        let tree = tree_all_empty();
+        let exterior: HashSet<usize> = HashSet::new();
+        let lights = vec![static_point_light(
+            DVec3::new(2.0, 1.5, 2.0),
+            8.0,
+            [1.0, 0.8, 0.6],
+        )];
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
+            bvh: &bvh,
+            primitives: &prims,
+            geometry: &geo,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = DirectBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        };
+        let config = ShConfig { probe_spacing: 1.0 };
+        let layout = probe_grid_layout(inputs.sh_ctx, &config);
+        let static_refs = static_light_refs(&sh_ctx);
+        let (direct_lights, global_indices) = static_direct_lights(&static_refs);
+        let geom_hash = geometry_content_hash(inputs.sh_ctx.geometry);
+        let key = |tracer_epoch| {
+            direct_cache_key(
+                &inputs,
+                &layout,
+                &direct_lights,
+                &global_indices,
+                config.probe_spacing,
+                &geom_hash,
+                tracer_epoch,
+            )
+            .as_filename()
+        };
+
+        let epoch = crate::ray_traversal::TRACER_EPOCH;
+        assert_ne!(key(epoch), key(epoch + 1));
     }
 
     /// Cache round-trip: a second build with a warm cache reproduces the first

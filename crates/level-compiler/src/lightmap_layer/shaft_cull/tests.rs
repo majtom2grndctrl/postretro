@@ -1,11 +1,11 @@
-// Shaft-cull margins against the hit test: a randomized f32 Möller–Trumbore search.
+// Shaft-cull margins against the hit test: a randomized search of the watertight f64 test.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use glam::{DVec3, Vec3};
 
 use super::margin::*;
 use super::*;
-use crate::lightmap_bake::ray_triangle_hit;
+use crate::ray_traversal::TraceRay;
 
 /// SplitMix64: a fixed, dependency-free stream, so the search is the same on
 /// every run.
@@ -93,7 +93,9 @@ fn traced_hit(from: Vec3, to: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
     let dir = delta / length;
     let origin = from + dir * RAY_EPSILON;
     let max_distance = length - RAY_EPSILON;
-    ray_triangle_hit(origin, dir, a, b, c).is_some_and(|dist| dist > 0.0 && dist < max_distance)
+    TraceRay::new(origin, dir)
+        .hit([a, b, c], 0.0, max_distance)
+        .is_some()
 }
 
 /// Whether a lead-in test of this triangle on `from → to` reports a hit:
@@ -105,11 +107,13 @@ fn lead_in_hit(from: Vec3, to: Vec3, [a, b, c]: [Vec3; 3]) -> bool {
         return false;
     }
     let dir = delta / length;
-    ray_triangle_hit(from, dir, a, b, c).is_some_and(|dist| dist < length)
+    TraceRay::new(from, dir)
+        .hit([a, b, c], 0.0, length)
+        .is_some()
 }
 
-/// Sine of the angle between the `f32` ray `from → to` and the plane of the
-/// triangle's `f32` edges.
+/// Sine of the angle between the `f32` ray `from → to` and the triangle's
+/// plane.
 fn sin_grazing(from: Vec3, to: Vec3, candidate: &Candidate) -> f64 {
     let dir = (to - from).as_dvec3().normalize();
     dir.dot(candidate.normal.normalize()).abs()
@@ -122,10 +126,10 @@ const OFFSETS: [f64; 4] = [0.0, 104.0, 1024.0, 4096.0];
 #[derive(Default, Debug)]
 struct Search {
     cases: usize,
-    /// Accepted hits on segments the certificate places off the triangle.
+    /// Accepted hits on segments the separation places off the triangle.
     phantom_hits: usize,
     /// Cases whose gap reached the margin: the claim's domain.
-    certified: usize,
+    separated: usize,
     /// Accepted hits with the gap at or past the margin: must stay zero.
     violations: usize,
     /// Largest gap / margin over accepted hits with a positive gap.
@@ -136,7 +140,7 @@ impl Search {
     fn record(&mut self, hit: bool, (gap, margin): (f64, f64)) {
         self.cases += 1;
         if gap >= margin {
-            self.certified += 1;
+            self.separated += 1;
         }
         if hit && gap > 0.0 {
             self.phantom_hits += 1;
@@ -151,8 +155,9 @@ impl Search {
 // The normal margin is sound against the hit test: a segment that stops short
 // of a triangle's plane, from either side and at any grazing angle, is never
 // hit once its gap along the triangle's own normal reaches m_N. Segments end a
-// random multiple of the hit test's rounding scale from the plane, over a
-// triangle's interior, at coordinates up to 4 km.
+// random multiple of their own `f32` ends' rounding scale from the plane,
+// which bounds the hit test's height error, over a triangle's interior, at
+// coordinates up to 4 km.
 #[test]
 fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
     let mut stream = Stream(0x5348_4146_545f_4e31);
@@ -185,19 +190,19 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
             .normalize_or(normal.any_orthonormal_vector());
         let toward_plane = along * (1.0 - sin * sin).sqrt() - normal * side * sin;
         let length = stream.log_range(0.01, 30.0);
-        let scale = UNIT_ROUNDOFF * candidate.shape * (foot.distance(a) + 2.0 * length + offset);
-        let height = scale * stream.log_range(1.0e-2, 60.0);
+        let scale = UNIT_ROUNDOFF * (foot.abs().max_element() + offset + 6.0 * length);
+        let height = scale * stream.log_range(1.0e-2, 1.0e3);
         let to = foot + normal * side * height;
         let from = to - toward_plane * length;
         let (from, to) = (from.as_vec3(), to.as_vec3());
         let bounds = segment_bounds(from, to);
-        let certificate = bounds.normal_certificate(&candidate, bounds.reach(&candidate));
-        search.record(traced_hit(from, to, points), certificate);
-        search.record(lead_in_hit(from, to, points), certificate);
+        let separation = bounds.normal_separation(&candidate, bounds.reach(&candidate));
+        search.record(traced_hit(from, to, points), separation);
+        search.record(lead_in_hit(from, to, points), separation);
     }
     assert_eq!(search.violations, 0, "{search:?}");
     assert!(
-        search.phantom_hits > 100 && search.certified > 10_000,
+        search.phantom_hits > 100 && search.separated > 10_000,
         "the search must reach the rounding regime and the margin: {search:?}"
     );
     assert!(search.worst_ratio > 0.01, "{search:?}");
@@ -205,10 +210,14 @@ fn shaft_normal_margin_admits_no_accepted_hit_beyond_it() {
 
 // The axis margin is sound against the hit test above the angle floor: a
 // segment at or above the floor that crosses a triangle's plane just outside
-// one of its edges is never hit once its gap reaches m_A, along that edge's
-// in-plane outward normal or along any other unit axis, N′ components
-// included. Steeper rays than the floor only; a ray below it is the accepted
-// gap and is not asserted.
+// one of its edges, or past one of its corners, is never hit once its gap
+// reaches m_A, along the direction from the triangle to the crossing or
+// along any other unit axis, N components included. Crossings land a random
+// multiple of τ outside the edge, or past its first corner in that corner's
+// normal cone, where the tolerance's region is round; so the tolerance's
+// hits are the phantom ones, and the worst ratio shows they reach τ itself.
+// Steeper rays than the floor only; a ray below it is the accepted gap and
+// is not asserted.
 #[test]
 fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     let mut stream = Stream(0x5348_4146_545f_4131);
@@ -216,6 +225,8 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
     // are the ones a search without them would draw.
     let mut axis_stream = Stream(0x5348_4146_545f_4132);
     let mut search = Search::default();
+    // The corner cases alone, also recorded in `search`.
+    let mut round_corners = Search::default();
     let mut other_axes = Search::default();
     let mut below_floor = 0;
     for _ in 0..150_000 {
@@ -246,11 +257,25 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         // At or a little below the floor, mostly above it.
         let sin = stream.range(0.8 * SIN_ANGLE_FLOOR, 1.0);
         let length = stream.log_range(0.01, 30.0);
-        let reach = p0.distance(corners[0]) + 2.0 * length + offset;
-        let scale = UNIT_ROUNDOFF * candidate.shape * (3.0 * reach + candidate.edge_sum) / sin;
-        let along_edge = stream.range(0.05, 0.95);
+        let scale = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
         let beyond = stream.log_range(1.0e-2, 60.0);
-        let crossing = p0 + (p1 - p0) * along_edge + outward * scale * beyond;
+        // A quarter of the crossings lie past p0 instead, along a direction
+        // in its normal cone, between the outward normals of its two edges:
+        // the triangle's nearest point is p0 itself, so the gap along that
+        // direction is the crossing's distance. The ray runs across it.
+        let at_corner = stream.unit() < 0.25;
+        let (foot, outward, run) = if at_corner {
+            let mut other = normal.cross((opposite - p0).normalize());
+            if other.dot(p1 - p0) > 0.0 {
+                other = -other;
+            }
+            let mix = stream.unit();
+            let toward = (outward * mix + other * (1.0 - mix)).normalize_or(outward);
+            (p0, toward, normal.cross(toward))
+        } else {
+            (p0 + (p1 - p0) * stream.range(0.05, 0.95), outward, run)
+        };
+        let crossing = foot + outward * scale * beyond;
         let sign = if stream.unit() < 0.5 { 1.0 } else { -1.0 };
         let dir = run * sign * (1.0 - sin * sin).sqrt() + normal * sin;
         let before = stream.range(0.1, 0.9);
@@ -262,35 +287,50 @@ fn shaft_axis_margin_admits_no_accepted_hit_beyond_it_above_the_angle_floor() {
         }
         let bounds = segment_bounds(from, to);
         let hits = [traced_hit(from, to, points), lead_in_hit(from, to, points)];
-        if let Some(certificate) = bounds.axis_certificate(&candidate, outward) {
+        if let Some(separation) = bounds.axis_separation(&candidate, outward) {
             for hit in hits {
-                search.record(hit, certificate);
+                search.record(hit, separation);
+                if at_corner {
+                    round_corners.record(hit, separation);
+                }
             }
         }
-        // Mostly the edge normal tipped toward a random direction, N′
-        // included, by up to a few times the angle that still keeps the gap
-        // open; now and then a direction drawn at random.
+        // Mostly that direction tipped toward a random one, N included, by
+        // up to a few times the angle that still keeps the gap open; now and
+        // then a direction drawn at random.
         let axis = if axis_stream.unit() < 0.125 {
             axis_stream.direction()
         } else {
-            let open = scale * beyond / (length + candidate.edge_sum);
+            let open = scale * beyond / (length + 2.0 * candidate.longest_edge);
             outward + axis_stream.direction() * open * axis_stream.log_range(1.0e-3, 3.0)
         };
-        if let Some(certificate) = bounds.axis_certificate(&candidate, axis) {
+        if let Some(separation) = bounds.axis_separation(&candidate, axis) {
             for hit in hits {
-                other_axes.record(hit, certificate);
+                other_axes.record(hit, separation);
             }
         }
     }
     assert_eq!(search.violations, 0, "{search:?}");
     assert!(
-        search.phantom_hits > 100 && search.certified > 10_000,
+        search.phantom_hits > 100 && search.separated > 10_000,
         "the search must reach the rounding regime and the margin: {search:?}"
     );
-    assert!(search.worst_ratio > 0.01, "{search:?}");
+    // m_A ≥ κτ, so a worst ratio past 0.9/κ means some accepted hit lay at
+    // least 0.9τ from the triangle: the search reaches the tolerance's
+    // boundary, not only its inside. Near the origin m_A is within a few
+    // percent of κτ, so the best ratio approaches 1/κ.
+    let boundary = 0.9 / KAPPA;
+    assert!(
+        search.worst_ratio > boundary,
+        "tolerance hits must reach near τ: {search:?}"
+    );
+    assert!(
+        round_corners.phantom_hits > 100 && round_corners.worst_ratio > boundary,
+        "the corner cases must reach near τ too: {round_corners:?}"
+    );
     assert_eq!(other_axes.violations, 0, "{other_axes:?}");
     assert!(
-        other_axes.certified > 2_000,
+        other_axes.separated > 2_000,
         "the other axes must reach the margin: {other_axes:?}"
     );
     assert!(
@@ -335,25 +375,195 @@ fn shaft_query_growth_exceeds_the_axis_margin_of_a_triangle_that_far_away() {
         "the probe sits just inside the cap: ρ = {}",
         probe.shape
     );
-    let scene = ShaftScene {
-        shape: probe.shape,
-        shape_edge: probe.shape * probe.longest_edge,
-        edge: probe.longest_edge,
-    };
+    let mut scene = ShaftScene::default();
+    scene.include(&probe);
     let growth = scene.query_growth(&bounds).unwrap();
     let candidate = Candidate::of(at(bounds.hi.x + growth)).unwrap();
     let (gap, margin) = bounds
-        .axis_certificate(&candidate, DVec3::X)
+        .axis_separation(&candidate, DVec3::X)
         .expect("a unit axis");
     assert!(
         gap >= margin,
         "growth {growth}: a triangle that far has gap {gap} under its margin {margin}"
     );
-    // About 8 cm: the capped sliver's 8ρe_T term dominates.
+    // About 1 mm: κτ dominates; the capped sliver's rounding terms are far
+    // below it.
     assert!(
-        (0.05..0.1).contains(&growth),
-        "growth {growth}: a capped 3 m sliver sets it near 8 cm, far below the hull's size"
+        (0.001..0.0011).contains(&growth),
+        "growth {growth}: κτ sets it near 1 mm, far below the hull's size"
     );
+}
+
+// The strict `f64` terms match their derivation where they dominate: a 1 cm
+// triangle 3 km from a 1 m segment at the origin, where R_T² carries the hit
+// test's rounding past τ and the sampler's endpoint terms stay small. Both
+// margins are recomputed from the forms margin.rs states, H as
+// w·R_T·P(9A + 54P)/‖N‖ and the in-plane reach expanded in R_T, not from the
+// margin code's own expressions, so a coefficient error in either fails. κ
+// is read from the code: it is chosen, not derived.
+#[test]
+fn shaft_strict_terms_match_their_derivation_where_they_dominate() {
+    let (w, u) = (2.0_f64.powi(-53), 2.0_f64.powi(-24));
+    let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
+    let sin_floor = 2.0_f64.to_radians().sin();
+    let (from, to) = (Vec3::ZERO, Vec3::Y);
+    let bounds = segment_bounds(from, to);
+    let points = [
+        Vec3::new(3000.0, 0.5, 0.5),
+        Vec3::new(3000.0, 0.51, 0.5),
+        Vec3::new(3000.0, 0.5, 0.51),
+    ];
+    let candidate = Candidate::of(points).unwrap();
+    let [a, b, c] = points.map(Vec3::as_dvec3);
+    let (e1, e2) = (b - a, c - a);
+    let e_t = e1.length().max(e2.length());
+    let area = e1.cross(e2).length();
+    let (lo, hi) = (from.as_dvec3(), to.as_dvec3());
+    let diag = (hi - lo).length();
+    let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
+    let magnitude = lo.abs().max(hi.abs());
+    let point_rounding =
+        w * (6.0 * (magnitude.max_element() + r) + 20.0 * (e_t + tau).powi(2) / tau);
+    let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+    let relative = |margin: f64, expected: f64| ((margin - expected) / expected).abs();
+
+    // m_N = κ[H_s + min(H, τ + δ_r) + e_H(n̂)].
+    let height = |p: f64| w * r * p * (9.0 * (24.0 * r + 4.0 * p) + 54.0 * p) / area;
+    let strict_height = height(4.0 * e_t);
+    let expected = KAPPA
+        * (strict_height
+            + height(4.0 * e_t + 2.0 * tau).min(tau + point_rounding)
+            + (candidate.normal / area).abs().dot(epsilon));
+    let (_, margin) = bounds.normal_separation(&candidate, bounds.reach(&candidate));
+    assert!(
+        strict_height > 0.1 * tau,
+        "H_s {strict_height} must be a large share of m_N {expected}"
+    );
+    assert!(
+        relative(margin, expected) < 1.0e-12,
+        "m_N {margin}, derived {expected}"
+    );
+
+    // m_A = κ[τ + δ_r + (w·q/sin θ0)(864R² + 2016e_T·R + 384e_T²) + e_H(a)],
+    // along an in-plane axis.
+    let reach =
+        w * (e_t / area) / sin_floor * (864.0 * r * r + 2016.0 * e_t * r + 384.0 * e_t * e_t);
+    let expected = KAPPA * (tau + point_rounding + reach + epsilon.y);
+    let (_, margin) = bounds
+        .axis_separation(&candidate, DVec3::Y)
+        .expect("a unit axis");
+    assert!(
+        reach > tau,
+        "the strict reach {reach} must outgrow τ here: m_A {expected}"
+    );
+    assert!(
+        relative(margin, expected) < 1.0e-12,
+        "m_A {margin}, derived {expected}"
+    );
+}
+
+// The query growth's bound on m_A, κ(c₀ + c₁R + c₂R²), matches the margin
+// and its derivation where each of its terms shows. With the scene holding
+// one triangle, the bound at that triangle's own R_T is m_A along ε, the
+// axis whose e_H(a) is all of ‖ε‖. Between them two cases give every term a
+// visible share: a 1 cm triangle at the origin with the segment 3 km out
+// (c₂R², and M and R_T in δ_r), and a 100 m sliver beside a segment at the
+// origin (c₀'s strict term and δ_r's edge term). Both are also recomputed
+// from the forms margin.rs states, so a coefficient wrong in the bound, or
+// in both, fails.
+#[test]
+fn shaft_query_bound_matches_the_axis_margin_and_its_derivation_where_each_term_shows() {
+    // Far above the `f64` evaluation's rounding; a term shows when its share
+    // of the margin is a hundred times that.
+    const AGREEMENT: f64 = 1.0e-12;
+    let (w, u) = (2.0_f64.powi(-53), 2.0_f64.powi(-24));
+    let tau = f64::from(crate::ray_traversal::TRACER_TOLERANCE_METERS);
+    let sin_floor = 2.0_f64.to_radians().sin();
+    let relative = |value: f64, expected: f64| ((value - expected) / expected).abs();
+    let (sin, cos) = 1.0_f64.to_radians().sin_cos();
+    let sliver = [
+        DVec3::new(0.5, 0.5, 0.5),
+        DVec3::new(100.5, 0.5, 0.5),
+        DVec3::new(0.5 + 100.0 * cos, 0.5 + 100.0 * sin, 0.5),
+    ];
+    /// A case's name, its segment, its triangle and the terms it shows.
+    type Case<'a> = (&'a str, (Vec3, Vec3), [Vec3; 3], &'a [&'a str]);
+    let cases: [Case; 2] = [
+        (
+            "1 cm triangle, segment 3 km out",
+            (Vec3::new(3000.0, 0.0, 0.0), Vec3::new(3000.0, 1.0, 0.0)),
+            [
+                Vec3::new(0.0, 0.5, 0.5),
+                Vec3::new(0.0, 0.51, 0.5),
+                Vec3::new(0.0, 0.5, 0.51),
+            ],
+            &["c₂R²", "c₁R, strict", "δ_r, coordinates"],
+        ),
+        (
+            "100 m sliver beside the segment",
+            (Vec3::ZERO, Vec3::Y),
+            sliver.map(|p| p.as_vec3()),
+            &["c₂R²", "c₁R, strict", "c₀, strict", "δ_r, edge"],
+        ),
+    ];
+    for (label, (from, to), points, shows) in cases {
+        let bounds = segment_bounds(from, to);
+        let candidate = Candidate::of(points).unwrap();
+        let mut scene = ShaftScene::default();
+        scene.include(&candidate);
+
+        // m_A = κ[τ + δ_r + (w·q/sin θ0)(864R² + 2016e_T·R + 384e_T²) + ‖ε‖],
+        // δ_r = w(6(M + R) + 20(e_T + τ)²/τ).
+        let [a, b, c] = points.map(Vec3::as_dvec3);
+        let (e1, e2) = (b - a, c - a);
+        let e_t = e1.length().max(e2.length());
+        let q = e_t / e1.cross(e2).length();
+        let (lo, hi) = (from.as_dvec3(), to.as_dvec3());
+        let (lo, hi) = (lo.min(hi), lo.max(hi));
+        let diag = (hi - lo).length();
+        let r = a.distance((lo + hi) * 0.5) + 0.5 * diag + e_t;
+        let magnitude = lo.abs().max(hi.abs());
+        let epsilon = magnitude * (10.0 * u) + DVec3::splat(6.0 * u * diag);
+        let strict = w * q / sin_floor;
+        let terms = [
+            ("τ", tau),
+            ("δ_r, coordinates", w * 6.0 * (magnitude.max_element() + r)),
+            ("δ_r, edge", w * 20.0 * (e_t + tau).powi(2) / tau),
+            ("c₂R²", strict * 864.0 * r * r),
+            ("c₁R, strict", strict * 2016.0 * e_t * r),
+            ("c₀, strict", strict * 384.0 * e_t * e_t),
+            ("‖ε‖", epsilon.length()),
+        ];
+        let expected = KAPPA * terms.iter().map(|(_, term)| term).sum::<f64>();
+        for name in shows {
+            let (_, term) = terms
+                .iter()
+                .find(|(term_name, _)| term_name == name)
+                .expect("a named term");
+            assert!(
+                KAPPA * term > 100.0 * AGREEMENT * expected,
+                "{label}: {name}, {term}, is too small a share of m_A {expected} to show"
+            );
+        }
+
+        let [m0, m1, m2] = scene.axis_margin_bound(&bounds);
+        let bound = m0 + m1 * r + m2 * r * r;
+        let (_, margin) = bounds
+            .axis_separation(&candidate, epsilon)
+            .expect("a unit axis");
+        assert!(
+            relative(margin, expected) < AGREEMENT,
+            "{label}: m_A {margin}, derived {expected}"
+        );
+        assert!(
+            relative(bound, expected) < AGREEMENT,
+            "{label}: query bound {bound}, derived {expected}"
+        );
+        assert!(
+            bound >= margin * (1.0 - AGREEMENT) && relative(bound, margin) < AGREEMENT,
+            "{label}: query bound {bound}, m_A {margin}"
+        );
+    }
 }
 
 // The hull-face axes: the plane through a slab edge tangent to the emitter

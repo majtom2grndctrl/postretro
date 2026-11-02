@@ -35,6 +35,9 @@ pub(crate) const SH_BASE_VOLUME_STAGE_VERSION: u32 = 2;
 /// - The fill, with −0.0 read as 0.0 so one fill has one key.
 /// - The later bounces' count and rays per patch, the patch lookup, and the
 ///   gather's own constants ([`fold_gather_constants`]).
+/// - The tracer epoch (`ray_traversal::TRACER_EPOCH`): the bounces and the
+///   gather take closest hits. The shared layer fingerprint folds it too;
+///   folding it here keeps the dependency direct.
 ///
 /// No animated light enters: the descriptors and slot table rebuild every
 /// build and the entry stores neither.
@@ -44,6 +47,7 @@ pub(crate) fn volume_key(
     layout: &ProbeGridLayout,
     probe_spacing: f32,
     bounce_fill: f32,
+    tracer_epoch: u32,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sh base volume\0");
@@ -77,6 +81,7 @@ pub(crate) fn volume_key(
     hasher.update(&BOUNCE_RAYS_PER_PATCH.to_le_bytes());
     hasher.update(&[PatchLookup::PRODUCTION.key_tag()]);
     fold_gather_constants(&mut hasher);
+    hasher.update(&tracer_epoch.to_le_bytes());
     CacheKey::new(
         SH_BASE_VOLUME_STAGE_ID,
         SH_BASE_VOLUME_STAGE_VERSION,

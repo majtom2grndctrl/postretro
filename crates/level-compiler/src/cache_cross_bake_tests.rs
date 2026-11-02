@@ -1340,6 +1340,7 @@ fn five_stage_version_bumps_miss_then_hit() {
             valid_probe_mask: u64::MAX,
             seed_axis: 0,
             light: &key_light,
+            tracer_epoch: 0,
         });
         let current = delta_sh_entry_cache_key(&DeltaShEntryKeyInputs {
             bounce_hash: None,
@@ -1352,6 +1353,7 @@ fn five_stage_version_bumps_miss_then_hit() {
             valid_probe_mask: u64::MAX,
             seed_axis: 0,
             light: &key_light,
+            tracer_epoch: 0,
         });
         cache.put(&previous, b"previous-format payload");
         assert_eq!(
@@ -1400,6 +1402,7 @@ fn five_stage_version_bumps_miss_then_hit() {
         8.0,
         64,
         CHUNK_LIGHT_LIST_STAGE_VERSION + 1,
+        crate::ray_traversal::TRACER_EPOCH,
     );
     cache.put(&current_chunk, b"current");
     assert_eq!(cache.get(&bumped_chunk), None);

@@ -23,6 +23,7 @@ use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 use crate::partition::{Aabb, BspChild, BspLeaf, BspNode, BspTree};
+use crate::ray_traversal::TRACER_EPOCH;
 use crate::sh_bake::{
     ShBakeCtx, ShConfig, animation_table_bytes, probe_grid_layout, static_light_refs,
 };
@@ -322,7 +323,12 @@ impl Scene {
     }
 
     pub(super) fn keys(&self) -> LayerKeys {
-        LayerKeys::new(&self.geometry, self.materials.as_ref())
+        self.keys_at(TRACER_EPOCH)
+    }
+
+    /// [`Self::keys`] under `tracer_epoch`.
+    pub(super) fn keys_at(&self, tracer_epoch: u32) -> LayerKeys {
+        LayerKeys::new(&self.geometry, self.materials.as_ref(), tracer_epoch)
     }
 
     /// The cache key of `light`'s layer, unflagged.
@@ -345,6 +351,19 @@ impl Scene {
         fill: f32,
         embedded: &EmbeddedEmitters,
     ) -> CacheKey {
+        self.volume_key_under(lights, spacing, fill, embedded, TRACER_EPOCH)
+    }
+
+    /// [`Self::volume_key_with`], the volume key alone folding
+    /// `tracer_epoch`: the layer keys keep the shipped epoch.
+    pub(super) fn volume_key_under(
+        &self,
+        lights: &[MapLight],
+        spacing: f32,
+        fill: f32,
+        embedded: &EmbeddedEmitters,
+        tracer_epoch: u32,
+    ) -> CacheKey {
         let reach = self.reach(lights);
         self.with_ctx(lights, |ctx| {
             let plan = LayerPlan::new(&static_light_refs(ctx), &reach, embedded);
@@ -354,7 +373,7 @@ impl Scene {
                     probe_spacing: spacing,
                 },
             );
-            volume_key(&self.keys(), &plan, &layout, spacing, fill)
+            volume_key(&self.keys(), &plan, &layout, spacing, fill, tracer_epoch)
         })
     }
 

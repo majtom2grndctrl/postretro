@@ -395,7 +395,7 @@ mod tests {
             let (bvh, primitives, _) =
                 crate::bvh_build::build_bvh(&geometry).expect("wall BVH builds");
             let clear = |from, to| {
-                crate::lightmap_bake::segment_clear(&bvh, &primitives, &geometry, from, to)
+                crate::ray_traversal::segment_clear(&bvh, &primitives, &geometry, from, to)
             };
             (
                 surface_separates(&chart, a, b, clear),

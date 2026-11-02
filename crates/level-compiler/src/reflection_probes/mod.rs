@@ -84,7 +84,7 @@ use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
-use hit::SceneTracer;
+pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
 use placement::{PlacedProbe, PlacementScene, bindings, place_probes, up_facing_faces};
 use roster::{check_roster, references};
@@ -115,7 +115,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// with fill and leak guard; the key gains the override table, the rule's
 /// constants, each probe's excluded set with its hulls and contacts, and
 /// each kept contact candidate's faces, planes and sides.
-const STAGE_VERSION: u32 = 11;
+/// 12: an excluded hull's exit reads the neighbour the ray is inside first,
+/// kept solid winning a tie, not the first excluded one in brush order.
+const STAGE_VERSION: u32 = 12;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -347,7 +349,13 @@ fn bake_or_load_with(
     }
 
     // Capture is a pure function of the keyed inputs, so a hit skips it.
-    let key = cache_key(inputs, &probes, &exclusions, constants)?;
+    let key = cache_key(
+        inputs,
+        &probes,
+        &exclusions,
+        constants,
+        crate::ray_traversal::TRACER_EPOCH,
+    )?;
     if let Some((section, reports)) =
         stage_cache
             .and_then(|cache| cache.get(&key))

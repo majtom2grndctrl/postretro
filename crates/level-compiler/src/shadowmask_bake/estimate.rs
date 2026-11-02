@@ -14,9 +14,9 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{
     CutParent, light_contribution_and_direction, light_texel_contribution_and_visibility_with,
-    segment_clear_remembering,
 };
 use crate::lightmap_layer::{SharedAtlas, light_may_reach};
+use crate::ray_traversal::segment_clear_remembering;
 use crate::texel_footprint::{
     ClipBand, ClipReach, EmbeddedEmitters, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
@@ -32,9 +32,7 @@ pub(crate) const ESTIMATE_STRIDE: u32 = LIT_TEXEL_FLOOR.isqrt();
 
 /// Each sample runs the walk's own visibility sampler (receiver footprint,
 /// seed and sample count), so a sample reads what the walk bakes at that
-/// texel, barring the occluder cache's documented rounding catch
-/// (`segment_clear_remembering`): the estimate's caches remember other
-/// triangles at a texel than the walk's do. A thin own segment with no lattice
+/// texel, whatever its caches hold. A thin own segment with no lattice
 /// coordinate is sampled at its centre; the tag names that placement so a
 /// build without it never shares a memo entry.
 const ESTIMATE_MODE: &[u8] = b"walk-area-samples;thin-segment-centres";

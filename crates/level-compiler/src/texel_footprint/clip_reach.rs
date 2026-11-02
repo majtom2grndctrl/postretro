@@ -4,15 +4,14 @@
 
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Point3;
 
 use crate::bvh_build::BvhPrimitive;
 use crate::chart_raster::{chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::geometry::GeometryResult;
-use crate::lightmap_bake::{Chart, RAY_EPSILON, ray_triangle_hit};
-use crate::ray_traversal::BoundedRay;
+use crate::lightmap_bake::{Chart, RAY_EPSILON};
+use crate::ray_traversal::{TraceRay, primitive_triangles, triangle_points};
 
 /// Footprint reach covered by the pre-pass, in texels: every sample offset is
 /// under one texel from the centre at any count.
@@ -21,8 +20,12 @@ const FOOTPRINT_REACH_TEXELS: f32 = 1.0;
 /// The slab about a chart's raised plane, the receiver's plane lifted
 /// `RAY_EPSILON` along its normal, that a triangle must reach to block a
 /// footprint's clip segments or lead-ins: it has corners on both sides of the
-/// raised plane, within a tolerance far above rounding. The receiver and its
-/// coplanar neighbours lie wholly below it.
+/// raised plane, within a tolerance. A clip segment lies in the raised plane,
+/// and the hit test accepts a crossing within τ of a triangle
+/// (`ray_traversal::TRACER_TOLERANCE_METERS`), so a triangle up to τ off the
+/// plane can block one; the tolerance is τ plus a quarter of `RAY_EPSILON`,
+/// far above rounding. The receiver and its coplanar neighbours lie a whole
+/// `RAY_EPSILON` below the plane, outside it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ClipBand {
     normal: Vec3,
@@ -41,7 +44,7 @@ impl ClipBand {
             normal,
             origin: chart.origin,
             height: RAY_EPSILON * normal.dot(chart.normal),
-            tolerance: 0.5 * RAY_EPSILON,
+            tolerance: crate::ray_traversal::TRACER_TOLERANCE_METERS + 0.25 * RAY_EPSILON,
         }
     }
 
@@ -93,33 +96,21 @@ pub(crate) fn front_faces_clear(
     to: Vec3,
     admits: impl Fn([Vec3; 3]) -> bool,
 ) -> bool {
+    #[cfg(test)]
+    crate::bake_counters::begin_ray(crate::bake_counters::RayKind::Shadow);
     let delta = to - from;
     let length = delta.length();
     if length <= 0.0 {
         return true;
     }
-    let dir = delta / length;
-    let ray = Ray::new(
-        Point3::new(from.x, from.y, from.z),
-        Vector3::new(dir.x, dir.y, dir.z),
-    );
-    let query = BoundedRay::new(&ray, length);
-    let geom = &geometry.geometry;
+    let ray = TraceRay::new(from, delta / length);
+    let query = ray.query(length);
     for prim in bvh.traverse_iterator(&query, primitives) {
-        let start = prim.index_offset as usize;
-        let end = start + prim.index_count as usize;
-        for tri in (start..end).step_by(3).take_while(|&tri| tri + 3 <= end) {
-            let points = [0, 1, 2]
-                .map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position));
-            let front = (points[1] - points[0])
-                .cross(points[2] - points[0])
-                .dot(dir)
-                < 0.0;
-            if front
-                && admits(points)
-                && ray_triangle_hit(from, dir, points[0], points[1], points[2])
-                    .is_some_and(|dist| dist < length)
-            {
+        #[cfg(test)]
+        crate::bake_counters::bump_trace(|trace| trace.leaf_visits += 1);
+        for tri in primitive_triangles(prim) {
+            let points = triangle_points(geometry, tri);
+            if admits(points) && ray.hit(points, 0.0, length).is_some_and(|hit| hit.front) {
                 return false;
             }
         }

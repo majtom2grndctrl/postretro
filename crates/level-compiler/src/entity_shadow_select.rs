@@ -11,7 +11,6 @@ use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use crate::bvh_build::BvhPrimitive;
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
-use crate::lightmap_bake;
 use crate::map_data::{EntityShadowParams, LightType, MapLight, ShadowType};
 
 const DECORATIVE_SPOT_GRID: usize = 16;
@@ -146,7 +145,7 @@ fn decorative_spot_fixture(
                 + bitangent * (phi.sin() * sin_theta)
                 + axis * cos_theta)
                 .normalize_or_zero();
-            if !lightmap_bake::segment_clear(
+            if !crate::ray_traversal::segment_clear(
                 bvh,
                 primitives,
                 geometry,

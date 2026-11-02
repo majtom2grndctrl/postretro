@@ -58,6 +58,7 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 ## Measurements
 - Baseline `main` b6fc0c4ee, hallway cold `--release`, quiet machine: Lightmap Bake 964.83 s, SH Bake 126.44 s, Total 1198.27 s. PRL kept as the hallway `cmp` reference.
 - Reach cull 5f7c5c4ea, same map (counted run, SH 124.75 s so not materially loaded): Lightmap Bake 722.37 s = 0.75× baseline, against the ≤ 0.65× gate. Spike prototype saved 369 s of 860 s; this saves 243 s of 965 s with the same 1,732 M texels skipped. Cost breakdown is task 7.
+- Task 7 (instrumented, light load, SH 123.6 s): Lightmap Bake 619.94 s = 0.643×, PRL `cmp`-identical to baseline. Cull machinery ~5 CPU-s total; border traces 293 CPU-s (13.36 M × 22 µs, required by the per-texel rule). The stage runs ~4.2 of 16 cores: partition window of 8 in-order items, 0.37 pairs per item, serial consumer 273 s. Window 64 (experiment, reverted): 522.6 s under heavier load, bytes identical. The 722 s counted run was load-inflated. Idle re-time is part of task 6.
 
 ## Tasks
 
@@ -70,5 +71,5 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 | 4 | Fixture suite (two rooms et al.) and coverage-proof fixture rows | delegated, integrated here | 3 | done: all 13 remaining automated rows pass; bin suite 2214 pass, clippy clean. Production changes are `cfg(test)` seams only (`face_removal_seam.rs` acts before proof and BVH, P7) |
 | 5 | One counted hallway run (permit side ≥ 40%, border cost) | integrating executor | 3 | done (5f7c5c4ea, cold `--release`, verify off, machine busy so untimed): 45,360 of 83,022 pairs culled (54.6%); 1,732.1 M texels skipped, 13.36 M traced inside culled pairs (0.77%); proof 48,062 edges, 0 unproven, 0.072 s. Lightmap Bake 722 s, SH 125 s under load: timing gate needs idle-machine baseline + new runs |
 | 1c | Weld rework of the coverage proof per `weld-consensus.md` | delegated (Opus), integrated here | 1b | |
-| 7 | Reach-cull cost breakdown on the hallway (index and flood build, slab and mask build, culled-pair clip pre-pass and shaft setup, border traces); propose structural levers inside the brief's Decisions | delegated (Opus) | 5 | |
+| 7 | Reach-cull cost breakdown on the hallway (index and flood build, slab and mask build, culled-pair clip pre-pass and shaft setup, border traces); propose structural levers inside the brief's Decisions | delegated (Opus) | 5 | done: no reach-side lever worth taking; the stage's scheduling levers (byte-budgeted window admission, zero-record fold skip, off-thread layer close) speed `main` too and are an owner call |
 | 6 | Gate runs: `cmp` set, verify switch, timing, warm, grep | integrating executor | 4, 5 | |

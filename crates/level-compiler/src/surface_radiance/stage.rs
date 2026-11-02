@@ -89,10 +89,18 @@ pub(crate) fn bake_sh_base(
 
     // An empty grid gathers nothing, so it caches nothing either.
     let caches = cache.filter(|_| !layout.is_empty()).map(|cache| {
-        let keys = LayerKeys::new(ctx.geometry, ctx.bounce_materials);
+        let tracer_epoch = crate::ray_traversal::TRACER_EPOCH;
+        let keys = LayerKeys::new(ctx.geometry, ctx.bounce_materials, tracer_epoch);
         let volume = VolumeCache {
             cache,
-            key: volume_key(&keys, &plan, &layout, config.probe_spacing, bounce_fill),
+            key: volume_key(
+                &keys,
+                &plan,
+                &layout,
+                config.probe_spacing,
+                bounce_fill,
+                tracer_epoch,
+            ),
         };
         (LayerCache { cache, keys }, volume)
     });

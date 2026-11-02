@@ -6,6 +6,7 @@ use crate::bake_content_keys::{bounce_material_hash, geometry_content_hash};
 use crate::cache::{CacheKey, StageCache};
 use crate::delta_sh_bake::{INDIRECT_DELTA_SH_STAGE_ID, INDIRECT_DELTA_SH_STAGE_VERSION};
 use crate::delta_sh_cache::{DeltaShEntryKeyInputs, delta_sh_entry_cache_key};
+use crate::ray_traversal::TRACER_EPOCH;
 use crate::surface_radiance::{DEFAULT_BOUNCE_FILL, LayerKeys, LayerPlan, LightDigest, volume_key};
 use crate::texel_footprint::NO_EMBEDDED_EMITTERS;
 
@@ -43,11 +44,18 @@ fn keys(
     };
     let geometry_hash = geometry_content_hash(geometry);
     let hash = bounce_material_hash(materials, geometry);
-    let layer_keys = LayerKeys::new(geometry, materials);
+    let layer_keys = LayerKeys::new(geometry, materials, TRACER_EPOCH);
     let plan = LayerPlan::new(&[room.static_light()], &[1], &NO_EMBEDDED_EMITTERS);
     let mut keys = vec![
         layer_keys.key(LightDigest::of(room.static_light()), false),
-        volume_key(&layer_keys, &plan, &layout, 1.0, DEFAULT_BOUNCE_FILL),
+        volume_key(
+            &layer_keys,
+            &plan,
+            &layout,
+            1.0,
+            DEFAULT_BOUNCE_FILL,
+            TRACER_EPOCH,
+        ),
     ];
     let animated = room
         .pipeline
@@ -68,6 +76,7 @@ fn keys(
             valid_probe_mask: u64::MAX,
             seed_axis: indirect_light_axis(&unit),
             light: &unit,
+            tracer_epoch: TRACER_EPOCH,
         })
     }));
     keys

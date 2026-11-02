@@ -19,14 +19,13 @@ use crate::chart_raster::{
     CHART_PADDING_TEXELS, ChartPlacement, chart_texel_seed, chart_texel_world_position,
 };
 use crate::geometry::{FaceIndexRange, GeometryResult};
-use crate::lightmap_bake::{
-    BlockLayout, Chart, light_texel_is_covered, segment_clear, segment_clear_remembering,
-};
+use crate::lightmap_bake::{BlockLayout, Chart, light_texel_is_covered};
 use crate::lightmap_layer::{
     ExactSkips, LayerTexel, ShaftCull, ShaftScene, SharedAtlas, bake_light_layer_chart_controlled,
     bake_light_layer_chart_without_clip_prepass,
 };
 use crate::map_data::{DEFAULT_LIGHT_SIZE, FalloffModel, LightType, MapLight, ShadowType};
+use crate::ray_traversal::{Occluder, segment_clear, segment_clear_remembering};
 use crate::texel_step_detector::VisibilityGrid;
 
 /// The default atlas density, so fixtures measure ramps at the pitch
@@ -671,7 +670,7 @@ impl Fixture {
         outcomes
     }
 
-    fn clear_remembering(&self, from: Vec3, to: Vec3, cache: &Cell<Option<usize>>) -> bool {
+    fn clear_remembering(&self, from: Vec3, to: Vec3, cache: &Cell<Option<Occluder>>) -> bool {
         segment_clear_remembering(&self.bvh, &self.primitives, &self.geometry, from, to, cache)
     }
 

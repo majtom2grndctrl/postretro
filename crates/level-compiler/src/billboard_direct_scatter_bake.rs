@@ -1,9 +1,7 @@
 // Normal-free direct scatter baker for billboard shading.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
-use bvh::ray::Ray;
 use glam::Vec3;
-use nalgebra::{Point3, Vector3};
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::{
     AnimatedBillboardDirectScatterDeltaVolumesSection,
     BILLBOARD_DIRECT_SCATTER_DELTA_RGBA_F16_COUNT,
@@ -27,7 +25,6 @@ use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, soft_visibility_early_out};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
-use crate::ray_traversal::BoundedRay;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, ShBakeCtx, ShConfig, incident_radiance_at_point,
     probe_grid_layout, static_light_refs, vec3_from,
@@ -44,7 +41,6 @@ pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID: &str = "animated_billboard
 /// Bump only when the animated scatter calculation or its cached payload changes.
 pub const ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION: u32 = 3;
 
-const RAY_EPSILON: f32 = 1.0e-3;
 // Matches `sh_bake`'s direct-light seed with its ray axis fixed at zero, so a
 // soft penumbra samples the same emitter lattice in normal-free scatter and
 // direct-SH transport.
@@ -97,6 +93,7 @@ pub fn bake_billboard_direct_scatter_volume_cached_controlled(
         &direct_lights,
         &global_indices,
         config.probe_spacing,
+        crate::ray_traversal::TRACER_EPOCH,
     );
     if let Some(cache) = cache {
         if let Some(bytes) = cache.get(&key) {
@@ -213,7 +210,13 @@ pub fn bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled(
         return None;
     }
 
-    let key = animated_cache_key(inputs, &layout, config.probe_spacing, direct_deltas);
+    let key = animated_cache_key(
+        inputs,
+        &layout,
+        config.probe_spacing,
+        direct_deltas,
+        crate::ray_traversal::TRACER_EPOCH,
+    );
     if let Some(cache) = cache {
         if let Some(bytes) = cache.get(&key) {
             match AnimatedBillboardDirectScatterDeltaVolumesSection::from_bytes(&bytes) {
@@ -538,8 +541,9 @@ fn static_cache_key(
     lights: &[&MapLight],
     global_indices: &[u64],
     probe_spacing: f32,
+    tracer_epoch: u32,
 ) -> CacheKey {
-    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing);
+    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing, tracer_epoch);
     hasher.update(&(lights.len() as u32).to_le_bytes());
     for (light, &global_index) in lights.iter().zip(global_indices) {
         hasher.update(&global_index.to_le_bytes());
@@ -562,8 +566,9 @@ fn animated_cache_key(
     layout: &ProbeGridLayout,
     probe_spacing: f32,
     direct_deltas: &AnimatedDirectShDeltaVolumesSection,
+    tracer_epoch: u32,
 ) -> CacheKey {
-    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing);
+    let mut hasher = common_cache_hasher(inputs, layout, probe_spacing, tracer_epoch);
     hasher.update(&(inputs.animated_lights.len() as u32).to_le_bytes());
     for entry in inputs.animated_lights.entries() {
         hasher.update(&(entry.source_index as u64).to_le_bytes());
@@ -593,10 +598,14 @@ fn animated_cache_key(
     )
 }
 
+/// What both scatter keys fold first: geometry, the probe grid, the portal
+/// adjacency, then `tracer_epoch` (`ray_traversal::TRACER_EPOCH`), since
+/// scatter visibility traces.
 fn common_cache_hasher(
     inputs: &BillboardDirectScatterBakeInputs<'_, '_>,
     layout: &ProbeGridLayout,
     probe_spacing: f32,
+    tracer_epoch: u32,
 ) -> blake3::Hasher {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&geometry_content_hash(inputs.sh_ctx.geometry));
@@ -616,6 +625,7 @@ fn common_cache_hasher(
         hasher.update(&(portal.front_leaf as u64).to_le_bytes());
         hasher.update(&(portal.back_leaf as u64).to_le_bytes());
     }
+    hasher.update(&tracer_epoch.to_le_bytes());
     hasher
 }
 
@@ -628,97 +638,8 @@ fn scatter_visibility_seed(probe_index: u64, light_index: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let direction = delta / length;
-    let origin = from + direction * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(direction.x, direction.y, direction.z),
-    );
-    let max_distance = length - RAY_EPSILON;
-    let geometry = &ctx.geometry.geometry;
-    let query = BoundedRay::new(&ray, max_distance);
-    for primitive in ctx.bvh.traverse_iterator(&query, ctx.primitives) {
-        let mut triangle = primitive.index_offset as usize;
-        let end = triangle + primitive.index_count as usize;
-        while triangle + 3 <= end {
-            let a = Vec3::from(geometry.vertices[geometry.indices[triangle] as usize].position);
-            let b = Vec3::from(geometry.vertices[geometry.indices[triangle + 1] as usize].position);
-            let c = Vec3::from(geometry.vertices[geometry.indices[triangle + 2] as usize].position);
-            triangle += 3;
-            if let Some(distance) = ray_triangle_distance(origin, direction, a, b, c)
-                && distance > 0.0
-                && distance < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// The unbounded reference scan: the occlusion answer [`segment_clear`] must
-/// match.
-#[cfg(test)]
-fn segment_clear_full_scan(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
-    let delta = to - from;
-    let length = delta.length();
-    if length < RAY_EPSILON {
-        return true;
-    }
-    let direction = delta / length;
-    let origin = from + direction * RAY_EPSILON;
-    let ray = Ray::new(
-        Point3::new(origin.x, origin.y, origin.z),
-        Vector3::new(direction.x, direction.y, direction.z),
-    );
-    let max_distance = length - RAY_EPSILON;
-    let geometry = &ctx.geometry.geometry;
-    for primitive in ctx.bvh.traverse_iterator(&ray, ctx.primitives) {
-        let mut triangle = primitive.index_offset as usize;
-        let end = triangle + primitive.index_count as usize;
-        while triangle + 3 <= end {
-            let a = Vec3::from(geometry.vertices[geometry.indices[triangle] as usize].position);
-            let b = Vec3::from(geometry.vertices[geometry.indices[triangle + 1] as usize].position);
-            let c = Vec3::from(geometry.vertices[geometry.indices[triangle + 2] as usize].position);
-            triangle += 3;
-            if let Some(distance) = ray_triangle_distance(origin, direction, a, b, c)
-                && distance > 0.0
-                && distance < max_distance
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn ray_triangle_distance(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
-    let edge_one = b - a;
-    let edge_two = c - a;
-    let h = direction.cross(edge_two);
-    let determinant = edge_one.dot(h);
-    if determinant.abs() < 1.0e-8 {
-        return None;
-    }
-    let inverse = 1.0 / determinant;
-    let s = origin - a;
-    let u = inverse * s.dot(h);
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(edge_one);
-    let v = inverse * direction.dot(q);
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let distance = inverse * edge_two.dot(q);
-    (distance > 0.0).then_some(distance)
+pub(crate) fn segment_clear(ctx: &RaytracingCtx<'_>, from: Vec3, to: Vec3) -> bool {
+    crate::ray_traversal::segment_clear(ctx.bvh, ctx.primitives, ctx.geometry, from, to)
 }
 
 #[cfg(test)]
@@ -735,6 +656,7 @@ mod tests {
     use crate::light_namespaces::StaticBakedLights;
     use crate::map_data::{FalloffModel, LightAnimation, LightType};
     use crate::partition::{Aabb as CompilerAabb, BspLeaf, BspTree};
+    use crate::ray_traversal::RAY_EPSILON;
 
     fn light(light_type: LightType) -> MapLight {
         MapLight {
@@ -1090,6 +1012,81 @@ mod tests {
         );
     }
 
+    /// Run `check` over a one-light cube scene's scatter inputs, its probe
+    /// layout and a one-entry id-45 section.
+    fn with_key_inputs(
+        check: impl FnOnce(
+            &BillboardDirectScatterBakeInputs<'_, '_>,
+            &ProbeGridLayout,
+            &AnimatedDirectShDeltaVolumesSection,
+        ),
+    ) {
+        let lights = vec![light(LightType::Point)];
+        let geometry = cube_geometry();
+        let (bvh, primitives, _) = build_bvh(&geometry).expect("fixture geometry must build a BVH");
+        let tree = empty_tree();
+        let exterior = HashSet::new();
+        let static_lights = StaticBakedLights::from_lights(&lights);
+        let animated_lights = AnimatedBakedLights::from_lights(&lights);
+        let sh_ctx = ShBakeCtx {
+            bounce_materials: None,
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+            tree: &tree,
+            exterior_leaves: &exterior,
+            static_lights: &static_lights,
+            animated_lights: &animated_lights,
+            total_light_count: lights.len(),
+        };
+        let inputs = BillboardDirectScatterBakeInputs {
+            sh_ctx: &sh_ctx,
+            portals: &[],
+            animated_lights: &animated_lights,
+            static_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+        };
+        let layout = probe_grid_layout(&sh_ctx, &ShConfig { probe_spacing: 1.0 });
+        let direct = AnimatedDirectShDeltaVolumesSection {
+            affinity_factor: 4,
+            affinity_dims: [1, 1, 1],
+            tile_dimension: 6,
+            tile_border: 1,
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: Vec::new(),
+        };
+        check(&inputs, &layout, &direct);
+    }
+
+    #[test]
+    fn billboard_direct_scatter_key_changes_with_tracer_epoch() {
+        with_key_inputs(|inputs, layout, _| {
+            let static_lights = static_light_refs(inputs.sh_ctx);
+            let (lights, global_indices) = static_direct_lights(&static_lights);
+            let key = |tracer_epoch| {
+                static_cache_key(inputs, layout, &lights, &global_indices, 1.0, tracer_epoch)
+                    .as_filename()
+            };
+            let epoch = crate::ray_traversal::TRACER_EPOCH;
+            assert_ne!(key(epoch), key(epoch + 1));
+        });
+    }
+
+    #[test]
+    fn animated_billboard_direct_scatter_key_changes_with_tracer_epoch() {
+        with_key_inputs(|inputs, layout, direct| {
+            let key = |tracer_epoch| {
+                animated_cache_key(inputs, layout, 1.0, direct, tracer_epoch).as_filename()
+            };
+            let epoch = crate::ray_traversal::TRACER_EPOCH;
+            assert_ne!(key(epoch), key(epoch + 1));
+        });
+    }
+
     #[test]
     fn static_scatter_omission_is_source_based_not_zero_grid_based() {
         let mut sdf = light(LightType::Point);
@@ -1169,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_segment_clear_matches_full_scan_around_a_blocker() {
+    fn bounded_segment_clear_matches_brute_force_around_a_blocker() {
         // A blocker quad at y = 0 (x, z in [-1, 1]) split on its x = z
         // diagonal, plus tiles and a far floor below it: tree nodes past the
         // segment ends for the bound to prune.
@@ -1217,7 +1214,7 @@ mod tests {
                     -13.0,
                 ] {
                     let to = Vec3::new(x, end_y, z);
-                    let full = segment_clear_full_scan(&ctx, from, to);
+                    let full = crate::ray_traversal::segment_clear_brute_force(&geometry, from, to);
                     assert_eq!(segment_clear(&ctx, from, to), full, "{from} -> {to}");
                     if full {
                         clear += 1;

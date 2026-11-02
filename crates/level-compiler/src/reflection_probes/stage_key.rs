@@ -65,12 +65,14 @@ pub(super) fn parse_cache_payload(
 /// inputs and output: the override table and the rule's `constants`, then
 /// each probe's `exclusions` (parallel to `probes`) with what the capture
 /// reads of the brushes CSG may hide, since geometry shows only what
-/// survived it.
+/// survived it. `tracer_epoch` is `ray_traversal::TRACER_EPOCH`: primary and
+/// shadow rays trace.
 pub(super) fn cache_key(
     inputs: &ReflectionProbeInputs<'_>,
     probes: &[PlacedProbe],
     exclusions: &[ProbeExclusion<'_>],
     constants: &ExclusionConstants,
+    tracer_epoch: u32,
 ) -> anyhow::Result<CacheKey> {
     anyhow::ensure!(
         exclusions.len() == probes.len(),
@@ -232,6 +234,7 @@ pub(super) fn cache_key(
         constants.extend_from_slice(&value.to_le_bytes());
     }
     section("constants", &constants);
+    section("tracer epoch", &tracer_epoch.to_le_bytes());
     drop(section);
     // Id 22 streams into the hasher: it can be the largest input.
     hasher.update(b"lightmap");

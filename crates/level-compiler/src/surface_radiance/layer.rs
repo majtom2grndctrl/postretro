@@ -151,8 +151,8 @@ fn fold_optional<const N: usize>(hasher: &mut blake3::Hasher, value: Option<[u8;
 }
 
 /// The inputs every layer key of one bake shares: the geometry a layer
-/// reads ([`layer_geometry_digest`]), the bounce materials, and the
-/// constants that shape patches and their shading.
+/// reads ([`layer_geometry_digest`]), the bounce materials, the constants
+/// that shape patches and their shading, and the tracer epoch.
 pub(crate) struct LayerKeys {
     shared: blake3::Hasher,
     /// [`Self::cell_id_fingerprint`], which no layer key folds.
@@ -161,8 +161,13 @@ pub(crate) struct LayerKeys {
 
 impl LayerKeys {
     /// Digests the geometry once. Built whenever the bake has a cache, for
-    /// its reads and its writes alike.
-    pub(crate) fn new(geometry: &GeometryResult, materials: Option<&BounceMaterials>) -> Self {
+    /// its reads and its writes alike. `tracer_epoch` is
+    /// `ray_traversal::TRACER_EPOCH`: soft visibility traces every layer.
+    pub(crate) fn new(
+        geometry: &GeometryResult,
+        materials: Option<&BounceMaterials>,
+        tracer_epoch: u32,
+    ) -> Self {
         let mut shared = blake3::Hasher::new();
         shared.update(&layer_geometry_digest(geometry));
         fold_bounce_hash(
@@ -183,6 +188,7 @@ impl LayerKeys {
         // Soft visibility's own lift, lattice rotation, sun ray length,
         // probe count and sampling epoch.
         fold_soft_visibility_constants(&mut shared);
+        shared.update(&tracer_epoch.to_le_bytes());
         Self {
             shared,
             cell_ids: cell_id_digest(geometry),
@@ -572,5 +578,21 @@ mod tests {
                 assert_ne!(before, after, "{edit} kept a layer key");
             }
         }
+    }
+
+    #[test]
+    fn sh_patch_layer_key_changes_with_tracer_epoch() {
+        let scene = Scene::new();
+        let lights = room_lights();
+        let key = |tracer_epoch| {
+            scene
+                .keys_at(tracer_epoch)
+                .key(LightDigest::of(&lights[0]), false)
+                .as_filename()
+        };
+
+        let epoch = crate::ray_traversal::TRACER_EPOCH;
+        assert_eq!(key(epoch), scene.key(&lights[0]).as_filename());
+        assert_ne!(key(epoch), key(epoch + 1));
     }
 }

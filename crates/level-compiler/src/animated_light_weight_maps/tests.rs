@@ -482,7 +482,8 @@ fn texel_major_reference(inputs: &WeightMapInputs<'_>) -> Vec<([u32; 4], Vec<Tex
     use crate::chart_raster::{
         CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
     };
-    use crate::lightmap_bake::{light_contribution_and_direction, segment_clear, soft_visibility};
+    use crate::lightmap_bake::{light_contribution_and_direction, soft_visibility};
+    use crate::ray_traversal::segment_clear;
     use crate::texel_footprint::{
         ClipBand, ClipReach, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
     };

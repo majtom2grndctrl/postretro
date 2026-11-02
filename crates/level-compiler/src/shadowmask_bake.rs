@@ -257,6 +257,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             shared.atlas_height,
             layer_count,
             &estimate::estimate_params(scene.cut_parents),
+            crate::ray_traversal::TRACER_EPOCH,
         );
         CacheKey::new(
             SHADOWMASK_ATLAS_STAGE_ID,

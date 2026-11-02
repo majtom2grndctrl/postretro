@@ -4,11 +4,11 @@ use std::cell::Cell;
 
 use super::*;
 use crate::lightmap_bake::{
-    SoftProbes, light_texel_contribution_and_visibility_with, segment_clear_remembering,
-    soft_visibility_with,
+    SoftProbes, light_texel_contribution_and_visibility_with, soft_visibility_with,
 };
 use crate::lightmap_layer::{LAYER_AABB_PADDING_METERS, LayerTexel, LightmapLayer};
 use crate::map_data::{DEFAULT_LIGHT_SIZE, MapLightmapScaleRegion};
+use crate::ray_traversal::{TRACER_EPOCH, segment_clear_remembering};
 use crate::texel_footprint::TexelFrame;
 
 /// (lightmap bytes, shadowmask bytes, layer count) of one fused bake.
@@ -176,6 +176,7 @@ impl Prepared {
                 config.lightmap_density,
                 test_args().soft_shadow_samples,
                 config.penumbra_floor,
+                TRACER_EPOCH,
                 layer,
             ),
         )

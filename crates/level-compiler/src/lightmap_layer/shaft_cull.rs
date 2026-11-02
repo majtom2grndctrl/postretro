@@ -6,7 +6,9 @@ use std::cell::{Cell, OnceCell};
 
 use bvh::aabb::Aabb;
 use bvh::bvh::Bvh;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
+#[cfg(test)]
+use glam::Vec3;
 use nalgebra::Point3;
 
 use super::chart_cull::exact_texel_local;
@@ -15,6 +17,7 @@ use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
 use crate::map_data::{LightType, MapLight};
+use crate::ray_traversal::{primitive_triangles, triangle_points};
 use crate::texel_footprint::{TexelFrame, TexelSampler};
 pub(crate) use margin::ShaftScene;
 use margin::{Candidate, Hull, HullAxis, HullBounds};
@@ -273,8 +276,8 @@ impl<'a> ShaftCull<'a> {
     /// from the hull alone: the receiver normal, then the hull's own faces
     /// ([`Hull::tangent_plane`]) through each side of the padded rectangle,
     /// at both slab heights, and planes through each rectangle corner across
-    /// its outward diagonal, each tangent to the emitter. Any unit axis is a
-    /// certificate at its own margin; these are the ones a candidate beside
+    /// its outward diagonal, each tangent to the emitter. Any unit axis
+    /// separates at its own margin; these are the ones a candidate beside
     /// the shaft most often clears on.
     fn hull_axes(&self, bounds: &HullBounds, hull: &Hull) -> [Option<HullAxis>; HULL_AXES] {
         let mut axes = [None; HULL_AXES];
@@ -317,11 +320,11 @@ impl<'a> ShaftCull<'a> {
         axes
     }
 
-    /// The candidate certificates [`Self::tile_clear`] would read for one
+    /// The candidate separations [`Self::tile_clear`] would read for one
     /// triangle against tile `(tile_x, tile_y)`: (gap, margin) along its own
     /// normal and along `axis`.
     #[cfg(test)]
-    pub(crate) fn certificates(
+    pub(crate) fn separations(
         &self,
         tile: (i32, i32),
         points: [Vec3; 3],
@@ -330,8 +333,8 @@ impl<'a> ShaftCull<'a> {
         let bounds = HullBounds::new(self.tile_hull(tile.0, tile.1));
         let candidate = Candidate::of(points).expect("a non-degenerate triangle");
         (
-            bounds.normal_certificate(&candidate, bounds.reach(&candidate)),
-            bounds.axis_certificate(&candidate, axis),
+            bounds.normal_separation(&candidate, bounds.reach(&candidate)),
+            bounds.axis_separation(&candidate, axis),
         )
     }
 
@@ -352,21 +355,6 @@ impl<'a> ShaftCull<'a> {
 /// Axes [`ShaftCull::hull_axes`] builds per tile: the receiver normal, then
 /// at each of the two slab heights the four sides and four corners.
 const HULL_AXES: usize = 1 + 2 * (4 + 4);
-
-/// The first index of each whole triangle in `prim`'s index range.
-fn primitive_triangles(prim: &BvhPrimitive) -> impl Iterator<Item = usize> {
-    let start = prim.index_offset as usize;
-    let end = start + prim.index_count as usize;
-    (start..end)
-        .step_by(3)
-        .take_while(move |&tri| tri + 3 <= end)
-}
-
-/// The stored `f32` corners of the triangle at index `tri`, in index order.
-fn triangle_points(geometry: &GeometryResult, tri: usize) -> [Vec3; 3] {
-    let geom = &geometry.geometry;
-    [0, 1, 2].map(|k| Vec3::from(geom.vertices[geom.indices[tri + k] as usize].position))
-}
 
 /// The largest `f32` at or below `x`.
 fn f32_below(x: f64) -> f32 {

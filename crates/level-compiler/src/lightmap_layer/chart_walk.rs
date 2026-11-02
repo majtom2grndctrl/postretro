@@ -20,8 +20,10 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
 use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
-use crate::lightmap_bake::segment_clear_remembering;
 use crate::map_data::{LightType, MapLight};
+#[cfg(test)]
+use crate::ray_traversal::Occluder;
+use crate::ray_traversal::segment_clear_remembering;
 use crate::texel_footprint::{
     ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
@@ -141,7 +143,8 @@ pub(super) fn bake_light_layer_chart_clipped(
     // One chart's texels are walked in order on one thread, so the occluder
     // caches stay local to this `(light, chart)` unit. Wall-clip segments keep
     // their own: they run between the light's rays and would otherwise evict
-    // the triangle that shadows the next texel.
+    // the triangle that shadows the next texel. The caches only reorder work;
+    // no answer depends on them.
     let last_occluder = Cell::new(None);
     let clip_occluder = Cell::new(None);
     for_each_light_layer_chart_texel(atlas, face_idx, |sample| {
@@ -257,7 +260,7 @@ fn verify_clear_texel(
     sampler: &TexelSampler,
     (bvh, primitives, geometry): (&bvh::bvh::Bvh<f32, 3>, &[BvhPrimitive], &GeometryResult),
     band: &ClipBand,
-    [last_occluder, clip_occluder]: [&Cell<Option<usize>>; 2],
+    [last_occluder, clip_occluder]: [&Cell<Option<Occluder>>; 2],
 ) {
     let shadow = Cell::new(last_occluder.get());
     let clip = Cell::new(clip_occluder.get());

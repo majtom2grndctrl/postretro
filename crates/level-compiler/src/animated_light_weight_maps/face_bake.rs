@@ -13,8 +13,9 @@ use super::{ChunkBakeResult, WEIGHT_EPSILON, WeightMapInputs, contribution_to_we
 use crate::chart_raster::{
     CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_seed, chart_texel_world_position,
 };
-use crate::lightmap_bake::{Chart, light_contribution_and_direction, segment_clear};
+use crate::lightmap_bake::{Chart, light_contribution_and_direction};
 use crate::map_data::ShadowType;
+use crate::ray_traversal::segment_clear;
 use crate::texel_footprint::{
     ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };

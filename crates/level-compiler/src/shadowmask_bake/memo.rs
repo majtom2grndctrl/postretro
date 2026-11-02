@@ -22,11 +22,14 @@ use crate::lightmap_layer::{self, SharedAtlas};
 /// floor, the face count, the eligible count, then per eligible light (in
 /// ascending spec index) its spec index, its id-40 membership and its
 /// `(light, atlas layer)` layer hashes in ascending layer order, then atlas
-/// width/height/layer-count, then `estimate_params` verbatim. The spec indices
-/// are hashed because they count every `!is_dynamic` light, owner-eligible or
-/// not: a static light that cannot own (SDF-shadowed or animated) placed
-/// earlier in the light list shifts every later index without changing any
-/// eligible light's layer hash.
+/// width/height/layer-count, `estimate_params` verbatim, then `tracer_epoch`
+/// (u32 LE): the cut-face estimate traces (`ray_traversal::TRACER_EPOCH`).
+/// The layer hashes fold the epoch too; folding it here keeps the dependency
+/// direct. The spec indices are hashed because they count every
+/// `!is_dynamic` light, owner-eligible or not: a static light that cannot own
+/// (SDF-shadowed or animated) placed earlier in the light list shifts every
+/// later index without changing any eligible light's layer hash.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn shadowmask_atlas_input_hash(
     eligible: &[EligibleLight<'_>],
     layer_input_hash: &impl Fn(usize, u32) -> [u8; 32],
@@ -35,6 +38,7 @@ pub(crate) fn shadowmask_atlas_input_hash(
     atlas_height: u32,
     layer_count: u32,
     estimate_params: &[u8],
+    tracer_epoch: u32,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
@@ -56,6 +60,7 @@ pub(crate) fn shadowmask_atlas_input_hash(
     hasher.update(&layer_count.to_le_bytes());
     hasher.update(&(estimate_params.len() as u32).to_le_bytes());
     hasher.update(estimate_params);
+    hasher.update(&tracer_epoch.to_le_bytes());
     *hasher.finalize().as_bytes()
 }
 

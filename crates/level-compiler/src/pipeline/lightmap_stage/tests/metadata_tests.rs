@@ -1,5 +1,6 @@
 //! Admission and byte-order regressions for lazy layer/light metadata.
 use super::*;
+use crate::ray_traversal::TRACER_EPOCH;
 
 fn prepared_at_density(
     geometry: &mut GeometryResult,
@@ -169,6 +170,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
                 0.25,
                 4,
                 PENUMBRA_FLOOR_DEFAULT,
+                TRACER_EPOCH,
                 layer,
             )
         })
@@ -179,7 +181,8 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
     );
 
     // The old section helper folded the dense layer-major matrix verbatim;
-    // the texel-step threshold and the cut map follow the encode settings.
+    // the texel-step threshold, the cut map and the tracer epoch follow the
+    // encode settings.
     let mut old_section = blake3::Hasher::new();
     old_section.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
     old_section.update(&(dense.len() as u32).to_le_bytes());
@@ -203,6 +206,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             }
         }
     }
+    old_section.update(&TRACER_EPOCH.to_le_bytes());
     assert_eq!(
         *old_section.finalize().as_bytes(),
         lightmap_layer::section_input_hash(
@@ -213,6 +217,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             2,
             TEXEL_STEP_THRESHOLD,
             &prepared.cut_parents,
+            TRACER_EPOCH,
         )
     );
 
@@ -235,6 +240,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
         prepared.atlas_height,
         prepared.layer_count,
         0,
+        TRACER_EPOCH,
     ] {
         old_mask.update(&word.to_le_bytes());
     }
@@ -248,6 +254,7 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             prepared.atlas_height,
             prepared.layer_count,
             &[],
+            TRACER_EPOCH,
         )
     );
 }

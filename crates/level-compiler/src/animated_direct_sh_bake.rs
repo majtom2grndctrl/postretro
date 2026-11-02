@@ -629,6 +629,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 42,
                 light: &unit_radiance_light(&authored),
+                tracer_epoch: 0,
             },
         );
 
@@ -647,6 +648,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 42,
                 light: &unit_radiance_light(&recolored),
+                tracer_epoch: 0,
             },
         );
         let bumped_version_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
@@ -661,6 +663,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 42,
                 light: &unit_radiance_light(&authored),
+                tracer_epoch: 0,
             },
         );
         let different_source_key = crate::delta_sh_cache::delta_sh_entry_cache_key(
@@ -675,6 +678,7 @@ mod tests {
                 valid_probe_mask: u64::MAX,
                 seed_axis: 43,
                 light: &unit_radiance_light(&authored),
+                tracer_epoch: 0,
             },
         );
 

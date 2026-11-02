@@ -137,8 +137,19 @@ fn face_aabb(
 /// Returns the live `bvh::Bvh` and primitive vector alongside the flattened
 /// section so callers (e.g. SH baker) can traverse the tree on the CPU without
 /// rebuilding from the PRL file. Leaves in `BvhSection` are sorted so each
-/// material bucket owns a contiguous range.
+/// material bucket owns a contiguous range. The section keeps the exact boxes;
+/// the live tree and primitives come back padded for the bake tracer
+/// (`ray_traversal::pad_bake_tree`), so every tree a bake traces is padded.
 pub fn build_bvh(
+    geo: &GeometryResult,
+) -> Result<(Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSection), BvhBuildError> {
+    let (mut bvh, mut primitives, section) = build_bvh_exact(geo)?;
+    crate::ray_traversal::pad_bake_tree(&mut bvh, &mut primitives);
+    Ok((bvh, primitives, section))
+}
+
+/// [`build_bvh`] before the bake pad: every box exact.
+pub(crate) fn build_bvh_exact(
     geo: &GeometryResult,
 ) -> Result<(Bvh<f32, 3>, Vec<BvhPrimitive>, BvhSection), BvhBuildError> {
     let mut primitives = collect_primitives(geo);

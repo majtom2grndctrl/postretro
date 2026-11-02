@@ -32,6 +32,59 @@ pub(crate) struct BakeCounts {
     /// Gathered-volume cache reads and writes attempted on a thread holding a
     /// governor permit: must stay zero.
     pub(crate) volume_cache_io_under_permit: u64,
+    /// BVH tracing cost of occlusion segments: every bake tracer's
+    /// `segment_clear`, the lead-in and embedded-emitter test, and
+    /// reflection-probe shadow rays.
+    pub(crate) shadow_trace: TraceCounts,
+    /// BVH tracing cost of closest-hit rays: SH gather and bounce rays and
+    /// reflection-probe primary rays.
+    pub(crate) gather_trace: TraceCounts,
+}
+
+/// What tracing one kind of ray cost, by unit of work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TraceCounts {
+    /// Rays traced.
+    pub(crate) rays: u64,
+    /// BVH node boxes the ray query tested.
+    pub(crate) box_tests: u64,
+    /// Leaves the traversal yielded.
+    pub(crate) leaf_visits: u64,
+    /// Triangle hit tests run, the occluder cache's included.
+    pub(crate) triangle_tests: u64,
+    /// Hit tests rejected on the determinant alone.
+    pub(crate) det_rejections: u64,
+}
+
+impl TraceCounts {
+    const ZERO: Self = Self {
+        rays: 0,
+        box_tests: 0,
+        leaf_visits: 0,
+        triangle_tests: 0,
+        det_rejections: 0,
+    };
+}
+
+impl Add for TraceCounts {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            rays: self.rays + other.rays,
+            box_tests: self.box_tests + other.box_tests,
+            leaf_visits: self.leaf_visits + other.leaf_visits,
+            triangle_tests: self.triangle_tests + other.triangle_tests,
+            det_rejections: self.det_rejections + other.det_rejections,
+        }
+    }
+}
+
+/// Which trace tally a ray's work lands in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RayKind {
+    Shadow,
+    Gather,
 }
 
 impl Add for BakeCounts {
@@ -52,6 +105,8 @@ impl Add for BakeCounts {
             volume_cache_io: self.volume_cache_io + other.volume_cache_io,
             volume_cache_io_under_permit: self.volume_cache_io_under_permit
                 + other.volume_cache_io_under_permit,
+            shadow_trace: self.shadow_trace + other.shadow_trace,
+            gather_trace: self.gather_trace + other.gather_trace,
         }
     }
 }
@@ -70,8 +125,11 @@ thread_local! {
             layer_cache_io_under_permit: 0,
             volume_cache_io: 0,
             volume_cache_io_under_permit: 0,
+            shadow_trace: TraceCounts::ZERO,
+            gather_trace: TraceCounts::ZERO,
         })
     };
+    static RAY_KIND: Cell<RayKind> = const { Cell::new(RayKind::Shadow) };
 }
 
 /// Add to this thread's tally. Every thread counts; only [`counted`] reads.
@@ -80,6 +138,23 @@ pub(crate) fn bump(update: impl FnOnce(&mut BakeCounts)) {
         let mut current = counts.get();
         update(&mut current);
         counts.set(current);
+    });
+}
+
+/// Start one ray of `kind` on this thread: later [`bump_trace`] calls land
+/// in its tally until the next ray starts. Tracers never nest a ray inside
+/// another's traversal.
+pub(crate) fn begin_ray(kind: RayKind) {
+    RAY_KIND.with(|current| current.set(kind));
+    bump_trace(|trace| trace.rays += 1);
+}
+
+/// Add to the tally of the ray this thread is tracing.
+pub(crate) fn bump_trace(update: impl FnOnce(&mut TraceCounts)) {
+    let kind = RAY_KIND.with(Cell::get);
+    bump(|counts| match kind {
+        RayKind::Shadow => update(&mut counts.shadow_trace),
+        RayKind::Gather => update(&mut counts.gather_trace),
     });
 }
 

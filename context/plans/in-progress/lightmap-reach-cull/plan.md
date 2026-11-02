@@ -24,36 +24,44 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| Two rooms, solid wall: culled; wall-touching texels traced, rest skipped | `lightmap_reach` fixture test | achievable as stated |
-| Doorway portal within R kept; just past R culled | fixture test | achievable as stated |
-| Centres in unreached leaf, slab reaches reached leaf: kept | fixture test | achievable as stated |
-| Brush-top chart overhanging solid: culled (relaxed) | fixture test | achievable as stated |
-| Long oblique drifted chart: bytes equal; fails with face-plane slab | fixture test with plane-slab negative control | achievable as stated |
-| Traced texel after skipped run: occluders differ, record = unculled = brute force | fixture test (P4) | achievable as stated |
-| Emitter sphere straddling portal seeds both leaves | unit test | achievable as stated |
-| `kinematic_mover` brush between light and chart: kept | fixture test | achievable as stated |
-| Sun / origin-in-solid: none culled; embedded emitter by floor setting | fixture test | achievable as stated |
-| Proof: closed brush with T-junction + overlap zero spans; 2 cm strip removed → spans only there | `coverage_proof` test | achievable as stated |
-| Crease moved just under τ proven + culls; just over τ unproven, culls nothing, warns | fixture test (P6) | achievable as stated |
-| Crack under τ at quarter points, over between: unproven, culls nothing | fixture test | achievable as stated |
-| Crack just over τ past ~190 m: `check_watertight` silent, proof unproven, no cull | fixture test | achievable as stated |
-| Hinge: four faces any order zero spans; one removed / two same-direction → unproven | test (P8) | achievable as stated |
-| `check_watertight` odd spans but proof proves all: culls, info logs, no hole warning | log-capture test | achievable as stated |
-| Faces removed past sample cap: no cull, capped warning + total + cull-off; warm same; unremoved culls; sun swap keeps hole warning, no cull-off line | log-capture stage test | achievable as stated |
-| Planted fault (`force` cull) fails verify naming texel and both values | test | achievable as stated |
-| Verify re-walk = kept-pair walk: shaft + clip on, caches empty; shaft tests tally equal reach-off walk (P1) | test | achievable as stated |
-| One governor permit: bakes; one permit per culled pair walk + re-walk + mask; progress once per pair (P2) | test | achievable as stated |
-| Existing parity: oracle per floor, warm = cold, worker counts, overlap texels; two-rooms parity 1 vs many workers (P3) | existing suites + new two-rooms row | achievable as stated |
-| Gate: whole-PRL `cmp` on the nine named bakes | gate run, verify on | achievable as stated |
-| Gate: verify switch in release binary (1/0/unset/malformed; re-walked = culled cold and warm) | gate run | achievable as stated |
-| Gate: proof zero unproven spans on hallway, mini, movement-feel; cull runs; watertight at info | gate run | achievable as stated |
-| Gate: hallway Lightmap Bake ≤ 0.65×; SH control; proof time; culled ≥ 40% of walked | timed gate run | achievable as stated |
-| Gate: border cost ≤ 10% of skipped | gate run (stage line) | achievable as stated |
-| Gate: movement-feel, kinematic-platform within noise | timed gate run | achievable as stated |
-| Gate: warm over baseline-filled cache hits section and layers; PRL = cold; stage line says cached | gate run | achievable as stated |
-| Gate: grep gate on the diff | grep script | achievable as stated |
+Results at 04cbc1862 unless stated. Gate bakes: new binary 80610f03e (verify on) against `main` b6fc0c4ee; round-2 review changes after it move no production byte (tests, docs, equal constants, non-finite log text).
+
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| Two rooms, solid wall: culled; wall-touching texels traced, rest skipped | `lightmap_reach::tests`, `reach_cull_tests` | achievable as stated | pass |
+| Doorway portal within R kept; just past R culled | `reach_fixture_tests` | achievable as stated | pass |
+| Centres in unreached leaf, slab reaches reached leaf: kept | `reach_fixture_tests` | achievable as stated | pass |
+| Brush-top chart overhanging solid: culled (relaxed) | `reach_fixture_tests` (crate in the far room's side wall, Corrections) | achievable as stated | pass |
+| Long oblique drifted chart: bytes equal; fails with face-plane slab | `reach_drift_tests` with face-plane negative control | achievable as stated | pass; plus `slab_tests` (oblique charts ~1 km out on three axes, every trace start inside its texel box; catches drift-term mutations) |
+| Traced texel after skipped run: occluders differ, record = unculled = brute force | `reach_verify_walk_tests` (4×4 brush-grid wall) | achievable as stated | pass |
+| Emitter sphere straddling portal seeds both leaves | `lightmap_reach::seed_tests` | achievable as stated | pass |
+| `kinematic_mover` brush between light and chart: kept | `reach_fixture_tests` | achievable as stated | pass |
+| Sun / origin-in-solid: none culled; embedded emitter by floor setting | `lightmap_reach::tests`, `reach_fixture_tests` | achievable as stated | pass |
+| Proof: closed brush with T-junction + overlap zero spans; 2 cm strip removed → spans only there | `coverage_proof::tests` | achievable as stated | pass |
+| Crease moved just under τ proven + culls; just over τ unproven, culls nothing, warns | `coverage_proof::tests`, `reach_hole_warning_tests` | achievable as stated | pass |
+| Crack under τ at quarter points, over between: unproven, culls nothing | `coverage_proof::tests` | achievable as stated | pass |
+| Crack just over τ past ~190 m: `check_watertight` silent, proof unproven, no cull | `coverage_proof::tests` (at 320 m, Corrections) | achievable as stated | pass |
+| Hinge: four faces any order zero spans; one removed / two same-direction → unproven | `coverage_proof::hinge_tests` | achievable as stated | pass |
+| `check_watertight` odd spans but proof proves all: culls, info logs, no hole warning | `coverage_proof::tests` log capture | achievable as stated | pass |
+| Faces removed past sample cap: no cull, capped warning + total + cull-off; warm same; unremoved culls; sun swap keeps hole warning, no cull-off line | `reach_hole_warning_tests` | achievable as stated | pass |
+| Planted fault (`force` cull) fails verify naming texel and both values | `reach_cull_tests` | achievable as stated | pass |
+| Verify re-walk = kept-pair walk: shaft + clip on, caches empty; shaft tests tally equal reach-off walk | `reach_verify_walk_tests` | achievable as stated | pass |
+| One governor permit: bakes; one permit per culled pair walk + re-walk + mask; progress once per pair | `reach_verify_walk_tests` | achievable as stated | pass |
+| Existing parity: oracle per floor, warm = cold, worker counts, overlap texels; two-rooms parity 1 vs many workers | existing suites + `reach_cull_tests`, `reach_warm_tests` | achievable as stated | pass (workspace `cargo test` green) |
+| Gate: whole-PRL `cmp` on the nine named bakes | gate run, verify on | achievable as stated | pass: 9/9 identical, 0 mismatches, re-walked = culled (`gate-report-2.md`) |
+| Gate: verify switch in release binary (1/0/unset/malformed; re-walked = culled cold and warm) | gate run + `tests/reach_verify_env.rs` | achievable as stated | pass (task 6 at 8ce7eb8ad; warm `=1` re-run at 80610f03e logs `bypassed (reach verify)`, re-walked 14,106 = culled) |
+| Gate: proof zero unproven spans on hallway, mini, movement-feel; cull runs; watertight at info | gate run + `gate_map_tests` | achievable as stated | pass: 48,062 / 23,914 / 1,698 edges, 0 unproven; parity spans at info; no hole WARN |
+| Gate: hallway Lightmap Bake ≤ 0.65×; SH control; proof time; culled ≥ 40% of walked | timed gate run | achievable as stated | pass: 0.577× (556.84 s vs 964.83 s, idle, f76b1c429; owner accepted it for the review fixes, which only add skips); SH 122.01 s vs 126.44 s; proof 0.103 s; 54.6% culled |
+| Gate: border cost ≤ 10% of skipped | gate run (stage line) | achievable as stated | pass: 0.768% (13,297,187 / 1,732,200,170) |
+| Gate: movement-feel, kinematic-platform within noise | timed gate run | achievable as stated | reported, not gated (owner ruling): movement-feel within noise; kinematic-platform +1.1 s (+9%) |
+| Gate: warm over baseline-filled cache hits section and layers; PRL = cold; stage line says cached | gate run | achievable as stated | pass (task 6): section hit; 44,662 layer hits, 0 misses; PRLs = cold; stage line names the cache |
+| Gate: grep gate on the diff | grep script | achievable as stated | pass (task 6, a–g) |
+
+## Review loop
+- Round 1 (`/review-panel`, 9 reviewers over `b6fc0c4ee..e51ed190e`): no byte-moving input found. Acted on 4 should-fix items (far-from-origin slab slack lost every skip past ~233 m; verify off in tests that bake through the binary; "served from cache" on a cold SDF-only map; hole warning in the wrong module) and the nits (fail-closed proof on non-finite geometry, stored-direction pairing, proof under the governor, emitter slack scaling, R footprint × skew, empty-slab guard, comment drift). Not acted on: bypass tied to whether the cull runs (brief's text), lazy index build, early stop after a mismatch.
+- Round 2 (3 reviewers over the fix diff): no defect; one should-fix test gap (measured drift never stressed) closed by `slab_tests`, which catches three drift-term mutations; nits fixed.
+- Final preflight at 04cbc1862: fmt, clippy (default and `--all-targets`), workspace `cargo test` (level-compiler 2,504 passed), `cargo check --release`, crate graph all clean. One flaky renderer test (`render::uploads::tests::two_frames_in_flight_reach_a_bounded_staging_steady_state`, Metal staging-buffer count under parallel load) failed once and passed alone and on a full rerun; this branch touches no renderer code.
+- Pre-existing on `main`, not this branch: ignored test `coloured_bounce_cache::cold_and_warm_builds_cache_entries_only_for_pre_change_stages` fails because its stage list lacks `cell_residency_set` (added on `main` in 27159d826).
 
 ## Measurements
 - Baseline `main` b6fc0c4ee, hallway cold `--release`, quiet machine: Lightmap Bake 964.83 s, SH Bake 126.44 s, Total 1198.27 s. PRL kept as the hallway `cmp` reference.
@@ -76,4 +84,5 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 | 1c | Weld rework of the coverage proof per `weld-consensus.md` | delegated (Opus), integrated here | 1b | weld built (R1–R22 pass but R9); sweep: both hallways 0 from δ = 20 µm, movement-feel never 0 with stand-ins off (crease-crack corner copies 81–325 µm apart), 0 from 20 µm with them on. Owner ruling 2026-11-02: build the §3 capped stand-ins (keeps "a crack is proven within τ"; authored maps are full of non-axial creases) with a focused adversarial review; roadmap entry at landing for crease-edge snapping in face extraction as the source fix. Built: capped stand-ins in one joint matching; δ = 100 µm (δ_min 50 µm, `weld-sweep.md`); gate maps 0/0/0; R1–R22 green; bin suite 2234 pass. Fourth review (`proof-cap-review.md`): cap beaten by nested closed prisms (ramp) and per-shell overlap rows; strict matching itself beaten by stacked sub-mm rods (ladder: faces close within τ without enclosing the BSP's solid); stand-in reach and window in axis units. Weld, prefilter, joint cap and lazy matching hold. Owner ruling 2026-11-02: land with the cheap fixes (no same-face pairs; reach and window in 3D) if gate maps stay 0, widen named gap 3 to "a solid region whose remaining faces are missing, narrower than τ, or close within τ without enclosing it (deliberately built sub-mm shells)", verify mode guards it; roadmap at landing: BSP boundary-coverage proof (open↔solid leaf boundaries covered by τ-grown faces) to replace edge balance |
 | 7 | Reach-cull cost breakdown on the hallway (index and flood build, slab and mask build, culled-pair clip pre-pass and shaft setup, border traces); propose structural levers inside the brief's Decisions | delegated (Opus) | 5 | done: no reach-side lever worth taking; the stage's scheduling levers (byte-budgeted window admission, zero-record fold skip, off-thread layer close) speed `main` too and are an owner call |
 | 1d | Cheap proof fixes per the fourth review: forbid same-face pairs, stand-in reach and window measured in 3D, "-0.000 m" print, consensus §3 doc drift | delegated | 1c | done: `pairing_tests.rs` (lone sub-τ face unproven; window measured along edges, attack 4 with negative control); R6 now pins 3D reach; gate maps 0/0/0; bin suite 2237 pass; clippy clean |
+| 8 | Review loop: `/review-panel` round 1 + `/fix-review-findings`, round 2 on the fix diff, full gate (`gate-report-2.md`) | delegated, integrated here | 6 | done: commits 7946afcae, 523d4c31a, 80610f03e, 04cbc1862; see Review loop |
 | 6 | Gate runs: `cmp` set, verify switch, timing, warm, grep | delegated (Sonnet), integrated here | 4, 5 | done (8ce7eb8ad vs b6fc0c4ee, report `scratchpad/gate-report.md`). `cmp` identical on all 9 bakes, verify on, re-walked = culled everywhere (hallway 45,360/83,022; mini 14,106/28,769; mini no-floor 14,110; movement-feel 1/1,740; the other five 0). Verify switch: `1` on, `0` and unset off, `banana` warns once and stays off, warm `=1` re-walks 14,106 with 0 partitions from cache. Proof 0 unproven on hallway (48,062 edges, 0.104 s), mini (23,914), movement-feel (1,698); parity spans at info; no hole WARN. Warm over baseline cache: `lightmap_section hit`, "stage served from cache"; section entry removed → 44,662 `lightmap_layer hit`, 0 miss; PRLs = cold. Grep gate clean (a–g). Small-map timings: movement-feel within noise; kinematic-platform +1.1 s (+9%, base 12.50–12.97 s, new 13.70–14.15 s, 0 pairs culled) — owner ruling below |

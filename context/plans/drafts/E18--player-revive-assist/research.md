@@ -38,7 +38,7 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 - Respawn: `ScriptCtx::pending_respawns`, drained by `sim::respawn::drain` from `begin_tick`. `drain` takes only `ctx` and the registry, so it cannot reach session-owned accumulator state. `enter_life_state` zeroes `life_state_elapsed_ticks`; the movement step and `advance_unstepped_life_state_time` advance it once per host tick for every pawn in a declared life state (a pawn whose descriptor declares none stays at zero), so a respawn or a same-state re-entry shows as elapsed failing to advance. `clear_for_level_unload` (`respawn_placements.rs`) clears the respawn queue at level unload. `touch_system` is session-owned tick state (`session/mod.rs`). `PlayerMovementComponent` holds `life_state: u8`, `life_state_elapsed_ticks`, `life_state_table_revision` and derived stamps (`life_use`, `life_touch`, …); no generation counter.
 - Capability: `player_life::permits(registry, pawn, Capability)`.
 - Disconnect: `host_handle_transport_disconnect` → `SeatTable::harvest_pawn`, from `net_poll_and_apply` before the tick loop.
-- Two-player test: `player_death_two_player_policy_bleeds_out_on_tick_900_then_respawns_next_tick` (`startup/player_death_surface_tests.rs`).
+- Two-player test: `player_death_two_player_policy_bleeds_out_on_tick_900_then_respawns_next_tick` (`startup/player_death_surface_tests.rs`). Its `Consumer::tick_then` calls `simulate_tick_with_presentation_aim` with a fresh `TouchSystem` and no remote pawn commands each tick, then `PlayerEventTable::run_tick`.
 
 ## Input and wire
 
@@ -49,7 +49,7 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 - `RelevanceFacts` (`dash`, `crouch`, `magazine`, `secondary`) from `registry_facts` and `tuning_facts` (`app/bindings.rs`).
 - `WireMovementInput` field order: `wish_dir`, `jump_pressed`, `dash_pressed`, `running`, `crouch_intent`, `facing_yaw`, `use_pressed`, `drop_pressed`, `aim_pitch`, `firing_slot`. `use_pressed` is an edge. `held_gap_sim_command` clears fire, activation, secondary, use and drop and carries other levels. `neutral_sim_command` builds literals. `wire_convert.rs` converts both ways.
 - `WIRE_VERSION` = 38 (`net/src/handshake.rs`). `WirePlayerMovementState::all_finite` (`net/src/wire/components.rs`) rejects non-finite floats before apply.
-- Tick: `postretro_foundation::TICK_DURATION` is 16 667 µs. `wait` enrollment converts `ceil(durationMs × 1000 / 16_667)` (`startup/reaction_validation.rs`). The timed-slot module carries its own `TICKS_PER_SECOND` = 60.
+- Tick: `postretro_foundation::TICK_DURATION` is 16 667 µs. `wait` enrollment converts `ceil(durationMs × 1000 / 16_667)` in f64 (`sim/src/scripting_systems/reaction_scheduler/enroll.rs`); `wait_duration_is_valid` (`startup/reaction_validation.rs`) mirrors it. The timed-slot module carries its own `TICKS_PER_SECOND` = 60.
 - `SNAPSHOT_VERSION` = 24 (`net/src/wire.rs`); every `WirePlayerMovementState` field addition has bumped it. `TUNING_PAYLOAD_EPOCH` = 16. Rechecked at `48040a7`, unchanged.
 - `SNAPSHOT_TICK_INTERVAL` = 2 (`netcode/src/host.rs`); the timed-slot module's `HOLD_CAP_TICKS` is 16.
 

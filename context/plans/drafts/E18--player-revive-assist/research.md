@@ -6,14 +6,47 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 
 - The client learns a teammate's assistability from a per-pawn `assistable` stamp replicated on the movement state, not from `TuningPayload`. The payload carries the pawn's own profiles, `assistable` included: it serializes `LifeStateProfile` verbatim, so `TUNING_PAYLOAD_EPOCH` bumps (review round 1).
 - The shared-key press-time resolution (old AC8 / I4 Phase 3) moves to `input-contextual-priority` (its open question 2). This spec exposes `assist_candidate` for it.
-- Interim binding: the dev mod's `input.ts` binds `assist` as a `hold` on Use's inputs (`KeyE`, gamepad `west`), the same pattern as its hold-Shift sprint beside tap-Shift dash. No engine default; engine defaults stay all `press` (decided after `/validate-plan`).
-- `input-contextual-priority` is reconciled in the same session: its open question 2 is decided, and the duration split is revive's interim.
+- Engine default for `assist`: `hold` on `KeyE` / gamepad `west`, through a per-command default activator (`press` for every other command), gated by relevance so a mod without `assistable` binds nothing and keeps Use on press. Reason: defaults for novices, controls for experts. The dev mod's `input.ts` keeps only a label row for `assist` and inherits the default. `input-contextual-priority` replaces this default with its grouped one.
+- `input-contextual-priority` is reconciled in the same session: its open question 2 is decided, and its Default task replaces revive's engine default.
+
+## Owner decisions: pair-valued `assistable` (2026-11-02)
+
+- `radius` and `holdMs` are literals or Number expressions over helper and target, through a reusable two-role pair scope built in this spec.
+- No per-entity state (`@state.*`) side reads here; a roadmap entry tracks them behind `scripting.md` §11's cross-entity write path.
+- Caps 16 m and 60 s: literals outside are rejected at load, expression results clamp. A radius at or below 0 is a gate (this helper cannot assist this target).
+- Mid-hold value change keeps the progress fraction; the new rate applies from the next pass. The effective rate is engine-internal: no script slot exposes it.
+- Engine-owned defaults when a field is omitted: 1.5 m and 3000 ms. `assistable: {}` is valid. The dev mod's `down` uses `{}`; the healer recipe lives in the docs only, since the one dev-mod expression that needs no new store would tie revive time to XP.
+- The per-pawn stamp is a bool. Numbers reach the helper's client through a host-evaluated pair table and the target's client through `received_required_ticks`; the client never evaluates pair IR.
+- Progress is a Q32 fixed-point accumulator: increment `ceil(2³² / n)`. For n ≤ 3600 (60 s), n(n − 1) < 2³², so a constant value completes on exactly the n-th advancing tick. Client tolerance and rebase work in the same units.
+- Rejected: a target part times helper factor split, a callback form, client-side evaluation, summed f32 fractions.
+
+## Pair scope grounding (read at `154e36b`)
+
+- `NumberOrIr` (`foundation/src/data_descriptors/types/movement.rs`): untagged serde, `Literal(f32)` or `Ir(IrNode)`; dash precedent. `LifeStateProfile` is in the same crate.
+- `eval_value_checked` (`foundation/src/ir/eval.rs`) returns `Err(IrEvalError)` on non-finite arithmetic or division by zero; `eval_value` totalizes to a value.
+- Activation caps: `MAX_ACTIVATION_IR_DEPTH` = 32, `MAX_ACTIVATION_IR_NODES` = 256 (`foundation/src/weapon_activation/compiled.rs`).
+- `CandidateValidationScope` (`foundation/src/candidate.rs`): value-free declaration-time twin of the runtime candidate scope.
+- `is_local_player_slot` (`scripting-core/src/player_event_scope.rs`): `player.*` catalog entries with no replication.
+- `PlayerConditionScope::seed_player` reads per-owner store values only with a seat; a seatless pawn reads them as unobserved. The single-player pawn holds `Seat(0)`: `SeatTable::new` reserves it and `startup/lifecycle_world_handles.rs` binds the local pawn to it, so per-owner side reads resolve in single player.
+- `MAX_CLIENTS` = 8 (`netcode/src/lib.rs`, private const).
+- Owner-token recognition sites: `storeRef` in `sdk/lib/data_script.ts`, the store `byPlayer` in `data_script.luau`, `QUICKJS_INSTALL_BY_PLAYER` / `LUAU_INSTALL_BY_PLAYER` (`scripting-core/src/game_state_refs.rs`), and the mirrors `JS_INSTALL_BY_PLAYER` / `LUAU_INSTALL_BY_PLAYER` in `script-compiler/src/light_membership.rs`, compared by a drift guard in `postretro-sim`. `OwnerToken` is declared in both SDK runtimes.
+- SDK lowering: a fluent `NumberRef` keeps its IR in a module `WeakMap`, so a ref inside a descriptor must be replaced before serialization; `loweredValue` (`sdk/lib/util/expression_refs.ts` / `.luau`) does it. `defineEntity` already walks the descriptor through `lowerLoadoutReferences`. `activation.charge` is a frozen `numberRef` constant; `activation.shot` lowers its scale values with `numberNode`. `[M]` the walk shape for `assistable`.
+- `[M]` the load-time hook for `PairValidationScope`: the descriptor validator in `scripting-core/src/data_descriptors/life_states.rs` sees the profile JSON but not store schemas; `startup/life_state_validation.rs` sees `DataRegistry` (names) but drops reactions rather than failing load. The executor grounds the hook; the outcome (load fails with the key path) is fixed.
+- Snapshot records: `EntitySnapshot.last_processed_client_tick` and the per-recipient `local_player` flag (`net/src/replication.rs`, `net/src/wire.rs`); a record carrying movement metadata without a movement payload fails `MovementMetadataWithoutMovement`.
+
+## Engine default grounding (read at `154e36b`)
+
+- Engine defaults reach bindings at these sites, each hard-coding `Activator::PRESS`: `default_bindings_for` (`input/defaults.rs`) and `engine_slots` (`input/binding_table.rs`), which `EffectiveTable::build` layers from. Both take the per-command default activator.
+- `EffectiveTable::build` skips `Relevance::Irrelevant` commands, so relevance gates engine defaults.
+- `default_bindings()` is relevance-blind and seeds the boot `InputSystem` (`session/mod.rs`) before `BindingState` installs the effective table.
+- `engine_defaults_bind_every_gameplay_command_but_pad_wieldable_slots` (`input/defaults_tests.rs`) requires every gameplay command to have keyboard and gamepad defaults; a defaultless `assist` would fail it. `engine_defaults_keep_every_legacy_key_mouse_and_button_read` counts "no extra key or button reads" and must exclude `assist`.
+- `Activator::new(ActivatorKind::Hold)` takes `DEFAULT_ACTIVATOR_THRESHOLD` (0.2 s).
 
 ## Implementability review (2026-11-02)
 
 - Orderings rows moved into the task that owns and tests each; AC10 became a review gate.
 - The assist task split into Task 2a (host, input, wire, sources, slots) and Task 2b (client presentation). Sequencing: Task 1 and Task 2a, then Task 2b, then Task 3, whose manual proof needs 2b's bars. `input-contextual-priority` cites Task 2a and Task 2b by name.
-- Progress counts held ticks against a required count, `ceil(holdMs × 1000 / TICK_DURATION µs)`, at least one, so host and client agree tick for tick; summed f32 fractions could complete a tick early or late.
+- Required count n = `ceil(holdMs × 1000 / TICK_DURATION µs)`, at least one, so host and client agree tick for tick; summed f32 fractions could complete a tick early or late. The Q32 accumulator (owner decisions above) keeps that guarantee for pair values that change mid-hold.
 - A pawn is never its own assist candidate.
 - The received-progress stream holds rather than steps down when a sample lands between its predecessor and the extrapolated value, and catches up at no more than twice the slope.
 
@@ -44,7 +77,6 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 
 - `Command` (`input/commands.rs`) and `Action` (`input/types.rs`). A new command touches `Command::ALL`, `id`, `context`, `kind`, `accepts` (only sprint, movement and crouch restrict to `Press | Hold`; others accept all), `gameplay_target`, the `activator_acceptance_per_command` expectation, `engine_default_inputs`, `derived_relevance`, and the `CommandId` list in `sim/src/scripting/primitives/manifest.rs`. The panel and manifest parsing pick it up from `Command::ALL`.
 - `legacy_actions` (`input/defaults_tests.rs`) is test-only, built from the pre-command legacy default tables; a command with no legacy default leaves it alone.
-- `default_bindings_for` builds every engine default with `Activator::PRESS`.
 - Defaults: Use is `KeyE` / `west`. Dash `KeyF` / `east`, drop `KeyG` / Select. The dev mod's `input.ts` binds sprint `hold` and dash `tap` (threshold 0.2) on `ShiftLeft`.
 - `RelevanceFacts` (`dash`, `crouch`, `magazine`, `secondary`) from `registry_facts` and `tuning_facts` (`app/bindings.rs`).
 - `WireMovementInput` field order: `wish_dir`, `jump_pressed`, `dash_pressed`, `running`, `crouch_intent`, `facing_yaw`, `use_pressed`, `drop_pressed`, `aim_pitch`, `firing_slot`. `use_pressed` is an edge. `held_gap_sim_command` clears fire, activation, secondary, use and drop and carries other levels. `neutral_sim_command` builds literals. `wire_convert.rs` converts both ways.

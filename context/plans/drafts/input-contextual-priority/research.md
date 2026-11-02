@@ -97,7 +97,7 @@ Consequence: a group exemption inside `conflicts` reaches every consumer that al
 
 ### Sibling drafts
 
-- `E18--player-revive-assist` (reconciled 2026-11-02): AC7 (assist relevant only when a descriptor declares `assistable`; no engine default), AC8 (the dev mod's interim `hold` assist beside `press` Use on `KeyE` / `west`, resolved by duration), I4 (one press performs exactly one of `assist`/`use`, resolved on the client; host never converts). Task 2 exposes `assist_candidate` and the client's predicted step over retained remote life-state ids and `assistable` stamps. Its former Phase 3 shared-key default now belongs to this spec.
+- `E18--player-revive-assist` (reconciled 2026-11-02): AC7 (assist relevant only when a descriptor declares `assistable`; engine default `hold` on `KeyE` / `west` while relevant, through a per-command default activator), AC8 (that `hold` beside `press` Use, resolved by duration), I4 (one press performs exactly one of `assist`/`use`, resolved on the client; host never converts). Task 2a exposes `assist_candidate` over pair values (host-evaluated radius and required ticks) and the pair table; Task 2b the client's predicted step over retained remote life-state ids, `assistable` bools and that table. The grouped shared-key default belongs to this spec and replaces revive's `hold` default.
 - `E18--player-life-states`: `player_capability(state_or_component, Capability)` — the one capability helper; a helper whose state has `use: false` cannot assist (revive AC5) and cannot Use (Spec A AC4).
 
 ## Precedent survey

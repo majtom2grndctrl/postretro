@@ -2,7 +2,7 @@
 
 ## Goal
 
-Let several interaction commands share one key in a context. Each press drives the highest-ranked member that is available at the moment the press fires, and stays committed to it until release. Combat commands never resolve by availability, so a contextual action cannot steal a combat key mid-fight. The client resolves locally from what it already predicts, a HUD slot shows what a press will do, and the first consumer is `assist` over `use` on Use's key, replacing the revive dev mod's interim hold-for-assist binding.
+Let several interaction commands share one key in a context. Each press drives the highest-ranked member that is available at the moment the press fires, and stays committed to it until release. Combat commands never resolve by availability, so a contextual action cannot steal a combat key mid-fight. The client resolves locally from what it already predicts, a HUD slot shows what a press will do, and the first consumer is `assist` over `use` on Use's key, replacing revive's duration-split engine default (`assist` `hold` beside `use` `press`).
 
 ## Scope
 
@@ -10,10 +10,10 @@ Let several interaction commands share one key in a context. Each press drives t
 
 - A **contextual group**: two or more interaction-class gameplay commands bound to one input with the same activator (kind and threshold). The group is not a conflict.
 - An engine-closed **rank** per command: `assist` (0), `use` (1). Every other command is unranked and never groups. The smallest rank among available members wins. The member with the largest rank present is the fallback and counts as available whatever the facts say, so a group always resolves to exactly one member.
-- **Availability facts**: a small fact struct the App computes once per frame from the local pawn and pushes into the input system. `assist` is available when it is relevant, the local pawn's life state allows `use`, and the assist candidate query finds a target. `use` is always available.
+- **Availability facts**: a small fact struct the App computes once per frame from the local pawn and pushes into the input system. `assist` is available when it is relevant, the local pawn's life state allows `use`, and the assist candidate query, fed revive's host-evaluated pair values, finds a target. `use` is always available.
 - **Commit at fire.** The resolver picks the member when the group's slot fires and drives only that member until release. The slot fires at the press edge for a `press` group, at a release before the min for a `press` group beside a `hold` partner, and at the min for a `hold` group. `assist` accepts only `press` and `hold` (`E18--player-revive-assist` Task 2a), so `tap` and `release` groups cannot form.
 - The Steam rule generalised: a key carries at most one short slot and one hold slot, and either slot may hold a group.
-- Engine default: `assist` on Use's inputs (`KeyE`, gamepad `west`).
+- Engine default: `assist` grouped with `use` on Use's inputs (`KeyE`, gamepad `west`), both `press`, ranked. It replaces revive's `hold` default for `assist`.
 - A readonly, client-local HUD slot `input.interaction`: the command a fresh press of a key carrying the full group performs now (`"assist"` or `"use"`).
 - Controls panel: a shared mark on grouped bindings and a note stating the order. A capture onto a group partner's input applies without a conflict dialog.
 - Author validation reports a grouped pair as no conflict. A mismatched pair (different activators, or a combat command) conflicts exactly as today.
@@ -31,7 +31,7 @@ Let several interaction commands share one key in a context. Each press drives t
 
 ## Direction
 
-**Problem.** The conflict checker refuses two short gameplay bindings on one input, and nothing in input can choose between commands by what is currently possible. So `assist` cannot default to Use's key, and no key can carry "revive if I can, otherwise use".
+**Problem.** The conflict checker refuses two short gameplay bindings on one input, and nothing in input can choose between commands by what is currently possible. So `assist` shares Use's key only through the duration split, which delays Use to key-up, and no key can carry "revive if I can, otherwise use".
 
 **Placement.**
 
@@ -47,15 +47,15 @@ Let several interaction commands share one key in a context. Each press drives t
 - **Two gameplay commands on one key conflict; the later is unbound** (`input.md` §Contexts, §Author validation; `player_options.md` §6 Conflicts). Kept for every pair except a group. A combat command beside an interaction still conflicts.
 - **Activators resolve client-side; the wire carries resolved intent** (`input.md` §Activators). Kept and extended. Contextual resolution is part of the same client-side step, so `WIRE_VERSION` is unchanged by this spec.
 - **Information flows one way, input to game logic** (`input.md` §7, No reverse dependency). Diverges, narrowly. Until now input consumed only facts fixed at load or table rebuild; `RelevanceFacts` is derived from descriptors when the table rebuilds. Contextual resolution makes input's output depend on live pawn state: a previous-frame fact from the world, written once per frame after the tick loop, and read by the next frame's `snapshot()` when it resolves buffered edges. Nothing writes into input mid-frame, and the fact enters only through `ContextualAvailability`. The divergence is needed because which member a press drives depends on the world, and the resolver needs that answer when the edge resolves. `input.md` §7 gains this exception at promotion.
-- **Client predicts only with host numbers** (`networking.md` §What gates). Kept. Client availability uses the revive spec's candidate query (`assist_candidate`) over host-replicated per-pawn life-state ids and `assistable` stamps.
+- **Client predicts only with host numbers** (`networking.md` §What gates). Kept. Client availability uses the revive spec's candidate query (`assist_candidate`) over host-replicated per-pawn life-state ids and `assistable` bools, with radius and required ticks from the host's pair values (revive's pair table on a connected client). It never evaluates a pair expression.
 - **Use edges ride a retained lane; held levels ride hold-then-neutral** (`networking.md` §Host input command queue). Kept. A resolved press emits one of them and never both.
 - **Glyphs draw the command's first binding** (`ui.md` §4 Glyphs). Kept. Grouped members keep their table entries, so both glyphs draw the shared key.
 - **The panel is the only remapping surface; activators read-only** (`player_options.md` §6 Panel). Kept. Rows stay one per command and gain a shared mark.
-- **`E18--player-revive-assist` gives `assist` no engine default; its dev mod binds `assist` as `hold` on Use's inputs beside Use's `press`** (revive AC7, AC8, I4). Replaced. This spec adds the engine default as a group and removes the dev mod's interim binding. Revive's I4 (the host never converts one command into the other) carries over unchanged as this spec's I4.
+- **`E18--player-revive-assist` gives `assist` an engine default, `hold` on Use's inputs beside Use's `press`, bound while `assist` is relevant, through a per-command default activator** (revive AC7, AC8, I4). Replaced. This spec's grouped default, both `press` and ranked, replaces it; the dev mod binds no `assist` input and inherits the group. Revive's I4 (the host never converts one command into the other) carries over unchanged as this spec's I4.
 
 **Alternatives rejected.**
 
-- **Keep the duration split as the permanent default** (assist `hold`, use `press` on E). This is legal today and is revive's interim, in its dev mod only. As a lasting default, every Use in a revive-enabled mod fires on key-up instead of key-down, and a tap beside a downed teammate still opens the door behind them.
+- **Keep the duration split as the permanent default** (assist `hold`, use `press` on E). This is revive's engine default. As a lasting default, every Use in a revive-enabled mod fires on key-up instead of key-down, and a tap beside a downed teammate still opens the door behind them.
 - **Any commands may group, reload included.** This is Apex Legends' controller layout. When an interactable is in reach, reload stops working: players were forced into revives, finishers and door opens when they meant to reload. It is the Enshrouded failure class (research.md §Precedent survey, pattern 3). Excluding combat commands removes the case without a lockout timer.
 - **Re-resolve every tick.** A teammate going down mid-hold would turn a held Use into an assist. A target drifting out of range would turn an assist into a Use. No working precedent switches a press mid-hold.
 - **Context-sensitive Use in the gameplay layer** (the L4D2 and Darktide shape). This would leave the binding table alone; the client's sim-command builder would turn a Use press into a held assist while a candidate exists, committed until release. It drops most of the grouping, panel and capture work. But it hardwires the policy into Use. No author or player can separate revive from Use short of a new option, the panel cannot show that E revives, and it breaks the model where authors set defaults and players rebind keys only.
@@ -99,7 +99,7 @@ Let several interaction commands share one key in a context. Each press drives t
   - **Client sees one, host does not:** nothing happens on the host (O6).
   - **Client sees none, host does:** the host applies Use and no assist starts (O7).
 
-  `WIRE_VERSION` and `TUNING_PAYLOAD_EPOCH` are unchanged by this spec. Revive's AC8 covers the interim duration split; this AC covers grouped resolution.
+  `WIRE_VERSION` and `TUNING_PAYLOAD_EPOCH` are unchanged by this spec. Revive's AC8 covers its duration-split default; this AC covers grouped resolution.
 
 ### Authoring and panel
 - [ ] **AC9.** An `input` block entry that binds `assist` and `use` to one input with one activator loads with no warning, in TS and Luau. The refused pairs of AC1, written in a block, each log the existing `conflicts with` warning and unbind the later entry.
@@ -137,7 +137,7 @@ Task agents cite rows by number. Expected outcomes are binding. "Available" mean
 
 ## Tasks
 
-New logic lands in new modules: `crates/postretro/src/input/contextual.rs` (rank-free helpers: facts, panel mark text) and `crates/postretro/src/app/contextual_availability.rs`. Files past ~800 lines (`input/system.rs`, `app/controls_panel.rs`, `frame_loop/mod.rs`, `main.rs`) receive only call-site edits, no logic, so none needs a split first. Prerequisite: `E18--player-revive-assist` has landed. Its Task 2a gives `Command::Assist`, `Action::Assist`, `assist_held` threaded through `build_sim_command`, and the accumulator in `sim/src/sim/assist.rs` with its `assist_candidate` query; its Task 2b gives the client predicted step in `client_assist.rs` and `ClientReplication::remote_assist_facts`. Revive ships no engine default for `assist`; its dev mod binds it `hold` on `KeyE` / `west`. Symbols: research.md §Grounding.
+New logic lands in new modules: `crates/postretro/src/input/contextual.rs` (rank-free helpers: facts, panel mark text) and `crates/postretro/src/app/contextual_availability.rs`. Files past ~800 lines (`input/system.rs`, `app/controls_panel.rs`, `frame_loop/mod.rs`, `main.rs`) receive only call-site edits, no logic, so none needs a split first. Prerequisite: `E18--player-revive-assist` has landed. Its Task 2a gives `Command::Assist`, `Action::Assist`, `Command::default_activator`, `assist`'s engine default (`hold` on `KeyE` / `west`, bound while relevant), `assist_held` threaded through `build_sim_command`, the accumulator in `sim/src/sim/assist.rs` with its `assist_candidate` query, host pair values from `assist_pairs::evaluate`, `ClientReplication::remote_assist_facts` and `ClientReplication::assist_pair_table`; its Task 2b gives the client predicted step in `client_assist.rs`. Symbols: research.md §Grounding.
 
 ### Task 1: Thin slice — `press` group, availability, client resolution
 
@@ -147,7 +147,7 @@ This slice falsifies the boundary assumptions: grouped members survive the table
 
 **Grouping rule.** In `binding_table::conflicts`, before the existing same-context test, two gameplay-context bindings on one input are not a conflict when both commands' `gameplay_target` actions are ranked and their `activator` values are equal (kind and threshold). Every caller of `conflicts` follows from this one edit: `collides`, `resolve_collisions`, `restore_guard`, `rebind::holders_of`, `author_layer::report_collisions` and the test-only `conflicting_pairs`.
 
-**Default.** Set `engine_default_inputs(Command::Assist)` to `KeyE` / `GilrsButton::West` (revive ships it empty), and remove the `assist` hold binding from `content/dev/scripts/input.ts` so the dev mod inherits the group.
+**Default.** Keep `engine_default_inputs(Command::Assist)` at `KeyE` / `GilrsButton::West` and change `Command::default_activator` for `Assist` from `hold` to `press`, so the engine default forms the group with Use's `press`. The dev mod binds no `assist` input and inherits the group.
 
 **Facts.** Add `ContextualAvailability { assist: bool }` with `available(action)` in `input/contextual.rs`. `Use` is always available. `available` is never consulted for an unranked action. Add `InputSystem::set_contextual_availability`, a setter beside `set_hold_timing_scale` that stores the facts for `resolve_pending_edges` to pass to the resolver.
 
@@ -159,8 +159,8 @@ This slice falsifies the boundary assumptions: grouped members survive the table
 - The assist candidate query finds a target for the local pawn as helper.
 
 The candidate query is revive's `assist_candidate` in `sim/src/sim/assist.rs`. The query runs over these sources:
-- **Single player and listen host:** registry pawns.
-- **Connected client:** the inputs revive's predicted step already uses (interpolated remote pawns and their retained life-state ids and `assistable` stamps), read from the same call site.
+- **Single player and listen host:** registry pawns, with pair values from revive's `assist_pairs::evaluate`.
+- **Connected client:** the inputs revive's predicted step already uses (interpolated remote pawns, their retained life-state ids and `assistable` bools, and the host's pair table), read from the same call site.
 
 `frame_loop/mod.rs` gets one call after the tick loop that computes the facts and passes them to `InputSystem::set_contextual_availability`.
 

@@ -140,6 +140,7 @@ Trigger fan-out, activation policy, dispatch parameters, enemy groups, spawning,
 
 - [x] **R — Respawn + player-leave policy.** Author-named player life states, capability gates, respawn and the rejoin map; player-leave keeps the harvest-and-hold contract. Shipped: `plans/done/E18--player-life-states/`.
 - [ ] **Player revive and second wind.** Teammate assist and impact-policy life-state reads and effects. Drafted: `drafts/E18--player-revive-assist/`.
+- [ ] **Per-entity state reads in interaction-pair expressions.** `@state.*` side reads in pair expressions such as revive's `assistable`, so a helper's or target's per-entity state can scale a revive. Waits on the cross-entity state-read write path (`scripting.md` §11).
 - [ ] **Life-state drop capability.** A `drop` profile key, separate from `switchWeapon`. Today `switchWeapon: false` also refuses drop, because drop repoints the active slot, so an author can't let a downed player drop a weapon while switching stays refused.
 - [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
 

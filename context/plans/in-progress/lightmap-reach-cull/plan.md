@@ -60,6 +60,7 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 - Reach cull 5f7c5c4ea, same map (counted run, SH 124.75 s so not materially loaded): Lightmap Bake 722.37 s = 0.75× baseline, against the ≤ 0.65× gate. Spike prototype saved 369 s of 860 s; this saves 243 s of 965 s with the same 1,732 M texels skipped. Cost breakdown is task 7.
 - Owner ruling 2026-11-02: the stage-scheduling levers (byte-budgeted window admission, zero-record fold skip, off-thread layer close) are a separate follow-up; roadmap entry at landing.
 - Task 7 (instrumented, light load, SH 123.6 s): Lightmap Bake 619.94 s = 0.643×, PRL `cmp`-identical to baseline. Cull machinery ~5 CPU-s total; border traces 293 CPU-s (13.36 M × 22 µs, required by the per-texel rule). The stage runs ~4.2 of 16 cores: partition window of 8 in-order items, 0.37 pairs per item, serial consumer 273 s. Window 64 (experiment, reverted): 522.6 s under heavier load, bytes identical. The 722 s counted run was load-inflated. Idle re-time is part of task 6.
+- Idle re-time, f76b1c429, hallway cold `--release`, verify off: Lightmap Bake 556.84 s = **0.577×** baseline (gate ≤ 0.65×), SH Bake 122.01 s (control), Total 783.65 s; proof 48,062 edges, 0 unproven, 0.103 s; stage line 45,360 / 83,022 culled; PRL `cmp`-identical to `main`'s. Cosmetic: proof info line prints "-0.000 m".
 
 ## Tasks
 

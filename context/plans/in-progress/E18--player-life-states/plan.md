@@ -33,7 +33,11 @@ after pawn loss, placement republish regression, tall-crouch swim exit, reload
 while downed, `inLifeState` scope, build-side respawn health — are fixed in the
 following commit.
 
-Remaining before landing: full preflight, AC17/AC18 manual visual
+Final gate at c7834596b (2026-11-01): fmt, workspace clippy -D warnings (also
+postretro dev-tools), workspace tests 13,969 passed / 0 failed / 102 ignored,
+generated SDK types current.
+
+Remaining before landing: AC17/AC18 manual visual
 proof per [manual-playtest.md](manual-playtest.md).
 
 Every build checks for an active `rustc` or `prl-build` first (owner rule, below).
@@ -232,27 +236,27 @@ No manual visual result is inferred.
 
 | AC | Proof | Status | Result |
 |---|---|---|---|
-| 1 | Shared validator plus QuickJS/Luau descriptor and startup/staged-manifest parity cases for every rejection, valid defaults, rejoin, and the 255-name limit | automated | PASS (focused proof; final gate pending) |
-| 2 | Undeclared zero-HP regressions across fire cancellation, vault/teleport, occupancy/damage eligibility, and ungated movement/look/switch/reload/use/touch/pickups | automated | PASS (focused proof; final gate pending) |
-| 3 | Spawn/join/restart and level-change initial state plus elapsed-zero assertions before the first tick; O15 pins first condition reads | automated | PASS (focused proof; final gate pending) |
-| 4 | Capability-by-capability refuse/permit pairs including zero HP; production host/local/client weapon paths; movement replay and owner look sampling; held/burst/charge and vault interruption | automated | PASS (focused proof; final gate pending) |
-| 5 | Forced-crouch entry/hold/exit tests with abilities both enabled and disabled, including slide/dash/jump precedence and blocked stand clearance | automated | PASS (focused proof; final gate pending) |
-| 6 | Trigger membership retained without spurious Exit, pickup and teleporter refusal/permit at zero HP, occupancy counts, O35/O40 | automated | PASS (focused proof; final gate pending) |
-| 7 | In-tick command execution, same-state no-op, exact 900-tick threshold, and all O15/O39 first-read values | automated | PASS (focused proof; final gate pending) |
-| 8 | Install and bind diagnostics naming reaction/state; both verbs; condition and crossing binding; runtime missing-state/no-state warnings | automated | PASS (focused proof; final gate pending) |
-| 9 | Two-pawn player-event predicates and own-pawn local crossings in both runtimes | automated | PASS (focused proof; final gate pending) |
-| 10 | Local String and owner-private Number publication/replication through the UI frozen map and visibleWhen resolver; undeclared empty name | automated | PASS (focused proof; final gate pending) |
-| 11 | Production tick-start respawn drain: all velocity/ability resets, settled ground, yaw, health/latch, state elapsed, cancelled weapons/vault, retained inventory | automated | PASS (focused proof; final gate pending) |
-| 12 | Owner teleport-class reconcile and observer cut with NO_TELEPORTER suppressing stale arrival sound, including O28 coalescing | automated | PASS (focused proof; final gate pending) |
-| 13 | Seat/map-order overlap selection, sequential batches, no-free warning, malformed health clamp, non-player skip; AC13 governs later queued pawns | automated | PASS (focused proof; final gate pending) |
-| 14 | Seat lifecycle scenarios for disconnect/hold expiry, suspend/demotion, reload removal and rejoin map, held seats and level-change clearing | automated | PASS (focused proof; final gate pending) |
-| 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated | PASS (focused proof; final gate pending) |
-| 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated | PASS (focused proof; final gate pending) |
-| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual | automated PASS; manual visual proof outstanding |
-| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual; owner wording resolved | automated PASS; manual visual proof outstanding |
-| 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated | PASS (focused proof; final gate pending) |
-| 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated | PASS (focused proof; final gate pending) |
-| 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks | PASS (focused proof; final gate pending) |
+| 1 | Shared validator plus QuickJS/Luau descriptor and startup/staged-manifest parity cases for every rejection, valid defaults, rejoin, and the 255-name limit | automated | PASS — full gate c7834596b |
+| 2 | Undeclared zero-HP regressions across fire cancellation, vault/teleport, occupancy/damage eligibility, and ungated movement/look/switch/reload/use/touch/pickups | automated | PASS — full gate c7834596b |
+| 3 | Spawn/join/restart and level-change initial state plus elapsed-zero assertions before the first tick; O15 pins first condition reads | automated | PASS — full gate c7834596b |
+| 4 | Capability-by-capability refuse/permit pairs including zero HP; production host/local/client weapon paths; movement replay and owner look sampling; held/burst/charge and vault interruption | automated | PASS — full gate c7834596b |
+| 5 | Forced-crouch entry/hold/exit tests with abilities both enabled and disabled, including slide/dash/jump precedence and blocked stand clearance | automated | PASS — full gate c7834596b |
+| 6 | Trigger membership retained without spurious Exit, pickup and teleporter refusal/permit at zero HP, occupancy counts, O35/O40 | automated | PASS — full gate c7834596b |
+| 7 | In-tick command execution, same-state no-op, exact 900-tick threshold, and all O15/O39 first-read values | automated | PASS — full gate c7834596b |
+| 8 | Install and bind diagnostics naming reaction/state; both verbs; condition and crossing binding; runtime missing-state/no-state warnings | automated | PASS — full gate c7834596b |
+| 9 | Two-pawn player-event predicates and own-pawn local crossings in both runtimes | automated | PASS — full gate c7834596b |
+| 10 | Local String and owner-private Number publication/replication through the UI frozen map and visibleWhen resolver; undeclared empty name | automated | PASS — full gate c7834596b |
+| 11 | Production tick-start respawn drain: all velocity/ability resets, settled ground, yaw, health/latch, state elapsed, cancelled weapons/vault, retained inventory | automated | PASS — full gate c7834596b |
+| 12 | Owner teleport-class reconcile and observer cut with NO_TELEPORTER suppressing stale arrival sound, including O28 coalescing | automated | PASS — full gate c7834596b |
+| 13 | Seat/map-order overlap selection, sequential batches, no-free warning, malformed health clamp, non-player skip; AC13 governs later queued pawns | automated | PASS — full gate c7834596b |
+| 14 | Seat lifecycle scenarios for disconnect/hold expiry, suspend/demotion, reload removal and rejoin map, held seats and level-change clearing | automated | PASS — full gate c7834596b |
+| 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated | PASS — full gate c7834596b |
+| 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated | PASS — full gate c7834596b |
+| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual | automated PASS — full gate c7834596b; **manual visual proof outstanding** |
+| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual; owner wording resolved | automated PASS — full gate c7834596b; **manual visual proof outstanding** |
+| 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated | PASS — full gate c7834596b |
+| 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated | PASS — full gate c7834596b |
+| 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks | PASS — full gate c7834596b |
 ## Tasks
 
 The integrating executor owns all shared contracts, `plan.md`, integration,

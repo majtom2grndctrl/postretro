@@ -114,13 +114,15 @@ fn player_death_twins_emit_identical_policy_and_down_vignette_wire() {
     assert_eq!(ts.reactions, lua.reactions);
     assert_eq!(ts.player_events, lua.player_events);
     assert_eq!(ts.crossings, lua.crossings);
+    assert_eq!(ts.events, lua.events);
     assert_eq!(
         (
             ts.reactions.len(),
             ts.player_events.len(),
-            ts.crossings.len()
+            ts.crossings.len(),
+            ts.events.len(),
         ),
-        (4, 2, 2)
+        (6, 4, 2, 1)
     );
     let reaction = |name: &str| {
         wire["reactions"]
@@ -160,6 +162,50 @@ fn player_death_twins_emit_identical_policy_and_down_vignette_wire() {
         &wire["playerEvents"][1],
         &json!({"op":"ge","a":{"op":"input","name":"player.lifeStateMs"},"b":{"op":"const","value":15000}})
     ));
+    // AC11: identical `assistReceived` / `assistGiven` player events and an
+    // identical `second-wind` impact event in both twins (the whole-wire
+    // comparison above already pins equality; these pin the content).
+    assert_eq!(wire["playerEvents"][2]["edge"], "assistReceived");
+    assert_eq!(wire["playerEvents"][2]["fire"], json!(["life.revived"]));
+    assert!(wire["playerEvents"][2].get("condition").is_none());
+    assert_eq!(wire["playerEvents"][3]["edge"], "assistGiven");
+    assert_eq!(wire["playerEvents"][3]["fire"], json!(["life.assistBonus"]));
+    let revived = reaction("life.revived");
+    assert_eq!(
+        revived["sequence"],
+        json!([
+            {"primitive":"setLifeState","target":"@player","args":{"state":"alive"}},
+            {"primitive":"grantHealth","target":"@player","args":{"amount":30}}
+        ])
+    );
+    let bonus = reaction("life.assistBonus");
+    assert_eq!(
+        (bonus["primitive"].as_str(), bonus["target"].as_str()),
+        (Some("addSlot"), Some("@player"))
+    );
+    assert_eq!(bonus["args"], json!({"slot":"progression.xp","delta":25}));
+    let second_wind = &wire["events"][0];
+    assert_eq!(second_wind["kind"], "impact");
+    assert_eq!(second_wind["id"], "second-wind");
+    assert_eq!(second_wind["filter"]["tag"], "enemy");
+    assert_eq!(second_wind["isOverride"], false);
+    assert!(contains(
+        second_wind,
+        &json!({"op":"input","owner":"@impact.source","name":"player.inLifeState:down"})
+    ));
+    for effect in [
+        json!({"primitive":"setLifeState","target":"@impact.source","args":{"state":"alive"}}),
+        json!({"primitive":"grantHealth","target":"@impact.source","args":{"amount":{"op":"const","value":40}}}),
+    ] {
+        assert!(contains(second_wind, &effect), "{effect}");
+    }
+    assert!(
+        contains(
+            second_wind,
+            &json!({"name":"progression.xp","op":"input","owner":"@impact.source"})
+        ) && contains(second_wind, &json!({"op":"const","value":50})),
+        "the XP bump reads and writes the source's own per-owner slot"
+    );
     assert_eq!(reaction("life.downedVignette")["primitive"], "vignette");
     assert_eq!(reaction("life.downedVignette")["args"]["durationMs"], 15000);
     assert_eq!(reaction("life.clearVignette")["args"]["strength"], 0);
@@ -227,6 +273,26 @@ fn player_death_dev_registration_and_hud_consume_the_authored_policy() {
             "dev mod registers each authored death reaction"
         );
     }
+    assert_eq!(ts.events.len(), 1);
+    let second_wind = manifest
+        .events
+        .iter()
+        .find(|event| event.id.ends_with("second-wind"))
+        .expect("dev mod registers the `second-wind` impact event");
+    assert!(!second_wind.is_override);
+    assert_eq!(second_wind.filter_tag.as_deref(), Some("enemy"));
+    assert_eq!(second_wind.policy, ts.events[0].policy);
+    assert!(
+        !manifest
+            .events
+            .iter()
+            .any(|event| event.id.ends_with("enemy-death")
+                && contains(
+                    &json!(event.policy),
+                    &json!({"name":"player.inLifeState:down"})
+                )),
+        "second wind is its own event, not a row in `enemyDeath`"
+    );
     let data = ctx.data_registry.borrow();
     let player = data
         .entities
@@ -266,19 +332,43 @@ fn player_death_dev_registration_and_hud_consume_the_authored_policy() {
     let meter = bar(&hud).expect("bleed-out bar exists");
     assert_eq!(meter["bind"]["slot"], "player.lifeStateMs");
     assert_eq!(meter["max"].as_f64(), Some(15000.0));
+    // AC11: "Reviving" on the helper's progress, "Being revived" on the target's.
+    for (tree, slot) in [
+        ("hud.reviving", "player.assistProgress"),
+        ("hud.beingRevived", "player.assistReceivedProgress"),
+    ] {
+        let registered = manifest
+            .ui_trees
+            .iter()
+            .find(|candidate| candidate.name == tree)
+            .unwrap_or_else(|| panic!("`{tree}` is registered"));
+        assert!(registered.always_on);
+        let json = serde_json::to_value(&registered.tree).unwrap();
+        let meter = bar(&json).unwrap_or_else(|| panic!("`{tree}` has a bar"));
+        assert_eq!(meter["bind"]["slot"], slot);
+        assert_eq!(meter["max"].as_f64(), Some(1.0));
+    }
+    let down = &states.states["down"];
+    assert!(
+        down.assistable.is_some(),
+        "`down` declares `assistable: {{}}`"
+    );
 }
 
-struct Consumer {
-    _app: crate::App,
-    ctx: ScriptCtx,
-    world: crate::collision::CollisionWorld,
-    descriptors: Vec<EntityTypeDescriptor>,
-    table: PlayerEventTable,
-    host: EntityId,
-    other: EntityId,
-    next_tick: u32,
+pub(super) struct Consumer {
+    pub(super) _app: crate::App,
+    pub(super) ctx: ScriptCtx,
+    pub(super) world: crate::collision::CollisionWorld,
+    pub(super) descriptors: Vec<EntityTypeDescriptor>,
+    pub(super) table: PlayerEventTable,
+    pub(super) host: EntityId,
+    pub(super) other: EntityId,
+    pub(super) next_tick: u32,
+    pub(super) assist: postretro_sim::sim::assist::AssistState,
+    pub(super) impact: RefCell<crate::impact_policy::ImpactPolicyRuntime>,
+    pub(super) input_block: Option<postretro_scripting_core::runtime::ModInputBlock>,
 }
-fn command() -> SimCommand {
+pub(super) fn command() -> SimCommand {
     SimCommand {
         assist_held: false,
         input_tick: 0,
@@ -310,8 +400,8 @@ fn command() -> SimCommand {
     }
 }
 impl Consumer {
-    fn new() -> Self {
-        let (mut app, ctx, _) = dev_mod();
+    pub(super) fn new() -> Self {
+        let (mut app, ctx, manifest) = dev_mod();
         ctx.registry.borrow_mut().clear_for_level_unload();
         let descriptors = ctx.data_registry.borrow().entities.clone();
         let placement = |x| postretro_sim::scripting::map_entity::MapEntity {
@@ -362,6 +452,19 @@ impl Consumer {
         );
         let table = PlayerEventTable::build(&ctx, Default::default(), Default::default(), None);
         assert!(!table.is_empty());
+        let mut assist = postretro_sim::sim::assist::AssistState::default();
+        assist.rebind(&ctx);
+        // The dev mod's own `second-wind` event alone: the combat presentation
+        // events are not under test here.
+        let mut impact = crate::impact_policy::ImpactPolicyRuntime::new(ctx.clone());
+        impact.replace_global_events(
+            manifest
+                .events
+                .iter()
+                .filter(|event| event.id.ends_with("second-wind"))
+                .cloned()
+                .collect(),
+        );
         Self {
             _app: app,
             ctx,
@@ -371,9 +474,12 @@ impl Consumer {
             host,
             other,
             next_tick: 0,
+            assist,
+            impact: RefCell::new(impact),
+            input_block: manifest.input.clone(),
         }
     }
-    fn movement(&self, pawn: EntityId) -> PlayerMovementComponent {
+    pub(super) fn movement(&self, pawn: EntityId) -> PlayerMovementComponent {
         self.ctx
             .registry
             .borrow()
@@ -381,7 +487,7 @@ impl Consumer {
             .unwrap()
             .clone()
     }
-    fn pose(&self, pawn: EntityId) -> Transform {
+    pub(super) fn pose(&self, pawn: EntityId) -> Transform {
         *self
             .ctx
             .registry
@@ -389,7 +495,7 @@ impl Consumer {
             .get_component::<Transform>(pawn)
             .unwrap()
     }
-    fn name(&self, pawn: EntityId) -> String {
+    pub(super) fn name(&self, pawn: EntityId) -> String {
         postretro_sim::sim::player_life::life_state_name(
             &self.ctx.registry.borrow(),
             pawn,
@@ -397,7 +503,7 @@ impl Consumer {
         )
         .unwrap()
     }
-    fn health(&self, pawn: EntityId) -> f32 {
+    pub(super) fn health(&self, pawn: EntityId) -> f32 {
         self.ctx
             .registry
             .borrow()
@@ -405,12 +511,16 @@ impl Consumer {
             .unwrap()
             .current
     }
-    fn tick(&mut self, command: SimCommand) -> TickEvents {
+    pub(super) fn tick(&mut self, command: SimCommand) -> TickEvents {
         self.tick_then(command, |_| {})
     }
     /// Runs one tick, calling `between` after the simulation (and its respawn
     /// drain) but before player events evaluate, as same-tick damage would land.
-    fn tick_then(&mut self, mut command: SimCommand, between: impl FnOnce(&Self)) -> TickEvents {
+    pub(super) fn tick_then(
+        &mut self,
+        mut command: SimCommand,
+        between: impl FnOnce(&Self),
+    ) -> TickEvents {
         command.input_tick = self.next_tick;
         self.next_tick += 1;
         let mut triggers = TriggerSystem::default();
@@ -450,7 +560,7 @@ impl Consumer {
             },
             DT,
             &mut Default::default(),
-            &mut Default::default(),
+            &mut self.assist,
             &self.descriptors,
             0,
             &Default::default(),
@@ -474,7 +584,8 @@ impl Consumer {
         );
         between(self);
         let mut residuals = Vec::new();
-        self.table.run_tick(&self.ctx, &[], &mut residuals);
+        self.table
+            .run_tick(&self.ctx, &events.assist_completions, &mut residuals);
         assert!(
             residuals.is_empty(),
             "the down/respawn policy is fixed-tick work"

@@ -30,6 +30,8 @@ mod player_death_surface_tests;
 #[cfg(test)]
 mod player_events_surface_tests;
 #[cfg(test)]
+mod player_revive_surface_tests;
+#[cfg(test)]
 mod player_spawn_surface_tests;
 pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;

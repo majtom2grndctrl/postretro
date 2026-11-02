@@ -60,11 +60,13 @@ import {
 } from "./scripts/positional-sound";
 import {
   ammoReadout,
+  beingRevivedMeterTree,
   bleedOutMeterTree,
   hud,
   hudTheme,
   openSeatsReadout,
   reloadMeterTree,
+  revivingMeterTree,
   spreadReticle,
   xpReadout,
 } from "./scripts/hud";
@@ -155,6 +157,8 @@ export default defineMod({
     spreadReticle,
     reloadMeterTree,
     bleedOutMeterTree,
+    revivingMeterTree,
+    beingRevivedMeterTree,
     pauseMenu,
     exitConfirm,
     quitConfirm,
@@ -204,6 +208,7 @@ export default defineMod({
     ammoOnKill,
     combatZombieLifecycle,
     factionSentimentBackstab,
+    ...playerDeath.events,
   ],
   triggerEvents: factionSentimentTriggerEvents,
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],

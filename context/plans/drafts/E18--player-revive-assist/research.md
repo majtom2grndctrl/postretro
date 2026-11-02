@@ -6,7 +6,8 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 
 - The client learns a teammate's assistability from a per-pawn `assistable` stamp replicated on the movement state, not from `TuningPayload`.
 - The shared-key press-time resolution (old AC8 / I4 Phase 3) moves to `input-contextual-priority` (its open question 2). This spec exposes `assist_candidate` for it.
-- Interim default: `assist` is a `hold` on Use's inputs (`KeyE`, gamepad `west`), the same pattern as the dev mod's hold-Shift sprint beside tap-Shift dash.
+- Interim binding: the dev mod's `input.ts` binds `assist` as a `hold` on Use's inputs (`KeyE`, gamepad `west`), the same pattern as its hold-Shift sprint beside tap-Shift dash. No engine default; engine defaults stay all `press` (decided after `/validate-plan`).
+- `input-contextual-priority` is reconciled in the same session: its open question 2 is decided, and the duration split is revive's interim.
 
 ## Impact policy
 

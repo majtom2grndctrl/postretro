@@ -163,6 +163,7 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 9 | Weapon reload and activation tick | Advances passive resources and reloads, transfers completed reloads from pawn reserves, then consumes actions and per-shot aim; accepted shots may spawn impact effects and apply damage |
 | 10 | Projectile launch finalization | Closes spawn grace for projectiles launched after the flight stage without moving them. They begin flight on the next fixed tick. |
 | 11 | Death sweep | Processes entities whose health reached zero after same-tick damage |
+| 12 | Assist accumulator (decided, not yet built) | Host and single player. Evaluates pair values and advances held assists over settled positions and life states after same-tick damage and deaths; records completions the tick's player-event pass applies before its condition snapshot (`scripting.md` §12) |
 
 Scripting bridges run later, outside the core simulation seam. Emitter, light and fog-volume bridges walk their configuration components. The emitter bridge writes particles into the presentation pool (§8); particle simulation updates that pool without spawning or rewriting registry entities.
 

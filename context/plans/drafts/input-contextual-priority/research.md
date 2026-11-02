@@ -40,7 +40,7 @@ Consequence: a group exemption inside `conflicts` reaches every consumer that al
 - `Command` is engine-closed; every property is an exhaustive match (`context`, `kind`, `accepts`, `gameplay_target`).
 - `Command::accepts`: shoot/alt-fire/analog/wheel → `press` only; sprint/crouch/movement → `press`|`hold`; everything else (use, reload, drop, jump, dash, selections) any kind.
 - `gameplay_target` maps a command to `(Action, sign)`; `Action` lives in `input/types.rs`.
-- `assist` does not exist yet; `E18--player-revive-assist` Task 2 adds it to "the closed gameplay action set" accepting `press` or `hold`.
+- `assist` does not exist yet; `E18--player-revive-assist` Task 2a adds it to "the closed gameplay action set" accepting `press` or `hold`.
 
 ### Engine defaults — `crates/postretro/src/input/defaults.rs`
 

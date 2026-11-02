@@ -19,6 +19,24 @@ pub(crate) const PORTAL_EPSILON: f64 = 0.01;
 /// from accumulating numerical precision loss during repeated clipping.
 pub(crate) const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
+/// How portal generation clips windings and which slivers it drops.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PortalTolerance {
+    /// Points within this of a plane count as on it, on both sides.
+    pub epsilon: f64,
+    /// Pieces below this area are dropped.
+    pub min_area: f64,
+}
+
+impl PortalTolerance {
+    /// The shipped full-tree and runtime portals: [`PORTAL_EPSILON`] and
+    /// [`MIN_PORTAL_AREA_M2`].
+    pub(crate) const SHIPPED: Self = Self {
+        epsilon: PORTAL_EPSILON,
+        min_area: MIN_PORTAL_AREA_M2,
+    };
+}
+
 /// A portal connecting two adjacent BSP leaves through a splitting plane.
 /// In the runtime set (`generate_runtime_portals`) the endpoints are cell
 /// ids, under the leaf-era field names the PRL format keeps.
@@ -31,6 +49,11 @@ pub struct Portal {
 
 /// Generate portals for all adjacent empty leaf pairs in the BSP tree.
 pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
+    generate_portals_with(tree, PortalTolerance::SHIPPED)
+}
+
+/// [`generate_portals`] under `tolerance`.
+pub(crate) fn generate_portals_with(tree: &BspTree, tolerance: PortalTolerance) -> Vec<Portal> {
     if tree.nodes.is_empty() {
         return Vec::new();
     }
@@ -38,7 +61,7 @@ pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     let mut portals = Vec::new();
     let ancestor_planes: Vec<(DVec3, f64)> = Vec::new();
 
-    generate_recursive(tree, 0, &ancestor_planes, &mut portals);
+    generate_recursive(tree, 0, &ancestor_planes, tolerance, &mut portals);
 
     portals
 }
@@ -49,14 +72,17 @@ fn generate_recursive(
     tree: &BspTree,
     node_idx: usize,
     ancestor_planes: &[PlaneEntry],
+    tolerance: PortalTolerance,
     portals: &mut Vec<Portal>,
 ) {
     let node = &tree.nodes[node_idx];
     let plane_normal = node.plane_normal;
     let plane_distance = node.plane_distance;
 
-    if let Some(winding) = make_node_portal(plane_normal, plane_distance, ancestor_planes) {
-        distribute_portal(tree, &winding, &node.front, &node.back, portals);
+    if let Some(winding) =
+        make_node_portal(plane_normal, plane_distance, ancestor_planes, tolerance)
+    {
+        distribute_portal(tree, &winding, &node.front, &node.back, tolerance, portals);
     }
 
     // Front child inherits the plane as-is; back child sees the negated plane.
@@ -64,14 +90,14 @@ fn generate_recursive(
     front_ancestors.push((plane_normal, plane_distance));
 
     if let BspChild::Node(child_idx) = node.front {
-        generate_recursive(tree, child_idx, &front_ancestors, portals);
+        generate_recursive(tree, child_idx, &front_ancestors, tolerance, portals);
     }
 
     let mut back_ancestors = ancestor_planes.to_vec();
     back_ancestors.push((-plane_normal, -plane_distance));
 
     if let BspChild::Node(child_idx) = node.back {
-        generate_recursive(tree, child_idx, &back_ancestors, portals);
+        generate_recursive(tree, child_idx, &back_ancestors, tolerance, portals);
     }
 }
 
@@ -81,11 +107,12 @@ fn make_node_portal(
     plane_normal: DVec3,
     plane_distance: f64,
     ancestor_planes: &[PlaneEntry],
+    tolerance: PortalTolerance,
 ) -> Option<Vec<DVec3>> {
     let winding = make_base_winding(plane_normal, plane_distance);
-    let winding = clip_winding_to_half_spaces(winding, ancestor_planes, PORTAL_EPSILON)?;
+    let winding = clip_winding_to_half_spaces(winding, ancestor_planes, tolerance.epsilon)?;
 
-    if winding.len() < 3 || polygon_area(&winding) < MIN_PORTAL_AREA_M2 {
+    if winding.len() < 3 || polygon_area(&winding) < tolerance.min_area {
         return None;
     }
 
@@ -98,6 +125,7 @@ fn distribute_portal(
     winding: &[DVec3],
     front_child: &BspChild,
     back_child: &BspChild,
+    tolerance: PortalTolerance,
     portals: &mut Vec<Portal>,
 ) {
     distribute_winding(
@@ -106,7 +134,7 @@ fn distribute_portal(
         front_child,
         back_child,
         &|_| true,
-        MIN_PORTAL_AREA_M2,
+        tolerance,
         &mut |piece, front, back| {
             let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front, back) else {
                 return;
@@ -123,8 +151,8 @@ fn distribute_portal(
 }
 
 /// Push a winding through the subtrees on each side of its plane, splitting
-/// it at every node `descend` admits, front side first. Each piece of at
-/// least `min_area` reaches `on_pair` with the two children it ends between:
+/// it at every node `descend` admits, front side first, under `tolerance`'s
+/// epsilon. Each piece of at least its `min_area` reaches `on_pair` with the two children it ends between:
 /// leaves, or nodes `descend` refused.
 fn distribute_winding(
     tree: &BspTree,
@@ -132,7 +160,7 @@ fn distribute_winding(
     front_child: &BspChild,
     back_child: &BspChild,
     descend: &impl Fn(usize) -> bool,
-    min_area: f64,
+    tolerance: PortalTolerance,
     on_pair: &mut impl FnMut(&[DVec3], &BspChild, &BspChild),
 ) {
     let (split_node, split_front) = match (front_child, back_child) {
@@ -148,20 +176,20 @@ fn distribute_winding(
         winding,
         split_node.plane_normal,
         split_node.plane_distance,
-        PORTAL_EPSILON,
+        tolerance.epsilon,
     );
     for (piece, side) in [
         (front_winding, &split_node.front),
         (back_winding, &split_node.back),
     ] {
         let Some(piece) = piece else { continue };
-        if piece.len() < 3 || polygon_area(&piece) < min_area {
+        if piece.len() < 3 || polygon_area(&piece) < tolerance.min_area {
             continue;
         }
         if split_front {
-            distribute_winding(tree, &piece, side, back_child, descend, min_area, on_pair);
+            distribute_winding(tree, &piece, side, back_child, descend, tolerance, on_pair);
         } else {
-            distribute_winding(tree, &piece, front_child, side, descend, min_area, on_pair);
+            distribute_winding(tree, &piece, front_child, side, descend, tolerance, on_pair);
         }
     }
 }

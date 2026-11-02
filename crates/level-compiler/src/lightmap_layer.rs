@@ -28,6 +28,7 @@ use glam::DVec3;
 mod cache_keys;
 mod chart_cull;
 mod chart_walk;
+mod reach_walk;
 mod shaft_cull;
 #[cfg(test)]
 mod skip_stats;
@@ -37,14 +38,19 @@ pub use cache_keys::{
     LayerKeyContext, layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
 };
-pub(crate) use chart_cull::{ExactSkips, chart_may_cover};
+pub(crate) use chart_cull::{
+    ExactSkips, POSITION_SLACK_PER_METER, chart_may_cover, exact_texel_local,
+};
 #[cfg(test)]
 use chart_walk::bake_light_layer_chart_clipped;
-pub(crate) use chart_walk::{bake_light_layer_chart_controlled, for_each_light_layer_chart_texel};
+#[cfg(test)]
+pub(crate) use chart_walk::bake_light_layer_chart_controlled;
+pub(crate) use chart_walk::{bake_light_layer_chart_reached, for_each_light_layer_chart_texel};
 #[cfg(test)]
 pub(crate) use chart_walk::{
     bake_light_layer_chart_without_clip_prepass, visit_light_chart_coverage_controlled,
 };
+pub(crate) use reach_walk::{ReachMismatchSlot, ReachTally, ReachWalk};
 pub(crate) use shaft_cull::ShaftScene;
 #[cfg(test)]
 pub(crate) use shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull};
@@ -689,6 +695,7 @@ fn bake_light_layer_for_faces(
                 true,
                 exact_skips,
                 &shaft_scene,
+                None,
                 control,
             )
         })

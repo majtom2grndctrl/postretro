@@ -26,6 +26,10 @@ pub(crate) struct ExactSkips {
     /// The chart walk stores visibility 1 at a tile of texels the tile shaft
     /// cull ([`super::shaft_cull`]) proves clear, and traces none of them.
     pub shaft_cull: bool,
+    /// The chart walk stores visibility 0 without tracing at the texels of a
+    /// `(light, chart)` pair open space cannot carry the light to
+    /// ([`crate::lightmap_reach`]), when the stage has a reach index.
+    pub reach_cull: bool,
     /// Every covered texel of a clear tile is also traced normally, with
     /// copies of both occluder caches, and must give exactly 1.0 and leave
     /// both copies as the skipped walk holds them. On by default in tests, so
@@ -37,6 +41,11 @@ pub(crate) struct ExactSkips {
     /// allow.
     #[cfg(test)]
     pub force_clear: bool,
+    /// Every pair whose chart frame the reach cull can bound counts as
+    /// culled, whatever the flood reached: the negative control that reach
+    /// verify mode fails a skip the geometry does not allow.
+    #[cfg(test)]
+    pub force_reach_cull: bool,
     /// Where the walk and planning tally what they skipped.
     #[cfg(test)]
     pub stats: Option<&'static SkipStats>,
@@ -46,10 +55,13 @@ impl ExactSkips {
     pub(crate) const ON: Self = Self {
         chart_cull: true,
         shaft_cull: true,
+        reach_cull: true,
         #[cfg(test)]
         verify: true,
         #[cfg(test)]
         force_clear: false,
+        #[cfg(test)]
+        force_reach_cull: false,
         #[cfg(test)]
         stats: None,
     };
@@ -57,8 +69,10 @@ impl ExactSkips {
     pub(crate) const OFF: Self = Self {
         chart_cull: false,
         shaft_cull: false,
+        reach_cull: false,
         verify: false,
         force_clear: false,
+        force_reach_cull: false,
         stats: None,
     };
 
@@ -75,7 +89,7 @@ impl ExactSkips {
 /// `chart_texel_world_position`'s local coordinate on `axis` of grid texel
 /// `texel` (window-relative), in `f64`: the exact value of its `f32`
 /// expression's inputs.
-pub(super) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f64 {
+pub(crate) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f64 {
     let frac = (f64::from(grid.origin[axis] + texel) + 0.5) / f64::from(grid.interior[axis]);
     f64::from(grid.uv_min[axis]) + frac * f64::from(grid.uv_extent[axis])
 }
@@ -85,7 +99,7 @@ pub(super) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f6
 /// expression rounds about ten times, each within 2⁻²⁴ of the magnitude of
 /// its terms: about 1.0e-6 m per metre across three components. This is
 /// four times that.
-const POSITION_SLACK_PER_METER: f64 = 4.0e-6;
+pub(crate) const POSITION_SLACK_PER_METER: f64 = 4.0e-6;
 
 /// Bound on the bake's `f32` rounding of a dot product of unit vectors: N·L,
 /// and the spot's `aim · (−L)`. The `to_light` difference, its normalizing

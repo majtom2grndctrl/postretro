@@ -108,6 +108,7 @@ fn bake_with(
         &primitives,
         config,
         prepared,
+        None,
         window,
     )
     .expect("fused fixture bake must succeed");
@@ -623,6 +624,7 @@ fn the_stage_warns_its_own_and_the_probe_flags_once_per_light() {
         &primitives,
         &config,
         prepared,
+        None,
         &PartitionWindow::default(),
     )
     .expect("fused fixture bake must succeed");

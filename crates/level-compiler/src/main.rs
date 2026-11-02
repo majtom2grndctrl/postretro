@@ -46,6 +46,7 @@ pub mod kinematic_geometry;
 pub mod light_namespaces;
 pub mod lightmap_bake;
 pub mod lightmap_layer;
+pub mod lightmap_reach;
 #[cfg(test)]
 mod lightmap_residency_dry_run;
 pub mod logger;

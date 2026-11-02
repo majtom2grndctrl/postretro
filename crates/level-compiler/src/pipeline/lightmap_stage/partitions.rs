@@ -14,13 +14,15 @@ use crate::cache::{CacheKey, StageCache};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::StaticBakedEntry;
 use crate::lightmap_layer::{
-    self, ExactSkips, ShaftScene, SharedAtlas, chart_may_cover, chart_texel_bounds, light_may_reach,
+    self, ExactSkips, ReachTally, ShaftScene, SharedAtlas, chart_may_cover, chart_texel_bounds,
+    light_may_reach,
 };
 use crate::texel_footprint::EmbeddedEmitters;
 
 #[cfg(test)]
 use super::PartitionHooks;
 use super::PartitionWindow;
+use super::reach::StageReach;
 use super::texel_steps::StepDetector;
 use super::window::PartitionSource;
 
@@ -148,8 +150,21 @@ pub(super) struct LayerPartitions<'a> {
     /// chart walk that takes a shaft test and shared read-only by the rest; a
     /// pass of cache hits, or of suns alone, never builds it.
     shaft_scene: OnceLock<ShaftScene>,
+    /// The reach cull and its tallies; `None` for a fixture without a tree.
+    reach: Option<&'a StageReach<'a>>,
     #[cfg(test)]
     hooks: PartitionHooks,
+}
+
+/// The exact skips the stage takes: all of them, outside tests.
+pub(super) fn stage_exact_skips(
+    #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
+) -> ExactSkips {
+    #[cfg(not(test))]
+    let exact_skips = ExactSkips::ON;
+    #[cfg(test)]
+    let exact_skips = window.exact_skips;
+    exact_skips
 }
 
 impl<'a> LayerPartitions<'a> {
@@ -168,17 +183,15 @@ impl<'a> LayerPartitions<'a> {
         penumbra_floor: bool,
         embedded_emitters: &'a EmbeddedEmitters,
         steps: Option<&'a StepDetector<'a>>,
-        #[cfg_attr(not(test), allow(unused_variables))] window: &PartitionWindow,
+        reach: Option<&'a StageReach<'a>>,
+        window: &PartitionWindow,
     ) -> Self {
         let mut layer_charts = vec![Vec::new(); lightmap_layer::atlas_layer_count(shared) as usize];
         for (face_idx, placement) in shared.placements.iter().enumerate() {
             layer_charts[placement.layer as usize].push(face_idx);
         }
         let chart_bounds = shared.charts.iter().map(chart_texel_bounds).collect();
-        #[cfg(not(test))]
-        let exact_skips = ExactSkips::ON;
-        #[cfg(test)]
-        let exact_skips = window.exact_skips;
+        let exact_skips = stage_exact_skips(window);
         Self {
             args,
             cache,
@@ -197,6 +210,7 @@ impl<'a> LayerPartitions<'a> {
             chart_bounds,
             exact_skips,
             shaft_scene: OnceLock::new(),
+            reach,
             #[cfg(test)]
             hooks: window.hooks.clone(),
         }
@@ -240,6 +254,10 @@ impl<'a> LayerPartitions<'a> {
 impl PartitionSource for LayerPartitions<'_> {
     fn load(&self, item: usize) -> Option<lightmap_layer::LightmapLayer> {
         let cache = self.cache?;
+        // Reach verify mode re-walks every culled pair, so it reads no layer.
+        if self.reach.is_some_and(|reach| reach.verify) {
+            return None;
+        }
         let (target_layer, _light) = self.items.get(item);
         #[cfg(test)]
         if let Some(hook) = &self.hooks.before_get {
@@ -270,6 +288,9 @@ impl PartitionSource for LayerPartitions<'_> {
             );
         }
         if let Some(partition) = &partition {
+            if let Some(reach) = self.reach {
+                ReachTally::add(&reach.tally.partitions_loaded, 1);
+            }
             self.control
                 .advance(self.layer_charts[target_layer as usize].len());
             self.detect_steps(item, partition);
@@ -312,7 +333,10 @@ impl PartitionSource for LayerPartitions<'_> {
             hook(light, _layer, chart);
         }
         let entry = self.layer_lights[light];
-        lightmap_layer::bake_light_layer_chart_controlled(
+        if let Some(reach) = self.reach {
+            ReachTally::add(&reach.tally.pairs_walked, 1);
+        }
+        lightmap_layer::bake_light_layer_chart_reached(
             entry.light,
             self.shared,
             chart,
@@ -324,6 +348,7 @@ impl PartitionSource for LayerPartitions<'_> {
             self.embedded_emitters.is_embedded(entry.source_index),
             self.exact_skips,
             &self.shaft_scene,
+            self.reach.and_then(|reach| reach.walk(light)),
             self.control,
         )
     }
@@ -334,6 +359,9 @@ impl PartitionSource for LayerPartitions<'_> {
         mut texels: Vec<lightmap_layer::LayerTexel>,
     ) -> lightmap_layer::LightmapLayer {
         let (target_layer, _light) = self.items.get(item);
+        if let Some(reach) = self.reach {
+            ReachTally::add(&reach.tally.partitions_baked, 1);
+        }
         texels.sort_unstable_by_key(|texel| texel.idx);
         let partition = lightmap_layer::LightmapLayer {
             atlas_width: self.shared.atlas_width,

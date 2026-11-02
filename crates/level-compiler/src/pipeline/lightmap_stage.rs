@@ -24,6 +24,8 @@ mod cache;
 mod metadata;
 mod partitions;
 mod peak;
+mod reach;
+mod reach_verify;
 mod texel_steps;
 mod window;
 
@@ -33,10 +35,18 @@ use crate::lightmap_layer::chart_texel_bounds;
 use crate::texel_step_detector::StepSite;
 use crate::texel_step_detector::{CutSites, TexelStepReport};
 pub(super) use metadata::MetadataCounts;
-use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
+use partitions::{
+    LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes, stage_exact_skips,
+};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
+use reach::StageReach;
+#[cfg(test)]
+pub(crate) use reach::{LAST_REACH_COUNTS, ReachCounts};
+pub(crate) use reach::{ReachInputs, warn_coverage_holes};
+#[cfg(test)]
+pub(crate) use reach_verify::with_reach_verify;
 use texel_steps::StepDetector;
 use window::LIGHTMAP_PARTITION_WINDOW;
 #[cfg(test)]
@@ -181,6 +191,7 @@ pub(crate) fn bake_fused_prepared(
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
 ) -> anyhow::Result<FusedLightingOutput> {
     bake_fused_windowed(
         args,
@@ -197,6 +208,7 @@ pub(crate) fn bake_fused_prepared(
         primitives,
         config,
         prepared,
+        reach,
         &PartitionWindow::default(),
     )
 }
@@ -217,6 +229,7 @@ pub(crate) fn bake_fused_windowed(
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
     window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
     peak::gate_working_set(
@@ -298,6 +311,11 @@ pub(crate) fn bake_fused_windowed(
         static_lights,
         light_source_labels,
     );
+    let mut stage_reach =
+        reach.map(|inputs| StageReach::new(inputs, &layer_lights, &embedded_emitters));
+    // Reach verify mode re-walks every culled pair, warm or cold, so it reads
+    // neither the section memo nor a layer; writes stay.
+    let bypass_reads = stage_reach.as_ref().is_some_and(|reach| reach.verify);
     // Partition keys feed only the cache, so an uncached bake hashes nothing.
     let layer_prefixes = if stage_cache.is_some() && !prepared.placements.is_empty() {
         layer_key_prefixes(
@@ -400,6 +418,7 @@ pub(crate) fn bake_fused_windowed(
         )
     });
     let cached_section = stage_cache
+        .filter(|_| !bypass_reads)
         .zip(section_key.as_ref())
         .and_then(|(cache, key)| cache.get(key))
         .and_then(|bytes| {
@@ -492,6 +511,15 @@ pub(crate) fn bake_fused_windowed(
                 geometry,
                 &prepared.cut_parents,
             );
+            if let Some(reach) = stage_reach.as_mut() {
+                let skips = stage_exact_skips(window);
+                reach.build_index(
+                    &prepared.charts,
+                    config.penumbra_floor,
+                    skips,
+                    lightmap_control,
+                );
+            }
             let source = LayerPartitions::new(
                 args,
                 stage_cache,
@@ -506,6 +534,7 @@ pub(crate) fn bake_fused_windowed(
                 config.penumbra_floor,
                 &embedded_emitters,
                 Some(&detector),
+                stage_reach.as_ref(),
                 window,
             );
             let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
@@ -588,6 +617,15 @@ pub(crate) fn bake_fused_windowed(
             })
             .collect();
         let items = LayerItems::selected(prepared.layer_count, &selected);
+        if let Some(reach) = stage_reach.as_mut().filter(|_| !selected.is_empty()) {
+            let skips = stage_exact_skips(window);
+            reach.build_index(
+                &prepared.charts,
+                config.penumbra_floor,
+                skips,
+                lightmap_control,
+            );
+        }
         let source = LayerPartitions::new(
             args,
             stage_cache,
@@ -602,6 +640,7 @@ pub(crate) fn bake_fused_windowed(
             config.penumbra_floor,
             &embedded_emitters,
             None,
+            stage_reach.as_ref(),
             window,
         );
         let completed_work = prepared.placements.len().saturating_mul(selected.len());
@@ -630,6 +669,11 @@ pub(crate) fn bake_fused_windowed(
         }
     }
 
+    // The stage line, then a verify mismatch fails the bake before the
+    // section memo is written.
+    if let Some(reach) = &stage_reach {
+        reach.finish(light_source_labels)?;
+    }
     if compose_lightmap && let (Some(cache), Some(key)) = (stage_cache, section_key.as_ref()) {
         #[cfg(test)]
         RAW_FILL_AT_LIGHTMAP_CACHE_WRITE

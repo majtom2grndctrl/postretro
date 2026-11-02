@@ -10,6 +10,7 @@ use glam::Vec3;
 #[cfg(test)]
 use super::CoveredChartTexel;
 use super::chart_cull::ExactSkips;
+use super::reach_walk::{ReachTally, ReachWalk, check_rewalk};
 use super::shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull, ShaftScene};
 #[cfg(test)]
 use super::skip_stats::{ChartTally, TileTally};
@@ -20,6 +21,7 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
 use crate::geometry::GeometryResult;
 #[cfg(test)]
 use crate::lightmap_bake::light_texel_is_covered;
+use crate::lightmap_reach::ChartReach;
 use crate::map_data::{LightType, MapLight};
 #[cfg(test)]
 use crate::ray_traversal::Occluder;
@@ -28,18 +30,9 @@ use crate::texel_footprint::{
     ClipBand, ClipReach, ProbeEarlyOut, TexelFrame, TexelSampler, TexelSite, lead_in_clear,
 };
 
-/// Bake one `(light, chart)` contribution in placement order.
-///
-/// This is the outermost governed unit for every light-layer bake path. Keeping
-/// admission here lets callers choose a single Rayon level without nesting a
-/// governor entry around the established per-chart work.
-///
-/// `embedded_emitter` is the light's flag from the stage's
-/// [`EmbeddedEmitters`](crate::texel_footprint::EmbeddedEmitters), tested
-/// once per light, never per chart. `shaft_scene` holds the bake's map-wide
-/// [`ShaftScene`]: the first walk that builds a shaft test (a point or spot
-/// light, with the shaft cull on) fills it inside its permit, and later walks
-/// share it. A sun, or a walk with the shaft cull off, never builds it.
+/// [`bake_light_layer_chart_reached`] without a reach index: the walk the
+/// test-only bakes take.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_light_layer_chart_controlled(
     light: &MapLight,
@@ -55,6 +48,53 @@ pub(crate) fn bake_light_layer_chart_controlled(
     shaft_scene: &OnceLock<ShaftScene>,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
+    bake_light_layer_chart_reached(
+        light,
+        atlas,
+        face_idx,
+        bvh,
+        primitives,
+        geometry,
+        area_sample_count,
+        penumbra_floor,
+        embedded_emitter,
+        exact_skips,
+        shaft_scene,
+        None,
+        control,
+    )
+}
+
+/// Bake one `(light, chart)` contribution in placement order.
+///
+/// This is the outermost governed unit for every light-layer bake path. Keeping
+/// admission here lets callers choose a single Rayon level without nesting a
+/// governor entry around the established per-chart work.
+///
+/// `embedded_emitter` is the light's flag from the stage's
+/// [`EmbeddedEmitters`](crate::texel_footprint::EmbeddedEmitters), tested
+/// once per light, never per chart. `shaft_scene` holds the bake's map-wide
+/// [`ShaftScene`]: the first walk that builds a shaft test (a point or spot
+/// light, with the shaft cull on) fills it inside its permit, and later walks
+/// share it. A sun, or a walk with the shaft cull off, never builds it.
+/// `reach` culls the pair when the stage's reach index rules it out
+/// ([`ReachWalk::culled_chart`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_light_layer_chart_reached(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    bvh: &bvh::bvh::Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    geometry: &GeometryResult,
+    area_sample_count: u32,
+    penumbra_floor: bool,
+    embedded_emitter: bool,
+    exact_skips: ExactSkips,
+    shaft_scene: &OnceLock<ShaftScene>,
+    reach: Option<ReachWalk<'_>>,
+    control: &BakeControl,
+) -> Vec<LayerTexel> {
     bake_light_layer_chart_clipped(
         light,
         atlas,
@@ -68,11 +108,12 @@ pub(crate) fn bake_light_layer_chart_controlled(
         true,
         exact_skips,
         shaft_scene,
+        reach,
         control,
     )
 }
 
-/// [`bake_light_layer_chart_controlled`] with the clip pre-pass optional:
+/// [`bake_light_layer_chart_reached`] with the clip pre-pass optional:
 /// without it every texel traces its clip segments, the reference the
 /// pre-pass must reproduce bit for bit.
 ///
@@ -83,6 +124,12 @@ pub(crate) fn bake_light_layer_chart_controlled(
 /// gives, and trace nothing: no shadow, clip or lead-in segment. The occluder
 /// caches change only on a hit, so they leave a clear tile as the unculled
 /// walk would. The direct term and the records are unchanged.
+///
+/// With `reach` culling the pair, a covered texel whose own slab touches
+/// open leaves only stores visibility 0 and traces nothing; every other
+/// texel traces as a kept pair's does. With verify on, the pair is then
+/// walked again as a kept pair, inside this permit, and every record must
+/// match bit for bit; a mismatch is recorded for the stage to fail on.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn bake_light_layer_chart_clipped(
     light: &MapLight,
@@ -97,11 +144,63 @@ pub(super) fn bake_light_layer_chart_clipped(
     skip_unreachable_clips: bool,
     exact_skips: ExactSkips,
     shaft_scene: &OnceLock<ShaftScene>,
+    reach: Option<ReachWalk<'_>>,
     control: &BakeControl,
 ) -> Vec<LayerTexel> {
-    // One permit covers the clip pre-pass, the shaft scene and the walk, so
-    // pause and the concurrency cap apply to all three.
+    // One permit covers the clip pre-pass, the shaft scene, the reach
+    // index's chart data, the walk and verify mode's re-walk, so pause and
+    // the concurrency cap apply to all of them. The re-walk never enters the
+    // governor again and never advances progress.
     let _permit = control.governor().enter();
+    let culled = reach
+        .as_ref()
+        .and_then(|walk| walk.culled_chart(face_idx, &atlas.charts[face_idx], exact_skips));
+    let walk = |culled: Option<&ChartReach>, tally: Option<&ReachTally>| {
+        walk_chart(
+            light,
+            atlas,
+            face_idx,
+            (bvh, primitives, geometry),
+            TexelSampler::with_early_out(light, area_sample_count, penumbra_floor, early_out),
+            skip_unreachable_clips,
+            exact_skips,
+            shaft_scene,
+            culled,
+            tally,
+        )
+    };
+    let mut texels = walk(culled, reach.as_ref().map(|reach| reach.tally));
+    if let (Some(reach), Some(_)) = (&reach, culled) {
+        ReachTally::add(&reach.tally.pairs_culled, 1);
+        if reach.verify {
+            // Fresh occluder caches, every other production skip on.
+            let kept = walk(None, None);
+            if check_rewalk(reach, light.origin, atlas, face_idx, &texels, &kept) {
+                // The stage fails; the layer cache keeps the kept walk's
+                // records, so no later build reads the culled ones.
+                texels = kept;
+            }
+        }
+    }
+    control.advance(1);
+    texels
+}
+
+/// One `(light, chart)` walk, inside the caller's permit; `culled` is the
+/// chart's reach when the pair is culled.
+#[allow(clippy::too_many_arguments)]
+fn walk_chart(
+    light: &MapLight,
+    atlas: &SharedAtlas<'_>,
+    face_idx: usize,
+    (bvh, primitives, geometry): (&bvh::bvh::Bvh<f32, 3>, &[BvhPrimitive], &GeometryResult),
+    sampler: TexelSampler,
+    skip_unreachable_clips: bool,
+    exact_skips: ExactSkips,
+    shaft_scene: &OnceLock<ShaftScene>,
+    culled: Option<&ChartReach>,
+    tally: Option<&ReachTally>,
+) -> Vec<LayerTexel> {
     let chart = &atlas.charts[face_idx];
     let capacity = if chart.uv_extent[0] > 0.0 && chart.uv_extent[1] > 0.0 {
         let (width, height) = chart_interior_dims(chart);
@@ -110,19 +209,21 @@ pub(super) fn bake_light_layer_chart_clipped(
         0
     };
     let mut texels = Vec::with_capacity(capacity);
-    let sampler = TexelSampler::with_early_out(light, area_sample_count, penumbra_floor, early_out);
     let frame = TexelFrame::for_chart(chart);
+    // A culled pair whose every texel skips traces nothing, so it needs
+    // neither the clip pre-pass nor a shaft test.
+    let traces = culled.is_none_or(|reach| !reach.skips_all());
     let band = ClipBand::for_chart(chart);
     // Light-independent, but partitions bake per light; it costs little
     // beside the light's rays.
-    let clip_reach = (skip_unreachable_clips && sampler.is_footprint())
+    let clip_reach = (traces && skip_unreachable_clips && sampler.is_footprint())
         .then(|| ClipReach::rasterized(chart, bvh, primitives, geometry));
     // `ShaftCull::new` declines a sun; checking first keeps a sun's walk
     // from building the map-wide scene it would never read. Other workers
     // wait on this init while holding their permits, which is safe only
     // because `ShaftScene::new` is serial and takes no lock or permit: keep
     // it that way.
-    let shaft = if exact_skips.shaft_cull && light.light_type != LightType::Directional {
+    let shaft = if traces && exact_skips.shaft_cull && light.light_type != LightType::Directional {
         let scene = shaft_scene.get_or_init(|| ShaftScene::new(primitives, geometry));
         ShaftCull::new(
             light, chart, &sampler, &frame, scene, bvh, primitives, geometry,
@@ -147,6 +248,7 @@ pub(super) fn bake_light_layer_chart_clipped(
     // no answer depends on them.
     let last_occluder = Cell::new(None);
     let clip_occluder = Cell::new(None);
+    let (mut skipped, mut traced_in_culled) = (0u64, 0u64);
     for_each_light_layer_chart_texel(atlas, face_idx, |sample| {
         let site = TexelSite {
             world_p: sample.world_p,
@@ -179,6 +281,15 @@ pub(super) fn bake_light_layer_chart_clipped(
             lead_in_clear(bvh, primitives, geometry, &band, from, to)
         };
         let record = bake_sparse_layer_texel(sample.idx, light, &site, || {
+            if let Some(reach) = culled {
+                // Skipped texels write no occluder; the tracer's answer never
+                // depends on the caches (build_pipeline.md §Ray traversal).
+                if reach.skips(sample.tx, sample.ty) {
+                    skipped += 1;
+                    return 0.0;
+                }
+                traced_in_culled += 1;
+            }
             if let Some(shaft) = &shaft {
                 let clear = *verdicts[tile].get_or_insert_with(|| {
                     #[cfg(test)]
@@ -236,7 +347,10 @@ pub(super) fn bake_light_layer_chart_clipped(
             tiles,
         });
     }
-    control.advance(1);
+    if let Some(tally) = tally {
+        ReachTally::add(&tally.texels_skipped, skipped);
+        ReachTally::add(&tally.texels_traced_in_culled, traced_in_culled);
+    }
     texels
 }
 
@@ -317,6 +431,7 @@ pub(crate) fn bake_light_layer_chart_without_clip_prepass(
         false,
         exact_skips,
         shaft_scene,
+        None,
         control,
     )
 }

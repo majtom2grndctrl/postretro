@@ -1659,7 +1659,7 @@ declare module "postretro" {
     crossings?: ReadonlyArray<CrossingDescriptor>;
     /** Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
-    /** Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once. */
+    /** Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction, or a repeated assist source and reaction, binds once. */
     playerEvents?: ReadonlyArray<PlayerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
@@ -2544,26 +2544,34 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
-    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
+    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
     on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
   }
   /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
   export type PlayerEventEdgeWord = "becomes" | "ceases";
+  /** A discrete player-event source: an assist completed on this player (`assistReceived`) or by this player (`assistGiven`). */
+  export type PlayerEventDiscreteWord = "assistReceived" | "assistGiven";
   const playerEventEdgeBrand: unique symbol;
-  /** A condition paired with its edge word. Build it with `becomes(cond)` or `ceases(cond)`. */
+  /** What a player event fires on. Build it with `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`. */
   export type PlayerEventEdge = Readonly<{ readonly [playerEventEdgeBrand]: true }>;
   /** A reaction a player event fires: a sourceless or player-event-scoped handle, or a bare name. */
   export type PlayerEventReaction = Reaction<{}> | Reaction<PlayerEventParams> | string;
   /** `levels` scopes a `ModManifest` entry to matching map tags; a level script's entry must omit it. */
   export type PlayerEventOptions = { levels?: string[] };
-  /** One `playerEvents` entry, as `players().on` builds it. */
-  export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** One `playerEvents` entry, as `players().on` builds it. A discrete source carries no condition. */
+  export type PlayerEventDescriptor =
+    | { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] }
+    | { edge: PlayerEventDiscreteWord; fire: string[]; levels?: string[] };
   /** Test the evaluated player in player events, or the local player in crossings. */
   export function inLifeState(name: string): BoolRef;
   /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
   export function becomes(cond: BoolRef): PlayerEventEdge;
   /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */
   export function ceases(cond: BoolRef): PlayerEventEdge;
+  /** Fire when an assist completes on a player: `on.player` is the target. The completion applies in that tick's player-event pass before any condition is evaluated, so that tick's conditions see the fire's writes; it changes no life state or health itself. No condition. */
+  export function assistReceived(): PlayerEventEdge;
+  /** Fire when a player completes an assist: `on.player` is the helper. Fires right after the target's `assistReceived()` subscriptions. No condition. */
+  export function assistGiven(): PlayerEventEdge;
   /** Address NPCs, optionally narrowed to those carrying `tag`. Resolved when each command takes effect, sequence steps included. */
   export function npcs(filter?: NpcGroupFilter): NpcGroup;
   /** Address every seat-bound player pawn. Resolved when each command takes effect, sequence steps included. */

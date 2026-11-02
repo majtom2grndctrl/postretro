@@ -161,6 +161,10 @@ export type PostretroModule = {
   becomes: typeof(becomes),
   --- Player-event edge word: fire when a Bool condition turns false for a player.
   ceases: typeof(ceases),
+  --- Discrete player-event source: an assist completed on the player (the target).
+  assistReceived: typeof(assistReceived),
+  --- Discrete player-event source: the player completed an assist (the helper).
+  assistGiven: typeof(assistGiven),
   wait: typeof(wait),
   fire: typeof(fire),
   --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.

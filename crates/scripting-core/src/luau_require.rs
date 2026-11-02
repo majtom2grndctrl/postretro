@@ -440,6 +440,8 @@ mod tests {
                 "inLifeState",
                 "becomes",
                 "ceases",
+                "assistReceived",
+                "assistGiven",
                 "wait",
                 "fire",
                 "scopeReactions",

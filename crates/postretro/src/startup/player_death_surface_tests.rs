@@ -474,7 +474,7 @@ impl Consumer {
         );
         between(self);
         let mut residuals = Vec::new();
-        self.table.run_tick(&self.ctx, &mut residuals);
+        self.table.run_tick(&self.ctx, &[], &mut residuals);
         assert!(
             residuals.is_empty(),
             "the down/respawn policy is fixed-tick work"

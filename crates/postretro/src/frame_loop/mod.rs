@@ -1079,12 +1079,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 pending_death_events.extend(app.host_run_remote_hit_death_sweep());
             }
             // The tick has settled: every hit this tick authorized, its death
-            // sweep and the accumulators have landed. Player events read that
-            // snapshot, then apply their in-tick commands.
+            // sweep and the accumulators have landed. This tick's assist
+            // completions apply first, so the snapshot sees their writes;
+            // player events then read that snapshot and apply their in-tick
+            // commands.
             {
                 let _scope = sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
-                app.player_events
-                    .run_tick(&script_ctx, &mut pending_player_event_residuals);
+                app.player_events.run_tick(
+                    &script_ctx,
+                    &tick_events.assist_completions,
+                    &mut pending_player_event_residuals,
+                );
             }
             // A `spawnFromSpawner` in a player event's fire list runs at the
             // seam above, after the drains earlier in this tick. Repeat them

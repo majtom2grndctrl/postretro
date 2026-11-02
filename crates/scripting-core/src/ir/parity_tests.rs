@@ -2021,3 +2021,6 @@ mod impact_source_sdk;
 
 #[path = "assist_sdk_tests.rs"]
 mod assist_sdk;
+
+#[path = "assist_source_sdk_tests.rs"]
+mod assist_source_sdk;

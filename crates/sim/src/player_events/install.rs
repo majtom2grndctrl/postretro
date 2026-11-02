@@ -1,6 +1,7 @@
 //! Install-time binding of the composed player events: conditions bind once
 //! against the player condition scope, fire lists partition into in-tick
-//! commands and a frame-end residual as trigger fire lists do.
+//! commands and a frame-end residual as trigger fire lists do. The discrete
+//! assist sources bind no condition and keep no edge memory.
 //! See: context/lib/scripting.md §12 (Player events)
 
 use std::cell::RefCell;
@@ -8,14 +9,16 @@ use std::cell::RefCell;
 use postretro_entities::ScriptCtx;
 use postretro_foundation::{BakedIr, CURRENT_IR_VERSION, IrNode, IrType, bind};
 use postretro_scripting_core::data_descriptors::{
-    ComposedPlayerEvent, NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource,
+    ComposedPlayerEvent, NamedReaction, PlayerEventSource, PlayerEventTrigger,
 };
 use postretro_scripting_core::data_registry::DataRegistry;
 use postretro_scripting_core::group_resolution::group_commands_apply_here;
 use postretro_scripting_core::ir_player_scope::PlayerConditionScope;
 use postretro_scripting_core::ir_scopes::DispatchScope;
 
-use super::{BoundPlayerEvent, PlayerEventResidualHandle, PlayerEventTable, validate};
+use super::{
+    BoundPlayerEvent, BoundTrigger, PlayerEventResidualHandle, PlayerEventTable, validate,
+};
 use crate::mover_commands::MoverCommandDiagnostics;
 use crate::spawner::SpawnContext;
 use crate::trigger_bindings::{BindSite, TRIGGER_EVENT_INPUTS, partition_direct_reaction};
@@ -86,42 +89,36 @@ impl PlayerEventTable {
     ) -> Option<BoundPlayerEvent> {
         let descriptor = &composed.descriptor;
         let source = &composed.source;
-        scope.begin_condition();
-        let baked = BakedIr {
-            version: CURRENT_IR_VERSION,
-            output: None,
-            root: descriptor.condition.clone(),
-        };
-        let program = match bind(&baked, scope) {
-            Ok(program) if program.root_type == IrType::Bool => program,
-            Ok(_) => {
-                scope.finish_condition();
-                log::error!(
-                    "[Scripting] player event {source}: condition must produce Bool, but produces Number; not installed"
-                );
-                return None;
+        let mut trigger = match &descriptor.trigger {
+            PlayerEventTrigger::Edge { edge, condition } => {
+                let (program, inputs) = bind_condition(condition, scope, source)?;
+                BoundTrigger::Edge {
+                    condition: condition.clone(),
+                    edge: *edge,
+                    program,
+                    inputs,
+                    memory: Vec::new(),
+                }
             }
-            Err(error) => {
-                scope.finish_condition();
-                log::error!(
-                    "[Scripting] player event {source}: condition failed to bind ({error}); not installed"
-                );
-                return None;
-            }
+            PlayerEventTrigger::AssistReceived => BoundTrigger::AssistReceived,
+            PlayerEventTrigger::AssistGiven => BoundTrigger::AssistGiven,
         };
-        let inputs = scope.finish_condition();
 
         let mut commands = Vec::new();
         let mut steps = Vec::new();
         for address in &descriptor.fire {
-            if let Some(first) = bound.first_binding(descriptor, address) {
+            if let Some(first) = bound.first_binding(&descriptor.trigger, address) {
                 if first == source {
                     log::warn!(
                         "[Scripting] player event {source}: fire list names reaction `{address}` twice; it binds once"
                     );
                 } else {
+                    let shared = match descriptor.trigger {
+                        PlayerEventTrigger::Edge { .. } => "one condition and edge".to_string(),
+                        _ => format!("`{}()`", descriptor.trigger.as_wire()),
+                    };
                     log::warn!(
-                        "[Scripting] player event: reaction `{address}` is bound by both {first} and {source} on one condition and edge; it binds once"
+                        "[Scripting] player event: reaction `{address}` is bound by both {first} and {source} on {shared}; it binds once"
                     );
                 }
                 continue;
@@ -150,7 +147,7 @@ impl PlayerEventTable {
             }
             // Recorded only once the address binds: a skipped or dropped
             // address must not make an identical later entry claim it did.
-            bound.record(descriptor, address, source);
+            bound.record(&descriptor.trigger, address, source);
             for (body_ordinal, reaction) in matched.into_iter().enumerate() {
                 partition_direct_reaction(
                     reaction,
@@ -170,61 +167,101 @@ impl PlayerEventTable {
             handle
         });
 
-        let memory = previous
-            .and_then(|previous| {
-                previous.events.iter().find(|bound| {
-                    bound.edge == descriptor.edge && bound.condition == descriptor.condition
-                })
+        // An edge whose condition and edge survive the recompose keeps its
+        // memory; discrete sources have none to keep.
+        if let BoundTrigger::Edge {
+            condition,
+            edge,
+            memory,
+            ..
+        } = &mut trigger
+            && let Some(previous) = previous.and_then(|previous| {
+                previous
+                    .events
+                    .iter()
+                    .find_map(|bound| match &bound.trigger {
+                        BoundTrigger::Edge {
+                            condition: kept,
+                            edge: kept_edge,
+                            memory,
+                            ..
+                        } if kept_edge == edge && kept == condition => Some(memory),
+                        _ => None,
+                    })
             })
-            .map(|bound| bound.memory.clone())
-            .unwrap_or_default();
+        {
+            memory.clone_from(previous);
+        }
 
         Some(BoundPlayerEvent {
             source: source.clone(),
-            condition: descriptor.condition.clone(),
-            edge: descriptor.edge,
-            program,
-            inputs,
+            trigger,
             commands,
             residual,
-            memory,
         })
     }
 }
 
-/// Every (condition, edge, address) bound so far, in composed order. Two
-/// entries reaching one triple bind it once: running the reaction twice would
-/// double its effects. Conditions match structurally.
+/// Bind an edge's condition once against the player condition scope,
+/// returning its program and the per-player inputs it reads. A failure logs
+/// naming the entry, which then does not install.
+fn bind_condition(
+    condition: &IrNode,
+    scope: &PlayerConditionScope,
+    source: &PlayerEventSource,
+) -> Option<(
+    postretro_foundation::BoundProgram<PlayerConditionScope>,
+    Vec<usize>,
+)> {
+    scope.begin_condition();
+    let baked = BakedIr {
+        version: CURRENT_IR_VERSION,
+        output: None,
+        root: condition.clone(),
+    };
+    let program = match bind(&baked, scope) {
+        Ok(program) if program.root_type == IrType::Bool => program,
+        Ok(_) => {
+            scope.finish_condition();
+            log::error!(
+                "[Scripting] player event {source}: condition must produce Bool, but produces Number; not installed"
+            );
+            return None;
+        }
+        Err(error) => {
+            scope.finish_condition();
+            log::error!(
+                "[Scripting] player event {source}: condition failed to bind ({error}); not installed"
+            );
+            return None;
+        }
+    };
+    Some((program, scope.finish_condition()))
+}
+
+/// Every (trigger, address) bound so far, in composed order. Two entries
+/// reaching one pair bind it once: running the reaction twice would double its
+/// effects. An edge trigger matches on edge and structural condition; a
+/// discrete one on its kind alone.
 #[derive(Default)]
 struct BoundAddresses {
-    entries: Vec<(IrNode, PlayerEventEdge, String, PlayerEventSource)>,
+    entries: Vec<(PlayerEventTrigger, String, PlayerEventSource)>,
 }
 
 impl BoundAddresses {
     fn first_binding(
         &self,
-        descriptor: &PlayerEventDescriptor,
+        trigger: &PlayerEventTrigger,
         address: &str,
     ) -> Option<&PlayerEventSource> {
         self.entries
             .iter()
-            .find(|(condition, edge, bound, _)| {
-                *edge == descriptor.edge && bound == address && *condition == descriptor.condition
-            })
-            .map(|(_, _, _, source)| source)
+            .find(|(bound_trigger, bound, _)| bound == address && bound_trigger == trigger)
+            .map(|(_, _, source)| source)
     }
 
-    fn record(
-        &mut self,
-        descriptor: &PlayerEventDescriptor,
-        address: &str,
-        source: &PlayerEventSource,
-    ) {
-        self.entries.push((
-            descriptor.condition.clone(),
-            descriptor.edge,
-            address.to_string(),
-            source.clone(),
-        ));
+    fn record(&mut self, trigger: &PlayerEventTrigger, address: &str, source: &PlayerEventSource) {
+        self.entries
+            .push((trigger.clone(), address.to_string(), source.clone()));
     }
 }

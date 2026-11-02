@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use postretro_entities::ScriptCtx;
 use postretro_foundation::data_descriptors::{FluidDescriptor, SwimParams};
 use postretro_foundation::ir::IrNode;
-use postretro_scripting_core::data_descriptors::{CrossingCondition, PlayerEventEdge};
+use postretro_scripting_core::data_descriptors::{
+    CrossingCondition, PlayerEventEdge, PlayerEventTrigger,
+};
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::runtime::{ModManifestResult, ScriptRuntime, ScriptRuntimeConfig};
 use postretro_test_log_capture::LogCapture;
@@ -162,8 +164,13 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
     // `players().on(becomes(read(player.swimming)), [markSwimming])`.
     assert_eq!(ts.player_events.len(), 1);
     let event = &ts.player_events[0];
-    assert_eq!(event.edge, PlayerEventEdge::Becomes);
-    assert_eq!(event.condition, swimming_read());
+    assert_eq!(
+        event.trigger,
+        PlayerEventTrigger::Edge {
+            edge: PlayerEventEdge::Becomes,
+            condition: swimming_read(),
+        }
+    );
     assert_eq!(event.fire, ["swim.markSwimming"]);
     assert!(event.levels.is_empty());
 
@@ -201,8 +208,7 @@ fn dev_manifest_declares_the_example_fluids_swim_block_and_wiring_under_its_mod_
     for event in &twin.player_events {
         assert!(
             dev.player_events.iter().any(|dev_event| {
-                dev_event.edge == event.edge
-                    && dev_event.condition == event.condition
+                dev_event.trigger == event.trigger
                     && dev_event.fire == event.fire
                     && dev_event.levels == event.levels
             }),

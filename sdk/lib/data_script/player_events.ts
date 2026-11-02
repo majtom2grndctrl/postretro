@@ -1,5 +1,5 @@
-// Player-event builders: the `becomes` / `ceases` edge words and the
-// `players().on` descriptor. Pure data; effective only when returned under a
+// Player-event builders: the `becomes` / `ceases` edge words, the discrete
+// `assistReceived` / `assistGiven` sources, and the `players().on` descriptor. Pure data; effective only when returned under a
 // manifest's `playerEvents`.
 // See: context/lib/scripting.md §12 (Player events)
 
@@ -11,9 +11,12 @@ import { triggerEventFireNames } from "./trigger_events";
 /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
 export type PlayerEventEdgeWord = "becomes" | "ceases";
 
+/** A discrete player-event source: an assist completed on this player (`assistReceived`) or by this player (`assistGiven`). */
+export type PlayerEventDiscreteWord = "assistReceived" | "assistGiven";
+
 declare const playerEventEdgeBrand: unique symbol;
 
-/** A condition paired with its edge word. Build it with `becomes(cond)` or `ceases(cond)`. */
+/** What a player event fires on. Build it with `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`. */
 export type PlayerEventEdge = Readonly<{
   readonly [playerEventEdgeBrand]: true;
 }>;
@@ -24,15 +27,14 @@ export type PlayerEventReaction = Reaction<{}> | Reaction<PlayerEventParams> | s
 /** `levels` scopes a `ModManifest` entry to matching map tags; a level script's entry must omit it. */
 export type PlayerEventOptions = { levels?: string[] };
 
-/** One `playerEvents` entry, as `players().on` builds it. */
-export type PlayerEventDescriptor = {
-  edge: PlayerEventEdgeWord;
-  condition: RuntimeValue;
-  fire: string[];
-  levels?: string[];
-};
+/** One `playerEvents` entry, as `players().on` builds it. A discrete source carries no condition. */
+export type PlayerEventDescriptor =
+  | { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] }
+  | { edge: PlayerEventDiscreteWord; fire: string[]; levels?: string[] };
 
-type EdgeData = { edge: PlayerEventEdgeWord; condition: RuntimeValue };
+type EdgeData =
+  | { edge: PlayerEventEdgeWord; condition: RuntimeValue }
+  | { edge: PlayerEventDiscreteWord };
 
 // Only edges built here lower; a hand-built `{ edge, condition }` is rejected
 // at author time rather than reaching the engine as a guess.
@@ -61,6 +63,22 @@ export function ceases(cond: BoolRef): PlayerEventEdge {
   return edgeWord("ceases", cond);
 }
 
+function discrete(edge: PlayerEventDiscreteWord): PlayerEventEdge {
+  const handle = Object.freeze({}) as PlayerEventEdge;
+  edges.set(handle, { edge });
+  return handle;
+}
+
+/** Fire on the target when an assist completes on them; `on.player` is the target. Host only; carries no condition. */
+export function assistReceived(): PlayerEventEdge {
+  return discrete("assistReceived");
+}
+
+/** Fire on the helper when their assist completes; `on.player` is the helper. Host only; carries no condition. */
+export function assistGiven(): PlayerEventEdge {
+  return discrete("assistGiven");
+}
+
 /** Build the `players().on` descriptor. */
 export function playerEvent(
   edge: PlayerEventEdge,
@@ -69,13 +87,11 @@ export function playerEvent(
 ): PlayerEventDescriptor {
   const data = edges.get(edge as object);
   if (data === undefined) {
-    throw new TypeError("players().on: `edge` must come from becomes(cond) or ceases(cond)");
+    throw new TypeError(
+      "players().on: `edge` must come from becomes(cond), ceases(cond), assistReceived() or assistGiven()",
+    );
   }
-  const descriptor: PlayerEventDescriptor = {
-    edge: data.edge,
-    condition: data.condition,
-    fire: triggerEventFireNames(fire),
-  };
+  const descriptor: PlayerEventDescriptor = { ...data, fire: triggerEventFireNames(fire) };
   if (options?.levels !== undefined) descriptor.levels = options.levels;
   return descriptor;
 }

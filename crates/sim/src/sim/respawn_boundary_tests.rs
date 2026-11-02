@@ -79,7 +79,7 @@ fn respawn_remote_without_command_uses_transform_yaw_and_first_elapsed_pass() {
         Default::default(),
         None,
     );
-    table.run_tick(&rig.ctx, &mut Vec::new());
+    table.run_tick(&rig.ctx, &[], &mut Vec::new());
     assert_eq!(
         rig.health(pawn).current,
         75.0,

@@ -36,9 +36,10 @@ export type {
   TriggerTarget,
   TeleporterTarget,
 } from "./data_script/commands";
-export { becomes, ceases } from "./data_script/player_events";
+export { assistGiven, assistReceived, becomes, ceases } from "./data_script/player_events";
 export type {
   PlayerEventDescriptor,
+  PlayerEventDiscreteWord,
   PlayerEventEdge,
   PlayerEventEdgeWord,
   PlayerEventOptions,

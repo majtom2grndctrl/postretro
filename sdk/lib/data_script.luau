@@ -150,18 +150,19 @@ export type PlayerGroup = {
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
 
---- A condition paired with its edge word. Build it with `becomes(cond)` or
---- `ceases(cond)`.
+--- What a player event fires on. Build it with `becomes(cond)`,
+--- `ceases(cond)`, `assistReceived()` or `assistGiven()`.
 export type PlayerEventEdge = { __playerEventEdge: true }
 
 --- `levels` scopes a `ModManifest` entry to matching map tags; a level
 --- script's entry must omit it.
 export type PlayerEventOptions = { levels: {string}? }
 
---- One `playerEvents` entry, as `players():on` builds it.
+--- One `playerEvents` entry, as `players():on` builds it. A discrete source
+--- (`assistReceived` / `assistGiven`) carries no condition.
 export type PlayerEventDescriptor = {
-  edge: "becomes" | "ceases",
-  condition: RuntimeValue,
+  edge: "becomes" | "ceases" | "assistReceived" | "assistGiven",
+  condition: RuntimeValue?,
   fire: {string},
   levels: {string}?,
 }

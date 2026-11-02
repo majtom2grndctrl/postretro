@@ -1,7 +1,14 @@
 //! Host-only player events (`players().on`): per-player state edges, evaluated
-//! once per authoritative tick after the tick settles.
-//! See: context/lib/scripting.md §12 (Player events)
+//! once per authoritative tick after the tick settles, and the discrete
+//! `assistReceived` / `assistGiven` sources, applied from the tick's assist
+//! completions before that evaluation.
+//! See: context/lib/scripting.md §12 (Player events, Assist)
 
+#[cfg(test)]
+mod assist_ordering_tests;
+mod assist_sources;
+#[cfg(test)]
+mod assist_sources_tests;
 mod evaluate;
 mod install;
 #[cfg(test)]
@@ -31,6 +38,7 @@ use postretro_scripting_core::ir_scopes::DispatchScope;
 use postretro_scripting_core::reaction_dispatch::PrepartitionedReactionStep;
 
 use crate::mover_commands::MoverCommandDiagnostics;
+use crate::sim::assist::AssistCompletion;
 use crate::spawner::SpawnContext;
 use crate::trigger_commands::{BoundTriggerCommand, TriggerFireContext};
 
@@ -56,18 +64,32 @@ pub struct PlayerEventResidual {
 }
 
 struct BoundPlayerEvent {
+    /// The entry's provenance, for diagnostics.
     source: PlayerEventSource,
-    /// Content key, with `edge`, for carrying edge memory across a recompose.
-    condition: IrNode,
-    edge: PlayerEventEdge,
-    program: BoundProgram<PlayerConditionScope>,
-    /// The per-player scope inputs the condition reads.
-    inputs: Vec<usize>,
+    trigger: BoundTrigger,
     commands: Vec<BoundTriggerCommand>,
     residual: Option<PlayerEventResidualHandle>,
-    /// The condition's last value for every player observed last tick, in
-    /// player order. An absent player counts as false.
-    memory: Vec<(PlayerKey, bool)>,
+}
+
+/// What a bound player event fires on.
+enum BoundTrigger {
+    /// `becomes` / `ceases`: fired by the per-tick snapshot evaluation.
+    Edge {
+        /// Content key, with `edge`, for carrying edge memory across a
+        /// recompose.
+        condition: IrNode,
+        edge: PlayerEventEdge,
+        program: BoundProgram<PlayerConditionScope>,
+        /// The per-player scope inputs the condition reads.
+        inputs: Vec<usize>,
+        /// The condition's last value for every player observed last tick,
+        /// in player order. An absent player counts as false.
+        memory: Vec<(PlayerKey, bool)>,
+    },
+    /// `assistReceived()`: fired per applied completion on its target.
+    AssistReceived,
+    /// `assistGiven()`: fired per applied completion on its helper.
+    AssistGiven,
 }
 
 /// The installed player events of one level, with their edge memory.
@@ -108,7 +130,13 @@ impl PlayerEventTable {
     /// Edge-memory entries across every event: one per observed player.
     #[cfg(test)]
     pub(crate) fn edge_memory_len(&self) -> usize {
-        self.events.iter().map(|event| event.memory.len()).sum()
+        self.events
+            .iter()
+            .map(|event| match &event.trigger {
+                BoundTrigger::Edge { memory, .. } => memory.len(),
+                BoundTrigger::AssistReceived | BoundTrigger::AssistGiven => 0,
+            })
+            .sum()
     }
 
     /// The frame-end steps a residual handle names.
@@ -119,13 +147,23 @@ impl PlayerEventTable {
         self.residuals.get(handle.0).map(Vec::as_slice)
     }
 
-    /// Evaluate every condition against the settled tick, then apply every
-    /// fire's in-tick commands, appending frame-end residuals to `residuals`.
-    /// No fire's writes are visible to this tick's evaluation.
-    pub fn run_tick(&mut self, script_ctx: &ScriptCtx, residuals: &mut Vec<PlayerEventResidual>) {
+    /// Apply this tick's assist completions, then evaluate every condition
+    /// against the settled tick, then apply every edge fire's in-tick
+    /// commands, appending frame-end residuals to `residuals` in that order.
+    ///
+    /// Completions apply before the snapshot, so this tick's conditions see
+    /// their writes; no edge fire's writes are visible to this tick's
+    /// evaluation. With no completions this is the edge pass alone.
+    pub fn run_tick(
+        &mut self,
+        script_ctx: &ScriptCtx,
+        assist_completions: &[AssistCompletion],
+        residuals: &mut Vec<PlayerEventResidual>,
+    ) {
         if self.events.is_empty() {
             return;
         }
+        self.apply_assist_completions(script_ctx, assist_completions, residuals);
         {
             let registry = script_ctx.registry.borrow();
             let slot_table = script_ctx.slot_table.borrow();
@@ -134,35 +172,59 @@ impl PlayerEventTable {
         self.apply(script_ctx, residuals);
     }
 
-    fn apply(&mut self, script_ctx: &ScriptCtx, residuals: &mut Vec<PlayerEventResidual>) {
+    fn apply(&self, script_ctx: &ScriptCtx, residuals: &mut Vec<PlayerEventResidual>) {
         let Some(dispatch_scope) = self.dispatch_scope.as_ref() else {
             return;
         };
         let mut dispatch_scope = dispatch_scope.borrow_mut();
         let mut registry = script_ctx.registry.borrow_mut();
         for fire in &self.scratch.fires {
-            let event = &self.events[fire.event];
-            let fire_context = TriggerFireContext {
-                event_player: Some(fire.pawn),
-                ..TriggerFireContext::default()
-            };
-            for command in &event.commands {
-                command.execute_with_script_ctx(
-                    &mut registry,
-                    script_ctx,
-                    &mut dispatch_scope,
-                    &self.command_diagnostics,
-                    &self.spawn_context,
-                    &fire_context,
-                );
-            }
-            if let Some(handle) = event.residual {
-                residuals.push(PlayerEventResidual {
-                    handle,
-                    player: fire.player,
-                    pawn: fire.pawn,
-                });
-            }
+            self.fire_event(
+                fire.event,
+                fire.player,
+                fire.pawn,
+                script_ctx,
+                &mut registry,
+                &mut dispatch_scope,
+                residuals,
+            );
+        }
+    }
+
+    /// Run one event's in-tick commands with `on.player` bound to `pawn`,
+    /// and queue its frame-end residual for `player`.
+    #[allow(clippy::too_many_arguments)]
+    fn fire_event(
+        &self,
+        event: usize,
+        player: PlayerKey,
+        pawn: EntityId,
+        script_ctx: &ScriptCtx,
+        registry: &mut postretro_entities::EntityRegistry,
+        dispatch_scope: &mut DispatchScope,
+        residuals: &mut Vec<PlayerEventResidual>,
+    ) {
+        let event = &self.events[event];
+        let fire_context = TriggerFireContext {
+            event_player: Some(pawn),
+            ..TriggerFireContext::default()
+        };
+        for command in &event.commands {
+            command.execute_with_script_ctx(
+                registry,
+                script_ctx,
+                dispatch_scope,
+                &self.command_diagnostics,
+                &self.spawn_context,
+                &fire_context,
+            );
+        }
+        if let Some(handle) = event.residual {
+            residuals.push(PlayerEventResidual {
+                handle,
+                player,
+                pawn,
+            });
         }
     }
 }

@@ -590,6 +590,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "inLifeState",
     "becomes",
     "ceases",
+    "assistReceived",
+    "assistGiven",
     "wait",
     "fire",
     "scopeReactions",

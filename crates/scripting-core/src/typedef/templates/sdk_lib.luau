@@ -990,20 +990,22 @@ export type PlayerGroup = {
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   --- Fire `fire` once per player whenever `edge`'s condition crosses for that
-  --- player. Evaluated on the host (and in single player) once per
-  --- authoritative tick, after the tick settles; a connected client registers
-  --- nothing. Effective only when returned under a manifest's `playerEvents`;
-  --- `options.levels` scopes a `ModManifest` entry.
+  --- player, or, for `assistReceived()` / `assistGiven()`, once per completed
+  --- assist on its target or helper. Evaluated on the host (and in single
+  --- player) once per authoritative tick, after the tick settles; a connected
+  --- client registers nothing. Effective only when returned under a
+  --- manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry.
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
---- A condition paired with its edge word. Build it with `becomes(cond)` or
---- `ceases(cond)`.
+--- What a player event fires on. Build it with `becomes(cond)`,
+--- `ceases(cond)`, `assistReceived()` or `assistGiven()`.
 export type PlayerEventEdge = { __playerEventEdge: true }
 --- `levels` scopes a `ModManifest` entry to matching map tags; a level
 --- script's entry must omit it.
 export type PlayerEventOptions = { levels: {string}? }
---- One `playerEvents` entry, as `players():on` builds it.
-export type PlayerEventDescriptor = { edge: "becomes" | "ceases", condition: RuntimeValue, fire: {string}, levels: {string}? }
+--- One `playerEvents` entry, as `players():on` builds it. A discrete source
+--- (`assistReceived` / `assistGiven`) carries no condition.
+export type PlayerEventDescriptor = { edge: "becomes" | "ceases" | "assistReceived" | "assistGiven", condition: RuntimeValue?, fire: {string}, levels: {string}? }
 --- Test the evaluated player in player events, or the local player in crossings.
 declare function inLifeState(name: string): BoolRef
 --- Fire when `cond` turns true for a player. Inside `cond`, a plain read of a
@@ -1015,6 +1017,14 @@ declare function becomes(cond: BoolRef): PlayerEventEdge
 --- Inside `cond`, a plain read of a per-player slot means the player being
 --- evaluated.
 declare function ceases(cond: BoolRef): PlayerEventEdge
+--- Fire when an assist completes on a player: `on.player` is the target. The
+--- completion applies in that tick's player-event pass before any condition
+--- is evaluated, so that tick's conditions see the fire's writes; it changes
+--- no life state or health itself. No condition.
+declare function assistReceived(): PlayerEventEdge
+--- Fire when a player completes an assist: `on.player` is the helper. Fires
+--- right after the target's `assistReceived()` subscriptions. No condition.
+declare function assistGiven(): PlayerEventEdge
 --- Address NPCs, optionally narrowed to those carrying `tag`. Resolved when
 --- each command takes effect, sequence steps included.
 declare function npcs(filter: NpcGroupFilter?): NpcGroup

@@ -132,10 +132,11 @@ pub use vm_adapters::*;
 pub use postretro_entities::data_descriptors::{
     ComposedPlayerEvent, CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, GroupKind,
     GroupTarget, InventoryDescriptor, LifeStatesDescriptor, LocomotionDescriptor, MeshDescriptor,
-    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
-    ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
-    SequenceTarget, TeleportEventDescriptor, TriggerEventDescriptor, TriggerPoolArm,
-    TriggerPoolDescriptor, VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PlayerEventTrigger,
+    PrimitiveDescriptor, ProgressDescriptor, RawAnimationState, RawMeshDescriptor,
+    ReactionDescriptor, SequenceStep, SequenceTarget, TeleportEventDescriptor,
+    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
+    build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{

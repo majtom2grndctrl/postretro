@@ -3,13 +3,16 @@
 //! worker counts, so a warm build after the first hits the id-54 cache.
 //! See: context/lib/build_pipeline.md §Compiler pipeline, §Build Cache
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 const FLUID_TEXTURE: &str = "test/concrete_grimey";
@@ -91,7 +94,7 @@ fn pool_room() -> String {
 /// and the build's log.
 fn build(temp: &TempBuildDir, map: &Path, name: &str, extra: &[&str]) -> (PathBuf, String) {
     let output_path = temp.0.join(format!("{name}.prl"));
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "info")
         .arg(map)
         .arg("-o")

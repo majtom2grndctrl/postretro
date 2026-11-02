@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use glam::DVec3;
 
-use super::super::{PORTAL_EPSILON, PlaneEntry, distribute_winding, polygon_area};
+use super::super::{PORTAL_EPSILON, PlaneEntry, PortalTolerance, distribute_winding, polygon_area};
 use super::FRAGMENT_DUST_AREA_M2;
 use crate::geometry_utils::{clip_winding_to_half_spaces, make_base_winding};
 use crate::partition::{BspChild, BspTree, InteriorPockets, OccluderTier};
@@ -61,7 +61,10 @@ fn join_recursive(
             &node.front,
             &node.back,
             &|_| true,
-            FRAGMENT_DUST_AREA_M2,
+            PortalTolerance {
+                min_area: FRAGMENT_DUST_AREA_M2,
+                ..PortalTolerance::SHIPPED
+            },
             &mut |_, front, back| {
                 if let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front, back)
                     && interior(*f)

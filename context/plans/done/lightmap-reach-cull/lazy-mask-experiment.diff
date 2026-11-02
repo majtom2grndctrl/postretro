@@ -1,0 +1,369 @@
+diff --git a/crates/level-compiler/src/lightmap_layer/chart_walk.rs b/crates/level-compiler/src/lightmap_layer/chart_walk.rs
+index 87c08d905..66aab6517 100644
+--- a/crates/level-compiler/src/lightmap_layer/chart_walk.rs
++++ b/crates/level-compiler/src/lightmap_layer/chart_walk.rs
+@@ -21,7 +21,7 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_seed, chart_texel_wor
+ use crate::geometry::GeometryResult;
+ #[cfg(test)]
+ use crate::lightmap_bake::light_texel_is_covered;
+-use crate::lightmap_reach::ChartReach;
++use crate::lightmap_reach::ChartMask;
+ use crate::map_data::{LightType, MapLight};
+ #[cfg(test)]
+ use crate::ray_traversal::Occluder;
+@@ -155,7 +155,7 @@ pub(super) fn bake_light_layer_chart_clipped(
+     let culled = reach
+         .as_ref()
+         .and_then(|walk| walk.culled_chart(face_idx, &atlas.charts[face_idx], exact_skips));
+-    let walk = |culled: Option<&ChartReach>, tally: Option<&ReachTally>| {
++    let walk = |culled: Option<&ChartMask>, tally: Option<&ReachTally>| {
+         walk_chart(
+             light,
+             atlas,
+@@ -199,7 +199,7 @@ pub(super) fn bake_light_layer_chart_clipped(
+ }
+ 
+ /// One `(light, chart)` walk, inside the caller's permit; `culled` is the
+-/// chart's reach when the pair is culled.
++/// chart's texel mask when the pair is culled.
+ #[allow(clippy::too_many_arguments)]
+ fn walk_chart(
+     light: &MapLight,
+@@ -210,7 +210,7 @@ fn walk_chart(
+     skip_unreachable_clips: bool,
+     exact_skips: ExactSkips,
+     shaft_scene: &OnceLock<ShaftScene>,
+-    culled: Option<&ChartReach>,
++    culled: Option<&ChartMask>,
+     tally: Option<&ReachTally>,
+ ) -> Vec<LayerTexel> {
+     let chart = &atlas.charts[face_idx];
+diff --git a/crates/level-compiler/src/lightmap_layer/reach_walk.rs b/crates/level-compiler/src/lightmap_layer/reach_walk.rs
+index bf72cec14..30988ac61 100644
+--- a/crates/level-compiler/src/lightmap_layer/reach_walk.rs
++++ b/crates/level-compiler/src/lightmap_layer/reach_walk.rs
+@@ -12,7 +12,7 @@ use super::chart_cull::ExactSkips;
+ use super::{LayerTexel, SharedAtlas};
+ use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
+ use crate::lightmap_bake::Chart;
+-use crate::lightmap_reach::{ChartReach, LightmapReachIndex};
++use crate::lightmap_reach::{ChartMask, LightmapReachIndex};
+ 
+ /// One light's view of the reach index for its chart walks.
+ #[derive(Clone, Copy)]
+@@ -27,13 +27,13 @@ pub(crate) struct ReachWalk<'a> {
+ }
+ 
+ impl<'a> ReachWalk<'a> {
+-    /// The chart's reach when this walk culls the pair, else `None`.
++    /// The chart's texel mask when this walk culls the pair, else `None`.
+     pub(super) fn culled_chart(
+         &self,
+         face_idx: usize,
+         chart: &Chart,
+         exact_skips: ExactSkips,
+-    ) -> Option<&'a ChartReach> {
++    ) -> Option<&'a ChartMask> {
+         #[cfg(test)]
+         if exact_skips.force_reach_cull {
+             return self.index.forced_chart(face_idx, chart);
+diff --git a/crates/level-compiler/src/lightmap_layer/skip_stats.rs b/crates/level-compiler/src/lightmap_layer/skip_stats.rs
+index 126d7d812..b97ce35ac 100644
+--- a/crates/level-compiler/src/lightmap_layer/skip_stats.rs
++++ b/crates/level-compiler/src/lightmap_layer/skip_stats.rs
+@@ -25,7 +25,7 @@ pub(crate) struct SkipStats {
+ /// Where in a reach-culled pair's work a note was taken.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum ReachPhase {
+-    /// Building a chart's reach mask, inside the first walk that asks.
++    /// Building a chart's reach mask, inside the first culled walk that asks.
+     MaskBuild,
+     /// Starting the reach-culled walk of a pair.
+     CulledWalk,
+diff --git a/crates/level-compiler/src/lightmap_reach.rs b/crates/level-compiler/src/lightmap_reach.rs
+index e3e94a8b2..e8789ee89 100644
+--- a/crates/level-compiler/src/lightmap_reach.rs
++++ b/crates/level-compiler/src/lightmap_reach.rs
+@@ -12,6 +12,7 @@ use crate::bake_control::BakeControl;
+ use crate::lightmap_bake::Chart;
+ use crate::lightmap_layer::{chart_texel_bounds, light_may_reach};
+ use crate::map_data::{LightType, MapLight};
++use crate::partition::region_polytope::RegionPolytope;
+ use crate::partition::{BspTree, find_leaf_for_point};
+ use crate::texel_footprint::TexelFrame;
+ 
+@@ -98,16 +99,14 @@ pub(crate) fn eligible_light_count(
+         .count()
+ }
+ 
+-/// A chart's reach data, shared by every light that walks it: the open
+-/// leaves its slab touches, sorted, and which texels' own slabs touch a
+-/// closed leaf and so must trace.
+-pub(crate) struct ChartReach {
+-    open_leaves: Vec<u32>,
++/// A culled chart's per-texel mask, shared by every light that culls it:
++/// which texels' own slabs touch a closed leaf and so must trace.
++pub(crate) struct ChartMask {
+     width: i32,
+     traced: Vec<u64>,
+ }
+ 
+-impl ChartReach {
++impl ChartMask {
+     /// Whether interior texel `(tx, ty)` of a culled pair stores 0 without
+     /// tracing: its slab touches open leaves only.
+     pub(crate) fn skips(&self, tx: i32, ty: i32) -> bool {
+@@ -119,18 +118,24 @@ impl ChartReach {
+     pub(crate) fn skips_all(&self) -> bool {
+         self.traced.iter().all(|&word| word == 0)
+     }
++}
+ 
+-    /// The open full-tree leaves the chart's slab touches, ascending.
+-    #[cfg(test)]
+-    pub(crate) fn open_leaves(&self) -> &[u32] {
+-        &self.open_leaves
+-    }
++/// A chart's slab as one descent of the tree finds it, shared by every
++/// light that walks it: the open leaves it touches, sorted, which decide a
++/// pair's cull, and the closed pieces the texel mask is tested against. The
++/// mask costs a test per texel, so it is built only once some pair of the
++/// chart is culled.
++struct ChartReach {
++    open_leaves: Vec<u32>,
++    closed_pieces: Vec<RegionPolytope>,
++    mask: OnceLock<ChartMask>,
+ }
+ 
+-/// A chart's frame and reach, built once, by the first walk that asks.
++/// A chart's frame, slab and mask, each built once, by the first walk that
++/// needs it.
+ struct ChartEntry {
+     frame: Option<ChartFrame>,
+-    reach: OnceLock<Option<ChartReach>>,
++    reach: OnceLock<ChartReach>,
+ }
+ 
+ /// One eligible light's flood.
+@@ -245,10 +250,11 @@ impl<'t> LightmapReachIndex<'t> {
+         self.lights.iter().filter(|light| light.is_some()).count()
+     }
+ 
+-    /// The chart's reach, building it on first use. Serial, taking no lock
+-    /// or permit: walks that need it while another builds it wait holding
+-    /// their permits, as for the shaft scene.
+-    fn chart(&self, chart_idx: usize, chart: &Chart) -> Option<(&ChartFrame, &ChartReach)> {
++    /// The chart's frame, building it on first use; `None` when the chart's
++    /// pairs are always kept. This build, the slab's and the mask's are each
++    /// serial, taking no lock or permit: walks that need one while another
++    /// builds it wait holding their permits, as for the shaft scene.
++    fn frame(&self, chart_idx: usize, chart: &Chart) -> Option<(&ChartFrame, &ChartEntry)> {
+         let entry = self.charts[chart_idx].get_or_init(|| {
+             #[cfg(test)]
+             let chart = self
+@@ -260,44 +266,70 @@ impl<'t> LightmapReachIndex<'t> {
+                 reach: OnceLock::new(),
+             }
+         });
+-        let frame = entry.frame.as_ref()?;
+-        let reach = entry
++        Some((entry.frame.as_ref()?, entry))
++    }
++
++    /// The chart's slab: one descent of the tree, on first use.
++    fn reach<'s>(&self, frame: &ChartFrame, entry: &'s ChartEntry) -> &'s ChartReach {
++        entry
+             .reach
+-            .get_or_init(|| {
+-                #[cfg(test)]
+-                if let Some(stats) = self.seams.stats {
+-                    stats.note_reach(crate::lightmap_layer::ReachPhase::MaskBuild, chart_idx);
+-                }
+-                Some(frame.reach(self.tree, &self.closed))
+-            })
+-            .as_ref()?;
+-        Some((frame, reach))
++            .get_or_init(|| frame.reach(self.tree, &self.closed))
+     }
+ 
+-    /// The chart's reach when the `(light, chart)` pair is culled: the light
++    /// The chart's texel mask, built by the first culled pair that needs it.
++    fn mask<'s>(
++        &self,
++        #[cfg_attr(not(test), allow(unused_variables))] chart_idx: usize,
++        frame: &ChartFrame,
++        reach: &'s ChartReach,
++    ) -> &'s ChartMask {
++        reach.mask.get_or_init(|| {
++            #[cfg(test)]
++            if let Some(stats) = self.seams.stats {
++                stats.note_reach(crate::lightmap_layer::ReachPhase::MaskBuild, chart_idx);
++            }
++            frame.mask(&reach.closed_pieces)
++        })
++    }
++
++    /// The chart's mask when the `(light, chart)` pair is culled: the light
+     /// is eligible, its emitter clears the chart's slab, and every open leaf
+-    /// the slab touches lies outside its flood. `None` keeps the pair.
++    /// the slab touches lies outside its flood. `None` keeps the pair. A kept
++    /// pair builds no mask, and one whose emitter does not clear the slab no
++    /// slab.
+     pub(crate) fn culled_chart(
+         &self,
+         light: usize,
+         chart_idx: usize,
+         chart: &Chart,
+-    ) -> Option<&ChartReach> {
++    ) -> Option<&ChartMask> {
+         let light = self.lights.get(light)?.as_ref()?;
+-        let (frame, reach) = self.chart(chart_idx, chart)?;
+-        let culled = frame.emitter_clears(light.emitter.centre, light.emitter.size)
+-            && !reach
+-                .open_leaves
+-                .iter()
+-                .any(|&leaf| light.reached.contains(leaf as usize));
+-        culled.then_some(reach)
++        let (frame, entry) = self.frame(chart_idx, chart)?;
++        if !frame.emitter_clears(light.emitter.centre, light.emitter.size) {
++            return None;
++        }
++        let reach = self.reach(frame, entry);
++        let culled = !reach
++            .open_leaves
++            .iter()
++            .any(|&leaf| light.reached.contains(leaf as usize));
++        culled.then(|| self.mask(chart_idx, frame, reach))
+     }
+ 
+-    /// The chart's reach for a pair forced culled, whatever the flood
++    /// The chart's mask for a pair forced culled, whatever the flood
+     /// reached: the planted fault verify mode must catch.
+     #[cfg(test)]
+-    pub(crate) fn forced_chart(&self, chart_idx: usize, chart: &Chart) -> Option<&ChartReach> {
+-        self.chart(chart_idx, chart).map(|(_, reach)| reach)
++    pub(crate) fn forced_chart(&self, chart_idx: usize, chart: &Chart) -> Option<&ChartMask> {
++        let (frame, entry) = self.frame(chart_idx, chart)?;
++        Some(self.mask(chart_idx, frame, self.reach(frame, entry)))
++    }
++
++    /// The open full-tree leaves the chart's slab touches, ascending; `None`
++    /// when the chart's pairs are always kept.
++    #[cfg(test)]
++    pub(crate) fn chart_open_leaves(&self, chart_idx: usize, chart: &Chart) -> Option<&[u32]> {
++        let (frame, entry) = self.frame(chart_idx, chart)?;
++        Some(&self.reach(frame, entry).open_leaves)
+     }
+ 
+     /// `light`'s R; `None` for a light the index never culls.
+diff --git a/crates/level-compiler/src/lightmap_reach/slab.rs b/crates/level-compiler/src/lightmap_reach/slab.rs
+index b2fe135e2..5ba5ba469 100644
+--- a/crates/level-compiler/src/lightmap_reach/slab.rs
++++ b/crates/level-compiler/src/lightmap_reach/slab.rs
+@@ -2,6 +2,8 @@
+ // starts can lie in, and which texels can start one in a closed leaf.
+ // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
+ 
++use std::sync::OnceLock;
++
+ use glam::DVec3;
+ 
+ use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
+@@ -11,7 +13,7 @@ use crate::partition::region_polytope::RegionPolytope;
+ use crate::partition::{Aabb, BspChild, BspTree};
+ use crate::texel_footprint::TexelFrame;
+ 
+-use super::ChartReach;
++use super::{ChartMask, ChartReach};
+ 
+ /// Largest distance from 1 of a chart-frame axis's length for the slab to be
+ /// built; `shaft_cull`'s limit.
+@@ -235,12 +237,12 @@ impl ChartFrame {
+         polytope
+     }
+ 
+-    /// The chart's open leaves and per-texel mask: one descent of the chart
+-    /// slab through the tree, then each texel's box tested against every
+-    /// closed piece the descent found.
++    /// The chart's slab: one descent of it through the tree, keeping the
++    /// open leaves it touches and the pieces of it in closed leaves. Its
++    /// texel mask is built later, from those pieces, by [`ChartFrame::mask`].
+     pub(super) fn reach(&self, tree: &BspTree, closed: &[bool]) -> ChartReach {
+         let mut open_leaves = Vec::new();
+-        let mut pieces = Vec::new();
++        let mut closed_pieces = Vec::new();
+         if !tree.nodes.is_empty() {
+             descend(
+                 tree,
+@@ -248,7 +250,7 @@ impl ChartFrame {
+                 self.polytope(self.chart_box()),
+                 &mut |leaf, piece| {
+                     if closed[leaf] {
+-                        pieces.push(piece);
++                        closed_pieces.push(piece);
+                     } else {
+                         open_leaves.push(leaf as u32);
+                     }
+@@ -257,16 +259,22 @@ impl ChartFrame {
+         }
+         open_leaves.sort_unstable();
+         open_leaves.dedup();
++        ChartReach {
++            open_leaves,
++            closed_pieces,
++            mask: OnceLock::new(),
++        }
++    }
++
++    /// The chart's per-texel mask: each texel's box tested against every
++    /// closed piece of its slab.
++    pub(super) fn mask(&self, closed_pieces: &[RegionPolytope]) -> ChartMask {
+         let (width, height) = self.dims;
+         let mut traced = vec![0u64; (width as usize * height as usize).div_ceil(64)];
+-        for piece in &pieces {
++        for piece in closed_pieces {
+             self.mark_traced(piece, &mut traced);
+         }
+-        ChartReach {
+-            open_leaves,
+-            width,
+-            traced,
+-        }
++        ChartMask { width, traced }
+     }
+ 
+     /// Mark every texel whose box `piece` does not provably miss.
+diff --git a/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_drift_tests.rs b/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_drift_tests.rs
+index 87c264d7d..ff873e16a 100644
+--- a/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_drift_tests.rs
++++ b/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_drift_tests.rs
+@@ -121,9 +121,8 @@ fn check_drift(slab_charts: Option<&'static [Chart]>) -> anyhow::Result<()> {
+     anyhow::ensure!(
+         index.culled_chart(0, sheet, chart).is_none()
+             && index
+-                .forced_chart(sheet, chart)
++                .chart_open_leaves(sheet, chart)
+                 .expect("an orthonormal frame")
+-                .open_leaves()
+                 .iter()
+                 .any(|&leaf| index.reaches(0, leaf as usize) == Some(true)),
+         "the drifted slab reaches a reached leaf"
+diff --git a/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_fixture_tests.rs b/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_fixture_tests.rs
+index 4ffd484c9..d31cd2905 100644
+--- a/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_fixture_tests.rs
++++ b/crates/level-compiler/src/pipeline/lightmap_stage/tests/reach_fixture_tests.rs
+@@ -157,11 +157,10 @@ fn reach_keeps_a_chart_whose_slab_reaches_a_reached_leaf_its_centres_do_not() {
+         if lifted_centres(chart).any(reached) {
+             continue;
+         }
+-        let slab = index
+-            .forced_chart(chart_idx, chart)
++        let open_leaves = index
++            .chart_open_leaves(chart_idx, chart)
+             .expect("an orthonormal chart frame");
+-        if !slab
+-            .open_leaves()
++        if !open_leaves
+             .iter()
+             .any(|&leaf| index.reaches(0, leaf as usize) == Some(true))
+         {

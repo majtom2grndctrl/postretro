@@ -4,8 +4,9 @@
 //! holds a classic arrival its baseline cannot reach.
 //! See: context/lib/build_pipeline.md §Compiler pipeline, §PRL section IDs
 
+mod prl_build_support;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use glam::Vec3;
 use postretro_level_format::cell_locator::CellLocatorSection;
@@ -15,6 +16,8 @@ use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::teleporters::{TeleportMode, TeleportersSection};
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_level_loader::LevelWorld;
+
+use prl_build_support::prl_build;
 
 fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -37,7 +40,7 @@ fn compile(map: &str, out: &Path) -> Option<TeleportersSection> {
 }
 
 fn compile_prl(map: &str, prl: &Path) {
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .arg(workspace().join(format!("content/dev/maps/{map}.map")))
         .arg("-o")
         .arg(prl)

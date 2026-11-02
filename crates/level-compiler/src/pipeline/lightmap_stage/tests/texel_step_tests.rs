@@ -240,6 +240,7 @@ fn bake(
         &primitives,
         config,
         prepared,
+        None,
         &window,
     )
     .expect("a stepped bake still compiles");

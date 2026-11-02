@@ -20,10 +20,11 @@
 //   direction's edges; nothing is excused. Where copies farther apart than
 //   δ leave a gap, an edge ending within τ may stand in with its stored
 //   end, capped so a direction never counts more edges than it has present
-//   within τ (`settle`). A pair needs each one's stretch within τ of one
-//   triangle of the other's face, and distance to a triangle is convex
-//   along a segment, so the ends settle the piece. An edge left out is an
-//   unproven span.
+//   within τ (`settle`); both distances run along the edges in 3D, never in
+//   axis units. A pair joins edges of two faces, never one, and needs each
+//   one's stretch within τ of one triangle of the other's face; distance to
+//   a triangle is convex along a segment, so the ends settle the piece. An
+//   edge left out is an unproven span.
 // - The limit is τ less a margin for `f64` rounding scaled by the
 //   geometry's extent, with no δ in it: rounding counts toward a hole, and
 //   no quantum merges edges, so the proof holds at any coordinate.
@@ -120,9 +121,12 @@ pub(crate) struct CoverageReport {
 }
 
 impl CoverageReport {
-    /// Total length of the unproven spans, in meters.
+    /// Total length of the unproven spans, in meters: +0 when there are
+    /// none (a float `sum` of nothing is −0, which logs as "-0.000 m").
     pub(crate) fn unproven_length(&self) -> f64 {
-        self.unproven.iter().map(|span| span.length).sum()
+        self.unproven
+            .iter()
+            .fold(0.0, |total, span| total + span.length)
     }
 
     /// The first unproven spans in report order, up to the watertightness
@@ -216,6 +220,8 @@ fn prove_welded(
 mod gate_map_tests;
 #[cfg(test)]
 mod hinge_tests;
+#[cfg(test)]
+mod pairing_tests;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]

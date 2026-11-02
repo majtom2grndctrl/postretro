@@ -4,16 +4,27 @@
 // Capped stand-ins, and why they are sound:
 // - Two copies of one corner farther apart than δ leave a stretch one edge
 //   runs over and its partner stops short of. An edge whose welded end lies
-//   within τ (axis) of such a piece may stand in there with its stored end:
-//   the pair is checked in 3D like any other, so the stretch lies within τ
-//   of the stand-in's face and its end within τ of the partner's.
+//   within τ of such a piece, along the edge in 3D, may stand in there with
+//   its stored end: the pair is checked in 3D like any other, so the
+//   stretch lies within τ of the stand-in's face and its end within τ of
+//   the partner's.
 // - Uncapped, a chain of collinear edges stands in on both sides of each
 //   link, so one direction supplies two partners on a piece where it has
 //   one edge. The cap stops that: stand-ins may lift a direction's count on
 //   a piece only to the most edges of that direction present on any piece
-//   within τ. They fill a dip, where one edge has ended and the next not yet
-//   begun; a direction short on every piece within τ, as a dropped face
-//   leaves it, stays short, and so does a same-way surplus (an overlap).
+//   within τ, along every edge of that direction. They fill a dip, where
+//   one edge has ended and the next not yet begun; a direction short on
+//   every piece within τ, as a dropped face leaves it, stays short, and so
+//   does a same-way surplus (an overlap). Closed shells stacked within τ
+//   raise both counts and can still carry a deficit along a line: inside
+//   named gap 3 as `plan.md` row 1c widens it, which verify mode guards.
+// - Distances are along the edges, not the axis: an edge at angle θ to the
+//   axis covers |cos θ| of axis per metre, so a skewed member would stretch
+//   an axis-unit τ to metres of real edge (a cluster linked across lines by
+//   a short diagonal). Each edge's reach is τ·|cos θ| of axis; a
+//   direction's window takes its steepest edge's, so it spans at most τ
+//   along every edge of that direction. A smaller window only refuses
+//   stand-ins: it costs a false hole, never a missed one.
 // - Both sides' caps hold in one matching: each side's run covers its
 //   present edges plus dummies that hold back the other side's stand-ins
 //   past its cap, and two matchings in one bipartite graph covering those
@@ -38,9 +49,10 @@ pub(super) struct Measure<'a> {
     /// (τ less the rounding margin)², so a computed distance that clears it
     /// proves the exact one is within τ.
     pub(super) limit_squared: f64,
-    /// How far past its own welded end, along the axis, an edge may stand
-    /// in: τ. Axis units only offer the candidate; the pair is checked in 3D
-    /// at the edge's stored end.
+    /// How far past its own welded end an edge may stand in, and how far
+    /// its direction's cap window reaches: τ, along the edges in 3D.
+    /// Converted to axis units per edge (`Placed::scale`); the pair is
+    /// still checked in 3D at the edge's stored end.
     pub(super) stand_in_reach: f64,
 }
 
@@ -60,20 +72,25 @@ impl Measure<'_> {
                 .any(|tri| tri != partner.triangle && within(tri))
     }
 
-    /// `a` and `b` may pair on some piece: they run opposite ways, and each
-    /// one's stored segment meets the other's face box. A necessary
-    /// condition only, so it prunes pairs and never proves one.
+    /// `a` and `b` may pair on some piece: two faces' edges running
+    /// opposite ways, each one's stored segment meeting the other's face
+    /// box. A necessary condition only, so it prunes pairs and never proves
+    /// one.
     fn may_pair(&self, a: &DirectedEdge, b: &DirectedEdge) -> bool {
         let meets = |edge: &DirectedEdge, face: u32| {
             self.boxes[face as usize]
                 .as_ref()
                 .is_none_or(|bounds| bounds.meets(edge.from, edge.to))
         };
-        opposed(a, b) && meets(a, b.face) && meets(b, a.face)
+        a.face != b.face && opposed(a, b) && meets(a, b.face) && meets(b, a.face)
     }
 
-    /// `a` and `b` pair on a piece: they run opposite ways, and each
-    /// one's stretch there lies within τ of the other's face.
+    /// `a` and `b` pair on a piece: edges of two faces running opposite
+    /// ways, each one's stretch there within τ of the other's face. Never
+    /// two of one face: a face narrower than τ lies within τ of its own
+    /// opposite edges, and would close itself with nothing around it. Fan
+    /// diagonals, the one place a face's edges rightly close each other,
+    /// cancel before matching (`edges`).
     fn pairs(
         &self,
         a: &DirectedEdge,
@@ -81,7 +98,7 @@ impl Measure<'_> {
         b: &DirectedEdge,
         b_ends: [DVec3; 2],
     ) -> bool {
-        opposed(a, b) && self.covers(b, a_ends) && self.covers(a, b_ends)
+        a.face != b.face && opposed(a, b) && self.covers(b, a_ends) && self.covers(a, b_ends)
     }
 }
 
@@ -96,6 +113,9 @@ struct Placed<'a> {
     edge: &'a DirectedEdge,
     t_from: f64,
     t_to: f64,
+    /// Axis per metre along the edge: |direction · axis|, at most 1. An
+    /// axis distance over this is the 3D distance along the edge.
+    scale: f64,
 }
 
 impl Placed<'_> {
@@ -159,10 +179,15 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
         .iter()
         .map(|&i| {
             let edge = &edges[i];
+            let (t_from, t_to) = (
+                (edge.weld_from - origin).dot(axis),
+                (edge.weld_to - origin).dot(axis),
+            );
             Placed {
                 edge,
-                t_from: (edge.weld_from - origin).dot(axis),
-                t_to: (edge.weld_to - origin).dot(axis),
+                t_from,
+                t_to,
+                scale: ((t_to - t_from).abs() / edge.length()).min(1.0),
             }
         })
         .collect();
@@ -174,6 +199,9 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     let first_after = |t: f64| breaks.partition_point(|&b| b <= t);
     let pieces = breaks.len().saturating_sub(1);
     let reach = measure.stand_in_reach;
+    // Per side, its steepest edge's scale: a window this many τ of axis
+    // wide spans at most τ along every edge of the side.
+    let mut steepest = [1.0f64; 2];
 
     // Per side (along, against) and piece, the `placed` indices running over
     // it, and those standing in from within reach past their ends.
@@ -196,21 +224,25 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
                 .push(UnprovenSpan::new([p.edge.from, p.edge.to], p.edge));
             continue;
         };
+        steepest[side] = steepest[side].min(p.scale);
         let (start, end) = (first_at_or_after(lo), first_at_or_after(hi));
         for on in &mut present[side][start..end] {
             on.push(index);
         }
-        // Pieces wholly within reach past either end.
-        let below = first_at_or_after(lo - reach);
-        let above = first_after(hi + reach).saturating_sub(1).max(end);
+        // Pieces wholly within reach past either end, along this edge.
+        let own_reach = reach * p.scale;
+        let below = first_at_or_after(lo - own_reach);
+        let above = first_after(hi + own_reach).saturating_sub(1).max(end);
         for piece in (below..start).chain(end..above) {
             near[side][piece].push(index);
         }
     }
 
     // Per side and piece, the most edges of that side present on any piece
-    // within reach: what its stand-ins may lift it to.
+    // within reach along every edge of the side: what its stand-ins may
+    // lift it to.
     let window: [Vec<usize>; 2] = [0, 1].map(|side| {
+        let reach = reach * steepest[side];
         (0..pieces)
             .map(|piece| {
                 let first = breaks[1..].partition_point(|&b| b < breaks[piece] - reach);

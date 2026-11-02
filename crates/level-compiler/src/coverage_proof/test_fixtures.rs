@@ -271,6 +271,37 @@ pub(super) fn hinge(frame: Frame) -> (Vec<Polygon>, [usize; 4], (DVec3, DVec3)) 
     (polygons, [1, 3, 6, 8], line)
 }
 
+/// The `hinge` fixture plus a 2 m plank whose edge E1 runs into the hinge's
+/// bottom end at 89.977° to it, and a sub-millimetre sliver whose 0.7 mm
+/// edge runs opposite both lines near that end, linking them into one
+/// cluster with E1 as its axis. Every brush is closed. Returns the faces,
+/// box B's −X slot (a hinge face) and the hinge's ends.
+pub(super) fn axis_skew_hinge(frame: Frame) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
+    let (mut polygons, slots, line) = hinge(frame);
+    let corner = DVec3::new(1.0, 1.0, 0.0);
+    let far = DVec3::new(1.0 + 2f64.sqrt(), 1.0 - 2f64.sqrt(), 0.0008);
+    let middle = (far + corner) * 0.5;
+    let outward = DVec3::new(1.0, 1.0, 0.0).normalize();
+    polygons.extend(tetrahedron(
+        frame,
+        [far, corner, middle + outward * 0.1, middle + DVec3::Z * 0.1],
+        2,
+    ));
+
+    let (u, v) = ((corner - far).normalize(), DVec3::Z);
+    let d = -(u + v).normalize();
+    let s0 = corner + DVec3::Z * 0.0006;
+    let s1 = s0 + d * 0.0007;
+    let aside = DVec3::new(1.0, -1.0, 0.0).normalize();
+    let lift = d.cross(aside).normalize();
+    polygons.extend(tetrahedron(
+        frame,
+        [s0, s1, s0 + aside * 0.0005, (s0 + s1) * 0.5 + lift * 0.0004],
+        3,
+    ));
+    (polygons, slots[2], line)
+}
+
 /// The four faces of the tetrahedron `corners` in `frame`, each wound
 /// counter-clockwise about its outward normal.
 pub(super) fn tetrahedron(frame: Frame, corners: [DVec3; 4], brush: u32) -> Vec<Polygon> {

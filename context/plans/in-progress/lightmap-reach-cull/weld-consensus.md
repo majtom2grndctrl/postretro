@@ -2,6 +2,12 @@
 
 **Status.** Reviewer and orchestrator consensus, 2026-11-02.
 
+**Later rulings.** Named gap 3 was widened past owner item 2 below, per `plan.md` rows 1c and 1d:
+"a solid region whose remaining faces are missing, narrower than τ, or close within τ without
+enclosing it (deliberately built sub-mm shells)". Verify mode guards it. Since row 1d, two edges of
+one face never pair, so a lone face narrower than τ no longer closes itself, and stand-in reach and
+the cap window (§3) are measured along the edges in 3D.
+
 ## Owner items (before building)
 
 1. **Replace owner rulings 1b (c) and (c′).** Those are the seam-overlap excuse and the corner fan,
@@ -88,18 +94,33 @@ stand-ins.
 
 ### 3. Fallback, only if the δ procedure needs it: capped stand-ins
 
-Do **not** build this unless step 6 of the δ procedure triggers it, and the owner and orchestrator
-approve.
+**Built** (`plan.md` row 1c: the δ procedure's step 6 triggered it on movement-feel, and the owner
+approved). Reviewed in `proof-cap-review.md`; row 1d added the 3D measures below.
 
-- Stand-ins return as today: an edge may partner on pieces within τ (axis units, from its welded end)
-  past its own end. The point evaluated is its **true** end.
-- Add a count cap. On a piece, a direction may use stand-ins only up to `window_max − present`:
+- Stand-ins return: an edge may partner on pieces within τ past its own welded end. The point
+  evaluated is its **true** end.
+  - τ is measured along the edge in 3D: an axis distance over |edge direction · axis|. In axis units,
+    an edge skewed to its cluster's axis reached metres along itself (review §4).
+- A count cap. On a piece, a direction may use stand-ins only up to `window_max − present`:
   - `present` is that direction's present-edge count on the piece.
   - `window_max` is the largest present count of that direction on any piece within τ.
-- The cap is enforced **jointly**. One matching must cover every present edge on both sides and use
-  at most each side's cap. Do not combine two one-sided runs, which is how `cover` works today.
-  Solve it as a flow with lower bounds, or as a bounded exhaustive search that fails toward unproven.
-- If built, it needs its own adversarial review: the uncapped version was broken once.
+  - The window takes the direction's steepest edge's scale, so it spans at most τ along every edge
+    of that direction. A smaller window only refuses stand-ins.
+- The cap is enforced **jointly**: one matching covers every present edge on both sides and uses at
+  most each side's cap. It is built from two one-sided runs, and combining them is valid (review §5):
+  - Both runs live in one bipartite graph, X = P0 ∪ S0 ∪ D1 and Y = P1 ∪ S1 ∪ D0. P is a side's
+    present edges, S its stand-ins, and D the dummies that hold back the other side's stand-ins past
+    its cap; each dummy may take any of those stand-ins.
+  - Its edges are P0–P1, P0–S1, S0–P1 and the dummies'. No edge joins two stand-ins.
+  - Side 0's run covers P0 ∪ D1, and side 1's covers P1 ∪ D0. `pairs` is symmetric, so both are
+    matchings in that one graph.
+  - By Mendelsohn–Dulmage, one matching then covers P0 ∪ D1 ∪ P1 ∪ D0. Every dummy holds a stand-in,
+    so at most each side's cap of its stand-ins reaches a present edge.
+  - The original text here said not to combine two one-sided runs: two runs checked alone need not
+    share one matching. The dummies put both caps into the one graph, so the theorem joins them.
+- Known gap: closed shells stacked within τ raise a direction's window without touching its deficit,
+  and per-shell overlaps hold a deficit balanced on each piece (review §1–§2). The owner accepted
+  both under named gap 3 (`plan.md` row 1c), with verify mode guarding it.
 
 ### 4. Delete
 

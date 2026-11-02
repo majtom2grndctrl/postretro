@@ -4,8 +4,8 @@
 use glam::DVec3;
 
 use super::test_fixtures::{
-    Frame, Polygon, assert_hinge_hole_found, bottom_strips, box_face, chained_hinge, closed_box,
-    delta, facing, hinge, prove, prove_with, stations, tau, tetrahedron, top_strips,
+    Frame, Polygon, assert_hinge_hole_found, axis_skew_hinge, bottom_strips, box_face,
+    chained_hinge, closed_box, delta, facing, prove, prove_with, stations, tau, top_strips,
     unproven_along, unproven_near,
 };
 use super::weld::WeldRule;
@@ -14,46 +14,17 @@ fn frame() -> Frame {
     Frame::oblique(DVec3::new(1.0, 2.0, 3.0))
 }
 
-/// The `hinge` fixture plus a 2 m plank whose edge E1 runs into the hinge's
-/// bottom end at 89.977° to it, and a sub-millimetre sliver whose 0.7 mm
-/// edge runs opposite both lines near that end, linking them into one
-/// cluster with E1 as its axis. Every brush is closed. Returns the faces,
-/// box B's −X slot (a hinge face) and the hinge's ends.
-fn axis_skew_hinge(frame: Frame) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
-    let (mut polygons, slots, line) = hinge(frame);
-    let corner = DVec3::new(1.0, 1.0, 0.0);
-    let far = DVec3::new(1.0 + 2f64.sqrt(), 1.0 - 2f64.sqrt(), 0.0008);
-    let middle = (far + corner) * 0.5;
-    let outward = DVec3::new(1.0, 1.0, 0.0).normalize();
-    polygons.extend(tetrahedron(
-        frame,
-        [far, corner, middle + outward * 0.1, middle + DVec3::Z * 0.1],
-        2,
-    ));
-
-    let (u, v) = ((corner - far).normalize(), DVec3::Z);
-    let d = -(u + v).normalize();
-    let s0 = corner + DVec3::Z * 0.0006;
-    let s1 = s0 + d * 0.0007;
-    let aside = DVec3::new(1.0, -1.0, 0.0).normalize();
-    let lift = d.cross(aside).normalize();
-    polygons.extend(tetrahedron(
-        frame,
-        [s0, s1, s0 + aside * 0.0005, (s0 + s1) * 0.5 + lift * 0.0004],
-        3,
-    ));
-    (polygons, slots[2], line)
-}
-
 // R6. Regression: the end-stub rule measured a stub along its cluster's
 // axis. One 0.7 mm edge merged a hinge into a cluster whose axis lay across
 // it, every hinge edge projected under τ and read as a stub, and the hinge
-// missing a face read proven along its whole metre. The sliver lies within
-// τ of the hinge's first half millimetre and may partner there.
+// missing a face read proven along its whole metre. Slack 2δ, not 2τ: a
+// stand-in's reach in axis units let the sliver partner the hinge's first
+// 0.37 mm from more than τ past its end along it; measured along the edge
+// (row 1d), it no longer does.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_whose_cluster_axis_lies_across_it() {
     let (polygons, dropped, line) = axis_skew_hinge(frame());
-    assert_hinge_hole_found(polygons, dropped, line, 2.0 * tau());
+    assert_hinge_hole_found(polygons, dropped, line, 2.0 * delta());
 }
 
 // R6. Regression: under the end-stub rule a stub needed only some partner,

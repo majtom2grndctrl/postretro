@@ -35,6 +35,21 @@ fn coverage_proof_proves_an_extracted_room_with_cut_t_junctions_and_overlaps() {
     assert_eq!(report.edges_proven, report.edges);
 }
 
+// The stage's info line prints the unproven length: none reads "0.000", not
+// the "-0.000" a float sum of nothing gives.
+#[test]
+fn coverage_proof_unproven_length_of_a_closed_box_is_positive_zero() {
+    let report = prove(&closed_box(
+        Frame::IDENTITY,
+        DVec3::ZERO,
+        DVec3::ONE,
+        0.0,
+        0,
+    ));
+    assert!(report.unproven.is_empty(), "{:#?}", report.unproven);
+    assert_eq!(format!("{:.3}", report.unproven_length()), "0.000");
+}
+
 // The proof's soundness rests on every traced face winding counter-clockwise
 // about its outward normal, through extraction, fan triangulation and the
 // oversize-face cut.

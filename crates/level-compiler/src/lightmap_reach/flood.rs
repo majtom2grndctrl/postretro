@@ -12,9 +12,10 @@ use crate::portals::{Portal, PortalTolerance, generate_portals_with};
 use super::LeafSet;
 
 /// The flood's own full-tree portals: every piece of every node winding, with
-/// no area floor and a clip tolerance of a micrometre. The shipped set
-/// ([`PortalTolerance::SHIPPED`]) drops openings under 0.1 m² or about 1 cm
-/// wide, which a ray crosses; the flood must cross every opening a ray can.
+/// no area floor and a clip tolerance of a micrometre (1e-6 engine metres).
+/// The shipped set ([`PortalTolerance::SHIPPED`]) drops openings under 0.1 m²
+/// or about 1 cm wide, which a ray crosses; the flood must cross every
+/// opening a ray can.
 /// A piece narrower than this tolerance lies between open/solid boundaries
 /// whose faces (the precondition the coverage proof checks) come within τ of
 /// any ray through it, so the tracer blocks that ray (build_pipeline.md step
@@ -24,10 +25,16 @@ const FLOOD_PORTALS: PortalTolerance = PortalTolerance {
     min_area: 0.0,
 };
 
-/// Slack on the seed sphere over `light_size`, in metres: every emitter
-/// target lies within `light_size` of the light's `f32` origin to within
-/// `f32` rounding far below this.
-const SEED_SLACK: f64 = 1.0e-3;
+/// Absolute slack, in metres, on how far an emitter target lies from the
+/// light's `f32` origin past `light_size`.
+const EMITTER_SLACK: f64 = 1.0e-3;
+
+/// Relative slack on that distance, per metre of the origin's distance from
+/// the world origin and of `light_size`. A target is `centre + sample·size`
+/// in `f32`: the add rounds within 2⁻²⁴ (6e-8) of the target's length, and
+/// the sample's unit length and the product round within a few 2⁻²⁴ of
+/// `size`. This is over ten times both.
+const EMITTER_SLACK_PER_METER: f64 = 1.0e-6;
 
 /// R's absolute margin, in `RAY_EPSILON`s. A traced point lies at most one
 /// footprint radius plus a lift and a skipped `RAY_EPSILON` (two in all) past
@@ -82,6 +89,13 @@ impl Emitter {
             size: f64::from(light.light_size.max(0.0)),
         }
     }
+
+    /// A bound on the distance from `centre` of every `f32` ray target the
+    /// walk traces to: `size` plus 1 mm near the world origin, growing with
+    /// the target's rounding farther out.
+    pub(super) fn target_radius(self) -> f64 {
+        self.size + EMITTER_SLACK + EMITTER_SLACK_PER_METER * (self.centre.length() + self.size)
+    }
 }
 
 /// R: a bound on the distance from the emitter centre of every point of
@@ -120,7 +134,7 @@ pub(super) fn ball_flood(
         }
     };
     seed(source, &mut reached, &mut frontier);
-    for leaf in sphere_leaves(tree, emitter.centre, emitter.size + SEED_SLACK) {
+    for leaf in sphere_leaves(tree, emitter.centre, emitter.target_radius()) {
         seed(leaf, &mut reached, &mut frontier);
     }
     while let Some(leaf) = frontier.pop() {

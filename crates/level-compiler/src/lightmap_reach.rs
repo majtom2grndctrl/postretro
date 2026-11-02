@@ -19,7 +19,7 @@ mod flood;
 mod slab;
 
 use flood::{Emitter, PortalGraph, ball_flood, reach_radius};
-use slab::ChartFrame;
+use slab::{ChartFrame, FRAME_SKEW_LIMIT};
 
 /// A set of full-tree leaves, one bit each.
 #[derive(Debug, Clone)]
@@ -180,11 +180,18 @@ impl<'t> LightmapReachIndex<'t> {
             PortalGraph::new(tree)
         };
         let chart_bounds: Vec<_> = charts.iter().map(chart_texel_bounds).collect();
+        // How far a footprint point lies from its texel centre. `radius()`,
+        // the longer texel step `r`, assumes orthonormal axes. A culled
+        // chart's frame passes the slab's skew check, `|u·v| ≤
+        // FRAME_SKEW_LIMIT`, so an offset `α·pitch_u + β·pitch_v` with
+        // `α² + β² < 1` is under `r·√(1 + FRAME_SKEW_LIMIT)` long, which
+        // `r·(1 + FRAME_SKEW_LIMIT)` bounds. A chart that fails the check
+        // has every pair kept, so R need not cover it.
         let chart_radius: Vec<f64> = charts
             .iter()
             .map(|chart| {
                 if penumbra_floor {
-                    f64::from(TexelFrame::for_chart(chart).radius())
+                    f64::from(TexelFrame::for_chart(chart).radius()) * (1.0 + FRAME_SKEW_LIMIT)
                 } else {
                     // The centre sampler traces from the texel centre alone.
                     0.0
@@ -247,7 +254,8 @@ impl<'t> LightmapReachIndex<'t> {
 
     /// The chart's reach, building it on first use. Serial, taking no lock
     /// or permit: walks that need it while another builds it wait holding
-    /// their permits, as for the shaft scene.
+    /// their permits, as they do on `ShaftScene::new`. `None` keeps the
+    /// chart's pairs: its frame is not bounded, or its slab touches no leaf.
     fn chart(&self, chart_idx: usize, chart: &Chart) -> Option<(&ChartFrame, &ChartReach)> {
         let entry = self.charts[chart_idx].get_or_init(|| {
             #[cfg(test)]
@@ -268,7 +276,7 @@ impl<'t> LightmapReachIndex<'t> {
                 if let Some(stats) = self.seams.stats {
                     stats.note_reach(crate::lightmap_layer::ReachPhase::MaskBuild, chart_idx);
                 }
-                Some(frame.reach(self.tree, &self.closed))
+                frame.reach(self.tree, &self.closed)
             })
             .as_ref()?;
         Some((frame, reach))
@@ -285,7 +293,7 @@ impl<'t> LightmapReachIndex<'t> {
     ) -> Option<&ChartReach> {
         let light = self.lights.get(light)?.as_ref()?;
         let (frame, reach) = self.chart(chart_idx, chart)?;
-        let culled = frame.emitter_clears(light.emitter.centre, light.emitter.size)
+        let culled = frame.emitter_clears(light.emitter)
             && !reach
                 .open_leaves
                 .iter()

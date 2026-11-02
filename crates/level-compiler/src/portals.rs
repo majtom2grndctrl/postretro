@@ -12,11 +12,15 @@ pub use occluder_tier::{generate_runtime_portals, interior_pockets};
 
 /// Tighter than BSP face classification (0.1). Portals are clipped against
 /// many ancestor planes in sequence, so a looser epsilon accumulates too much
-/// error. Matches ericw-tools' ON_EPSILON for winding operations.
+/// error. Matches ericw-tools' ON_EPSILON for winding operations. The shipped
+/// value; [`PortalTolerance`] carries the per-call override (the lightmap reach
+/// flood uses a tighter one).
 pub(crate) const PORTAL_EPSILON: f64 = 0.01;
 
 /// Slivers below this area are discarded to prevent degenerate geometry
-/// from accumulating numerical precision loss during repeated clipping.
+/// from accumulating numerical precision loss during repeated clipping. The
+/// shipped value; [`PortalTolerance`] carries the per-call override (the
+/// lightmap reach flood uses a tighter one).
 pub(crate) const MIN_PORTAL_AREA_M2: f64 = 0.1;
 
 /// How portal generation clips windings and which slivers it drops.
@@ -47,7 +51,9 @@ pub struct Portal {
     pub back_leaf: usize,
 }
 
-/// Generate portals for all adjacent empty leaf pairs in the BSP tree.
+/// Generate portals for all adjacent empty leaf pairs in the BSP tree, under
+/// [`PortalTolerance::SHIPPED`]. See [`generate_portals_with`] for the
+/// parameterised variant.
 pub fn generate_portals(tree: &BspTree) -> Vec<Portal> {
     generate_portals_with(tree, PortalTolerance::SHIPPED)
 }
@@ -151,9 +157,10 @@ fn distribute_portal(
 }
 
 /// Push a winding through the subtrees on each side of its plane, splitting
-/// it at every node `descend` admits, front side first, under `tolerance`'s
-/// epsilon. Each piece of at least its `min_area` reaches `on_pair` with the two children it ends between:
-/// leaves, or nodes `descend` refused.
+/// it at every node `descend` admits, front side first. Splits use
+/// `tolerance.epsilon`; each piece of at least `tolerance.min_area` reaches
+/// `on_pair` with the two children it ends between: leaves, or nodes
+/// `descend` refused.
 fn distribute_winding(
     tree: &BspTree,
     winding: &[DVec3],

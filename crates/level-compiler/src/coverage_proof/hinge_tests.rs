@@ -1,4 +1,4 @@
-// Coverage proof tests: hinges and boxes missing faces beside chains, strips, stagger and folds that every excuse rule before the weld let through.
+// Coverage proof tests: hinges and boxes missing faces beside chains, strips, stagger and folds that a hinge or box must still report as unproven.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use glam::DVec3;
@@ -14,26 +14,26 @@ fn frame() -> Frame {
     Frame::oblique(DVec3::new(1.0, 2.0, 3.0))
 }
 
-// R6. Regression: the end-stub rule measured a stub along its cluster's
-// axis. One 0.7 mm edge merged a hinge into a cluster whose axis lay across
-// it, every hinge edge projected under τ and read as a stub, and the hinge
-// missing a face read proven along its whole metre. Slack 2δ, not 2τ: a
-// stand-in's reach in axis units let the sliver partner the hinge's first
-// 0.37 mm from more than τ past its end along it; measured along the edge
-// (row 1d), it no longer does.
+// A hinge missing a face reads unproven even when its cluster axis lies
+// across it. One 0.7 mm edge merges the hinge into a cluster whose axis lies
+// across the hinge, so every hinge edge projects under τ, and the whole
+// metre must still read unproven. Slack is 2δ, not 2τ: a stand-in's reach is
+// measured along the edge, so a sliver cannot partner the hinge's first
+// 0.37 mm from more than τ past its end.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_whose_cluster_axis_lies_across_it() {
     let (polygons, dropped, line) = axis_skew_hinge(frame());
     assert_hinge_hole_found(polygons, dropped, line, 2.0 * delta());
 }
 
-// R6. Regression: under the end-stub rule a stub needed only some partner,
-// not one of its own. A face edge broken into 0.4 mm links, every one a
-// stub, shared the one opposite edge left on a hinge missing a face.
+// A chain of sub-τ edges shares no single opposite edge. A face edge broken
+// into 0.4 mm links, each shorter than τ, cannot all pair with the one
+// opposite edge left on a hinge missing a face; each link needs a partner
+// of its own.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_beside_a_chain_of_sub_tau_edges() {
     // Brush 0's top, one loop with a collinear corner every 0.4 mm on the
-    // hinge, fanned from a corner off it.
+    // hinge, triangulated from a corner off it.
     let mut top = vec![DVec3::new(-1.0, 0.0, 0.0)];
     top.extend((0..=2500).map(|k| DVec3::new(0.0, f64::from(k) / 2500.0, 0.0)));
     top.push(DVec3::new(-1.0, 1.0, 0.0));
@@ -43,7 +43,7 @@ fn coverage_proof_reports_a_hinge_missing_a_face_beside_a_chain_of_sub_tau_edges
 }
 
 /// The two same-way faces on a 2 cm hinge, tiled into strips `width` wide,
-/// the bottom's stations `stagger` past the top's. Strip seams a few
+/// the bottom's stations `stagger` past the top's. Strip joints a few
 /// tenths of a millimetre apart link into one cluster, so the cost grows
 /// with the strip count squared.
 fn staggered_hinge(width: f64, stagger: f64) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
@@ -53,19 +53,19 @@ fn staggered_hinge(width: f64, stagger: f64) -> (Vec<Polygon>, usize, (DVec3, DV
     chained_hinge(frame(), LENGTH, top, bottom)
 }
 
-// R6. Regression: both same-way faces on a hinge tiled into 0.4 mm strips,
-// staggered by 0.2 mm, so every piece holds two same-way edges whose ends
-// overlap by under τ, which the seam rule's turning edges never explained.
+// Strips staggered under 1 mm read unproven: both same-way faces on a hinge
+// tiled into 0.4 mm strips, staggered by 0.2 mm, so every piece holds two
+// same-way edges whose ends overlap by under τ.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_beside_staggered_sub_tau_strips() {
     let (polygons, dropped, line) = staggered_hinge(0.0004, 0.0002);
     assert_hinge_hole_found(polygons, dropped, line, 2.0 * delta());
 }
 
-// R6. Regression: 0.98 mm strips staggered by half their width, with a
-// tiny closed box per stagger whose face runs through the hinge, closed
-// every corner the seam rule's fan searched, and the hinge missing a face
-// read proven.
+// Cap boxes cannot hide a missing face: 0.98 mm strips staggered by half
+// their width, with a tiny closed box per stagger whose face runs through
+// the hinge. The boxes close every corner at the staggers, and the hinge
+// missing a face still reads unproven.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_beside_strips_and_cap_boxes() {
     const WIDTH: f64 = 0.00098;
@@ -113,7 +113,7 @@ fn coverage_proof_reports_a_hinge_missing_a_face_beside_strips_and_cap_boxes() {
     assert_hinge_hole_found(polygons, dropped, line, 2.0 * delta());
 }
 
-// R7: strips staggered under δ, wider than 2δ, so each stagger's copies
+// Strips staggered under δ, wider than 2δ, so each stagger's copies
 // weld and the strips' ends coincide. Edge counts, not stagger size, find
 // the face missing from the hinge.
 #[test]
@@ -190,7 +190,7 @@ fn hinged_box(width: f64, first: f64) -> (Vec<Polygon>, [usize; 2], Vec<(DVec3, 
     (polygons, slots, rims)
 }
 
-// R8: the full leak. Both x faces of a box are gone and each of their
+// The full leak. Both x faces of a box are gone and each of their
 // eight rims is a hinge beside staggered strips, so a ray along x crosses
 // the box's solid through faces it lies in. Every rim reads unproven along
 // its length, whether the stagger welds or not.
@@ -222,8 +222,9 @@ fn coverage_proof_reports_every_rim_of_a_box_missing_both_x_faces_beside_strips(
     }
 }
 
-/// The chained hinge with brush 0's x = 0 face R1 replaced by `r1`, loops
-/// in local coordinates.
+/// The chained hinge with brush 0's x = 0 side face replaced by `r1`, loops
+/// in local coordinates. The dropped face is the one `chained_hinge`
+/// removes to make the hole.
 fn hinge_with_r1(
     length: f64,
     r1: Vec<Vec<DVec3>>,
@@ -231,7 +232,7 @@ fn hinge_with_r1(
 ) -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
     let (mut polygons, dropped, line) =
         chained_hinge(frame(), length, top_strips(&[0.0, length]), bottom);
-    // Order −X, +X, …: R1 is brush 0's slot 1.
+    // Order −X, +X, …: the side face is brush 0's slot 1.
     polygons.remove(1);
     let dropped = dropped - 1;
     polygons.extend(
@@ -241,8 +242,8 @@ fn hinge_with_r1(
     (polygons, dropped, line)
 }
 
-// R18: the deficit side as a chain. With D gone, R1 is the hinge's one
-// edge left running −y, its corners every 0.4 mm. Uncapped stand-ins let
+// The deficit side as a chain. With the dropped face gone, the side face
+// is the hinge's one edge left running −y, its corners every 0.4 mm. Uncapped stand-ins let
 // each link's neighbours partner the second +y edge.
 #[test]
 fn coverage_proof_reports_a_hinge_missing_a_face_whose_deficit_side_is_a_chain() {
@@ -263,7 +264,7 @@ fn windows(length: f64, pitch: f64, from: f64, to: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// R1 cut into strips at `strips`, with brush 1's bottom only at `bottom`.
+/// The side face cut into strips at `strips`, with brush 1's bottom only at `bottom`.
 fn slotted_hinge(
     length: f64,
     strips: &[[f64; 2]],
@@ -287,11 +288,11 @@ fn slotted_hinge(
     hinge_with_r1(length, r1, bottom)
 }
 
-// R19: R1 cut into 0.4 mm strips with 0.1 mm slots, brush 1's bottom only
-// at R1's slots, D gone. Uncapped stand-ins let each slot borrow both
+// The side face cut into 0.4 mm strips with 0.1 mm slots, brush 1's bottom
+// only at the side face's slots, the dropped face gone. Uncapped stand-ins let each slot borrow both
 // neighbouring strips. The cap lets a slot lift the −y count only to the
 // one edge present beside it, so one of its two +y edges stays unmatched
-// on every slot; the strips balance, T1 against R1.
+// on every slot; the strips balance, the bottom's edge against the side face's.
 #[test]
 fn coverage_proof_reports_a_hinge_whose_deficit_side_is_slotted() {
     const LENGTH: f64 = 0.02;
@@ -311,11 +312,11 @@ fn coverage_proof_reports_a_hinge_whose_deficit_side_is_slotted() {
     }
 }
 
-// R19, the strips-aligned reading: brush 1's bottom only at R1's strips.
-// Each strip holds two +y edges against R1's one, and the cap lets no −y
-// stand-in in where one −y edge is all that lies within τ, so every strip
-// reads unproven. A slot holds T1 alone, a crack under τ between R1's
-// strips, which their ends close.
+// The strips-aligned reading: brush 1's bottom only at the side face's
+// strips. Each strip holds two +y edges against the side face's one, and
+// the cap lets no −y stand-in in where one −y edge is all that lies within
+// τ, so every strip reads unproven. A slot holds the bottom's edge alone, a
+// crack under τ between the side face's strips, which their ends close.
 #[test]
 fn coverage_proof_reports_a_hinge_whose_deficit_side_is_slotted_beside_strips() {
     const LENGTH: f64 = 0.02;
@@ -334,8 +335,9 @@ fn coverage_proof_reports_a_hinge_whose_deficit_side_is_slotted_beside_strips() 
     }
 }
 
-// R20: D's hinge edge stops 0.3 mm (over δ, under τ) short of R1's at both
-// ends. The copies sit too far apart to weld; D stands in with its stored
+// The dropped face's hinge edge stops 0.3 mm (over δ, under τ) short of the
+// side face's at both ends. The copies sit too far apart to weld; the
+// dropped face stands in with its stored
 // end on each gap, where the −y count dips below the two present within τ,
 // and the gaps are proven as the cracks within τ they are.
 #[test]
@@ -400,7 +402,7 @@ fn fold_comb(s: f64, width: f64, slot: f64) -> (Vec<Polygon>, Vec<(DVec3, DVec3)
     (polygons, rims, n)
 }
 
-// R21: the fold comb. A box missing both x faces, its other faces strips
+// The fold comb. A box missing both x faces, its other faces strips
 // 0.5δ wide with slots over δ and under τ. Each strip's two end corners lie
 // within δ of each other; welding them would fold every strip away and
 // leave nothing to report. The weld refuses a cluster holding two corners

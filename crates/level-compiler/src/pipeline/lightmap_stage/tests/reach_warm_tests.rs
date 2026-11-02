@@ -1,6 +1,6 @@
 //! Reach cull through a warm stage cache on the two-rooms fixture: warm
 //! equals cold, with verify mode re-walking every culled pair past the cache
-//! and, off, the stage served from it (research P3, P5).
+//! and, off, the stage served from it, with the same bytes at any worker count.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use super::reach_bake::{ReachRun, reach_bake_with};

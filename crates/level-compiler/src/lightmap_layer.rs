@@ -38,9 +38,7 @@ pub use cache_keys::{
     LayerKeyContext, layer_input_hash, section_input_hash, validate_cached_lightmap_section,
     validate_layer_partition,
 };
-pub(crate) use chart_cull::{
-    ExactSkips, POSITION_SLACK_PER_METER, chart_may_cover, exact_texel_local,
-};
+pub(crate) use chart_cull::{ExactSkips, chart_may_cover, exact_texel_local};
 #[cfg(test)]
 use chart_walk::bake_light_layer_chart_clipped;
 #[cfg(test)]

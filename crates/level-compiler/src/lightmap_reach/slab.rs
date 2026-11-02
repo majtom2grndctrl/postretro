@@ -4,21 +4,22 @@
 
 use glam::DVec3;
 
-use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims};
+use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
-use crate::lightmap_layer::{POSITION_SLACK_PER_METER, exact_texel_local};
+use crate::lightmap_layer::exact_texel_local;
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::{Aabb, BspChild, BspTree};
 use crate::texel_footprint::TexelFrame;
 
 use super::ChartReach;
+use super::flood::Emitter;
 
 /// Largest distance from 1 of a chart-frame axis's length for the slab to be
 /// built; `shaft_cull`'s limit.
 const FRAME_NORM_LIMIT: f64 = 1.0e-6;
 
 /// Largest `|dot|` between two chart-frame axes; `shaft_cull`'s limit.
-const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
+pub(super) const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
 
 /// Relative slack on the footprint radius: offsets go through `f32` texel
 /// steps along axes within [`FRAME_NORM_LIMIT`] of unit length.
@@ -28,13 +29,19 @@ const RADIUS_SLACK: f64 = 1.0e-5;
 /// product of a near-unit vector.
 const EPSILON_SLACK: f64 = 1.0e-5;
 
-/// Bound, per metre of coordinate magnitude, on how far an `f32` shadow-trace
-/// start lies from its exact position: the texel centre's
-/// [`POSITION_SLACK_PER_METER`], then three `f32` adds (the footprint
-/// offset, the lift, the trace start), each within 2⁻²⁴ of the magnitude.
-const TRACE_START_SLACK_PER_METER: f64 = POSITION_SLACK_PER_METER + 4.0 * 6.0e-8;
+/// Bound, per metre of distance from the world origin, on how far an `f32`
+/// shadow-trace start lies from the exact sum of its `f32` texel centre and
+/// the offsets the walk adds to it. Three `f32` adds place it (the footprint
+/// point, the lift, the trace start), each rounding within 2⁻²⁴ (6e-8) of
+/// its result's length; one more 6e-8 is spare.
+const TRACE_START_SLACK_PER_METER: f64 = 4.0 * 6.0e-8;
 
-/// Absolute slack under that bound, for coordinates near the origin.
+/// Bound, per metre of the chart's coordinates, on the `f64` rounding of a
+/// texel centre's measured drift: a few 2⁻⁵³ (1.1e-16).
+const DRIFT_SLACK_PER_METER: f64 = 1.0e-12;
+
+/// Absolute slack under those bounds: subnormal results, and coordinates
+/// near the origin.
 const TRACE_START_SLACK: f64 = 1.0e-6;
 
 /// How far past a tree plane a slab piece still counts as touching its side:
@@ -47,10 +54,6 @@ const DESCENT_TOLERANCE: f64 = 1.0e-5;
 /// separated: above the `f64` rounding of slab corners and piece vertices.
 const SEPARATION_TOLERANCE: f64 = 1.0e-9;
 
-/// Least clearance, in metres, of the emitter sphere over its `light_size`,
-/// above every rounding of a ray target.
-const EMITTER_SLACK: f64 = 1.0e-3;
-
 /// A box in chart-frame coordinates: `a` along `u_axis`, `b` along `v_axis`,
 /// `c` along the normal, about the chart origin.
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +65,11 @@ pub(super) struct FrameBox {
 /// A chart's frame in `f64` and the slab every texel's shadow-trace starts
 /// lie in, as the walk reconstructs them (`chart_texel_world_position` with
 /// the stored frame, never the face plane).
+///
+/// Each texel's slab sits on its exact affine centre (`exact_texel_local`,
+/// frame height 0), moved by the drift of the walk's `f32` centres from
+/// those: measured over every texel, in frame coordinates, so the slab
+/// rounds only the few `f32` adds the walk makes after the centre.
 ///
 /// A shadow trace from a footprint point starts at `point + normal·ε +
 /// dir·ε` (`segment_clear` skips its first `RAY_EPSILON`), `point` within a
@@ -78,10 +86,9 @@ pub(super) struct ChartFrame {
     dual: [DVec3; 3],
     grid: ChartGrid,
     dims: (i32, i32),
-    /// Half-width of a texel's box on `a` and `b` about its centre.
-    pad: [f64; 2],
-    /// The slab's `c` range.
-    heights: [f64; 2],
+    /// A texel's box about its exact affine centre `(a, b, 0)`: its low and
+    /// high corners' offsets.
+    extent: [DVec3; 2],
 }
 
 impl ChartFrame {
@@ -119,44 +126,68 @@ impl ChartFrame {
         } else {
             0.0
         };
-        let span = |axis: usize| {
-            f64::from(grid.uv_min[axis]).abs() + f64::from(grid.uv_extent[axis]).abs()
+        let dims = chart_interior_dims(chart);
+        let mut frame = Self {
+            origin,
+            axes,
+            dual,
+            grid,
+            dims,
+            extent: [DVec3::ZERO; 2],
         };
-        let magnitude = (origin.abs() + axes[0].abs() * span(0) + axes[1].abs() * span(1))
-            .max_element()
-            + radius
-            + 3.0 * f64::from(RAY_EPSILON);
-        let slack = TRACE_START_SLACK_PER_METER * magnitude + TRACE_START_SLACK;
+        // The walk's centres: their drift from the exact affine centres, in
+        // frame coordinates, and their largest distance from the world
+        // origin.
+        let (mut drift_lo, mut drift_hi) = (DVec3::ZERO, DVec3::ZERO);
+        let mut centre_magnitude = 0.0f64;
+        for ty in 0..dims.1 {
+            for tx in 0..dims.0 {
+                let centre = chart_texel_world_position(chart, tx, ty).as_dvec3();
+                let drift = frame.frame_coords(centre)
+                    - DVec3::new(frame.local(0, tx), frame.local(1, ty), 0.0);
+                if !drift.is_finite() {
+                    return None;
+                }
+                drift_lo = drift_lo.min(drift);
+                drift_hi = drift_hi.max(drift);
+                centre_magnitude = centre_magnitude.max(centre.length());
+            }
+        }
+        // Every start lies within a footprint radius and two `RAY_EPSILON`s
+        // of its centre, so this bounds the length of every `f32` sum the
+        // walk rounds after the centre.
+        let magnitude = centre_magnitude + radius + 3.0 * f64::from(RAY_EPSILON);
+        let span = |axis: usize| {
+            f64::from(frame.grid.uv_min[axis]).abs() + f64::from(frame.grid.uv_extent[axis]).abs()
+        };
+        let coordinates = origin.length() + span(0) + span(1) + centre_magnitude;
+        let slack = TRACE_START_SLACK_PER_METER * magnitude
+            + DRIFT_SLACK_PER_METER * coordinates
+            + TRACE_START_SLACK;
         let epsilon = f64::from(RAY_EPSILON) * (1.0 + EPSILON_SLACK);
         let radius_slack = radius * RADIUS_SLACK;
         let in_plane =
             |axis: usize| radius + radius_slack + (epsilon + slack) * dual[axis].length();
         let height_slack = slack * dual[2].length() + radius_slack;
+        let pad = DVec3::new(in_plane(0), in_plane(1), 0.0);
         let lowest = f64::from(RAY_EPSILON) * (1.0 - EPSILON_SLACK) - height_slack;
         let highest = epsilon * (1.0 + dual[2].length()) + height_slack;
-        let frame = Self {
-            origin,
-            axes,
-            dual,
-            dims: chart_interior_dims(chart),
-            grid,
-            pad: [in_plane(0), in_plane(1)],
-            heights: [lowest, highest],
-        };
-        let finite = frame.dual.iter().all(|d| d.is_finite())
-            && frame.pad.iter().all(|p| p.is_finite())
-            && frame.heights.iter().all(|h| h.is_finite());
+        frame.extent = [
+            drift_lo - pad + DVec3::Z * lowest,
+            drift_hi + pad + DVec3::Z * highest,
+        ];
+        let finite =
+            frame.dual.iter().all(|d| d.is_finite()) && frame.extent.iter().all(|e| e.is_finite());
         finite.then_some(frame)
     }
 
     /// Whether every emitter target lies above the whole slab in frame
     /// height, so every shadow trace climbs from its lifted origin and its
-    /// start stays in `[ε, 2ε]` up to rounding. `centre` is the light's
-    /// `f32` origin.
-    pub(super) fn emitter_clears(&self, centre: DVec3, size: f64) -> bool {
-        let height = self.dual[2].dot(centre - self.origin);
-        let lowest = height - self.dual[2].length() * (size + EMITTER_SLACK);
-        lowest >= self.heights[1]
+    /// start stays in `[ε, 2ε]` up to rounding.
+    pub(super) fn emitter_clears(&self, emitter: Emitter) -> bool {
+        let height = self.dual[2].dot(emitter.centre - self.origin);
+        let lowest = height - self.dual[2].length() * emitter.target_radius();
+        lowest >= self.extent[1].z
     }
 
     fn local(&self, axis: usize, texel: i32) -> f64 {
@@ -164,10 +195,10 @@ impl ChartFrame {
     }
 
     fn texel_box(&self, tx: i32, ty: i32) -> FrameBox {
-        let (a, b) = (self.local(0, tx), self.local(1, ty));
+        let centre = DVec3::new(self.local(0, tx), self.local(1, ty), 0.0);
         FrameBox {
-            lo: DVec3::new(a - self.pad[0], b - self.pad[1], self.heights[0]),
-            hi: DVec3::new(a + self.pad[0], b + self.pad[1], self.heights[1]),
+            lo: centre + self.extent[0],
+            hi: centre + self.extent[1],
         }
     }
 
@@ -237,8 +268,10 @@ impl ChartFrame {
 
     /// The chart's open leaves and per-texel mask: one descent of the chart
     /// slab through the tree, then each texel's box tested against every
-    /// closed piece the descent found.
-    pub(super) fn reach(&self, tree: &BspTree, closed: &[bool]) -> ChartReach {
+    /// closed piece the descent found. `None` when it finds no leaf: every
+    /// slab lies in some leaf, so an empty set means the search lost it, and
+    /// a pair culled on it would skip every texel.
+    pub(super) fn reach(&self, tree: &BspTree, closed: &[bool]) -> Option<ChartReach> {
         let mut open_leaves = Vec::new();
         let mut pieces = Vec::new();
         if !tree.nodes.is_empty() {
@@ -255,6 +288,9 @@ impl ChartFrame {
                 },
             );
         }
+        if open_leaves.is_empty() && pieces.is_empty() {
+            return None;
+        }
         open_leaves.sort_unstable();
         open_leaves.dedup();
         let (width, height) = self.dims;
@@ -262,11 +298,11 @@ impl ChartFrame {
         for piece in &pieces {
             self.mark_traced(piece, &mut traced);
         }
-        ChartReach {
+        Some(ChartReach {
             open_leaves,
             width,
             traced,
-        }
+        })
     }
 
     /// Mark every texel whose box `piece` does not provably miss.
@@ -291,8 +327,8 @@ impl ChartFrame {
                     - 0.5
                     - f64::from(grid.origin[axis])
             };
-            let first = index(lo[axis] - self.pad[axis]).floor() - 1.0;
-            let last = index(hi[axis] + self.pad[axis]).ceil() + 1.0;
+            let first = index(lo[axis] - self.extent[1][axis]).floor() - 1.0;
+            let last = index(hi[axis] - self.extent[0][axis]).ceil() + 1.0;
             let first = first.clamp(0.0, f64::from(count - 1)) as i32;
             let last = last.clamp(0.0, f64::from(count - 1)) as i32;
             first..=last

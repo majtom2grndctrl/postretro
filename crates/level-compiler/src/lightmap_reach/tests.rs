@@ -2,6 +2,8 @@
 // masks on the two-rooms fixtures.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
+use super::closed_leaves;
+use super::slab::ChartFrame;
 use super::test_fixtures::{
     ReachFixture, Wall, chart_inside, point_light, room_a_centre, room_b, room_b_centre,
 };
@@ -9,6 +11,7 @@ use crate::chart_raster::{chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::Chart;
 use crate::lightmap_layer::chart_may_cover;
 use crate::map_data::MapLight;
+use crate::partition::BspTree;
 use crate::texel_footprint::TexelFrame;
 
 /// The fixtures' lightmap density: coarse, so charts stay small.
@@ -168,4 +171,23 @@ fn reach_index_never_culls_a_sun_or_a_light_in_solid() {
         (0..atlas.charts.len())
             .all(|c| (0..2).all(|light| index.culled_chart(light, c, &atlas.charts[c]).is_none()))
     );
+}
+
+// A slab whose descent touches no leaf keeps its pairs: an empty leaf set
+// would otherwise read as unreached and skip every texel. A tree with no
+// nodes stands in for a descent that finds none.
+#[test]
+fn reach_keeps_a_chart_whose_slab_touches_no_leaf() {
+    let fixture = ReachFixture::two_rooms(Wall::Solid);
+    let light = room_a_light();
+    let atlas = fixture.atlas(std::slice::from_ref(&light), DENSITY);
+    let (_, chart) = far_room_charts(&atlas.charts, &light)[0];
+    let frame = ChartFrame::new(chart, true).expect("an orthonormal frame");
+    let leafless = BspTree {
+        nodes: Vec::new(),
+        leaves: Vec::new(),
+    };
+    assert!(frame.reach(&leafless, &[]).is_none());
+    let closed = closed_leaves(fixture.tree(), fixture.exterior());
+    assert!(frame.reach(fixture.tree(), &closed).is_some());
 }

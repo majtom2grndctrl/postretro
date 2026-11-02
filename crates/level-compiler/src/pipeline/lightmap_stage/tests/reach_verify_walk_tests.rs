@@ -1,8 +1,8 @@
 //! Reach cull walk order on the two-rooms fixture: verify mode's re-walk is a
-//! kept pair's production walk (research P1), a culled pair's work stays in
-//! one permit and one progress unit (P2), and a texel traced after a run of
+//! kept pair's production walk, a culled pair's work stays in one permit and
+//! one progress unit, and a texel traced after a run of
 //! skipped ones records what the unculled walk and a brute-force trace do
-//! though the remembered occluders differ (P4).
+//! though the remembered occluders differ.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use std::sync::atomic::AtomicUsize;
@@ -52,7 +52,7 @@ fn by_face(stats: &SkipStats) -> std::collections::BTreeMap<usize, Vec<ChartTall
     faces
 }
 
-// P1: verify mode re-walks each culled pair with the shaft cull and the clip
+// Verify mode re-walks each culled pair with the shaft cull and the clip
 // pre-pass on and both occluder caches empty at its first texel, exactly as
 // production walks a kept pair: each tile's shaft tests and traced segments
 // equal those of the bake with only the reach cull off, and so does every
@@ -99,7 +99,7 @@ fn reach_verify_rewalks_a_culled_pair_as_production_walks_a_kept_pair() {
     assert!(shaft_tests > 0, "the re-walks take the shaft cull");
 }
 
-// P2: verify mode on, one governor permit, four threads: the two rooms bake
+// Verify mode on, one governor permit, four threads: the two rooms bake
 // to completion. Every admission is the thread's only permit; each culled
 // pair's walk, its re-walk and its chart's mask build run holding exactly
 // one; the re-walk starts with progress where the culled walk started it;
@@ -209,7 +209,7 @@ fn brute_force_visibility(
     )
 }
 
-// P4: inside a culled pair, a texel traced right after a run of skipped ones
+// Inside a culled pair, a texel traced right after a run of skipped ones
 // meets a remembered occluder the unculled walk does not hold there, since
 // skipped texels write none. Its record equals the unculled walk's and a
 // brute-force trace of every triangle. The wall is built of 4 x 4 brushes,

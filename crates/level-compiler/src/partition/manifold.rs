@@ -1,5 +1,6 @@
-// Watertightness diagnostic: flags open edges in the emitted world-face set so
-// dropped-face holes surface at compile time instead of in-game.
+// Edge-parity watertightness diagnostic (info-level): odd-covered edge spans in
+// the emitted world-face set. Not a hole test: parity flags spans that are not
+// holes, and its weld hides narrow cracks. The coverage proof owns hole warnings.
 // See: context/lib/build_pipeline.md §PRL Compilation
 //
 // The faces emitted by `extract_faces` are the boundary of the solid point-set:
@@ -7,9 +8,10 @@
 // outward-facing shell. The topological boundary of a solid is a closed
 // 2-manifold, so along every line in space the surface covers each point an even
 // number of times (0, or 2 where two faces meet, 4 at a brush hinge). A point
-// covered an ODD number of times is an open boundary — the signature of a face
-// the clipper dropped. This runs on the pre-exterior-cull face set on purpose:
-// after culling, the legitimately-open outer shell would swamp the real holes.
+// covered an ODD number of times is an open boundary — usually the signature of
+// a face the clipper dropped, though not always. This runs on the pre-exterior-
+// cull face set on purpose: after culling, the legitimately-open outer shell
+// would swamp the odd-covered spans worth looking at.
 //
 // Why per-line coverage and not a plain shared-edge count: BSP face extraction is
 // inherently T-junction dense — a long floor edge is routinely opposed by two
@@ -22,7 +24,7 @@
 // check needs no assumption about consistent face winding.
 //
 // Diagnostic only — never fails the build. A compiler bug must not halt a level
-// designer; it must be visible so it can be fixed.
+// designer; the finding is logged so it can still be investigated.
 
 use std::collections::HashMap;
 
@@ -48,7 +50,8 @@ const MIN_EDGE_LEN: f64 = 1e-6;
 /// Open spans shorter than this are ignored as clip/quantization noise rather
 /// than reported as holes, in meters. A hole you can see through is far larger.
 const MIN_OPEN_SPAN: f64 = 1e-3;
-/// Max open-edge locations to surface. A holed map can produce many open spans;
+/// Max open-edge locations to surface. Re-exported as `OPEN_EDGE_SAMPLE_CAP`,
+/// it also caps the coverage proof's hole-warning samples. A holed map can produce many open spans;
 /// the count conveys severity, the samples convey where to look.
 pub const MAX_SAMPLES: usize = 12;
 
@@ -111,8 +114,8 @@ impl WatertightReport {
 ///
 /// Pass the `faces` from `PartitionResult` *before* exterior culling. Groups
 /// every face edge by its supporting line, then walks each line looking for
-/// sub-intervals covered an odd number of times — those are open boundaries
-/// (dropped faces). T-junctions cancel because the interior surface is still
+/// sub-intervals covered an odd number of times — those are open boundaries,
+/// usually a dropped face but possibly spans that are not holes. T-junctions cancel because the interior surface is still
 /// fully covered there. Deterministic: coverage is order-independent and sampled
 /// locations are sorted before truncation.
 pub fn check_watertight(faces: &[Face]) -> WatertightReport {

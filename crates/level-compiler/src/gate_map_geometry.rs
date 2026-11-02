@@ -1,7 +1,6 @@
 // Gate-map geometry harness: the pre-cut and post-cut geometry the bake tracers trace, built by the pipeline's own stage functions.
+// Shared by the ray-traversal census tests and the coverage-proof gate-map tests.
 // See: context/lib/build_pipeline.md §Ray traversal
-
-#![cfg(test)]
 
 use std::time::{Duration, Instant};
 

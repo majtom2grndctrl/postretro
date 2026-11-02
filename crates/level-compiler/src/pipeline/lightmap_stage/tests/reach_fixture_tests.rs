@@ -222,6 +222,36 @@ fn reach_culls_a_far_room_brush_top_whose_slab_overhangs_into_solid() {
     }
 }
 
+// --- far from the world origin ---------------------------------------------
+
+// The two rooms moved 300 m and 1 km along one axis, the light in room A:
+// room B's pairs are culled and skip as many texels as at the world origin,
+// with bytes equal to the unculled bake's at both floor settings, verify
+// mode on. The slab's rounding slack grows with the coordinates; a bound
+// loose enough to reach the brush under each face traces every texel.
+#[test]
+fn reach_skips_far_room_texels_a_kilometre_from_the_world_origin() {
+    let counts_at = |metres: f64| {
+        let offset = [metres / UNIT, 0.0, 0.0];
+        let fixture = ReachFixture::compile(&Rooms::STANDARD.world_at(Wall::Solid, offset), &[]);
+        let lights = [point_light(engine([128.0 + offset[0], 128.0, 64.0]), 6.0)];
+        assert_exact_at_both_floors(&fixture, &lights)
+    };
+    let near = counts_at(0.0);
+    for metres in [300.0, 1000.0] {
+        for ((floor, far), near) in [true, false].into_iter().zip(counts_at(metres)).zip(near) {
+            eprintln!("{metres} m, floor {floor}: {far:?}");
+            assert!(
+                far.culled > 0
+                    && far.skipped > 0
+                    && (far.culled, far.skipped, far.traced_in_culled)
+                        == (near.culled, near.skipped, near.traced_in_culled),
+                "{metres} m, floor {floor}: {far:?}; at the origin {near:?}"
+            );
+        }
+    }
+}
+
 // --- a mover in the doorway --------------------------------------------------
 
 /// A sliding door: a `kinematic_mover` brush filling the standard doorway at

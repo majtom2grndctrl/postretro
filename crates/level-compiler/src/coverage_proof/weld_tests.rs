@@ -33,7 +33,7 @@ fn weld_radius_is_at_most_a_quarter_of_the_tracer_tolerance() {
     assert!(WELD_RADIUS_METERS <= f64::from(TRACER_TOLERANCE_METERS) / 4.0);
 }
 
-// R1: the movement-feel corners. A wall line meets a beam's flat bottom and
+// The movement-feel corners. A wall line meets a beam's flat bottom and
 // sloped face, and the wall's, the bottom's and the sloped face's copies of
 // the corner land micrometres apart along the line, leaving an overlap.
 // The copies weld into one vertex and the overlap is gone.
@@ -48,7 +48,7 @@ fn coverage_proof_proves_an_overlap_at_a_corner_whose_copies_weld() {
     );
 }
 
-// R2: without the sloped face, the corner's copies still weld, and the face
+// Without the sloped face, the corner's copies still weld, and the face
 // missing from the corner is open along each of its rims.
 #[test]
 fn coverage_proof_reports_a_corner_missing_its_closing_face() {
@@ -74,7 +74,7 @@ fn coverage_proof_reports_a_corner_missing_its_closing_face() {
     );
 }
 
-// R3, negative control: with the weld off, the same closed corner's copies
+// Negative control: with the weld off, the same closed corner's copies
 // leave their overlap unproven. Nothing else closes it.
 #[test]
 fn coverage_proof_without_the_weld_reports_the_overlap_at_a_closed_corner() {
@@ -87,7 +87,7 @@ fn coverage_proof_without_the_weld_reports_the_overlap_at_a_closed_corner() {
     );
 }
 
-// R4: copies just under δ apart weld, and just over δ apart do not. Near
+// Copies just under δ apart weld, and just over δ apart do not. Near
 // the origin, so `f32` storage keeps the distance well inside the margin.
 #[test]
 fn coverage_proof_welds_copies_just_under_delta_apart_and_not_just_over() {
@@ -125,7 +125,7 @@ fn coverage_proof_welds_copies_just_under_delta_apart_and_not_just_over() {
     }
 }
 
-// R5: three copies at c, c + 0.6δ and c + 1.2δ link pair by pair into one
+// Three copies at c, c + 0.6δ and c + 1.2δ link pair by pair into one
 // cluster 1.2δ wide. It is refused, so the overlap stays unproven, the same
 // in every order of the three faces.
 #[test]
@@ -206,7 +206,7 @@ fn split_crease_box(lift: f64, copy: f64) -> Vec<Polygon> {
     polygons
 }
 
-// R9: a crease crack just under τ wide whose crack edges are split mid-way,
+// A crease crack just under τ wide whose crack edges are split mid-way,
 // their copies δ/2 apart along the line. The copies weld and the crack is
 // proven: distances read stored geometry with the full τ, no δ off it.
 #[test]
@@ -219,7 +219,7 @@ fn coverage_proof_proves_a_crease_crack_under_tau_with_welded_copies() {
     );
 }
 
-// R10: the same crack just over τ is a hole along its creases (P6).
+// The same crack just over τ is a hole along its creases.
 #[test]
 fn coverage_proof_reports_a_crease_crack_over_tau_with_welded_copies() {
     let report = prove(&split_crease_box(1.01 * tau(), 0.5 * delta()));
@@ -244,7 +244,7 @@ fn coverage_proof_reports_a_crease_crack_over_tau_with_welded_copies() {
     }
 }
 
-// R11: a gap τ + 0.9δ wide between two edges, each of whose corners has a
+// A gap τ + 0.9δ wide between two edges, each of whose corners has a
 // copy 0.95δ toward the other edge. The copies weld and represent their
 // clusters, so the welded edges lie τ − δ apart; the stored ones do not,
 // and the gap is a hole. Axis-aligned across x = 0, so every copy, nearer
@@ -302,7 +302,7 @@ fn coverage_proof_measures_stored_corners_not_their_weld_representatives() {
     }
 }
 
-// R12, a cost: across a crack 3δ wide, one side is two same-way edges whose
+// A cost: across a crack 3δ wide, one side is two same-way edges whose
 // ends overlap 0.2δ along the line, their corners 1.5δ apart across it, too
 // far to weld. The overlap holds two edges against one, and the cap lets
 // no stand-in lift the one, so it reads unproven; the rest of the crack is
@@ -366,7 +366,7 @@ fn reversed_vertices(geometry: &GeometryResult) -> GeometryResult {
     out
 }
 
-// R13 (P8): the hinge's four faces in all 24 orders, its vertex buffer in
+// The hinge's four faces in all 24 orders, its vertex buffer in
 // two orders, and the whole hinge translated far off the origin: the same
 // verdict and the same spans, up to the translation, intact and with one
 // face removed.
@@ -440,7 +440,7 @@ fn sliver_top() -> (Vec<Polygon>, usize, (DVec3, DVec3)) {
     (polygons, 3, edge)
 }
 
-// R14: a sliver 0.5δ wide between two neighbours proves; without one
+// A sliver 0.5δ wide between two neighbours proves; without one
 // neighbour, the stretch beside it is open along its metre.
 #[test]
 fn coverage_proof_proves_a_sliver_between_neighbours_and_not_beside_a_missing_one() {
@@ -457,7 +457,7 @@ fn coverage_proof_proves_a_sliver_between_neighbours_and_not_beside_a_missing_on
     );
 }
 
-// R15: two closed boxes corner to corner, their corners 0.5δ apart, weld
+// Two closed boxes corner to corner, their corners 0.5δ apart, weld
 // there and prove; the second box's far face, a metre away, dropped, is
 // open along all four rims.
 #[test]
@@ -498,7 +498,7 @@ fn coverage_proof_welds_boxes_corner_to_corner_and_finds_a_face_dropped_a_metre_
     }
 }
 
-// R22, a cost: the wall's upper face has a T-junction corner of its own
+// A cost: the wall's upper face has a T-junction corner of its own
 // within δ of its corner copy, beside the bottom's copy. The cluster holds
 // two corners of one triangle, so it is refused, and the overlap stays
 // unproven.

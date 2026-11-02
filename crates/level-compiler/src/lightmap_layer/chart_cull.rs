@@ -18,7 +18,10 @@ use super::skip_stats::SkipStats;
 /// Production takes every skip; tests turn them off, through the partition
 /// window, the chart walk's argument or the test-only face walk's
 /// (`bake_light_layer_controlled`), to check the skipped bake against the
-/// full one. No flag, env var or cache key holds this.
+/// full one. No flag, env var or cache key holds this. The one env var nearby,
+/// `POSTRETRO_LIGHTMAP_REACH_VERIFY`, does not switch a skip: it only makes
+/// the reach cull re-walk the pairs it culled to check them, and the cull
+/// stays on whether it is set or not.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ExactSkips {
     /// Planning drops a `(light, chart)` pair [`chart_may_cover`] rules out.

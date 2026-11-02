@@ -73,28 +73,35 @@ impl Rooms {
 
     /// The two rooms' world brushes.
     pub(crate) fn world(self, wall: Wall) -> Vec<String> {
+        self.world_at(wall, [0.0; 3])
+    }
+
+    /// The two rooms' world brushes, moved `offset` map units.
+    pub(crate) fn world_at(self, wall: Wall, offset: [f64; 3]) -> Vec<String> {
+        let at = |q: [f64; 3]| [q[0] + offset[0], q[1] + offset[1], q[2] + offset[2]];
+        let brush = |min: [f64; 3], max: [f64; 3]| box_brush(at(min), at(max));
         let max = self.max;
-        let mut world = sealed_room([0.0, 0.0, 0.0], max);
+        let mut world = sealed_room(at([0.0, 0.0, 0.0]), at(max));
         let [x0, x1] = self.wall_x;
         let (y_max, z_max) = (max[1], max[2]);
         match wall {
-            Wall::Solid => world.push(box_brush([x0, 0.0, 0.0], [x1, y_max, z_max])),
+            Wall::Solid => world.push(brush([x0, 0.0, 0.0], [x1, y_max, z_max])),
             Wall::Grid(along_y, along_z) => {
                 let (dy, dz) = (y_max / f64::from(along_y), z_max / f64::from(along_z));
                 for j in 0..along_y {
                     for k in 0..along_z {
                         let (y, z) = (f64::from(j) * dy, f64::from(k) * dz);
-                        world.push(box_brush([x0, y, z], [x1, y + dy, z + dz]));
+                        world.push(brush([x0, y, z], [x1, y + dy, z + dz]));
                     }
                 }
             }
             Wall::Opening([y0, y1, z0, z1]) => {
                 if z0 > 0.0 {
-                    world.push(box_brush([x0, 0.0, 0.0], [x1, y_max, z0]));
+                    world.push(brush([x0, 0.0, 0.0], [x1, y_max, z0]));
                 }
-                world.push(box_brush([x0, 0.0, z1], [x1, y_max, z_max]));
-                world.push(box_brush([x0, 0.0, z0], [x1, y0, z1]));
-                world.push(box_brush([x0, y1, z0], [x1, y_max, z1]));
+                world.push(brush([x0, 0.0, z1], [x1, y_max, z_max]));
+                world.push(brush([x0, 0.0, z0], [x1, y0, z1]));
+                world.push(brush([x0, y1, z0], [x1, y_max, z1]));
             }
         }
         world

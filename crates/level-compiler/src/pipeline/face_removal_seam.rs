@@ -1,6 +1,6 @@
 // Test seam: extracted faces a test removes from the traced geometry right
-// after extraction, before the coverage proof and the BVH read it (research
-// P7 of lightmap-reach-cull).
+// after extraction, before the coverage proof and the BVH read it, so the
+// proof and the tracer see the same faces.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
 
 use std::cell::RefCell;
@@ -15,15 +15,22 @@ thread_local! {
 }
 
 /// Run `work` with every face `remove` names taken out of the geometry the
-/// pipeline extracts on this thread.
+/// pipeline extracts on this thread. The previous predicate is restored when
+/// `work` returns or panics.
 pub(crate) fn with_removed_faces<T>(
     remove: impl Fn(&GeometryResult, usize) -> bool + 'static,
     work: impl FnOnce() -> T,
 ) -> T {
-    let previous = REMOVE.with(|cell| cell.replace(Some(Box::new(remove))));
-    let result = work();
-    REMOVE.with(|cell| *cell.borrow_mut() = previous);
-    result
+    struct Restore(Option<RemovePredicate>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            REMOVE.with(|cell| *cell.borrow_mut() = previous);
+        }
+    }
+
+    let _restore = Restore(REMOVE.with(|cell| cell.replace(Some(Box::new(remove)))));
+    work()
 }
 
 /// Collapse every triangle of each face the active predicate names onto its

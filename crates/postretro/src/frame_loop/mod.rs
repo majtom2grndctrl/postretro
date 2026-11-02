@@ -459,6 +459,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
                 false,
                 false,
+                false,
             );
             command.activation.cancel = Some(token);
             let _ = netcode::client_send_input_command_in_registry(
@@ -577,6 +578,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             snapshot.button(Action::Sprint),
             &mut app.sprint_toggle_active,
         );
+        let assist_held = snapshot.button(Action::Assist).is_active();
 
         for tick_index in 0..ticks {
             let forward_axis = snapshot.axis_value(Action::MoveForward);
@@ -679,6 +681,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 false,
                 use_pressed,
                 drop_pressed,
+                assist_held,
             );
             command.select_slot = select_slot;
             let input_tick = netcode::client_peek_next_command_tick(

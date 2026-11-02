@@ -151,6 +151,7 @@ fn neutral_input(camera: &crate::camera::Camera) -> MovementInput {
         false,
         false,
         false,
+        false,
     )
     .movement
 }
@@ -1241,6 +1242,7 @@ fn teleport_same_tick_yaw_reaches_presentation_aims_and_a_remote_start_aim() {
     let mut command = crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
+        false,
         false,
         false,
         false,

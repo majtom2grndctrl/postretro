@@ -439,6 +439,7 @@ impl Level {
             HashMap::new()
         };
         let command = SimCommand {
+            assist_held: false,
             input_tick: self.input_tick,
             movement: MovementInput {
                 wish_dir: glam::Vec2::ZERO,

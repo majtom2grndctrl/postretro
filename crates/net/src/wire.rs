@@ -1088,6 +1088,10 @@ pub struct WireMovementInput {
     /// is a level like `reload`, not a switch edge: a held value survives input-gap
     /// replay and the host resolves it against the pawn's possessed inventory.
     pub firing_slot: u8,
+    /// The client-resolved `assist` level (`WIRE_VERSION` 39). A level like
+    /// `reload`: a gap-held command carries it. The host never derives Use
+    /// from it, nor it from Use.
+    pub assist_held: bool,
 }
 
 /// Wire mirror of the engine `FireButtonState`.
@@ -1654,6 +1658,7 @@ mod tests {
             activation: WireActivationInput::default(),
             client_tick: 4_242,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.5, -0.75],
                 jump_pressed: true,
                 dash_pressed: false,

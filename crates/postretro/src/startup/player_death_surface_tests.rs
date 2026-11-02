@@ -280,6 +280,7 @@ struct Consumer {
 }
 fn command() -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: postretro_physics::movement::MovementInput {
             wish_dir: Vec2::ZERO,

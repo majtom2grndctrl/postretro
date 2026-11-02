@@ -206,8 +206,11 @@ fn engine_defaults_keep_every_legacy_key_mouse_and_button_read() {
             old.scale
         );
     }
+    // `assist` had no pre-command default; its engine default shares Use's
+    // inputs and is not an extra read of the legacy table.
     let current_non_stick = current
         .iter()
+        .filter(|binding| binding.action != Action::Assist)
         .filter(|binding| !matches!(binding.input, PhysicalInput::GamepadAxisHalf(..)))
         .filter(|binding| !is_stick_axis(binding.input))
         .count();

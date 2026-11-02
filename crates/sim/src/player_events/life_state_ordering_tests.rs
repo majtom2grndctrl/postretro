@@ -49,6 +49,7 @@ fn install() -> (World, EntityId, EntityId) {
 
 fn neutral_command() -> crate::sim::SimCommand {
     crate::sim::SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: glam::Vec2::ZERO,

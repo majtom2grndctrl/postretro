@@ -410,8 +410,8 @@ policies govern resolution:
   The give-up after the grace and the post-give-up neutral-walk (the coast toward a stream
   that resumed at a far-future tick) advance the cursor with synthesized neutral input.
   Neutralization clears movement, use, and fire but retains the latest finite aim pitch and
-  facing yaw for remote-avatar presentation. Decided, not yet built: held `assist` is a level a
-  `Held` command keeps and neutralization clears. Only a `Real` command advances assist
+  facing yaw for remote-avatar presentation. Held `assist` is a level a `Held` command keeps
+  and neutralization clears. Decided, not yet built: only a `Real` command advances assist
   progress, so a held tick keeps it and a re-resolved tick counts once. A neutral after the
   grace resets progress as a release does but does not end a completed hold; only a real
   release does. A client that has never sent a command resolves
@@ -1208,7 +1208,7 @@ Mover prediction is phase-seeded and separate from the pawn command-ring predict
 
 A mover's **block reaction** (reverse/stop/crush on contact, and every non-`crush` mover's hold or back-off for a pinned player, `movement.md` §6) is the exception to this pure re-simulation: it depends on entity positions the client does not simulate for remote pawns and enemies, so the host decides and clients reconcile only the result as replicated phase — the stop hold, which a `displace` hold shares, or a reversed course. A client riding into a hold may move for a tick, then settle back where the host holds it. Block policy, auto-close timers, per-victim crush cadence, pin onset memory and the rider-yield warning stay host-only — off the wire and off the content digest.
 
-Trigger volumes are shared baked map data, not replicated state; their armed state never crosses the wire. Clients send a `use_pressed` input bit, and (decided, not yet built) a held `assist` level, with movement input. Only the host evaluates touch/use overlap and fires trigger commands, and only the host records assist completions. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
+Trigger volumes are shared baked map data, not replicated state; their armed state never crosses the wire. Clients send a `use_pressed` input bit and a held `assist` level with movement input. Only the host evaluates touch/use overlap and fires trigger commands, and only the host records assist completions. A fired command mutates replicated mover phase, including its optional target segment, so clients reconcile the resulting motion without ever evaluating the trigger locally.
 
 Teleporters diverge: client prediction reads their armed state, so it replicates. The host registers each installed teleporter for replication at level install. A script `arm` or `disarm` applies on the host only, at the start of its next movement tick. Clients take armed state from replication alone and never clear an arrival latch on an armed change they observe; latches reach them in the pawn record. A joiner's first predictions use installed armed state until each teleporter's payload arrives (§Snapshot apply ordering, Joiner gate).
 

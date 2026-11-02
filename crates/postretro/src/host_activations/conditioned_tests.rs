@@ -69,6 +69,7 @@ fn mandated_link() -> LinkConfig {
 
 fn neutral() -> sim::SimCommand {
     sim::SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: Vec2::ZERO,
@@ -705,6 +706,7 @@ impl Fixture {
             teleport_yaw_stamp: 0.0,
             client_tick: tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: command.movement.wish_dir.to_array(),
                 jump_pressed: false,
                 dash_pressed: false,

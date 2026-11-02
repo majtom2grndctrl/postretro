@@ -1485,6 +1485,7 @@ fn build_sim_command(
     select_pressed: bool,
     use_pressed: bool,
     drop_pressed: bool,
+    assist_held: bool,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
     let sprint = sprint_intent;
@@ -1539,6 +1540,7 @@ fn build_sim_command(
         select_slot,
         use_pressed,
         drop_pressed,
+        assist_held,
     }
 }
 
@@ -8515,6 +8517,7 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: postretro_sim::weapon::FireButtonState {
                 pressed: false,
@@ -9342,6 +9345,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                 )
             })
             .collect();
@@ -9383,6 +9387,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                 )
             })
             .collect();
@@ -9419,6 +9424,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                 )
             })
             .collect();
@@ -9449,7 +9455,7 @@ mod tests {
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
                 build_sim_command(
-                    &snapshot, &camera, false, false, false, false, false, false, false,
+                    &snapshot, &camera, false, false, false, false, false, false, false, false,
                 )
             })
             .collect();
@@ -9485,6 +9491,7 @@ mod tests {
                     false,
                     false,
                     drop_pressed,
+                    false,
                 )
             })
             .collect();
@@ -9514,6 +9521,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9555,6 +9563,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9643,6 +9652,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9716,6 +9726,7 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: postretro_sim::weapon::FireButtonState {
                 pressed: false,
@@ -9982,6 +9993,7 @@ mod tests {
             crouch: true,
             magazine: true,
             secondary: true,
+            assistable: true,
         };
         let table = EffectiveTable::build(&author, &Default::default(), facts, false);
         let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);

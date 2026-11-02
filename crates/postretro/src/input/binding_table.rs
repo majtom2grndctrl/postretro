@@ -510,7 +510,7 @@ fn engine_slots(command: Command, class: DeviceClass) -> Vec<(AuthorBinding, Bin
             (
                 AuthorBinding {
                     input: *input,
-                    activator: Activator::PRESS,
+                    activator: command.default_activator(),
                 },
                 BindingOrigin::Engine,
             )

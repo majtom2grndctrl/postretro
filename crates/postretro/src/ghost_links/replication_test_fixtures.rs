@@ -222,6 +222,7 @@ fn neutral_input() -> MovementInput {
         false,
         false,
         false,
+        false,
     )
     .movement
 }

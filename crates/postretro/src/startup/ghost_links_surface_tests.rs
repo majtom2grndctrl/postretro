@@ -598,6 +598,7 @@ impl Level {
             use_edges.insert(PlayerId::Remote(PARTNER_CLIENT), true);
         }
         let command = SimCommand {
+            assist_held: false,
             input_tick: self.input_tick,
             movement: MovementInput {
                 wish_dir: glam::Vec2::ZERO,

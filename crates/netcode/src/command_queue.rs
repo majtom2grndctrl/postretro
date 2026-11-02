@@ -32,6 +32,8 @@ use postretro_entities::{EntityId, EntityRegistry};
 
 mod activation_admission;
 mod activation_cadence;
+#[cfg(test)]
+mod assist_level_tests;
 mod departed_weapons;
 mod press_edges;
 mod switch_lane;
@@ -1080,11 +1082,12 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
         select_slot: None,
         use_pressed: false,
         drop_pressed: false,
+        assist_held: false,
     }
 }
 
-/// Carry movement and reload across a packet gap without inventing an activation
-/// start or use/drop press. Committed shots advance on their own fixed-tick clock;
+/// Carry movement, reload and the `assist` level across a packet gap without
+/// inventing an activation start or use/drop press. Committed shots advance on their own fixed-tick clock;
 /// retained starts and release/cancel edges are delivered separately. Reload's
 /// weapon-owned press latch prevents the carried level from restarting a reload;
 /// a non-advancing hold also forces the level low while a due reload press is
@@ -1127,6 +1130,7 @@ mod tests {
             activation: postretro_net::wire::WireActivationInput::default(),
             client_tick,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, wish_forward],
                 jump_pressed: false,
                 dash_pressed: false,

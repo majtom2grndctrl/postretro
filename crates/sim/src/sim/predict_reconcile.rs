@@ -47,6 +47,7 @@ pub(crate) struct PrototypeCommand {
 impl PrototypeCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,

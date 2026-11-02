@@ -562,6 +562,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         let events = postretro_sim::sim::run_host_movement_tick(
             &mut registry,
@@ -611,6 +612,7 @@ mod tests {
                 let command = crate::build_sim_command(
                     &crate::input::ActionSnapshot::neutral(),
                     &camera,
+                    false,
                     false,
                     false,
                     false,

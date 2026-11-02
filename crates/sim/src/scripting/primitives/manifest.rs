@@ -408,6 +408,10 @@ const COMMAND_IDS: &[(&str, &str)] = &[
         "Crouch. Accepts `press` or `hold`. Relevant only when a movement descriptor declares crouch.",
     ),
     ("use", "Use or interact."),
+    (
+        "assist",
+        "Assist a teammate (revive). Accepts `press` or `hold`; the engine default is `hold` on Use's inputs. Relevant only when a life state declares `assistable`.",
+    ),
     ("drop", "Drop the wielded item."),
     ("shoot", "Primary fire. Accepts only `press`."),
     (

@@ -245,3 +245,123 @@ fn the_controls_panel_lists_dash_from_the_registry_before_any_level_loads() {
         );
     }
 }
+
+// --- `assist` relevance (E18 revive-assist AC7, AC8) ---
+
+fn life_states(assistable: bool) -> postretro_entities::data_descriptors::LifeStatesDescriptor {
+    use postretro_foundation::{Assistable, LifeStateProfile};
+    postretro_entities::data_descriptors::LifeStatesDescriptor {
+        initial: "alive".into(),
+        states: [
+            ("alive".to_string(), LifeStateProfile::default()),
+            (
+                "down".to_string(),
+                LifeStateProfile {
+                    assistable: assistable.then(Assistable::default),
+                    ..LifeStateProfile::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        rejoin: Default::default(),
+        state_ids: Default::default(),
+        table_revision: 0,
+    }
+}
+
+#[test]
+fn assist_is_relevant_exactly_when_a_loaded_life_state_declares_assistable() {
+    let mut plain = entity("plain");
+    plain.life_states = Some(life_states(false));
+    assert!(!registry_facts(&[plain.clone(), entity("none")]).assistable);
+    let mut reviver = entity("reviver");
+    reviver.life_states = Some(life_states(true));
+    assert!(registry_facts(&[plain, reviver]).assistable);
+}
+
+#[test]
+fn host_tuning_life_state_profiles_make_assist_relevant_in_co_op() {
+    let mut tuning = tuning_with_dash();
+    assert!(!tuning_facts(&tuning).assistable);
+    tuning.life_state_profiles = vec![(
+        1,
+        postretro_foundation::LifeStateProfile {
+            assistable: Some(Default::default()),
+            ..Default::default()
+        },
+    )];
+    let facts = tuning_facts(&tuning);
+    assert!(facts.assistable && facts.dash, "the other facts survive");
+    assert!(registry_facts(&[]).union(facts).assistable);
+}
+
+/// Install `pawn` as the mod's only entity type in a fresh session and run the
+/// Input stage's refresh, as the first gameplay frame does before it reads a
+/// snapshot.
+fn session_after_first_refresh(pawn: EntityTypeDescriptor) -> crate::App {
+    let mut app = crate::app::controls_panel::tests::test_app();
+    app.session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .script_ctx
+        .data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![pawn]);
+    app.refresh_effective_bindings();
+    app
+}
+
+#[test]
+fn irrelevant_assist_session_first_gameplay_frame_fires_use_on_press() {
+    use crate::input::{Action, ButtonState};
+    use winit::keyboard::KeyCode;
+    // The boot seed is relevance-blind: on it, Use on E would wait for a
+    // release beside the engine `hold`. The refresh replaces it first.
+    let mut boot = InputSystem::new(default_bindings());
+    boot.handle_keyboard_event_at(KeyCode::KeyE, true, 0.0);
+    assert_eq!(
+        boot.snapshot_at(0.01).button(Action::Use),
+        ButtonState::Inactive
+    );
+
+    let mut pawn = entity("pawn");
+    pawn.life_states = Some(life_states(false));
+    let mut app = session_after_first_refresh(pawn);
+    let session = app.session.as_mut().unwrap();
+    let rows = crate::app::controls_panel::controls_rows(
+        session.bindings.table(),
+        session.bindings.author(),
+    );
+    assert!(rows.iter().all(|row| row.command != Command::Assist));
+    let input = &mut session.input_system;
+    let t = input.now();
+    input.handle_keyboard_event_at(KeyCode::KeyE, true, t);
+    let snapshot = input.snapshot_at(t + 0.01);
+    assert_eq!(snapshot.button(Action::Use), ButtonState::Pressed);
+    assert!(!snapshot.button(Action::Assist).is_active());
+}
+
+#[test]
+fn relevant_assist_session_lists_assist_and_holds_it_on_key_e() {
+    use crate::input::{Action, ButtonState};
+    use winit::keyboard::KeyCode;
+    let mut pawn = entity("pawn");
+    pawn.life_states = Some(life_states(true));
+    let mut app = session_after_first_refresh(pawn);
+    let session = app.session.as_mut().unwrap();
+    let rows = crate::app::controls_panel::controls_rows(
+        session.bindings.table(),
+        session.bindings.author(),
+    );
+    assert!(rows.iter().any(|row| row.command == Command::Assist));
+    let input = &mut session.input_system;
+    let t = input.now();
+    input.handle_keyboard_event_at(KeyCode::KeyE, true, t);
+    let pending = input.snapshot_at(t + 0.01);
+    assert_eq!(pending.button(Action::Use), ButtonState::Inactive);
+    let held = input.snapshot_at(t + 0.3);
+    assert!(held.button(Action::Assist).is_active());
+    assert_eq!(held.button(Action::Use), ButtonState::Inactive);
+}

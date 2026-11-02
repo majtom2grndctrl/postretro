@@ -5243,6 +5243,7 @@ mod tests {
             teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 0.0],
                 jump_pressed: false,
                 dash_pressed: false,
@@ -5480,6 +5481,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick,
                 movement: wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,

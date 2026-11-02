@@ -69,6 +69,7 @@ fn command(pressed: bool, active: bool) -> sim::SimCommand {
         false,
         false,
         false,
+        false,
     );
     command.fire_button = weapon::FireButtonState { pressed, active };
     command
@@ -1919,6 +1920,7 @@ fn teleporting_shooter() -> crate::App {
         false,
         false,
         false,
+        false,
     )
     .movement
     .facing_yaw;
@@ -1944,6 +1946,7 @@ fn shooter_tick(app: &mut crate::App, tick: u32, fire: bool) -> (Vec3, Vec3, boo
         let mut command = crate::build_sim_command(
             &crate::input::ActionSnapshot::neutral(),
             &app.camera,
+            false,
             false,
             false,
             false,

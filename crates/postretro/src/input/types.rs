@@ -18,6 +18,7 @@ pub enum Action {
     Dash,
     Crouch,
     Use,
+    Assist,
     Drop,
     Shoot,
     AltFire,

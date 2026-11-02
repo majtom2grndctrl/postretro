@@ -123,6 +123,10 @@ pub struct SimCommand {
     /// the full command alongside `use_pressed`; `MovementInput` mirrors it for
     /// the client-prediction input boundary.
     pub drop_pressed: bool,
+    /// The resolved `assist` level, true on every command built while the
+    /// assist binding is down. Read by both runners from here, never from
+    /// `MovementInput`; a gap-held command carries it as a level.
+    pub assist_held: bool,
 }
 
 pub struct PostMovementCommand {
@@ -2331,6 +2335,7 @@ mod tests {
 
     pub(super) fn sim_command(fire: bool, reload: bool) -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,

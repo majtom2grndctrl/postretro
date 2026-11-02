@@ -1359,7 +1359,7 @@ export type AudioProfile = {
   ghost: AudioGhostProfile?,
 }
 
---- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
+--- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `assist`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
 export type CommandId =
   --- Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
   "move_forward"
@@ -1387,6 +1387,8 @@ export type CommandId =
   | "crouch"
   --- Use or interact.
   | "use"
+  --- Assist a teammate (revive). Accepts `press` or `hold`; the engine default is `hold` on Use's inputs. Relevant only when a life state declares `assistable`.
+  | "assist"
   --- Drop the wielded item.
   | "drop"
   --- Primary fire. Accepts only `press`.

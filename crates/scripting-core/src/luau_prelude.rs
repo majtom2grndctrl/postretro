@@ -218,6 +218,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "set",
     "update",
     "when",
+    "assist",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
@@ -412,6 +413,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "set",
     "update",
     "when",
+    "assist",
     "brain",
     "candidate",
     "state",

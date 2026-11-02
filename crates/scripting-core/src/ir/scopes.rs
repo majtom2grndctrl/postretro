@@ -153,6 +153,17 @@ impl StoreScope {
         })
     }
 
+    /// A record's projected IR type and per-owner flag, for the pair read
+    /// table (`ir/pair_scope.rs`).
+    pub(crate) fn store_record(&self, name: &str) -> Option<(Option<IrType>, bool)> {
+        let table = self.ctx.slot_table.borrow();
+        let record = table.get(name)?;
+        Some((
+            Self::project(&record.schema.slot_type),
+            record.schema.per_owner,
+        ))
+    }
+
     fn per_owner_slot(&self, name: &str) -> Option<bool> {
         self.ctx
             .slot_table

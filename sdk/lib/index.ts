@@ -97,6 +97,8 @@ export type {
   PlayerTarget,
   PlayerOwner,
   OwnerToken,
+  Assist,
+  AssistSide,
   TriggerEventDescriptor,
   TriggerEventReaction,
   TriggerEventRule,
@@ -160,6 +162,7 @@ export {
   inLifeState,
   becomes,
   ceases,
+  assist,
 } from "./data_script";
 
 export type {

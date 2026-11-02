@@ -191,6 +191,10 @@ pub(crate) struct Session {
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
     /// Per-level rising-overlap and prompt state for host-authoritative item touch.
     pub(crate) touch_system: crate::sim::touch::TouchSystem,
+    /// Host assist state: the bound `assistable` pair table, rebound with
+    /// player events. Session-owned, beside `touch_system`; a surface
+    /// teardown leaves it, so a suspended world stays live.
+    pub(crate) assist_state: crate::sim::assist::AssistState,
 
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
@@ -789,6 +793,7 @@ impl Session {
             )
             .with_spawn_context(trigger_spawn_context),
             touch_system: crate::sim::touch::TouchSystem::default(),
+            assist_state: crate::sim::assist::AssistState::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
             impact_particle_requests: Vec::new(),

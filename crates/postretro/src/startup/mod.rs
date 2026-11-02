@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod app_dirs;
+#[cfg(test)]
+mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;

@@ -2018,3 +2018,6 @@ mod member_builder_sdk;
 
 #[path = "impact_source_sdk_tests.rs"]
 mod impact_source_sdk;
+
+#[path = "assist_sdk_tests.rs"]
+mod assist_sdk;

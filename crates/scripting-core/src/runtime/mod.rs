@@ -21,3 +21,7 @@ pub use types::{
     ScriptRuntime, ScriptRuntimeConfig, StagedManifestCommitOutcome,
 };
 pub(crate) use types::{validate_mod_manifest_id, validate_mod_manifest_version};
+
+#[cfg(all(test, debug_assertions))]
+#[path = "assist_validation_tests.rs"]
+mod assist_validation_tests;

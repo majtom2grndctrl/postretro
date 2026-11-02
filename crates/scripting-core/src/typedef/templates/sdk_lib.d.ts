@@ -724,14 +724,14 @@
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
   /** The wire owner a `byPlayer` read or write addresses. */
-  export type OwnerToken = "@impact.source" | "@player";
+  export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target";
   export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: OwnerToken; readonly [stateRefValueBrand]: T };
   export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
-  /** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
-  export type PlayerOwner = SourceHandle | PlayerTarget;
+  /** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
+  export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
   /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
   export type PlayerComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
   /** Writable form of `PlayerComputedRef`. */
@@ -797,6 +797,17 @@
   export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
   /** Build a deferred impact-effect group guarded by a Bool expression. */
   export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
+  const assistSideBrand: unique symbol;
+  /** One side of an assist pair expression, evaluated on the host for each helper and target. */
+  export interface AssistSide {
+    readonly [assistSideBrand]: true;
+    /** Whether this side's pawn is in life state `name`. An unknown name rejects the mod at load. */
+    inLifeState(name: string): BoolRef;
+  }
+  /** The two sides an `assistable` `radius` or `holdMs` expression reads: `byPlayer(assist.helper)`, `assist.target.inLifeState(name)`. */
+  export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
+  /** The helper and target of an assist pair, for `assistable.radius` and `assistable.holdMs` expressions. */
+  export const assist: Assist;
 
   // -------------------------------------------------------------------------
   // UI theme helpers. `defineTheme` accepts nested singular token groups and

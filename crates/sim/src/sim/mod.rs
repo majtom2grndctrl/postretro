@@ -1,6 +1,8 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub mod assist;
+pub mod assist_pairs;
 pub mod cpu_stages;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;

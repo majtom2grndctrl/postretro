@@ -92,11 +92,16 @@ impl App {
     }
 
     /// Rebind player events over the active composed set. A recompose keeps
-    /// edge memory for every condition and edge that survives it.
+    /// edge memory for every condition and edge that survives it. The assist
+    /// pair table rebinds here too, replacing the whole table and re-arming
+    /// its fault warnings; a connected client binds nothing.
     pub(crate) fn rebuild_player_events(&mut self, keep_edge_memory: bool) {
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
+        let script_ctx = session.scripting.script_ctx.clone();
+        session.assist_state.rebind(&script_ctx);
+        let session = &*session;
         let previous = std::mem::take(&mut self.player_events);
         self.player_events = postretro_sim::player_events::PlayerEventTable::build(
             &session.scripting.script_ctx,

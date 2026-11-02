@@ -458,6 +458,7 @@ mod tests {
                 "set",
                 "update",
                 "when",
+                "assist",
                 "brain",
                 "candidate",
                 "state",

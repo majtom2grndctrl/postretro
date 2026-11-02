@@ -612,6 +612,23 @@ impl ScriptRuntime {
                     };
                 }
             };
+            // Pair expressions read per-owner store values, which only meet the
+            // descriptors here: bind them against the incoming schemas before
+            // any registry or store change.
+            if let Err(reason) = crate::ir_pair_validation::validate_assistable_expressions(
+                &next_descriptors,
+                &next_store_declarations,
+                &ctx.slot_table.borrow(),
+            ) {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
+            }
             let next_committed_store_slots =
                 crate::store_identity::declaration_slot_names(&next_store_declarations);
             // Keep identity in the same all-or-nothing commit gate as slot

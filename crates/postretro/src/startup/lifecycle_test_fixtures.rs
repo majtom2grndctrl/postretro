@@ -135,6 +135,7 @@ pub(crate) fn test_app() -> App {
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::default(),
             touch_system: crate::sim::touch::TouchSystem::default(),
+            assist_state: crate::sim::assist::AssistState::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
             impact_particle_requests: Vec::new(),

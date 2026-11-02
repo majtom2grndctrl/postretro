@@ -201,6 +201,14 @@ export type LifeStateMovementProfile = {
   posture: LifeStatePosture?,
 }
 
+--- A teammate may assist a pawn in this state. Each field is a literal or a Number expression over `assist.helper` and `assist.target`, evaluated on the host for each pair.
+export type LifeStateAssistable = {
+  --- Reach between pawn origins in metres. A literal must be in (0, 16]; an expression result clamps to 16, and at or below 0 this helper cannot assist this target. Defaults to 1.5.
+  radius: NumberValue?,
+  --- Hold time in milliseconds, rounded up to whole ticks. A literal must be in [0, 60000]; an expression result clamps to 60000, and a negative result holds progress without advancing it. Defaults to 3000.
+  holdMs: NumberValue?,
+}
+
 --- Closed engine capabilities for one author-named player life state. Every boolean defaults to true. Declaring life states hands zero-HP behavior to authored transitions; HP never changes the life state automatically.
 export type LifeStateProfile = {
   --- Movement scaling, abilities and posture. Omission permits full movement.
@@ -221,6 +229,8 @@ export type LifeStateProfile = {
   occupancy: boolean?,
   --- Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior.
   damageable: boolean?,
+  --- A teammate holding `assist` in range revives or otherwise assists this pawn. Omitted: not assistable. `{}` takes every default.
+  assistable: LifeStateAssistable?,
 }
 
 --- Author-named player life states; requires components.movement. Names use the engine ASCII identifier syntax. At most 255 distinct names may appear across the mod. Unknown profile keys reject content.
@@ -2952,15 +2962,16 @@ export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 --- The wire owner a `byPlayer` read or write addresses.
-export type OwnerToken = "@impact.source" | "@player"
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target"
 export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: OwnerToken, __stateRefValueBrand: T? }
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
---- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
---- event's player (`on.player`).
-export type PlayerOwner = SourceHandle | PlayerTarget
+--- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
+--- event's player (`on.player`), or a side of an assist pair expression
+--- (`assist.helper`, `assist.target`).
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide
 --- A per-player engine slot. A plain read means the local player (HUD binds,
 --- crossings, impact policies), or the evaluated player inside a player-event
 --- condition; `byPlayer(on.player)` in a player-event reaction, or
@@ -3058,6 +3069,20 @@ declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: Number
 declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect
 --- Build a deferred impact-effect group guarded by a Bool expression.
 declare function when(cond: BoolRef, effects: {Effect}): GatedEffect
+--- One side of an assist pair expression, evaluated on the host for each
+--- helper and target.
+export type AssistSide = {
+  __assistSideBrand: true,
+  --- Whether this side's pawn is in life state `name`. An unknown name rejects
+  --- the mod at load.
+  inLifeState: (self: AssistSide, name: string) -> BoolRef,
+}
+--- The two sides an `assistable` `radius` or `holdMs` expression reads:
+--- `store.slot:byPlayer(assist.helper)`, `assist.target:inLifeState(name)`.
+export type Assist = { helper: AssistSide, target: AssistSide }
+--- The helper and target of an assist pair, for `assistable.radius` and
+--- `assistable.holdMs` expressions.
+declare assist: Assist
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -3748,6 +3773,8 @@ export type PostretroModule = {
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),
+  --- The helper and target of an assist pair, for `assistable` expressions.
+  assist: Assist,
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

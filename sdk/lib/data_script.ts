@@ -5,11 +5,10 @@
 import type { ComputedRef, Ref } from "./ui/widgets";
 import type { PresentationTemplate } from "./ui/presentation";
 import type { RuntimeValue } from "postretro";
-import { numberNode, boolNode, numberRef, boolRef } from "./util/expression_refs";
+import { numberNode, boolNode, numberRef, boolRef, loweredValue } from "./util/expression_refs";
 import type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 export type { NumberValue, BoolValue, NumberRef, BoolRef, RuntimeExpressionRefs } from "./util/expression_refs";
 import { DISPATCH_PARAMS } from "./data_script/reactions";
-import { PLAYER_TARGET } from "./data_script/commands";
 import type {
   ActivatorsTarget,
   GroupCommand,
@@ -277,12 +276,12 @@ export type StoreDeclaration = {
 };
 
 /** The wire owner a `byPlayer` read or write addresses. */
-export type OwnerToken = "@impact.source" | "@player";
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target";
 /** A ref with an explicit owner token, suitable for owner-addressed read/write lowering. */
 export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { readonly owner: OwnerToken };
 export type OwnerAddressedRef<T> = Ref<T> & { readonly owner: OwnerToken };
-/** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
-export type PlayerOwner = SourceHandle | PlayerTarget;
+/** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
 
 type StoreComputedRef<T> = ComputedRef<T> & {
   byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T>;
@@ -412,6 +411,16 @@ export interface SourceHandle {
   adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
 }
 
+declare const assistSideBrand: unique symbol;
+/** One side of an assist pair expression, evaluated on the host for each helper and target. */
+export interface AssistSide {
+  readonly [assistSideBrand]: true;
+  /** Whether this side's pawn is in life state `name`. An unknown name rejects the mod at load. */
+  inLifeState(name: string): BoolRef;
+}
+/** The two sides an `assistable` `radius` or `holdMs` expression reads: `byPlayer(assist.helper)`, `assist.target.inLifeState(name)`. */
+export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
+
 export type Impact = Readonly<{
   target: TargetHandle;
   source: SourceHandle;
@@ -521,6 +530,21 @@ const impactSource = {
 // Engine state refs' `byPlayer` recognizes the source by this wire spelling.
 Object.defineProperty(impactSource, "__wire", { value: "@impact.source", enumerable: false });
 const IMPACT_SOURCE: SourceHandle = Object.freeze(impactSource) as unknown as SourceHandle;
+
+function assistSide(wire: "@assist.helper" | "@assist.target"): AssistSide {
+  const side = {
+    inLifeState: (name: string) => boolRef({ op: "input", owner: wire, name: `player.inLifeState:${name}` }),
+  };
+  // `byPlayer` recognizes each side by this wire spelling.
+  Object.defineProperty(side, "__wire", { value: wire, enumerable: false });
+  return Object.freeze(side) as unknown as AssistSide;
+}
+
+/** The helper and target of an assist pair, for `assistable.radius` and `assistable.holdMs` expressions. */
+export const assist: Assist = Object.freeze({
+  helper: assistSide("@assist.helper"),
+  target: assistSide("@assist.target"),
+});
 
 const IMPACT: Impact = Object.freeze({
   target: IMPACT_TARGET,
@@ -690,10 +714,28 @@ function lowerLoadoutReferences(descriptor: import("postretro").EntityTypeDescri
   }
 }
 
+/**
+ * Replaces each fluent ref in a life state's `assistable` with its IR: a ref
+ * keeps its node outside the object, so it would not survive serialization.
+ */
+function lowerAssistableReferences(descriptor: import("postretro").EntityTypeDescriptor): void {
+  const states = descriptor.components?.lifeStates?.states;
+  if (states === null || typeof states !== "object") return;
+  for (const profile of Object.values(states)) {
+    const assistable = (profile as { assistable?: unknown } | null)?.assistable;
+    if (assistable === null || typeof assistable !== "object") continue;
+    const fields = assistable as Record<string, unknown>;
+    for (const field of ["radius", "holdMs"]) {
+      if (fields[field] !== undefined) fields[field] = loweredValue(fields[field]);
+    }
+  }
+}
+
 export function defineEntity<T>(
   descriptor: T & import("postretro").EntityTypeDescriptor,
 ): T {
   lowerLoadoutReferences(descriptor);
+  lowerAssistableReferences(descriptor);
   return descriptor;
 }
 
@@ -882,6 +924,11 @@ export function defineStore<const S extends Record<string, StoreSlotSchema>>(
   return handle;
 }
 
+// Owner tokens `byPlayer` accepts, by the `__wire` spelling each owner handle
+// carries. The drift guard in postretro-sim holds this list to the engine's
+// `BY_PLAYER_OWNER_TOKENS`.
+const BY_PLAYER_OWNER_TOKENS: readonly string[] = ["@player", "@impact.source", "@assist.helper", "@assist.target"];
+
 function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): StateRef {
   const ref = { slot, kind };
   Object.defineProperty(ref, "byPlayer", {
@@ -889,11 +936,10 @@ function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): Stat
       if (!perOwner) {
         throw new TypeError(`state slot \`${slot}\` is global and cannot be addressed with byPlayer`);
       }
-      const token = owner === IMPACT_SOURCE
-        ? "@impact.source"
-        : (owner as unknown) === PLAYER_TARGET
-          ? "@player"
-          : "@invalid";
+      const wire = owner !== null && typeof owner === "object"
+        ? (owner as { readonly __wire?: unknown }).__wire
+        : undefined;
+      const token = typeof wire === "string" && BY_PLAYER_OWNER_TOKENS.includes(wire) ? wire : "@invalid";
       return Object.freeze({ slot, kind, owner: token }) as OwnerAddressedRef<unknown>;
     },
     enumerable: false,

@@ -1258,15 +1258,16 @@ export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 --- The wire owner a `byPlayer` read or write addresses.
-export type OwnerToken = "@impact.source" | "@player"
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target"
 export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: OwnerToken, __stateRefValueBrand: T? }
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
---- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
---- event's player (`on.player`).
-export type PlayerOwner = SourceHandle | PlayerTarget
+--- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
+--- event's player (`on.player`), or a side of an assist pair expression
+--- (`assist.helper`, `assist.target`).
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide
 --- A per-player engine slot. A plain read means the local player (HUD binds,
 --- crossings, impact policies), or the evaluated player inside a player-event
 --- condition; `byPlayer(on.player)` in a player-event reaction, or
@@ -1364,6 +1365,20 @@ declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: Number
 declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect
 --- Build a deferred impact-effect group guarded by a Bool expression.
 declare function when(cond: BoolRef, effects: {Effect}): GatedEffect
+--- One side of an assist pair expression, evaluated on the host for each
+--- helper and target.
+export type AssistSide = {
+  __assistSideBrand: true,
+  --- Whether this side's pawn is in life state `name`. An unknown name rejects
+  --- the mod at load.
+  inLifeState: (self: AssistSide, name: string) -> BoolRef,
+}
+--- The two sides an `assistable` `radius` or `holdMs` expression reads:
+--- `store.slot:byPlayer(assist.helper)`, `assist.target:inLifeState(name)`.
+export type Assist = { helper: AssistSide, target: AssistSide }
+--- The helper and target of an assist pair, for `assistable.radius` and
+--- `assistable.holdMs` expressions.
+declare assist: Assist
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and

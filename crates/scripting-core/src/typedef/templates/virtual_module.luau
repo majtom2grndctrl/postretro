@@ -199,6 +199,8 @@ export type PostretroModule = {
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),
+  --- The helper and target of an assist pair, for `assistable` expressions.
+  assist: Assist,
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

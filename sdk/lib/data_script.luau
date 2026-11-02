@@ -499,6 +499,18 @@ export type SourceHandle = {
   adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
 
+--- One side of an assist pair expression, evaluated on the host for each
+--- helper and target.
+export type AssistSide = {
+  __assistSideBrand: true,
+  --- Whether this side's pawn is in life state `name`. An unknown name rejects
+  --- the mod at load.
+  inLifeState: (self: AssistSide, name: string) -> BoolRef,
+}
+--- The two sides an `assistable` `radius` or `holdMs` expression reads:
+--- `store.slot:byPlayer(assist.helper)`, `assist.target:inLifeState(name)`.
+export type Assist = { helper: AssistSide, target: AssistSide }
+
 export type Impact = {
   target: TargetHandle,
   source: SourceHandle,
@@ -566,12 +578,13 @@ export type StoreDeclaration = {
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
-export type OwnerToken = "@impact.source" | "@player"
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target"
 export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: OwnerToken }
 export type OwnerAddressedRef<T> = Ref<T> & { owner: OwnerToken }
---- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
---- event's player (`on.player`).
-export type PlayerOwner = SourceHandle | PlayerTarget
+--- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
+--- event's player (`on.player`), or a side of an assist pair expression
+--- (`assist.helper`, `assist.target`).
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide
 type StoreComputedRef<T> = ComputedRef<T> & {
   byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T>,
 }
@@ -592,13 +605,13 @@ local storeDeclarations = setmetatable({}, { __mode = "k" })
 -- shared dispatch params as `defineReaction`.
 local dataScriptParts = __postretroDataScriptParts
 local DISPATCH_PARAMS = dataScriptParts.reactions.DISPATCH_PARAMS
-local PLAYER_TARGET = dataScriptParts.commands.PLAYER_TARGET
 
 local expressionRefs = __postretroExpressionRefs
 local numberNode = expressionRefs.numberNode
 local boolNode = expressionRefs.boolNode
 local numberRef = expressionRefs.numberRef
 local boolRef = expressionRefs.boolRef
+local loweredValue = expressionRefs.loweredValue
 
 --- Test the evaluated player in player events, or the local player in crossings.
 function DataScriptSdk.inLifeState(name: string): BoolRef
@@ -722,6 +735,24 @@ IMPACT_SOURCE = table.freeze({
     return sentimentImpactEffect("@impact.source", toward, delta)
   end,
 }) :: any
+
+local function assistSide(wire: string): AssistSide
+  return table.freeze({
+    __assistSideBrand = true,
+    -- `byPlayer` recognizes each side by this wire spelling.
+    __wire = wire,
+    inLifeState = function(_self: AssistSide, name: string): BoolRef
+      return boolRef({ op = "input", owner = wire, name = "player.inLifeState:" .. name })
+    end,
+  }) :: any
+end
+
+--- The helper and target of an assist pair, for `assistable.radius` and
+--- `assistable.holdMs` expressions.
+DataScriptSdk.assist = table.freeze({
+  helper = assistSide("@assist.helper"),
+  target = assistSide("@assist.target"),
+}) :: Assist
 
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
@@ -897,8 +928,32 @@ local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
   end
 end
 
+-- Replace each fluent ref in a life state's `assistable` with its IR: a ref
+-- keeps its node outside the table, so it would not survive serialization.
+local function lowerAssistableReferences(descriptor: EntityTypeDescriptor)
+  local components = (descriptor :: any).components
+  if type(components) ~= "table" or type(components.lifeStates) ~= "table" then
+    return
+  end
+  local states = components.lifeStates.states
+  if type(states) ~= "table" then
+    return
+  end
+  for _, profile in pairs(states) do
+    local assistable = if type(profile) == "table" then profile.assistable else nil
+    if type(assistable) == "table" then
+      for _, field in { "radius", "holdMs" } do
+        if assistable[field] ~= nil then
+          assistable[field] = loweredValue(assistable[field])
+        end
+      end
+    end
+  end
+end
+
 function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
   lowerLoadoutReferences(descriptor)
+  lowerAssistableReferences(descriptor)
   return descriptor
 end
 
@@ -1046,6 +1101,11 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
+-- Owner tokens `byPlayer` accepts, by the `__wire` spelling each owner handle
+-- carries. The drift guard in postretro-sim holds this list to the engine's
+-- `BY_PLAYER_OWNER_TOKENS`.
+local BY_PLAYER_OWNER_TOKENS = table.freeze({ ["@player"] = true, ["@impact.source"] = true, ["@assist.helper"] = true, ["@assist.target"] = true })
+
 local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
   local ref = { slot = slot, kind = kind }
   local methods = {
@@ -1053,10 +1113,15 @@ local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): St
       if not perOwner then
         error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
       end
-      local token = if rawequal(owner, IMPACT_SOURCE)
-        then "@impact.source"
-        elseif rawequal(owner, PLAYER_TARGET) then "@player"
-        else "@invalid"
+      -- `pcall`: an opaque SDK target raises on any field it does not serve.
+      local wire = nil
+      if type(owner) == "table" then
+        local ok, value = pcall(function()
+          return (owner :: any).__wire
+        end)
+        wire = if ok then value else nil
+      end
+      local token = if type(wire) == "string" and BY_PLAYER_OWNER_TOKENS[wire] then wire else "@invalid"
       return table.freeze({
         slot = slot,
         kind = kind,

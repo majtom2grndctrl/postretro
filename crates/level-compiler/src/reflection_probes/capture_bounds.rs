@@ -1,4 +1,4 @@
-// Reflection-probe capture bounds: which neighbour holds an excluded hull's exit, and the projection box the leak guard tests.
+// Reflection-probe capture bounds: which neighbour holds an excluded hull's exit, the kept depth a trace carries past it, and the projection box the leak guard tests.
 // See: context/lib/resource_management.md §5.2 (Exclusion)
 
 use glam::{DVec3, Vec3};
@@ -53,11 +53,11 @@ pub(super) enum Held {
 /// meets there (`resource_management.md` §5.2), so taking the guard instead
 /// shows the excluded brush where the capture need not.
 ///
-/// Known limit: kept solid that holds the exit behind the excluded brush
-/// taken is not carried on. Should the ray leave that brush into open
-/// space, beyond its contact, then enter the kept solid through a face CSG
-/// removed against the hull whose exit it held, the re-trace reads through
-/// the solid.
+/// Kept solid that holds the exit behind the excluded brush taken is not
+/// dropped: the trace carries its depth ([`HeldDepth`]), so a ray that
+/// leaves that brush into open space and enters the kept solid through a
+/// face CSG removed against the hull whose exit it held reads no further
+/// than that depth.
 pub(super) fn nearest_held(
     kept: impl IntoIterator<Item = f64>,
     excluded: impl IntoIterator<Item = (f64, usize, f64)>,
@@ -72,6 +72,41 @@ pub(super) fn nearest_held(
         (_, Some((_, slot, leaves))) => Some(Held::Excluded { slot, leaves }),
         (Some(_), None) => Some(Held::Kept),
         (None, None) => None,
+    }
+}
+
+/// How far past a [`HeldDepth`] a read may land and still read at it: τ
+/// along the ray ([`TRACER_TOLERANCE_METERS`]). The depth is measured off the
+/// held brush's `f64` planes, a kept hit's distance off its mesh in `f32`:
+/// this covers the hit distance's rounding (60 µm at 1 km) and the mesh
+/// corners' (15 µm at ±500 m) seen along a ray up to about 88° off the
+/// entry face's normal, and stays a third of [`CONTACT_TOLERANCE_M`], so no
+/// face CSG left behind the depth comes within it.
+pub(super) const HELD_DEPTH_SLACK_M: f64 = TRACER_TOLERANCE_METERS as f64;
+
+/// The least depth of kept solid a trace passed over: a kept neighbour that
+/// held an excluded hull's exit ([`held_at`]) behind the nearer excluded one
+/// [`nearest_held`] took. Past that depth the ray is inside the kept hull,
+/// where CSG removed every face it could meet but the hull's own back
+/// faces, so whatever it reads there, a kept hit, a fill or an exit into
+/// open space, it reads through kept solid: the leak guard. At the depth
+/// itself it reads the kept brush's own entry face, where that survived.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct HeldDepth(f64);
+
+impl HeldDepth {
+    /// No kept solid passed over: every read admitted.
+    pub(super) const NONE: Self = Self(f64::INFINITY);
+
+    /// Carry kept solid passed over at `depth`, from the ray origin.
+    pub(super) fn pass_over(&mut self, depth: f64) {
+        self.0 = self.0.min(depth);
+    }
+
+    /// Whether a read `distance` from the ray origin lies at or before the
+    /// carried depth, within [`HELD_DEPTH_SLACK_M`].
+    pub(super) fn admits(self, distance: f64) -> bool {
+        distance <= self.0 + HELD_DEPTH_SLACK_M
     }
 }
 

@@ -3,7 +3,7 @@
 
 use glam::{DVec3, Vec3};
 
-use super::capture_bounds::{Held, ProjectionBox, held_at, nearest_held};
+use super::capture_bounds::{Held, HeldDepth, ProjectionBox, held_at, nearest_held};
 use super::capture_fill::{Fill, KeptCandidate, find_fill};
 use super::hit::{FaceMask, MaskedHit, RAY_EPSILON, SceneTracer, SurfaceHit};
 use super::placement::PlacedProbe;
@@ -146,6 +146,10 @@ pub(crate) struct ProbeExclusion<'a> {
     /// Every kept brush some excluded brush touches, sorted by brush.
     kept: Vec<KeptCandidate>,
     projection_box: ProjectionBox,
+    /// Whether reads past a [`HeldDepth`] take the leak guard; off only so
+    /// the no-leak oracle can show it catches the trace without it.
+    #[cfg(test)]
+    carries_held_depth: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -277,7 +281,26 @@ impl<'a> ProbeExclusion<'a> {
             contacts,
             kept,
             projection_box,
+            #[cfg(test)]
+            carries_held_depth: true,
         }
+    }
+
+    /// This exclusion with reads past a [`HeldDepth`] admitted, as before
+    /// the depth was carried: the no-leak oracle's control.
+    #[cfg(test)]
+    pub(super) fn ignoring_held_depth(mut self) -> Self {
+        self.carries_held_depth = false;
+        self
+    }
+
+    /// Whether `held` admits a read `distance` from the ray origin.
+    pub(super) fn admits(&self, held: HeldDepth, distance: f64) -> bool {
+        #[cfg(test)]
+        if !self.carries_held_depth {
+            return true;
+        }
+        held.admits(distance)
     }
 
     /// The excluded brushes, ascending.
@@ -340,7 +363,10 @@ impl<'a> ProbeExclusion<'a> {
     /// does none of these does the trace drop that brush's faces and
     /// re-trace from the same bound, so another brush's face at the same
     /// distance still counts; that pass neither counts as skipping the brush
-    /// nor spends a hull pass. Every distance is from `origin`.
+    /// nor spends a hull pass. Kept solid that held an exit the ray passed
+    /// over for a nearer excluded neighbour bounds every read after it: a
+    /// kept hit, fill or exit into open space past its depth takes the leak
+    /// guard ([`HeldDepth`]). Every distance is from `origin`.
     pub(crate) fn trace(
         &self,
         tracer: &SceneTracer<'_>,
@@ -372,6 +398,8 @@ impl<'a> ProbeExclusion<'a> {
         let brush_faces = self.brushes.faces;
         let mut min_distance = RAY_EPSILON;
         let mut first_skipped: Option<SurfaceHit> = None;
+        // The least depth of kept solid passed over at any exit so far.
+        let mut held = HeldDepth::NONE;
         // The excluded brushes the ray passes beside, and their faces, which
         // the trace ignores from then on.
         let mut beside: Vec<u32> = Vec::new();
@@ -398,7 +426,7 @@ impl<'a> ProbeExclusion<'a> {
                 &ignored,
             );
             let Some(skipped) = skipped else {
-                return self.settle(hit, first_skipped, origin, direction);
+                return self.settle(hit, first_skipped, held, origin, direction);
             };
             debug_assert!(
                 skipped.distance > min_distance,
@@ -421,6 +449,7 @@ impl<'a> ProbeExclusion<'a> {
                 origin64,
                 direction64,
                 f64::from(skipped.distance),
+                &mut held,
             ) {
                 // Outside the box the ray can only end outside it too, as
                 // the box is convex and holds the capture point: the leak
@@ -456,8 +485,15 @@ impl<'a> ProbeExclusion<'a> {
                     // A kept side CSG removed against the hull, crossed
                     // inside it or, passing beside it, through their contact
                     // gap.
-                    Exit::Fill(fill) => return self.filled(fill, hit, first, origin, direction),
+                    Exit::Fill(fill) => {
+                        return self.filled(fill, hit, first, held, origin, direction);
+                    }
                     Exit::LeakGuard => return RayOutcome::LeakGuard(first),
+                    // Into open space inside kept solid passed over: the
+                    // re-trace would read through it.
+                    Exit::Open(exit) if !self.admits(held, exit) => {
+                        return RayOutcome::LeakGuard(first);
+                    }
                     // Never at or before the skipped face itself, so each
                     // pass advances even when f32 rounds the exit below it.
                     Exit::Open(exit) => {
@@ -472,33 +508,35 @@ impl<'a> ProbeExclusion<'a> {
 
     /// What a ray reads at `fill`, `hit` its kept front-face hit and
     /// `first` the first excluded surface it skipped: a kept face nearer
-    /// than the fill hides it, and a fill outside the projection box takes
-    /// the leak guard.
-    fn filled(
+    /// than the fill hides it, and a fill past the `held` depth or outside
+    /// the projection box takes the leak guard.
+    pub(super) fn filled(
         &self,
         fill: Fill,
         hit: Option<SurfaceHit>,
         first: SurfaceHit,
+        held: HeldDepth,
         origin: Vec3,
         direction: Vec3,
     ) -> RayOutcome {
         if hit.is_some_and(|hit| hit.distance < fill.distance) {
-            return self.settle(hit, Some(first), origin, direction);
+            return self.settle(hit, Some(first), held, origin, direction);
         }
         let point = origin.as_dvec3() + direction.as_dvec3() * f64::from(fill.distance);
-        if self.projection_box.holds(point) {
+        if self.admits(held, f64::from(fill.distance)) && self.projection_box.holds(point) {
             RayOutcome::Fill(fill)
         } else {
             RayOutcome::LeakGuard(first)
         }
     }
 
-    /// The ray's resolved hit, checked against the leak guard's miss and box
-    /// rules once it has skipped an excluded brush.
-    fn settle(
+    /// The ray's resolved hit, checked against the leak guard's miss, box
+    /// and `held` depth rules once it has skipped an excluded brush.
+    pub(super) fn settle(
         &self,
         hit: Option<SurfaceHit>,
         first_skipped: Option<SurfaceHit>,
+        held: HeldDepth,
         origin: Vec3,
         direction: Vec3,
     ) -> RayOutcome {
@@ -507,9 +545,10 @@ impl<'a> ProbeExclusion<'a> {
         };
         match hit {
             Some(hit)
-                if self
-                    .projection_box
-                    .holds(origin.as_dvec3() + direction.as_dvec3() * f64::from(hit.distance)) =>
+                if self.admits(held, f64::from(hit.distance))
+                    && self.projection_box.holds(
+                        origin.as_dvec3() + direction.as_dvec3() * f64::from(hit.distance),
+                    ) =>
             {
                 RayOutcome::Hit(hit)
             }
@@ -526,7 +565,8 @@ impl<'a> ProbeExclusion<'a> {
     /// a re-trace. Of the neighbours that hold it, the one the ray is inside
     /// first decides, kept solid winning a tie ([`nearest_held`]): kept solid
     /// takes the leak guard, and an excluded hull is gone on through, its
-    /// own exit classified in turn. A level or gently rising ray leaving a
+    /// own exit classified in turn, and the nearest kept solid that also held
+    /// the exit is carried in `held`. A level or gently rising ray leaving a
     /// pillar's side just under the ceiling enters the ceiling, if at all,
     /// far from the pillar, so it re-traces onto the intact ceiling. A ray
     /// that never enters the hull, its entry a tolerance hit, passes beside
@@ -540,6 +580,7 @@ impl<'a> ProbeExclusion<'a> {
         origin: DVec3,
         direction: DVec3,
         entry: f64,
+        held: &mut HeldDepth,
     ) -> Crossing {
         let volumes = self.brushes.volumes;
         let mut reached = entry;
@@ -573,17 +614,20 @@ impl<'a> ProbeExclusion<'a> {
             }
             // Where the ray is first inside `brush` at or past the exit, and
             // where it leaves it, when it holds the exit.
-            let held = |brush: u32| {
+            let holds = |brush: u32| {
                 let span = self.span(brush, origin, direction);
                 held_at(hull, span, exit, (origin, direction)).map(|at| (at, span.1))
             };
+            // The nearest kept depth decides the tie rule and, passed over,
+            // is the one carried.
             let kept = contacts
                 .kept
                 .iter()
-                .filter_map(|&kept| held(self.kept[kept].brush))
-                .map(|(at, _)| at);
+                .filter_map(|&kept| holds(self.kept[kept].brush))
+                .map(|(at, _)| at)
+                .min_by(f64::total_cmp);
             let excluded = contacts.excluded.iter().filter_map(|&next| {
-                let (at, next_leaves) = held(self.excluded[next])?;
+                let (at, next_leaves) = holds(self.excluded[next])?;
                 Some((at, next, next_leaves))
             });
             match nearest_held(kept, excluded) {
@@ -594,6 +638,9 @@ impl<'a> ProbeExclusion<'a> {
                     slot: next,
                     leaves: next_leaves,
                 }) => {
+                    if let Some(depth) = kept {
+                        held.pass_over(depth);
+                    }
                     slot = next;
                     reached = exit;
                     leaves = next_leaves;

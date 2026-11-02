@@ -120,7 +120,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// each kept contact candidate's faces, planes and sides.
 /// 12: an excluded hull's exit reads the neighbour the ray is inside first,
 /// kept solid winning a tie, not the first excluded one in brush order.
-const STAGE_VERSION: u32 = 12;
+/// 13: kept solid passed over at an exit for a nearer excluded neighbour
+/// bounds every later read: past its depth the ray takes the leak guard.
+const STAGE_VERSION: u32 = 13;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {

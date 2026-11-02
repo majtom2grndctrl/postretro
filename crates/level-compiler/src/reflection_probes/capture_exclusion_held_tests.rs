@@ -1,12 +1,14 @@
 // Capture exclusion: kept solid that holds an excluded hull's exit, passed over for a nearer excluded neighbour, bounds every later read.
 // See: context/lib/resource_management.md §5.2 (Exclusion)
 
+use super::capture_bounds::{HELD_DEPTH_SLACK_M, HeldDepth};
 use super::capture_exclusion::{CONTACT_TOLERANCE_M, RayOutcome};
 use super::capture_exclusion_test_fixtures::{CaptureFixture, ROOM_MAX, ROOM_MIN, exclusion};
 use super::capture_exclusion_tests::{
     CONTACT_GAP, IN_BACK_WALL, PLATFORM_HEIGHT, UNITS_PER_METER, boxed, over_the_platform,
     platform_under_a_block_with,
 };
+use super::capture_fill::Fill;
 use super::hit::SurfaceHit;
 
 /// Map units per millimetre.
@@ -131,5 +133,83 @@ fn kept_solid_passed_over_at_a_blocks_exit_bounds_the_re_trace_from_a_nearer_nei
             "reads the wall behind through K: {outcome:?}"
         );
         assert_eq!(outcome, RayOutcome::LeakGuard(front));
+    });
+}
+
+/// A traced surface at `distance` along the ray, on the mesh's first face.
+fn surface_at(distance: f32) -> SurfaceHit {
+    SurfaceHit {
+        distance,
+        face: 0,
+        triangle: [0, 1, 2],
+        barycentric: [1.0, 0.0, 0.0],
+    }
+}
+
+// Once kept solid has been passed over at a depth, every kind of read the
+// trace settles on, a kept hit, a fill and an exit into open space, reads at
+// that depth within distance rounding and takes the leak guard past it. Each
+// goes through the read point the trace itself calls, on the R6 layout's
+// exclusion, at a depth whose point lies in the projection box.
+#[test]
+fn reads_past_a_carried_kept_depth_take_the_leak_guard_and_reads_at_it_stand() {
+    let r6 = R6::new();
+    let (origin, direction) = over_the_platform(R6_RAY.0, R6_RAY.1);
+    r6.room.with_scene(|scene, probes| {
+        let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
+        let filter = exclusion(scene, &probe, &[r6.block, r6.excluded]);
+        let first = surface_at(1.0);
+        let depth = 1.1_f64;
+        let mut held = HeldDepth::NONE;
+        held.pass_over(depth);
+        // At the depth: as `f32` rounds it, and a rounding's width past it.
+        // Past it: just beyond the slack.
+        let at = [depth as f32, (depth + 0.1 * HELD_DEPTH_SLACK_M) as f32];
+        let past = (depth + 2.0 * HELD_DEPTH_SLACK_M) as f32;
+        let fill_at = |distance: f32| Fill {
+            distance,
+            brush: r6.kept,
+            side: 0,
+            texture_index: 0,
+            lit: surface_at(distance),
+        };
+        for distance in at {
+            let hit = surface_at(distance);
+            assert_eq!(
+                filter.settle(Some(hit), Some(first), held, origin, direction),
+                RayOutcome::Hit(hit),
+                "a kept hit at the depth reads"
+            );
+            let fill = fill_at(distance);
+            assert_eq!(
+                filter.filled(fill, None, first, held, origin, direction),
+                RayOutcome::Fill(fill),
+                "a fill at the depth reads"
+            );
+            assert!(
+                filter.admits(held, f64::from(distance)),
+                "an exit into open space at the depth traces on"
+            );
+        }
+        assert_eq!(
+            filter.settle(Some(surface_at(past)), Some(first), held, origin, direction),
+            RayOutcome::LeakGuard(first),
+            "a kept hit past the depth"
+        );
+        assert_eq!(
+            filter.filled(fill_at(past), None, first, held, origin, direction),
+            RayOutcome::LeakGuard(first),
+            "a fill past the depth"
+        );
+        assert!(
+            !filter.admits(held, f64::from(past)),
+            "an exit into open space past the depth"
+        );
+        // With nothing passed over, the same reads stand.
+        let hit = surface_at(past);
+        assert_eq!(
+            filter.settle(Some(hit), Some(first), HeldDepth::NONE, origin, direction),
+            RayOutcome::Hit(hit)
+        );
     });
 }

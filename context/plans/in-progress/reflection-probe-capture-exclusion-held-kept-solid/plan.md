@@ -34,7 +34,7 @@ read at: cc660f45b (no source under `reflection_probes/` changed since the brief
 |---|---|---|---|---|
 | 1 | R6 row alone, before any fix: falsify the premise (builder gains a no-near-brush parameter and per-brush tops) | integrating executor | — | done: preconditions hold; on cc660f45b the row fails with `Hit` on the wall behind at 1.711 m (map x = 128). Premise holds |
 | 2 | Split `held_at`, `Held`, `nearest_held`, `outside_by`, `ProjectionBox` into `capture_bounds.rs`, behavior-preserving, own commit | integrating executor | 1 | done: 183 `reflection_probes` tests pass, R6 still red |
-| 3 | Carried kept depth through `cross` and `trace_counting`, checked at each read point; read-kind seam rows; `STAGE_VERSION` bump | integrating executor | 2 | |
+| 3 | Carried kept depth through `cross` and `trace_counting`, checked at each read point; read-kind seam rows; `STAGE_VERSION` bump | integrating executor | 2 || done: R6 green; read-kind seam row green; 185 `reflection_probes` tests pass; `STAGE_VERSION` 12 → 13 |
 | 4 | Later-hull row, kept-behind at-depth assertion, off-box R6 variant | integrating executor | 3 | |
 | 5 | No-leak oracle over generated layouts, and its disabled-check run | integrating executor | 3 | |
 | 6 | Cache and bytes check on `reflection-probes-test.map` | integrating executor | 3 | |

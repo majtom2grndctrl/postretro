@@ -6,19 +6,26 @@ use glam::DVec3;
 use super::UnprovenSpan;
 use super::clusters::opposed;
 use super::edges::{DirectedEdge, face_triangles};
+use super::matching::PieceGraph;
+use super::seams::{Turns, seam_overlap};
 use crate::geometry::GeometryResult;
 use crate::ray_traversal::{distance_squared_to_triangle, triangle_points};
 
 /// Whether a stretch of edge lies within τ of a partner's face.
 pub(super) struct Measure<'a> {
     pub(super) geometry: &'a GeometryResult,
+    pub(super) edges: &'a [DirectedEdge],
+    pub(super) turns: &'a Turns,
     /// (τ less the rounding margin)², so a computed distance that clears it
     /// proves the exact one is within τ.
     pub(super) limit_squared: f64,
     /// How far past its own end, along the axis, an edge may stand in as a
     /// partner: τ. Edge ends that meet at one corner project to slightly
-    /// different axis points (rounding, or a crack's ends), leaving a stub
-    /// only one of them reaches.
+    /// different axis points (rounding, or a crack's ends), leaving a stretch
+    /// only one of them reaches. Axis units only offer the candidate: a stand-in
+    /// pairs only when its end point lies within τ of the partner's face and
+    /// the partner's whole stretch within τ of its face, in 3D, and it is used
+    /// up like any partner.
     pub(super) end_reach: f64,
 }
 
@@ -27,7 +34,7 @@ impl Measure<'_> {
     /// tried from the triangle `partner` bounds. Distance to a triangle is
     /// convex along a segment, so the whole stretch between them does too.
     /// A degenerate triangle's distance is NaN and covers nothing.
-    fn covers(&self, partner: &DirectedEdge, ends: [DVec3; 2]) -> bool {
+    pub(super) fn covers(&self, partner: &DirectedEdge, ends: [DVec3; 2]) -> bool {
         let within = |tri: usize| {
             let corners = triangle_points(self.geometry, tri).map(|c| c.as_dvec3());
             ends.iter()
@@ -58,17 +65,17 @@ pub(super) struct Settled {
 }
 
 /// An edge placed on the cluster axis: its ends' axis coordinates.
-struct Placed<'a> {
-    edge: &'a DirectedEdge,
-    t_from: f64,
-    t_to: f64,
+pub(super) struct Placed<'a> {
+    pub(super) edge: &'a DirectedEdge,
+    pub(super) t_from: f64,
+    pub(super) t_to: f64,
 }
 
 impl Placed<'_> {
     /// The edge's point whose axis coordinate is `t`, clamped to the edge:
     /// past an end, that end. Its ends map to its stored corners exactly,
     /// and the map is monotone, so consecutive breaks tile the edge.
-    fn at(&self, t: f64) -> DVec3 {
+    pub(super) fn at(&self, t: f64) -> DVec3 {
         let (lo, hi) = self.span();
         let t = t.clamp(lo, hi);
         if t == self.t_from {
@@ -117,13 +124,11 @@ impl Side {
 /// stretch, and edges running along the axis pair with edges running
 /// against it only when each one's stretch lies within τ of the other's
 /// face. An edge whose end lies within `end_reach` of the piece stands in
-/// with that end, and an edge whose piece lies within `end_reach` of its own
-/// end needs only a partner that pairs, so a stub where two meeting ends
-/// land apart still closes. Every other edge running over the piece must be
-/// covered by one one-for-one matching; one left out is unproven there,
-/// as is a stub nothing pairs with. The axis only
-/// shapes the pieces: every check reads the edges' own stretches, so a poor
-/// axis can cost a pair and never prove one.
+/// with that end. Every edge running over the piece must be covered by one
+/// one-for-one matching, save one of two same-way edges overlapping at a
+/// seam (`seams`); one left out is unproven there. The axis only shapes the
+/// pieces: every check reads the edges' own stretches in 3D, so a poor axis
+/// can cost a pair and never prove one.
 pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measure<'_>) -> Settled {
     let reference = members
         .iter()
@@ -193,61 +198,37 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     let mut unproven: Vec<Vec<usize>> = vec![Vec::new(); placed.len()];
     for piece in 0..pieces {
         let (lo, hi) = (breaks[piece], breaks[piece + 1]);
-        let (left, right) = (&along[piece], &against[piece]);
-        if left.present.is_empty() && right.present.is_empty() {
+        let sides = [&along[piece], &against[piece]];
+        if sides.iter().all(|side| side.present.is_empty()) {
             continue;
         }
         let ends = |index: usize| [placed[index].at(lo), placed[index].at(hi)];
-        let lefts: Vec<usize> = left.all().collect();
-        let rights: Vec<usize> = right.all().collect();
-        let pairs: Vec<Vec<bool>> = lefts
-            .iter()
-            .map(|&a| {
-                let a_ends = ends(a);
-                rights
-                    .iter()
-                    .map(|&b| measure.pairs(placed[a].edge, a_ends, placed[b].edge, ends(b)))
-                    .collect()
-            })
-            .collect();
-        // An edge whose piece lies within reach of its own end is a stub:
-        // it needs a partner that pairs, not one of its own. Every other
-        // edge running over the piece must be covered by one one-for-one
-        // matching. A matching covering one side's such edges and one
-        // covering the other's combine into one covering both
-        // (Mendelsohn–Dulmage), so each side is matched on its own, with
-        // stubs and stand-ins as partners only.
-        let stub = |index: usize| {
-            let (start, end) = placed[index].span();
-            hi - start <= measure.end_reach || end - lo <= measure.end_reach
-        };
-        let settle_side = |present: &[usize],
-                           partners: usize,
-                           pair: &dyn Fn(usize, usize) -> bool| {
-            let interior: Vec<usize> = (0..present.len()).filter(|&k| !stub(present[k])).collect();
-            let adjacency: Vec<Vec<usize>> = interior
+        let [lefts, rights] = sides.map(|side| side.all().collect::<Vec<usize>>());
+        let graph = PieceGraph {
+            pairs: lefts
                 .iter()
-                .map(|&k| (0..partners).filter(|&o| pair(k, o)).collect())
-                .collect();
-            let matched = covered_by_matching(&adjacency, partners);
-            let mut covered: Vec<bool> = (0..present.len())
-                .map(|k| (0..partners).any(|o| pair(k, o)))
-                .collect();
-            for (&k, &m) in interior.iter().zip(&matched) {
-                covered[k] = m;
-            }
-            covered
+                .map(|&a| {
+                    let a_ends = ends(a);
+                    rights
+                        .iter()
+                        .map(|&b| measure.pairs(placed[a].edge, a_ends, placed[b].edge, ends(b)))
+                        .collect()
+                })
+                .collect(),
+            required: sides.map(|side| side.present.len()),
+            total: [lefts.len(), rights.len()],
         };
-        let left_covered = settle_side(&left.present, rights.len(), &|l, r| pairs[l][r]);
-        let right_covered = settle_side(&right.present, lefts.len(), &|r, l| pairs[l][r]);
-        for (slot, &index) in left.present.iter().enumerate() {
-            if !left_covered[slot] {
-                unproven[index].push(piece);
+        let mut uncovered = graph.uncovered();
+        if uncovered.iter().any(|slots| !slots.is_empty()) {
+            let seams = sides.map(|side| seam_pairs(measure, &placed, &side.present, lo, hi));
+            let proven = graph.proven_with_seams([&seams[0], &seams[1]]);
+            if proven {
+                uncovered = [Vec::new(), Vec::new()];
             }
         }
-        for (slot, &index) in right.present.iter().enumerate() {
-            if !right_covered[slot] {
-                unproven[index].push(piece);
+        for (side, slots) in sides.iter().zip(uncovered) {
+            for slot in slots {
+                unproven[side.present[slot]].push(piece);
             }
         }
     }
@@ -276,39 +257,21 @@ pub(super) fn settle(edges: &[DirectedEdge], members: &[usize], measure: &Measur
     settled
 }
 
-/// Which left vertices a maximum matching covers, by Kuhn's augmenting
-/// paths over `adjacency` (left → right slots, in order). The same input
-/// covers the same vertices; an augmenting path never uncovers a left
-/// vertex, so the count is the maximum.
-fn covered_by_matching(adjacency: &[Vec<usize>], right_count: usize) -> Vec<bool> {
-    fn augment(
-        left: usize,
-        adjacency: &[Vec<usize>],
-        visited: &mut [bool],
-        left_of: &mut [Option<usize>],
-    ) -> bool {
-        for &right in &adjacency[left] {
-            if visited[right] {
-                continue;
-            }
-            visited[right] = true;
-            let free = match left_of[right] {
-                None => true,
-                Some(other) => augment(other, adjacency, visited, left_of),
-            };
-            if free {
-                left_of[right] = Some(left);
-                return true;
+/// The pairs of `present` slots that overlap at a seam on the piece.
+fn seam_pairs(
+    measure: &Measure<'_>,
+    placed: &[Placed<'_>],
+    present: &[usize],
+    lo: f64,
+    hi: f64,
+) -> Vec<(usize, usize)> {
+    let mut seams = Vec::new();
+    for a in 0..present.len() {
+        for b in a + 1..present.len() {
+            if seam_overlap(measure, &placed[present[a]], &placed[present[b]], lo, hi) {
+                seams.push((a, b));
             }
         }
-        false
     }
-
-    let mut left_of = vec![None; right_count];
-    (0..adjacency.len())
-        .map(|left| {
-            let mut visited = vec![false; right_count];
-            augment(left, adjacency, &mut visited, &mut left_of)
-        })
-        .collect()
+    seams
 }

@@ -16,17 +16,18 @@
 // - The limit is τ less a margin for `f64` rounding of the evaluated points
 //   and distances, scaled by the geometry's extent: rounding counts toward a
 //   hole, and no quantum merges edges, so the proof holds at any coordinate.
-// - A maximum bipartite matching per piece pairs edges one-for-one in any
-//   input order (edges are sorted by geometry first); an edge it leaves out
-//   is an unproven span.
+// - Every edge running over a piece enters one maximum bipartite matching,
+//   which pairs edges one-for-one whatever the input order (edges are
+//   sorted by geometry first); an edge it leaves out is an unproven span.
 // - Edge ends meeting at one point land apart along their line (rounding,
-//   or a crack's ends), leaving a stub one edge reaches and its partner
-//   does not, or two same-way edges both cover. Within τ of its own end an
-//   edge stands in with that end point, and an edge whose piece lies there
-//   needs a partner that pairs rather than one of its own. Both still pass
-//   the τ check both ways. So one-for-one holds everywhere but stubs no
-//   longer than τ at edge ends, where every point already lies within τ of
-//   the partner's face.
+//   or a crack's ends). Where they leave a gap, an edge stands in with its
+//   end point on pieces within τ past that end, and is used up like any
+//   partner. Where they overlap, two same-way edges both run over the
+//   stretch: one may go unmatched only at a seam (`seams`), an overlap no
+//   longer than τ in 3D between one edge's end and the other's start, with
+//   the edges where their faces turn off the line running opposite ways
+//   within τ of each other. A chain of short edges turns nowhere, so it
+//   excuses nothing.
 
 use std::time::{Duration, Instant};
 
@@ -39,9 +40,12 @@ use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 mod clusters;
 mod edges;
+mod matching;
+mod seams;
 mod settle;
 
 use edges::DirectedEdge;
+use seams::Turns;
 use settle::{Measure, Settled};
 
 /// Edges link into one cluster when each overlaps the other within this
@@ -82,7 +86,6 @@ impl UnprovenSpan {
 
     /// The span as the watertightness check's open-edge location, for
     /// `pipeline::watertight_open_edge_provenance`. `None` without a brush.
-    #[cfg_attr(not(test), allow(dead_code))] // Read by the hole warning the reach cull adds.
     pub(crate) fn open_edge(&self) -> Option<OpenEdge> {
         Some(OpenEdge {
             midpoint: self.midpoint,
@@ -111,7 +114,6 @@ impl CoverageReport {
 
     /// The first unproven spans in report order, up to the watertightness
     /// check's sample cap.
-    #[cfg_attr(not(test), allow(dead_code))] // Read by the hole warning the reach cull adds.
     pub(crate) fn samples(&self) -> &[UnprovenSpan] {
         &self.unproven[..self.unproven.len().min(OPEN_EDGE_SAMPLE_CAP)]
     }
@@ -135,13 +137,15 @@ pub(crate) fn prove_coverage(
         .flat_map(|v| v.position)
         .fold(0.0f64, |m, c| m.max(f64::from(c).abs()));
     let limit = tau - ROUNDING_EPSILONS * f64::EPSILON * (1.0 + extent);
+    let edges = edges::boundary_edges(geometry, face_brushes);
+    let turns = Turns::new(&edges);
     let measure = Measure {
         geometry,
+        edges: &edges,
+        turns: &turns,
         limit_squared: limit * limit,
         end_reach: tau,
     };
-
-    let edges = edges::boundary_edges(geometry, face_brushes);
     let clusters = clusters::clusters(&edges, LINK_RADIUS_TAUS * tau);
     let settled: Vec<Settled> = clusters
         .par_iter()
@@ -177,6 +181,8 @@ pub(crate) fn prove_coverage(
 
 #[cfg(test)]
 mod gate_map_tests;
+#[cfg(test)]
+mod stub_tests;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]

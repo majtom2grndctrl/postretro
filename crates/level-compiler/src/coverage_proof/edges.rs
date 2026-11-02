@@ -44,13 +44,14 @@ pub(super) fn face_triangles(range: &FaceIndexRange) -> impl Iterator<Item = usi
 /// inside one face that runs both ways between the same two stored corners:
 /// a fan diagonal, which lies on both its triangles and so is matched exactly.
 /// Edges with bit-identical corners bound nothing and are left out. Sorted
-/// by their corners, the corners of the triangle they bound and their brush,
-/// so the order depends on the geometry and not on face order.
+/// by their corners, the corners of the triangle they bound, their brush and
+/// their face, so the order depends on the geometry, and only geometry-identical
+/// edges fall back to face order.
 pub(super) fn boundary_edges(
     geometry: &GeometryResult,
     face_brushes: &[Option<u32>],
 ) -> Vec<DirectedEdge> {
-    type Key = ([Bits; 2], [Bits; 3], Option<u32>);
+    type Key = ([Bits; 2], [Bits; 3], Option<u32>, u32);
     let mut keyed: Vec<(Key, DirectedEdge)> = Vec::new();
     let mut face_edges: Vec<(Bits, Bits, usize)> = Vec::new();
     for (face, range) in geometry.face_index_ranges.iter().enumerate() {
@@ -69,7 +70,7 @@ pub(super) fn boundary_edges(
         for &(a, b, tri) in &face_edges {
             let corners = corner_bits(geometry, tri);
             keyed.push((
-                ([a, b], corners, brush),
+                ([a, b], corners, brush, face as u32),
                 DirectedEdge {
                     from: position(a),
                     to: position(b),

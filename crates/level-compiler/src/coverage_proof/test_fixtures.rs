@@ -5,10 +5,35 @@ use glam::{DQuat, DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
+use super::{CoverageReport, UnprovenSpan, prove_coverage};
 use crate::geometry::{FaceIndexRange, GeometryResult, extract_geometry_with_brushes};
 use crate::light_namespaces::StaticBakedLights;
+use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 use crate::reflection_probes::placement_test_fixtures::{box_brush, entity, parse_inline};
 use crate::{lightmap_bake, partition, portals, visibility};
+
+pub(super) fn tau() -> f64 {
+    f64::from(TRACER_TOLERANCE_METERS)
+}
+
+pub(super) fn prove(polygons: &[Polygon]) -> CoverageReport {
+    let (geometry, brushes) = polygon_geometry(polygons);
+    prove_coverage(&geometry, &brushes)
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+pub(super) fn to_segment(p: DVec3, a: DVec3, b: DVec3) -> f64 {
+    let ab = b - a;
+    let s = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    (p - (a + ab * s)).length()
+}
+
+/// Both ends of `span` lie within `tolerance` of the segment `a`–`b`.
+pub(super) fn lies_along(span: &UnprovenSpan, a: DVec3, b: DVec3, tolerance: f64) -> bool {
+    span.endpoints
+        .iter()
+        .all(|&p| to_segment(p, a, b) <= tolerance)
+}
 
 /// A face for [`polygon_geometry`]: its loop, wound counter-clockwise about
 /// its outward normal, and its brush.
@@ -197,6 +222,43 @@ pub(super) fn closed_box(
             assert!(normal.dot(outward) > 0.0, "box quad wound outward");
             Polygon {
                 corners: local.iter().map(|&p| frame.point(p)).collect(),
+                brush: Some(brush),
+            }
+        })
+        .collect()
+}
+
+/// Two closed boxes meeting along the line x = y = 1 (local), 0 ≤ z ≤ 1:
+/// box A's +X and +Y faces and box B's −X and −Y faces share it. Returns
+/// the faces, the four hinge faces' slots (A +X, A +Y, B −X, B −Y) and the
+/// hinge's ends.
+pub(super) fn hinge(frame: Frame) -> (Vec<Polygon>, [usize; 4], (DVec3, DVec3)) {
+    let mut polygons = closed_box(frame, DVec3::ZERO, DVec3::ONE, 0.0, 0);
+    polygons.extend(closed_box(
+        frame,
+        DVec3::new(1.0, 1.0, 0.0),
+        DVec3::new(2.0, 2.0, 1.0),
+        0.0,
+        1,
+    ));
+    let line = (
+        frame.point(DVec3::new(1.0, 1.0, 0.0)).as_dvec3(),
+        frame.point(DVec3::new(1.0, 1.0, 1.0)).as_dvec3(),
+    );
+    (polygons, [1, 3, 6, 8], line)
+}
+
+/// The four faces of the tetrahedron `corners` in `frame`, each wound
+/// counter-clockwise about its outward normal.
+pub(super) fn tetrahedron(frame: Frame, corners: [DVec3; 4], brush: u32) -> Vec<Polygon> {
+    [[0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 3, 1], [1, 2, 3, 0]]
+        .into_iter()
+        .map(|[a, b, c, opposite]| {
+            let normal = (corners[b] - corners[a]).cross(corners[c] - corners[a]);
+            let outward = normal.dot(corners[a] - corners[opposite]) > 0.0;
+            let loop_ = if outward { [a, b, c] } else { [a, c, b] };
+            Polygon {
+                corners: loop_.iter().map(|&k| frame.point(corners[k])).collect(),
                 brush: Some(brush),
             }
         })

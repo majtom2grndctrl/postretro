@@ -4,36 +4,12 @@
 use glam::{DVec3, Vec3};
 
 use super::test_fixtures::{
-    Frame, Polygon, clip_polygon, closed_box, extracted_room, face_polygons, polygon_geometry,
-    room_interior,
+    Frame, Polygon, clip_polygon, closed_box, extracted_room, face_polygons, hinge, lies_along,
+    prove, room_interior, tau, to_segment,
 };
 use super::{CoverageReport, UnprovenSpan, prove_coverage};
 use crate::map_data::{Face, TextureProjection};
 use crate::partition::{OPEN_EDGE_SAMPLE_CAP, check_watertight};
-use crate::ray_traversal::TRACER_TOLERANCE_METERS;
-
-fn tau() -> f64 {
-    f64::from(TRACER_TOLERANCE_METERS)
-}
-
-fn prove(polygons: &[Polygon]) -> CoverageReport {
-    let (geometry, brushes) = polygon_geometry(polygons);
-    prove_coverage(&geometry, &brushes)
-}
-
-/// Distance from `p` to the segment `a`–`b`.
-fn to_segment(p: DVec3, a: DVec3, b: DVec3) -> f64 {
-    let ab = b - a;
-    let s = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
-    (p - (a + ab * s)).length()
-}
-
-/// Both ends of `span` lie within `tolerance` of the segment `a`–`b`.
-fn lies_along(span: &UnprovenSpan, a: DVec3, b: DVec3, tolerance: f64) -> bool {
-    span.endpoints
-        .iter()
-        .all(|&p| to_segment(p, a, b) <= tolerance)
-}
 
 fn polygon_normal(corners: &[Vec3]) -> DVec3 {
     let mut twice = DVec3::ZERO;
@@ -292,24 +268,6 @@ fn coverage_proof_finds_a_far_crack_the_watertightness_weld_hides() {
     for span in on_crack {
         assert!((span.length - length).abs() < 1e-3);
     }
-}
-
-/// Two closed boxes meeting along the line x = y = 1 (local), 0 ≤ z ≤ 1:
-/// box A's +X and +Y faces and box B's −X and −Y faces share it.
-fn hinge(frame: Frame) -> (Vec<Polygon>, [usize; 4], (DVec3, DVec3)) {
-    let mut polygons = closed_box(frame, DVec3::ZERO, DVec3::ONE, 0.0, 0);
-    polygons.extend(closed_box(
-        frame,
-        DVec3::new(1.0, 1.0, 0.0),
-        DVec3::new(2.0, 2.0, 1.0),
-        0.0,
-        1,
-    ));
-    let line = (
-        frame.point(DVec3::new(1.0, 1.0, 0.0)).as_dvec3(),
-        frame.point(DVec3::new(1.0, 1.0, 1.0)).as_dvec3(),
-    );
-    (polygons, [1, 3, 6, 8], line)
 }
 
 fn permutations(n: usize) -> Vec<Vec<usize>> {

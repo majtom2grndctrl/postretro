@@ -137,7 +137,7 @@ Task agents cite rows by number. Expected outcomes are binding. "Available" mean
 
 ## Tasks
 
-New logic lands in new modules: `crates/postretro/src/input/contextual.rs` (rank-free helpers: facts, panel mark text) and `crates/postretro/src/app/contextual_availability.rs`. Files past ~800 lines (`input/system.rs`, `app/controls_panel.rs`, `frame_loop/mod.rs`, `main.rs`) receive only call-site edits, no logic, so none needs a split first. Prerequisite: `E18--player-revive-assist` has landed. Its Task 2a gives `Command::Assist`, `Action::Assist`, `Command::default_activator`, `assist`'s engine default (`hold` on `KeyE` / `west`, bound while relevant), `assist_held` threaded through `build_sim_command`, the accumulator in `sim/src/sim/assist.rs` with its `assist_candidate` query, host pair values from `assist_pairs::evaluate`, `ClientReplication::remote_assist_facts` and `ClientReplication::assist_pair_table`; its Task 2b gives the client predicted step in `client_assist.rs`. Symbols: research.md §Grounding.
+New logic lands in new modules: `crates/postretro/src/input/contextual.rs` (rank-free helpers: facts, panel mark text) and `crates/postretro/src/app/contextual_availability.rs`. Files past ~800 lines (`input/system.rs`, `app/controls_panel.rs`, `frame_loop/mod.rs`, `main.rs`) receive only call-site edits, no logic, so none needs a split first. Prerequisite: `E18--player-revive-assist` has landed. Its Task 2a gives `Command::Assist`, `Action::Assist`, `Command::default_activator`, `assist`'s engine default (`hold` on `KeyE` / `west`, bound while relevant), `assist_held` threaded through `build_sim_command`, the accumulator in `sim/src/sim/assist.rs` with its `assist_candidate` query, host pair values from the accumulator state's `pair_values` accessor (the last accumulator pass's results; this spec never evaluates pair IR), `ClientReplication::remote_assist_facts` and `ClientReplication::assist_pair_table`; its Task 2b gives the client predicted step in `client_assist.rs`. Symbols: research.md §Grounding.
 
 ### Task 1: Thin slice — `press` group, availability, client resolution
 
@@ -159,7 +159,7 @@ This slice falsifies the boundary assumptions: grouped members survive the table
 - The assist candidate query finds a target for the local pawn as helper.
 
 The candidate query is revive's `assist_candidate` in `sim/src/sim/assist.rs`. The query runs over these sources:
-- **Single player and listen host:** registry pawns, with pair values from revive's `assist_pairs::evaluate`.
+- **Single player and listen host:** registry pawns, with pair values from revive's `pair_values` accessor, which returns the last accumulator pass's results.
 - **Connected client:** the inputs revive's predicted step already uses (interpolated remote pawns, their retained life-state ids and `assistable` bools, and the host's pair table), read from the same call site.
 
 `frame_loop/mod.rs` gets one call after the tick loop that computes the facts and passes them to `InputSystem::set_contextual_availability`.

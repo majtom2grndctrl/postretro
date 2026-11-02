@@ -39,6 +39,8 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 - `RelevanceFacts` (`dash`, `crouch`, `magazine`, `secondary`) from `registry_facts` and `tuning_facts` (`app/bindings.rs`).
 - `WireMovementInput` field order: `wish_dir`, `jump_pressed`, `dash_pressed`, `running`, `crouch_intent`, `facing_yaw`, `use_pressed`, `drop_pressed`, `aim_pitch`, `firing_slot`. `use_pressed` is an edge. `held_gap_sim_command` clears fire, activation, secondary, use and drop and carries other levels. `neutral_sim_command` builds literals. `wire_convert.rs` converts both ways.
 - `WIRE_VERSION` = 38.
+- `SNAPSHOT_VERSION` = 24 (`net/src/wire.rs`); every `WirePlayerMovementState` field addition has bumped it. `TUNING_PAYLOAD_EPOCH` = 16. Rechecked at `48040a7`, unchanged.
+- `SNAPSHOT_TICK_INTERVAL` = 2 (`netcode/src/host.rs`); the timed-slot module's `HOLD_CAP_TICKS` is 16.
 
 ## Client view of other pawns
 
@@ -52,5 +54,8 @@ Read at `b6fc0c4`, after `E18--player-life-states` landed. Cited by symbol. `[M]
 - `LifeStateMs` touched: `player_slots.rs`, `engine_state_catalog.rs` (`OwnerPrivatePlayer`), `light_membership.rs` `MIRRORED_GAME_STATE_LEAVES`, `ui_proxy.rs`, `netcode/src/state_slots.rs`, generated `sdk/types/postretro.d.*`, typedef `expected.d.*` fixtures.
 - Owner-private values reach clients through `owner_private_source_value` on the host and the state-slot wire channel. Every non-weapon `PlayerSlot` resolves through `player_slot_value`, which reads pawn components only; a value outside a component reads absent to every consumer.
 - Timed-slot projection: `netcode/src/state_slots/timed_slot_targets.rs` `NAMES: [&str; 4]` (reloadProgress, weaponCooldownMs, heat, cell), fed by `ReplicatedWeaponProjection`; upward ramp per index via `Ramp::accept`. `Ramp` is `pub(super)` in that private module and ramps only once successive interval slopes agree, so it shows the first samples raw. `LifeStateMs` has its own `LifeStateDisplay` / `LifeStateClock`, applied in `App::build_ui_display_slot_snapshot`.
+- `run_client_predicted_tick` (`runtime_teleporters/client_tick.rs`) takes a `predict` closure; `frame_loop` passes one that calls `predict_client_weapon_command` then movement prediction. Forward prediction in netcode takes no `EntityRegistry`. `capture_local_reconcile` surfaces `acked_tick`; the state batch applies only on `accepted_newest_snapshot`, and `accept_timed_slot_sample` skips a batch not applied and slots held for a baseline refresh.
+- `reset_level_scoped_client_state` (called from `unload_level`) and `demote_client_state` (called from the host-hold path in `main.rs`) both run `prediction.reset_for_level_unload`. App-side state clears beside those calls, as `client_weapon` and `active_slot_resync` do.
+- `ui_proxy.rs` writes `player.lifeStateMs` only off a connected client.
 - HUD: `bleedOutMeterTree` and `reloadMeterTree` in `content/dev/scripts/hud.ts`.
 - Stale docs confirmed in `docs/scripting-reference.md` (per-owner + persist rejected; no source-scoped fact vocabulary) and `SourceHandle.grantHealth`'s doc comment.

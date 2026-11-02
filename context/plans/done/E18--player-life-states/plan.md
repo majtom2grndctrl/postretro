@@ -1,8 +1,7 @@
 # Player life states — plan of record
 
 mode: resumable
-status: approved
-execution: stopped after bounded batch 04; awaiting next step
+status: landed
 read at: 834a09c51
 
 ## Resume point
@@ -37,8 +36,9 @@ Final gate at c7834596b (2026-11-01): fmt, workspace clippy -D warnings (also
 postretro dev-tools), workspace tests 13,969 passed / 0 failed / 102 ignored,
 generated SDK types current.
 
-Remaining before landing: AC17/AC18 manual visual
-proof per [manual-playtest.md](manual-playtest.md).
+Landed 2026-11-01 on the owner's "land the plane". The owner accepted AC17/AC18's
+manual visual proof at landing ([manual-playtest.md](manual-playtest.md)).
+Revive and second wind are the next brief, `drafts/E18--player-revive-assist/`.
 
 Every build checks for an active `rustc` or `prl-build` first (owner rule, below).
 
@@ -253,8 +253,8 @@ No manual visual result is inferred.
 | 14 | Seat lifecycle scenarios for disconnect/hold expiry, suspend/demotion, reload removal and rejoin map, held seats and level-change clearing | automated | PASS — full gate c7834596b |
 | 15 | Late-join FullBaseline round trip carries teammate state/elapsed/revision/crouched capsule; host predicate stays true during join | automated | PASS — full gate c7834596b |
 | 16 | Authority reload remap for kept/removed/new/undeclared states and changed profiles, client no-remap, demotion/rejoin seam | automated | PASS — full gate c7834596b |
-| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual | automated PASS — full gate c7834596b; **manual visual proof outstanding** |
-| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual; owner wording resolved | automated PASS — full gate c7834596b; **manual visual proof outstanding** |
+| 17 | 75 ms each-way conditioned reconcile harness, oversized transition, eye-height envelope versus crouch input; two-client dev-mod visual playtest | automated plus manual-visual | automated PASS — full gate c7834596b; manual visual proof accepted by the owner at landing (2026-11-01) |
+| 18 | Deterministic frame-clock tests: strict positive-frame advance through trims, delay/loss and reordered snapshots, bounded-rate convergence, zero-duration frames and reset witnesses; owning-client playtest | automated plus manual-visual; owner wording resolved | automated PASS — full gate c7834596b; manual visual proof accepted by the owner at landing (2026-11-01) |
 | 19 | One named outcome test for every O1–O44 row, including amended O24/O25, linked in an ordering coverage ledger before final review | automated | PASS — full gate c7834596b |
 | 20 | TS/Luau consumer parity and a production two-pawn simulate-tick → player-event test through 900 ticks and next-tick respawn | automated | PASS — full gate c7834596b |
 | 21 | Review scripting-reference and teleporter verb tables/recipes against both SDKs and bundle command availability | manual-doc review plus SDK surface checks | PASS — full gate c7834596b |
@@ -273,7 +273,7 @@ and upstream/downstream contracts. They do not commit or edit this plan.
 | 4 | Number/String reads and SDK mirrors, continuously advancing HUD clock with rate correction, local predicates and authoritative reload remap | integrating executor | 1 | done: catalog, publication, clock, remap, replication and SDK proofs pass |
 | 5 | Respawn SDK/binding/queue, published placements, shared teleport-arrival tail, tick-start seat-order relocation and yaw propagation | integrating executor | 2, 3, 4 | done: 20 library + 6 app respawn tests and regressions pass |
 | 6 | Carried state names, disconnect/demotion/suspend harvest, rejoin restore and level-unload clearing | integrating executor | 5 | done: harvest, spawn, real App lifecycle and regressions pass |
-| 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | done: implementation/focused proof; manual AC17/18 outstanding |
+| 7 | Dev down/bleed-out TS/Luau twins and HUD, baseline/lifecycle coverage, complete Ordering ledger, bundle-facing docs and manual runbook | integrating executor | 6 | done: implementation/focused proof; manual AC17/18 accepted at landing |
 
 First proof is Task 1's real descriptor/verb/condition/wire/fire slice: it
 tests the shared substrate every subsequent task consumes. Tasks 2–4 run

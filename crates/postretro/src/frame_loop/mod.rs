@@ -1,6 +1,7 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
+mod cancel_command;
 mod mirror_content;
 pub(crate) mod named_drains;
 mod planar;
@@ -449,19 +450,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     if ticks == 0 && app.is_connected_client() {
         let session = app.session.as_mut().expect("running session installed");
         if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
-            let mut command = build_sim_command(
-                &input::ActionSnapshot::neutral(),
-                &app.camera,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-            );
-            command.activation.cancel = Some(token);
+            let command =
+                cancel_command::cancel_only_command(gameplay_snapshot.as_ref(), &app.camera, token);
             let _ = netcode::client_send_input_command_in_registry(
                 session.net_endpoint.as_mut(),
                 &command,
@@ -907,6 +897,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             };
             let trigger_system = &mut session.trigger_system;
             let touch_system = &mut session.touch_system;
+            let assist_state = &mut session.assist_state;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
             let trigger_bindings = &app.trigger_bindings;
             let presentation_camera_aim = (app.camera.pitch, app.camera.yaw + local_respawn_yaw);
@@ -962,6 +953,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 },
                 tick_dt,
                 touch_system,
+                assist_state,
                 descriptors,
                 descriptor_generation,
                 &data_registry.factions,

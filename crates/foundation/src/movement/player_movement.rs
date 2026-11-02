@@ -429,6 +429,16 @@ pub struct PlayerMovementComponent {
     /// replicated copy.
     #[serde(skip)]
     pub assistable: bool,
+    /// This pawn's assist progress as helper, 0..1, written by the host and
+    /// single-player accumulator every tick. Read through
+    /// `player.assistProgress`; never on the wire.
+    #[serde(skip)]
+    pub assist_progress: f32,
+    /// The highest progress among this pawn's helpers, 0..1, written by the
+    /// accumulator every tick. `player.assistReceivedProgress` reads 0 while
+    /// `assistable` is false. Never on the wire.
+    #[serde(skip)]
+    pub assist_received_progress: f32,
 }
 
 impl PlayerMovementComponent {
@@ -535,6 +545,8 @@ impl PlayerMovementComponent {
             life_speed_scale: 1.0,
             life_posture: super::LifeStatePosture::Stand,
             assistable: false,
+            assist_progress: 0.0,
+            assist_received_progress: 0.0,
         }
     }
 

@@ -113,6 +113,7 @@ impl HostSimulation {
             },
             TICK_DT,
             &mut self.touch,
+            &mut Default::default(),
             &self.descriptors,
             0,
             &self.factions,

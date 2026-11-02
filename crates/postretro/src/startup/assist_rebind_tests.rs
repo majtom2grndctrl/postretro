@@ -82,3 +82,80 @@ fn assist_pair_table_rebinds_with_player_events_and_a_connected_client_binds_not
     app.rebuild_player_events(false);
     assert!(!declares_down(&app));
 }
+
+/// O21 / O51: `unload_level` clears the accumulator's level-scoped state
+/// (progress, latches, row-6 records, pair values, stored life states) and
+/// keeps the bound table for the next install's rebind.
+#[test]
+fn assist_unload_level_clears_progress_and_keeps_the_bound_table() {
+    use postretro_entities::Transform;
+    use postretro_entities::provenance::{DescriptorProvenance, DescriptorSpawnPath};
+    use postretro_foundation::{PlayerMovementComponent, Seat};
+
+    let mut app = test_app();
+    let ctx = script_ctx(&app);
+    ctx.data_registry
+        .borrow_mut()
+        .replace_entity_types(vec![player(Some(Assistable::default()))]);
+    app.rebuild_player_events(false);
+    let (helper, target) = {
+        let mut registry = ctx.registry.borrow_mut();
+        let mut spawn = |seat: u16, down: bool| {
+            let pawn = registry.spawn(Transform::default());
+            let mut movement = PlayerMovementComponent::from_descriptor(
+                &crate::mod_digest::tests::movement_descriptor(),
+            );
+            if down {
+                movement.life_state = DOWN;
+                movement.assistable = true;
+            }
+            registry.set_component(pawn, movement).unwrap();
+            registry
+                .set_component(
+                    pawn,
+                    DescriptorProvenance {
+                        canonical_name: "player".into(),
+                        owned_components: Default::default(),
+                        map_overrides: Default::default(),
+                        spawn_path: DescriptorSpawnPath::PlayerSpawn,
+                    },
+                )
+                .unwrap();
+            registry.bind_pawn_seat(pawn, Seat(seat));
+            pawn
+        };
+        let helper = spawn(0, false);
+        let target = spawn(1, true);
+        registry.mark_local_player_pawn(helper).unwrap();
+        (helper, target)
+    };
+    let command = crate::build_sim_command(
+        &crate::input::ActionSnapshot::neutral(),
+        &crate::camera::Camera::new(glam::Vec3::ZERO, 0.0, 0.0),
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+    );
+    {
+        let session = app.session.as_mut().expect("test app session installed");
+        session
+            .assist_state
+            .run_host_pass(&mut ctx.registry.borrow_mut(), None, &command, &[]);
+        let state = &session.assist_state;
+        assert!(state.helper(helper).unwrap().progress.progress > 0);
+        assert!(state.pair_values(helper, target).is_some());
+    }
+
+    app.unload_level();
+    let state = &app.session.as_ref().unwrap().assist_state;
+    assert!(state.helper(helper).is_none());
+    assert_eq!(state.helpers().count(), 0);
+    assert_eq!(state.row6_record(helper), Default::default());
+    assert_eq!(state.pair_values(helper, target), None);
+    assert!(declares_down(&app), "the bound table survives the unload");
+}

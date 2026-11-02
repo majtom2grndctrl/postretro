@@ -411,10 +411,11 @@ policies govern resolution:
   that resumed at a far-future tick) advance the cursor with synthesized neutral input.
   Neutralization clears movement, use, and fire but retains the latest finite aim pitch and
   facing yaw for remote-avatar presentation. Held `assist` is a level a `Held` command keeps
-  and neutralization clears. Decided, not yet built: only a `Real` command advances assist
+  and neutralization clears. Only a `Real` command advances assist
   progress, so a held tick keeps it and a re-resolved tick counts once. A neutral after the
   grace resets progress as a release does but does not end a completed hold; only a real
-  release does. A client that has never sent a command resolves
+  release does, so a client's zero-tick cancel-only command carries the current `assist`
+  level rather than a neutral one. A client that has never sent a command resolves
   to nothing — its pawn holds its authoritative pose. Clean loopback reaches the empty
   frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
   data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's

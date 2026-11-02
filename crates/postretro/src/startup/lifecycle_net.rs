@@ -159,7 +159,8 @@ impl App {
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     /// | level parity, published level identity, this peer's reveal | |
     /// | settle state and its timer, the active loading screen, undispatched system commands | |
-    /// | respawn requests and placements, carried life-state names (held seats too) | |
+    /// | respawn requests and placements, carried life-state names (held seats too) | the bound assist pair table (rebound at install) |
+    /// | assist progress, latches, row-6 records, last-pass pair values, stored per-pawn life states | |
     pub(crate) fn unload_level(&mut self) {
         let unload_started = std::time::Instant::now();
         self.cpu_timer.level_changed();
@@ -186,6 +187,9 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
             crate::respawn_placements::clear_for_level_unload(&session.scripting.script_ctx);
+            // Assist progress is level-scoped; the bound pair table survives
+            // until the next install rebinds it (O21, O51).
+            session.assist_state.clear_for_level_unload();
             session
                 .scripting
                 .script_ctx

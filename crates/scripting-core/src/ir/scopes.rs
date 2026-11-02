@@ -495,13 +495,13 @@ pub struct EntityScope {
     /// Engine owner reads already warned about, one bit per
     /// `PlayerSlot::index()`: an absent value warns once per scope, not once
     /// per hit.
-    warned_owned_engine: std::cell::Cell<u16>,
+    warned_owned_engine: std::cell::Cell<u32>,
     /// Per-owner store reads already warned about for a seatless source.
     warned_owned_store: RefCell<Vec<String>>,
 }
 
 // `warned_owned_engine` holds one bit per engine per-player slot.
-const _: () = assert!(PlayerSlot::ALL.len() <= u16::BITS as usize);
+const _: () = assert!(PlayerSlot::ALL.len() <= u32::BITS as usize);
 
 impl EntityScope {
     /// Construct the host-authoritative impact-policy composite scope.
@@ -610,7 +610,7 @@ impl EntityScope {
 
     fn read_owned_engine(&self, slot: PlayerSlot) -> IrValue {
         self.owner_engine[slot.index()].unwrap_or_else(|| {
-            let bit = 1u16 << slot.index();
+            let bit = 1u32 << slot.index();
             let warned = self.warned_owned_engine.get();
             if warned & bit == 0 {
                 self.warned_owned_engine.set(warned | bit);

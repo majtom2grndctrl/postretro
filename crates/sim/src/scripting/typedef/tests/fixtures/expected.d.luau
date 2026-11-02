@@ -1812,6 +1812,8 @@ export type GameStateRefs = {
   player: {
     ammo: PlayerComputedRef<number>,
     ammoReserve: PlayerComputedRef<number>,
+    assistProgress: PlayerComputedRef<number>,
+    assistReceivedProgress: PlayerComputedRef<number>,
     cell: PlayerComputedRef<number>,
     cellCapacity: PlayerComputedRef<number>,
     health: PlayerComputedRef<number>,

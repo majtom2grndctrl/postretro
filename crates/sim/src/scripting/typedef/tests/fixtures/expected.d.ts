@@ -1813,6 +1813,8 @@ declare module "postretro" {
     readonly player: {
       readonly ammo: PlayerComputedRef<number>;
       readonly ammoReserve: PlayerComputedRef<number>;
+      readonly assistProgress: PlayerComputedRef<number>;
+      readonly assistReceivedProgress: PlayerComputedRef<number>;
       readonly cell: PlayerComputedRef<number>;
       readonly cellCapacity: PlayerComputedRef<number>;
       readonly health: PlayerComputedRef<number>;

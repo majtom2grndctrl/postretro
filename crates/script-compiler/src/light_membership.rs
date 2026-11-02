@@ -942,6 +942,8 @@ pub const MIRRORED_GAME_STATE_LEAVES: &[(&str, &str, bool)] = &[
     ("player.weaponCooldownMs", "number", true),
     ("player.swimming", "boolean", true),
     ("player.lifeStateMs", "number", true),
+    ("player.assistProgress", "number", true),
+    ("player.assistReceivedProgress", "number", true),
     ("player.lifeState", "string", false),
     ("player.immersion", "number", true),
     ("player.weapon.current", "string", false),

@@ -33,6 +33,8 @@ struct PawnState {
     reserve: u32,
     swim: Option<SwimState>,
     life_ticks: Option<u32>,
+    /// Assist progress as helper and as target, on an assistable pawn.
+    assist: Option<(f32, f32)>,
 }
 
 /// A movement pawn's swim state and resolved immersion.
@@ -50,6 +52,7 @@ impl PawnState {
             reserve: 0,
             swim: None,
             life_ticks: None,
+            assist: None,
         }
     }
 
@@ -60,6 +63,7 @@ impl PawnState {
             reserve: 0,
             swim: None,
             life_ticks: None,
+            assist: None,
         }
     }
 
@@ -197,6 +201,26 @@ fn differing_states(slot: PlayerSlot) -> [PawnState; 2] {
                 ..PawnState::healthy(100.0, 100.0)
             },
         ],
+        PlayerSlot::AssistProgress => [
+            PawnState {
+                assist: Some((0.25, 0.0)),
+                ..PawnState::healthy(100.0, 100.0)
+            },
+            PawnState {
+                assist: Some((0.5, 0.0)),
+                ..PawnState::healthy(100.0, 100.0)
+            },
+        ],
+        PlayerSlot::AssistReceivedProgress => [
+            PawnState {
+                assist: Some((0.0, 0.75)),
+                ..PawnState::healthy(100.0, 100.0)
+            },
+            PawnState {
+                assist: Some((0.0, 0.125)),
+                ..PawnState::healthy(100.0, 100.0)
+            },
+        ],
     }
 }
 
@@ -229,6 +253,13 @@ fn spawn(registry: &mut EntityRegistry, state: PawnState) -> EntityId {
     if let Some(ticks) = state.life_ticks {
         let mut movement = movement_component();
         movement.life_state_elapsed_ticks = ticks;
+        registry.set_component(pawn, movement).unwrap();
+    }
+    if let Some((progress, received)) = state.assist {
+        let mut movement = movement_component();
+        movement.assistable = true;
+        movement.assist_progress = progress;
+        movement.assist_received_progress = received;
         registry.set_component(pawn, movement).unwrap();
     }
     if let Some(weapon) = state.weapon {

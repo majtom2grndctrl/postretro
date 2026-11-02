@@ -216,6 +216,11 @@ impl AssistPairTable {
         table
     }
 
+    /// Whether the table binds no profile: no pair can be assisted.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Whether (descriptor, state) has a bound `assistable` profile.
     pub fn declares(&self, descriptor: &str, life_state: u8) -> bool {
         self.entry(descriptor, life_state).is_some()

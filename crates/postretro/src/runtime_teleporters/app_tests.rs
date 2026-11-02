@@ -1309,6 +1309,7 @@ fn teleport_same_tick_yaw_reaches_presentation_aims_and_a_remote_start_aim() {
         },
         TICK,
         &mut touch,
+        &mut Default::default(),
         &[],
         0,
         &factions,

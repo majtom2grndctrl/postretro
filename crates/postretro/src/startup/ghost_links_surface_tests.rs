@@ -678,6 +678,7 @@ impl Level {
             },
             DT,
             &mut session.touch_system,
+            &mut session.assist_state,
             &data_registry.entities,
             data_registry.entity_types_generation(),
             &data_registry.factions,

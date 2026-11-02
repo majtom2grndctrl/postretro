@@ -1148,6 +1148,7 @@ impl Fixture {
             },
             DT,
             &mut self.touch,
+            &mut Default::default(),
             &self.descriptors,
             0,
             &factions,

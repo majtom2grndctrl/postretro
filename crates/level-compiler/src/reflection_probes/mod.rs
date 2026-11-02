@@ -27,6 +27,8 @@ mod share;
 mod stage_key;
 
 #[cfg(test)]
+mod capture_exclusion_held_tests;
+#[cfg(test)]
 mod capture_exclusion_test_fixtures;
 #[cfg(test)]
 mod capture_exclusion_tests;

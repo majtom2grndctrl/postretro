@@ -627,10 +627,10 @@ const LOW_PILLAR_TOP: f64 = 64.0;
 const IN_LOW_PILLAR: [f64; 3] = [48.0, 0.0, 32.0];
 
 /// Map units per metre.
-const UNITS_PER_METER: f64 = 1.0 / 0.0254;
+pub(super) const UNITS_PER_METER: f64 = 1.0 / 0.0254;
 
 /// `probe` with its projection box the map-unit box `min`..`max`.
-fn boxed(probe: &PlacedProbe, min: [f64; 3], max: [f64; 3]) -> PlacedProbe {
+pub(super) fn boxed(probe: &PlacedProbe, min: [f64; 3], max: [f64; 3]) -> PlacedProbe {
     let (lo, hi) = engine_box(min, max);
     PlacedProbe {
         box_min: lo.as_vec3().to_array(),
@@ -817,7 +817,7 @@ fn two_tolerance_hits_at_an_excluded_pillars_corner_still_reach_the_kept_hit() {
 /// The contact-gap row's gap between an excluded block and the floor under
 /// it, in map units: 0.8 mm, inside CSG's 1 mm contact epsilon, so CSG
 /// removes the floor's top under the block.
-const CONTACT_GAP: f64 = 0.0008 * UNITS_PER_METER;
+pub(super) const CONTACT_GAP: f64 = 0.0008 * UNITS_PER_METER;
 
 // Regression: a ray through the contact gap under an excluded block took a
 // tolerance hit on the block's front, 0.2 mm under its bottom edge, and so
@@ -883,22 +883,38 @@ fn platform_under_a_block(height: f64) -> CaptureFixture {
 /// map-x span of `far`, in that order after the near brush, each `height` u
 /// tall from the floor. CSG removes a brush's side where it butts another
 /// and its top under the block.
-fn split_platform_under_a_block(height: f64, far: &[[f64; 2]]) -> CaptureFixture {
+pub(super) fn split_platform_under_a_block(height: f64, far: &[[f64; 2]]) -> CaptureFixture {
+    let far: Vec<([f64; 2], f64)> = far.iter().map(|&span| (span, height)).collect();
+    platform_under_a_block_with(Some(height), &far, height + CONTACT_GAP)
+}
+
+/// The room with the excluded block of [`split_platform_under_a_block`]
+/// from `block_bottom` up to 40 u over map x 100 to 116, a near brush from
+/// map x 84 to 100 topped at `near` when given, and one brush per `far`
+/// entry, its map-x span and its top, in that order after the near brush.
+/// Every brush stands on the floor; all heights are map units.
+pub(super) fn platform_under_a_block_with(
+    near: Option<f64>,
+    far: &[([f64; 2], f64)],
+    block_bottom: f64,
+) -> CaptureFixture {
     let mut world = textured_room();
-    world.push(textured_box_brush(
-        [84.0, -8.0, 0.0],
-        [100.0, 8.0, height],
-        TRIM_TEXTURE,
-    ));
-    for &[x0, x1] in far {
+    if let Some(top) = near {
+        world.push(textured_box_brush(
+            [84.0, -8.0, 0.0],
+            [100.0, 8.0, top],
+            TRIM_TEXTURE,
+        ));
+    }
+    for &([x0, x1], top) in far {
         world.push(textured_box_brush(
             [x0, -8.0, 0.0],
-            [x1, 8.0, height],
+            [x1, 8.0, top],
             TRIM_TEXTURE,
         ));
     }
     world.push(textured_box_brush(
-        [100.0, -8.0, height + CONTACT_GAP],
+        [100.0, -8.0, block_bottom],
         [116.0, 8.0, 40.0],
         TRIM_TEXTURE,
     ));
@@ -979,29 +995,29 @@ fn a_ray_through_the_contact_gap_over_a_platform_with_no_face_left_never_passes_
 }
 
 /// The split-platform rows' platform height, in map units.
-const PLATFORM_HEIGHT: f64 = 8.0;
+pub(super) const PLATFORM_HEIGHT: f64 = 8.0;
 
 /// A ray across the block's front (map x = 100) `over` metres above a
 /// [`PLATFORM_HEIGHT`] platform, descending at `slope` (map z per map x),
 /// its origin 1 m before the crossing, past the pool.
-fn over_the_platform(over: f64, slope: f64) -> (Vec3, Vec3) {
+pub(super) fn over_the_platform(over: f64, slope: f64) -> (Vec3, Vec3) {
     let crossing = engine([100.0, 0.5, PLATFORM_HEIGHT + over * UNITS_PER_METER]);
     let direction = engine([1.0, 0.0, -slope]).normalize();
     ((crossing - direction).as_vec3(), direction.as_vec3())
 }
 
 /// The map x where that ray meets the platform's top plane.
-fn meets_the_platform_top(over: f64, slope: f64) -> f64 {
+pub(super) fn meets_the_platform_top(over: f64, slope: f64) -> f64 {
     100.0 + over * UNITS_PER_METER / slope
 }
 
 /// How far that ray lies under the block's bottom at map x `x`, in metres.
-fn under_the_block(over: f64, slope: f64, x: f64) -> f64 {
+pub(super) fn under_the_block(over: f64, slope: f64, x: f64) -> f64 {
     CONTACT_GAP / UNITS_PER_METER - over + slope * (x - 100.0) / UNITS_PER_METER
 }
 
 /// How far along that ray map x `x` lies from its origin.
-fn reaching(slope: f64, x: f64) -> f32 {
+pub(super) fn reaching(slope: f64, x: f64) -> f32 {
     (1.0 + (x - 100.0) / UNITS_PER_METER * (1.0 + slope * slope).sqrt()) as f32
 }
 

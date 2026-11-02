@@ -608,6 +608,7 @@ impl RelayHarness {
             snapshot_due,
             &mut self.last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
     }
 

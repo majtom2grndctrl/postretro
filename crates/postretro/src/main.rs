@@ -5005,6 +5005,7 @@ impl App {
                 snapshot_due,
                 last_emitted_snapshot_tick,
                 &script_ctx.presentation_overrides.borrow(),
+                &session.assist_state,
             );
             // Ingesting the current presentation pose establishes which baseline
             // must eventually be acknowledged; it does not imply snapshot delivery.

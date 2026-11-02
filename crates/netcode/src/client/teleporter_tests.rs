@@ -50,6 +50,7 @@ fn teleporter(source_entity: u32) -> ComponentPayload {
 
 fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id,
         baseline_id,
         last_processed_client_tick: None,

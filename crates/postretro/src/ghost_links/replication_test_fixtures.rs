@@ -1057,6 +1057,7 @@ impl Loopback {
             self.snapshot_due,
             &mut self.last_snapshot,
             &self.host.presentation_overrides.borrow(),
+            &Default::default(),
         );
         self.snapshot_due = false;
     }

@@ -81,6 +81,7 @@ fn binding() -> WirePresentationBinding {
 }
 fn full(nid: u32, baseline: u32, bound: bool, payloads: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id: nid,
         baseline_id: baseline,
         components: payloads,
@@ -100,6 +101,7 @@ fn delta(
     payloads: Vec<ComponentPayload>,
 ) -> EntityRecord {
     EntityRecord::Delta {
+        assist_facts: None,
         network_id: nid,
         baseline_ref: baseline,
         new_baseline_id: next,

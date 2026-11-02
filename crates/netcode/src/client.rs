@@ -68,6 +68,8 @@ use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
 
+#[cfg(test)]
+mod assist_facts_tests;
 mod assist_retention;
 #[cfg(test)]
 mod assist_retention_tests;
@@ -84,8 +86,8 @@ mod replay_poses;
 #[cfg(test)]
 mod teleporter_tests;
 mod teleporters;
-pub use assist_retention::RemoteAssistFacts;
 use assist_retention::RemoteAssistRetention;
+pub use assist_retention::{AssistPairEntry, RemoteAssistFacts};
 use bindings::{ClientBindings, RegionBinding, is_presentation_payload};
 pub use ghost_links::GhostLinkUpdate;
 use late_baselines::LateBaselineHistory;
@@ -1123,6 +1125,7 @@ impl ClientReplication {
                     baseline_id,
                     components,
                     local_player,
+                    assist_facts,
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
@@ -1205,6 +1208,11 @@ impl ClientReplication {
                             *last_processed_client_tick,
                             &mut outcome,
                         );
+                        self.remote_assist.retain_local(
+                            NetworkId(*network_id),
+                            *local_player,
+                            assist_facts.as_ref(),
+                        );
                     }
                 }
                 EntityRecord::Delta {
@@ -1213,6 +1221,7 @@ impl ClientReplication {
                     new_baseline_id,
                     components,
                     local_player,
+                    assist_facts,
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
@@ -1311,6 +1320,8 @@ impl ClientReplication {
                         *last_processed_client_tick,
                         &mut outcome,
                     );
+                    self.remote_assist
+                        .retain_local(nid, *local_player, assist_facts.as_ref());
                 }
                 EntityRecord::Despawn {
                     network_id,
@@ -1850,7 +1861,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
-        self.remote_assist.forget(network_id);
+        self.remote_assist.forget_remote(network_id);
         self.bindings.mover_network_ids.remove(&network_id);
         self.bindings.region_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
@@ -3513,6 +3524,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             // Generic non-local fixture: intentionally omits `local_player`/
@@ -3535,6 +3547,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,
@@ -4513,6 +4526,7 @@ mod tests {
     #[test]
     fn stale_mapping_repair_respawn_reuses_network_id_with_clean_presentation_state() {
         let baseline = |baseline_id, x, aim_pitch| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7163,6 +7177,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             last_processed_client_tick: None,
@@ -7185,6 +7200,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,
@@ -7415,6 +7431,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             last_processed_client_tick: None,
@@ -7435,6 +7452,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,

@@ -38,6 +38,7 @@ fn pawn(
     assistable: bool,
 ) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id,
         baseline_id,
         last_processed_client_tick: local_player.then_some(0),

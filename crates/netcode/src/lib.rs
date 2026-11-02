@@ -53,6 +53,7 @@ pub use ghost_link_wire::{ghost_color_filter_from_wire, ghost_link_state_to_wire
 pub mod frame_order;
 mod host;
 mod host_address;
+mod host_assist_facts;
 mod host_input;
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
@@ -183,7 +184,7 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{
-    ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection,
+    AssistPairEntry, ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection,
     RemoteAssistFacts,
 };
 #[cfg(test)]
@@ -3807,6 +3808,7 @@ mod tests {
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3844,6 +3846,7 @@ mod tests {
             0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
         assert!(sampled.is_empty());
@@ -3899,6 +3902,7 @@ mod tests {
             0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
@@ -6937,6 +6941,7 @@ mod tests {
     #[test]
     fn descriptor_class_snapshots_require_descriptor_table() {
         let classed = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -6948,6 +6953,7 @@ mod tests {
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 8,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -7137,6 +7143,7 @@ mod tests {
     #[test]
     fn client_sample_interpolation_reports_the_render_tick_remotes_were_sampled_at() {
         let record = |baseline_id, x: f32| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7223,6 +7230,7 @@ mod tests {
                 sequence: 0,
                 server_tick: 100,
                 records: vec![EntityRecord::FullBaseline {
+                    assist_facts: None,
                     network_id: 7,
                     baseline_id: 1,
                     last_processed_client_tick: None,
@@ -7333,6 +7341,7 @@ mod tests {
             })
         };
         let record = |baseline_id, transform_x, aim_pitch| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7916,6 +7925,7 @@ mod tests {
                     server_tick: 10,
                     records: vec![
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 7,
                             baseline_id: 1,
                             last_processed_client_tick: None,
@@ -7956,6 +7966,7 @@ mod tests {
                             ],
                         },
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 8,
                             baseline_id: 1,
                             last_processed_client_tick: None,

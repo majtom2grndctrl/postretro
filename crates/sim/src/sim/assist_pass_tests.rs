@@ -1183,3 +1183,6 @@ fn assist_pass_runs_in_the_fixed_tick_and_reports_completions_on_tick_events() {
     assert_eq!(events.assist_completions[0].target, world.pawns[1]);
     assert_eq!(events.assist_completions[0].life_state, DOWN);
 }
+
+#[path = "assist_snapshot_tests.rs"]
+mod snapshot_tests;

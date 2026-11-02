@@ -31,6 +31,7 @@ fn link(index: u16, source_entity: u32, armed: bool, members: u8) -> Vec<Compone
 
 fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id,
         baseline_id,
         last_processed_client_tick: None,
@@ -45,6 +46,7 @@ fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>
 
 fn delta(network_id: u32, baseline_ref: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::Delta {
+        assist_facts: None,
         network_id,
         baseline_ref,
         new_baseline_id: baseline_ref + 1,

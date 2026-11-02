@@ -2267,6 +2267,7 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
         sequence: stale_sequence,
         server_tick: 0,
         records: vec![EntityRecord::Delta {
+            assist_facts: None,
             network_id: net,
             baseline_ref: 0,
             new_baseline_id: 0,

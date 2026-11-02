@@ -45,4 +45,8 @@ postretro-render-data.workspace = true
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
 postretro-render-cpu.workspace = true
+# Runtime-cell rows check that the player cannot stand inside solid or past an
+# exempt seal, through the engine's own containment query on a compiled level.
+postretro-physics.workspace = true
+postretro-foundation.workspace = true
 proptest = { workspace = true }

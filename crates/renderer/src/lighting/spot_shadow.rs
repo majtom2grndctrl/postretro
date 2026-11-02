@@ -2,6 +2,7 @@
 //
 // See: context/lib/rendering_pipeline.md §4 (Dynamic direct, spot shadow maps)
 
+use crate::render::gpu_create::GpuCreate;
 use glam::Mat4;
 
 #[cfg(test)]
@@ -21,37 +22,38 @@ pub const DEFAULT_SPOT_SHADOW_MAP_RESOLUTION: u32 = 1024;
 /// by the forward shader at `@group(5) @binding(2)`.
 pub const LIGHT_SPACE_MATRICES_SIZE: u64 = (SHADOW_POOL_SIZE * 16 * 4) as u64;
 
-/// Pool of shadow-map texture slots, one per dynamic spot light that
-/// passes visibility culling. Ranked by projected influence area each frame.
-///
-/// Owns the group 5 resources the forward shader binds: the shadow depth
-/// array (as a D2Array view), the comparison sampler, and the light-space
-/// matrix storage buffer. `matrices` is sized for all `SHADOW_POOL_SIZE` slots;
-/// slots that aren't assigned in a given frame are left at whatever was last written
-/// (the fragment shader gates on the per-light slot sentinel so those
-/// stale entries are never sampled).
-pub struct SpotShadowPool {
+/// The spot pool's GPU textures at one resolution: the shadow depth array
+/// (per-slot 2D attachment views and a D2Array sampling view), the comparison
+/// sampler, and the light-space matrix uniform. Shared through `Arc` by every
+/// level set built at that resolution (`render/shadow_tier.rs`); the group-5
+/// bind group that ties them to the extent-bound views is each set's own.
+/// `matrices_buffer` is sized for all `SHADOW_POOL_SIZE` slots; slots that
+/// aren't assigned in a given frame are left at whatever was last written (the
+/// fragment shader gates on the per-light slot sentinel so those stale entries
+/// are never sampled).
+pub struct SpotShadowTextures {
     /// Resolution shared by the live pool and its spot depth caches.
     pub resolution: u32,
     /// Array texture with SHADOW_POOL_SIZE layers, each `resolution × resolution`.
-    /// Held for ownership — actual access goes through `views` and `bind_group`.
-    #[allow(dead_code)]
     pub array_texture: wgpu::Texture,
     /// Texture views for each slot (2D views for render attachments).
     pub views: Vec<wgpu::TextureView>,
     /// D2Array view of `array_texture`, bound at `@group(5) @binding(0)` for sampling.
-    /// Held for ownership — `bind_group` references it.
-    #[allow(dead_code)]
     pub array_view: wgpu::TextureView,
     /// Comparison sampler bound at `@group(5) @binding(1)`.
-    /// Held for ownership — `bind_group` references it.
-    #[allow(dead_code)]
     pub compare_sampler: wgpu::Sampler,
     /// Uniform buffer of `SHADOW_POOL_SIZE` `mat4x4<f32>` bound at `@group(5) @binding(2)`.
     /// Contains light-space view-projection matrices per slot.
     pub matrices_buffer: wgpu::Buffer,
-    /// Bind group for group 5 — lives alongside the resources above.
-    pub bind_group: wgpu::BindGroup,
+}
+
+/// The active level's spot pool: its tier's shared textures plus this
+/// frame's slot assignment. Ranked by projected influence area each frame.
+/// Replaced whole when a level set is published, so slot state never
+/// survives a level boundary.
+pub struct SpotShadowPool {
+    /// The textures of the active set's shadow tier.
+    pub textures: std::sync::Arc<SpotShadowTextures>,
     /// Per-frame slot assignment: slot_assignment[light_index] = slot (0..SHADOW_POOL_SIZE) or NO_SHADOW_SLOT.
     pub slot_assignment: Vec<u32>,
     /// Per-slot light-space matrix for the occupant of each shadow slot, written
@@ -99,8 +101,9 @@ impl SpotShadowPool {
     ///
     /// Bindings 3, 4, and 5 are owned outside the pool — the SDF shadow pass owns
     /// the factor target, the renderer owns the scene depth view, and the cube
-    /// shadow pool owns the cube sampling view. All are supplied at construction
-    /// time and must be re-supplied on resize via `rebuild_bind_group`. The fog
+    /// shadow pool owns the cube sampling view. Each level set binds them through
+    /// [`SpotShadowTextures::bind_group`] and rebuilds that group with its other
+    /// extent-bound groups on a scene-extent change. The fog
     /// volume compute pass also binds group 5 but does not reference slots 3, 4,
     /// or 5 — unused BGL entries are valid.
     pub fn bind_group_layout(
@@ -199,33 +202,26 @@ impl SpotShadowPool {
         entries
     }
 
-    /// Allocate the shadow-map pool at renderer init.
-    ///
-    /// Creates a single array texture with `SHADOW_POOL_SIZE` layers,
-    /// each `resolution × resolution` Depth32Float,
-    /// along with the sampler, matrix buffer, and bind group that the
-    /// forward shader's `@group(5)` layout expects.
-    ///
-    /// Bindings 3 (SDF shadow factor) and 4 (scene depth) are owned outside
-    /// the pool — the SDF shadow pass owns the half-res factor target and the
-    /// renderer owns the scene depth view. Both are passed in here so the pool
-    /// can build a complete bind group at construction time. Both views must be
-    /// re-supplied on resize via `rebuild_bind_group` since they are
-    /// re-created when the surface changes size.
-    ///
-    /// `point_cube_view` is `Some` only when the adapter supports
-    /// `CUBE_ARRAY_TEXTURES` — it must be `Some` iff `layout` was built with
-    /// `cube_array_supported = true`, since the bind group's entry set must match
-    /// the BGL exactly. `None` omits binding 5 (point shadows off).
-    pub fn new(
-        device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
-        sdf_shadow_factor_view: &wgpu::TextureView,
-        scene_depth_view: &wgpu::TextureView,
-        point_cube_view: Option<&wgpu::TextureView>,
-        resolution: u32,
-    ) -> Self {
-        let array_texture = device.create_texture(&wgpu::TextureDescriptor {
+    /// The pool over a tier's shared textures, with no slot occupied.
+    pub fn over(textures: std::sync::Arc<SpotShadowTextures>) -> Self {
+        Self {
+            textures,
+            slot_assignment: Vec::new(),
+            slot_cone_matrices: [None; SHADOW_POOL_SIZE],
+            slot_entity_eligible: [false; SHADOW_POOL_SIZE],
+        }
+    }
+}
+
+impl SpotShadowTextures {
+    /// Allocate one tier's pool textures: a single array texture with
+    /// `SHADOW_POOL_SIZE` layers, each `resolution × resolution`
+    /// Depth32Float, along with the sampler and matrix buffer the forward
+    /// shader's `@group(5)` layout expects. No bind group: bindings 3–5 are
+    /// extent-bound or renderer-owned, so each level set builds its own
+    /// through [`SpotShadowTextures::bind_group`].
+    pub fn new(device: &wgpu::Device, resolution: u32) -> Self {
+        let array_texture = device.new_texture(&wgpu::TextureDescriptor {
             label: Some("Spot Shadow Map Array"),
             size: wgpu::Extent3d {
                 width: resolution,
@@ -282,23 +278,12 @@ impl SpotShadowPool {
             ..Default::default()
         });
 
-        let matrices_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let matrices_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Spot Shadow Light-Space Matrices"),
             size: LIGHT_SPACE_MATRICES_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let bind_group = build_bind_group(
-            device,
-            layout,
-            &array_view,
-            &compare_sampler,
-            &matrices_buffer,
-            sdf_shadow_factor_view,
-            scene_depth_view,
-            point_cube_view,
-        );
 
         Self {
             resolution,
@@ -307,26 +292,24 @@ impl SpotShadowPool {
             array_view,
             compare_sampler,
             matrices_buffer,
-            bind_group,
-            slot_assignment: Vec::new(),
-            slot_cone_matrices: [None; SHADOW_POOL_SIZE],
-            slot_entity_eligible: [false; SHADOW_POOL_SIZE],
         }
     }
 
-    /// Rebuild the group-5 bind group after one of the external views
-    /// (SDF shadow factor target or scene depth) has been re-created — both
-    /// flip on a surface resize. The pool-owned resources (array view,
-    /// sampler, matrix buffer) are stable across resizes.
-    pub fn rebuild_bind_group(
-        &mut self,
+    /// Build the group-5 bind group over these textures and the external
+    /// views: the SDF shadow factor target (binding 3) and scene depth
+    /// (binding 4), both recreated on a scene-extent change, and the point
+    /// cube sampling view (binding 5). `point_cube_view` is `Some` iff
+    /// `layout` was built with `cube_array_supported = true`, since the bind
+    /// group's entry set must match the BGL exactly.
+    pub fn bind_group(
+        &self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         sdf_shadow_factor_view: &wgpu::TextureView,
         scene_depth_view: &wgpu::TextureView,
         point_cube_view: Option<&wgpu::TextureView>,
-    ) {
-        self.bind_group = build_bind_group(
+    ) -> wgpu::BindGroup {
+        build_bind_group(
             device,
             layout,
             &self.array_view,
@@ -335,7 +318,7 @@ impl SpotShadowPool {
             sdf_shadow_factor_view,
             scene_depth_view,
             point_cube_view,
-        );
+        )
     }
 }
 
@@ -383,7 +366,7 @@ fn build_bind_group(
             resource: wgpu::BindingResource::TextureView(cube_view),
         });
     }
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spot Shadow Bind Group"),
         layout,
         entries: &entries,

@@ -1,0 +1,90 @@
+# log extract from target/occluder-after/campaign-test/bake.log (prl-build at 5426b60b4 + fragment-cull fix, RUST_LOG=info, -v)
+partition stage: 0.04 s (stamps 0.06 -> 0.10 Data script compilation)
+visibility stage: 0.02 s
+[Compiler] Occluder classification: 143 brushes, 40 occlude alone; exempt alone: 14 under floor, 13 no open face, 65 short span, 11 low top; 8 clusters, 15 sections, 2 occlude (6 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[Compiler] Door recognition: 2 of 3 kinematic movers seal a doorway at their closed pose: movers 0, 1
+BSP leaves: 466 solid, 537 empty
+BSP nodes: 1002
+BSP leaves: 1003
+BSP max depth: 29
+Total faces (after brush-side extraction): 1520
+[Compiler] Watertightness: 43 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+Exterior flood-fill: 256 exterior leaves, 281 interior empty leaves
+[Compiler] Runtime cells: 507 occluder-tier leaves; 793 cells (71 interior, 466 solid, 256 exterior); 132 runtime portals; full tree 1003 leaves, 1386 portals
+Visibility: 327 non-solid cells, 132 portals
+Vertices: 3906 (28 bytes each)
+Triangles: 1950
+Faces: 978
+Interior cells: 71
+Bvh: 1955 nodes (977 internal, 978 leaf), 978 leaf entries
+Cell Visibility: 100%  ETA 0.0s
+[Compiler] DirectShVolume cull: 11 of 11 static-direct light(s) had cells dropped by the reach test
+retained 1380 and dropped 44; retained 19077120 raw payload bytes, \
+retained 377 and dropped 1554; retained 5211648 raw payload bytes, \
+retained 1301 and dropped 123; retained 17985024 raw payload bytes, \
+[ChunkLightList] grid 11x7x16 (1232 chunks), 16 static lights, avg 0.25 / chunk, max 6, total indices 314, payload 11112 bytes
+[Compiler] lightmap stage predicted peak 980 MiB: shadowmask fill 16 + encode scratch 40 + face map 16 + layer plane 228 + 8 partitions 512 + sections 163 + metadata 3 + cache metadata 0 + ownership metadata 2 (73 blocks on 20 bake layers of 2048²)
+[Compiler] CellResidencySet sampling: 1917 eye candidates (1818 in cell, 51 inset, 48 rejected; missed into solid 30, exterior 45, other cell 24), 0 camera cells without an eye point, 11214 walks (0 step-limited, 0 frustum fallback)
+[Compiler] CellResidencySet: 71 camera cells, 4096 entries (max 71 per camera), 35960 bytes, max lead 32 m, 0.016 s
+[Compiler] Lightmap runtime all-resident pool: 17 pool layers
+[ShadowmaskAtlas] peak per-face owner demand: 5 candidate light(s) on one face (capacity 4); 1 light(s) dropped above the floor
+[AnimatedLightChunks] 421 chunks, 5 animated lights, max 2 / chunk, mean 1.03 / chunk, 0 chunks bottomed out at min-extent floor
+[Compiler] PRL section footprint: id 23 (ChunkLightList), 11160 payload bytes
+[Compiler] PRL section footprint: id 24 (AnimatedLightChunks), 11384 payload bytes
+[Compiler] PRL section footprint: id 51 (CellResidencySet), 35960 payload bytes
+ChunkLightList    0.01s
+[Compiler] Watertightness: 43 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+seals per mover: m0 x5, m1 x5 (total 10)
+faces cut into sub-charts: 0 (extra charts 0)
+oversize SH cluster warnings: 8
+  SH cluster cell 325 is an indivisible singleton with 72 primitives, exceeding limit 64 by 8
+  SH cluster cell 575 is an indivisible singleton with 146 primitives, exceeding limit 64 by 82
+  SH cluster cell 210 is an indivisible singleton with 157 primitives, exceeding limit 64 by 93
+  SH cluster cell 552 is an indivisible singleton with 159 primitives, exceeding limit 64 by 95
+  SH cluster cell 325 is an indivisible singleton with 72 primitives, exceeding limit 64 by 8
+  SH cluster cell 575 is an indivisible singleton with 146 primitives, exceeding limit 64 by 82
+  SH cluster cell 210 is an indivisible singleton with 157 primitives, exceeding limit 64 by 93
+  SH cluster cell 552 is an indivisible singleton with 159 primitives, exceeding limit 64 by 95
+## stage timing table
+  Parsing           0.03s
+  Partitioning      0.04s
+  DataScript        0.06s
+  Visibility        0.01s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.00s
+  NavMesh           0.94s
+  TexValidation     0.01s
+  Materials         0.13s
+  SH Bake           2.52s
+  Delta SH Bake     0.61s
+  Direct SH Bake    0.85s
+  Animated Direct SH Bake   0.08s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.10s
+  Billboard Direct Scatter Bake   0.49s
+  ChunkLightList    0.01s
+  Atlas Preparation   0.10s
+  Cell Residency Set   0.02s
+  Lightmap Bake    11.84s
+    TexelSteps      0.51s
+  ShadowmaskAtlas   1.64s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    3.50s
+    TexelSteps      0.28s
+  TextureMips       0.01s
+  Reflection Probes   0.17s
+  ClusterDirectory   0.03s
+  Packing           1.14s
+  Total            25.83s
+## seal lines
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 96
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 97
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 101
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 104
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 105
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 106
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 107
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 111
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 114
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 115

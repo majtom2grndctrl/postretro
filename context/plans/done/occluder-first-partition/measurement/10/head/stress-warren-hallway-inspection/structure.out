@@ -1,0 +1,74 @@
+warning: function `widget_contains_text` is never used
+    --> crates\postretro\src\main.rs:9620:8
+     |
+9620 |     fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `button_action` is never used
+    --> crates\postretro\src\main.rs:9637:8
+     |
+9637 |     fn button_action<'a>(
+     |        ^^^^^^^^^^^^^
+
+warning: function `find_button` is never used
+    --> crates\postretro\src\main.rs:9657:8
+     |
+9657 |     fn find_button<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `find_slider` is never used
+    --> crates\postretro\src\main.rs:9677:8
+     |
+9677 |     fn find_slider<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `workspace_root` is never used
+    --> crates\postretro\src\main.rs:9697:8
+     |
+9697 |     fn workspace_root() -> PathBuf {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `focus_button_action` is never used
+    --> crates\postretro\src\main.rs:9704:8
+     |
+9704 |     fn focus_button_action(
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ensure_scripts_build` is never used
+    --> crates\postretro\src\main.rs:9762:8
+     |
+9762 |     fn ensure_scripts_build() -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `postretro` (bin "postretro" test) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 1.46s
+     Running unittests src\main.rs (target\release\deps\postretro-e1b57fd488fe154d.exe)
+
+running 1 test
+PRL: C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 0.4 s
+bake read: id51=4c567b65504ac2ad walk_epoch=4 size=2700159992 mtime=1793317887 prl=C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+
+=== structure
+cells 7645 (interior 1656, solid 5573, exterior 416, drawable 1634)
+interior cell AABB volume: [<0.1 m3] 9 [0.1-1 m3] 0 [1-10 m3] 26 [10-100 m3] 610 [100-1000 m3] 725 [1000-10000 m3] 286 [>=10000 m3] 0
+interior cell smallest extent: [<0.1 m] 9 [0.1-0.25 m] 0 [0.25-0.5 m] 2 [0.5-1 m] 220 [1-2 m] 198 [2-4 m] 723 [4-8 m] 443 [>=8 m] 61
+interior cell largest extent: p50 9.75 p95 26.01 max 53.64
+portals 2586 (walkable, both cells interior: 2586; touching solid or exterior: 0)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 32 [1-10 m2] 236 [10-100 m2] 1937 [100-1000 m2] 381 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 95 [1.5-2] 1513 [2-4] 546 [4-8] 235 [8-16] 131 [16-32] 37 [32-64] 29 [>=64] 0
+walkable portal normals: horizontal 291, vertical 2295, oblique 0
+faces 11552, triangles 22958, vertices 46062, BVH leaves 11552
+lightmap blocks 1634 over 1634 cells (max 1 per cell), texel area 729152912
+lightmap storage: streaming
+SH probe grid 50x13x61 = 39650 probes
+SH clusters 6244 (indivisible oversize 3), max 30 cells per cluster
+cell visibility: 5990 components, 31783 coupled pairs
+id 51: 7645 camera cells, 270925 entries; entries per interior camera cell p50 174.00 p95 250.00 max 323.00
+lights 345, fog volumes 0
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 0.46s
+

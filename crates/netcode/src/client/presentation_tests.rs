@@ -129,6 +129,7 @@ fn snapshot(sequence: u32, clock: f64, records: Vec<EntityRecord>) -> SnapshotMe
         faction_sentiment_record: None,
         ghost_audio: None,
         server_script_time: clock,
+        level_tick: 0,
     }
 }
 fn apply(

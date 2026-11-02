@@ -68,6 +68,7 @@ fn bake_residency(cache: &StageCache, cut: bool) -> RawBake {
                 &AlphaLightsNs::from_lights(&lights),
                 None,
                 &[],
+                &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
                 &bvh,
                 &prims,
                 &config(false),

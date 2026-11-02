@@ -1,12 +1,12 @@
 // Renderer-owned normal-free direct-scatter volume resources for billboards.
 // See: context/lib/rendering_pipeline.md §7.4
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
 use postretro_render_cpu::frame_uniforms::BillboardScatterMode;
 use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 use postretro_render_cpu::sh_volume::BIND_BILLBOARD_DIRECT_SCATTER;
-use wgpu::util::DeviceExt;
 
 use super::residency::{ResidencyAllocationState, source_ids};
 use super::sh_allocation::{
@@ -54,7 +54,7 @@ impl BillboardDirectScatterResources {
     )]
     pub(super) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         base_sh_usable: bool,
         base: Option<&BillboardDirectScatterVolumeSection>,
         animated: Option<&AnimatedBillboardDirectScatterDeltaVolumesSection>,
@@ -114,7 +114,7 @@ impl BillboardDirectScatterResources {
                 false,
                 ResidencyAllocationState::Data,
             );
-            let composed = device.create_texture(
+            let composed = device.new_texture(
                 &allocation.descriptor(Some("Billboard Direct Scatter Composed Volume")),
             );
             let sampled = composed.create_view(&wgpu::TextureViewDescriptor {
@@ -217,7 +217,7 @@ pub(super) fn append_shared_bind_group_layout_entries(
 
 fn upload_base_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     section: Option<&BillboardDirectScatterVolumeSection>,
     base_section_present: bool,
     animated_section_present: bool,
@@ -254,7 +254,7 @@ fn upload_base_texture(
 
     let allocation = billboard_scatter_base_allocation(section.grid_dimensions);
     ledger.record_texture(allocation, &[47], false, ResidencyAllocationState::Data);
-    let texture = device.create_texture_with_data(
+    let texture = device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("Billboard Direct Scatter Base Volume")),
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -265,10 +265,10 @@ fn upload_base_texture(
 
 fn upload_dummy_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     allocation: super::sh_allocation::TextureAllocation,
 ) -> wgpu::Texture {
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("Billboard Direct Scatter Dummy Volume")),
         wgpu::util::TextureDataOrder::LayerMajor,

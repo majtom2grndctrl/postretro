@@ -1,0 +1,18 @@
+
+running 1 test
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 2020796272 after 522031648; trip frames: before 19554 after 5853; frames deferring more texels after: 0 of 75374
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 2686359120 after 682244656; trip frames: before 25858 after 6812; frames deferring more texels after: 0 of 106267
+pose tour stress-street.poses, 2 frames per pose
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 82482400 after 12362432; trip frames: before 1036 after 226; frames deferring more texels after: 0 of 5920
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_diff ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.17s
+

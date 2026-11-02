@@ -1,0 +1,22 @@
+postretro-world-poses 1
+# H3 street set: 8 costliest uncapped street walks (9g), 8 costliest rooftop walks (9g), 4 stress-street.README.md sweep poses as typical cases. Eye poses (engine m); README start poses (capsule centre at floor + 0.81) converted to eye = floor + 1.5 m, as the 9g sweep poses are.
+pose st:g5.3.0@180 -59.247803 22.505802 -124.25481 180 0
+pose st:g6.3.0@180 -54.747803 22.5058 -124.25481 180 0
+pose st:g5.4.0@180 -59.247803 22.505802 -119.75481 180 0
+pose st:g6.6.0@180 -54.747803 22.5058 -110.75481 180 0
+pose st:g5.5.0@180 -59.247803 22.505802 -115.25481 180 0
+pose st:g13.30.0@0 -23.247803 1.4999981 -2.7548065 0 0
+pose st:g8.7.0@180 -45.747803 19.9912 -106.25481 180 0
+pose st:g5.0.0@180 -59.247803 17.502 -137.7548 180 0
+pose roof:B4.s2.c@180/-15 -57 22.5 -118 180 -15
+pose roof:B3.s1.e@180/-15 -47 20 -101 180 -15
+pose roof:B4.s2.e@180/-15 -61 22.5 -118 180 -15
+pose roof:B2.s1.e@135/-15 -26 17.5 -101 135 -15
+pose roof:B3.s1.c@180/-15 -47 20 -105 180 -15
+pose roof:B4.s2.c@225/0 -57 22.5 -118 225 0
+pose roof:A7.s2.c@225/-15 -79 17.5 -132 225 -15
+pose roof:A6.s2.e@225/-15 -75 20 -115 225 -15
+pose rd:plaza -26.00 1.5 -40.00 0 0
+pose rd:promenade -32.00 1.5 -90.00 90 0
+pose rd:elevated -30.00 7.5 -96.00 90 0
+pose rd:upperdeck -70.00 12.5 -100.00 0 0

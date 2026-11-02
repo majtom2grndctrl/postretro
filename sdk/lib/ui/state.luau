@@ -4,14 +4,12 @@
 -- remains a type-level capability. Presentation-local cells below remain
 -- separate and keep their `:get()`/`:set()` handle behavior.
 
---- Primitive reaction body produced by `:set()`. Mirrors `data_script.luau`'s
---- `PrimitiveReactionDescriptor`; redeclared here to keep the module
---- self-contained (the Luau prelude has no module loader).
-export type PrimitiveReactionDescriptor = {
+--- System reaction produced by `:set()`. Mirrors `data_script.luau`'s
+--- `SystemReactionStep`; redeclared here to keep the module self-contained
+--- (the Luau prelude has no module loader).
+export type SystemReactionStep = {
   primitive: string,
-  tag: string?,
   args: { [string]: any }?,
-  onComplete: string?,
 }
 
 --- A reactive predicate (M13 G2): `{ slot }` or `{ local }` source + optional
@@ -70,7 +68,7 @@ export type LocalBindRef = { ["local"]: string }
 --- produces an equality `Predicate` (typed to the cell's `T`).
 export type LocalStateHandle<T> = {
   get: (self: LocalStateHandle<T>) -> LocalBindRef,
-  set: (self: LocalStateHandle<T>, value: T) -> PrimitiveReactionDescriptor,
+  set: (self: LocalStateHandle<T>, value: T) -> SystemReactionStep,
   is: (self: LocalStateHandle<T>, value: T) -> Predicate,
 }
 
@@ -97,7 +95,7 @@ function UiStateSdk.createLocalState(init: { [string]: any }): { scope: any, cel
       get = function(self): LocalBindRef
         return { ["local"] = cellName }
       end,
-      set = function(self, value): PrimitiveReactionDescriptor
+      set = function(self, value): SystemReactionStep
         -- A `cellWrite` reaction (NEVER `setState`): presentation cell, scoped.
         return { primitive = "cellWrite", args = { scope = scopeId, cell = cellName, value = value } }
       end,

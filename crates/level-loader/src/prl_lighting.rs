@@ -27,7 +27,7 @@ use postretro_render_data::influence::LightInfluence;
 
 use crate::prl::{LevelWorld, LightType, LightmapMode, MapLight, PrlLoadError, ShadowType};
 use crate::prl_container::PrlContainer;
-use crate::prl_lightmap::{GpuLightingPayloads, LoadedLightmap, LoadedShadowmask};
+use crate::prl_lightmap::GpuLightingPayloads;
 #[cfg(test)]
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::{section_validation, section_validation_from_error};
@@ -44,7 +44,6 @@ pub(crate) struct LoadedLighting {
     pub(crate) lights: Vec<MapLight>,
     pub(crate) light_influences: Vec<LightInfluence>,
     pub(crate) sh_volume: Option<OctahedralShVolumeSection>,
-    pub(crate) lightmap: Option<LoadedLightmap>,
     pub(crate) lightmap_mode: LightmapMode,
     pub(crate) sdf_atlas: Option<SdfAtlasSection>,
     pub(crate) chunk_light_list: Option<ChunkLightListSection>,
@@ -58,7 +57,6 @@ pub(crate) struct LoadedLighting {
     pub(crate) animated_billboard_direct_scatter_delta_volumes:
         Option<AnimatedBillboardDirectScatterDeltaVolumesSection>,
     pub(crate) entity_shadow_lights: Vec<u32>,
-    pub(crate) shadowmask_atlas: Option<LoadedShadowmask>,
     pub(crate) cluster_directory: Option<ClusterDirectorySection>,
 }
 
@@ -68,7 +66,6 @@ impl Default for LoadedLighting {
             lights: Vec::new(),
             light_influences: Vec::new(),
             sh_volume: None,
-            lightmap: None,
             lightmap_mode: LightmapMode::Shadowed,
             sdf_atlas: None,
             chunk_light_list: None,
@@ -81,7 +78,6 @@ impl Default for LoadedLighting {
             billboard_direct_scatter_volume: None,
             animated_billboard_direct_scatter_delta_volumes: None,
             entity_shadow_lights: Vec::new(),
-            shadowmask_atlas: None,
             cluster_directory: None,
         }
     }

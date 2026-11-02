@@ -21,17 +21,20 @@ pub mod debug_ui {
 #[allow(unused_imports)]
 pub use postretro_renderer::{
     BloomRenderProfile, BloomResolution, BvhOverlayBudget, BvhOverlayColorMode,
-    BvhOverlayDepthMode, BvhOverlayState, CameraCullDiagnostics, CameraCullPath,
+    BvhOverlayDepthMode, BvhOverlayState, CachedModel, CameraCullDiagnostics, CameraCullPath,
     CaptureAdapterIdentity, CaptureGpuTimingPass, CaptureGpuTimingState, CaptureGpuTimingWindow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
-    DEFAULT_INDIRECT_SCALE, FrameScene, KinematicMoverInstance, LevelGeometry,
-    LevelGeometryRangeError, LightTermMask, LightmapResidencyReport, LocatorDiagnostics,
-    MoverOccluderAabb, PortalOverlayState, PresentHandle, Renderer, ResidencyAllocation,
-    ResidencyAllocationShape, ResidencyAllocationState, ResidencySource, SPLASH_CLEAR_COLOR,
-    SdfShadowMode, ShResidencyReport, ShSampleRegion, ShSampleRegionSets,
+    DEFAULT_INDIRECT_SCALE, DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, FrameScene, KinematicMoverInstance,
+    LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometry,
+    LevelGeometryParts, LevelGeometryRangeError, LevelInstallError, LevelSetBuilder,
+    LevelSetBuilderProbe, LevelSetId, LightTermMask, LightmapResidencyReport, LocatorDiagnostics,
+    ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey, ModelEntryIdentity,
+    MoverOccluderAabb, PendingLevelSet, PortalOverlayState, PresentHandle, Renderer,
+    ResidencyAllocation, ResidencyAllocationShape, ResidencyAllocationState, ResidencySource,
+    SPLASH_CLEAR_COLOR, SdfShadowMode, ShResidencyReport, ShSampleRegion, ShSampleRegionSets,
     ShStreamingLifecycleSummary, SpatialCellSetDiagnostics, SpatialDiagnostics,
     SpriteCollectionRegistration, StreamingReachLever, WorldWireframeMode, level_world_to_geometry,
-    sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
+    lightmap_family_inputs, sprite_specular_exponent_is_valid, validate_level_geometry_ranges,
 };
 
 #[cfg(feature = "dev-tools")]

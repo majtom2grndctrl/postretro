@@ -28,8 +28,9 @@ use crate::animated_direct_sh_bake::{
 };
 use crate::bake_control::BakeControl;
 use crate::billboard_direct_scatter_bake::{
-    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_ID,
-    BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, BillboardDirectScatterBakeInputs,
+    ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_ID, ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
+    BILLBOARD_DIRECT_SCATTER_STAGE_ID, BILLBOARD_DIRECT_SCATTER_STAGE_VERSION,
+    BillboardDirectScatterBakeInputs,
     bake_animated_billboard_direct_scatter_delta_volumes_cached_controlled,
     bake_billboard_direct_scatter_volume_cached_controlled,
 };
@@ -67,7 +68,10 @@ use crate::pipeline::lightmap_stage;
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
 use crate::sh_bake::{ShBakeCtx, ShConfig};
-use crate::sh_group::{SH_GROUP_STAGE_ID, SH_GROUP_STAGE_VERSION};
+use crate::surface_radiance::{
+    SH_BASE_VOLUME_STAGE_ID, SH_BASE_VOLUME_STAGE_VERSION, SH_PATCH_LAYER_STAGE_ID,
+    SH_PATCH_LAYER_STAGE_VERSION,
+};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -280,10 +284,12 @@ fn bake_deltas_with_controls(
         portals: &[],
         animated_lights: &animated_lights,
         mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let direct_inputs = DirectBakeInputs {
         sh_ctx: &sh_ctx,
         portals: &[],
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let selected = EntityShadowLightsSection {
         light_indices: vec![0, 1],
@@ -357,6 +363,7 @@ fn bake_animated_delta_pair(
         portals: &[],
         animated_lights: &animated_lights,
         mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+        embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
     };
     let config = ShConfig { probe_spacing: 1.0 };
     let (indirect, indirect_tally) =
@@ -408,6 +415,7 @@ fn bake_direct_delta_only(
         &DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         },
         &ShConfig { probe_spacing: 1.0 },
         &alpha_lights,
@@ -642,7 +650,10 @@ fn p4_p5_p9_chunk_light_dynamic_edits_and_empty_static_cache_contract() {
 fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
     let (dir, cache) = fresh_cache("pre_atlas_density_scale");
     run_pre_atlas_and_fused_cache_fixture(&cache, 0.5, &[]);
-    for stage_id in PRE_ATLAS_MEMO_STAGE_IDS {
+    for stage_id in PRE_ATLAS_MEMO_STAGE_IDS
+        .into_iter()
+        .chain([SH_PATCH_LAYER_STAGE_ID])
+    {
         let access = cache.test_access(stage_id);
         assert!(
             access.read_attempts > 0 && access.writes > 0,
@@ -677,8 +688,10 @@ fn lightmap_density_and_scale_edits_preserve_pre_atlas_sh_and_chunk_identity() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Pre-atlas memos a lightmap-only edit must hit. The SH base's gathered
+/// volume stands in for the per-light patch layers it sums: a hit reads none.
 const PRE_ATLAS_MEMO_STAGE_IDS: [&str; 6] = [
-    SH_GROUP_STAGE_ID,
+    SH_BASE_VOLUME_STAGE_ID,
     INDIRECT_DELTA_SH_STAGE_ID,
     DIRECT_SH_STAGE_ID,
     BILLBOARD_DIRECT_SCATTER_STAGE_ID,
@@ -702,6 +715,11 @@ fn assert_uncached_delta_stages_untouched(cache: &StageCache, build: &str) {
 }
 
 fn assert_pre_atlas_memos_hit_without_rewrite(cache: &StageCache, edit: &str) {
+    let layers = cache.test_access(SH_PATCH_LAYER_STAGE_ID);
+    assert!(
+        layers.read_attempts == 0 && layers.writes == 0,
+        "{edit}: the SH base volume hit must read and write no patch layer: {layers:?}"
+    );
     for stage_id in PRE_ATLAS_MEMO_STAGE_IDS {
         let access = cache.test_access(stage_id);
         assert!(access.read_attempts > 0, "{edit} did not probe {stage_id}");
@@ -770,9 +788,21 @@ fn run_pre_atlas_and_fused_cache_fixture(
             animated_lights: &animated_lights,
             total_light_count: lights.len(),
         };
-        crate::sh_group::bake_sh_volume_grouped_controlled(
+        let static_refs = crate::sh_bake::static_light_refs(&sh_ctx);
+        let (handoff, _) = crate::surface_radiance::plan_sh_base(
+            &geometry,
+            &static_refs,
+            0,
+            sh_config.probe_spacing,
+            crate::surface_radiance::DEFAULT_BOUNCE_FILL,
+            u64::MAX,
+        )
+        .expect("SH base gate admits the fixture");
+        crate::surface_radiance::bake_sh_base(
             &sh_ctx,
             &sh_config,
+            handoff,
+            &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
             Some(cache),
             &control(),
         );
@@ -801,6 +831,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         let direct_inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         bake_direct_sh_volume_cached_controlled(
             &direct_inputs,
@@ -814,6 +845,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
             portals: &[],
             animated_lights: &animated_lights,
             mutable_descriptors: &ScriptMutableDescriptorSlots::empty(animated_lights.len()),
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let (animated_direct, _) = bake_animated_direct_sh_delta_volumes_controlled_with_tally(
             &animated_inputs,
@@ -839,6 +871,8 @@ fn run_pre_atlas_and_fused_cache_fixture(
             sh_ctx: &sh_ctx,
             portals: &[],
             animated_lights: &animated_lights,
+            static_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
+            animated_embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         assert!(
             bake_billboard_direct_scatter_volume_cached_controlled(
@@ -906,6 +940,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         &alpha_lights,
         Some(&selection),
         &[],
+        &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         &bvh,
         &primitives,
         &config,
@@ -1375,12 +1410,14 @@ fn five_stage_version_bumps_miss_then_hit() {
 
 #[test]
 fn lighting_scale_cache_versions_pin_current_epochs() {
-    assert_eq!(DIRECT_SH_STAGE_VERSION, 5);
-    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 3);
-    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 3);
-    assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
+    assert_eq!(DIRECT_SH_STAGE_VERSION, 6);
+    assert_eq!(DIRECT_SH_DELTA_STAGE_VERSION, 4);
+    assert_eq!(ANIMATED_DIRECT_DELTA_SH_STAGE_VERSION, 4);
+    assert_eq!(BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 4);
+    assert_eq!(ANIMATED_BILLBOARD_DIRECT_SCATTER_STAGE_VERSION, 3);
     assert_eq!(INDIRECT_DELTA_SH_STAGE_VERSION, 5);
-    assert_eq!(SH_GROUP_STAGE_VERSION, 4);
+    assert_eq!(SH_PATCH_LAYER_STAGE_VERSION, 2);
+    assert_eq!(SH_BASE_VOLUME_STAGE_VERSION, 2);
 
     let (dir, cache) = fresh_cache("cone_reach_billboard_epoch");
     let current = CacheKey::new(

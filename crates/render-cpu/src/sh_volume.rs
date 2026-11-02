@@ -3,6 +3,13 @@
 
 use postretro_level_format::sh_volume::{AnimationDescriptor, OctahedralShVolumeSection};
 
+mod usable;
+
+pub use usable::{
+    ShVolumeRejection, animated_light_count, atlas_fits, check_sh_volume,
+    dynamic_compose_grid_fits, sh_sampler_lattice, usable_sh_volume, volume_3d_fits,
+};
+
 pub const BIND_SH_TOTAL_ATLAS: u32 = 1;
 pub const BIND_SH_ATLAS_SAMPLER: u32 = 2;
 pub const BIND_SH_GRID_INFO: u32 = 10;

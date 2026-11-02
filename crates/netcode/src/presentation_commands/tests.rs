@@ -70,7 +70,10 @@ impl Session {
             client.set_mod_identity("test.mod".to_string(), "1.0.0".to_string());
             client.set_mod_digest(Some(FINGERPRINT));
             client.set_level_parity(Some(("test-level".to_string(), FINGERPRINT)));
-            client.set_revealed_level(Some("test-level".to_string()));
+            client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+                "test-level",
+                None,
+            )));
             server.add_relay_connection(client_id, None);
             client.set_connected();
             seats
@@ -486,14 +489,14 @@ fn every_legal_audience_row_routes_all_five_kinds_over_the_real_relay() {
     let cases = [
         (
             "every-machine default",
-            FireOrigin::EveryMachine,
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
             None,
             local,
             local,
         ),
         (
             "every-machine everyone",
-            FireOrigin::EveryMachine,
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
             Some(Audience::Everyone),
             local,
             local,
@@ -743,7 +746,7 @@ fn illegal_audience_tokens_skip_with_one_warning_per_source_and_primitive() {
         for command in five_commands() {
             fire_origin(
                 &queue,
-                FireOrigin::EveryMachine,
+                FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
                 with_audience(command, Some(Audience::Activators)),
             );
         }
@@ -780,7 +783,11 @@ fn illegal_audience_tokens_skip_with_one_warning_per_source_and_primitive() {
 fn injected_every_machine_ai_activate_and_observer_origins_present_once_without_broadcast() {
     let mut session = Session::new();
     let queue = SystemCommandQueue::new();
-    fire_origin(&queue, FireOrigin::EveryMachine, sound("activate"));
+    fire_origin(
+        &queue,
+        FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+        sound("activate"),
+    );
     route_player_presentation(&queue, Some(&mut session.server), Some(&session.seats));
     assert_eq!(queue.take(), vec![sound("activate")]);
     session.relay_to_clients();
@@ -793,7 +800,11 @@ fn injected_every_machine_ai_activate_and_observer_origins_present_once_without_
     // Observer cue dispatch runs locally on each client under the same origin.
     for _ in [CLIENT_A, CLIENT_B] {
         let observer_queue = SystemCommandQueue::new();
-        fire_origin(&observer_queue, FireOrigin::EveryMachine, sound("activate"));
+        fire_origin(
+            &observer_queue,
+            FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored),
+            sound("activate"),
+        );
         route_player_presentation(&observer_queue, None, None);
         assert_eq!(observer_queue.take(), vec![sound("activate")]);
     }

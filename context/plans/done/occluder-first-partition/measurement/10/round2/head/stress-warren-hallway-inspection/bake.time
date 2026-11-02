@@ -1,0 +1,5 @@
+flags: --sh-probe-spacing 4.0 --no-cache 
+binary: 441144d88369
+start: 2026-10-29 20:45:21
+exit: 0
+wall_seconds: 1457

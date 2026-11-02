@@ -1,0 +1,74 @@
+# stress-street uncapped walk (scratch visibility snapshot, MAX_PORTAL_WALK_STEPS raised), per pose: before | after (fix build)
+poses 2960 considered mean 2553.7 p95 8891 max 18513; over 5000: 518; reach mean 189.5 p95 619 max 1207
+poses 2960 considered mean 1247.7 p95 3812 max 6761; over 5000: 29; reach mean 126.6 p95 399 max 654
+poses 2960 after tests > before: 877 after reach > before: 789
+sum tests before 7558805 after 3693216
+g1.6.0@180 (3426, 289) (5214, 523)
+g14.15.0@180 (2050, 178) (3773, 425)
+g14.16.0@180 (2124, 204) (3752, 404)
+g14.17.0@180 (2260, 248) (3872, 387)
+g0.5.0@180 (3375, 279) (4857, 510)
+g8.16.0@180 (2458, 177) (3826, 433)
+g11.14.0@0 (1542, 122) (2896, 268)
+g0.4.0@180 (3555, 283) (4875, 512)
+g8.17.0@180 (2491, 182) (3773, 416)
+g10.10.2@270 (150, 17) (1259, 68)
+# after-build tripped poses (uncapped tests, reach, degree attribution)
+  degsum 3375 from deg>=20 cells 1002 from window-like cells 815 (338 cells)
+g5.3.0@180 considered 6213 reach 645 PrlPortal { walk_reach: 645 }
+  degsum 3320 from deg>=20 cells 852 from window-like cells 836 (341 cells)
+g6.3.0@180 considered 6315 reach 654 PrlPortal { walk_reach: 654 }
+  degsum 3007 from deg>=20 cells 856 from window-like cells 647 (259 cells)
+g1.4.0@180 considered 5413 reach 556 PrlPortal { walk_reach: 556 }
+  degsum 3327 from deg>=20 cells 1002 from window-like cells 767 (314 cells)
+g5.4.0@180 considered 6042 reach 621 PrlPortal { walk_reach: 621 }
+  degsum 3159 from deg>=20 cells 852 from window-like cells 768 (312 cells)
+g6.4.0@180 considered 5737 reach 605 PrlPortal { walk_reach: 605 }
+  degsum 2969 from deg>=20 cells 856 from window-like cells 643 (256 cells)
+g1.5.0@180 considered 5441 reach 547 PrlPortal { walk_reach: 547 }
+  degsum 3286 from deg>=20 cells 959 from window-like cells 748 (303 cells)
+g5.5.0@180 considered 5905 reach 613 PrlPortal { walk_reach: 613 }
+  degsum 3096 from deg>=20 cells 810 from window-like cells 743 (299 cells)
+g6.5.0@180 considered 5554 reach 594 PrlPortal { walk_reach: 594 }
+  degsum 2866 from deg>=20 cells 834 from window-like cells 639 (253 cells)
+g1.6.0@180 considered 5214 reach 523 PrlPortal { walk_reach: 523 }
+  degsum 3083 from deg>=20 cells 898 from window-like cells 676 (270 cells)
+g5.6.0@180 considered 5948 reach 565 PrlPortal { walk_reach: 565 }
+  degsum 3348 from deg>=20 cells 981 from window-like cells 777 (316 cells)
+g6.6.0@180 considered 6162 reach 630 PrlPortal { walk_reach: 630 }
+  degsum 3214 from deg>=20 cells 917 from window-like cells 746 (301 cells)
+g7.7.0@180 considered 5989 reach 603 PrlPortal { walk_reach: 603 }
+  degsum 3172 from deg>=20 cells 895 from window-like cells 758 (306 cells)
+g8.7.0@180 considered 5715 reach 597 PrlPortal { walk_reach: 597 }
+  degsum 2868 from deg>=20 cells 834 from window-like cells 641 (254 cells)
+g7.8.0@180 considered 5235 reach 521 PrlPortal { walk_reach: 521 }
+  degsum 2940 from deg>=20 cells 788 from window-like cells 723 (291 cells)
+g8.8.0@180 considered 5124 reach 565 PrlPortal { walk_reach: 565 }
+  degsum 2341 from deg>=20 cells 644 from window-like cells 604 (302 cells)
+g16.14.0@90 considered 5377 reach 536 PrlPortal { walk_reach: 536 }
+  degsum 2637 from deg>=20 cells 769 from window-like cells 762 (325 cells)
+g12.28.1@0 considered 5216 reach 536 PrlPortal { walk_reach: 536 }
+  degsum 2697 from deg>=20 cells 815 from window-like cells 736 (312 cells)
+g13.28.1@0 considered 5225 reach 533 PrlPortal { walk_reach: 533 }
+  degsum 2444 from deg>=20 cells 707 from window-like cells 662 (290 cells)
+g14.28.1@0 considered 5202 reach 500 PrlPortal { walk_reach: 500 }
+  degsum 2749 from deg>=20 cells 793 from window-like cells 837 (358 cells)
+g12.29.0@0 considered 5795 reach 571 PrlPortal { walk_reach: 571 }
+  degsum 2676 from deg>=20 cells 757 from window-like cells 746 (317 cells)
+g14.29.0@0 considered 5828 reach 542 PrlPortal { walk_reach: 542 }
+  degsum 2089 from deg>=20 cells 625 from window-like cells 446 (193 cells)
+g16.29.0@0 considered 5119 reach 393 PrlPortal { walk_reach: 393 }
+  degsum 2097 from deg>=20 cells 638 from window-like cells 421 (177 cells)
+g9.30.0@0 considered 5366 reach 372 PrlPortal { walk_reach: 372 }
+  degsum 2473 from deg>=20 cells 761 from window-like cells 642 (267 cells)
+g11.30.0@0 considered 6353 reach 474 PrlPortal { walk_reach: 474 }
+  degsum 2897 from deg>=20 cells 793 from window-like cells 952 (405 cells)
+g12.30.0@0 considered 6761 reach 625 PrlPortal { walk_reach: 625 }
+  degsum 2952 from deg>=20 cells 839 from window-like cells 910 (388 cells)
+g13.30.0@0 considered 6491 reach 618 PrlPortal { walk_reach: 618 }
+  degsum 2847 from deg>=20 cells 757 from window-like cells 878 (374 cells)
+g14.30.0@0 considered 6315 reach 603 PrlPortal { walk_reach: 603 }
+  degsum 2434 from deg>=20 cells 674 from window-like cells 582 (242 cells)
+g16.30.0@0 considered 6117 reach 467 PrlPortal { walk_reach: 467 }
+  degsum 2066 from deg>=20 cells 625 from window-like cells 401 (181 cells)
+g17.30.0@0 considered 5111 reach 385 PrlPortal { walk_reach: 385 }

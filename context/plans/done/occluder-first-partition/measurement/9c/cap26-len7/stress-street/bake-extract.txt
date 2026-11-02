@@ -1,0 +1,12 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1259 brushes, 74 occlude alone; exempt alone: 1174 under floor, 10 no open face, 1 short span, 0 low top; 29 clusters, 37 sections, 13 occlude (1070 member brushes); constants: floor 1.2 m, absolute length 7 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 0 of 0 kinematic movers seal a doorway at their closed pose
+[INFO prl_build::partition] BSP leaves: 2749 solid, 3104 empty
+[INFO prl_build::partition] BSP leaves: 5853
+[INFO prl_build::partition] Total faces (after brush-side extraction): 10383
+[WARN prl_build::pipeline] [Compiler] Watertightness: 558 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 334 exterior leaves, 2770 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 1899 occluder-tier leaves; 3913 cells (830 interior, 2749 solid, 334 exterior); 3444 runtime portals; full tree 5853 leaves, 7918 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 22410 eye candidates (21569 in cell, 244 inset, 597 rejected; missed into solid 715, exterior 0, other cell 126), 2 camera cells without an eye point, 130878 walks (3108 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 830 camera cells, 678831 entries (max 830 per camera), 5446320 bytes, max lead 32 m, 6.008 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 5446320 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 558 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

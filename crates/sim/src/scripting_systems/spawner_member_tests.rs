@@ -52,7 +52,7 @@ impl Fixture {
     fn new() -> Self {
         let ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let spawn_context = SpawnContext::default();
         spawn_context.replace_level_data(
             [("cultist".to_string(), behavior_enemy_descriptor("cultist"))]

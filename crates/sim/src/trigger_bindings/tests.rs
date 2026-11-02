@@ -1881,7 +1881,9 @@ fn residual_hop_only_reactions_bind_and_run_the_chained_reaction() {
             follow_ups,
             vec![(
                 "target".to_string(),
-                postretro_entities::FireOrigin::EveryMachine
+                postretro_entities::FireOrigin::EveryMachine(
+                    postretro_entities::MachineSource::HostMirrored
+                )
             )],
             "{shape}: follow-up"
         );

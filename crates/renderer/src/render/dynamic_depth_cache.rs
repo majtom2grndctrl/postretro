@@ -1,5 +1,6 @@
 // Dynamic-tier world-depth cache state and GPU resources.
 // See: context/lib/rendering_pipeline.md §4.
+use crate::render::gpu_create::GpuCreate;
 use glam::Mat4;
 
 use crate::lighting::cube_shadow::{CUBE_FACE_RESOLUTION, CUBE_FACES};
@@ -159,72 +160,93 @@ impl DynamicCacheAllocation {
     }
 }
 
+/// One dynamic world-depth cache texture and its per-layer attachment views.
+/// Shared through `Arc` by every level set built at its shadow tier
+/// (`shadow_tier.rs`).
+pub(super) struct DynamicCacheTexture {
+    pub texture: wgpu::Texture,
+    views: Vec<wgpu::TextureView>,
+}
+
+impl DynamicCacheTexture {
+    /// The spot cache: `DYNAMIC_SPOT_CACHE_LAYERS` layers at the tier's
+    /// spot resolution.
+    pub fn spot(device: &wgpu::Device, spot_shadow_map_resolution: u32) -> Self {
+        Self::new(
+            device,
+            "Dynamic Spot World Depth Cache",
+            spot_shadow_map_resolution,
+            DYNAMIC_SPOT_CACHE_LAYERS,
+        )
+    }
+
+    /// The cube cache: every face of `DYNAMIC_CUBE_CACHE_SLOTS` cube units.
+    pub fn cube(device: &wgpu::Device) -> Self {
+        Self::new(
+            device,
+            "Dynamic Cube World Depth Cache",
+            CUBE_FACE_RESOLUTION,
+            DYNAMIC_CUBE_CACHE_SLOTS * CUBE_FACES,
+        )
+    }
+
+    fn new(device: &wgpu::Device, label: &str, resolution: u32, layers: usize) -> Self {
+        let texture = cache_texture(device, label, resolution, layers);
+        let views = cache_views(&texture, layers);
+        Self { texture, views }
+    }
+}
+
+/// One level set's dynamic cache textures: each present only when the level
+/// holds a dynamic light of that type.
+#[derive(Clone, Default)]
+pub(super) struct DynamicCacheTextures {
+    pub spot: Option<std::sync::Arc<DynamicCacheTexture>>,
+    pub cube: Option<std::sync::Arc<DynamicCacheTexture>>,
+}
+
+/// The active level's dynamic cache: its set's shared textures and which
+/// layer holds which light's warm world depth. Built fresh when a set is
+/// published, so no warm layer survives a level boundary.
 pub(super) struct DynamicDepthCacheGpu {
     pub state: DynamicDepthCache,
-    allocation: DynamicCacheAllocation,
-    spot_shadow_map_resolution: u32,
-    pub spot_texture: Option<wgpu::Texture>,
-    spot_views: Vec<wgpu::TextureView>,
-    pub cube_texture: Option<wgpu::Texture>,
-    cube_views: Vec<wgpu::TextureView>,
+    textures: DynamicCacheTextures,
 }
 
 impl DynamicDepthCacheGpu {
-    pub fn new(
-        device: &wgpu::Device,
-        allocation: DynamicCacheAllocation,
-        spot_shadow_map_resolution: u32,
-    ) -> Self {
-        let spot_texture = allocation.spot.then(|| {
-            cache_texture(
-                device,
-                "Dynamic Spot World Depth Cache",
-                spot_shadow_map_resolution,
-                DYNAMIC_SPOT_CACHE_LAYERS,
-            )
-        });
-        let cube_texture = allocation.cube.then(|| {
-            cache_texture(
-                device,
-                "Dynamic Cube World Depth Cache",
-                CUBE_FACE_RESOLUTION,
-                DYNAMIC_CUBE_CACHE_SLOTS * CUBE_FACES,
-            )
-        });
-        let spot_views = cache_views(spot_texture.as_ref(), DYNAMIC_SPOT_CACHE_LAYERS);
-        let cube_views = cache_views(cube_texture.as_ref(), DYNAMIC_CUBE_CACHE_SLOTS * CUBE_FACES);
+    /// The cache over a set's shared textures, every layer cold. Creates
+    /// nothing.
+    pub fn over(textures: DynamicCacheTextures) -> Self {
         Self {
             state: DynamicDepthCache::default(),
-            allocation,
-            spot_shadow_map_resolution,
-            spot_texture,
-            spot_views,
-            cube_texture,
-            cube_views,
+            textures,
         }
     }
 
-    pub fn reset_level(
-        &mut self,
-        device: &wgpu::Device,
-        allocation: DynamicCacheAllocation,
-        spot_shadow_map_resolution: u32,
-    ) {
-        if self.allocation != allocation
-            || self.spot_shadow_map_resolution != spot_shadow_map_resolution
-        {
-            *self = Self::new(device, allocation, spot_shadow_map_resolution);
-        } else {
-            self.state.reset_level();
-        }
+    pub fn spot_texture(&self) -> Option<&wgpu::Texture> {
+        self.textures.spot.as_deref().map(|cache| &cache.texture)
+    }
+
+    pub fn cube_texture(&self) -> Option<&wgpu::Texture> {
+        self.textures.cube.as_deref().map(|cache| &cache.texture)
     }
 
     pub fn spot_view(&self, plan: DynamicSpotPlan) -> &wgpu::TextureView {
-        &self.spot_views[plan.cache_layer as usize]
+        let cache = self
+            .textures
+            .spot
+            .as_deref()
+            .expect("a dynamic spot plan implies the spot cache texture");
+        &cache.views[plan.cache_layer as usize]
     }
 
     pub fn cube_view(&self, plan: DynamicCubePlan, face: usize) -> &wgpu::TextureView {
-        &self.cube_views[DynamicDepthCache::cube_face_layer(plan, face) as usize]
+        let cache = self
+            .textures
+            .cube
+            .as_deref()
+            .expect("a dynamic cube plan implies the cube cache texture");
+        &cache.views[DynamicDepthCache::cube_face_layer(plan, face) as usize]
     }
 }
 
@@ -234,7 +256,7 @@ fn cache_texture(
     resolution: u32,
     layers: usize,
 ) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.new_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: resolution,
@@ -250,10 +272,7 @@ fn cache_texture(
     })
 }
 
-fn cache_views(texture: Option<&wgpu::Texture>, layers: usize) -> Vec<wgpu::TextureView> {
-    let Some(texture) = texture else {
-        return Vec::new();
-    };
+fn cache_views(texture: &wgpu::Texture, layers: usize) -> Vec<wgpu::TextureView> {
     (0..layers)
         .map(|layer| {
             texture.create_view(&wgpu::TextureViewDescriptor {

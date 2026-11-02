@@ -66,8 +66,8 @@ mod control;
 pub use control::{
     ClientControlMessage, ClosingCause, ConnectClaim, DISPLAY_NAME_MAX_BYTES, DivergenceReason,
     HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES, ParityDeclaration, PlayerClaimId,
-    ProtocolVersion, RosterEntry, ServerControlMessage, SessionId, SessionRosterMessage,
-    decode_connect_claim, encode_connect_claim,
+    ProtocolVersion, RevealedLevel, RosterEntry, ServerControlMessage, SessionId,
+    SessionRosterMessage, decode_connect_claim, encode_connect_claim,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 
@@ -370,8 +370,10 @@ impl WeaponCuesMessage {
 /// record (armed state, member categories, script-set look ramps), and the
 /// envelope gained the level-scoped ghost-audio record (script-set Ghost bus
 /// ramps). Both are unreleased additions under the one bump.
-/// Bumped to 23 for player life-state id, elapsed ticks and table revision.
-pub const SNAPSHOT_VERSION: u16 = 23;
+/// Bumped to 23 for the envelope's host `level_tick`, the fixed-tick level
+/// clock a client's `levelLoad` `wait` tails land on.
+/// Bumped to 24 for player life-state id, elapsed ticks and table revision.
+pub const SNAPSHOT_VERSION: u16 = 24;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -483,6 +485,17 @@ pub struct RawSnapshotMessage {
     /// envelope a harness or tracker built without one), never "no fields set".
     pub ghost_audio: Option<WireGhostAudioState>,
     pub server_script_time: f64,
+    /// The host scheduler's level tick when this snapshot was assembled: the
+    /// fixed ticks it has evaluated since the current level's clock started
+    /// (restarted at level teardown, suspend or role change, kept across a hot
+    /// reload; the host's first tick after its reveal is 1), read after that
+    /// frame's ticks and landing drain,
+    /// so every host tail due by it has landed. This is the host timeline a
+    /// client's `levelLoad`-class `wait` tails land on. It counts the same
+    /// clamped ticks the host lands its own tails on, which
+    /// `server_script_time` (unclamped frame time) does not after a stall, and
+    /// it does not derive from `server_tick`.
+    pub level_tick: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +578,8 @@ pub struct SnapshotMessage {
     /// The validated level-scoped ghost-audio record, as the raw envelope carried it.
     pub ghost_audio: Option<WireGhostAudioState>,
     pub server_script_time: f64,
+    /// See [`RawSnapshotMessage::level_tick`].
+    pub level_tick: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,6 +1061,7 @@ impl RawSnapshotMessage {
             faction_sentiment_record: self.faction_sentiment_record.clone(),
             ghost_audio: self.ghost_audio,
             server_script_time: self.server_script_time,
+            level_tick: self.level_tick,
         })
     }
 }
@@ -1467,9 +1483,10 @@ mod tests {
 
     #[test]
     fn player_life_state_wire_round_trips_and_rejects_pre_life_snapshot_version() {
+        const PRE_LIFE_STATE_SNAPSHOT_VERSION: u16 = 23;
         const {
-            assert!(SNAPSHOT_VERSION >= 23);
-            assert!(crate::handshake::WIRE_VERSION >= 36);
+            assert!(SNAPSHOT_VERSION > PRE_LIFE_STATE_SNAPSHOT_VERSION);
+            assert!(crate::handshake::WIRE_VERSION >= 38);
         }
         let mut movement = sample_movement();
         movement.life_state = 17;
@@ -1477,12 +1494,12 @@ mod tests {
         movement.life_state_table_revision = 249;
         assert!(round_trips(&movement));
         let mut raw = raw_snapshot(1, 2, Vec::new());
-        raw.version = 22;
+        raw.version = PRE_LIFE_STATE_SNAPSHOT_VERSION;
         assert_eq!(
             raw.validate(),
             Err(ValidationError::VersionMismatch {
                 expected: SNAPSHOT_VERSION,
-                received: 22
+                received: PRE_LIFE_STATE_SNAPSHOT_VERSION
             })
         );
     }
@@ -1611,6 +1628,7 @@ mod tests {
     ) -> RawSnapshotMessage {
         RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence,
             server_tick,
@@ -1701,6 +1719,7 @@ mod tests {
         };
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 3,
             server_tick: 42,
@@ -2263,6 +2282,7 @@ mod tests {
     fn validate_full_baseline_produces_typed_record() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 4,
             server_tick: 60,
@@ -2305,6 +2325,7 @@ mod tests {
     fn validate_delta_maps_overloaded_ids() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 5,
             server_tick: 61,
@@ -2343,6 +2364,7 @@ mod tests {
     fn validate_despawn_maps_tombstone_and_reason() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 6,
             server_tick: 62,
@@ -2392,6 +2414,7 @@ mod tests {
     fn truncated_buffer_decodes_to_err_not_panic() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 9,
             server_tick: 1,
@@ -2426,6 +2449,7 @@ mod tests {
     fn invalid_record_kind_decodes_then_rejects_without_panic() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2456,6 +2480,7 @@ mod tests {
     fn invalid_component_kind_decodes_then_rejects() {
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2572,6 +2597,7 @@ mod tests {
         }
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: PRE_KNOCKBACK_SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2596,6 +2622,7 @@ mod tests {
         // snapshot and produces no partial typed result.
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -2791,6 +2818,7 @@ mod tests {
 
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -3012,6 +3040,7 @@ mod tests {
 
         let raw = RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 1,
@@ -4072,7 +4101,7 @@ mod tests {
     #[test]
     fn ghost_link_record_snapshot_rejects_the_pre_ghost_layout() {
         const PRE_GHOST_SNAPSHOT_VERSION: u16 = 21;
-        assert!(SNAPSHOT_VERSION > PRE_GHOST_SNAPSHOT_VERSION);
+        const { assert!(SNAPSHOT_VERSION > PRE_GHOST_SNAPSHOT_VERSION) };
         let mut raw = raw_snapshot(1, 2, Vec::new());
         raw.version = PRE_GHOST_SNAPSHOT_VERSION;
         assert_eq!(
@@ -4154,6 +4183,38 @@ mod tests {
             Err(ValidationError::MissingComponentPayload(
                 COMPONENT_KIND_GHOST_LINK
             ))
+        );
+    }
+
+    // The host level tick rides the snapshot envelope under the
+    // SNAPSHOT_VERSION 23 bump and reaches the typed model unchanged, beside
+    // the host script time it does not derive from.
+    #[test]
+    fn level_tick_rides_the_envelope_through_validate_and_refuses_the_pre_level_tick_version() {
+        const { assert!(SNAPSHOT_VERSION >= 23) };
+        let mut raw = raw_snapshot(4, 912, Vec::new());
+        raw.server_script_time = 6.25;
+        raw.level_tick = 300;
+        let decoded: RawSnapshotMessage = decode(&encode(&raw)).expect("snapshot decodes");
+        assert_eq!(decoded, raw);
+        let snapshot = decoded.validate().expect("snapshot validates");
+        assert_eq!(snapshot.level_tick, 300);
+        assert_eq!(snapshot.server_tick, 912);
+        assert_eq!(snapshot.server_script_time, 6.25);
+
+        raw.level_tick = u32::MAX;
+        let decoded: RawSnapshotMessage = decode(&encode(&raw)).expect("snapshot decodes");
+        assert_eq!(decoded.validate().unwrap().level_tick, u32::MAX);
+
+        const PRE_LEVEL_TICK_SNAPSHOT_VERSION: u16 = 22;
+        const { assert!(SNAPSHOT_VERSION > PRE_LEVEL_TICK_SNAPSHOT_VERSION) };
+        raw.version = PRE_LEVEL_TICK_SNAPSHOT_VERSION;
+        assert_eq!(
+            raw.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: PRE_LEVEL_TICK_SNAPSHOT_VERSION,
+            })
         );
     }
 

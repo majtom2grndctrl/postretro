@@ -2,7 +2,7 @@
 //! Convex SAT preserves closed contacts; AABBs only reject candidates.
 //! See: context/lib/build_pipeline.md §PRL section IDs (CellResidencySet, Teleporters)
 use super::portal_distance::Neighbors;
-use crate::partition::{Aabb, BspTree, region_polytope::RegionPolytope};
+use crate::partition::{Aabb, CellHull, region_polytope::RegionPolytope};
 use glam::{DQuat, DVec3, Vec3};
 use postretro_level_format::cells::CellsSection;
 use postretro_level_format::environment_volumes::EnvironmentBrush;
@@ -14,7 +14,8 @@ use postretro_level_loader::LevelWorld;
 #[derive(Clone, Copy)]
 pub struct TeleportResidencyInput<'a> {
     pub section: &'a TeleportersSection,
-    pub tree: &'a BspTree,
+    /// Per runtime cell, its hull: the convex regions of its member leaves.
+    pub hulls: &'a [CellHull],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +34,13 @@ pub(crate) fn build_routes(
     build_routes_with(input, cells, world, LeafPrefilter::On)
 }
 
-/// Whether cell hulls are built only for leaves a teleporter region can reach.
+/// Whether hull pieces are built only for pieces a teleporter region can
+/// reach.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LeafPrefilter {
     On,
-    /// Every playable leaf: the exhaustive reference the prefilter must match.
+    /// Every playable cell's every piece: the exhaustive reference the
+    /// prefilter must match.
     #[cfg(test)]
     Off,
 }
@@ -59,8 +62,8 @@ fn build_routes_with(
         return Ok(Vec::new());
     }
     anyhow::ensure!(
-        input.tree.leaves.len() == cells.cells.len(),
-        "teleporter residency: BSP leaf count differs from runtime cells"
+        input.hulls.len() == cells.cells.len(),
+        "teleporter residency: cell hull count differs from runtime cells"
     );
     // Regions first: they need no cell geometry.
     let regions: Vec<(Vec<Hull>, Arrival)> = input
@@ -89,53 +92,52 @@ fn build_routes_with(
             (source, arrival)
         })
         .collect();
-    // Clipping every leaf dominates on large maps. A leaf's hull lies inside
-    // its bounds, so a leaf whose bounds miss every region's (with margin over
-    // the SAT's own AABB reject) cannot touch one: skipping it changes nothing.
-    let needed: Vec<bool> = match prefilter {
-        LeafPrefilter::On => {
-            let reach: Vec<&Aabb> = regions
-                .iter()
-                .flat_map(|(source, arrival)| {
-                    let image = match arrival {
-                        Arrival::Image(image) => image.as_slice(),
-                        Arrival::Cell(_) => &[],
-                    };
-                    source.iter().chain(image).map(|hull| &hull.bounds)
-                })
-                .collect();
-            let mut needed: Vec<bool> = input
-                .tree
-                .leaves
-                .iter()
-                .map(|leaf| reach.iter().any(|region| may_touch(&leaf.bounds, region)))
-                .collect();
-            for (_, arrival) in &regions {
-                if let &Arrival::Cell(cell) = arrival
-                    && let Some(slot) = needed.get_mut(cell)
-                {
-                    *slot = true;
-                }
-            }
-            needed
+    // Clipping every piece dominates on large maps. A piece's hull lies
+    // inside its bounds, so a piece whose bounds miss every region's (with
+    // margin over the SAT's own AABB reject) cannot touch one: skipping it
+    // changes nothing. A located arrival cell keeps every piece.
+    let reach: Vec<&Aabb> = regions
+        .iter()
+        .flat_map(|(source, arrival)| {
+            let image = match arrival {
+                Arrival::Image(image) => image.as_slice(),
+                Arrival::Cell(_) => &[],
+            };
+            source.iter().chain(image).map(|hull| &hull.bounds)
+        })
+        .collect();
+    let mut arrival_cells = vec![false; cells.cells.len()];
+    for (_, arrival) in &regions {
+        if let &Arrival::Cell(cell) = arrival
+            && let Some(slot) = arrival_cells.get_mut(cell)
+        {
+            *slot = true;
         }
-        #[cfg(test)]
-        LeafPrefilter::Off => vec![true; cells.cells.len()],
-    };
-    let hulls: Vec<Option<Hull>> = cells
+    }
+    let hulls: Vec<Vec<Hull>> = cells
         .cells
         .iter()
-        .zip(&input.tree.leaves)
-        .zip(&needed)
-        .map(|((cell, leaf), &needed)| {
-            if !needed || cell.is_solid() || cell.is_exterior() {
-                return None;
+        .zip(input.hulls)
+        .zip(&arrival_cells)
+        .map(|((cell, hull), &arrival)| {
+            if cell.is_solid() || cell.is_exterior() {
+                return Vec::new();
             }
-            let mut polytope = RegionPolytope::from_aabb(&leaf.bounds);
-            for &(normal, distance) in &leaf.defining_planes {
-                polytope = polytope.clip(normal, distance).0;
-            }
-            Hull::from_polytope(&polytope, leaf.defining_planes.iter().map(|&(n, _)| n))
+            hull.pieces
+                .iter()
+                .filter(|piece| {
+                    prefilter != LeafPrefilter::On
+                        || arrival
+                        || reach.iter().any(|region| may_touch(&piece.bounds, region))
+                })
+                .filter_map(|piece| {
+                    let mut polytope = RegionPolytope::from_aabb(&piece.bounds);
+                    for &(normal, distance) in &piece.defining_planes {
+                        polytope = polytope.clip(normal, distance).0;
+                    }
+                    Hull::from_polytope(&polytope, piece.defining_planes.iter().map(|&(n, _)| n))
+                })
+                .collect()
         })
         .collect();
     Ok(regions
@@ -144,7 +146,7 @@ fn build_routes_with(
             source_cells: touched_cells(source, &hulls),
             arrival_cells: match arrival {
                 Arrival::Cell(cell) => {
-                    if hulls.get(*cell).is_some_and(Option::is_some) {
+                    if hulls.get(*cell).is_some_and(|pieces| !pieces.is_empty()) {
                         vec![*cell as u32]
                     } else {
                         Vec::new()
@@ -157,10 +159,10 @@ fn build_routes_with(
 }
 
 /// Conservative AABB overlap: twice the SAT contact epsilon, so a clipped
-/// hull's rounding past its leaf bounds can never be culled here.
-fn may_touch(leaf: &Aabb, region: &Aabb) -> bool {
+/// hull's rounding past its piece bounds can never be culled here.
+fn may_touch(piece: &Aabb, region: &Aabb) -> bool {
     let margin = DVec3::splat(2.0 * CONTACT_EPSILON);
-    !((leaf.max + margin).cmplt(region.min).any() || (region.max + margin).cmplt(leaf.min).any())
+    !((piece.max + margin).cmplt(region.min).any() || (region.max + margin).cmplt(piece.min).any())
 }
 
 /// Extra origins per camera cell. One source→arrival edge only: arriving at
@@ -333,15 +335,17 @@ fn brush_hull(brush: &EnvironmentBrush) -> Option<Hull> {
             .map(|p| DVec3::from(p.normal.map(f64::from))),
     )
 }
-fn touched_cells(regions: &[Hull], cells: &[Option<Hull>]) -> Vec<u32> {
+/// Cells any of whose pieces a region touches, ascending.
+fn touched_cells(regions: &[Hull], cells: &[Vec<Hull>]) -> Vec<u32> {
     cells
         .iter()
         .enumerate()
-        .filter_map(|(id, cell)| {
-            cell.as_ref()
-                .filter(|cell| regions.iter().any(|region| region.intersects(cell)))
-                .map(|_| id as u32)
+        .filter(|(_, pieces)| {
+            pieces
+                .iter()
+                .any(|piece| regions.iter().any(|region| region.intersects(piece)))
         })
+        .map(|(id, _)| id as u32)
         .collect()
 }
 

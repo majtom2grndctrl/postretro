@@ -1,0 +1,20 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-showcase/stress-warren-showcase.prl
+1578 cells (454 camera), 1187 clusters (0.796 MiB whole map), pinned + owners 0 clusters (0.000 MiB), id-51 max lead 32.0 m, 31493 entries
+lightmap: 440 blocks (15.138 MiB whole map), 0 pinned blocks
+
+## L = 16 m (454 camera cells)
+mandatory cells            median 51, p95 108, max 142
+SH mandatory bytes         median 0.747 MiB, p95 0.796 MiB, max 0.796 MiB
+SH mandatory clusters      median 16, p95 23, max 30
+lightmap mandatory bytes   median 1.655 MiB, p95 2.772 MiB, max 3.895 MiB
+  id-22 half bytes         median 0.709 MiB, p95 1.188 MiB, max 1.669 MiB
+  id-42 half bytes         median 0.946 MiB, p95 1.584 MiB, max 2.226 MiB
+lightmap blocks            median 51, p95 94, max 128
+lightmap pairs             median 51, p95 94, max 128
+lightmap pool layers       median 1, p95 1, max 1
+worst SH cell 1434: 28 clusters, 0.796 MiB SH; lightmap 103 blocks, 2.660 MiB, 1 layers
+
+Gate (L = 16 m): worst-cell SH mandatory 0.796 MiB of the 256 MiB floor, before fixed metadata and whole-resident scatter
+

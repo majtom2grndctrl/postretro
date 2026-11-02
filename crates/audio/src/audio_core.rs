@@ -222,6 +222,13 @@ impl<B: Backend> AudioCore<B> {
         self.registry.load_from_content_root(content_root);
     }
 
+    /// Register a set the decode half already decoded, replacing any sounds
+    /// from a previously installed level: the main-thread half of
+    /// [`load_level_sounds`](Self::load_level_sounds).
+    pub(crate) fn register_level_sounds(&mut self, sounds: crate::DecodedLevelSounds) {
+        self.registry.register_decoded(sounds);
+    }
+
     /// Drop every registered sound. Wired into the level-unload / shutdown path
     /// so registry memory is released with the level. After this the registry is
     /// empty and a subsequent `load_level_sounds` repopulates it.

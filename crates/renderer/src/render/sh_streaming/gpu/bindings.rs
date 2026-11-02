@@ -1,6 +1,7 @@
 //! Sample-side bind groups and streamed-grid uniform construction.
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 pub(super) fn create_sample_bind_groups(
     device: &wgpu::Device,
@@ -67,7 +68,7 @@ pub(super) fn create_sample_bind_groups(
             resource: wgpu::BindingResource::TextureView(&sh.billboard_direct_scatter.sampled_view),
         },
     ];
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Streamed SH Volume Bind Group"),
         layout: &sh.bind_group_layout,
         entries: &entries,
@@ -77,7 +78,7 @@ pub(super) fn create_sample_bind_groups(
         binding: BIND_DYNAMIC_DIRECT_PARAMS,
         resource: sh.direct.dynamic_direct_params_binding(),
     });
-    let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Streamed SH Mesh Bind Group"),
         layout: &sh.mesh_bind_group_layout,
         entries: &mesh_entries,
@@ -106,7 +107,7 @@ pub(super) fn create_grid_info(
         present: true,
         probe_occlusion_enabled,
     });
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Streamed SH Grid Info"),
         contents: &grid_bytes,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

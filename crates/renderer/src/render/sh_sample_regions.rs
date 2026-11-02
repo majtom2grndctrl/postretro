@@ -4,21 +4,11 @@
 //! addresses, residency, and scaled-node writer closure remain renderer-owned
 //! details.
 
-use glam::Vec3;
 use postretro_visibility::VisibleCells;
 
 /// One world-space AABB whose drawn pixels may sample the SH probe volume.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ShSampleRegion {
-    pub min: Vec3,
-    pub max: Vec3,
-}
-
-impl ShSampleRegion {
-    pub const fn new(min: Vec3, max: Vec3) -> Self {
-        Self { min, max }
-    }
-}
+/// Defined beside the residency plan, which indexes cell bounds with it.
+pub use postretro_render_cpu::sh_residency::ShSampleRegion;
 
 /// App-owned non-mesh consumers for one frame. Cells are named by runtime
 /// cell id: the renderer indexed each cell's bounds at level install, so a

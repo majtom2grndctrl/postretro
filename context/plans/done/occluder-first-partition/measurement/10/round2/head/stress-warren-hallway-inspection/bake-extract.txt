@@ -1,0 +1,41 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1608 brushes, 738 occlude alone; exempt alone: 3 under floor, 60 no open face, 799 short span, 8 low top; 65 clusters, 99 sections, 12 occlude (51 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 9 of 11 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5, 6, 7, 8
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 260 occluding wall faces with a free end, 279 end planes, 124 ended by the length bound (2 × the face's longer broad extent); an end is free when it meets no solid and at least 8 of its 15 probes 0.1 m past it are open
+[INFO prl_build::visibility] Exterior flood-fill: 416 exterior leaves, 3600 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 5459 occluder-tier leaves (18 holding several interior pockets); 7881 cells (1857 interior, 5608 solid, 416 exterior); 2924 runtime portals; full tree 9624 leaves, 9370 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 753
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 754
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 764
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 765
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 781
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 782
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 627
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 749
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 750
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 769
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 775
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 777
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 1468
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 1469
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 1562
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 1565
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 1567
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 2290
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 2300
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 2301
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 2308
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1302
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1303
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1310
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1313
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1321
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 1325
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 1586
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 1591
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 1592
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 1596
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 406
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 418
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 7 seals generated portal 1418
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 2866
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 2867

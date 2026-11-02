@@ -1,5 +1,5 @@
 //! Actual renderer entry-point proofs for the deferred upload contract.
-//! See: context/plans/in-progress/per-frame-upload-batching/index.md
+//! See: context/plans/done/per-frame-upload-batching/index.md
 
 use super::UploadCounts;
 use crate::render::{ClearColor, FrameScene, Renderer, ShSampleRegionSets};
@@ -29,7 +29,11 @@ fn regions() -> ShSampleRegionSets<'static> {
 }
 fn renderer() -> Option<Renderer> {
     match Renderer::new_offscreen(64, 64) {
-        Ok(renderer) => Some(renderer),
+        Ok(mut renderer) => {
+            // Level writers need a level: the empty one, no geometry or lights.
+            renderer.install_empty_level_for_test();
+            Some(renderer)
+        }
         Err(error) if error.to_string().contains("requires a GPU adapter") => {
             eprintln!("[UploadProof] skipped: no adapter ({error:#})");
             None
@@ -255,10 +259,10 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
             })
             .collect();
         renderer.set_mesh_draws(&draws);
-        let source = include_str!("../mesh_pass.rs");
+        let source = include_str!("../mesh_pass/lighting.rs");
         let count = site_writes(
             &renderer,
-            "mesh_pass.rs",
+            "mesh_pass/lighting.rs",
             source,
             "queue.write_buffer(&self.light_params_buffer",
         );
@@ -271,7 +275,7 @@ fn mesh_light_params_stage_once_for_world_viewmodel_both_and_neither() {
         assert_eq!(
             site_writes(
                 &renderer,
-                "mesh_pass.rs",
+                "mesh_pass/lighting.rs",
                 source,
                 "queue.write_buffer(&self.light_params_buffer"
             ) - count,
@@ -418,9 +422,9 @@ fn mover_and_billboard_ghosts_record_through_their_pipelines_in_both_modes() {
     };
     let device = renderer.device.clone();
     renderer
-        .full_mut()
-        .kinematic_brush
-        .install_geometry(&device, Some(&geometry), 1);
+        .level_mut()
+        .kinematic
+        .replace_geometry(&device, &geometry, 1);
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
     renderer.register_smoke_collection(
         "ghost-proof",
@@ -531,7 +535,7 @@ fn devtools_probe_setter_between_uniforms_and_submit_stages_and_reaches_gpu() {
         &renderer,
         &mut encoder,
         renderer
-            .full()
+            .level()
             .sh_volume_resources
             .grid_info_buffer_for_test(),
         include_str!("grid_readback.wgsl"),
@@ -587,7 +591,7 @@ fn acquire_failures_flush_each_frame_and_preserve_a_real_diff_gated_setter() {
         &renderer,
         &mut encoder,
         renderer
-            .full()
+            .level()
             .sh_volume_resources
             .grid_info_buffer_for_test(),
         include_str!("grid_readback.wgsl"),

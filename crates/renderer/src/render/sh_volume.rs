@@ -1,6 +1,7 @@
 // SH irradiance volume GPU resources: octahedral atlas textures, grid-info uniform, bind group (group 3).
 // See: context/lib/rendering_pipeline.md §4, §8
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::billboard_direct_scatter_volume::BillboardDirectScatterVolumeSection;
@@ -23,14 +24,13 @@ pub use postretro_render_cpu::sh_volume::{
     build_animation_buffers_from_descriptors, build_grid_info_bytes, f32_to_f16_bits,
     probe_occlusion_seed_from_fast_env,
 };
-use wgpu::util::DeviceExt;
 
 use super::billboard_direct_scatter::{
     BillboardDirectScatterResources,
     append_shared_bind_group_layout_entries as append_billboard_scatter_layout_entries,
 };
 use super::direct_sh_resources::{
-    DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries, atlas_fits,
+    DirectAtlasLayout, DirectShResources, append_shared_bind_group_layout_entries,
     direct_section_when_base_present, mesh_dynamic_direct_params_layout_entry,
 };
 use super::residency::{ResidencyAllocationState, source_ids};
@@ -39,7 +39,7 @@ use super::sh_allocation::texture_allocation_bytes;
 use super::sh_allocation::{
     ShAllocationKind, buffer_allocation, depth_moment_allocation, indirect_base_atlas_allocation,
     indirect_base_atlas_dummy_allocation, indirect_total_atlas_allocation,
-    scripted_light_descriptor_bytes, scripted_light_sample_reserve_bytes, volume_3d_fits,
+    scripted_light_descriptor_bytes, scripted_light_sample_reserve_bytes,
 };
 #[cfg(feature = "dev-tools")]
 use super::sh_atlas::base_atlas_format_label;
@@ -377,7 +377,7 @@ impl ShVolumeResources {
     /// sampling and falls back to `ambient_floor + direct_sum`.
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         sections: ShVolumeSections<'_>,
         scripted_light_capacity: usize,
         probe_occlusion_enabled: bool,
@@ -399,53 +399,22 @@ impl ShVolumeResources {
             entries: &sh_bind_group_layout_entries(),
         });
 
-        // A zero-dimension grid is treated the same as a missing/empty section.
-        let limits = device.limits();
-        let usable = section
-            .filter(|s| {
-                s.grid_dimensions[0] > 0 && s.grid_dimensions[1] > 0 && s.grid_dimensions[2] > 0
-            })
-            .filter(|s| {
-                // A degenerate lattice would sample through `max(cell, 1e-6)` or NaN;
-                // refuse it so every SH consumer takes the no-volume path.
-                let sane = s.grid_origin.iter().all(|v| v.is_finite())
-                    && s.cell_size.iter().all(|v| v.is_finite() && *v > 0.0);
-                if !sane {
-                    log::error!(
-                        "[Renderer] SH volume lattice is degenerate (grid origin {:?}, cell size {:?}); disabling SH volume for this level",
-                        s.grid_origin,
-                        s.cell_size,
-                    );
+        // The device-limit filter is render-cpu's, so prep derives the same
+        // verdict (and the lattice and descriptor count that follow from it)
+        // without a device. A zero-dimension grid is treated the same as a
+        // missing/empty section, silently.
+        let limits = super::install_prep::device_limits(&device.limits());
+        let usable = section.filter(|s| {
+            match postretro_render_cpu::sh_volume::check_sh_volume(s, &limits) {
+                Ok(()) => true,
+                Err(rejection) => {
+                    if rejection.is_logged() {
+                        log::error!("[Renderer] {rejection}; disabling SH volume for this level");
+                    }
+                    false
                 }
-                sane
-            })
-            .filter(|s| {
-                let fits = atlas_fits(s.atlas_dimensions, s.layer_count, &limits);
-                if !fits {
-                    log::error!(
-                        "[Renderer] Octahedral SH atlas {}x{}x{} exceeds device limits (maxTextureDimension2D {}, maxTextureArrayLayers {}); disabling SH volume for this level",
-                        s.atlas_dimensions[0],
-                        s.atlas_dimensions[1],
-                        s.layer_count,
-                        limits.max_texture_dimension_2d,
-                        limits.max_texture_array_layers,
-                    );
-                }
-                fits
-            })
-            .filter(|s| {
-                let fits = sh_depth_moment_fits(s.grid_dimensions, &limits);
-                if !fits {
-                    log::error!(
-                        "[Renderer] SH depth-moment grid {}x{}x{} exceeds device maxTextureDimension3D {}; disabling SH volume for this level",
-                        s.grid_dimensions[0],
-                        s.grid_dimensions[1],
-                        s.grid_dimensions[2],
-                        limits.max_texture_dimension_3d,
-                    );
-                }
-                fits
-            });
+            }
+        });
 
         let grid_origin: [f32; 3];
         let cell_size: [f32; 3];
@@ -837,7 +806,7 @@ impl ShVolumeResources {
             },
         ];
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Bind Group"),
             layout: &bind_group_layout,
             entries: &entries,
@@ -857,7 +826,7 @@ impl ShVolumeResources {
             binding: postretro_render_cpu::sh_volume::BIND_DYNAMIC_DIRECT_PARAMS,
             resource: direct.dynamic_direct_params_binding(),
         });
-        let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let mesh_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SH Volume Mesh Superset Bind Group"),
             layout: &mesh_bind_group_layout,
             entries: &mesh_entries,
@@ -1097,8 +1066,9 @@ fn dummy_depth_moment_payload() -> [u16; 4] {
     [0u16; 4]
 }
 
+#[cfg(test)]
 fn sh_depth_moment_fits(grid_dimensions: [u32; 3], limits: &wgpu::Limits) -> bool {
-    volume_3d_fits(grid_dimensions, limits)
+    super::sh_allocation::volume_3d_fits(grid_dimensions, limits)
 }
 
 // --- Minor wgpu helper shims (local to this module) ---
@@ -1122,7 +1092,7 @@ impl DeviceBufferInit for wgpu::Device {
         contents: &[u8],
         usage: wgpu::BufferUsages,
     ) -> wgpu::Buffer {
-        self.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.new_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents,
             usage,
@@ -1140,6 +1110,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use wgpu::util::DeviceExt;
 
     const SH_DEPTH_MIN_VARIANCE_M2_REF: f32 = 1.0e-4;
     const SH_DEPTH_BIAS_CELL_FRACTION_REF: f32 = 0.05;

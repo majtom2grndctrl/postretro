@@ -1,0 +1,97 @@
+
+running 1 test
+
+=== before: 2960 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=2a40e98aa948a4b1 walk_epoch=3 size=129785845 mtime=1793154539 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+paths [("portal", 2442), ("step_limit", 518)]
+per pose                   mean          p95          max
+considered               2042.6         5000         5000
+accepted                  664.9         1862         2261
+drawn                     272.1         1386         1894
+reach                     272.2         1386         1894
+seen                       41.7          130          224
+drawn_faces              1081.4         5559         7364
+tris                     2163.0        11118        14729
+tris_in_frustum          1939.3        10297        14249
+lightmap_blocks           272.1         1386         1894
+lightmap_texels        643840.5      2309184      2697888
+sh_clusters                52.2          265          359
+fog_volumes                 0.0            0            0
+id51_outside               15.5           60          543
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            0
+hit_solid                   0.1            0            7
+hit_exterior                0.0            0            0
+
+=== after: 2960 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=7f8e377d677289f2 walk_epoch=3 size=130326049 mtime=1793274910 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/cap26/stress-street/stress-street.prl
+paths [("portal", 2931), ("step_limit", 29)]
+per pose                   mean          p95          max
+considered               1286.8         3610         5000
+accepted                  393.3         1161         1780
+drawn                     152.5          405         1512
+reach                     158.7          424         1546
+seen                       65.8          169          280
+drawn_faces              1092.7         2951         9984
+tris                     2185.2         5900        19967
+tris_in_frustum          1817.5         5422        18965
+lightmap_blocks           152.5          405         1512
+lightmap_texels        367511.0       967200      2284096
+sh_clusters                43.5          126          498
+fog_volumes                 0.0            0            0
+id51_outside                1.3            0          321
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            2
+hit_solid                   0.1            0            7
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 29
+  trip g5.3.0@180
+  trip g6.3.0@180
+  trip g5.4.0@180
+  trip g6.4.0@180
+  trip g5.5.0@180
+  trip g6.5.0@180
+  trip g6.6.0@180
+  trip g15.9.0@90
+  trip g15.10.0@90
+  trip g15.11.0@90
+  trip g15.12.0@90
+  trip g15.14.0@90
+  trip g16.14.0@90
+  trip g12.26.0@0
+  trip g12.27.1@0
+  trip g13.27.1@0
+  trip g12.28.1@0
+  trip g13.28.1@0
+  trip g14.28.1@0
+  trip g11.29.0@0
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 9, 9 with rays that did not miss before
+  g11.21.0@270: 1 new of 1 rays
+  g10.22.0@270: 1 new of 1 rays
+  g11.22.0@270: 2 new of 2 rays
+  g12.22.0@180: 1 new of 1 rays
+  g12.22.0@270: 1 new of 1 rays
+  g15.22.0@180: 1 new of 1 rays
+  g16.22.0@90: 1 new of 1 rays
+  g17.22.0@90: 1 new of 1 rays
+  g18.22.0@90: 1 new of 1 rays
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: FAIL
+
+thread 'session::lightmap_residency::walk_measurement::world_poses::world_poses_diff' (17810119) panicked at crates/postretro/src/session/lightmap_residency/walk_measurement/world_poses/mod.rs:204:5:
+guard failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_diff ... FAILED
+
+failures:
+
+failures:
+    session::lightmap_residency::walk_measurement::world_poses::world_poses_diff
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.08s
+

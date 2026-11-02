@@ -1,0 +1,11 @@
+postretro-world-poses 1
+# frame-cost/poses.txt (start-pose capsule centre y 1.0) as eye poses, eye = centre + 0.5 m
+pose fc:P1 -17.78 1.5 -13.8176 90 0
+pose fc:P2 -17.78 1.5 -13.8176 90 15
+pose fc:G1 -14.224 1.5 -13.8176 98 15
+pose fc:G2 -17.78 1.5 -13.8176 64 0
+pose fc:G3 -22.86 1.5 -7.62 82 0
+pose fc:L2 -22.86 1.5 -13.8176 102 15
+pose fc:C1 -3.2512 1.5 -3.2512 0 0
+pose fc:C2 -7.62 1.5 -13.8176 90 0
+pose fc:V1 -32.004 1.5 -10.16 90 0

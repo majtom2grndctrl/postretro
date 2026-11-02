@@ -4,6 +4,7 @@
 #[cfg(test)]
 use super::renderer_dynamic_shadow_passes::tally_entity_occluder_submissions;
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 fn wireframe_draws_leaf(
     mode: WorldWireframeMode,
@@ -21,9 +22,10 @@ fn wireframe_draws_leaf(
 }
 
 impl Renderer {
-    /// Depth pre-pass (writes the scene depth buffer for the forward Equal test)
-    /// followed by the half-res SDF shadow dispatch. Both run before `scene_color`
-    /// is bound and before the forward pass that consumes them.
+    /// Depth pre-pass (writes the scene depth buffer, static world then movers,
+    /// for the forward and mover `Equal` tests) followed by the half-res SDF
+    /// shadow dispatch. Both run before `scene_color` is bound and before the
+    /// forward pass that consumes them.
     pub(super) fn record_depth_and_sdf_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -34,6 +36,9 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         if render_world {
             let depth_ts = full
                 .frame_timing
@@ -56,15 +61,29 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if full.has_geometry && full.index_count > 0 {
+            if level.has_geometry && level.index_count > 0 {
                 depth_pass.set_pipeline(&full.depth_prepass_pipeline);
                 depth_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
-                depth_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
-                depth_pass.set_index_buffer(full.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                depth_pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
+                depth_pass
+                    .set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-                if let Some(cull) = &full.compute_cull {
+                if let Some(cull) = &level.compute_cull {
                     cull.draw_indirect(&mut depth_pass, None); // None = no texture bind (group 0 only)
                 }
+            }
+
+            // Movers after the static world, from the same list the Kinematic
+            // Brush Pass shades `Equal` against: world hidden behind a mover
+            // then fails the forward pass's `Equal`, and each mover pixel
+            // shades once.
+            if full.kinematic_brush.has_draws(&level.kinematic) {
+                depth_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
+                full.kinematic_brush.record_depth(
+                    &mut depth_pass,
+                    &level.kinematic,
+                    MoverView::Main,
+                );
             }
         }
 
@@ -72,7 +91,7 @@ impl Renderer {
         // consumes scene depth, and before the forward pass that samples the
         // shadow factor. Skipped when no SDF atlas is loaded; forward-side
         // atlas/mode flags gate consumption so stale target contents are ignored.
-        if render_world && full.sdf_atlas_resources.present {
+        if render_world && level.sdf_atlas_resources.present {
             let sdf_ts = full
                 .frame_timing
                 .as_ref()
@@ -91,7 +110,8 @@ impl Renderer {
             full.sdf_shadow_pass.dispatch(
                 queue,
                 encoder,
-                &full.sdf_atlas_resources,
+                &level.sdf_shadow,
+                &level.sdf_atlas_resources,
                 SdfShadowFrameInputs {
                     inv_view_proj,
                     camera_position: full.last_camera_position.into(),
@@ -117,11 +137,14 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         // Capture the just-composed SH atlas for the live irradiance overlay.
         // Separate submission so the boundary orders this copy after the compose
         // storage writes (see the note at the compose dispatch above). Skipped
         // unless the overlay is active.
-        if full.sh_probe_readback.wants_copy() {
+        if level.sh_probe_readback.wants_copy() {
             // Block until the compose submit above has fully retired before the
             // copy reads `total`. A submission boundary alone does not hard-sync
             // the compute storage writes against the copy on the Metal backend:
@@ -134,9 +157,9 @@ impl Renderer {
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("SH Readback Encoder"),
                 });
-            full.sh_probe_readback.encode_copy(
+            level.sh_probe_readback.encode_copy(
                 &mut readback_encoder,
-                &full.sh_volume_resources.total_atlas_texture,
+                &level.sh_volume_resources.total_atlas_texture,
             );
             queue.submit_unbatched(
                 std::iter::once(readback_encoder.finish()),
@@ -162,14 +185,17 @@ impl Renderer {
         let full = full
             .as_ref()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_ref() else {
+            return;
+        };
         if render_world
             && full.wireframe_enabled
-            && full.has_geometry
-            && full.wireframe_index_count > 0
-            && !full.bvh_leaves.is_empty()
-            && let Some(cull) = &full.compute_cull
+            && level.has_geometry
+            && level.wireframe_index_count > 0
+            && !level.bvh_leaves.is_empty()
+            && let Some(cull) = &level.compute_cull
         {
-            let cull_status_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            let cull_status_bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Wireframe Cull Status BG"),
                 layout: &full.wireframe_cull_status_bgl,
                 entries: &[wgpu::BindGroupEntry {
@@ -211,14 +237,14 @@ impl Renderer {
             overlay_pass.set_pipeline(pipeline);
             overlay_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
             overlay_pass.set_bind_group(1, &cull_status_bind_group, &[]);
-            overlay_pass.set_vertex_buffer(0, full.vertex_buffer.slice(..));
+            overlay_pass.set_vertex_buffer(0, level.vertex_buffer.slice(..));
             overlay_pass.set_index_buffer(
-                full.wireframe_index_buffer.slice(..),
+                level.wireframe_index_buffer.slice(..),
                 wgpu::IndexFormat::Uint32,
             );
 
             // instance_index = leaf index so shader looks up per-leaf cull status.
-            for (leaf_idx, leaf) in full.bvh_leaves.iter().enumerate() {
+            for (leaf_idx, leaf) in level.bvh_leaves.iter().enumerate() {
                 if !wireframe_draws_leaf(full.world_wireframe_mode, visible, leaf) {
                     continue;
                 }

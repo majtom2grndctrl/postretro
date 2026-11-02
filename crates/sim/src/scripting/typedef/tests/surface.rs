@@ -368,8 +368,8 @@ fn typescript_ui_module_declaration_is_generated() {
             && ui_module.contains("export function createLocalState")
             && ui_module.contains("export const ui:")
             && ui_module.contains("export function showDialog(")
-            && ui_module.contains("export function setSentiment(from: string, to: string, value: number): PrimitiveReactionDescriptor;")
-            && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): PrimitiveReactionDescriptor;")
+            && ui_module.contains("export function setSentiment(from: string, to: string, value: number): SystemReactionStep;")
+            && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep;")
             && ui_module.contains("export function getGameState(): GameStateRefs;")
             && ui_module.contains(
                 "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"
@@ -415,9 +415,11 @@ fn set_ghost_audio_is_declared_on_postretro_audio_and_not_the_root_module() {
             "PostretroAudioModule missing `{export}`"
         );
     }
-    assert!(audio_module.contains(
-        "export function setGhostAudio(fields: GhostAudioFields): PrimitiveReactionDescriptor;"
-    ));
+    assert!(
+        audio_module.contains(
+            "export function setGhostAudio(fields: GhostAudioFields): SystemReactionStep;"
+        )
+    );
     for module in ["postretro", "postretro/ui"] {
         assert!(
             !ts_module_block(&ts, module).contains("setGhostAudio"),
@@ -505,7 +507,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
     let ts_ui = ts_module_block(&ts, "postretro/ui");
 
     assert!(
-        ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): PrimitiveReactionDescriptor;")
+        ts.contains("export function updateState<T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef): SystemReactionStep;")
             && ts.contains("export function onStateCrossing(predicate: RuntimeValue | BoolRef, fire: (Reaction<{}> | Reaction<CrossingParams> | string)[], options?: CrossingOptions): CrossingDescriptor;")
             && ts.contains("export type PredicateCrossingDescriptor = {")
             && ts.contains("predicate: RuntimeValue;")
@@ -522,7 +524,7 @@ fn ir_valued_state_reactions_are_emitted_in_both_sdk_surfaces() {
         "TypeScript postretro/ui declaration must import RuntimeValue before using it:\n{ts_ui}"
     );
     assert!(
-        luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> PrimitiveReactionDescriptor,")
+        luau.contains("updateState: <T>(ref: Ref<T>, value: T | RuntimeValue | NumberRef | BoolRef) -> SystemReactionStep,")
             && luau.contains("& ((predicate: RuntimeValue | BoolRef, fire: {Reaction<any> | string}, options: CrossingOptions?) -> CrossingDescriptor)")
             && luau.contains("export type PredicateCrossingDescriptor = {")
             && luau.contains("predicate: RuntimeValue,")

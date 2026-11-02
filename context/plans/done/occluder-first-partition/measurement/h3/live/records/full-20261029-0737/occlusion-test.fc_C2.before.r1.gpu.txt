@@ -1,0 +1,15 @@
+gpu span_s=6.46 frame_ms=16.534 frames_by_time=391 resolve_passes=331 busy_frac=0.695 gpu_ms_per_frame=11.499 gfxcompute_frac=0.642 gfxcompute_ms_per_frame=10.609 counted_ms_per_frame=13.575
+  GFX          Textured Pass                                    n=   332 ms_per_frame=  2.057
+  ComputeUQ4   Fog Raymarch Pass                                n=   328 ms_per_frame=  1.881
+  GFX          Skinned Viewmodel Pass                           n=   331 ms_per_frame=  1.757
+  GFX          Skinned Mesh Pass                                n=   333 ms_per_frame=  1.625
+  SDMA0        Page On 65536 bytes  (postretro)                 n= 11674 ms_per_frame=  1.117
+  GFX          GPU Execution  (postretro)                       n=  1528 ms_per_frame=  1.094
+  ComputeUQ4   Streamed Animated Direct SH                      n=   327 ms_per_frame=  0.487
+  ComputeUQ4   Streamed SH Compose                              n=   328 ms_per_frame=  0.443
+  GFX          Screen Effects Resolve Pass                      n=   331 ms_per_frame=  0.358
+  SDMA1_PAGE   GPU Execution  (postretro)                       n=  3136 ms_per_frame=  0.354
+  Channel 11   Fog Raymarch Pass                                n=    59 ms_per_frame=  0.347
+  GFX          Bloom Bright Pass                                n=   332 ms_per_frame=  0.145
+  GFX          Bloom Horizontal Gaussian Pass                   n=  1656 ms_per_frame=  0.131
+  SDMA0        Per-frame Upload Copies                          n=   332 ms_per_frame=  0.127

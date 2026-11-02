@@ -1,0 +1,13 @@
+frames 275 busy median 256.88 p95 268.10 ms | span median 266.04 p95 283.51 ms
+  Textured Pass                                    154.826 ms/frame
+  Page On 65536 bytes  ( postretro-capture (41231) 118.981 ms/frame
+  Kinematic Brush Pass                              62.932 ms/frame
+  Fluid Reflection Pass                             10.638 ms/frame
+  Streamed SH Compose                                8.397 ms/frame
+  Animated LM Compose                                6.207 ms/frame
+  Streamed Animated Direct SH                        6.040 ms/frame
+  Bloom Bright Pass                                  2.136 ms/frame
+  Fluid Surface Pass                                 1.397 ms/frame
+  Per-frame Upload Copies                            1.011 ms/frame
+  Bloom Vertical Gaussian Pass                       0.861 ms/frame
+  Bloom Horizontal Gaussian Pass                     0.821 ms/frame

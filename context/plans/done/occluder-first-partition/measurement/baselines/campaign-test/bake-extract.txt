@@ -1,0 +1,44 @@
+# log extract from target/occluder-baselines/campaign-test/bake.log (frozen prl-build 8a9a341, RUST_LOG=info, -v)
+[INFO prl_build::partition] BSP leaves: 166 solid, 321 empty
+[INFO prl_build::partition] BSP nodes: 486
+[INFO prl_build::partition] BSP leaves: 487
+[INFO prl_build::partition] Total faces (after brush-side extraction): 1059
+[INFO prl_build::partition] Average faces per leaf: 2.2
+[WARN prl_build::pipeline] [Compiler] Watertightness: 9 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 9):
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 0.203, 26.822) — near brush 105
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.219, 26.822) — near brush 99
+[INFO prl_build::visibility] Exterior flood-fill: 114 exterior leaves, 207 interior empty leaves
+[INFO prl_build::visibility] Visibility: 321 empty leaves, 837 portals
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 695
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 696
+[INFO prl_build::geometry] Vertices: 3228 (28 bytes each)
+[INFO prl_build::geometry] Triangles: 1612
+[INFO prl_build::geometry] Faces: 808
+[INFO prl_build::geometry] Empty leaves: 207
+[INFO prl_build::geometry] Unique textures: 14
+[INFO prl_build::bvh_build] Bvh: 1615 nodes (807 internal, 808 leaf), 808 leaf entries
+  Cell Visibility: 100%  ETA 0.0s
+[INFO prl_build::chunk_light_list_bake] [ChunkLightList] grid 11x7x16 (1232 chunks), 16 static lights, avg 0.25 / chunk, max 6, total indices 314, payload 11112 bytes
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 5589 eye candidates (5535 in cell, 12 inset, 42 rejected; missed into solid 33, exterior 0, other cell 21), 0 camera cells without an eye point, 33282 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 207 camera cells, 24201 entries (max 167 per camera), 195576 bytes, max lead 32 m, 0.077 s
+[INFO prl_build::pipeline] [Compiler] Lightmap runtime all-resident pool: 18 pool layers
+[INFO prl_build::animated_light_chunks] [AnimatedLightChunks] 342 chunks, 5 animated lights, max 2 / chunk, mean 1.02 / chunk, 0 chunks bottomed out at min-extent floor
+[INFO prl_build::pipeline::animated_atlas_stage] [AnimatedLightWeightMaps] Packed layout: 160 blocks on 3 pages of 2048² (150994944 bytes; identity layout 8 pages of 2048², 402653184 bytes)
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 195576 payload bytes
+## open-edge sample lines
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-56.083, 1.219, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 0.203, 26.822) — near brush 105
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 26.822) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.016, 33.325) — near brush 99
+[WARN prl_build::pipeline] [Compiler]   open edge near (-49.581, 1.219, 26.822) — near brush 99

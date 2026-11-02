@@ -1,0 +1,24 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+loaded in 0.6 s
+bake read: id51=2a40e98aa948a4b1 walk_epoch=3 size=129785845 mtime=1793154539 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 75374 frames in 59.1 s; deferred 0 blocks / 0 texels, left behind 2405597 blocks / 2020796272 texels, 19554 trip frames
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap has been running for over 60 seconds
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 106267 frames in 68.9 s; deferred 0 blocks / 0 texels, left behind 3215521 blocks / 2686359120 texels, 25858 trip frames
+pose tour stress-street.poses, 2 frames per pose: 5920 frames in 3.3 s; deferred 0 blocks / 0 texels, left behind 93146 blocks / 82482400 texels, 1036 trip frames
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-street/stress-street.before.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 2020796272 (blocks 2405597); outside-baked-set blocks 3588615; trip frames 19554 of 75374
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 2686359120 (blocks 3215521); outside-baked-set blocks 4832123; trip frames 25858 of 106267
+pose tour stress-street.poses, 2 frames per pose
+  deferred texels 0 (blocks 0); left-behind texels 82482400 (blocks 93146); outside-baked-set blocks 135912; trip frames 1036 of 5920
+verdict: UNPAIRED (record only)
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 132.23s
+
+POSTRETRO_WORLD_POSES_FILE=$R/$M.poses POSTRETRO_WORLD_POSES_OUT= $T     131.46s user 0.40s system 99% cpu 2:12.27 total

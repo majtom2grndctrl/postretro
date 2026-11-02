@@ -1,0 +1,30 @@
+
+running 1 test
+replaying /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/stress-warren-hallway-inspection/stress-warren-hallway-inspection.before.bakegap: 3 sequences
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 1.2 s
+bake read: id51=e6d8eca9c466ffa9 walk_epoch=3 size=2677370617 mtime=1793224594 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap has been running for over 60 seconds
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 93837 frames in 392.9 s; deferred 0 blocks / 0 texels, left behind 73 blocks / 67887520 texels, 0 trip frames
+   pool: first 15 layers, peak 34 layers (34 occupied; headroom cost 0 layers, 0.0 MiB), growths 6
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 95392 frames in 492.1 s; deferred 0 blocks / 0 texels, left behind 419 blocks / 236470496 texels, 0 trip frames
+   pool: first 15 layers, peak 36 layers (36 occupied; headroom cost 0 layers, 0.0 MiB), growths 6
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose: 9192 frames in 81.7 s; deferred 0 blocks / 0 texels, left behind 55952 blocks / 23074487456 texels, 0 trip frames
+   pool: first 15 layers, peak 32 layers (30 occupied; headroom cost 2 layers, 28.0 MiB), growths 2
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/stress-warren-hallway-inspection/stress-warren-hallway-inspection.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 28655008 after 67887520; trip frames: before 0 after 0; frames deferring more texels after: 0 of 93837
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 38436080 after 236470496; trip frames: before 0 after 0; frames deferring more texels after: 0 of 95392
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 23232976320 after 23074487456; trip frames: before 0 after 0; frames deferring more texels after: 0 of 9192
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 968.17s
+

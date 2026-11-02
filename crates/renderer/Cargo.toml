@@ -43,6 +43,10 @@ dev-tools = [
 # Capture-only controls the app's `capture` feature drives: the planar
 # preset override a capture scene sets. Adds no dependencies.
 capture = []
+# Fault-injection seams for the app's binary-owned tests (a provoked wgpu
+# validation error, on the main thread or in a level build). Adds no
+# dependencies; production callers never enable it.
+test-seams = []
 
 [dev-dependencies]
 blake3.workspace = true

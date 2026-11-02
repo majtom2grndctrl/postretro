@@ -151,7 +151,10 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // `@invariant` keeps clip-space Z bit-exact with `vs_depth`, which writes
+    // the mover's depth in the depth pre-pass that this pass tests `Equal`
+    // against. See rendering_pipeline.md §7.2.
+    @invariant @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) world_normal: vec3<f32>,
     @location(2) world_tangent: vec3<f32>,
@@ -175,12 +178,36 @@ fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
     return normalize(vec3<f32>(x, y, z));
 }
 
+// The one clip-position path for both mover entry points: `vs_depth` and
+// `vs_main` share it so the colour draw's `Equal` test finds the depth the
+// pre-pass wrote.
+fn mover_world_position(position: vec3<f32>, instance_index: u32) -> vec4<f32> {
+    return instances[instance_index].model * vec4<f32>(position, 1.0);
+}
+
+fn mover_clip_position(world_pos: vec4<f32>) -> vec4<f32> {
+    return camera.view_proj * world_pos;
+}
+
+struct DepthOutput {
+    @invariant @builtin(position) clip_position: vec4<f32>,
+};
+
+// Depth pre-pass entry: vertex-only, position from location 0 and the
+// instance transform, nothing else.
+@vertex
+fn vs_depth(in: VertexInput, @builtin(instance_index) instance_index: u32) -> DepthOutput {
+    var out: DepthOutput;
+    out.clip_position = mover_clip_position(mover_world_position(in.position, instance_index));
+    return out;
+}
+
 @vertex
 fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
     var out: VertexOutput;
     let instance = instances[instance_index];
-    let world_pos = instance.model * vec4<f32>(in.position, 1.0);
-    out.clip_position = camera.view_proj * world_pos;
+    let world_pos = mover_world_position(in.position, instance_index);
+    out.clip_position = mover_clip_position(world_pos);
     out.world_position = world_pos.xyz;
     out.uv = in.base_uv;
 

@@ -1,0 +1,7 @@
+GATE_OK waited=30 temp=63
+10:08:22 SENTINEL sentinel_a total_ms=16.536 rc=0 2026-10-29 10:08:21 util=6 inUseVidMemoryBytes=585777152 vramFreeBytes=2730463232 mhz=11 temp=70 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=0 screensaver=no locked=absent
+10:09:16 RUN stress-street.rd_elevated.cap26.def rc=0 GATE_OK waited=30 temp=66 total=17.456 work=15.139 submit=9.645 record=2.039 walk=0.823 tests=2577.000 val=validation: on (build default)
+10:10:43 RUN stress-street.rd_elevated.before.def rc=0 GATE_OK waited=62 temp=67 total=17.009 work=11.635 submit=6.925 record=1.902 walk=0.845 tests=2762.000 val=validation: on (build default)
+GATE_OK waited=70 temp=67
+10:12:06 SENTINEL sentinel_end total_ms=16.530 rc=0 2026-10-29 10:12:06 util=0 inUseVidMemoryBytes=585580544 vramFreeBytes=2730455040 mhz=37 temp=75 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=48 screensaver=no locked=absent
+10:12:06 DONE

@@ -85,7 +85,8 @@ use postretro_render_data::influence::LightInfluence;
 #[cfg(feature = "load-prl")]
 use postretro_render_data::material::Material;
 
-/// Stable runtime cell identifier. It is the compiler BSP leaf index.
+/// Stable runtime cell identifier: an index into the Cells section. One cell
+/// can group several compiler BSP leaves.
 pub type CellId = usize;
 
 /// One canonical, unordered coupled cell pair with baked graded details.

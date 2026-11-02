@@ -1,0 +1,27 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap26/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 2.4 s
+bake read: id51=398ad9c2fbdf41c8 walk_epoch=3 size=2748376473 mtime=1793254885 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9k/cap26/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+
+=== structure
+cells 10021 (interior 3268, solid 6337, exterior 416, drawable 3184)
+interior cell AABB volume: [<0.1 m3] 26 [0.1-1 m3] 0 [1-10 m3] 60 [10-100 m3] 1688 [100-1000 m3] 1267 [1000-10000 m3] 227 [>=10000 m3] 0
+interior cell smallest extent: [<0.1 m] 26 [0.1-0.25 m] 0 [0.25-0.5 m] 2 [0.5-1 m] 617 [1-2 m] 389 [2-4 m] 1541 [4-8 m] 633 [>=8 m] 60
+interior cell largest extent: p50 6.50 p95 21.13 max 32.51
+portals 5357 (walkable, both cells interior: 5357; touching solid or exterior: 0)
+walkable portal area: [<0.1 m2] 0 [0.1-1 m2] 67 [1-10 m2] 667 [10-100 m2] 4088 [100-1000 m2] 535 [>=1000 m2] 0
+walkable portal aspect (diameter / narrowest width): [<1.5] 273 [1.5-2] 2533 [2-4] 1387 [4-8] 596 [8-16] 328 [16-32] 181 [32-64] 59 [>=64] 0
+walkable portal normals: horizontal 543, vertical 4814, oblique 0
+faces 13804, triangles 27403, vertices 55011, BVH leaves 13804
+lightmap blocks 3184 over 3184 cells (max 1 per cell), texel area 739206144
+lightmap storage: streaming
+SH probe grid 50x13x61 = 39650 probes
+SH clusters 7062 (indivisible oversize 3), max 32 cells per cluster
+cell visibility: 6754 components, 63687 coupled pairs
+id 51: 10021 camera cells, 855367 entries; entries per interior camera cell p50 263.00 p95 433.00 max 538.00
+lights 345, fog volumes 0
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_structure ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 2.40s
+

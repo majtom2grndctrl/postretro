@@ -238,3 +238,17 @@ debug = true
 
 [profile.dev-debug.package."*"]
 opt-level = 2
+
+# Perf iteration: dev codegen and incremental builds, without debug
+# assertions. objc2's per-message debug check alone cost ~0.9 us per Metal
+# draw. Use with --features dev-tools (and tracy). Shipped-number checks use
+# --release.
+[profile.profiling]
+inherits = "dev"
+debug-assertions = false
+overflow-checks = false
+
+[profile.profiling.package."*"]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false

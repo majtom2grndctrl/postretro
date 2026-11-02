@@ -51,18 +51,28 @@ impl Renderer {
         let Some(full) = full.as_mut() else {
             return;
         };
-        for gpu_texture in &full.gpu_textures {
+        // The active level's materials and any staged for the next install;
+        // with neither, there is nothing to rewrite.
+        let materials = full
+            .level
+            .iter()
+            .flat_map(|level| level.gpu_textures.iter())
+            .chain(
+                full.pending_textures
+                    .iter()
+                    .flat_map(|textures| textures.gpu_textures.iter()),
+            );
+        let mut rewritten = 0usize;
+        for gpu_texture in materials {
             rewrite_material_surface_depth(
                 queue,
                 &gpu_texture.uniform_buffer,
                 gpu_texture.uniform_plan,
                 quality,
             );
+            rewritten += 1;
         }
-        log::info!(
-            "[Renderer] Surface Depth quality: {quality:?} ({} materials)",
-            full.gpu_textures.len()
-        );
+        log::info!("[Renderer] Surface Depth quality: {quality:?} ({rewritten} materials)");
     }
 
     /// The Surface Depth setting currently applied to every installed material.
@@ -369,9 +379,13 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("set_probe_occlusion_enabled is a full-ready path");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         if full.probe_occlusion_enabled != enabled {
             full.probe_occlusion_enabled = enabled;
-            full.sh_volume_resources
+            level
+                .sh_volume_resources
                 .set_probe_occlusion_enabled(queue, enabled);
             log::info!("[Renderer] Probe Occlusion: {enabled}");
         }
@@ -509,12 +523,16 @@ impl Renderer {
         });
     }
 
-    /// Current `fog_pixel_scale` — read by the debug-UI slider on first draw.
-    /// The setter (`set_fog_pixel_scale` above) drives a scatter-target
-    /// rebuild rather than a per-frame uniform write.
+    /// The active level's `fog_pixel_scale` — read by the debug-UI slider on
+    /// first draw; with no active set, the scale a new set starts at. The
+    /// setter (`set_fog_pixel_scale` above) drives a scatter-target rebuild
+    /// rather than a per-frame uniform write.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn fog_pixel_scale(&self) -> u32 {
-        self.full().fog.pixel_scale
+        self.full().level.as_ref().map_or_else(
+            || postretro_render_cpu::fog_volume::clamp_fog_pixel_scale(0),
+            |level| level.extent.fog.pixel_scale(),
+        )
     }
 
     /// Boot-ready: the surface/device/queue/boot-splash exist and the surface is
@@ -533,6 +551,9 @@ impl Renderer {
 
     #[allow(dead_code)]
     pub fn has_compute_cull(&self) -> bool {
-        self.full().compute_cull.is_some()
+        self.full()
+            .level
+            .as_ref()
+            .is_some_and(|level| level.compute_cull.is_some())
     }
 }

@@ -23,7 +23,7 @@ const DIRECT_COMPOSE_PARAMS_SIZE: usize = 16;
 pub(super) const DEBUG_OVERRIDE_SIZE: usize = 32;
 pub(super) const ANIMATED_LIGHT_SCALE_SIZE: usize = 1040;
 
-pub(super) fn promotion_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(in crate::render::sh_streaming) fn promotion_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     vec![
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),
@@ -43,7 +43,7 @@ pub(super) fn promotion_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     ]
 }
 
-pub(super) fn animated_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+pub(in crate::render::sh_streaming) fn animated_bgl_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     vec![
         texture_bgl_entry(0),
         sampler_bgl_entry(BIND_BASE_SAMPLER),

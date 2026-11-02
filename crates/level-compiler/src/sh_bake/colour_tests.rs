@@ -1,12 +1,17 @@
 // PNG-backed, pre-encoding colour and base/delta estimator contracts.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+use glam::{DVec3, Vec3};
+
+use super::bounce::*;
+use super::sh_math::*;
+use super::trace::*;
 use super::*;
 use crate::bvh_build::build_bvh;
 use crate::coloured_bounce_test_fixtures::{Appearance, room_map, write_textures};
 use crate::delta_sh_bake::{indirect_light_axis, unit_radiance_light};
 use crate::fixture_pipeline::FixturePipeline;
-use crate::map_format::MapFormat;
+use crate::lightmap_bake::soft_visibility_one_sample;
 use crate::surface_materials::stats::BounceMaterials;
 use crate::texture_mips::{StageTextureBytes, bake_materials_into};
 use postretro_level_format::geometry::NO_TEXTURE;
@@ -27,22 +32,7 @@ impl Room {
         write_textures(dir.path());
         let path = dir.path().join("room.map");
         std::fs::write(&path, room_map(Appearance::RedWall, true, true)).unwrap();
-        let map = crate::parse::parse_map_file(&path, MapFormat::IdTech2).unwrap();
-        let partition = crate::partition::partition(&map.brush_volumes).unwrap();
-        let portals = crate::portals::generate_portals(&partition.tree);
-        let exterior_leaves = crate::visibility::find_exterior_leaves(&partition.tree, &portals);
-        let geometry =
-            crate::geometry::extract_geometry(&partition.faces, &partition.tree, &exterior_leaves);
-        let (bvh, primitives, _) = build_bvh(&geometry).unwrap();
-        let pipeline = FixturePipeline {
-            geometry,
-            bvh,
-            primitives,
-            tree: partition.tree,
-            faces: partition.faces,
-            exterior_leaves,
-            lights: map.lights,
-        };
+        let pipeline = crate::fixture_pipeline::load_map(&path);
         let room = Self { dir, pipeline };
         assert!(
             probe_is_valid_pub(

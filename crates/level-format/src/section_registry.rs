@@ -157,9 +157,10 @@ pub enum SectionId {
     /// See `cell_draw_index::CellDrawIndexSection`.
     CellDrawIndex = 37,
 
-    /// Runtime visibility cells, preserving the compiler BSP leaf id space
-    /// one-to-one. Carries cell bounds, flags, face ranges, and per-cell portal
-    /// adjacency ranges without BSP split planes. See `cells::CellsSection`.
+    /// Runtime visibility cells, each grouping one or more compiler BSP
+    /// leaves; every cell id in the PRL names one. Carries cell bounds, flags,
+    /// face ranges, and per-cell portal adjacency ranges without BSP split
+    /// planes. See `cells::CellsSection`.
     Cells = 38,
 
     /// Point-to-cell lookup decision tree. Version 1 mirrors the compiler BSP

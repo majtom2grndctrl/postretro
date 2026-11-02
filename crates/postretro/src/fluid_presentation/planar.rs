@@ -33,7 +33,7 @@ impl App {
     /// The renderer's planar target exists only while the installed level
     /// holds the candidate plane selection reads: one source, the app's
     /// candidates (`rendering_pipeline.md` §7.3a, Target lifecycle).
-    fn sync_planar_candidate(&mut self) {
+    pub(crate) fn sync_planar_candidate(&mut self) {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_planar_candidate(self.planar_render.has_candidate());
         }

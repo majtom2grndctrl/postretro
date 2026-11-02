@@ -53,8 +53,15 @@ pub enum SystemReactionCommand {
     },
     LoadLevel {
         map: String,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
     },
-    RestartLevel,
+    RestartLevel {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+    },
     ReturnToFrontend,
     PopTree,
     SetState {
@@ -124,11 +131,33 @@ pub enum Audience {
     Everyone,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FireOrigin {
-    #[default]
-    EveryMachine,
+    EveryMachine(MachineSource),
     HostOnly(FireSubject),
+}
+
+/// Why a source fires on every machine, which decides where and on which
+/// clock a `wait` tail it parks lands (`scripting.md` §12, Steps after a
+/// `wait`). Presentation routes the same for all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MachineSource {
+    /// `levelLoad`: every machine fires it at its own install, for a level
+    /// the host started, so its tails count on the host timeline.
+    HostTimeline,
+    /// A host decision each machine observes and fires for itself, on its own
+    /// clock: a crossing over shared slots, a weapon event or observer cue.
+    HostMirrored,
+    /// Each machine fires for its own player: a crossing over own, owner-private
+    /// or local slots, a movement event, a UI press.
+    OwnState,
+}
+
+/// A fire with no stated source is a host decision observed on every machine.
+impl Default for FireOrigin {
+    fn default() -> Self {
+        Self::EveryMachine(MachineSource::HostMirrored)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -147,13 +176,20 @@ pub enum FireSubject {
         player: Option<Seat>,
         teleporter: EntityId,
     },
+    /// A `wait` landing whose subject left during the wait: what the same step
+    /// routed to them before the wait presents on no machine. A sound the
+    /// source plays everywhere by default (a trigger's, a teleport's) still
+    /// does.
+    Departed {
+        sounds_everywhere: bool,
+    },
 }
 
 impl FireOrigin {
     /// Named follow-ups preserve where they run but carry no scoped subject.
     pub fn follow_up(&self) -> Self {
         match self {
-            Self::EveryMachine => Self::EveryMachine,
+            Self::EveryMachine(source) => Self::EveryMachine(*source),
             Self::HostOnly(_) => Self::HostOnly(FireSubject::None),
         }
     }
@@ -269,8 +305,8 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
     use Audience::*;
     use FireOrigin::*;
     match (origin, audience) {
-        (EveryMachine, Option::None | Some(Everyone)) => Recipients::Local,
-        (EveryMachine, Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
+        (EveryMachine(_), Option::None | Some(Everyone)) => Recipients::Local,
+        (EveryMachine(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
         (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
         (
             HostOnly(FireSubject::Trigger { player, .. } | FireSubject::Teleport { player, .. }),
@@ -294,6 +330,13 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         (HostOnly(FireSubject::PlayerEvent { player }), Option::None | Some(Player)) => {
             player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
         }
+        (HostOnly(FireSubject::Departed { sounds_everywhere }), Option::None) => {
+            if sound && *sounds_everywhere {
+                Recipients::Everyone
+            } else {
+                Recipients::Seats(Vec::new())
+            }
+        }
         (HostOnly(FireSubject::None), Option::None) => Recipients::Local,
         (HostOnly(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
     }
@@ -301,7 +344,9 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
 
 /// How a system reaction relates to the machine that drains it. A player
 /// event decides from this which reactions it may fire on the host for one
-/// player (`scripting.md` §12, Player events).
+/// player (`scripting.md` §12, Player events). `system_reaction_is_machine_local`
+/// (`reactions/machine_local.rs`) also reads it to decide what a client lands
+/// after a `wait`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemReactionClass {
     /// A one-shot effect whose audience is resolved from its fire origin and
@@ -472,7 +517,7 @@ impl SystemReactionCommand {
             | Self::BackspaceText { .. }
             | Self::ClearText { .. } => SystemReactionClass::MachineLocal,
             Self::LoadLevel { .. }
-            | Self::RestartLevel
+            | Self::RestartLevel { .. }
             | Self::ReturnToFrontend
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }
@@ -480,6 +525,22 @@ impl SystemReactionCommand {
             | Self::AddOwnerSlot { .. } => SystemReactionClass::HostConsequence,
             Self::SetState { .. } => SystemReactionClass::SlotWrite,
         }
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    // Drift guard: the foundation name list the script compiler reads is
+    // exactly `SystemReactionKind::ALL`, in order.
+    #[test]
+    fn foundation_system_reaction_names_match_every_kind() {
+        let names: Vec<_> = SystemReactionKind::ALL
+            .iter()
+            .map(|kind| kind.primitive_name())
+            .collect();
+        assert_eq!(names, postretro_foundation::SYSTEM_REACTION_PRIMITIVES);
     }
 }
 
@@ -515,32 +576,15 @@ mod audience_tests {
         };
         let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
         let none = FireOrigin::HostOnly(FireSubject::None);
+        let departed =
+            |sounds_everywhere| FireOrigin::HostOnly(FireSubject::Departed { sounds_everywhere });
+        let every = FireOrigin::EveryMachine(MachineSource::HostMirrored);
         let rows = [
-            (FireOrigin::EveryMachine, None, false, Recipients::Local),
-            (
-                FireOrigin::EveryMachine,
-                Some(Everyone),
-                true,
-                Recipients::Local,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Activators),
-                true,
-                Recipients::Skip,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Trigger),
-                false,
-                Recipients::Skip,
-            ),
-            (
-                FireOrigin::EveryMachine,
-                Some(Player),
-                false,
-                Recipients::Skip,
-            ),
+            (every.clone(), None, false, Recipients::Local),
+            (every.clone(), Some(Everyone), true, Recipients::Local),
+            (every.clone(), Some(Activators), true, Recipients::Skip),
+            (every.clone(), Some(Trigger), false, Recipients::Skip),
+            (every.clone(), Some(Player), false, Recipients::Skip),
             (trigger(Some(Seat(2))), None, true, Recipients::Everyone),
             (
                 trigger(Some(Seat(2))),
@@ -592,6 +636,11 @@ mod audience_tests {
             (none.clone(), Some(Everyone), false, Recipients::Everyone),
             (trigger(None), Some(Everyone), false, Recipients::Everyone),
             (event(None), Some(Everyone), true, Recipients::Everyone),
+            (departed(true), None, true, Recipients::Everyone),
+            (departed(true), None, false, Recipients::Seats(vec![])),
+            (departed(false), None, true, Recipients::Seats(vec![])),
+            (departed(false), Some(Everyone), false, Recipients::Everyone),
+            (departed(false), Some(Player), true, Recipients::Skip),
         ];
         for (origin, audience, sound, expected) in rows {
             let queue = SystemCommandQueue::new();
@@ -624,9 +673,15 @@ mod audience_tests {
         queue.push(SystemReactionCommand::PopTree);
         assert_eq!(queue.take(), [SystemReactionCommand::PopTree]);
         assert_eq!(origin.follow_up(), FireOrigin::HostOnly(FireSubject::None));
-        assert_eq!(
-            FireOrigin::EveryMachine.follow_up(),
-            FireOrigin::EveryMachine
-        );
+        for source in [
+            MachineSource::HostTimeline,
+            MachineSource::HostMirrored,
+            MachineSource::OwnState,
+        ] {
+            assert_eq!(
+                FireOrigin::EveryMachine(source).follow_up(),
+                FireOrigin::EveryMachine(source)
+            );
+        }
     }
 }

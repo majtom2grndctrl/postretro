@@ -61,7 +61,7 @@ fn draw(renderer: &mut Renderer, look: FluidSurfaceLook, camera: Vec3) -> Vec<u8
 }
 
 fn installed_grid(renderer: &Renderer) -> Option<FluidGridPlanes> {
-    renderer.full().fluid_surface.installed_grid()
+    renderer.fluid_test().installed_grid()
 }
 
 /// The planes the packer chooses for `volumes` on the lattice at `origin`,
@@ -287,10 +287,7 @@ fn water_takes_its_viewer_sides_baked_term_above_below_and_on_the_crossing_frame
         assert!(installed_grid(&renderer).is_some());
         renderer.set_fluid_surface_draws(&[look_draw(0, look)]);
         assert_eq!(
-            renderer
-                .full()
-                .fluid_surface
-                .frame_variants(LightTermMask::ALL),
+            renderer.fluid_test().frame_variants(LightTermMask::ALL),
             [variant]
         );
         for (name, camera) in views {
@@ -367,10 +364,7 @@ fn reflecting_and_reflection_free_variants_match_wherever_the_reflecting_gate_is
         assert!(installed_grid(&renderer).is_some());
         renderer.set_fluid_surface_draws(&[look_draw(0, free)]);
         assert_eq!(
-            renderer
-                .full()
-                .fluid_surface
-                .frame_variants(LightTermMask::ALL),
+            renderer.fluid_test().frame_variants(LightTermMask::ALL),
             [FluidShaderVariant::ReflectionFree]
         );
         let today = draw(&mut renderer, free, camera);
@@ -378,10 +372,7 @@ fn reflecting_and_reflection_free_variants_match_wherever_the_reflecting_gate_is
         renderer.install_fluid_surfaces(std::slice::from_ref(&pool), Some(&section));
         renderer.set_fluid_surface_draws(&[look_draw(0, mirrored)]);
         assert_eq!(
-            renderer
-                .full()
-                .fluid_surface
-                .frame_variants(LightTermMask::ALL),
+            renderer.fluid_test().frame_variants(LightTermMask::ALL),
             [FluidShaderVariant::Reflecting]
         );
         let reflecting = draw(&mut renderer, mirrored, camera);
@@ -500,7 +491,7 @@ fn the_fluid_grid_takes_each_levels_sh_lattice_and_a_level_without_one_draws_amb
         install(&mut renderer, Some(section));
         assert_eq!(installed_grid(&renderer), None, "{name}: no grid");
         assert!(
-            !renderer.full().sh_volume_resources.present,
+            !renderer.level().sh_volume_resources.present,
             "{name}: SH volume refused"
         );
         check_water(&mut renderer, Vec3::splat(0.5), name);

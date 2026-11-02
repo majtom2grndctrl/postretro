@@ -10,6 +10,7 @@ use crate::bake_control::BakeControl;
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::{BlockLayout, cut_map_key_bytes};
 use crate::lightmap_layer::{SharedAtlas, atlas_layout_fingerprint};
+use crate::texel_footprint::EmbeddedEmitters;
 use crate::texel_step_detector::{CutSites, TexelStepReport};
 use crate::{
     animated_atlas_layout, animated_block_ids, animated_light_weight_maps, cache, geometry,
@@ -19,8 +20,10 @@ use crate::{
 /// store the result with the texel-step report the bake found. Either way the
 /// report logs once, here, on the caller's thread, naming each light by its
 /// source label: `animated_lights` is the list `wm_inputs.lights` was taken
-/// from, in order. Fails when an animated face's chart leaves its lightmap
-/// cell block.
+/// from, in order. `probe_embedded_emitters` are the probe-point bakes'
+/// emitter flags, keyed alike ([`crate::animated_direct_sh_bake::embedded_emitters`]);
+/// each light either set flags warns once, here. Fails when an animated
+/// face's chart leaves its lightmap cell block.
 pub(super) fn bake_or_load_weight_maps(
     wm_inputs: &WeightMapInputs<'_>,
     final_lightmap_density: f32,
@@ -28,24 +31,21 @@ pub(super) fn bake_or_load_weight_maps(
     animated_weight_control: &BakeControl,
     animated_lights: &AnimatedBakedLights<'_>,
     light_source_labels: &[String],
+    probe_embedded_emitters: &EmbeddedEmitters,
 ) -> anyhow::Result<WeightMapBake> {
     debug_assert_eq!(animated_lights.len(), wm_inputs.lights.len());
     let animated_light_chunks_section = wm_inputs.chunk_section;
     let wm_key = weight_map_cache_key(wm_inputs, final_lightmap_density);
-    // Tested every compile, warm or cold, and warned here once per light:
-    // the flags read only the keyed lights and geometry, so a cached entry
-    // was baked under the same ones.
+    // Tested every compile, warm or cold, on the cut geometry the stage
+    // bakes, and warned here once per light: the flags read only the keyed
+    // lights and geometry, so a cached entry was baked under the same ones.
     let embedded_emitters =
         animated_light_weight_maps::embedded_emitters(wm_inputs, animated_weight_control);
-    embedded_emitters.warn(
-        "animated",
-        |light| wm_inputs.lights.get(light),
-        |light| {
-            let entry = animated_lights.entries().get(light)?;
-            light_source_labels
-                .get(entry.source_index)
-                .map(String::as_str)
-        },
+    warn_embedded_emitters(
+        &embedded_emitters,
+        probe_embedded_emitters,
+        animated_lights,
+        light_source_labels,
     );
 
     let cached = stage_cache.and_then(|c| c.get(&wm_key)).and_then(|bytes| {
@@ -108,6 +108,32 @@ pub(super) fn bake_or_load_weight_maps(
             .map(String::as_str)
     });
     Ok(bake)
+}
+
+/// Warn each animated light flagged by the weight-map stage's emitter test
+/// (`weight_maps`) or by the probe-point bakes' (`probes`), once, on the
+/// caller thread; both are keyed by position in `animated_lights`. The
+/// pipeline calls this with no weight-map flags when the stage has no chunk
+/// to bake, so a light only the probe stages flag still warns.
+pub(super) fn warn_embedded_emitters(
+    weight_maps: &EmbeddedEmitters,
+    probes: &EmbeddedEmitters,
+    animated_lights: &AnimatedBakedLights<'_>,
+    light_source_labels: &[String],
+) {
+    let entries = animated_lights.entries();
+    EmbeddedEmitters::warn(
+        "animated",
+        weight_maps,
+        probes,
+        |light| entries.get(light).map(|entry| entry.light),
+        |light| {
+            let entry = entries.get(light)?;
+            light_source_labels
+                .get(entry.source_index)
+                .map(String::as_str)
+        },
+    );
 }
 
 /// The `animated_lm_weight_maps` cache key.

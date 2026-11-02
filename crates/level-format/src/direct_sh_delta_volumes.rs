@@ -50,7 +50,7 @@ pub struct DirectShDeltaVolumesSection {
     /// Unlike `DeltaShVolumesSection`, this section has no header field
     /// bounding the selection count, so `from_bytes` cannot self-validate
     /// these indices; bounds checking is the loader's job (see
-    /// `validate_direct_sh_delta` in `crates/level-loader/src/prl_loader.rs`).
+    /// `validate_direct_sh_delta` in `crates/level-loader/src/prl_lighting.rs`).
     pub affinity_lights: Vec<u32>,
     /// Flat probe payload, one compact valid-probe RGB16F octahedral tile
     /// sub-block per CSR entry, index-parallel to `affinity_lights`.

@@ -1,0 +1,22 @@
+ms per frame (main thread samples / frames in trace span)
+bucket                                        rd_elevated.before     rd_elevated.cap26   rd_promenade.before    rd_promenade.cap26    rd_elevated.before     rd_elevated.cap26
+frames in span                                               395                   373                   396                   377                   381                   375
+render_frame_indirect                                       8.00                 10.91                  7.76                 10.10                  7.73                 10.34
+encoder finish (in render_submit)                           5.65                  8.26                  5.37                  7.60                  5.32                  7.70
+  encode_render_pass                                        5.36                  7.98                  5.04                  7.27                  5.04                  7.46
+    hal Metal draw_indexed_indirect                         2.05                  4.78                  1.81                  3.98                  2.05                  4.69
+      AMD driver drawIndexedPrimitives                      0.15                  0.27                  0.11                  0.31                  0.12                  0.30
+    indirect validation (wgpu-core)                         0.37                  0.45                  0.32                  0.48                  0.00                  0.00
+  objc2 msg_send_check (debug_assertions)                   3.19                  5.67                  2.91                  4.82                  3.26                  5.53
+queue_submit                                                0.58                  0.78                  0.70                  0.73                  0.63                  0.73
+record_scene_passes (render_record)                         1.54                  1.66                  1.50                  1.58                  1.57                  1.72
+  cull diagnostics estimate (dev-tools)                     1.13                  1.56                  0.99                  1.43                  1.12                  1.56
+visibility                                                  0.70                  0.75                  0.50                  0.55                  0.70                  0.74
+refresh_camera_cull_diagnostics (dev-tools, redraw)                  0.55                  0.83                  0.47                  0.76                  0.52                  0.82
+  candidate count_submitted (dev-tools)                     0.04                  0.09                  0.06                  0.11                  0.03                  0.10
+level_streaming prepare_drains (render_prep)                  0.44                  0.75                  0.52                  0.93                  0.47                  0.70
+set_spatial_diagnostics (dev-tools)                         0.00                  0.00                  0.00                  0.00                  0.00                  0.00
+SpatialCellSetDiagnostics (dev-tools)                       0.00                  0.00                  0.00                  0.00                  0.00                  0.00
+objc2 msg_send_check inside encoder finish                  2.98                  5.46                  2.73                  4.62                  3.07                  5.28
+objc2 msg_send_check inside hal draw                        1.89                  4.48                  1.69                  3.65                  1.92                  4.37
+indirect_validation inside finish                           0.37                  0.45                  0.32                  0.48                  0.00                  0.00

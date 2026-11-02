@@ -23,8 +23,8 @@ pub struct Chart {
     /// Includes padding.
     pub width_texels: u32,
     pub height_texels: u32,
-    /// BSP leaf (runtime cell) this chart's face belongs to; cell blocks
-    /// group charts by it.
+    /// Runtime cell this chart's face belongs to (the face's `leaf_index`);
+    /// cell blocks group charts by it.
     pub leaf_index: u32,
     /// `Some` for a sub-chart of a face cut past one pool layer: the window
     /// onto its parent's texel grid. `None` for a chart that is its own grid.

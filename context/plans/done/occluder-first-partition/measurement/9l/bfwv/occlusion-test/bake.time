@@ -1,0 +1,8 @@
+flags:  --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-9l/bfwv/occlusion-test/cache
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9l/bin/prl-build-bfwv a0d978680146
+start: 2026-10-29 00:43:50
+/dev/disk1s6   466Gi   424Gi    23Gi    95%    4.7M  245M    2%   /System/Volumes/Data
+exit: 0
+wall_seconds: 14
+200M	/Users/dhiester/Projects/Personal/postretro/target/occluder-9l/bfwv/occlusion-test/cache
+/dev/disk1s6   466Gi   424Gi    23Gi    95%    4.7M  243M    2%   /System/Volumes/Data

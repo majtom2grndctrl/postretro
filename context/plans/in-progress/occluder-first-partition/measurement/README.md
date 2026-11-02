@@ -1,6 +1,0 @@
-# measurement
-
-Scratch tooling and outputs behind `../research.md` §Measurements, kept so the before/after rows can be rerun. Not engine code.
-
-- `portal-gran/` — offline analysis. `gran/` is a snapshot of `crates/visibility/src` (test modules dropped, some items made public) plus `gran.rs`: `gran stats <sliver_n> <prl>...` prints cell, portal, area and aspect stats and lists the `sliver_n` highest-aspect portals; `gran decomp <prl> <csv>` compares rect walk, exact oracle and a ray-cast seen set per pose. `run.sh` rebuilds and reruns everything against `content/dev/maps/*.prl`; bake those first. Cargo deps point at this checkout's `crates/`. Refresh the snapshot if the walk has changed since.
-- `frame-cost/` — live runs (dev + dev-tools build, `POSTRETRO_CPU_TIMING=1`, `POSTRETRO_GPU_TIMING=1`, `--start-pose`). The scripts still carry the original scratch (`D`) and checkout (`R`) paths and expect a copied binary in `$D/bin/`; edit both before rerunning. `poses.txt` holds the poses; `maps/` the wall-to-ceiling and no-red-pillars variants of `occlusion-test.map` (bake with `--lightmap-density 0.025` to match the repo bake). `results/` holds the parsed CPU table (`parse.py`) and Metal System Trace GPU summaries (`gpuparse2.py`).

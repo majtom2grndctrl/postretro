@@ -1,0 +1,7 @@
+flags: --sh-probe-spacing 4.0 --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-hallway-inspection/cache
+binary: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/bin/prl-build-cap26-len7 83a122ab85d8
+start: 2026-10-28 11:59:46
+exit: 0
+wall_seconds: 1379
+ 26G	/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-hallway-inspection/cache
+/dev/disk1s6   466Gi   419Gi    29Gi    94%    4.7M  304M    2%   /System/Volumes/Data

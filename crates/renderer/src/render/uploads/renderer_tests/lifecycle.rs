@@ -56,7 +56,9 @@ fn pending_frame_uploads_fail_at_actual_commit_install_unload_and_splash_entries
                     leaves: vec![],
                     root_node_index: 0,
                 };
-                renderer.install_level_geometry(&empty_geometry(&bvh), Default::default());
+                renderer
+                    .install_level_geometry(&empty_geometry(&bvh), Default::default())
+                    .expect("level resources install");
             }
             6 => {
                 renderer.inject_acquire_failure_for_test();

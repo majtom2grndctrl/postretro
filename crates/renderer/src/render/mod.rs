@@ -24,17 +24,24 @@ mod frame_timing;
 mod ghost_depth;
 mod ghost_order;
 mod ghost_pipeline;
+pub(crate) mod gpu_create;
+pub(crate) mod install_pipelines;
+mod install_prep;
+#[cfg(test)]
+mod install_prep_tests;
 mod kinematic_brush;
 mod kinematic_ghost;
 mod kinematic_ghost_shape;
 mod lightmap_residency;
 mod lightmap_streaming;
+mod load_error_capture;
 mod loaded_texture;
 mod mesh_depth;
 mod mesh_ghost;
 mod mesh_pass;
 mod planar_reflection;
 mod promoted_depth_cache;
+pub(crate) mod queue_writes;
 pub(crate) mod residency;
 mod rigid_occluder_depth;
 mod screen_effects;
@@ -57,10 +64,12 @@ mod sh_residency;
 mod sh_sample_regions;
 mod sh_streaming;
 mod sh_volume;
+mod shadow_tier;
 mod shadowmask;
 mod smoke;
 mod splash_pass;
 mod ui;
+mod upload_thread;
 pub(crate) mod uploads;
 
 #[cfg(test)]
@@ -108,7 +117,12 @@ mod geometry_ranges;
 mod geometry_ranges_gpu_test;
 #[cfg(test)]
 mod ghost_depth_frame_test;
+mod level_build;
+mod level_resource_set;
+#[cfg(test)]
+mod level_resource_set_tests;
 mod material_plan;
+mod model_cache;
 mod pipeline_layout;
 mod renderer_capture;
 mod renderer_debug_ui;
@@ -132,6 +146,7 @@ mod renderer_resources;
 mod renderer_shadow_passes;
 mod renderer_splash;
 mod renderer_state;
+mod renderer_textures;
 mod renderer_types;
 mod renderer_ui_layer;
 mod renderer_world_less_capture;
@@ -152,7 +167,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use glam::{Mat4, Vec3};
-use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 /// Linear HDR target shared by every gameplay scene pass.
@@ -169,9 +183,12 @@ use crate::compute_cull::ComputeCullPipeline;
 use crate::lighting::lightmap::LightmapResources;
 use crate::lighting::spot_shadow::SpotShadowPool;
 use crate::render::loaded_texture::{
-    LoadedTexture, TextureLoadTiming, load_model_diffuse_texture, load_textures,
-    placeholder_loaded_texture,
+    LoadedTexture, TextureLoadTiming, load_textures, placeholder_loaded_texture,
+    upload_prepared_texture,
 };
+pub use gpu_create::{GpuCreationCounts, gpu_creation_counts};
+#[cfg(feature = "test-seams")]
+pub use install_pipelines::PipelineBuildRelease;
 use postretro_level_format::alpha_lights::ALPHA_LIGHT_LEAF_UNASSIGNED;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_loader::MapLight;
@@ -183,6 +200,12 @@ use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
 use postretro_render_data::material::Material;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
+pub use renderer_resources::{LevelInstallError, lightmap_family_inputs};
+pub use upload_thread::UPLOAD_SUBMIT_CHUNK_BYTES;
+pub(crate) use upload_thread::UploadThread;
+#[cfg(feature = "test-seams")]
+pub use upload_thread::UploadWrites;
+pub use upload_thread::{UploadError, UploadRetirement};
 
 pub use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
 use animated_direct_sh_compose::AnimatedDirectShDebugOverride;
@@ -196,6 +219,12 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+pub use level_build::{
+    LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
+    LevelSetBuilder, LevelSetBuilderProbe, PendingLevelSet, SmokeCollectionRequest,
+};
+use level_resource_set::{LevelLightGroups, LevelResourceSet, LevelTextures, SamplerMaps};
+pub use level_resource_set::{LevelSetId, PreviousLevelSet};
 pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
@@ -203,6 +232,10 @@ pub use lightmap_residency::{
 pub use lightmap_streaming::{
     DEFAULT_LIGHTMAP_POOL_CAP_LAYERS, LightmapStreamingLevers, LightmapStreamingLiveDiagnostics,
     MAX_LIGHTMAP_POOL_CAP_LAYERS, StreamingReachLever,
+};
+pub use model_cache::{
+    CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
+    ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
@@ -235,15 +268,14 @@ pub(crate) use postretro_render_cpu::frame_uniforms::{
     build_uniform_data,
 };
 pub use postretro_render_cpu::frame_uniforms::{LightTermMask, SdfShadowMode};
-pub(crate) use postretro_render_cpu::material_plan::{
-    parse_blake3_key, plan_submesh_materials, resolve_model_open_path_and_handle,
-};
+pub(crate) use postretro_render_cpu::material_plan::resolve_model_open_path_and_handle;
 pub(crate) use postretro_render_cpu::mesh_instances;
 
 // Re-export the moved free items so they stay reachable at their original
 // `render::*` paths (external callers and sibling render modules depend on these).
 pub use geometry_ranges::{LevelGeometryRangeError, validate_level_geometry_ranges};
 pub use kinematic_brush::KinematicMoverInstance;
+pub(crate) use kinematic_brush::MoverView;
 pub(crate) use material_plan::*;
 pub(crate) use pipeline_layout::*;
 pub use postretro_render_cpu::fluid_surface::FluidSurfaceDraw;

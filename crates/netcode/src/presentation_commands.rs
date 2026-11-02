@@ -69,7 +69,7 @@ pub fn presentation_command_to_wire(
         // mapped here or deliberately kept off the wire.
         SystemReactionCommand::PushTree { .. }
         | SystemReactionCommand::LoadLevel { .. }
-        | SystemReactionCommand::RestartLevel
+        | SystemReactionCommand::RestartLevel { .. }
         | SystemReactionCommand::ReturnToFrontend
         | SystemReactionCommand::PopTree
         | SystemReactionCommand::SetState { .. }

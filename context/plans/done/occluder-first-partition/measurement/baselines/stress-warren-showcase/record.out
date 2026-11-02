@@ -1,0 +1,12 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.0 s
+bake read: id51=76239ea11fe8366f walk_epoch=3 size=33143034 mtime=1793154499 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+grid spacing=7.25 m columns=22x27 (cap 600) floors=1279 eye=1.5 m yaws=[0.0, 90.0, 180.0, 270.0] pitch=0 footprint=[-78.0288, -94.2848]..[78.0288, 94.2848]
+bake=id51=76239ea11fe8366f walk_epoch=3 size=33143034 mtime=1793154499 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+5116 poses written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.poses
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_record ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 0.06s
+

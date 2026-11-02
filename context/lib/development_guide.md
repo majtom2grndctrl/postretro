@@ -58,7 +58,7 @@ cargo test -p <crate> <filter>   # add --features dev-tools where the crate has 
 cargo run -p postretro-level-compiler -- <in>.map -o <out>.prl   # compile a level (binary: prl-build)
 ```
 
-Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger.
+Other profiles are deliberate exceptions. `--release` (thin LTO, no incremental: an edit rebuild takes a minute or more) is for distribution, perf validation, and preflight's release check. `--profile dev-debug` drops workspace optimization and restores full debug info for stepping through code in a debugger. `--profile profiling` keeps `dev` codegen and incremental builds but drops debug assertions and overflow checks; use it for perf iteration and profiling with `dev-tools` or `tracy`: `cargo run -p xtask -- run --profile profiling --features dev-tools -- <map>.prl`. Debug assertions skew `dev` timings: on Mac, `objc2` checks every Objective-C message, about 2.7 ms of Metal submit per frame. Shipped numbers stay on `--release`.
 
 Runtime-only environment variables never trigger a rebuild: `RUST_LOG`, `WGPU_BACKEND`, and the `POSTRETRO_*` diagnostics (§6.4). Distribution builds: `cargo run -p xtask -- dist` and `sdk-dist` (`build_pipeline.md` §Distribution packaging).
 
@@ -174,7 +174,7 @@ Adjacent work discovered during implementation gets a follow-up task, not a scop
 
 - **Robustness gaps** outside the task's scope → file a follow-up with enough context for the next agent.
 - **Unmeasured micro-optimizations** (instruction tuning, hand-vectorizing, cache tricks) → file a follow-up. Structural levers under **Performance** (bounding, culling, baking) are part of the task.
-- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative; land it with its first consumer.
+- **Abstractions** without multiple concrete consumers → three similar lines beat a premature helper. A seam for a planned, named feature is not speculative: land it with its first consumer. Shape it to that feature's definition, not a guess. If another plan owns the decision, leave it to that plan.
 
 **Performance.** Runtime performance is a first-class goal, and this engine's costs are specific — design for them while writing the code, not later. Two domains matter: the per-frame hot path (Input → Game logic → Audio → Render → Present) and build/load iteration time.
 
@@ -189,7 +189,7 @@ Inside the hot path the ordinary defaults still hold: avoid per-frame allocation
 
 **Performance is part of the task, not a follow-up.** A change is done when it works *and* its hot-path cost is designed, bounded, and measured. A plan names each hot path the change touches and the constraint it carries: no per-frame allocation, writes driven by change rather than by frame, bounded GPU work with no stalls, and a measurement where a timing surface exists. Delegated work carries those constraints in its brief. Review checks them.
 
-**Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached, parallelized, and may even approximate for author speed. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
+**Build and load time is a budget too.** The offline bake dominates compile time — the bake is the engine's most-optimized CPU path (content-hash stage caching, rayon-parallel SH, incremental per-light bake), and near-instant boot is a product goal. The discipline is the warm/cold contract: the cold (`--no-cache`) build is the exact ship source of truth and favors correctness; the warm iteration path is cached and parallelized and bakes the same bytes; `--release` only bypasses the cache. Coupling: "Bake over compute" moves cost *into* the bake, so weigh what a new baked input costs the build loop, not just the frame.
 
 **Bound the full resource lifetime.** A working-set or disk bound spans the full lifecycle: production, buffering, serialization, cache or container writes, return, and cleanup. Count representations that coexist. Persistence can duplicate the output of an otherwise bounded algorithm.
 

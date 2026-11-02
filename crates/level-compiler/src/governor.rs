@@ -86,6 +86,8 @@ impl Governor {
         drop(state);
         let permit = Permit { governor: self };
         #[cfg(test)]
+        HELD_ON_THREAD.with(|held| held.set(held.get() + 1));
+        #[cfg(test)]
         let hook = {
             self.enter_hook
                 .lock()
@@ -138,6 +140,20 @@ impl Governor {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Permits the current thread holds, across every governor: lets a test
+    /// prove work runs outside any permit. A permit is dropped on the thread
+    /// that entered, as every caller's scoped guard is.
+    static HELD_ON_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Permits the calling thread holds right now.
+#[cfg(test)]
+pub(crate) fn permits_held_on_this_thread() -> usize {
+    HELD_ON_THREAD.with(std::cell::Cell::get)
+}
+
 /// An RAII admission permit returned by [`Governor::enter`].
 #[must_use = "dropping the permit releases admission for another work item"]
 pub struct Permit<'a> {
@@ -150,6 +166,8 @@ impl Drop for Permit<'_> {
         debug_assert!(state.active > 0);
         state.active -= 1;
         drop(state);
+        #[cfg(test)]
+        HELD_ON_THREAD.with(|held| held.set(held.get().saturating_sub(1)));
         self.governor.changed.notify_all();
     }
 }

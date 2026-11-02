@@ -101,6 +101,17 @@ pub(super) fn bind_sequence_step(
     slot_table: &SlotTable,
     script_ctx: Option<&ScriptCtx>,
 ) -> Option<BoundTriggerCommand> {
+    // A system step binds exactly as the same reaction does as a body.
+    if matches!(step.id, SequenceTarget::System) {
+        return bind_command_at(
+            site,
+            &step.primitive,
+            None,
+            &step.args,
+            slot_table,
+            script_ctx,
+        );
+    }
     if step.primitive == "setState" {
         log::warn!(
             "[Trigger] setState is system-targeted and cannot carry an entity target; not binding"
@@ -118,7 +129,9 @@ pub(super) fn bind_sequence_step(
         // analogue for them. The amended `partition_direct_reaction` (Task 3)
         // routes a `Fire` to a `DeferredEvent` and a `Wait` plus its tail to the
         // residual before reaching here, so this arm is the belt-and-braces guard.
-        SequenceTarget::Wait | SequenceTarget::Fire => return None,
+        // `System` only keeps the match exhaustive: system steps bind earlier in
+        // this function.
+        SequenceTarget::Wait | SequenceTarget::Fire | SequenceTarget::System => return None,
     });
     bind_command_at(
         site,

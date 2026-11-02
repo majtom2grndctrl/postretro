@@ -231,10 +231,7 @@ fn a_standing_quad_reflects_at_the_cpu_composite_and_refused_faces_draw_reflecti
     let records = pass_records(&renderer);
     let below_reflecting = drawn(&mut renderer, 50.0, below);
     assert_eq!(
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL),
+        renderer.fluid_test().frame_variants(LightTermMask::ALL),
         [FluidShaderVariant::Reflecting]
     );
     assert_eq!(
@@ -344,10 +341,7 @@ fn the_low_tier_draws_the_probe_only_composite_and_drops_the_ssr_layer() {
         [0.0; 2]
     );
     assert_eq!(
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL),
+        renderer.fluid_test().frame_variants(LightTermMask::ALL),
         [FluidShaderVariant::Reflecting]
     );
 
@@ -651,10 +645,7 @@ fn overlapping_reflecting_surfaces_each_read_their_own_reflection_in_either_draw
     renderer.set_reflection_quality(FluidReflectionQuality::High);
     let visible_first = capture_checked(&mut renderer, view);
     assert_eq!(
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL),
+        renderer.fluid_test().frame_variants(LightTermMask::ALL),
         [FluidShaderVariant::Reflecting; 2],
         "both pools reflect, so both draw into the target"
     );
@@ -718,12 +709,7 @@ fn raising_reflectivity_from_zero_shows_ssr_next_frame_without_a_rebuild() {
     let (_, scene) = off_frame(&mut renderer, view);
     renderer.set_reflection_quality(FluidReflectionQuality::High);
     let (targets, group_5) = (target_builds(&renderer), group_5_builds(&renderer));
-    let variants = |renderer: &Renderer| {
-        renderer
-            .full()
-            .fluid_surface
-            .frame_variants(LightTermMask::ALL)
-    };
+    let variants = |renderer: &Renderer| renderer.fluid_test().frame_variants(LightTermMask::ALL);
 
     renderer.set_fluid_surface_draws(&[look_draw(0, mirror_at(0.0))]);
     let records = pass_records(&renderer);

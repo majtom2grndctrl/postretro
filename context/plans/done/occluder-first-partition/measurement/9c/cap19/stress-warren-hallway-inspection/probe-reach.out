@@ -1,0 +1,5 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap19/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+  SH grid 50x13x61 cell [4.0, 4.0, 4.0]; 6147 clusters, 1728 interior cells
+  probe reach into another cluster's cells: 272 clusters (1728 interior cells), 3550 cluster pairs, 72966 probe refs, max 41 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 272 clusters (1728 interior cells), 3412 cluster pairs, 65251 probe refs
+  owner edges: patch 1278 over 270 clusters; sparse halo 1311 over 270 clusters

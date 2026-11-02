@@ -1,0 +1,3 @@
+postretro-world-poses 1
+# H3 hallway: the sweep pose in cap26's camera cell 4575 (mandatory set 112.5 M, 5th largest; no sweep pose sits in the four larger cells)
+pose hw:g13.16.2@0 23.963997 3.1255994 29.8312 0 0

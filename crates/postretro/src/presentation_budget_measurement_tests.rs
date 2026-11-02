@@ -59,7 +59,10 @@ fn participating_transport() -> (NetServer, NetClient) {
     client.set_mod_identity("budget.test".into(), "1.0.0".into());
     client.set_mod_digest(Some(fingerprint));
     client.set_level_parity(Some(("stress-budget".into(), fingerprint)));
-    client.set_revealed_level(Some("stress-budget".into()));
+    client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+        "stress-budget",
+        None,
+    )));
     server.add_relay_connection(CLIENT, None);
     client.set_connected();
     for _ in 0..128 {
@@ -339,6 +342,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
             None,
             step * 2,
             2.0 + f64::from(step) / 30.0,
+            0,
             true,
             &mut last_tick,
             &ctx.presentation_overrides.borrow(),

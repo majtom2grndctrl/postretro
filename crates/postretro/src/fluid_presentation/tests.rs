@@ -917,9 +917,20 @@ fn suspend_clears_the_fluid_eye_presentation() {
         .expect("main.rs has a suspend handler");
     let body = &main[start..];
     let body = &body[..body.find("\n    fn ").unwrap_or(body.len())];
+    // The handler runs the platform suspend, which needs no event loop, so
+    // the clear is read where that body lives.
     assert!(
-        body.contains("self.suspend_level_state();"),
-        "native suspend delegates to the CPU/session suspend seam"
+        body.contains("self.suspend_platform();"),
+        "suspended() runs the platform suspend"
+    );
+    let start = main
+        .find("pub(crate) fn suspend_platform(")
+        .expect("main.rs has the platform suspend");
+    let platform = &main[start..];
+    let platform = &platform[..platform.find("\n    }\n").unwrap_or(platform.len())];
+    assert!(
+        platform.contains("self.clear_fluid_eye_presentation();"),
+        "suspended() clears the fluid eye presentation"
     );
 
     let mut app = test_app();
@@ -933,7 +944,7 @@ fn suspend_clears_the_fluid_eye_presentation() {
         eye
     };
     assert_eq!(app.fluid_eye.tint(), WATER.tint);
-    app.suspend_level_state();
+    app.suspend_platform();
     assert_eq!(app.fluid_eye.tint(), [0.0; 4]);
     assert_eq!(app.fluid_eye.muffle(), 0.0);
 }

@@ -131,7 +131,10 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
     client.set_mod_identity("test.mod".into(), "1.0.0".into());
     client.set_mod_digest(Some([0x5a; 32]));
     client.set_level_parity(Some(("test-level".into(), [0x5a; 32])));
-    client.set_revealed_level(Some("test-level".into()));
+    client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+        "test-level",
+        None,
+    )));
     client.set_connected();
     life.fixture.server.add_relay_connection(LATE, None);
     // The host keeps simulating through the handshake: player events, movement

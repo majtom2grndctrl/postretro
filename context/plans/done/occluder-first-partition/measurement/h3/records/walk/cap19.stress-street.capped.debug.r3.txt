@@ -1,0 +1,21 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+st:g5.3.0@180 5000 1813 1 PortalStepLimitFallback { considered: 5000, accepted: 1813 } 1072.46 1002.61 37
+st:g6.3.0@180 5000 1967 1 PortalStepLimitFallback { considered: 5000, accepted: 1967 } 1098.46 1028.74 37
+st:g5.4.0@180 5000 1966 1 PortalStepLimitFallback { considered: 5000, accepted: 1966 } 1103.34 1033.57 37
+st:g6.6.0@180 5000 1938 1 PortalStepLimitFallback { considered: 5000, accepted: 1938 } 1095.89 1026.11 37
+st:g5.5.0@180 5000 1919 1 PortalStepLimitFallback { considered: 5000, accepted: 1919 } 1098.19 1028.83 37
+st:g13.30.0@0 5000 2011 1 PortalStepLimitFallback { considered: 5000, accepted: 2011 } 1103.63 1033.47 35
+st:g8.7.0@180 5000 1933 1 PortalStepLimitFallback { considered: 5000, accepted: 1933 } 1103.08 1033.57 37
+st:g5.0.0@180 3874 1156 0 PrlPortal { walk_reach: 282 } 731.63 723.88 55
+roof:B4.s2.c@180/-15 5000 1671 1 PortalStepLimitFallback { considered: 5000, accepted: 1671 } 1048.28 979.24 39
+roof:B3.s1.e@180/-15 5000 1864 1 PortalStepLimitFallback { considered: 5000, accepted: 1864 } 1098.96 1029.68 37
+roof:B4.s2.e@180/-15 5000 1830 1 PortalStepLimitFallback { considered: 5000, accepted: 1830 } 1079.78 1010.30 37
+roof:B2.s1.e@135/-15 5000 1978 1 PortalStepLimitFallback { considered: 5000, accepted: 1978 } 1109.38 1041.15 37
+roof:B3.s1.c@180/-15 5000 1791 1 PortalStepLimitFallback { considered: 5000, accepted: 1791 } 1079.45 1009.28 37
+roof:B4.s2.c@225/0 5000 2151 1 PortalStepLimitFallback { considered: 5000, accepted: 2151 } 1120.75 1053.42 36
+roof:A7.s2.c@225/-15 3627 1342 0 PrlPortal { walk_reach: 402 } 755.79 745.19 53
+roof:A6.s2.e@225/-15 4662 1737 0 PrlPortal { walk_reach: 490 } 953.97 940.81 42
+rd:plaza 2635 927 0 PrlPortal { walk_reach: 129 } 502.40 498.44 79
+rd:promenade 2544 814 0 PrlPortal { walk_reach: 223 } 496.12 489.99 81
+rd:elevated 3074 1081 0 PrlPortal { walk_reach: 273 } 613.66 605.95 66
+rd:upperdeck 1625 526 0 PrlPortal { walk_reach: 100 } 296.67 293.31 135

@@ -32,12 +32,15 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let stride = full.shadow_vs_stride;
-        let draw_world = full.has_geometry && full.index_count > 0;
+        let draw_world = level.has_geometry && level.index_count > 0;
         let cache_plan = &full.promoted_depth_cache_frame_plan;
         let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan;
         full.dynamic_depth_cache_diagnostics.frame = Default::default();
-        full.shadow_world.begin_frame();
+        level.shadow_world.begin_frame();
         full.dynamic_depth_cache_diagnostics.frame.cached_spots =
             dynamic_cache_plan.spot().len() as u32;
         // One pair spans the whole pool loop because cached and uncached slots
@@ -107,7 +110,7 @@ impl Renderer {
                             ..Default::default()
                         });
                         if draw_world {
-                            full.shadow_world.record(
+                            level.shadow_world.record(
                                 &mut pass,
                                 cpu_frame,
                                 ShadowRegion::Spot(slot),
@@ -116,8 +119,8 @@ impl Renderer {
                                     pipeline: &full.shadow_depth_pipeline,
                                     bind_group: &full.shadow_vs_bind_group,
                                     dynamic_offset: slot * stride,
-                                    vertex_buffer: &full.vertex_buffer,
-                                    index_buffer: &full.index_buffer,
+                                    vertex_buffer: &level.vertex_buffer,
+                                    index_buffer: &level.index_buffer,
                                 },
                             );
                         }
@@ -128,7 +131,7 @@ impl Renderer {
                         .mark_spot_world_rendered(plan);
                 }
 
-                let view = &full.spot_shadow_pool.views[slot as usize];
+                let view = &full.spot_shadow_pool.textures.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Promoted Spot Entity Shadow Depth Pass"),
                     color_attachments: &[],
@@ -151,6 +154,7 @@ impl Renderer {
                     if let Some(mesh_plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             mesh_plan,
                             MeshDepthInstanceFilter::AllRetained,
                             &full.shadow_vs_bind_group,
@@ -166,6 +170,7 @@ impl Renderer {
                     let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                         &mut pass,
                         &full.kinematic_brush,
+                        &level.kinematic,
                         &full.mover_occluder_aabbs,
                         &full.shadow_vs_bind_group,
                         slot * stride,
@@ -201,7 +206,7 @@ impl Renderer {
                             ..Default::default()
                         });
                         if draw_world {
-                            full.shadow_world.record(
+                            level.shadow_world.record(
                                 &mut pass,
                                 cpu_frame,
                                 ShadowRegion::Spot(slot),
@@ -210,8 +215,8 @@ impl Renderer {
                                     pipeline: &full.shadow_depth_pipeline,
                                     bind_group: &full.shadow_vs_bind_group,
                                     dynamic_offset: slot * stride,
-                                    vertex_buffer: &full.vertex_buffer,
-                                    index_buffer: &full.index_buffer,
+                                    vertex_buffer: &level.vertex_buffer,
+                                    index_buffer: &level.index_buffer,
                                 },
                             );
                         }
@@ -226,15 +231,14 @@ impl Renderer {
                 dynamic_depth_cache::copy_cached_world_depth(
                     encoder,
                     full.dynamic_depth_cache
-                        .spot_texture
-                        .as_ref()
+                        .spot_texture()
                         .expect("dynamic spot cache allocated"),
                     plan.cache_layer as u32,
-                    &full.spot_shadow_pool.array_texture,
+                    &full.spot_shadow_pool.textures.array_texture,
                     slot,
-                    full.spot_shadow_pool.resolution,
+                    full.spot_shadow_pool.textures.resolution,
                 );
-                let view = &full.spot_shadow_pool.views[slot as usize];
+                let view = &full.spot_shadow_pool.textures.views[slot as usize];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Dynamic Spot Entity Shadow Depth Pass"),
                     color_attachments: &[],
@@ -255,6 +259,7 @@ impl Renderer {
                     if let Some(mesh_plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             mesh_plan,
                             MeshDepthInstanceFilter::DynamicCasters,
                             &full.shadow_vs_bind_group,
@@ -270,6 +275,7 @@ impl Renderer {
                     let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                         &mut pass,
                         &full.kinematic_brush,
+                        &level.kinematic,
                         &full.mover_occluder_aabbs,
                         &full.shadow_vs_bind_group,
                         slot * stride,
@@ -284,7 +290,7 @@ impl Renderer {
                 continue;
             }
 
-            let view = &full.spot_shadow_pool.views[slot as usize];
+            let view = &full.spot_shadow_pool.textures.views[slot as usize];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Spot Shadow Depth Pass"),
                 color_attachments: &[],
@@ -301,7 +307,7 @@ impl Renderer {
             });
             // An uncached live slot draws its reach every frame.
             if draw_world {
-                full.shadow_world.record(
+                level.shadow_world.record(
                     &mut pass,
                     cpu_frame,
                     ShadowRegion::Spot(slot),
@@ -310,8 +316,8 @@ impl Renderer {
                         pipeline: &full.shadow_depth_pipeline,
                         bind_group: &full.shadow_vs_bind_group,
                         dynamic_offset: slot * stride,
-                        vertex_buffer: &full.vertex_buffer,
-                        index_buffer: &full.index_buffer,
+                        vertex_buffer: &level.vertex_buffer,
+                        index_buffer: &level.index_buffer,
                     },
                 );
             }
@@ -333,6 +339,7 @@ impl Renderer {
                 if let Some(plan) = &mesh_frame_plan {
                     let submitted = full.mesh_pass.record_skinned_depth(
                         &mut pass,
+                        &level.models,
                         plan,
                         MeshDepthInstanceFilter::DynamicCasters,
                         &full.shadow_vs_bind_group,
@@ -348,6 +355,7 @@ impl Renderer {
                 let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                     &mut pass,
                     &full.kinematic_brush,
+                    &level.kinematic,
                     &full.mover_occluder_aabbs,
                     &full.shadow_vs_bind_group,
                     slot * stride,
@@ -383,6 +391,9 @@ impl Renderer {
         let full = full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run");
+        let Some(level) = full.level.as_mut() else {
+            return;
+        };
         let cache_plan = &full.promoted_depth_cache_frame_plan;
         let dynamic_cache_plan = full.dynamic_depth_cache_frame_plan;
         full.dynamic_depth_cache_diagnostics.frame.cached_cubes =
@@ -394,7 +405,7 @@ impl Renderer {
         }
         if let Some(pool) = &full.cube_shadow_pool {
             let stride = full.shadow_vs_stride;
-            let draw_world = full.has_geometry && full.index_count > 0;
+            let draw_world = level.has_geometry && level.index_count > 0;
 
             for layer in 0..pool.face_matrices.len() {
                 let face_matrix_opt = pool.face_matrices[layer];
@@ -447,7 +458,7 @@ impl Renderer {
                             });
 
                             if draw_world {
-                                full.shadow_world.record(
+                                level.shadow_world.record(
                                     &mut pass,
                                     cpu_frame,
                                     ShadowRegion::CubeFace(layer as u32),
@@ -456,8 +467,8 @@ impl Renderer {
                                         pipeline: &full.shadow_depth_pipeline,
                                         bind_group: &full.cube_shadow_vs_bind_group,
                                         dynamic_offset: layer as u32 * stride,
-                                        vertex_buffer: &full.vertex_buffer,
-                                        index_buffer: &full.index_buffer,
+                                        vertex_buffer: &level.vertex_buffer,
+                                        index_buffer: &level.index_buffer,
                                     },
                                 );
                             }
@@ -493,6 +504,7 @@ impl Renderer {
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
+                                &level.models,
                                 mesh_plan,
                                 MeshDepthInstanceFilter::AllRetained,
                                 &full.cube_shadow_vs_bind_group,
@@ -508,6 +520,7 @@ impl Renderer {
                         let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                             &mut pass,
                             &full.kinematic_brush,
+                            &level.kinematic,
                             &full.mover_occluder_aabbs,
                             &full.cube_shadow_vs_bind_group,
                             layer as u32 * stride,
@@ -543,7 +556,7 @@ impl Renderer {
                                 ..Default::default()
                             });
                             if draw_world {
-                                full.shadow_world.record(
+                                level.shadow_world.record(
                                     &mut pass,
                                     cpu_frame,
                                     ShadowRegion::CubeFace(layer as u32),
@@ -552,8 +565,8 @@ impl Renderer {
                                         pipeline: &full.shadow_depth_pipeline,
                                         bind_group: &full.cube_shadow_vs_bind_group,
                                         dynamic_offset: layer as u32 * stride,
-                                        vertex_buffer: &full.vertex_buffer,
-                                        index_buffer: &full.index_buffer,
+                                        vertex_buffer: &level.vertex_buffer,
+                                        index_buffer: &level.index_buffer,
                                     },
                                 );
                             }
@@ -570,8 +583,7 @@ impl Renderer {
                     dynamic_depth_cache::copy_cached_world_depth(
                         encoder,
                         full.dynamic_depth_cache
-                            .cube_texture
-                            .as_ref()
+                            .cube_texture()
                             .expect("dynamic cube cache allocated"),
                         dynamic_depth_cache::DynamicDepthCache::cube_face_layer(plan, face) as u32,
                         &pool.array_texture,
@@ -599,6 +611,7 @@ impl Renderer {
                         if let Some(mesh_plan) = &mesh_frame_plan {
                             let submitted = full.mesh_pass.record_skinned_depth(
                                 &mut pass,
+                                &level.models,
                                 mesh_plan,
                                 MeshDepthInstanceFilter::DynamicCasters,
                                 &full.cube_shadow_vs_bind_group,
@@ -614,6 +627,7 @@ impl Renderer {
                         let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                             &mut pass,
                             &full.kinematic_brush,
+                            &level.kinematic,
                             &full.mover_occluder_aabbs,
                             &full.cube_shadow_vs_bind_group,
                             layer as u32 * stride,
@@ -651,7 +665,7 @@ impl Renderer {
                 // uniform's dynamic offset, and its reach comes from the same
                 // matrix.
                 if draw_world {
-                    full.shadow_world.record(
+                    level.shadow_world.record(
                         &mut pass,
                         cpu_frame,
                         ShadowRegion::CubeFace(layer as u32),
@@ -660,8 +674,8 @@ impl Renderer {
                             pipeline: &full.shadow_depth_pipeline,
                             bind_group: &full.cube_shadow_vs_bind_group,
                             dynamic_offset: layer as u32 * stride,
-                            vertex_buffer: &full.vertex_buffer,
-                            index_buffer: &full.index_buffer,
+                            vertex_buffer: &level.vertex_buffer,
+                            index_buffer: &level.index_buffer,
                         },
                     );
                 }
@@ -681,6 +695,7 @@ impl Renderer {
                     if let Some(plan) = &mesh_frame_plan {
                         let submitted = full.mesh_pass.record_skinned_depth(
                             &mut pass,
+                            &level.models,
                             plan,
                             MeshDepthInstanceFilter::DynamicCasters,
                             &full.cube_shadow_vs_bind_group,
@@ -696,6 +711,7 @@ impl Renderer {
                     let submitted = full.rigid_occluder_depth.record_kinematic_movers(
                         &mut pass,
                         &full.kinematic_brush,
+                        &level.kinematic,
                         &full.mover_occluder_aabbs,
                         &full.cube_shadow_vs_bind_group,
                         layer as u32 * stride,
@@ -714,7 +730,7 @@ impl Renderer {
         {
             timing.write_encoder_end(encoder, TIMING_PAIR_DYNAMIC_CUBE_DEPTH);
         }
-        full.dynamic_depth_cache_diagnostics.frame.reach_walks = full.shadow_world.walks;
+        full.dynamic_depth_cache_diagnostics.frame.reach_walks = level.shadow_world.walks;
         full.dynamic_depth_cache_diagnostics
             .finish_frame(full.frame_timing.is_some());
         // Close the coarse promoted-depth-cache timing pair opened in either shadow

@@ -1646,8 +1646,8 @@ mod tests {
         }
         const {
             assert!(postretro_net::handshake::WIRE_VERSION >= 34);
+            assert!(postretro_net::wire::SNAPSHOT_VERSION >= 22);
         }
-        assert!(postretro_net::wire::SNAPSHOT_VERSION >= 22);
     }
 
     // Regression: multiple enemy shots surfaced by one AI tick had no seam-crossing

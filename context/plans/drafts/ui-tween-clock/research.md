@@ -1,6 +1,6 @@
 # ui-tween-clock — research
 
-Facts read at 82a008480. These inform the brief without deciding it.
+Facts read at b6b85754c. These inform the brief without deciding it.
 
 ## UI time today
 - `UiReadSnapshot::time_seconds` (`crates/ui/src/output.rs`) is the only UI time. It reaches the retained trees and presentation templates as `TweenClock::now` (`renderer_ui_layer.rs`). Readers:
@@ -9,7 +9,7 @@ Facts read at 82a008480. These inform the brief without deciding it.
   - `styleRanges` pulse and flash, `StyleEffectState` (`scripting-core/src/ui/style_ranges.rs`). `pulse_factor` takes its phase from absolute `now`.
 - There are three production snapshot sites. `build_ui_read_snapshot` takes `self.script_time` on the Running path and in `render_frontend_frame` (Frontend and the first-launch hold). `loading_screen_snapshot` takes `ActiveLoad::ui_time`.
 - `App::script_time` (`main.rs`) advances by raw `frame_dt` only on the Running path. Its gate is `if !frozen` (the dev-tools `freeze_time`). It resets to zero at the end of install (`startup/lifecycle.rs`) and in unload (`startup/lifecycle_net.rs`). Its other readers are world-side: the GPU `time` uniform via `render_frame_indirect`, the light bridge, the emitter sim, the map-light collector, fog, and lightmap streaming `monotonic_seconds`.
-- `RedrawRequested` returns early for `BootState::Frontend | BootState::FirstLaunchHold` after `run_frontend_ui_logic` and `render_frontend_frame`. That return comes before `script_time` advances, so frontend UI time holds at whatever value it had. After an unload that value is 0, and at boot it is 0 until a level runs.
+- The redraw path in `frame_loop/mod.rs` returns early for `BootState::Frontend | BootState::FirstLaunchHold` after `run_frontend_ui_logic` and `render_frontend_frame`. That return comes before `script_time` advances, so frontend UI time holds at whatever value it had. After an unload that value is 0, and at boot it is 0 until a level runs.
 - A frontend with a backdrop level runs through Running, so its menu animates. Without a backdrop the same menu tree stands still: whether a mod declares a backdrop changes whether its menu animates.
 - `ActiveLoad::ui_time` starts at 0 in `begin_loading_screen` and grows by raw `frame_dt` in `advance_loading_screen`.
 - `PresentationPool` (`crates/sim/src/sim/presentation_pool.rs`) keeps a third accumulator, `frame_time_seconds`. It grows by raw `frame_dt` (`valid_frame_delta`) on Running frames only. It drives instance age, lifetime fade, overlay linger and eviction. Its templates' tweens read the snapshot's `script_time`, so one instance runs on two clocks.
@@ -65,8 +65,23 @@ The per-load zero start exists only so Loading never touched `script_time` (`boo
 | T4 | Splash-fallback load | retained trees survive and keep easing; time never runs backward |
 | T5 | Reduce motion turned on mid-tween | the tween reaches its target that frame; a fade in progress continues |
 
+## Entry delay
+A tween starts on the frame its node first resolves (`drive_tween_f32`): with `from` it eases from there, without it it snaps. Nothing in the descriptor holds an entry back, so a cascade has no tree-side spelling.
+
+| Shape | Lifetime | Reduce motion | Shared state | Verdict |
+|---|---|---|---|---|
+| Reaction steps: `uiWait` between cell writes that reveal each row | a parked tail in the scheduler, by definition site | needs a per-wait collapse flag | none, but a wait that collapses on one machine moves every step after it | Rejected: visual timing in the scheduler (`drafts/ui-timed-reactions` research §Placement) |
+| Delay on every segment, retargets included | the tree | snaps | none | Rejected: a slot that changes each frame restarts the delay and never moves, and a HUD lags the value it exists to show |
+| Delay on the entry only, stagger on containers (chosen) | the tree instance | snaps through the tween rule | none | Chosen: `ui.md` §3 keeps everything the UI animates retained-UI-local |
+
+- Retarget during the delay. Keeping the remaining delay and swapping the target would add a third segment state; ending the delay keeps the one retarget rule, "ease from the current display at this frame's time".
+- `delayMs` requires `from`, as `exitFade` requires `visibleWhen`: a first resolution without `from` snaps, so a delay would hold nothing.
+- Stagger index is the authored child position, not the visible one, so a row hidden by `visibleWhen` keeps its slot in the cascade and a predicate flip never re-times its siblings.
+- Names: `delayMs` pairs with the tween's `durationMs`. `stagger.intervalMs` reuses `focus.repeat`'s `intervalMs`, the existing name for a per-step spacing.
+- Templates share `NumberTween`, so the delay reaches presentation instances without a second rule; it counts from the instance's first resolution and ends with the instance.
+
 ## Interactions
-- `drafts/ui-timed-reactions` names the same clock for `uiWait`, and its Doors defer moving tweens onto it to this brief. One clock means a cascade of `uiWait` steps and the tweens they start stay in step under a hitch.
+- `drafts/ui-timed-reactions` names the same clock for `uiWait`. One clock means a `uiWait` and the tweens of the menu it opens stay in step under a hitch.
 - The flash limiter keeps its own uncapped elapsed time for window aging. It measures exposure, so a hitch must age its window by the full time.
 - Hold-to-repeat and slider acceleration take `frame_dt` in the focus engine. They set input cadence and are out of scope.
 

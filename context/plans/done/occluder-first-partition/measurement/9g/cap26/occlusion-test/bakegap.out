@@ -1,0 +1,29 @@
+
+running 1 test
+replaying /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/occlusion-test/occlusion-test.before.bakegap: 3 sequences
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.prl
+loaded in 0.1 s
+bake read: id51=bbf0549829b85fb9 walk_epoch=3 size=113267665 mtime=1793221340 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 54370 frames in 5.5 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 9 layers, peak 9 layers (9 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 70432 frames in 9.4 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 9 layers, peak 9 layers (9 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+pose tour occlusion-test.poses, 2 frames per pose: 2434 frames in 0.2 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 9 layers, peak 9 layers (9 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 0 after 0; trip frames: before 0 after 0; frames deferring more texels after: 0 of 54370
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 0 after 0; trip frames: before 0 after 0; frames deferring more texels after: 0 of 70432
+pose tour occlusion-test.poses, 2 frames per pose
+  deferred texels: before 0 after 0 (ok)
+  deferred blocks: before 0 after 0; left-behind texels: before 0 after 0; trip frames: before 0 after 0; frames deferring more texels after: 0 of 2434
+verdict: PASS
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 15.31s
+

@@ -388,6 +388,24 @@ impl ScriptRuntime {
         }
     }
 
+    /// The descriptor snapshot a staged hot reload deferred because it
+    /// changed presentation assets, which the next level install promotes
+    /// before its model sweep; `None` when none is pending (always in release
+    /// builds). A level load dispatched before that install predicts its
+    /// models from this snapshot, the one its install will spawn from.
+    pub fn deferred_mesh_descriptors(
+        &self,
+    ) -> Option<&[crate::data_descriptors::EntityTypeDescriptor]> {
+        #[cfg(debug_assertions)]
+        {
+            self.deferred_mesh_descriptors.as_deref()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            None
+        }
+    }
+
     /// Commit a completed staged manifest result on the main thread.
     ///
     /// Latest successful results replace the descriptor registry snapshot,

@@ -1,0 +1,23 @@
+{
+  "map": "<path to mover-setpiece.prl>",
+  "camera": {
+    "position": [
+      -38.1,
+      1.2192,
+      -30.48
+    ],
+    "yaw_deg": 90.0,
+    "pitch_deg": 0.0,
+    "fov_deg": 100.0
+  },
+  "resolution": [
+    3840,
+    2160
+  ],
+  "output": "<output.png>",
+  "measurement": {
+    "report": "<report.json>",
+    "warmup_frames": 120,
+    "sample_frames": 240
+  }
+}

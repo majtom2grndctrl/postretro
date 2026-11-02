@@ -1,0 +1,7 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len10/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl: L 16 m, 7629 camera cells; mandatory texels p50 0.0 M p95 75.5 M max 120.2 M (pool cap 15 layers ~62.9 M)
+  cell 771: 120.2 M, 255 entries
+  cell 674: 120.2 M, 261 entries
+  cell 672: 120.2 M, 261 entries
+  cell 593: 120.2 M, 262 entries
+  cell 794: 119.7 M, 261 entries
+  cells over 62.9 M: 684

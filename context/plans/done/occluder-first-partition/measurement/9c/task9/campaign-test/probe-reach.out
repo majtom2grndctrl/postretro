@@ -1,0 +1,5 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-after/campaign-test/campaign-test.prl
+  SH grid 74x48x114 cell [1.0, 1.0, 1.0]; 739 clusters, 71 interior cells
+  probe reach into another cluster's cells: 17 clusters (71 interior cells), 47 cluster pairs, 52001 probe refs, max 5 clusters reached by one
+  of which more than one probe spacing beyond the cluster's own interior cells: 16 clusters (69 interior cells), 44 cluster pairs, 36940 probe refs
+  owner edges: patch 22 over 15 clusters; sparse halo 22 over 15 clusters

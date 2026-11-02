@@ -3,6 +3,7 @@
 // See: context/lib/rendering_pipeline.md
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 
 // `material_shading.wgsl` owns world-material leaf helpers (`blinn_phong`,
 // `sample_normal`, `reconstruct_tbn_normal`). Its argument-only helpers are
@@ -189,7 +190,8 @@ pub(crate) const TIMING_PAIR_FLUID_SURFACE: usize = 15;
 pub(crate) const TIMING_PAIR_FLUID_REFLECTION: usize = 16;
 pub(crate) const TIMING_PAIR_PLANAR_REFLECTION: usize = 17;
 pub(crate) const TIMING_PAIR_PLANAR_FORWARD: usize = 18;
-pub(crate) const TIMING_PAIR_COUNT: usize = 19;
+pub(crate) const TIMING_PAIR_KINEMATIC_BRUSH: usize = 19;
+pub(crate) const TIMING_PAIR_COUNT: usize = 20;
 
 // Must match `Uniforms` in forward.wgsl and wireframe.wgsl (both bind the same buffer).
 // std140: vec3<f32> aligns to 16 bytes; camera_position and ambient_floor share a slot.
@@ -239,7 +241,7 @@ pub(crate) fn create_depth_texture(
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let size = prepass_attachment_extent(width, height);
 
-    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+    let depth_texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Depth Texture"),
         size,
         mip_level_count: 1,

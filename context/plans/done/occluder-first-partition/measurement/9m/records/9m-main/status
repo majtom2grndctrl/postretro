@@ -1,0 +1,21 @@
+GATE_OK waited=51 temp=67
+10:13:20 SENTINEL sentinel_a total_ms=16.522 rc=0 2026-10-29 10:13:20 util=5 inUseVidMemoryBytes=585056256 vramFreeBytes=2730455040 mhz=185 temp=74 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=50 screensaver=no locked=absent
+10:14:39 RUN stress-street.rd_promenade.cap26.def rc=0 GATE_OK waited=55 temp=67 total=17.079 work=13.807 submit=8.810 record=1.848 walk=0.573 tests=1953.283 val=validation: on (build default)
+10:16:22 RUN stress-street.rd_promenade.before.def rc=0 GATE_OK waited=79 temp=67 total=16.877 work=10.940 submit=6.551 record=1.845 walk=0.587 tests=1867.000 val=validation: on (build default)
+10:18:03 RUN stress-street.rd_elevated.before.val0 rc=0 GATE_OK waited=77 temp=67 total=16.972 work=11.182 submit=6.437 record=1.935 walk=0.845 tests=2762.000 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+10:19:32 RUN stress-street.rd_elevated.cap26.val0 rc=0 GATE_OK waited=64 temp=67 total=17.435 work=14.369 submit=8.881 record=2.058 walk=0.814 tests=2577.000 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+10:21:13 RUN stress-street.rd_promenade.cap26.val0 rc=0 GATE_OK waited=76 temp=67 total=17.067 work=13.246 submit=8.197 record=1.903 walk=0.574 tests=1953.483 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+10:22:51 RUN stress-street.rd_promenade.before.val0 rc=0 GATE_OK waited=74 temp=67 total=16.806 work=10.639 submit=6.177 record=1.902 walk=0.593 tests=1867.000 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+GATE_OK waited=66 temp=67
+10:24:11 SENTINEL sentinel_6 total_ms=16.514 rc=0 2026-10-29 10:24:11 util=6 inUseVidMemoryBytes=585703424 vramFreeBytes=2730381312 mhz=0 temp=74 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=54 screensaver=no locked=absent
+10:25:47 RUN stress-street.rd_elevated.before.tp rc=0 GATE_OK waited=54 temp=67 total=16.833 work=11.150 submit=6.908 record=1.675 walk=0.776 tests=2762.000 val=validation: on (build default)
+10:27:23 RUN stress-street.rd_elevated.cap26.tp rc=0 GATE_OK waited=55 temp=67 total=17.131 work=14.918 submit=9.856 record=1.868 walk=0.775 tests=2577.000 val=validation: on (build default)
+10:28:57 RUN stress-street.rd_promenade.cap26.tp rc=0 GATE_OK waited=52 temp=67 total=16.977 work=13.928 submit=8.978 record=1.823 walk=0.577 tests=1943.125 val=validation: on (build default)
+10:30:19 RUN stress-street.rd_promenade.before.tp rc=0 GATE_OK waited=42 temp=67 total=16.738 work=10.643 submit=6.666 record=1.680 walk=0.534 tests=1867.000 val=validation: on (build default)
+10:31:30 RUN stress-street.rd_elevated.cap26.tpval0 rc=0 GATE_OK waited=30 temp=67 total=17.031 work=14.046 submit=8.983 record=1.894 walk=0.770 tests=2577.000 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+10:32:48 RUN stress-street.rd_elevated.before.tpval0 rc=0 GATE_OK waited=38 temp=67 total=16.772 work=10.759 submit=6.461 record=1.728 walk=0.778 tests=2762.000 val=validation: off (WGPU_VALIDATION_INDIRECT_CALL override)
+GATE_OK waited=33 temp=67
+10:33:35 SENTINEL sentinel_12 total_ms=16.527 rc=0 2026-10-29 10:33:35 util=7 inUseVidMemoryBytes=585048064 vramFreeBytes=2730135552 mhz=345 temp=72 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=76 screensaver=no locked=absent
+GATE_OK waited=30 temp=66
+10:34:18 SENTINEL sentinel_end total_ms=16.530 rc=0 2026-10-29 10:34:18 util=6 inUseVidMemoryBytes=585768960 vramFreeBytes=2730070016 mhz=34 temp=72 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=73 screensaver=no locked=absent
+10:34:18 DONE

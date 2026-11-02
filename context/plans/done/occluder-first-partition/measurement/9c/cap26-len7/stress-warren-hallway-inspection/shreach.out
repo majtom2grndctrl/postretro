@@ -1,0 +1,20 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap26-len7/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+7640 cells (1624 camera), 6259 clusters (4.812 MiB whole map), pinned + owners 0 clusters (0.000 MiB), id-51 max lead 32.0 m, 247660 entries
+lightmap: 1603 blocks (2514.901 MiB whole map), 0 pinned blocks
+
+## L = 16 m (1624 camera cells)
+mandatory cells            median 97, p95 191, max 258
+SH mandatory bytes         median 3.460 MiB, p95 4.794 MiB, max 4.812 MiB
+SH mandatory clusters      median 107, p95 123, max 134
+lightmap mandatory bytes   median 138.372 MiB, p95 254.339 MiB, max 353.433 MiB
+  id-22 half bytes         median 59.302 MiB, p95 109.002 MiB, max 151.471 MiB
+  id-42 half bytes         median 79.070 MiB, p95 145.336 MiB, max 201.962 MiB
+lightmap blocks            median 97, p95 180, max 237
+lightmap pairs             median 97, p95 180, max 237
+lightmap pool layers       median 15, p95 25, max 33
+worst SH cell 2578: 123 clusters, 4.812 MiB SH; lightmap 123 blocks, 169.672 MiB, 18 layers
+
+Gate (L = 16 m): worst-cell SH mandatory 4.812 MiB of the 256 MiB floor, before fixed metadata and whole-resident scatter
+

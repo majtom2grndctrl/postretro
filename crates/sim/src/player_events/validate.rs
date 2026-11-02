@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use postretro_entities::reactions::system_commands::{SystemReactionClass, SystemReactionKind};
-use postretro_entities::{ReplicationScope, SlotTable};
+use postretro_entities::{MachineRole, SlotTable, system_reaction_is_machine_local};
 use postretro_scripting_core::data_descriptors::{
     NamedReaction, ReactionDescriptor, SequenceTarget,
 };
@@ -43,7 +43,8 @@ pub(super) fn fire_list_violation(
 }
 
 /// An interruptible `wait` parks until its paired trigger exit; a player event
-/// has none, so the scheduler would refuse the tail at runtime.
+/// has none, so the scheduler would demote the wait to non-interruptible, with
+/// a warning, at runtime.
 fn holds_interruptible_wait(descriptor: &ReactionDescriptor) -> bool {
     let ReactionDescriptor::Sequence(steps) = descriptor else {
         return false;
@@ -83,29 +84,50 @@ fn direct_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> 
     machine_local_effect(descriptor, slot_table)
 }
 
+/// Whether a player event must refuse this system reaction: machine-local on
+/// the host, so it would land on the host's screen, and not presentation,
+/// which the fire forwards to the event player instead.
+pub(crate) fn player_event_refuses(
+    kind: SystemReactionKind,
+    args: &serde_json::Value,
+    slot_table: &SlotTable,
+) -> bool {
+    kind.class() != SystemReactionClass::Presentation
+        && system_reaction_is_machine_local(kind, args, slot_table, MachineRole::Host)
+}
+
 /// A UI-stack verb, a text edit, a cell write, or a `setState` on a slot that
-/// does not replicate: each would land on the host's screen.
+/// does not replicate, as a body or as a system step: each would land on the
+/// host's screen.
 fn machine_local_effect(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> Option<String> {
-    let ReactionDescriptor::Primitive(primitive) = descriptor else {
-        return None;
-    };
-    match SystemReactionKind::from_primitive_name(&primitive.primitive)?.class() {
-        SystemReactionClass::MachineLocal => Some(format!(
-            "`{}` is machine-local: fired on the host it opens on the host's screen, not the event player's",
-            primitive.primitive
-        )),
-        SystemReactionClass::SlotWrite => {
-            let slot = primitive.args.get("slot")?.as_str()?;
-            let replicates = slot_table
-                .get(slot)
-                .is_some_and(|record| record.schema.network != ReplicationScope::None);
-            (!replicates).then(|| {
-                format!(
-                    "`setState` writes `{slot}`, which does not replicate, so the write stays on the host"
-                )
-            })
+    let refused = |primitive: &str, args: &serde_json::Value| {
+        let kind = SystemReactionKind::from_primitive_name(primitive)?;
+        if !player_event_refuses(kind, args, slot_table) {
+            return None;
         }
-        SystemReactionClass::Presentation | SystemReactionClass::HostConsequence => None,
+        Some(match kind.class() {
+            SystemReactionClass::SlotWrite => format!(
+                "`setState` writes `{}`, which does not replicate, so the write stays on the host",
+                args.get("slot")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            ),
+            _ => format!(
+                "`{primitive}` is machine-local: fired on the host it opens on the host's screen, not the event player's"
+            ),
+        })
+    };
+    match descriptor {
+        ReactionDescriptor::Primitive(primitive)
+            if primitive.tag.is_none() && primitive.kind.is_none() =>
+        {
+            refused(&primitive.primitive, &primitive.args)
+        }
+        ReactionDescriptor::Sequence(steps) => steps
+            .iter()
+            .filter(|step| matches!(step.id, SequenceTarget::System))
+            .find_map(|step| refused(&step.primitive, &step.args)),
+        _ => None,
     }
 }
 
@@ -255,13 +277,23 @@ fn route_violation(
 /// would play on the host), a machine-local effect, a plain per-player read,
 /// or `on.player` itself.
 fn reached_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> Option<String> {
-    if let ReactionDescriptor::Primitive(primitive) = descriptor
-        && SystemReactionKind::from_primitive_name(&primitive.primitive)
+    let presents = |primitive: &str| {
+        SystemReactionKind::from_primitive_name(primitive)
             .is_some_and(|kind| kind.class() == SystemReactionClass::Presentation)
-    {
+    };
+    let presented = match descriptor {
+        ReactionDescriptor::Primitive(primitive) => {
+            presents(&primitive.primitive).then_some(primitive.primitive.as_str())
+        }
+        ReactionDescriptor::Sequence(steps) => steps
+            .iter()
+            .find(|step| matches!(step.id, SequenceTarget::System) && presents(&step.primitive))
+            .map(|step| step.primitive.as_str()),
+        ReactionDescriptor::Progress(_) => None,
+    };
+    if let Some(primitive) = presented {
         return Some(format!(
-            "presents `{}`, which would play on the host; list it in the event's fire list instead",
-            primitive.primitive
+            "presents `{primitive}`, which would play on the host; list it in the event's fire list instead"
         ));
     }
     if reaction_uses_event_player(descriptor) {

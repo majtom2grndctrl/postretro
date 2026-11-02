@@ -354,7 +354,7 @@ fn life_state_o39_wait_tail_enters_at_drain_and_reload_drops_pending_tail() {
         vec![],
     );
     let scheduler = ReactionScheduler::default();
-    scheduler.set_enabled(true);
+    scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
     let mut sequences = SequencedPrimitiveRegistry::new();
     register_reaction_control_primitives(&mut sequences, scheduler.clone());
     register_sequenced_life_state_primitives(&mut sequences, world.script_ctx.clone());

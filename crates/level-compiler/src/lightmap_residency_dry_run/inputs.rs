@@ -232,7 +232,7 @@ fn portal_vertices<'a>(
 }
 
 /// Whether the runtime loader would reject this portal. Must match
-/// `convert_usable_portals` in `crates/level-loader/src/prl_loader.rs`: a bad
+/// `convert_usable_portals` in `crates/level-loader/src/prl_loader/spatial.rs`: a bad
 /// vertex range, fewer than 3 vertices, a non-finite vertex, or zero area.
 pub(super) fn loader_rejects_portal(vertices: Option<&[[f32; 3]]>) -> bool {
     let Some(vertices) = vertices else {

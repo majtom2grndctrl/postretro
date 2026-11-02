@@ -1,0 +1,13 @@
+[package]
+name = "thin-cells"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+glam = "0.33"
+postretro-level-loader = { path = "/Users/dhiester/Projects/Personal/postretro/crates/level-loader", features = ["load-prl"] }
+
+[profile.release]
+debug = false

@@ -1,0 +1,14 @@
+frames 486 busy median 29.38 p95 30.16 ms | span median 35.74 p95 36.77 ms
+  Textured Pass                                     26.333 ms/frame
+  Page On 65536 bytes  ( postretro-capture (32825)   1.261 ms/frame
+  Bloom Bright Pass                                  0.506 ms/frame
+  Streamed Animated Direct SH                        0.404 ms/frame
+  Streamed SH Compose                                0.358 ms/frame
+  Promoted Cube Entity Shadow Depth Pass             0.327 ms/frame
+  Bloom Vertical Gaussian Pass                       0.262 ms/frame
+  Bloom Upsample Pass                                0.223 ms/frame
+  Bloom Horizontal Gaussian Pass                     0.190 ms/frame
+  GPU Execution  ( postretro-capture (32825) )       0.164 ms/frame
+  Depth Pre-Pass                                     0.147 ms/frame
+  Bloom Downsample Pass                              0.139 ms/frame
+completion median 35.83 p95 36.76

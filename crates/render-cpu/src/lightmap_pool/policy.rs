@@ -1,6 +1,7 @@
 // Streamed lightmap pool placement policy: per-level pool model and per-drain plans.
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
+mod growth;
 mod journal;
 mod placement;
 mod plan;
@@ -9,6 +10,7 @@ mod repack;
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
 use super::{BlockPlacement, BlockPool, BlockTableEntry, Slot, block_table_bytes};
+pub use growth::POOL_POLICY_IDENTITY;
 use journal::{JournalOp, Touched};
 pub use plan::{
     BlockUpload, DrainPlan, EvictionReason, NotAPlannedUpload, PlannedEviction, PoolCopy,
@@ -59,6 +61,8 @@ struct Scratch {
     repack_band: Vec<(u32, u32)>,
     repack_residents: Vec<u32>,
     moves: Vec<PoolCopy>,
+    /// Aligned extents of the targeted demand, for growth sizing.
+    demand: Vec<(u32, u32)>,
 }
 
 /// The renderer's model of one level's streamed lightmap pool: which block
@@ -88,11 +92,15 @@ pub struct LightmapPoolModel {
     used_texels: Vec<u64>,
     layers: u32,
     cap_layers: u32,
+    /// Layers every block placed at once fills: no growth reserves past it.
+    all_resident_layers: u32,
     /// Usable layers the device can hold beside the spare. Growth never
     /// plans past it; a pair that would need it is deferred.
     max_layers: u32,
     retiring: bool,
     texture_allocations: u32,
+    #[cfg(test)]
+    growth_sizing: growth::GrowthSizing,
     journal: Vec<JournalOp>,
     drain: u64,
     touch_stamp: Vec<u64>,
@@ -132,8 +140,8 @@ impl LightmapPoolModel {
         max_layers: u32,
     ) -> Option<Self> {
         let alignment = alignment.max(1);
-        let ceiling = super::place_all_resident(&extents, alignment, edge)?.layer_count;
-        let layers = cap_layers.min(ceiling).min(max_layers);
+        let all_resident_layers = super::place_all_resident(&extents, alignment, edge)?.layer_count;
+        let layers = cap_layers.min(all_resident_layers).min(max_layers);
         let count = extents.len();
         Some(Self {
             edge,
@@ -147,9 +155,12 @@ impl LightmapPoolModel {
             used_texels: vec![0; layers as usize],
             layers,
             cap_layers,
+            all_resident_layers,
             max_layers,
             retiring: false,
             texture_allocations: 1,
+            #[cfg(test)]
+            growth_sizing: growth::GrowthSizing::default(),
             journal: Vec::new(),
             drain: 0,
             touch_stamp: vec![0; count],
@@ -298,6 +309,7 @@ impl LightmapPoolModel {
             s.repack_band.capacity(),
             s.repack_residents.capacity(),
             s.moves.capacity(),
+            s.demand.capacity(),
             p.copies.capacity(),
             p.uploads.capacity(),
             p.table_writes.capacity(),

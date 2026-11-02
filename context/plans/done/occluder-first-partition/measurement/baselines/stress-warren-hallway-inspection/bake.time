@@ -1,0 +1,4 @@
+flags: --sh-probe-spacing 4.0 --cache-dir /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/cache
+start: 2026-10-27 19:31:43
+exit: 0
+wall_seconds: 1232

@@ -1,0 +1,5 @@
+flags: --sh-probe-spacing 4.0 --lightmap-density 0.25 --cache-dir C:/Users/danhi/Projects/Personal/postretro/.claude/worktrees/mac-agent-review-panel-ee30a1/target/occluder-10-ctl/head/stress-street/cache
+binary: b163e94d0013
+start: 2026-10-29 17:09:52
+exit: 0
+wall_seconds: 23

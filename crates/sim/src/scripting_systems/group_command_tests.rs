@@ -58,7 +58,7 @@ impl Fixture {
     fn new() -> Self {
         let ctx = ScriptCtx::new();
         let scheduler = ReactionScheduler::default();
-        scheduler.set_enabled(true);
+        scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
         let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
 
         let mut sequence_registry = SequencedPrimitiveRegistry::new();
@@ -161,7 +161,8 @@ impl Fixture {
     fn set_client(&self) {
         // The role the session derives from a `Client` endpoint.
         self.ctx.owner_slot_writes_enabled.set(false);
-        self.scheduler.set_enabled(false);
+        self.scheduler
+            .set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Client);
     }
 
     fn spawn_with_health(&self, tags: &[&str]) -> EntityId {

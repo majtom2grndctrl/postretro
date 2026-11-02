@@ -3,6 +3,7 @@
 
 pub mod animated_lightmap;
 pub mod chunk_list;
+pub mod device_limits;
 pub mod flash_clamp;
 pub mod flash_limiter;
 pub mod fluid_surface;
@@ -10,6 +11,7 @@ pub mod fog_mask;
 pub mod frame_uniforms;
 pub mod ghost_instance;
 pub mod ghost_transparency;
+pub mod lightmap_family;
 pub mod lightmap_pool;
 pub mod loaded_texture;
 pub mod material_plan;
@@ -22,9 +24,12 @@ pub mod screen_effects;
 pub mod sdf_atlas;
 pub mod sdf_shadow;
 pub mod sh_compose;
+pub mod sh_residency;
 pub mod sh_volume;
 pub mod shadow_reach;
 pub mod surface_depth;
+pub mod texture_prep;
+pub mod uv_normalize;
 
 pub mod fx {
     pub mod fog_volume;

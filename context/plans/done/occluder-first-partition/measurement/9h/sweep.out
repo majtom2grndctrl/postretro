@@ -1,0 +1,1150 @@
+   Compiling postretro-level-compiler v0.1.0 (/Users/dhiester/Projects/Personal/postretro/crates/level-compiler)
+    Finished `release` profile [optimized] target(s) in 1m 31s
+     Running unittests src/main.rs (target/release/deps/prl_build-98a0affe62b9d23a)
+
+running 1 test
+setup: wall [0.0, 1184.0, 0.0]..[1024.0, 1216.0, 256.0]; eyes x [64.0, 300.0, 544.0, 800.0, 980.0] × y [700.0, 900.0, 1100.0], z 59 u, yaws [45.0, 70.0, 90.0, 110.0, 135.0]°, 100° HFOV at 16:9; samples: 32 u cell-centred lattice, nudged 0.5 u, over x [0, 1024], y [1216, 2720], z [0, 256]
+eyes inside a brush, dropped with their yaws: [[800.0, 900.0, 59.0]]
+HEAD classification: b37 Occludes, b102 Occludes, yellow room b113..=b125 [Occludes, ShortSpan, ShortSpan, UnderFloor, LowTop, ShortSpan, UnderFloor, Occludes, LowTop, ShortSpan, UnderFloor, Occludes, Occludes]
+
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/occlusion-test/occlusion-test.prl: 2036 triangles; 12032 lattice points: 494 inside brushes, 0 seen by some eye (dropped), 11538 hidden
+== /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/before/occlusion-test/occlusion-test.prl: 555 cells, 960 portals
+leak mean 39.36% over 70 poses; worst 98.83% (11403 of 11538 samples) at eye [64.0, 700.0, 59.0] yaw 90°
+non-portal paths: []
+per pose (eye x, eye y, yaw: leaked samples / visible cells):
+  64 700 45: 9870 / 217
+  64 700 70: 11403 / 249
+  64 700 90: 11403 / 244
+  64 700 110: 9490 / 192
+  64 700 135: 2339 / 48
+  64 900 45: 6611 / 137
+  64 900 70: 7415 / 165
+  64 900 90: 1828 / 20
+  64 900 110: 1828 / 18
+  64 900 135: 1828 / 18
+  64 1100 45: 1030 / 23
+  64 1100 70: 0 / 3
+  64 1100 90: 320 / 13
+  64 1100 110: 320 / 13
+  64 1100 135: 320 / 16
+  300 700 45: 9032 / 186
+  300 700 70: 9870 / 217
+  300 700 90: 5803 / 194
+  300 700 110: 10712 / 225
+  300 700 135: 4842 / 123
+  300 900 45: 4614 / 73
+  300 900 70: 5052 / 96
+  300 900 90: 224 / 14
+  300 900 110: 2380 / 44
+  300 900 135: 2104 / 32
+  300 1100 45: 598 / 14
+  300 1100 70: 0 / 4
+  300 1100 90: 0 / 3
+  300 1100 110: 0 / 1
+  300 1100 135: 128 / 9
+  544 700 45: 6384 / 112
+  544 700 70: 9718 / 212
+  544 700 90: 10094 / 229
+  544 700 110: 9299 / 224
+  544 700 135: 6760 / 196
+  544 900 45: 3986 / 31
+  544 900 70: 4112 / 40
+  544 900 90: 0 / 7
+  544 900 110: 3437 / 102
+  544 900 135: 2933 / 79
+  544 1100 45: 434 / 9
+  544 1100 70: 0 / 3
+  544 1100 90: 0 / 3
+  544 1100 110: 0 / 4
+  544 1100 135: 224 / 14
+  800 700 45: 4446 / 38
+  800 700 70: 10119 / 184
+  800 700 90: 11400 / 242
+  800 700 110: 11400 / 249
+  800 700 135: 9515 / 226
+  800 1100 45: 434 / 8
+  800 1100 70: 434 / 8
+  800 1100 90: 0 / 3
+  800 1100 110: 0 / 3
+  800 1100 135: 416 / 23
+  980 700 45: 3842 / 29
+  980 700 70: 9221 / 128
+  980 700 90: 11193 / 236
+  980 700 110: 11400 / 252
+  980 700 135: 9515 / 229
+  980 900 45: 3842 / 29
+  980 900 70: 3842 / 28
+  980 900 90: 3842 / 29
+  980 900 110: 11400 / 239
+  980 900 135: 6897 / 207
+  980 1100 45: 3842 / 27
+  980 1100 70: 3842 / 26
+  980 1100 90: 3842 / 26
+  980 1100 110: 3842 / 24
+  980 1100 135: 599 / 32
+leaking cells (210; * = leaks at the worst pose):
+  *cell 51: Quake bounds [648.0, 1832.0, 0.0]..[688.0, 2720.0, 512.0]; 224 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 52: Quake bounds [688.0, 1832.0, 0.0]..[1536.0, 1872.0, 512.0]; 88 hidden samples, leaks at 35 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 53: Quake bounds [688.0, 1872.0, 144.0]..[1536.0, 2720.0, 512.0]; 1188 hidden samples, leaks at 35 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=2720 brushes [31, 36, 126]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1"]
+  *cell 54: Quake bounds [688.0, 1912.0, 0.0]..[1536.0, 2720.0, 144.0]; 1100 hidden samples, leaks at 31 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=2720 brushes [31, 36, 126]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 55: Quake bounds [728.0, 1872.0, 0.0]..[1536.0, 1912.0, 144.0]; 72 hidden samples, leaks at 31 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  *cell 57: Quake bounds [568.0, 1832.0, 0.0]..[608.0, 2720.0, 512.0]; 224 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 58: Quake bounds [608.0, 1832.0, 0.0]..[648.0, 1872.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 59: Quake bounds [608.0, 1872.0, 136.0]..[648.0, 2720.0, 512.0]; 108 hidden samples, leaks at 24 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=136 brushes [93, 100]"]
+  *cell 60: Quake bounds [608.0, 1912.0, 0.0]..[648.0, 2720.0, 136.0]; 100 hidden samples, leaks at 12 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "z=136 brushes [93, 100]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 64: Quake bounds [648.0, 1752.0, 0.0]..[688.0, 1832.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 65: Quake bounds [688.0, 1752.0, 0.0]..[1536.0, 1792.0, 512.0]; 88 hidden samples, leaks at 36 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 66: Quake bounds [688.0, 1792.0, 136.0]..[1536.0, 1832.0, 512.0]; 44 hidden samples, leaks at 36 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=136 brushes [93, 100]"]
+  *cell 67: Quake bounds [728.0, 1792.0, 0.0]..[1536.0, 1832.0, 136.0]; 36 hidden samples, leaks at 29 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=136 brushes [93, 100]", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  *cell 69: Quake bounds [568.0, 1752.0, 0.0]..[608.0, 1832.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 70: Quake bounds [608.0, 1752.0, 0.0]..[648.0, 1792.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 71: Quake bounds [608.0, 1792.0, 128.0]..[648.0, 1832.0, 512.0]; 4 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  *cell 73: Quake bounds [648.0, 1672.0, 0.0]..[688.0, 1752.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 74: Quake bounds [688.0, 1672.0, 0.0]..[1536.0, 1712.0, 512.0]; 88 hidden samples, leaks at 35 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 75: Quake bounds [688.0, 1712.0, 128.0]..[1536.0, 1752.0, 512.0]; 88 hidden samples, leaks at 35 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  *cell 76: Quake bounds [728.0, 1712.0, 0.0]..[1536.0, 1752.0, 128.0]; 72 hidden samples, leaks at 29 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  *cell 78: Quake bounds [568.0, 1672.0, 0.0]..[608.0, 1752.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 79: Quake bounds [608.0, 1672.0, 0.0]..[648.0, 1712.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 80: Quake bounds [608.0, 1712.0, 120.0]..[648.0, 1752.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=120 brushes [77, 84, 91, 98]"]
+  *cell 82: Quake bounds [488.0, 1832.0, 0.0]..[528.0, 2720.0, 512.0]; 224 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 83: Quake bounds [528.0, 1832.0, 0.0]..[568.0, 1872.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 84: Quake bounds [528.0, 1872.0, 128.0]..[568.0, 2720.0, 512.0]; 216 hidden samples, leaks at 23 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=2720 brushes [31, 36, 126]", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  *cell 85: Quake bounds [528.0, 1912.0, 0.0]..[568.0, 2720.0, 128.0]; 200 hidden samples, leaks at 11 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=2720 brushes [31, 36, 126]", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 87: Quake bounds [408.0, 1832.0, 0.0]..[448.0, 2720.0, 512.0]; 224 hidden samples, leaks at 23 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 88: Quake bounds [448.0, 1832.0, 0.0]..[488.0, 1872.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 89: Quake bounds [448.0, 1872.0, 120.0]..[488.0, 2720.0, 512.0]; 108 hidden samples, leaks at 23 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=120 brushes [77, 84, 91, 98]"]
+  *cell 90: Quake bounds [448.0, 1912.0, 0.0]..[488.0, 2720.0, 120.0]; 100 hidden samples, leaks at 12 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "z=120 brushes [77, 84, 91, 98]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 94: Quake bounds [488.0, 1752.0, 0.0]..[528.0, 1832.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 95: Quake bounds [528.0, 1752.0, 0.0]..[568.0, 1792.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 96: Quake bounds [528.0, 1792.0, 120.0]..[568.0, 1832.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=120 brushes [77, 84, 91, 98]"]
+  *cell 98: Quake bounds [408.0, 1752.0, 0.0]..[448.0, 1832.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 99: Quake bounds [448.0, 1752.0, 0.0]..[488.0, 1792.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 100: Quake bounds [448.0, 1792.0, 112.0]..[488.0, 1832.0, 512.0]; 5 hidden samples, leaks at 24 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  *cell 102: Quake bounds [488.0, 1672.0, 0.0]..[528.0, 1752.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 103: Quake bounds [528.0, 1672.0, 0.0]..[568.0, 1712.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 104: Quake bounds [528.0, 1712.0, 112.0]..[568.0, 1752.0, 512.0]; 20 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  *cell 106: Quake bounds [408.0, 1672.0, 0.0]..[448.0, 1752.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 107: Quake bounds [448.0, 1672.0, 0.0]..[488.0, 1712.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 108: Quake bounds [448.0, 1712.0, 104.0]..[488.0, 1752.0, 512.0]; 10 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 116: Quake bounds [728.0, 1432.0, 0.0]..[788.0, 1672.0, 512.0]; 112 hidden samples, leaks at 28 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=788 brushes [106, 110]"]
+  *cell 117: Quake bounds [788.0, 1432.0, 0.0]..[1536.0, 1472.0, 512.0]; 56 hidden samples, leaks at 35 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 118: Quake bounds [788.0, 1472.0, 96.0]..[1536.0, 1672.0, 512.0]; 210 hidden samples, leaks at 36 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 119: Quake bounds [788.0, 1536.0, 0.0]..[1536.0, 1672.0, 96.0]; 84 hidden samples, leaks at 29 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768"]
+  *cell 120: Quake bounds [852.0, 1472.0, 0.0]..[1536.0, 1536.0, 96.0]; 30 hidden samples, leaks at 30 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768", "x=852 brushes [106, 110]"]
+  *cell 125: Quake bounds [648.0, 1592.0, 0.0]..[688.0, 1672.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 126: Quake bounds [688.0, 1592.0, 0.0]..[728.0, 1632.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 127: Quake bounds [688.0, 1632.0, 120.0]..[728.0, 1672.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=120 brushes [77, 84, 91, 98]"]
+  *cell 129: Quake bounds [648.0, 1512.0, 0.0]..[688.0, 1592.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 130: Quake bounds [688.0, 1512.0, 0.0]..[728.0, 1552.0, 512.0]; 16 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 131: Quake bounds [688.0, 1552.0, 112.0]..[728.0, 1592.0, 512.0]; 20 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  *cell 133: Quake bounds [648.0, 1432.0, 0.0]..[688.0, 1512.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 134: Quake bounds [688.0, 1432.0, 0.0]..[728.0, 1472.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 135: Quake bounds [688.0, 1472.0, 104.0]..[728.0, 1512.0, 512.0]; 10 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 137: Quake bounds [568.0, 1592.0, 0.0]..[608.0, 1672.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 138: Quake bounds [608.0, 1592.0, 0.0]..[648.0, 1632.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 139: Quake bounds [608.0, 1632.0, 112.0]..[648.0, 1672.0, 512.0]; 5 hidden samples, leaks at 27 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  *cell 141: Quake bounds [568.0, 1512.0, 0.0]..[608.0, 1592.0, 512.0]; 24 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 142: Quake bounds [608.0, 1512.0, 0.0]..[648.0, 1552.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 143: Quake bounds [608.0, 1552.0, 104.0]..[648.0, 1592.0, 512.0]; 10 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 145: Quake bounds [568.0, 1432.0, 0.0]..[608.0, 1512.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 146: Quake bounds [608.0, 1432.0, 0.0]..[648.0, 1472.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 147: Quake bounds [608.0, 1472.0, 96.0]..[648.0, 1512.0, 512.0]; 5 hidden samples, leaks at 26 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 151: Quake bounds [488.0, 1592.0, 0.0]..[528.0, 1672.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 152: Quake bounds [528.0, 1592.0, 0.0]..[568.0, 1632.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 153: Quake bounds [528.0, 1632.0, 104.0]..[568.0, 1672.0, 512.0]; 10 hidden samples, leaks at 26 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 155: Quake bounds [488.0, 1512.0, 0.0]..[528.0, 1592.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 156: Quake bounds [528.0, 1512.0, 0.0]..[568.0, 1552.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 157: Quake bounds [528.0, 1552.0, 96.0]..[568.0, 1592.0, 512.0]; 20 hidden samples, leaks at 26 poses
+    planes: ["x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 159: Quake bounds [488.0, 1432.0, 0.0]..[528.0, 1512.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  *cell 160: Quake bounds [528.0, 1432.0, 0.0]..[568.0, 1472.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 161: Quake bounds [528.0, 1472.0, 88.0]..[568.0, 1512.0, 512.0]; 10 hidden samples, leaks at 27 poses
+    planes: ["x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 163: Quake bounds [408.0, 1592.0, 0.0]..[448.0, 1672.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 164: Quake bounds [448.0, 1592.0, 0.0]..[488.0, 1632.0, 512.0]; 8 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 165: Quake bounds [448.0, 1632.0, 96.0]..[488.0, 1672.0, 512.0]; 5 hidden samples, leaks at 25 poses
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 167: Quake bounds [408.0, 1432.0, 0.0]..[488.0, 1472.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 168: Quake bounds [408.0, 1472.0, 96.0]..[488.0, 1592.0, 512.0]; 40 hidden samples, leaks at 26 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+   cell 169: Quake bounds [408.0, 1568.0, 0.0]..[448.0, 1592.0, 96.0]; 3 hidden samples, leaks at 1 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1568 brushes [109]"]
+  *cell 187: Quake bounds [-512.0, 1912.0, 0.0]..[408.0, 1984.0, 512.0]; 208 hidden samples, leaks at 32 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "y=1984 brushes [102]"]
+  *cell 189: Quake bounds [-212.0, 2288.0, 0.0]..[408.0, 2720.0, 128.0]; 728 hidden samples, leaks at 17 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-212 brushes [114, 115, 116, 120, 125]", "y=2288 brushes [113, 124, 125]"]
+  *cell 190: Quake bounds [220.0, 2136.0, 0.0]..[408.0, 2288.0, 128.0]; 96 hidden samples, leaks at 17 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2288 brushes [113, 124, 125]", "x=220 brushes [124]"]
+  *cell 202: Quake bounds [-212.0, 1984.0, 0.0]..[408.0, 2056.0, 128.0]; 104 hidden samples, leaks at 28 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=1984 brushes [102]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-212 brushes [114, 115, 116, 120, 125]", "y=2056 brushes [113, 120, 124]"]
+  *cell 203: Quake bounds [220.0, 2056.0, 0.0]..[408.0, 2136.0, 128.0]; 72 hidden samples, leaks at 17 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2056 brushes [113, 120, 124]", "x=220 brushes [124]"]
+  *cell 222: Quake bounds [-228.0, 1984.0, 128.0]..[408.0, 2056.0, 512.0]; 104 hidden samples, leaks at 32 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1984 brushes [102]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-228 brushes [113, 114, 115, 116]", "y=2056 brushes [113, 120, 124]"]
+  *cell 223: Quake bounds [-228.0, 2056.0, 144.0]..[408.0, 2720.0, 512.0]; 1092 hidden samples, leaks at 32 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=-228 brushes [113, 114, 115, 116]", "y=2056 brushes [113, 120, 124]", "z=144 brushes [1, 12, 13, 14, 16, 101] +1"]
+  *cell 238: Quake bounds [328.0, 1832.0, 0.0]..[368.0, 1912.0, 512.0]; 24 hidden samples, leaks at 22 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 239: Quake bounds [368.0, 1832.0, 0.0]..[408.0, 1872.0, 512.0]; 16 hidden samples, leaks at 22 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 240: Quake bounds [368.0, 1872.0, 112.0]..[408.0, 1912.0, 512.0]; 20 hidden samples, leaks at 22 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  *cell 242: Quake bounds [248.0, 1832.0, 0.0]..[288.0, 1912.0, 512.0]; 24 hidden samples, leaks at 22 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 243: Quake bounds [288.0, 1832.0, 0.0]..[328.0, 1872.0, 512.0]; 8 hidden samples, leaks at 22 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 244: Quake bounds [288.0, 1872.0, 104.0]..[328.0, 1912.0, 512.0]; 10 hidden samples, leaks at 22 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 246: Quake bounds [168.0, 1832.0, 0.0]..[208.0, 1912.0, 512.0]; 24 hidden samples, leaks at 22 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 247: Quake bounds [208.0, 1832.0, 0.0]..[248.0, 1872.0, 512.0]; 16 hidden samples, leaks at 21 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 248: Quake bounds [208.0, 1872.0, 96.0]..[248.0, 1912.0, 512.0]; 20 hidden samples, leaks at 21 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 250: Quake bounds [-512.0, 1832.0, 0.0]..[128.0, 1912.0, 512.0]; 96 hidden samples, leaks at 33 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  *cell 251: Quake bounds [128.0, 1832.0, 0.0]..[168.0, 1872.0, 512.0]; 8 hidden samples, leaks at 22 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  *cell 252: Quake bounds [128.0, 1872.0, 88.0]..[168.0, 1912.0, 512.0]; 10 hidden samples, leaks at 21 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 265: Quake bounds [328.0, 1752.0, 0.0]..[368.0, 1832.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 266: Quake bounds [368.0, 1752.0, 0.0]..[408.0, 1792.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 267: Quake bounds [368.0, 1792.0, 104.0]..[408.0, 1832.0, 512.0]; 10 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  *cell 269: Quake bounds [328.0, 1672.0, 0.0]..[368.0, 1752.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 270: Quake bounds [368.0, 1672.0, 0.0]..[408.0, 1712.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 271: Quake bounds [368.0, 1712.0, 96.0]..[408.0, 1752.0, 512.0]; 20 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 273: Quake bounds [328.0, 1592.0, 0.0]..[368.0, 1672.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 274: Quake bounds [368.0, 1592.0, 0.0]..[408.0, 1632.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 275: Quake bounds [368.0, 1632.0, 88.0]..[408.0, 1672.0, 512.0]; 10 hidden samples, leaks at 24 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 277: Quake bounds [328.0, 1432.0, 0.0]..[368.0, 1592.0, 512.0]; 40 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 278: Quake bounds [368.0, 1432.0, 0.0]..[408.0, 1472.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 279: Quake bounds [368.0, 1472.0, 96.0]..[408.0, 1592.0, 512.0]; 40 hidden samples, leaks at 25 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 280: Quake bounds [368.0, 1512.0, 0.0]..[388.0, 1552.0, 96.0]; 3 hidden samples, leaks at 8 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "x=388 brushes [105, 109]"]
+  *cell 282: Quake bounds [368.0, 1552.0, 80.0]..[388.0, 1592.0, 96.0]; 2 hidden samples, leaks at 3 poses
+    planes: ["y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1", "x=388 brushes [105, 109]"]
+  *cell 283: Quake bounds [388.0, 1568.0, 80.0]..[408.0, 1592.0, 96.0]; 1 hidden samples, leaks at 3 poses
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "z=80 brushes [44, 51, 58, 65, 72, 79] +1", "x=388 brushes [105, 109]", "y=1568 brushes [109]"]
+  *cell 286: Quake bounds [368.0, 1472.0, 72.0]..[388.0, 1512.0, 96.0]; 1 hidden samples, leaks at 9 poses
+    planes: ["x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]", "x=388 brushes [105, 109]"]
+  *cell 292: Quake bounds [248.0, 1752.0, 0.0]..[288.0, 1832.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 293: Quake bounds [288.0, 1752.0, 0.0]..[328.0, 1792.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 294: Quake bounds [288.0, 1792.0, 96.0]..[328.0, 1832.0, 512.0]; 5 hidden samples, leaks at 23 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 296: Quake bounds [248.0, 1672.0, 0.0]..[288.0, 1752.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 297: Quake bounds [288.0, 1672.0, 0.0]..[328.0, 1712.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 298: Quake bounds [288.0, 1712.0, 88.0]..[328.0, 1752.0, 512.0]; 10 hidden samples, leaks at 24 poses
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 300: Quake bounds [248.0, 1592.0, 0.0]..[288.0, 1672.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 301: Quake bounds [288.0, 1592.0, 0.0]..[328.0, 1632.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 302: Quake bounds [288.0, 1632.0, 80.0]..[328.0, 1672.0, 512.0]; 6 hidden samples, leaks at 24 poses
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  *cell 304: Quake bounds [248.0, 1512.0, 0.0]..[288.0, 1592.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 305: Quake bounds [288.0, 1512.0, 0.0]..[328.0, 1552.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 306: Quake bounds [288.0, 1552.0, 72.0]..[328.0, 1592.0, 512.0]; 12 hidden samples, leaks at 24 poses
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  *cell 308: Quake bounds [248.0, 1432.0, 0.0]..[288.0, 1512.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 309: Quake bounds [288.0, 1432.0, 0.0]..[328.0, 1472.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 310: Quake bounds [288.0, 1472.0, 64.0]..[328.0, 1512.0, 512.0]; 6 hidden samples, leaks at 24 poses
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=64 brushes [42, 49, 56, 63, 70]"]
+  *cell 316: Quake bounds [168.0, 1752.0, 0.0]..[208.0, 1832.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 317: Quake bounds [208.0, 1752.0, 0.0]..[248.0, 1792.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 318: Quake bounds [208.0, 1792.0, 88.0]..[248.0, 1832.0, 512.0]; 10 hidden samples, leaks at 23 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 320: Quake bounds [168.0, 1672.0, 0.0]..[208.0, 1752.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 321: Quake bounds [208.0, 1672.0, 0.0]..[248.0, 1712.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 322: Quake bounds [208.0, 1712.0, 80.0]..[248.0, 1752.0, 512.0]; 24 hidden samples, leaks at 23 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  *cell 324: Quake bounds [168.0, 1592.0, 0.0]..[208.0, 1672.0, 512.0]; 16 hidden samples, leaks at 22 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 325: Quake bounds [208.0, 1592.0, 0.0]..[248.0, 1632.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 326: Quake bounds [208.0, 1632.0, 72.0]..[248.0, 1672.0, 512.0]; 12 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  *cell 328: Quake bounds [168.0, 1512.0, 0.0]..[208.0, 1592.0, 512.0]; 24 hidden samples, leaks at 22 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 329: Quake bounds [208.0, 1512.0, 0.0]..[248.0, 1552.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 330: Quake bounds [208.0, 1552.0, 64.0]..[248.0, 1592.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  *cell 332: Quake bounds [168.0, 1432.0, 0.0]..[208.0, 1512.0, 512.0]; 16 hidden samples, leaks at 23 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 333: Quake bounds [208.0, 1432.0, 0.0]..[248.0, 1472.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 334: Quake bounds [208.0, 1472.0, 56.0]..[248.0, 1512.0, 512.0]; 12 hidden samples, leaks at 24 poses
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=56 brushes [41, 48, 55, 62]"]
+  *cell 339: Quake bounds [-12.0, 1432.0, 0.0]..[128.0, 1472.0, 512.0]; 32 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 340: Quake bounds [-12.0, 1472.0, 96.0]..[128.0, 1832.0, 512.0]; 220 hidden samples, leaks at 25 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 341: Quake bounds [-12.0, 1536.0, 0.0]..[128.0, 1832.0, 96.0]; 108 hidden samples, leaks at 20 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768"]
+  *cell 342: Quake bounds [52.0, 1472.0, 0.0]..[128.0, 1536.0, 96.0]; 12 hidden samples, leaks at 21 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768", "x=52 brushes [104, 108, 112]"]
+  *cell 351: Quake bounds [128.0, 1752.0, 0.0]..[168.0, 1792.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  *cell 352: Quake bounds [128.0, 1792.0, 80.0]..[168.0, 1832.0, 512.0]; 6 hidden samples, leaks at 24 poses
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  *cell 354: Quake bounds [128.0, 1672.0, 0.0]..[168.0, 1712.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  *cell 355: Quake bounds [128.0, 1712.0, 72.0]..[168.0, 1752.0, 512.0]; 12 hidden samples, leaks at 23 poses
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  *cell 357: Quake bounds [128.0, 1592.0, 0.0]..[168.0, 1632.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  *cell 358: Quake bounds [128.0, 1632.0, 64.0]..[168.0, 1672.0, 512.0]; 6 hidden samples, leaks at 23 poses
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  *cell 360: Quake bounds [128.0, 1512.0, 0.0]..[168.0, 1552.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  *cell 361: Quake bounds [128.0, 1552.0, 56.0]..[168.0, 1592.0, 512.0]; 12 hidden samples, leaks at 23 poses
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=56 brushes [41, 48, 55, 62]"]
+  *cell 363: Quake bounds [128.0, 1432.0, 0.0]..[168.0, 1472.0, 512.0]; 8 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  *cell 364: Quake bounds [128.0, 1472.0, 48.0]..[168.0, 1512.0, 512.0]; 7 hidden samples, leaks at 24 poses
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=48 brushes [40, 47, 54]"]
+  *cell 376: Quake bounds [648.0, 1352.0, 0.0]..[688.0, 1432.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 377: Quake bounds [688.0, 1352.0, 0.0]..[1536.0, 1392.0, 512.0]; 88 hidden samples, leaks at 41 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 378: Quake bounds [688.0, 1392.0, 96.0]..[1536.0, 1432.0, 512.0]; 110 hidden samples, leaks at 38 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  *cell 379: Quake bounds [728.0, 1392.0, 0.0]..[1536.0, 1432.0, 96.0]; 54 hidden samples, leaks at 31 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  *cell 381: Quake bounds [568.0, 1352.0, 0.0]..[608.0, 1432.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 382: Quake bounds [608.0, 1352.0, 0.0]..[648.0, 1392.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 383: Quake bounds [608.0, 1392.0, 88.0]..[648.0, 1432.0, 512.0]; 10 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 386: Quake bounds [528.0, 1352.0, 0.0]..[568.0, 1392.0, 512.0]; 16 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 387: Quake bounds [528.0, 1392.0, 80.0]..[568.0, 1432.0, 512.0]; 24 hidden samples, leaks at 26 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  *cell 389: Quake bounds [648.0, 1216.0, 0.0]..[688.0, 1352.0, 512.0]; 32 hidden samples, leaks at 28 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1216 brushes [37]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  *cell 390: Quake bounds [688.0, 1216.0, 0.0]..[1536.0, 1312.0, 512.0]; 264 hidden samples, leaks at 40 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1216 brushes [37]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 391: Quake bounds [688.0, 1312.0, 88.0]..[1536.0, 1352.0, 512.0]; 55 hidden samples, leaks at 40 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  *cell 392: Quake bounds [728.0, 1312.0, 0.0]..[1536.0, 1352.0, 88.0]; 27 hidden samples, leaks at 34 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  *cell 394: Quake bounds [568.0, 1216.0, 0.0]..[608.0, 1352.0, 512.0]; 32 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1216 brushes [37]", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  *cell 395: Quake bounds [608.0, 1216.0, 0.0]..[648.0, 1312.0, 512.0]; 24 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 396: Quake bounds [608.0, 1312.0, 80.0]..[648.0, 1352.0, 512.0]; 6 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  *cell 399: Quake bounds [528.0, 1216.0, 0.0]..[568.0, 1312.0, 512.0]; 48 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 400: Quake bounds [528.0, 1312.0, 72.0]..[568.0, 1352.0, 512.0]; 12 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  *cell 416: Quake bounds [408.0, 1352.0, 0.0]..[448.0, 1432.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 417: Quake bounds [448.0, 1352.0, 0.0]..[512.0, 1392.0, 512.0]; 16 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 418: Quake bounds [448.0, 1392.0, 72.0]..[512.0, 1432.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  *cell 419: Quake bounds [488.0, 1392.0, 0.0]..[512.0, 1432.0, 72.0]; 4 hidden samples, leaks at 8 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 421: Quake bounds [328.0, 1352.0, 0.0]..[368.0, 1432.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 422: Quake bounds [368.0, 1352.0, 0.0]..[408.0, 1392.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 423: Quake bounds [368.0, 1392.0, 64.0]..[408.0, 1432.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  *cell 425: Quake bounds [248.0, 1352.0, 0.0]..[288.0, 1432.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 426: Quake bounds [288.0, 1352.0, 0.0]..[328.0, 1392.0, 512.0]; 8 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 427: Quake bounds [288.0, 1392.0, 56.0]..[328.0, 1432.0, 512.0]; 12 hidden samples, leaks at 25 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=56 brushes [41, 48, 55, 62]"]
+  *cell 429: Quake bounds [408.0, 1216.0, 0.0]..[448.0, 1352.0, 512.0]; 32 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 430: Quake bounds [448.0, 1216.0, 0.0]..[512.0, 1312.0, 512.0]; 48 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 431: Quake bounds [448.0, 1312.0, 64.0]..[512.0, 1352.0, 512.0]; 12 hidden samples, leaks at 25 poses
+    planes: ["x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  *cell 432: Quake bounds [488.0, 1312.0, 0.0]..[512.0, 1352.0, 64.0]; 2 hidden samples, leaks at 8 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=64 brushes [42, 49, 56, 63, 70]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2"]
+  *cell 434: Quake bounds [328.0, 1216.0, 0.0]..[368.0, 1352.0, 512.0]; 32 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  *cell 435: Quake bounds [368.0, 1216.0, 0.0]..[408.0, 1312.0, 512.0]; 48 hidden samples, leaks at 26 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 436: Quake bounds [368.0, 1312.0, 56.0]..[408.0, 1352.0, 512.0]; 12 hidden samples, leaks at 23 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=56 brushes [41, 48, 55, 62]"]
+  *cell 438: Quake bounds [248.0, 1216.0, 0.0]..[288.0, 1352.0, 512.0]; 32 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  *cell 439: Quake bounds [288.0, 1216.0, 0.0]..[328.0, 1312.0, 512.0]; 24 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 440: Quake bounds [288.0, 1312.0, 48.0]..[328.0, 1352.0, 512.0]; 7 hidden samples, leaks at 25 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=48 brushes [40, 47, 54]"]
+  *cell 442: Quake bounds [168.0, 1352.0, 0.0]..[208.0, 1432.0, 512.0]; 24 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 443: Quake bounds [208.0, 1352.0, 0.0]..[248.0, 1392.0, 512.0]; 16 hidden samples, leaks at 24 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 444: Quake bounds [208.0, 1392.0, 48.0]..[248.0, 1432.0, 512.0]; 28 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=48 brushes [40, 47, 54]"]
+  *cell 446: Quake bounds [168.0, 1216.0, 0.0]..[208.0, 1352.0, 512.0]; 32 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  *cell 447: Quake bounds [208.0, 1216.0, 0.0]..[248.0, 1312.0, 512.0]; 48 hidden samples, leaks at 27 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 448: Quake bounds [208.0, 1312.0, 40.0]..[248.0, 1352.0, 512.0]; 14 hidden samples, leaks at 24 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=40 brushes [39, 46]"]
+  *cell 450: Quake bounds [-512.0, 1352.0, 0.0]..[128.0, 1432.0, 512.0]; 96 hidden samples, leaks at 36 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  *cell 451: Quake bounds [128.0, 1352.0, 0.0]..[168.0, 1392.0, 512.0]; 8 hidden samples, leaks at 23 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  *cell 452: Quake bounds [128.0, 1392.0, 40.0]..[168.0, 1432.0, 512.0]; 14 hidden samples, leaks at 24 poses
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=40 brushes [39, 46]"]
+  *cell 454: Quake bounds [-512.0, 1216.0, 0.0]..[128.0, 1352.0, 512.0]; 128 hidden samples, leaks at 35 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=-512 brushes [31, 33, 36]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  *cell 455: Quake bounds [128.0, 1216.0, 0.0]..[168.0, 1312.0, 512.0]; 24 hidden samples, leaks at 25 poses
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  *cell 456: Quake bounds [128.0, 1312.0, 32.0]..[168.0, 1352.0, 512.0]; 7 hidden samples, leaks at 23 poses
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=32 brushes [38]"]
+cells holding hidden samples (214):
+  cell 51: Quake bounds [648.0, 1832.0, 0.0]..[688.0, 2720.0, 512.0]; 224 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 52: Quake bounds [688.0, 1832.0, 0.0]..[1536.0, 1872.0, 512.0]; 88 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 53: Quake bounds [688.0, 1872.0, 144.0]..[1536.0, 2720.0, 512.0]; 1188 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=2720 brushes [31, 36, 126]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1"]
+  cell 54: Quake bounds [688.0, 1912.0, 0.0]..[1536.0, 2720.0, 144.0]; 1100 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=2720 brushes [31, 36, 126]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 55: Quake bounds [728.0, 1872.0, 0.0]..[1536.0, 1912.0, 144.0]; 72 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  cell 57: Quake bounds [568.0, 1832.0, 0.0]..[608.0, 2720.0, 512.0]; 224 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 58: Quake bounds [608.0, 1832.0, 0.0]..[648.0, 1872.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 59: Quake bounds [608.0, 1872.0, 136.0]..[648.0, 2720.0, 512.0]; 108 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=136 brushes [93, 100]"]
+  cell 60: Quake bounds [608.0, 1912.0, 0.0]..[648.0, 2720.0, 136.0]; 100 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "z=136 brushes [93, 100]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 64: Quake bounds [648.0, 1752.0, 0.0]..[688.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 65: Quake bounds [688.0, 1752.0, 0.0]..[1536.0, 1792.0, 512.0]; 88 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 66: Quake bounds [688.0, 1792.0, 136.0]..[1536.0, 1832.0, 512.0]; 44 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=136 brushes [93, 100]"]
+  cell 67: Quake bounds [728.0, 1792.0, 0.0]..[1536.0, 1832.0, 136.0]; 36 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=136 brushes [93, 100]", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  cell 69: Quake bounds [568.0, 1752.0, 0.0]..[608.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 70: Quake bounds [608.0, 1752.0, 0.0]..[648.0, 1792.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 71: Quake bounds [608.0, 1792.0, 128.0]..[648.0, 1832.0, 512.0]; 4 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  cell 73: Quake bounds [648.0, 1672.0, 0.0]..[688.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 74: Quake bounds [688.0, 1672.0, 0.0]..[1536.0, 1712.0, 512.0]; 88 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 75: Quake bounds [688.0, 1712.0, 128.0]..[1536.0, 1752.0, 512.0]; 88 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  cell 76: Quake bounds [728.0, 1712.0, 0.0]..[1536.0, 1752.0, 128.0]; 72 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  cell 78: Quake bounds [568.0, 1672.0, 0.0]..[608.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 79: Quake bounds [608.0, 1672.0, 0.0]..[648.0, 1712.0, 512.0]; 8 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 80: Quake bounds [608.0, 1712.0, 120.0]..[648.0, 1752.0, 512.0]; 8 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=120 brushes [77, 84, 91, 98]"]
+  cell 82: Quake bounds [488.0, 1832.0, 0.0]..[528.0, 2720.0, 512.0]; 224 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 83: Quake bounds [528.0, 1832.0, 0.0]..[568.0, 1872.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 84: Quake bounds [528.0, 1872.0, 128.0]..[568.0, 2720.0, 512.0]; 216 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=2720 brushes [31, 36, 126]", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24"]
+  cell 85: Quake bounds [528.0, 1912.0, 0.0]..[568.0, 2720.0, 128.0]; 200 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=2720 brushes [31, 36, 126]", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 87: Quake bounds [408.0, 1832.0, 0.0]..[448.0, 2720.0, 512.0]; 224 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=2720 brushes [31, 36, 126]", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 88: Quake bounds [448.0, 1832.0, 0.0]..[488.0, 1872.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 89: Quake bounds [448.0, 1872.0, 120.0]..[488.0, 2720.0, 512.0]; 108 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=120 brushes [77, 84, 91, 98]"]
+  cell 90: Quake bounds [448.0, 1912.0, 0.0]..[488.0, 2720.0, 120.0]; 100 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "z=120 brushes [77, 84, 91, 98]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 94: Quake bounds [488.0, 1752.0, 0.0]..[528.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 95: Quake bounds [528.0, 1752.0, 0.0]..[568.0, 1792.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 96: Quake bounds [528.0, 1792.0, 120.0]..[568.0, 1832.0, 512.0]; 8 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=120 brushes [77, 84, 91, 98]"]
+  cell 98: Quake bounds [408.0, 1752.0, 0.0]..[448.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 99: Quake bounds [448.0, 1752.0, 0.0]..[488.0, 1792.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 100: Quake bounds [448.0, 1792.0, 112.0]..[488.0, 1832.0, 512.0]; 5 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  cell 102: Quake bounds [488.0, 1672.0, 0.0]..[528.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 103: Quake bounds [528.0, 1672.0, 0.0]..[568.0, 1712.0, 512.0]; 16 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 104: Quake bounds [528.0, 1712.0, 112.0]..[568.0, 1752.0, 512.0]; 20 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  cell 106: Quake bounds [408.0, 1672.0, 0.0]..[448.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 107: Quake bounds [448.0, 1672.0, 0.0]..[488.0, 1712.0, 512.0]; 8 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 108: Quake bounds [448.0, 1712.0, 104.0]..[488.0, 1752.0, 512.0]; 10 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 116: Quake bounds [728.0, 1432.0, 0.0]..[788.0, 1672.0, 512.0]; 112 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=788 brushes [106, 110]"]
+  cell 117: Quake bounds [788.0, 1432.0, 0.0]..[1536.0, 1472.0, 512.0]; 56 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 118: Quake bounds [788.0, 1472.0, 96.0]..[1536.0, 1672.0, 512.0]; 210 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 119: Quake bounds [788.0, 1536.0, 0.0]..[1536.0, 1672.0, 96.0]; 84 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=788 brushes [106, 110]", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 120: Quake bounds [852.0, 1472.0, 0.0]..[1536.0, 1536.0, 96.0]; 30 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768", "x=852 brushes [106, 110]"]
+  cell 125: Quake bounds [648.0, 1592.0, 0.0]..[688.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 126: Quake bounds [688.0, 1592.0, 0.0]..[728.0, 1632.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 127: Quake bounds [688.0, 1632.0, 120.0]..[728.0, 1672.0, 512.0]; 8 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=120 brushes [77, 84, 91, 98]"]
+  cell 129: Quake bounds [648.0, 1512.0, 0.0]..[688.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 130: Quake bounds [688.0, 1512.0, 0.0]..[728.0, 1552.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 131: Quake bounds [688.0, 1552.0, 112.0]..[728.0, 1592.0, 512.0]; 20 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  cell 133: Quake bounds [648.0, 1432.0, 0.0]..[688.0, 1512.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 134: Quake bounds [688.0, 1432.0, 0.0]..[728.0, 1472.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 135: Quake bounds [688.0, 1472.0, 104.0]..[728.0, 1512.0, 512.0]; 10 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=728 brushes [94, 95, 96, 97, 98, 99] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 137: Quake bounds [568.0, 1592.0, 0.0]..[608.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 138: Quake bounds [608.0, 1592.0, 0.0]..[648.0, 1632.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 139: Quake bounds [608.0, 1632.0, 112.0]..[648.0, 1672.0, 512.0]; 5 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  cell 141: Quake bounds [568.0, 1512.0, 0.0]..[608.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 142: Quake bounds [608.0, 1512.0, 0.0]..[648.0, 1552.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 143: Quake bounds [608.0, 1552.0, 104.0]..[648.0, 1592.0, 512.0]; 10 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 145: Quake bounds [568.0, 1432.0, 0.0]..[608.0, 1512.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 146: Quake bounds [608.0, 1432.0, 0.0]..[648.0, 1472.0, 512.0]; 8 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 147: Quake bounds [608.0, 1472.0, 96.0]..[648.0, 1512.0, 512.0]; 5 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 151: Quake bounds [488.0, 1592.0, 0.0]..[528.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 152: Quake bounds [528.0, 1592.0, 0.0]..[568.0, 1632.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 153: Quake bounds [528.0, 1632.0, 104.0]..[568.0, 1672.0, 512.0]; 10 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 155: Quake bounds [488.0, 1512.0, 0.0]..[528.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 156: Quake bounds [528.0, 1512.0, 0.0]..[568.0, 1552.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 157: Quake bounds [528.0, 1552.0, 96.0]..[568.0, 1592.0, 512.0]; 20 hidden samples
+    planes: ["x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 159: Quake bounds [488.0, 1432.0, 0.0]..[528.0, 1512.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2"]
+  cell 160: Quake bounds [528.0, 1432.0, 0.0]..[568.0, 1472.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 161: Quake bounds [528.0, 1472.0, 88.0]..[568.0, 1512.0, 512.0]; 10 hidden samples
+    planes: ["x=568 brushes [78, 79, 80, 81, 82, 83] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 163: Quake bounds [408.0, 1592.0, 0.0]..[448.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 164: Quake bounds [448.0, 1592.0, 0.0]..[488.0, 1632.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 165: Quake bounds [448.0, 1632.0, 96.0]..[488.0, 1672.0, 512.0]; 5 hidden samples
+    planes: ["y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 167: Quake bounds [408.0, 1432.0, 0.0]..[488.0, 1472.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 168: Quake bounds [408.0, 1472.0, 96.0]..[488.0, 1592.0, 512.0]; 40 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=488 brushes [70, 71, 72, 73, 74, 75] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 169: Quake bounds [408.0, 1568.0, 0.0]..[448.0, 1592.0, 96.0]; 3 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1568 brushes [109]"]
+  cell 187: Quake bounds [-512.0, 1912.0, 0.0]..[408.0, 1984.0, 512.0]; 208 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "y=1984 brushes [102]"]
+  cell 189: Quake bounds [-212.0, 2288.0, 0.0]..[408.0, 2720.0, 128.0]; 728 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=2720 brushes [31, 36, 126]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-212 brushes [114, 115, 116, 120, 125]", "y=2288 brushes [113, 124, 125]"]
+  cell 190: Quake bounds [220.0, 2136.0, 0.0]..[408.0, 2288.0, 128.0]; 96 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2288 brushes [113, 124, 125]", "x=220 brushes [124]"]
+  cell 191: Quake bounds [4.0, 2136.0, 0.0]..[204.0, 2208.0, 128.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2208 brushes [115, 116, 118, 119, 122, 123]", "x=4 brushes [117, 118, 119, 121, 122, 123]", "x=204 brushes [124]"]
+  cell 198: Quake bounds [4.0, 2208.0, 0.0]..[204.0, 2272.0, 128.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2208 brushes [115, 116, 118, 119, 122, 123]", "y=2272 brushes [115, 118, 122, 125]", "x=4 brushes [117, 118, 119, 121, 122, 123]", "x=204 brushes [124]"]
+  cell 202: Quake bounds [-212.0, 1984.0, 0.0]..[408.0, 2056.0, 128.0]; 104 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "y=1984 brushes [102]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-212 brushes [114, 115, 116, 120, 125]", "y=2056 brushes [113, 120, 124]"]
+  cell 203: Quake bounds [220.0, 2056.0, 0.0]..[408.0, 2136.0, 128.0]; 72 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2056 brushes [113, 120, 124]", "x=220 brushes [124]"]
+  cell 206: Quake bounds [52.0, 2072.0, 0.0]..[204.0, 2136.0, 128.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2072 brushes [111, 112, 114, 117, 120, 121]", "x=52 brushes [104, 108, 112]", "x=204 brushes [124]"]
+  cell 209: Quake bounds [4.0, 2072.0, 96.0]..[52.0, 2136.0, 128.0]; 4 hidden samples
+    planes: ["z=128 brushes [1, 2, 3, 4, 5, 6] +24", "y=2136 brushes [111, 112, 114, 116, 117, 119] +2", "y=2072 brushes [111, 112, 114, 117, 120, 121]", "x=52 brushes [104, 108, 112]", "x=4 brushes [117, 118, 119, 121, 122, 123]", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 222: Quake bounds [-228.0, 1984.0, 128.0]..[408.0, 2056.0, 512.0]; 104 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1984 brushes [102]", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-228 brushes [113, 114, 115, 116]", "y=2056 brushes [113, 120, 124]"]
+  cell 223: Quake bounds [-228.0, 2056.0, 144.0]..[408.0, 2720.0, 512.0]; 1092 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=2720 brushes [31, 36, 126]", "x=-228 brushes [113, 114, 115, 116]", "y=2056 brushes [113, 120, 124]", "z=144 brushes [1, 12, 13, 14, 16, 101] +1"]
+  cell 238: Quake bounds [328.0, 1832.0, 0.0]..[368.0, 1912.0, 512.0]; 24 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 239: Quake bounds [368.0, 1832.0, 0.0]..[408.0, 1872.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 240: Quake bounds [368.0, 1872.0, 112.0]..[408.0, 1912.0, 512.0]; 20 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=112 brushes [9, 23, 69, 76, 83, 90] +2"]
+  cell 242: Quake bounds [248.0, 1832.0, 0.0]..[288.0, 1912.0, 512.0]; 24 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 243: Quake bounds [288.0, 1832.0, 0.0]..[328.0, 1872.0, 512.0]; 8 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 244: Quake bounds [288.0, 1872.0, 104.0]..[328.0, 1912.0, 512.0]; 10 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 246: Quake bounds [168.0, 1832.0, 0.0]..[208.0, 1912.0, 512.0]; 24 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 247: Quake bounds [208.0, 1832.0, 0.0]..[248.0, 1872.0, 512.0]; 16 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 248: Quake bounds [208.0, 1872.0, 96.0]..[248.0, 1912.0, 512.0]; 20 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 250: Quake bounds [-512.0, 1832.0, 0.0]..[128.0, 1912.0, 512.0]; 96 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  cell 251: Quake bounds [128.0, 1832.0, 0.0]..[168.0, 1872.0, 512.0]; 8 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2"]
+  cell 252: Quake bounds [128.0, 1872.0, 88.0]..[168.0, 1912.0, 512.0]; 10 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1912 brushes [45, 53, 61, 69, 77, 85] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1872 brushes [45, 53, 61, 69, 77, 85] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 265: Quake bounds [328.0, 1752.0, 0.0]..[368.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 266: Quake bounds [368.0, 1752.0, 0.0]..[408.0, 1792.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 267: Quake bounds [368.0, 1792.0, 104.0]..[408.0, 1832.0, 512.0]; 10 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=104 brushes [61, 68, 75, 82, 89, 96]"]
+  cell 269: Quake bounds [328.0, 1672.0, 0.0]..[368.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 270: Quake bounds [368.0, 1672.0, 0.0]..[408.0, 1712.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 271: Quake bounds [368.0, 1712.0, 96.0]..[408.0, 1752.0, 512.0]; 20 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 273: Quake bounds [328.0, 1592.0, 0.0]..[368.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 274: Quake bounds [368.0, 1592.0, 0.0]..[408.0, 1632.0, 512.0]; 16 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 275: Quake bounds [368.0, 1632.0, 88.0]..[408.0, 1672.0, 512.0]; 10 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 277: Quake bounds [328.0, 1432.0, 0.0]..[368.0, 1592.0, 512.0]; 40 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 278: Quake bounds [368.0, 1432.0, 0.0]..[408.0, 1472.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 279: Quake bounds [368.0, 1472.0, 96.0]..[408.0, 1592.0, 512.0]; 40 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 280: Quake bounds [368.0, 1512.0, 0.0]..[388.0, 1552.0, 96.0]; 3 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "x=388 brushes [105, 109]"]
+  cell 282: Quake bounds [368.0, 1552.0, 80.0]..[388.0, 1592.0, 96.0]; 2 hidden samples
+    planes: ["y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1", "x=388 brushes [105, 109]"]
+  cell 283: Quake bounds [388.0, 1568.0, 80.0]..[408.0, 1592.0, 96.0]; 1 hidden samples
+    planes: ["x=408 brushes [62, 63, 64, 65, 66, 67] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "z=80 brushes [44, 51, 58, 65, 72, 79] +1", "x=388 brushes [105, 109]", "y=1568 brushes [109]"]
+  cell 286: Quake bounds [368.0, 1472.0, 72.0]..[388.0, 1512.0, 96.0]; 1 hidden samples
+    planes: ["x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]", "x=388 brushes [105, 109]"]
+  cell 292: Quake bounds [248.0, 1752.0, 0.0]..[288.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 293: Quake bounds [288.0, 1752.0, 0.0]..[328.0, 1792.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 294: Quake bounds [288.0, 1792.0, 96.0]..[328.0, 1832.0, 512.0]; 5 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 296: Quake bounds [248.0, 1672.0, 0.0]..[288.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 297: Quake bounds [288.0, 1672.0, 0.0]..[328.0, 1712.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 298: Quake bounds [288.0, 1712.0, 88.0]..[328.0, 1752.0, 512.0]; 10 hidden samples
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 300: Quake bounds [248.0, 1592.0, 0.0]..[288.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 301: Quake bounds [288.0, 1592.0, 0.0]..[328.0, 1632.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 302: Quake bounds [288.0, 1632.0, 80.0]..[328.0, 1672.0, 512.0]; 6 hidden samples
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  cell 304: Quake bounds [248.0, 1512.0, 0.0]..[288.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 305: Quake bounds [288.0, 1512.0, 0.0]..[328.0, 1552.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 306: Quake bounds [288.0, 1552.0, 72.0]..[328.0, 1592.0, 512.0]; 12 hidden samples
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  cell 308: Quake bounds [248.0, 1432.0, 0.0]..[288.0, 1512.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 309: Quake bounds [288.0, 1432.0, 0.0]..[328.0, 1472.0, 512.0]; 8 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 310: Quake bounds [288.0, 1472.0, 64.0]..[328.0, 1512.0, 512.0]; 6 hidden samples
+    planes: ["x=328 brushes [54, 55, 56, 57, 58, 59] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=64 brushes [42, 49, 56, 63, 70]"]
+  cell 316: Quake bounds [168.0, 1752.0, 0.0]..[208.0, 1832.0, 512.0]; 16 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 317: Quake bounds [208.0, 1752.0, 0.0]..[248.0, 1792.0, 512.0]; 16 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 318: Quake bounds [208.0, 1792.0, 88.0]..[248.0, 1832.0, 512.0]; 10 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 320: Quake bounds [168.0, 1672.0, 0.0]..[208.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 321: Quake bounds [208.0, 1672.0, 0.0]..[248.0, 1712.0, 512.0]; 16 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 322: Quake bounds [208.0, 1712.0, 80.0]..[248.0, 1752.0, 512.0]; 24 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  cell 324: Quake bounds [168.0, 1592.0, 0.0]..[208.0, 1672.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 325: Quake bounds [208.0, 1592.0, 0.0]..[248.0, 1632.0, 512.0]; 16 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 326: Quake bounds [208.0, 1632.0, 72.0]..[248.0, 1672.0, 512.0]; 12 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  cell 328: Quake bounds [168.0, 1512.0, 0.0]..[208.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 329: Quake bounds [208.0, 1512.0, 0.0]..[248.0, 1552.0, 512.0]; 16 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 330: Quake bounds [208.0, 1552.0, 64.0]..[248.0, 1592.0, 512.0]; 24 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  cell 332: Quake bounds [168.0, 1432.0, 0.0]..[208.0, 1512.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 333: Quake bounds [208.0, 1432.0, 0.0]..[248.0, 1472.0, 512.0]; 16 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 334: Quake bounds [208.0, 1472.0, 56.0]..[248.0, 1512.0, 512.0]; 12 hidden samples
+    planes: ["x=248 brushes [46, 47, 48, 49, 50, 51] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=56 brushes [41, 48, 55, 62]"]
+  cell 339: Quake bounds [-12.0, 1432.0, 0.0]..[128.0, 1472.0, 512.0]; 32 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 340: Quake bounds [-12.0, 1472.0, 96.0]..[128.0, 1832.0, 512.0]; 220 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 341: Quake bounds [-12.0, 1536.0, 0.0]..[128.0, 1832.0, 96.0]; 108 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "x=-12 brushes [104, 108, 112, 117, 118, 119] +3", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 342: Quake bounds [52.0, 1472.0, 0.0]..[128.0, 1536.0, 96.0]; 12 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "y=1536 brushes [107, 108, 110] grid768", "x=52 brushes [104, 108, 112]"]
+  cell 351: Quake bounds [128.0, 1752.0, 0.0]..[168.0, 1792.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2"]
+  cell 352: Quake bounds [128.0, 1792.0, 80.0]..[168.0, 1832.0, 512.0]; 6 hidden samples
+    planes: ["y=1832 brushes [44, 52, 60, 68, 76, 84] +2", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1792 brushes [44, 52, 60, 68, 76, 84] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  cell 354: Quake bounds [128.0, 1672.0, 0.0]..[168.0, 1712.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2"]
+  cell 355: Quake bounds [128.0, 1712.0, 72.0]..[168.0, 1752.0, 512.0]; 12 hidden samples
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1752 brushes [43, 51, 59, 67, 75, 83] +2", "y=1712 brushes [43, 51, 59, 67, 75, 83] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  cell 357: Quake bounds [128.0, 1592.0, 0.0]..[168.0, 1632.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2"]
+  cell 358: Quake bounds [128.0, 1632.0, 64.0]..[168.0, 1672.0, 512.0]; 6 hidden samples
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1672 brushes [42, 50, 58, 66, 74, 82] +2", "y=1632 brushes [42, 50, 58, 66, 74, 82] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  cell 360: Quake bounds [128.0, 1512.0, 0.0]..[168.0, 1552.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2"]
+  cell 361: Quake bounds [128.0, 1552.0, 56.0]..[168.0, 1592.0, 512.0]; 12 hidden samples
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1592 brushes [41, 49, 57, 65, 73, 81] +2", "y=1552 brushes [41, 49, 57, 65, 73, 81] +2", "z=56 brushes [41, 48, 55, 62]"]
+  cell 363: Quake bounds [128.0, 1432.0, 0.0]..[168.0, 1472.0, 512.0]; 8 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5"]
+  cell 364: Quake bounds [128.0, 1472.0, 48.0]..[168.0, 1512.0, 512.0]; 7 hidden samples
+    planes: ["x=168 brushes [38, 39, 40, 41, 42, 43] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1512 brushes [40, 48, 56, 64, 72, 80] +2", "y=1472 brushes [40, 48, 56, 64, 72, 80] +5", "z=48 brushes [40, 47, 54]"]
+  cell 376: Quake bounds [648.0, 1352.0, 0.0]..[688.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 377: Quake bounds [688.0, 1352.0, 0.0]..[1536.0, 1392.0, 512.0]; 88 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 378: Quake bounds [688.0, 1392.0, 96.0]..[1536.0, 1432.0, 512.0]; 110 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30"]
+  cell 379: Quake bounds [728.0, 1392.0, 0.0]..[1536.0, 1432.0, 96.0]; 54 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=96 brushes [5, 9, 10, 11, 14, 19] +30", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  cell 381: Quake bounds [568.0, 1352.0, 0.0]..[608.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 382: Quake bounds [608.0, 1352.0, 0.0]..[648.0, 1392.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 383: Quake bounds [608.0, 1392.0, 88.0]..[648.0, 1432.0, 512.0]; 10 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 386: Quake bounds [528.0, 1352.0, 0.0]..[568.0, 1392.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 387: Quake bounds [528.0, 1392.0, 80.0]..[568.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  cell 389: Quake bounds [648.0, 1216.0, 0.0]..[688.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1216 brushes [37]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6"]
+  cell 390: Quake bounds [688.0, 1216.0, 0.0]..[1536.0, 1312.0, 512.0]; 264 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1216 brushes [37]", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 391: Quake bounds [688.0, 1312.0, 88.0]..[1536.0, 1352.0, 512.0]; 55 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=688 brushes [15, 16, 20, 27, 94, 95] +6", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2"]
+  cell 392: Quake bounds [728.0, 1312.0, 0.0]..[1536.0, 1352.0, 88.0]; 27 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=1536 brushes [32, 34, 36, 126, 127] grid768", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=88 brushes [45, 52, 59, 66, 73, 80] +2", "x=728 brushes [94, 95, 96, 97, 98, 99] +2"]
+  cell 394: Quake bounds [568.0, 1216.0, 0.0]..[608.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1216 brushes [37]", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2"]
+  cell 395: Quake bounds [608.0, 1216.0, 0.0]..[648.0, 1312.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 396: Quake bounds [608.0, 1312.0, 80.0]..[648.0, 1352.0, 512.0]; 6 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=648 brushes [86, 87, 88, 89, 90, 91] +2", "x=608 brushes [86, 87, 88, 89, 90, 91] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=80 brushes [44, 51, 58, 65, 72, 79] +1"]
+  cell 399: Quake bounds [528.0, 1216.0, 0.0]..[568.0, 1312.0, 512.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 400: Quake bounds [528.0, 1312.0, 72.0]..[568.0, 1352.0, 512.0]; 12 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=568 brushes [78, 79, 80, 81, 82, 83] +2", "x=528 brushes [78, 79, 80, 81, 82, 83] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  cell 416: Quake bounds [408.0, 1352.0, 0.0]..[448.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 417: Quake bounds [448.0, 1352.0, 0.0]..[512.0, 1392.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 418: Quake bounds [448.0, 1392.0, 72.0]..[512.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]"]
+  cell 419: Quake bounds [488.0, 1392.0, 0.0]..[512.0, 1432.0, 72.0]; 4 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=72 brushes [43, 50, 57, 64, 71, 78]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 421: Quake bounds [328.0, 1352.0, 0.0]..[368.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 422: Quake bounds [368.0, 1352.0, 0.0]..[408.0, 1392.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 423: Quake bounds [368.0, 1392.0, 64.0]..[408.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  cell 425: Quake bounds [248.0, 1352.0, 0.0]..[288.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 426: Quake bounds [288.0, 1352.0, 0.0]..[328.0, 1392.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 427: Quake bounds [288.0, 1392.0, 56.0]..[328.0, 1432.0, 512.0]; 12 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=56 brushes [41, 48, 55, 62]"]
+  cell 429: Quake bounds [408.0, 1216.0, 0.0]..[448.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 430: Quake bounds [448.0, 1216.0, 0.0]..[512.0, 1312.0, 512.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 431: Quake bounds [448.0, 1312.0, 64.0]..[512.0, 1352.0, 512.0]; 12 hidden samples
+    planes: ["x=512 brushes [24, 26, 33, 35]", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=448 brushes [70, 71, 72, 73, 74, 75] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=64 brushes [42, 49, 56, 63, 70]"]
+  cell 432: Quake bounds [488.0, 1312.0, 0.0]..[512.0, 1352.0, 64.0]; 2 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "x=512 brushes [24, 26, 33, 35]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=64 brushes [42, 49, 56, 63, 70]", "x=488 brushes [70, 71, 72, 73, 74, 75] +2"]
+  cell 434: Quake bounds [328.0, 1216.0, 0.0]..[368.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2"]
+  cell 435: Quake bounds [368.0, 1216.0, 0.0]..[408.0, 1312.0, 512.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 436: Quake bounds [368.0, 1312.0, 56.0]..[408.0, 1352.0, 512.0]; 12 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=408 brushes [62, 63, 64, 65, 66, 67] +2", "x=368 brushes [62, 63, 64, 65, 66, 67] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=56 brushes [41, 48, 55, 62]"]
+  cell 438: Quake bounds [248.0, 1216.0, 0.0]..[288.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2"]
+  cell 439: Quake bounds [288.0, 1216.0, 0.0]..[328.0, 1312.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 440: Quake bounds [288.0, 1312.0, 48.0]..[328.0, 1352.0, 512.0]; 7 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=328 brushes [54, 55, 56, 57, 58, 59] +2", "x=288 brushes [54, 55, 56, 57, 58, 59] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=48 brushes [40, 47, 54]"]
+  cell 442: Quake bounds [168.0, 1352.0, 0.0]..[208.0, 1432.0, 512.0]; 24 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 443: Quake bounds [208.0, 1352.0, 0.0]..[248.0, 1392.0, 512.0]; 16 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 444: Quake bounds [208.0, 1392.0, 48.0]..[248.0, 1432.0, 512.0]; 28 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=48 brushes [40, 47, 54]"]
+  cell 446: Quake bounds [168.0, 1216.0, 0.0]..[208.0, 1352.0, 512.0]; 32 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2"]
+  cell 447: Quake bounds [208.0, 1216.0, 0.0]..[248.0, 1312.0, 512.0]; 48 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 448: Quake bounds [208.0, 1312.0, 40.0]..[248.0, 1352.0, 512.0]; 14 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=248 brushes [46, 47, 48, 49, 50, 51] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=208 brushes [46, 47, 48, 49, 50, 51] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=40 brushes [39, 46]"]
+  cell 450: Quake bounds [-512.0, 1352.0, 0.0]..[128.0, 1432.0, 512.0]; 96 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=-512 brushes [31, 33, 36]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  cell 451: Quake bounds [128.0, 1352.0, 0.0]..[168.0, 1392.0, 512.0]; 8 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2"]
+  cell 452: Quake bounds [128.0, 1392.0, 40.0]..[168.0, 1432.0, 512.0]; 14 hidden samples
+    planes: ["y=1432 brushes [39, 47, 55, 63, 71, 79] +2", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1392 brushes [39, 47, 55, 63, 71, 79] +2", "z=40 brushes [39, 46]"]
+  cell 454: Quake bounds [-512.0, 1216.0, 0.0]..[128.0, 1352.0, 512.0]; 128 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=-512 brushes [31, 33, 36]", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2"]
+  cell 455: Quake bounds [128.0, 1216.0, 0.0]..[168.0, 1312.0, 512.0]; 24 hidden samples
+    planes: ["z=0 brushes [0, 2, 3, 4, 6, 7] +113", "z=512 brushes [30, 31, 32, 33, 34, 35] +4", "y=1216 brushes [37]", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2"]
+  cell 456: Quake bounds [128.0, 1312.0, 32.0]..[168.0, 1352.0, 512.0]; 7 hidden samples
+    planes: ["z=512 brushes [30, 31, 32, 33, 34, 35] +4", "x=168 brushes [38, 39, 40, 41, 42, 43] +2", "y=1352 brushes [38, 46, 54, 62, 70, 78] +2", "x=128 brushes [38, 39, 40, 41, 42, 43] +2", "y=1312 brushes [38, 46, 54, 62, 70, 78] +2", "z=32 brushes [38]"]
+
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/occlusion-test/occlusion-test.prl: 2148 triangles; 12032 lattice points: 494 inside brushes, 0 seen by some eye (dropped), 11538 hidden
+== /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap19/occlusion-test/occlusion-test.prl: 505 cells, 291 portals
+leak mean 0.00% over 70 poses; worst 0.00% (0 of 11538 samples) at eye [980.0, 1100.0, 59.0] yaw 135°
+non-portal paths: []
+per pose (eye x, eye y, yaw: leaked samples / visible cells):
+  64 700 45: 0 / 31
+  64 700 70: 0 / 67
+  64 700 90: 0 / 57
+  64 700 110: 0 / 57
+  64 700 135: 0 / 51
+  64 900 45: 0 / 24
+  64 900 70: 0 / 54
+  64 900 90: 0 / 46
+  64 900 110: 0 / 46
+  64 900 135: 0 / 42
+  64 1100 45: 0 / 17
+  64 1100 70: 0 / 7
+  64 1100 90: 0 / 31
+  64 1100 110: 0 / 31
+  64 1100 135: 0 / 32
+  300 700 45: 0 / 20
+  300 700 70: 0 / 31
+  300 700 90: 0 / 51
+  300 700 110: 0 / 51
+  300 700 135: 0 / 45
+  300 900 45: 0 / 19
+  300 900 70: 0 / 23
+  300 900 90: 0 / 32
+  300 900 110: 0 / 39
+  300 900 135: 0 / 38
+  300 1100 45: 0 / 13
+  300 1100 70: 0 / 3
+  300 1100 90: 0 / 4
+  300 1100 110: 0 / 7
+  300 1100 135: 0 / 23
+  544 700 45: 0 / 25
+  544 700 70: 0 / 29
+  544 700 90: 0 / 56
+  544 700 110: 0 / 50
+  544 700 135: 0 / 41
+  544 900 45: 0 / 17
+  544 900 70: 0 / 18
+  544 900 90: 0 / 9
+  544 900 110: 0 / 32
+  544 900 135: 0 / 33
+  544 1100 45: 0 / 11
+  544 1100 70: 0 / 6
+  544 1100 90: 0 / 1
+  544 1100 110: 0 / 3
+  544 1100 135: 0 / 25
+  800 700 45: 0 / 27
+  800 700 70: 0 / 30
+  800 700 90: 0 / 41
+  800 700 110: 0 / 49
+  800 700 135: 0 / 43
+  800 1100 45: 0 / 8
+  800 1100 70: 0 / 9
+  800 1100 90: 0 / 2
+  800 1100 110: 0 / 4
+  800 1100 135: 0 / 26
+  980 700 45: 0 / 21
+  980 700 70: 0 / 32
+  980 700 90: 0 / 40
+  980 700 110: 0 / 55
+  980 700 135: 0 / 43
+  980 900 45: 0 / 21
+  980 900 70: 0 / 21
+  980 900 90: 0 / 24
+  980 900 110: 0 / 36
+  980 900 135: 0 / 37
+  980 1100 45: 0 / 15
+  980 1100 70: 0 / 15
+  980 1100 90: 0 / 15
+  980 1100 110: 0 / 18
+  980 1100 135: 0 / 28
+leaking cells (0; * = leaks at the worst pose):
+cells holding hidden samples (19):
+  cell 135: Quake bounds [220.0, 1216.0, -0.0]..[768.0, 1536.0, 128.0]; 577 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=220 brushes [124]", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 162: Quake bounds [768.0, 1216.0, -0.0]..[1024.0, 1536.0, 128.0]; 308 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=1024 brushes [37] grid1024", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 164: Quake bounds [220.0, 1536.0, -0.0]..[768.0, 2304.0, 128.0]; 1375 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=220 brushes [124]", "y=2304 grid768", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 205: Quake bounds [768.0, 1536.0, -0.0]..[1024.0, 2304.0, 128.0]; 768 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=1024 brushes [37] grid1024", "y=2304 grid768", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 206: Quake bounds [220.0, 2304.0, -0.0]..[768.0, 2720.0, 128.0]; 884 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=220 brushes [124]", "y=2720 brushes [31, 36, 126]", "y=2304 grid768", "x=768 grid768"]
+  cell 207: Quake bounds [768.0, 2304.0, -0.0]..[1024.0, 2720.0, 128.0]; 416 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=1024 brushes [37] grid1024", "y=2720 brushes [31, 36, 126]", "y=2304 grid768", "x=768 grid768"]
+  cell 252: Quake bounds [-0.0, 2288.0, -0.0]..[204.0, 2720.0, 128.0]; 336 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=2288 brushes [113, 124, 125]", "y=2720 brushes [31, 36, 126]"]
+  cell 255: Quake bounds [-0.0, 2072.0, -0.0]..[204.0, 2272.0, 128.0]; 132 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=2072 brushes [111, 112, 114, 117, 120, 121]", "y=2272 brushes [115, 118, 122, 125]"]
+  cell 260: Quake bounds [-0.0, 1216.0, -0.0]..[204.0, 1536.0, 128.0]; 224 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 265: Quake bounds [-0.0, 1536.0, -0.0]..[204.0, 2056.0, 128.0]; 366 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=2056 brushes [113, 120, 124]", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 276: Quake bounds [204.0, 2288.0, -0.0]..[212.0, 2720.0, 128.0]; 56 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=212 brushes [120, 125]", "x=204 brushes [124]", "y=2288 brushes [113, 124, 125]", "y=2720 brushes [31, 36, 126]"]
+  cell 278: Quake bounds [204.0, 1216.0, -0.0]..[212.0, 1536.0, 128.0]; 35 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=212 brushes [120, 125]", "x=204 brushes [124]", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 282: Quake bounds [204.0, 1536.0, -0.0]..[212.0, 2056.0, 128.0]; 45 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=212 brushes [120, 125]", "x=204 brushes [124]", "y=2056 brushes [113, 120, 124]", "y=1536 brushes [107, 108, 110] grid768"]
+  cell 303: Quake bounds [-0.0, 1216.0, 144.0]..[768.0, 1536.0, 256.0]; 960 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 304: Quake bounds [768.0, 1216.0, 144.0]..[1024.0, 1536.0, 256.0]; 320 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=1024 brushes [37] grid1024", "y=1216 brushes [37]", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 305: Quake bounds [-0.0, 1536.0, 144.0]..[768.0, 2304.0, 256.0]; 2304 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "y=2304 grid768", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 306: Quake bounds [768.0, 1536.0, 144.0]..[1024.0, 2304.0, 256.0]; 768 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=1024 brushes [37] grid1024", "y=2304 grid768", "y=1536 brushes [107, 108, 110] grid768", "x=768 grid768"]
+  cell 307: Quake bounds [-0.0, 2304.0, 144.0]..[768.0, 2720.0, 256.0]; 1248 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "y=2720 brushes [31, 36, 126]", "y=2304 grid768", "x=768 grid768"]
+  cell 308: Quake bounds [768.0, 2304.0, 144.0]..[1024.0, 2720.0, 256.0]; 416 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=1024 brushes [37] grid1024", "y=2720 brushes [31, 36, 126]", "y=2304 grid768", "x=768 grid768"]
+
+/Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.prl: 2114 triangles; 12032 lattice points: 494 inside brushes, 0 seen by some eye (dropped), 11538 hidden
+== /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/cap26/occlusion-test/occlusion-test.prl: 484 cells, 241 portals
+leak mean 0.00% over 70 poses; worst 0.00% (0 of 11538 samples) at eye [980.0, 1100.0, 59.0] yaw 135°
+non-portal paths: []
+per pose (eye x, eye y, yaw: leaked samples / visible cells):
+  64 700 45: 0 / 33
+  64 700 70: 0 / 54
+  64 700 90: 0 / 55
+  64 700 110: 0 / 57
+  64 700 135: 0 / 52
+  64 900 45: 0 / 25
+  64 900 70: 0 / 45
+  64 900 90: 0 / 39
+  64 900 110: 0 / 42
+  64 900 135: 0 / 47
+  64 1100 45: 0 / 19
+  64 1100 70: 0 / 7
+  64 1100 90: 0 / 19
+  64 1100 110: 0 / 19
+  64 1100 135: 0 / 20
+  300 700 45: 0 / 22
+  300 700 70: 0 / 31
+  300 700 90: 0 / 41
+  300 700 110: 0 / 51
+  300 700 135: 0 / 49
+  300 900 45: 0 / 21
+  300 900 70: 0 / 20
+  300 900 90: 0 / 24
+  300 900 110: 0 / 34
+  300 900 135: 0 / 45
+  300 1100 45: 0 / 14
+  300 1100 70: 0 / 3
+  300 1100 90: 0 / 4
+  300 1100 110: 0 / 7
+  300 1100 135: 0 / 23
+  544 700 45: 0 / 23
+  544 700 70: 0 / 27
+  544 700 90: 0 / 42
+  544 700 110: 0 / 49
+  544 700 135: 0 / 48
+  544 900 45: 0 / 20
+  544 900 70: 0 / 15
+  544 900 90: 0 / 6
+  544 900 110: 0 / 31
+  544 900 135: 0 / 48
+  544 1100 45: 0 / 14
+  544 1100 70: 0 / 3
+  544 1100 90: 0 / 1
+  544 1100 110: 0 / 3
+  544 1100 135: 0 / 33
+  800 700 45: 0 / 27
+  800 700 70: 0 / 28
+  800 700 90: 0 / 30
+  800 700 110: 0 / 50
+  800 700 135: 0 / 49
+  800 1100 45: 0 / 8
+  800 1100 70: 0 / 8
+  800 1100 90: 0 / 1
+  800 1100 110: 0 / 3
+  800 1100 135: 0 / 39
+  980 700 45: 0 / 26
+  980 700 70: 0 / 27
+  980 700 90: 0 / 29
+  980 700 110: 0 / 50
+  980 700 135: 0 / 56
+  980 900 45: 0 / 21
+  980 900 70: 0 / 20
+  980 900 90: 0 / 19
+  980 900 110: 0 / 28
+  980 900 135: 0 / 48
+  980 1100 45: 0 / 15
+  980 1100 70: 0 / 15
+  980 1100 90: 0 / 15
+  980 1100 110: 0 / 15
+  980 1100 135: 0 / 41
+leaking cells (0; * = leaks at the worst pose):
+cells holding hidden samples (9):
+  cell 135: Quake bounds [220.0, 1216.0, -0.0]..[1024.0, 2048.0, 128.0]; 2228 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=1024 brushes [37] grid1024", "x=220 brushes [124]", "y=1216 brushes [37]", "y=2048 grid1024"]
+  cell 201: Quake bounds [220.0, 2048.0, -0.0]..[1024.0, 2720.0, 128.0]; 2100 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=1024 brushes [37] grid1024", "x=220 brushes [124]", "y=2720 brushes [31, 36, 126]", "y=2048 grid1024"]
+  cell 244: Quake bounds [-0.0, 2288.0, -0.0]..[204.0, 2720.0, 128.0]; 336 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=2288 brushes [113, 124, 125]", "y=2720 brushes [31, 36, 126]"]
+  cell 247: Quake bounds [-0.0, 2072.0, -0.0]..[204.0, 2272.0, 128.0]; 132 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=2072 brushes [111, 112, 114, 117, 120, 121]", "y=2272 brushes [115, 118, 122, 125]"]
+  cell 252: Quake bounds [-0.0, 1216.0, -0.0]..[204.0, 2056.0, 128.0]; 590 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "x=204 brushes [124]", "y=1216 brushes [37]", "y=2056 brushes [113, 120, 124]"]
+  cell 267: Quake bounds [204.0, 2288.0, -0.0]..[212.0, 2720.0, 128.0]; 56 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=212 brushes [120, 125]", "x=204 brushes [124]", "y=2288 brushes [113, 124, 125]", "y=2720 brushes [31, 36, 126]"]
+  cell 269: Quake bounds [204.0, 1216.0, -0.0]..[212.0, 2056.0, 128.0]; 80 hidden samples
+    planes: ["z=-0 brushes [0, 2, 3, 4, 6, 7] +113", "z=128 brushes [1, 2, 3, 4, 5, 6] +24", "x=212 brushes [120, 125]", "x=204 brushes [124]", "y=1216 brushes [37]", "y=2056 brushes [113, 120, 124]"]
+  cell 292: Quake bounds [-0.0, 1216.0, 144.0]..[1024.0, 2048.0, 256.0]; 3328 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=1024 brushes [37] grid1024", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "y=1216 brushes [37]", "y=2048 grid1024"]
+  cell 293: Quake bounds [-0.0, 2048.0, 144.0]..[1024.0, 2720.0, 256.0]; 2688 hidden samples
+    planes: ["z=256 brushes [37, 133, 134, 135, 136, 137] +2", "z=144 brushes [1, 12, 13, 14, 16, 101] +1", "x=1024 brushes [37] grid1024", "x=-0 brushes [2, 6, 7, 37] grid768 grid1024", "y=2720 brushes [31, 36, 126]", "y=2048 grid1024"]
+test pipeline::runtime_cells::leak_tests::behind_wall_leak_sweep_reports_hidden_samples_in_walk_visible_cells ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2022 filtered out; finished in 1.27s
+

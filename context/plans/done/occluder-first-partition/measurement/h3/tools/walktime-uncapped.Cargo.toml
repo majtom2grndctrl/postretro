@@ -1,0 +1,31 @@
+[package]
+name = "walktime-uncapped"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[[bin]]
+name = "walktime-uncapped"
+path = "main.rs"
+
+[dependencies]
+glam = "0.33"
+postretro-level-loader = { path = "/Users/dhiester/Projects/Personal/postretro/crates/level-loader", features = ["load-prl"] }
+postretro-visibility = { path = "/private/tmp/claude-501/-Users-dhiester-Projects-Personal-postretro/25609316-dd73-4754-993f-da7529caa8f7/scratchpad/visu9g" }
+
+# Mirrors the workspace's dev profile (opt-level 2, no LTO, debug assertions and
+# overflow checks on), the profile of the live H3 engine build.
+[profile.dev]
+opt-level = 2
+lto = "off"
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Mirrors the workspace's release profile.
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"

@@ -2290,5 +2290,6 @@ fn stale_snapshot_for(h: &LoopbackHarness) -> postretro_net::wire::SnapshotMessa
         faction_sentiment_record: None,
         ghost_audio: None,
         server_script_time: 0.0,
+        level_tick: 0,
     }
 }

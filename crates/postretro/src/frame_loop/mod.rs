@@ -62,6 +62,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // player write later this frame wins over them.
     app.poll_os_preferences();
     app.poll_window_mode_readback();
+    // Every boot state, Booting and Splash included: retired stages (level
+    // loads, and the upload threads of suspended renderers) join here once
+    // finished, never on suspend or on any other frame path.
+    app.poll_stage_retirements();
 
     #[cfg(feature = "observe-live")]
     app.drain_observe_live_requests();
@@ -126,6 +130,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         app.finish_first_launch_hold_if_closed();
         return;
     }
+
+    // A Running frame: a load beside this level is polled once, never
+    // waited on. Its stages draw nothing here, a ready bundle is held for
+    // its caller, and a failure leaves this level Running.
+    app.poll_beside_level_load(event_loop);
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::Input);
@@ -771,6 +780,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                             }),
                     );
                 }
+                // A client's own-clock `wait` tails count this machine's ticks.
+                if let Some(session) = app.session.as_ref() {
+                    session.scripting.scheduler.evaluate(&[]);
+                }
                 continue;
             }
 
@@ -1025,6 +1038,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // This tick's paired-trigger Exit fires cancel matching
             // interruptible instances before the countdown advances,
             // so an Exit on the exact landing tick wins.
+            // Each call is one fixed tick of the scheduler's tick count, which
+            // chained `wait` segments anchor to: run exactly once per fixed tick.
             scripting
                 .scheduler
                 .evaluate(&tick_events.trigger_exit_fires);
@@ -1392,10 +1407,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // deferred-dispatch call so a `fire`-seeded child's depth is
         // attributable per instance. The scheduler owns its tails as
         // `Vec<SequenceStep>` and never mints a `TriggerResidualHandle`,
-        // so this never resolves through `app.trigger_bindings`.
-        // `take_landings` (inside `drain_landings`) `mem::take`s the
-        // queue, so nothing borrows it across the block — no need to
-        // move it onto `App`.
+        // so this never resolves through `app.trigger_bindings`. The
+        // drain takes each batch out of the queue before resuming it, so
+        // nothing borrows the queue across the block — no need to move it
+        // onto `App`.
         //
         // Before draining, drop any interruptible instance whose keyed
         // trigger left the level mid-wait: `paired_enters` retains only
@@ -1406,12 +1421,36 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             .scripting
             .scheduler
             .drop_orphaned_interruptible_instances(session.trigger_system.paired_enters());
-        session.scripting.scheduler.drain_landings(
+        // A client's `levelLoad` tails land on the host timeline: the host's
+        // fixed ticks this level, read from the newest snapshot's level tick
+        // plus the local time since it arrived and half the RTT. The level
+        // clock counts from this client's reveal, so beside that reading it
+        // tells the scheduler which host tick this client joined at.
+        if let Some(netcode::NetEndpoint::Client {
+            replication,
+            time_sync,
+            ..
+        }) = session.net_endpoint.as_ref()
+        {
+            let local_time = script_ctx.presentation_script_time.get();
+            session.scripting.scheduler.advance_host_clock(
+                replication.host_level_tick(local_time, time_sync.rtt_micros()),
+                local_time,
+            );
+        }
+        session.scripting.scheduler.drain_landings_resolving_seats(
             &script_ctx.data_registry.borrow(),
             &session.scripting.sequence_registry,
             &session.scripting.reaction_registry,
             &session.scripting.system_registry,
             &script_ctx,
+            &|player, registry| match player {
+                trigger_system::PlayerId::Local(pawn) => registry.seat_for_pawn(pawn),
+                trigger_system::PlayerId::Remote(client_id) => session
+                    .seat_table
+                    .as_ref()
+                    .and_then(|seats| seats.seat_for_client(client_id)),
+            },
         );
     }
 
@@ -2769,8 +2808,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 // Reveal frame just presented — close out
                 // log line C with the present-cost of the frame
                 // the user is about to see.
-                app.level_timings.record("first_level_frame");
-                log::info!("{}", app.level_timings.summary());
+                app.level_timings.log_level_line();
                 app.pending_level_log = false;
             }
         } else {

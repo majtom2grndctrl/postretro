@@ -1,0 +1,92 @@
+# log extract from target/occluder-after/stress-street/bake.log (prl-build at 5426b60b4 + fragment-cull fix, RUST_LOG=info, -v)
+partition stage: 0.30 s (stamps 0.37 -> 0.67 Data script compilation)
+visibility stage: 0.05 s
+[Compiler] Occluder classification: 1259 brushes, 72 occlude alone; exempt alone: 1174 under floor, 10 no open face, 3 short span, 0 low top; 29 clusters, 37 sections, 11 occlude (827 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[Compiler] Door recognition: 0 of 0 kinematic movers seal a doorway at their closed pose
+BSP leaves: 2977 solid, 2733 empty
+BSP nodes: 5709
+BSP leaves: 5710
+BSP max depth: 31
+Total faces (after brush-side extraction): 10496
+[Compiler] Watertightness: 574 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+Exterior flood-fill: 306 exterior leaves, 2427 interior empty leaves
+[Compiler] Runtime cells: 3682 occluder-tier leaves; 4559 cells (1276 interior, 2977 solid, 306 exterior); 2598 runtime portals; full tree 5710 leaves, 6969 portals
+Visibility: 1582 non-solid cells, 2598 portals
+Vertices: 40733 (28 bytes each)
+Triangles: 20367
+Faces: 10183
+Interior cells: 1276
+Bvh: 20365 nodes (10182 internal, 10183 leaf), 10183 leaf entries
+Cell Visibility: 100%  ETA 0.0s
+[Compiler] DirectShVolume cull: 23 of 23 static-direct light(s) had cells dropped by the reach test
+retained 8 and dropped 0; retained 110592 raw payload bytes, \
+retained 157 and dropped 137; retained 2170368 raw payload bytes, \
+retained 8 and dropped 0; retained 110592 raw payload bytes, \
+[ChunkLightList] grid 12x5x19 (1140 chunks), 25 static lights, avg 0.43 / chunk, max 7, total indices 495, payload 11100 bytes
+[Compiler] lightmap stage predicted peak 267 MiB: shadowmask fill 4 + encode scratch 10 + face map 4 + layer plane 57 + 8 partitions 128 + sections 11 + metadata 20 + cache metadata 0 + ownership metadata 32 (1276 blocks on 5 bake layers of 1024²)
+[Compiler] CellResidencySet sampling: 34452 eye candidates (34350 in cell, 7 inset, 95 rejected; missed into solid 84, exterior 0, other cell 18), 0 camera cells without an eye point, 206142 walks (2648 step-limited, 0 frustum fallback)
+[Compiler] CellResidencySet: 1276 camera cells, 1519790 entries (max 1274 per camera), 12176576 bytes, max lead 32 m, 4.066 s
+[Compiler] Lightmap runtime all-resident pool: 2 pool layers
+[ShadowmaskAtlas] peak per-face owner demand: 6 candidate light(s) on one face (capacity 4); 2 light(s) dropped above the floor
+[AnimatedLightChunks] 628 chunks, 2 animated lights, max 2 / chunk, mean 1.09 / chunk, 0 chunks bottomed out at min-extent floor
+[Compiler] PRL section footprint: id 23 (ChunkLightList), 11148 payload bytes
+[Compiler] PRL section footprint: id 24 (AnimatedLightChunks), 20380 payload bytes
+[Compiler] PRL section footprint: id 51 (CellResidencySet), 12176576 payload bytes
+ChunkLightList    0.05s
+[Compiler] Watertightness: 574 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+seals per mover: none (total 0)
+faces cut into sub-charts: 0 (extra charts 0)
+oversize SH cluster warnings: 46
+  SH cluster cell 803 is an indivisible singleton with 323 primitives, exceeding limit 64 by 259
+  SH cluster cell 962 is an indivisible singleton with 86 primitives, exceeding limit 64 by 22
+  SH cluster cell 1235 is an indivisible singleton with 75 primitives, exceeding limit 64 by 11
+  SH cluster cell 865 is an indivisible singleton with 67 primitives, exceeding limit 64 by 3
+  SH cluster cell 1128 is an indivisible singleton with 151 primitives, exceeding limit 64 by 87
+  SH cluster cell 1206 is an indivisible singleton with 89 primitives, exceeding limit 64 by 25
+  SH cluster cell 779 is an indivisible singleton with 172 primitives, exceeding limit 64 by 108
+  SH cluster cell 1700 is an indivisible singleton with 68 primitives, exceeding limit 64 by 4
+  SH cluster cell 3994 is an indivisible singleton with 95 primitives, exceeding limit 64 by 31
+  SH cluster cell 3836 is an indivisible singleton with 167 primitives, exceeding limit 64 by 103
+  SH cluster cell 1583 is an indivisible singleton with 92 primitives, exceeding limit 64 by 28
+  SH cluster cell 1726 is an indivisible singleton with 84 primitives, exceeding limit 64 by 20
+  SH cluster cell 1866 is an indivisible singleton with 67 primitives, exceeding limit 64 by 3
+  SH cluster cell 4319 is an indivisible singleton with 78 primitives, exceeding limit 64 by 14
+  SH cluster cell 4300 is an indivisible singleton with 71 primitives, exceeding limit 64 by 7
+  SH cluster cell 4121 is an indivisible singleton with 139 primitives, exceeding limit 64 by 75
+  SH cluster cell 4086 is an indivisible singleton with 124 primitives, exceeding limit 64 by 60
+  SH cluster cell 2357 is an indivisible singleton with 77 primitives, exceeding limit 64 by 13
+  SH cluster cell 2873 is an indivisible singleton with 220 primitives, exceeding limit 64 by 156
+  SH cluster cell 3189 is an indivisible singleton with 124 primitives, exceeding limit 64 by 60
+## stage timing table
+  Parsing           0.34s
+  Partitioning      0.31s
+  DataScript        0.07s
+  Visibility        0.06s
+  Geometry          0.00s
+  BVH Build         0.01s
+  Cell Visibility   0.08s
+  NavMesh           0.06s
+  TexValidation     0.01s
+  Materials         0.17s
+  SH Bake           0.13s
+  Delta SH Bake     0.02s
+  Direct SH Bake    0.03s
+  Animated Direct SH Bake   0.00s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.02s
+  Billboard Direct Scatter Bake   0.03s
+  ChunkLightList    0.05s
+  Atlas Preparation   0.23s
+  Cell Residency Set   4.08s
+  Lightmap Bake     1.43s
+    TexelSteps      0.03s
+  ShadowmaskAtlas   0.15s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.03s
+    TexelSteps      0.00s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.09s
+  Packing           1.46s
+  Total             9.02s
+## seal lines

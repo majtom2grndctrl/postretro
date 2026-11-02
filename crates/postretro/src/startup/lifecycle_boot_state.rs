@@ -52,11 +52,10 @@ impl App {
         frame_dt: f32,
     ) -> bool {
         // Settling counts as installed: a request drained here unloads the
-        // held level before its settle check can reveal it.
-        if matches!(
-            self.boot_state,
-            BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running
-        ) {
+        // held level before its settle check can reveal it. A Loading drain
+        // runs before the Loading step, so a request already queued cancels
+        // a load whose bundle this frame would find ready (pin P1).
+        if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
         }
 
@@ -89,6 +88,9 @@ impl App {
         }
     }
 
+    /// Queue a runtime level request for the next drain. A CLI boot load
+    /// refuses runtime requests in every stage, queued, parsing, preparing
+    /// or uploading, and is not cancelled (pin P8).
     pub(crate) fn enqueue_level_request(&mut self, request: LevelRequest) {
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             log::warn!(
@@ -103,11 +105,10 @@ impl App {
                     .retain(|queued| !matches!(queued, LevelRequest::Load(_)));
             }
             LevelRequest::Unload => {
-                if self
-                    .level_requests
-                    .iter()
-                    .any(|queued| matches!(queued, LevelRequest::Unload))
-                {
+                // Only a repeat of the queue's last request is redundant: an
+                // earlier `Unload` followed by a `Load` still ends that load
+                // in Frontend, so the unload is never dropped (pin P3).
+                if matches!(self.level_requests.back(), Some(LevelRequest::Unload)) {
                     return;
                 }
             }
@@ -118,7 +119,15 @@ impl App {
     /// Follow a server-selected catalog level through the ordinary runtime
     /// request path. A catalog mismatch is recoverable content divergence, not
     /// a transport failure: leave the connection alive for a later relevel.
-    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String) {
+    ///
+    /// `level_life` names the host install. A repeat of the last life changes
+    /// nothing, and a load already in flight or queued for the id serves any
+    /// life. The connection's first relevel naming a known id keeps a matching
+    /// active map and adopts its life, re-declaring the reveal if already
+    /// revealed. Any later life naming the active map is a host reinstall: the
+    /// client reloads, so `levelLoad` fires again and teardown clears the
+    /// previous life's level state.
+    pub(crate) fn follow_relevel_catalog(&mut self, catalog_id: String, level_life: u64) {
         let catalog_has_id = self.session.as_ref().is_some_and(|session| {
             session
                 .scripting
@@ -134,23 +143,42 @@ impl App {
             return;
         }
 
-        if self.relevel_is_already_selected(&catalog_id) {
+        let previous = self.last_relevel.replace((catalog_id.clone(), level_life));
+        let first = previous.is_none();
+        if previous.is_some_and(|(_, life)| life == level_life)
+            || self.relevel_load_is_selected(&catalog_id)
+        {
             return;
+        }
+        let active = matches!(
+            &self.active_level_source,
+            Some(LevelSource::Catalog(id)) if *id == catalog_id
+        );
+        if active && first {
+            // A reveal declared before the host named a life cannot promote
+            // into a catalog level; declare the adopted one.
+            if self.boot_state == BootState::Running {
+                self.publish_net_reveal();
+            }
+            return;
+        }
+        if active {
+            log::info!(
+                "[Net] host reinstalled `{catalog_id}` (level life {level_life}); reloading it"
+            );
         }
 
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(catalog_id)));
     }
 
-    fn relevel_is_already_selected(&self, catalog_id: &str) -> bool {
-        let source_is_catalog =
-            |source: &LevelSource| matches!(source, LevelSource::Catalog(id) if id == catalog_id);
-        self.active_level_source.as_ref().is_some_and(source_is_catalog)
-            || self
-                .level_load
-                .as_ref()
-                .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
+    /// Whether a load of `catalog_id` is in flight or queued. Either installs
+    /// a fresh life, so a relevel never restarts it.
+    fn relevel_load_is_selected(&self, catalog_id: &str) -> bool {
+        self.level_load
+            .as_ref()
+            .is_some_and(|load| load.entry.catalog_id.as_deref() == Some(catalog_id))
             || self.level_requests.iter().any(|request| {
-                matches!(request, LevelRequest::Load(source) if source_is_catalog(source))
+                matches!(request, LevelRequest::Load(LevelSource::Catalog(id)) if id == catalog_id)
             })
     }
 
@@ -180,8 +208,20 @@ impl App {
         log::info!("[Loader] queued dev level lifecycle cycle: {target_display}");
     }
 
+    /// Drain queued level requests at the redraw boundary.
+    ///
+    /// A runtime load in flight no longer holds requests back: a load
+    /// request supersedes it (its stages are cancelled and retire; the
+    /// loading screen keeps its tree and clock, pin P4), and an unload
+    /// request cancels it and enters Frontend (pin P3). A CLI boot load in
+    /// flight drains nothing: its refusal happened at enqueue (pin P8). In
+    /// the loading-screen order the installed level unloads before the new
+    /// load starts, and the load only queues; its stages dispatch once
+    /// nothing older still runs (pin P12). Any request that resolves
+    /// supersedes a load beside the running level: it is cancelled first,
+    /// then the request takes its ordinary path.
     pub(in crate::startup) fn drain_level_requests(&mut self) {
-        if self.boot_state == BootState::Loading && self.level_load_in_flight() {
+        if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
         }
 
@@ -191,6 +231,7 @@ impl App {
                     let Some(load) = self.resolve_level_source(source) else {
                         continue;
                     };
+                    self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
@@ -198,6 +239,8 @@ impl App {
                     return;
                 }
                 LevelRequest::Unload => {
+                    self.cancel_beside_level_load();
+                    self.abandon_level_load_for_frontend();
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
@@ -211,7 +254,19 @@ impl App {
         matches!(self.boot_state, BootState::Settling | BootState::Running)
     }
 
+    /// A level load is active: queued or staged, not yet committed, failed
+    /// or cancelled.
     pub(in crate::startup) fn level_load_in_flight(&self) -> bool {
-        self.level_rx.is_some() || self.level_worker.is_some() || self.has_deferred_level_payload()
+        self.level_loads.active().is_some()
     }
+}
+
+/// The boot states whose redraw drains level requests. Splash (the OS
+/// preference wait included) and the first-launch hold drain none, so a
+/// request they queue starts no stage work until boot leaves them (pin P12).
+pub(crate) fn boot_state_drains_level_requests(state: &BootState) -> bool {
+    matches!(
+        state,
+        BootState::Loading | BootState::Frontend | BootState::Settling | BootState::Running
+    )
 }

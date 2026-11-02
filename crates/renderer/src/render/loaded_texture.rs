@@ -1,43 +1,28 @@
-// GPU texture resources and baked `.prm` upload for world and model materials.
+// Loaded world and model material textures: the prepared-texture GPU pass
+// and per-slot upload over the placeholder and upload primitives.
 // See: context/lib/resource_management.md · context/lib/rendering_pipeline.md
+
+mod placeholders;
+mod upload;
 
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use postretro_level_format::prm::{
-    PrmFile, PrmFormat, PrmHeader, PrmReadError, PrmSlot, cache_filename_for_key,
-};
+use postretro_level_format::prm::{PrmReadError, PrmSlot};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
-use postretro_render_cpu::loaded_texture::{
-    TextureSlotPlan, TextureSlotPolicy, slot_levels, texture_slot_plan,
-};
+use postretro_render_cpu::loaded_texture::slot_levels;
 use postretro_render_cpu::surface_depth::{SurfaceReliefLevels, surface_relief_from_rg8_levels};
+use postretro_render_cpu::texture_prep::{
+    PreparedTexture, PreparedWorldTextures, prepare_world_textures,
+};
 
-const PLACEHOLDER_SIZE: u32 = 64;
-const CHECKER_SQUARE: u32 = 8;
-const MAGENTA: [u8; 4] = [255, 0, 0xFF, 255];
-const BLACK_RGBA: [u8; 4] = [0, 0, 0, 255];
-
-/// The placeholder bound to the specular slot when a material has no `_s.png`
-/// and no `_h.png`: a single-channel 1×1 black texel.
-///
-/// R (specular intensity) is 0 — the zero specular response this placeholder
-/// has always provided. G is NOT flat by itself: WGSL expands a single-channel
-/// sample to `(r, 0, 0, 1)`, and `g = 0` under the signed encoding is MAXIMUM
-/// RAISE. What keeps a material without a height map on its true plane is the
-/// has-depth bit, which `build_material_bind_group` sets only for an
-/// `Rg8Unorm` slot — and this placeholder must therefore stay a non-`Rg8Unorm`
-/// format, so that gate stays clear for it.
-///
-/// `absent_specular_placeholder_is_never_a_surface_map` pins both facts.
-const SPECULAR_PLACEHOLDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
-const SPECULAR_PLACEHOLDER_PIXEL: [u8; 1] = [0];
-
-/// Tangent-space +Z normal encoded as Rgba8Unorm: (0,0,1) → (127,127,255).
-/// The 1×1 placeholder stays Rgba8Unorm because BC5 requires a 4×4-block
-/// minimum. The shader samples both Rgba8Unorm and Bc5RgUnorm normals as
-/// `texture_2d<f32>`, so its `.rg * 2 - 1` decode works for either format.
-const NEUTRAL_NORMAL_PIXEL: [u8; 4] = [127, 127, 255, 255];
+pub(super) use placeholders::placeholder_loaded_texture;
+use placeholders::{
+    make_diffuse_placeholder, make_emissive_placeholder, make_normal_placeholder,
+    make_specular_placeholder,
+};
+pub(super) use upload::prm_format_to_wgpu;
+pub use upload::{upload_texture_array_data, upload_texture_data};
 
 /// GPU resources for one world or model material.
 /// World loading consumes all available slots; model loading consumes diffuse
@@ -73,328 +58,6 @@ pub struct LoadedTexture {
     pub surface_relief: SurfaceReliefLevels,
 }
 
-/// Row-layout classification for a `.prm`-backed upload format.
-///
-/// `Some(bpp)` is an uncompressed format with that bytes-per-pixel;
-/// `None` is block-compressed (BC5), sized block-by-block instead.
-/// `upload_texture_data` and `upload_texture_array_data` share this one table,
-/// so a format legal in a `.prm` cannot be uploadable through one and a panic
-/// through the other.
-///
-/// Returns `None` for a format outside the `.prm` contract, which is a caller
-/// bug — both uploaders turn that into a panic naming the format. Split out
-/// from the uploaders so the mapping is checkable without a GPU.
-fn upload_bytes_per_pixel(format: wgpu::TextureFormat) -> Option<Option<u32>> {
-    match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => Some(Some(4)),
-        // The two-channel surface map: R specular, G inverted height. A material with an
-        // `_h.png` height sibling bakes its specular slot to this instead of
-        // `R8Unorm`, so every world-material upload path must size it.
-        wgpu::TextureFormat::Rg8Unorm => Some(Some(2)),
-        wgpu::TextureFormat::R8Unorm => Some(Some(1)),
-        wgpu::TextureFormat::Bc5RgUnorm => Some(None),
-        _ => None,
-    }
-}
-
-/// Upload a pre-baked mip chain to a 2D texture. Each `(width, height, bytes)`
-/// entry in `levels` is a single mip level, in level order (mip 0 first), with
-/// `width`/`height` the LOGICAL mip dimensions.
-///
-/// For uncompressed formats (Rgba8*, Rg8, R8) the byte count must equal
-/// `bytes_per_pixel(format) * width * height`, uploaded with
-/// `bytes_per_row = bytes_per_pixel * width` and `rows_per_image = height`.
-///
-/// For BC5 (block-compressed, 16 bytes per 4×4 texel block) the byte count is
-/// the block-aligned `ceil(width/4) * ceil(height/4) * 16`, uploaded with
-/// `bytes_per_row = ceil(width/4) * 16` (one block row) and
-/// `rows_per_image = ceil(height/4)` (block rows). The copy extent stays the
-/// logical `width × height`; wgpu permits a block-compressed copy whose extent
-/// equals the mip level size even when not a multiple of the 4×4 block.
-pub fn upload_texture_data(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    format: wgpu::TextureFormat,
-    levels: &[(u32, u32, &[u8])],
-    label: &str,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    // `None` = block-compressed (BC5); `Some(bpp)` = uncompressed with that
-    // bytes-per-pixel. Drives the per-level `bytes_per_row`/`rows_per_image`.
-    let bytes_per_pixel: Option<u32> = upload_bytes_per_pixel(format)
-        .unwrap_or_else(|| panic!("upload_texture_data: unsupported format {format:?}"));
-    let (mip0_w, mip0_h, _) = levels
-        .first()
-        .copied()
-        .expect("upload_texture_data: levels must contain at least mip 0");
-    let mip_level_count = levels.len() as u32;
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: mip0_w,
-            height: mip0_h,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    for (level, (level_w, level_h, bytes)) in levels.iter().enumerate() {
-        // Uncompressed: one row = bpp*w bytes, height rows.
-        // BC5: one block row = ceil(w/4) blocks × 16 bytes; ceil(h/4) block rows.
-        let (bytes_per_row, rows_per_image) = match bytes_per_pixel {
-            Some(bpp) => (bpp * level_w, *level_h),
-            None => (level_w.div_ceil(4) * 16, level_h.div_ceil(4)),
-        };
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: level as u32,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(rows_per_image),
-            },
-            // Copy extent stays the LOGICAL mip size; wgpu allows a block-
-            // compressed copy whose extent equals the logical mip dims even when
-            // not a multiple of 4×4 (WebGPU physical-vs-logical size rule, GPUImageCopyTexture).
-            wgpu::Extent3d {
-                width: *level_w,
-                height: *level_h,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
-}
-
-/// Upload layer-major mip chains to a `texture_2d_array`.
-///
-/// `layers` is ordered by array layer; each inner vector is ordered by mip
-/// level. The explicit counts come from the CPU-side upload plan and are
-/// asserted against the payload shape before the GPU descriptor is built.
-/// Logical dimensions and BC5 copy layout follow `upload_texture_data`.
-pub fn upload_texture_array_data(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    format: wgpu::TextureFormat,
-    layers: &[Vec<(u32, u32, &[u8])>],
-    array_layer_count: u32,
-    mip_level_count: u32,
-    label: &str,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let bytes_per_pixel: Option<u32> = upload_bytes_per_pixel(format)
-        .unwrap_or_else(|| panic!("upload_texture_array_data: unsupported format {format:?}"));
-    assert_eq!(
-        layers.len(),
-        array_layer_count as usize,
-        "upload_texture_array_data: layer payload count must match array_layer_count"
-    );
-    let first_layer = layers
-        .first()
-        .expect("upload_texture_array_data: layers must contain at least layer 0");
-    assert_eq!(
-        first_layer.len(),
-        mip_level_count as usize,
-        "upload_texture_array_data: layer 0 mip count must match mip_level_count"
-    );
-    let (mip0_w, mip0_h, _) = first_layer
-        .first()
-        .copied()
-        .expect("upload_texture_array_data: each layer must contain mip 0");
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: mip0_w,
-            height: mip0_h,
-            depth_or_array_layers: array_layer_count,
-        },
-        mip_level_count,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    for (layer, levels) in layers.iter().enumerate() {
-        assert_eq!(
-            levels.len(),
-            mip_level_count as usize,
-            "upload_texture_array_data: every layer must have the planned mip count"
-        );
-        for (level, (level_w, level_h, bytes)) in levels.iter().enumerate() {
-            let (bytes_per_row, rows_per_image) = match bytes_per_pixel {
-                Some(bpp) => (bpp * level_w, *level_h),
-                None => (level_w.div_ceil(4) * 16, level_h.div_ceil(4)),
-            };
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: level as u32,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: layer as u32,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                bytes,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(rows_per_image),
-                },
-                wgpu::Extent3d {
-                    width: *level_w,
-                    height: *level_h,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-    }
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor {
-        label: Some(&format!("{label} View")),
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        mip_level_count: Some(mip_level_count),
-        array_layer_count: Some(array_layer_count),
-        ..Default::default()
-    });
-    (texture, view)
-}
-
-pub(super) fn prm_format_to_wgpu(format: PrmFormat) -> wgpu::TextureFormat {
-    match format {
-        PrmFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
-        PrmFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-        PrmFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
-        // Two-channel surface map: R specular, G inverted height (see `PrmFormat`).
-        PrmFormat::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
-        // BC5 two-channel (R,G) block-compressed normal map. Requires the
-        // adapter's TEXTURE_COMPRESSION_BC feature (checked at device creation
-        // in render/mod.rs).
-        PrmFormat::Bc5RgUnorm => wgpu::TextureFormat::Bc5RgUnorm,
-    }
-}
-
-/// Build a 64×64 RGBA8 magenta/black checkerboard for the diffuse placeholder.
-/// Single mip level — the placeholder doesn't need filtering at distance.
-pub(super) fn generate_checkerboard_pixels() -> Vec<u8> {
-    let pixel_count = (PLACEHOLDER_SIZE * PLACEHOLDER_SIZE) as usize;
-    let mut data = Vec::with_capacity(pixel_count * 4);
-    for y in 0..PLACEHOLDER_SIZE {
-        for x in 0..PLACEHOLDER_SIZE {
-            let checker_x = x / CHECKER_SQUARE;
-            let checker_y = y / CHECKER_SQUARE;
-            let color = if (checker_x + checker_y).is_multiple_of(2) {
-                &MAGENTA
-            } else {
-                &BLACK_RGBA
-            };
-            data.extend_from_slice(color);
-        }
-    }
-    data
-}
-
-fn make_diffuse_placeholder(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let data = generate_checkerboard_pixels();
-    upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        &[(PLACEHOLDER_SIZE, PLACEHOLDER_SIZE, &data)],
-        "Placeholder Diffuse (Checkerboard)",
-    )
-}
-
-fn make_specular_placeholder(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    upload_texture_data(
-        device,
-        queue,
-        SPECULAR_PLACEHOLDER_FORMAT,
-        &[(1, 1, &SPECULAR_PLACEHOLDER_PIXEL[..])],
-        "Placeholder Specular (Black 1x1)",
-    )
-}
-
-fn make_normal_placeholder(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8Unorm,
-        &[(1, 1, &NEUTRAL_NORMAL_PIXEL[..])],
-        "Placeholder Normal (Neutral 1x1)",
-    )
-}
-
-fn make_emissive_placeholder(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    upload_texture_data(
-        device,
-        queue,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-        &[(1, 1, &BLACK_RGBA)],
-        "Placeholder Emissive (Black sRGB 1x1)",
-    )
-}
-
-/// All-slot placeholder texture: 64×64 checkerboard diffuse, 1×1 black specular,
-/// 1×1 neutral normal, and 1×1 black sRGB emissive. Shared between `load_textures`' per-texture fallback path
-/// and the renderer's no-level-loaded bootstrap slot.
-pub(super) fn placeholder_loaded_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> LoadedTexture {
-    let (diffuse_texture, diffuse_view) = make_diffuse_placeholder(device, queue);
-    let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
-    let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
-    let (emissive_texture, emissive_view) = make_emissive_placeholder(device, queue);
-    LoadedTexture {
-        diffuse_texture,
-        diffuse_view,
-        specular_texture,
-        specular_view,
-        normal_texture,
-        normal_view,
-        emissive_texture,
-        emissive_view,
-        mip_count: 1,
-        surface_relief: SurfaceReliefLevels::FLAT,
-    }
-}
-
-fn d2_texture_slot_plan(
-    header: &PrmHeader,
-    slot_results: &[Result<PrmSlot, PrmReadError>; 4],
-    policy: TextureSlotPolicy,
-) -> Option<TextureSlotPlan> {
-    (header.layer_count == 1).then(|| texture_slot_plan(header.slot_mask, slot_results, policy))
-}
-
 /// Where [`load_textures`] spent its time, for the install's own log line.
 /// Log-only: nothing reads these to decide behavior.
 #[derive(Debug, Default, Clone, Copy)]
@@ -412,199 +75,99 @@ pub struct TextureLoadTiming {
     pub bytes_read: usize,
 }
 
-/// Load every world-material texture referenced by the PRL. `texture_names[i]`
-/// pairs with `texture_cache_keys.keys[i]`; an all-zero key produces a silent
-/// placeholder. Header errors and per-slot errors degrade to placeholders with
-/// a single warning each. Returns one `LoadedTexture` per entry, parallel to
+/// Load every world-material texture referenced by the PRL: the CPU pass
+/// ([`prepare_world_textures`]) then the GPU pass ([`upload_prepared_textures`])
+/// on this thread. Returns one `LoadedTexture` per entry, parallel to
 /// `texture_names`, with the time spent reading, parsing and uploading them.
 pub fn load_textures(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     texture_names: &[String],
     texture_cache_keys: &TextureCacheKeysSection,
     prm_cache_root: &Path,
 ) -> (Vec<LoadedTexture>, TextureLoadTiming) {
-    let mut out: Vec<LoadedTexture> = Vec::with_capacity(texture_names.len());
-    let mut timing = TextureLoadTiming::default();
+    let prepared = prepare_world_textures(texture_names, texture_cache_keys, prm_cache_root);
+    upload_prepared_textures(device, queue, &prepared)
+}
 
-    for (i, name) in texture_names.iter().enumerate() {
-        let key = match texture_cache_keys.keys.get(i) {
-            Some(k) => *k,
-            None => {
-                // PRL out of sync with TextureCacheKeys — log once per entry.
-                log::warn!(
-                    "[Loader] texture '{name}' index {i} has no cache key — using placeholders"
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
+/// The GPU pass over prepared world materials: creates every texture and stages
+/// every mip write on `queue`. Runs on whichever thread holds the device and
+/// queue; the writes reach the GPU at that queue's next submit.
+pub fn upload_prepared_textures(
+    device: &wgpu::Device,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
+    prepared: &PreparedWorldTextures,
+) -> (Vec<LoadedTexture>, TextureLoadTiming) {
+    let mut timing = TextureLoadTiming {
+        read: prepared.timing.read,
+        parse: prepared.timing.parse,
+        create_write: Duration::ZERO,
+        files_read: prepared.timing.files_read,
+        bytes_read: prepared.timing.bytes_read,
+    };
+    let out = prepared
+        .entries
+        .iter()
+        .map(|entry| {
+            if matches!(entry, PreparedTexture::Placeholder) {
+                return placeholder_loaded_texture(device, queue);
             }
-        };
-
-        if key == [0u8; 32] {
-            // Zero key signals "no source PNG" (e.g., compiler couldn't resolve
-            // the name). Silent placeholder by design.
-            out.push(placeholder_loaded_texture(device, queue));
-            continue;
-        }
-
-        let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-        let read_started = Instant::now();
-        let read_result = std::fs::read(&prm_path);
-        timing.read += read_started.elapsed();
-        let bytes = match read_result {
-            Ok(b) => {
-                timing.files_read += 1;
-                timing.bytes_read += b.len();
-                b
-            }
-            Err(err) => {
-                log::warn!(
-                    "[Loader] texture '{name}': cannot read {} : {err} — using placeholders",
-                    prm_path.display(),
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
-            }
-        };
-
-        let parse_started = Instant::now();
-        let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
-        timing.parse += parse_started.elapsed();
-        let create_started = Instant::now();
-        let header = match header_result {
-            Ok(header) => header,
-            Err(e) => {
-                log::warn!(
-                    "[Loader] texture '{name}': .prm header error: {e:?} — using placeholders"
-                );
-                out.push(placeholder_loaded_texture(device, queue));
-                continue;
-            }
-        };
-
-        let Some(plan) =
-            d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::WorldBundle)
-        else {
-            log::warn!(
-                "[Loader] texture '{name}': .prm declares {} layers, but world textures require exactly 1 — using placeholders",
-                header.layer_count,
-            );
-            out.push(placeholder_loaded_texture(device, queue));
-            continue;
-        };
-
-        let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[0],
-            0,
-            name,
-            Slot::Diffuse,
-            plan.consume[0],
-        );
-        let (specular_texture, specular_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[1],
-            1,
-            name,
-            Slot::Specular,
-            plan.consume[1],
-        );
-        let (normal_texture, normal_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[2],
-            2,
-            name,
-            Slot::Normal,
-            plan.consume[2],
-        );
-        let (emissive_texture, emissive_view) = upload_slot_or_placeholder(
-            device,
-            queue,
-            &slot_results[3],
-            3,
-            name,
-            Slot::Emissive,
-            plan.consume[3],
-        );
-
-        out.push(LoadedTexture {
-            diffuse_texture,
-            diffuse_view,
-            specular_texture,
-            specular_view,
-            normal_texture,
-            normal_view,
-            emissive_texture,
-            emissive_view,
-            mip_count: plan.mip_count,
-            surface_relief: specular_surface_relief(&slot_results[1], plan.consume[1]),
-        });
-        timing.create_write += create_started.elapsed();
-    }
-
+            let create_started = Instant::now();
+            let texture = upload_prepared_texture(device, queue, entry);
+            timing.create_write += create_started.elapsed();
+            texture
+        })
+        .collect();
     (out, timing)
 }
 
-/// Load one model material from the shared diffuse-addressed `.prm` cache.
-/// Models consume only diffuse in this slice even when the cache entry is a
-/// richer world bundle; specular and normal always use neutral placeholders.
-pub(super) fn load_model_diffuse_texture(
+/// The GPU half of one prepared material, world or model: the plan's policy
+/// already decided which slots it consumes, and every other slot binds its
+/// placeholder.
+pub(super) fn upload_prepared_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    name: &str,
-    key: [u8; 32],
-    prm_cache_root: &Path,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
+    prepared: &PreparedTexture,
 ) -> LoadedTexture {
-    if key == [0u8; 32] {
-        return placeholder_loaded_texture(device, queue);
-    }
-
-    let prm_path = prm_cache_root.join(format!("{}.prm", cache_filename_for_key(&key)));
-    let bytes = match std::fs::read(&prm_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            log::warn!(
-                "[Loader] model texture '{name}': cannot read {} : {err} — using placeholders",
-                prm_path.display(),
-            );
-            return placeholder_loaded_texture(device, queue);
-        }
-    };
-
-    let (header_result, slot_results) = PrmFile::from_bytes_partial(&bytes);
-    let header = match header_result {
-        Ok(header) => header,
-        Err(err) => {
-            log::warn!(
-                "[Loader] model texture '{name}': .prm header error: {err:?} — using placeholders"
-            );
-            return placeholder_loaded_texture(device, queue);
-        }
-    };
-    let Some(plan) =
-        d2_texture_slot_plan(&header, &slot_results, TextureSlotPolicy::ModelDiffuseOnly)
-    else {
-        log::warn!(
-            "[Loader] model texture '{name}': .prm declares {} layers, but model textures require exactly 1 — using placeholders",
-            header.layer_count,
-        );
+    let PreparedTexture::Bundle { name, slots, plan } = prepared else {
         return placeholder_loaded_texture(device, queue);
     };
     let (diffuse_texture, diffuse_view) = upload_slot_or_placeholder(
         device,
         queue,
-        &slot_results[0],
+        &slots[0],
         0,
         name,
         Slot::Diffuse,
         plan.consume[0],
     );
-    let (specular_texture, specular_view) = make_specular_placeholder(device, queue);
-    let (normal_texture, normal_view) = make_normal_placeholder(device, queue);
-    let (emissive_texture, emissive_view) = make_emissive_placeholder(device, queue);
+    let (specular_texture, specular_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[1],
+        1,
+        name,
+        Slot::Specular,
+        plan.consume[1],
+    );
+    let (normal_texture, normal_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[2],
+        2,
+        name,
+        Slot::Normal,
+        plan.consume[2],
+    );
+    let (emissive_texture, emissive_view) = upload_slot_or_placeholder(
+        device,
+        queue,
+        &slots[3],
+        3,
+        name,
+        Slot::Emissive,
+        plan.consume[3],
+    );
 
     LoadedTexture {
         diffuse_texture,
@@ -616,8 +179,8 @@ pub(super) fn load_model_diffuse_texture(
         emissive_texture,
         emissive_view,
         mip_count: plan.mip_count,
-        // Models take the neutral specular placeholder: no surface map.
-        surface_relief: SurfaceReliefLevels::FLAT,
+        // A model plan never consumes specular, so models stay flat.
+        surface_relief: specular_surface_relief(&slots[1], plan.consume[1]),
     }
 }
 
@@ -650,7 +213,7 @@ enum Slot {
 
 fn upload_slot_or_placeholder(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     slot_result: &Result<PrmSlot, PrmReadError>,
     slot_idx: u8,
     name: &str,
@@ -701,137 +264,7 @@ fn upload_slot_or_placeholder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_level_format::prm::{PrmSlots, STAGE_VERSION};
-
-    /// Surface Depth's central safety property: a material WITHOUT a height
-    /// map must render exactly as it did before the feature existed.
-    ///
-    /// Under the signed encoding the placeholder's expanded `(r, 0, 0, 1)` has
-    /// `.g == 0`, which reads as MAXIMUM RAISE, so the placeholder is not flat
-    /// by itself. The has-depth gate keeps it on the true plane: the bit is set
-    /// only for an `Rg8Unorm` slot. This test pins the placeholder's side of
-    /// that bargain — it must stay a black single-channel texel that the gate
-    /// never classifies as a surface map. Widening it to two channels would
-    /// open the gate and lift every un-mapped material by its full depth.
-    #[test]
-    fn absent_specular_placeholder_is_never_a_surface_map() {
-        assert_eq!(
-            SPECULAR_PLACEHOLDER_FORMAT,
-            wgpu::TextureFormat::R8Unorm,
-            "the specular placeholder must stay single-channel: its expanded g = 0 reads as \
-             maximum raise, so only the has-depth gate keeps it flat",
-        );
-        assert!(
-            !crate::render::specular_slot_is_surface_map(SPECULAR_PLACEHOLDER_FORMAT),
-            "the has-depth gate must never open for the specular placeholder",
-        );
-        assert_eq!(
-            SPECULAR_PLACEHOLDER_PIXEL,
-            [0],
-            "the placeholder texel must stay black: R is the zero specular response, and a \
-             single-channel texture has no stored G to disturb",
-        );
-        // One byte per texel, one texel — the placeholder must remain the
-        // cheapest possible no-op rather than growing a second channel.
-        assert_eq!(
-            upload_bytes_per_pixel(SPECULAR_PLACEHOLDER_FORMAT),
-            Some(Some(1)),
-        );
-        assert_eq!(
-            SPECULAR_PLACEHOLDER_PIXEL.len(),
-            1,
-            "placeholder payload must match its format's bytes per texel",
-        );
-    }
-
-    /// The renderer must be able to upload every format a `.prm` may legally
-    /// carry. `Rg8Unorm` is legal on the specular slot, but for a while the
-    /// uploaders' row-layout table did not know it — a world material with an
-    /// `_h.png` sibling panicked at level load instead of uploading.
-    #[test]
-    fn every_prm_format_has_an_upload_row_layout() {
-        for format in [
-            PrmFormat::Rgba8UnormSrgb,
-            PrmFormat::Rgba8Unorm,
-            PrmFormat::R8Unorm,
-            PrmFormat::Rg8Unorm,
-            PrmFormat::Bc5RgUnorm,
-        ] {
-            assert!(
-                upload_bytes_per_pixel(prm_format_to_wgpu(format)).is_some(),
-                "{format:?} is representable in a .prm but has no upload row layout",
-            );
-        }
-        // The surface map is two bytes per texel — twice the single-channel
-        // specular slot it replaces, and the byte count the upload must write.
-        assert_eq!(
-            prm_format_to_wgpu(PrmFormat::Rg8Unorm),
-            wgpu::TextureFormat::Rg8Unorm,
-        );
-        assert_eq!(
-            upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Rg8Unorm)),
-            Some(Some(2)),
-        );
-        // BC5 stays block-sized, not per-pixel.
-        assert_eq!(
-            upload_bytes_per_pixel(prm_format_to_wgpu(PrmFormat::Bc5RgUnorm)),
-            Some(None),
-        );
-        // A format outside the .prm contract is still reported as unsupported,
-        // so the uploaders keep panicking on a caller bug rather than
-        // guessing a row stride.
-        assert_eq!(
-            upload_bytes_per_pixel(wgpu::TextureFormat::Rgba16Float),
-            None,
-        );
-    }
-
-    /// A surface-map specular slot must slice into upload ranges that exactly
-    /// consume its payload — the CPU-side half of "would upload the right byte
-    /// count", provable without a device.
-    #[test]
-    fn surface_map_specular_slot_slices_to_its_whole_payload() {
-        let (width, height) = (64u16, 32u16);
-        let level_count = postretro_level_format::prm::expected_level_count(width, height);
-        let payload_len: usize = (0..level_count)
-            .map(|level| {
-                let w = (u32::from(width) >> level).max(1);
-                let h = (u32::from(height) >> level).max(1);
-                2 * (w * h) as usize
-            })
-            .sum();
-        let slot = PrmSlot {
-            format: PrmFormat::Rg8Unorm,
-            width,
-            height,
-            level_count,
-            payload: vec![0u8; payload_len],
-        };
-
-        let levels = slot_levels(&slot);
-        assert_eq!(levels.len(), usize::from(level_count));
-        assert_eq!(
-            (levels[0].0, levels[0].1, levels[0].2.len()),
-            (64, 32, 4096)
-        );
-
-        let bpp = upload_bytes_per_pixel(prm_format_to_wgpu(slot.format))
-            .expect("surface map is uploadable")
-            .expect("surface map is uncompressed");
-        let uploaded: usize = levels
-            .iter()
-            .map(|(w, h, bytes)| {
-                // What `upload_texture_data` writes per level: bytes_per_row *
-                // rows_per_image, which must be exactly the slice it was given.
-                assert_eq!(bytes.len(), (bpp * w * h) as usize);
-                bytes.len()
-            })
-            .sum();
-        assert_eq!(
-            uploaded, payload_len,
-            "the per-level uploads must consume the slot payload exactly",
-        );
-    }
+    use postretro_level_format::prm::PrmFormat;
 
     fn slot(format: PrmFormat, width: u16, height: u16, payload: Vec<u8>) -> PrmSlot {
         PrmSlot {
@@ -872,125 +305,6 @@ mod tests {
         assert_eq!(
             specular_surface_relief(&Err(PrmReadError::NotPresent), true),
             SurfaceReliefLevels::FLAT
-        );
-    }
-
-    // Checkerboard placeholder pixel pattern: 64×64 magenta/black, 8-pixel squares.
-
-    #[test]
-    fn checkerboard_has_correct_dimensions() {
-        let data = generate_checkerboard_pixels();
-        assert_eq!(data.len(), 64 * 64 * 4);
-    }
-
-    #[test]
-    fn checkerboard_top_left_is_magenta() {
-        let data = generate_checkerboard_pixels();
-        assert_eq!(&data[0..4], &MAGENTA);
-    }
-
-    #[test]
-    fn checkerboard_alternates_correctly() {
-        let data = generate_checkerboard_pixels();
-        assert_eq!(&data[0..4], &MAGENTA);
-        let offset_8_0 = (8 * 4) as usize;
-        assert_eq!(&data[offset_8_0..offset_8_0 + 4], &BLACK_RGBA);
-        let offset_16_0 = (16 * 4) as usize;
-        assert_eq!(&data[offset_16_0..offset_16_0 + 4], &MAGENTA);
-        let offset_0_8 = (8 * 64 * 4) as usize;
-        assert_eq!(&data[offset_0_8..offset_0_8 + 4], &BLACK_RGBA);
-        let offset_8_8 = ((8 * 64 + 8) * 4) as usize;
-        assert_eq!(&data[offset_8_8..offset_8_8 + 4], &MAGENTA);
-    }
-
-    #[test]
-    fn checkerboard_all_pixels_are_magenta_or_black() {
-        let data = generate_checkerboard_pixels();
-        for pixel in data.chunks(4) {
-            assert!(
-                pixel == MAGENTA || pixel == BLACK_RGBA,
-                "unexpected pixel: {pixel:?}"
-            );
-        }
-    }
-
-    // Regression: parsed multi-layer PRMs reached the legacy one-chain mip
-    // slicer, panicking in debug and uploading only layer 0 in release.
-    #[test]
-    fn d2_world_and_model_planning_rejects_multi_layer_prm() {
-        let slot = PrmSlot {
-            format: PrmFormat::Rgba8UnormSrgb,
-            width: 1,
-            height: 1,
-            level_count: 1,
-            payload: vec![0x11, 0x22, 0x33, 0xFF, 0x44, 0x55, 0x66, 0xFF],
-        };
-        let file = PrmFile {
-            header: PrmHeader {
-                stage_version: STAGE_VERSION,
-                slot_mask: PrmSlots::DIFFUSE,
-                bundle_hash: [0xA5; 32],
-                total_body_bytes: 0,
-                layer_count: 2,
-            },
-            slots: [Some(slot), None, None, None],
-        };
-        let bytes = file.to_bytes().expect("multi-layer fixture serializes");
-        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-        let header = header.expect("multi-layer header parses");
-
-        assert!(
-            slots[0].is_ok(),
-            "fixture must contain valid layer payloads"
-        );
-        assert!(
-            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle).is_none(),
-            "world D2 upload must fall back before mip planning"
-        );
-        assert!(
-            d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::ModelDiffuseOnly).is_none(),
-            "model D2 upload must fall back before mip planning"
-        );
-    }
-
-    // Regression: a hand-authored 2x2 BC5 normal declared zero mips, then the
-    // D2 upload path indexed an empty level list as if mip 0 existed.
-    #[test]
-    fn d2_world_planning_degrades_zero_mip_bc5_normal_to_placeholder() {
-        const HEADER_SIZE: usize = 45;
-        const SLOT_HEADER_SIZE: usize = 12;
-        let mut bytes = vec![0u8; HEADER_SIZE + SLOT_HEADER_SIZE];
-        bytes[0..4].copy_from_slice(b"PRM\x02");
-        bytes[4] = STAGE_VERSION;
-        bytes[5] = PrmSlots::NORMAL.bits();
-        bytes[39..43].copy_from_slice(&(SLOT_HEADER_SIZE as u32).to_le_bytes());
-        bytes[43..45].copy_from_slice(&1u16.to_le_bytes());
-        bytes[HEADER_SIZE] = PrmFormat::Bc5RgUnorm as u8;
-        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&2u16.to_le_bytes());
-        bytes[HEADER_SIZE + 4..HEADER_SIZE + 6].copy_from_slice(&2u16.to_le_bytes());
-        // level_count and payload_bytes remain zero.
-
-        let (header, slots) = PrmFile::from_bytes_partial(&bytes);
-        let header = header.expect("slot failure must not poison the header");
-        assert!(matches!(
-            &slots[2],
-            Err(PrmReadError::EmptyMipChain {
-                slot: 2,
-                format: PrmFormat::Bc5RgUnorm,
-                width: 2,
-                height: 2,
-            })
-        ));
-
-        let plan = d2_texture_slot_plan(&header, &slots, TextureSlotPolicy::WorldBundle)
-            .expect("single-layer world bundle still produces a placeholder plan");
-        assert!(
-            plan.consume[2],
-            "the slot error routes through placeholder upload"
-        );
-        assert_eq!(
-            plan.mip_count, 1,
-            "no valid mip chain disables mip filtering"
         );
     }
 }

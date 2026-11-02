@@ -1,4 +1,4 @@
-// Cells PRL section (ID 38): runtime visibility units preserving BSP leaf ids.
+// Cells PRL section (ID 38): runtime visibility units, each grouping BSP leaves.
 // See: context/lib/build_pipeline.md §PRL Compilation
 
 use crate::FormatError;

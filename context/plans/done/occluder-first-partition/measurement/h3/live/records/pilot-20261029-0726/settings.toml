@@ -1,0 +1,50 @@
+accessibility_panel_shown = true
+crouch_mode = "toggle"
+display_mode_bit_depth = 32
+display_mode_height = 900
+display_mode_monitor = "Monitor #4117"
+display_mode_refresh_millihertz = 60000
+display_mode_width = 1600
+fog_quality = "low"
+gamepad_invert_y = false
+gamepad_look_dead_zone = 0.15
+gamepad_look_sensitivity = 2.5
+invert_y = false
+mouse_sensitivity = 0.002
+player_id = [
+    228,
+    181,
+    109,
+    103,
+    58,
+    143,
+    117,
+    89,
+    233,
+    151,
+    63,
+    156,
+    25,
+    118,
+    131,
+    238,
+]
+reflection_quality = "very_high"
+render_resolution = "half"
+scroll_notch_pixels = 120.0
+shadow_quality = "high"
+sprint_mode = "hold"
+surface_depth_quality = "on"
+swap_confirm_cancel = false
+view_feel_scale = 1.0
+window_mode = "windowed"
+
+[accessibility]
+flash_limiter = true
+hold_timing_scale = 1.0
+master_volume = 1.0
+mono_audio = false
+music_volume = 1.0
+screen_shake_scale = 1.0
+sfx_volume = 1.0
+ui_volume = 1.0

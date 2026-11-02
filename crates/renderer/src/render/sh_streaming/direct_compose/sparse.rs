@@ -1,8 +1,8 @@
 //! Existing-binding sparse pools for streamed direct composition.
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_loader::ShStreamBaseMetadata;
 use postretro_render_cpu::sh_compose::{ComposeGridParams, DYNAMIC_COMPOSE_GRID_DIMS_SIZE};
-use wgpu::util::DeviceExt;
 
 use super::super::gpu::{
     BufferWrite, StagedUploads, coalesce_buffer_writes, stage_buffer_writes,
@@ -10,8 +10,8 @@ use super::super::gpu::{
 };
 use super::super::payload::sparse_offsets_fit_allocation;
 use super::super::{
-    AtlasShape, ShResidencyDrainError, buffer_with_zeroes, checked_cell_count,
-    sparse_compose_capacity, u32_bytes,
+    AtlasShape, ShResidencyDrainError, SparseComposeLayout, buffer_with_zeroes, checked_cell_count,
+    u32_bytes,
 };
 
 /// One row after the residency allocator has assigned its entry and f16 ranges.
@@ -321,17 +321,20 @@ fn is_word_aligned_tile_row(row: &DirectSparseRowUpload<'_>) -> bool {
     row.tile_f16_start & 1 == 0
 }
 
+/// The grid records and sparse buffers of one direct compose family, sized
+/// from the residency plan's `layout` raised to `sparse_floor`.
 pub(super) fn build_grid_and_sparse(
     device: &wgpu::Device,
     limits: &wgpu::Limits,
     base: &ShStreamBaseMetadata,
-    source: Option<&postretro_level_loader::ShStreamSparseMetadata>,
+    layout: &SparseComposeLayout,
     shape: AtlasShape,
     label: &'static str,
     sparse_floor: Option<(u32, u32)>,
 ) -> Result<(ComposeGridParams, StreamingSparseBuffers, wgpu::Buffer, u64), ShResidencyDrainError> {
-    let (affinity_dims, masks, levels, _indices, entry_capacity, tile_f16_capacity) =
-        sparse_compose_capacity(base, source, sparse_floor)?;
+    let affinity_dims = layout.affinity_dims;
+    let entry_capacity = layout.entry_capacity(sparse_floor);
+    let tile_f16_capacity = layout.tile_f16_capacity(sparse_floor);
     let cells = checked_cell_count(affinity_dims)?;
     let cells_usize = usize::try_from(cells).map_err(|_| ShResidencyDrainError::SlotOverflow)?;
     let entry_len =
@@ -342,11 +345,11 @@ pub(super) fn build_grid_and_sparse(
             .and_then(|count| count.checked_add(entry_len))
             .ok_or(ShResidencyDrainError::SlotOverflow)?,
     );
-    for mask in masks {
+    for &mask in &layout.valid_probe_masks {
         compaction.push(mask as u32);
         compaction.push((mask >> 32) as u32);
     }
-    compaction.extend(levels.into_iter().map(u32::from));
+    compaction.extend(layout.cell_levels.iter().copied().map(u32::from));
     compaction.resize(
         compaction
             .len()
@@ -406,7 +409,7 @@ pub(super) fn build_grid_and_sparse(
             .and_then(|count| count.checked_mul(4))
             .ok_or(ShResidencyDrainError::SlotOverflow)?,
     );
-    let compaction_metadata = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let compaction_metadata = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Streamed Direct SH Compaction Metadata"),
         contents: &u32_bytes(&compaction),
         usage: wgpu::BufferUsages::STORAGE
@@ -419,7 +422,7 @@ pub(super) fn build_grid_and_sparse(
         tile_words.size(),
         compaction_metadata.size(),
         entry_capacity,
-        source.is_some(),
+        layout.source_present,
     )?;
     let width = shape
         .tiles_per_row
@@ -470,7 +473,7 @@ pub(super) fn build_grid_and_sparse(
             reason: "streamed direct dirty compose records exceed adapter buffer limit",
         });
     }
-    let grid_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let grid_buffer = device.new_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: grid_capacity.max(record_size),
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

@@ -9,12 +9,14 @@ use crate::render::sh_streaming::install_tests::SyntheticMap;
 use crate::render::sh_streaming::{ShDrainBatch, ShResidencyState};
 use crate::render::sh_volume::ShVolumeSections;
 use crate::render::uploads::UploadQueue;
+use wgpu::util::DeviceExt;
 
 pub(crate) struct UploadOrderSh {
     map: SyntheticMap,
     pub(in crate::render::sh_streaming) state: ShResidencyState,
     sh: ShVolumeResources,
     uniforms: wgpu::BindGroupLayout,
+    pipelines: crate::render::sh_streaming::StreamingShPipelines,
     weights: wgpu::Buffer,
 }
 
@@ -71,6 +73,7 @@ impl UploadOrderSh {
             map,
             state,
             sh,
+            pipelines: crate::render::sh_streaming::StreamingShPipelines::new(device, &uniforms),
             uniforms,
             weights,
         };
@@ -83,6 +86,7 @@ impl UploadOrderSh {
                 queue,
                 &fixture.map.base(),
                 &fixture.map.sources(),
+                std::sync::Arc::clone(&fixture.state.sparse_compose),
                 crate::render::sh_streaming::floor::InitialPoolFloor {
                     dense_slots,
                     whole_dense_slots: 128,
@@ -93,7 +97,7 @@ impl UploadOrderSh {
                 },
                 false,
                 &mut fixture.sh,
-                &fixture.uniforms,
+                &fixture.pipelines,
                 &fixture.weights,
             )
             .expect("minimal SH pools"),
@@ -179,7 +183,6 @@ impl UploadOrderSh {
             device,
             queue,
             &mut self.sh,
-            &self.uniforms,
             &self.weights,
             ShDrainBatch {
                 generation: self.state.generation,
@@ -207,7 +210,6 @@ impl UploadOrderSh {
             device,
             queue,
             sh: &mut self.sh,
-            uniform_bind_group_layout: &self.uniforms,
             selection_weights: &self.weights,
         };
         self.state.install(Some(&mut gpu), &ready).unwrap();

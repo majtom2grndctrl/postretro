@@ -83,7 +83,17 @@ pub(super) struct PoolMirror {
     /// Per block: the frame whose latest drain carrying it deferred it, else
     /// 0. A later drain that carries it and places it clears the mark.
     deferred_on: Vec<u64>,
+    /// Per block: its texel area, width × height, the bake-gap gate's unit.
+    block_texels: Vec<u64>,
     pub(super) stats: PoolStats,
+}
+
+/// Each block's texel area from its extent.
+fn texel_areas(extents: &[(u32, u32)]) -> Vec<u64> {
+    extents
+        .iter()
+        .map(|&(width, height)| u64::from(width) * u64::from(height))
+        .collect()
 }
 
 impl PoolMirror {
@@ -94,11 +104,12 @@ impl PoolMirror {
     ) -> Self {
         let index = manifest.lightmap_index();
         let header = index.header;
-        let extents = index
+        let extents: Vec<(u32, u32)> = index
             .records
             .iter()
             .map(|r| (u32::from(r.width), u32::from(r.height)))
             .collect();
+        let block_texels = texel_areas(&extents);
         let model = LightmapPoolModel::new(
             extents,
             header.block_alignment(),
@@ -121,6 +132,7 @@ impl PoolMirror {
         };
         Self::with_model(
             model,
+            block_texels,
             Some(layout),
             manifest.content_tag(),
             layer_bytes,
@@ -137,19 +149,21 @@ impl PoolMirror {
         cap_layers: u32,
         clock: RetireClock,
     ) -> Self {
-        let extents = (0..source.block_count())
+        let extents: Vec<(u32, u32)> = (0..source.block_count())
             .map(|block| {
                 let summary = source.block_summary(block).expect("block in range");
                 (u32::from(summary.width), u32::from(summary.height))
             })
             .collect();
+        let block_texels = texel_areas(&extents);
         let model = LightmapPoolModel::new(extents, source.block_alignment(), edge, cap_layers)
             .expect("test blocks fit a layer");
-        Self::with_model(model, None, source.content_tag(), 0, clock)
+        Self::with_model(model, block_texels, None, source.content_tag(), 0, clock)
     }
 
     fn with_model(
         model: LightmapPoolModel,
+        block_texels: Vec<u64>,
         layout: Option<PayloadLayout>,
         content_tag: [u8; 32],
         layer_bytes: u64,
@@ -166,6 +180,7 @@ impl PoolMirror {
             retiring: None,
             frame: 0,
             deferred_on: vec![0; blocks],
+            block_texels,
             stats: PoolStats {
                 first_layers,
                 peak_layers: first_layers,
@@ -216,6 +231,11 @@ impl PoolMirror {
     /// growth defers.
     pub(super) fn retiring(&self) -> bool {
         self.retiring.is_some()
+    }
+
+    /// `block`'s texel area, width × height.
+    pub(super) fn block_texels(&self, block: u32) -> u64 {
+        self.block_texels[block as usize]
     }
 
     /// Whether this frame's latest drain carrying `block` deferred it.

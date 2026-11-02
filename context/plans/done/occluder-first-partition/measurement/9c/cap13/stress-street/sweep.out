@@ -1,0 +1,79 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-street/stress-street.prl
+loaded in 0.8 s
+bake read: id51=a680765e458bbfd7 walk_epoch=3 size=71042417 mtime=1793204081 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-street/stress-street.prl
+swept 2960 poses x 160x90 rays on 16 threads in 5.8 s
+sweep record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-street/stress-street.after.sweep
+
+=== this build: 2960 poses; rays 160x90 over HFOV 100 deg at 16:9, near 0.1 m, far 4096 m, hit pullback 0.01 m
+bake id51=a680765e458bbfd7 walk_epoch=3 size=71042417 mtime=1793204081 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-9c/cap13/stress-street/stress-street.prl
+paths [("portal", 2847), ("step_limit", 113)]
+per pose                   mean          p95          max
+considered               1599.5         4529         5000
+accepted                  573.9         1770         2276
+drawn                     178.0          500         1112
+reach                     202.5          596         1253
+seen                       71.6          205          320
+drawn_faces              1413.9         3604        10308
+tris                     2827.8         7208        20616
+tris_in_frustum          2359.6         6495        19822
+lightmap_blocks           178.0          500         1112
+lightmap_texels        341076.8       852560      2059824
+sh_clusters                31.9           77          173
+fog_volumes                 0.0            0            0
+id51_outside                1.0            0           97
+misses                      0.0            0            0
+faceless_misses             0.0            0            0
+culled_misses               0.0            0            2
+hit_solid                   0.1            1           20
+hit_exterior                0.0            0            0
+
+=== ray-grid guard
+step-cap trips: 113
+  trip g9.0.0@180
+  trip g10.0.0@180
+  trip g11.0.0@180
+  trip g12.0.0@180
+  trip g13.0.0@180
+  trip g14.0.0@180
+  trip g9.1.0@180
+  trip g10.1.0@180
+  trip g11.1.0@180
+  trip g12.1.0@180
+  trip g13.1.0@180
+  trip g14.1.0@180
+  trip g9.2.0@180
+  trip g10.2.0@180
+  trip g11.2.0@180
+  trip g12.2.0@180
+  trip g13.2.0@180
+  trip g14.2.0@180
+  trip g5.3.0@180
+  trip g6.3.0@180
+poses with hits in unreached drawable cells (fail when new): 0, 0 with rays that did not miss before
+poses with hits in cells entered across a culled opening (reported): 9, 9 with rays that did not miss before
+  g11.21.0@270: 1 new of 1 rays
+  g10.22.0@270: 1 new of 1 rays
+  g11.22.0@270: 2 new of 2 rays
+  g12.22.0@180: 1 new of 1 rays
+  g12.22.0@270: 1 new of 1 rays
+  g15.22.0@180: 1 new of 1 rays
+  g16.22.0@90: 1 new of 1 rays
+  g17.22.0@90: 1 new of 1 rays
+  g18.22.0@90: 1 new of 1 rays
+poses with hits in unreached faceless cells (reported): 0, 0 with rays that did not miss before
+verdict: FAIL
+
+thread 'session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep' (16409005) panicked at crates/postretro/src/session/lightmap_residency/walk_measurement/world_poses/mod.rs:158:5:
+ray-grid guard failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep ... FAILED
+
+failures:
+
+failures:
+    session::lightmap_residency::walk_measurement::world_poses::world_poses_ray_sweep
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 6.70s
+

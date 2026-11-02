@@ -1,0 +1,75 @@
+# log extract from target/occluder-after/occlusion-test/bake.log (prl-build at 5426b60b4 + fragment-cull fix, RUST_LOG=info, -v)
+partition stage: 0.03 s (stamps 0.05 -> 0.08 Data script compilation)
+visibility stage: 0.01 s
+[Compiler] Occluder classification: 141 brushes, 29 occlude alone; exempt alone: 69 under floor, 1 no open face, 28 short span, 14 low top; 6 clusters, 11 sections, 5 occlude (17 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[Compiler] Door recognition: 0 of 1 kinematic movers seal a doorway at their closed pose
+BSP leaves: 268 solid, 497 empty
+BSP nodes: 764
+BSP leaves: 765
+BSP max depth: 29
+Total faces (after brush-side extraction): 1287
+[Compiler] Watertightness: world geometry is closed (0 open edges)
+Exterior flood-fill: 124 exterior leaves, 373 interior empty leaves
+[Compiler] Runtime cells: 305 occluder-tier leaves; 461 cells (69 interior, 268 solid, 124 exterior); 124 runtime portals; full tree 765 leaves, 1519 portals
+Visibility: 193 non-solid cells, 124 portals
+Vertices: 4156 (28 bytes each)
+Triangles: 2078
+Faces: 1039
+Interior cells: 69
+Bvh: 2077 nodes (1038 internal, 1039 leaf), 1039 leaf entries
+Cell Visibility: 100%  ETA 0.0s
+[Compiler] DirectShVolume cull: 8 of 8 static-direct light(s) had cells dropped by the reach test
+retained 96 and dropped 106; retained 1327104 raw payload bytes, \
+retained 77 and dropped 67; retained 1064448 raw payload bytes, \
+retained 16 and dropped 33; retained 221184 raw payload bytes, \
+[ChunkLightList] grid 10x3x10 (300 chunks), 9 static lights, avg 0.52 / chunk, max 4, total indices 155, payload 3020 bytes
+[Compiler] lightmap stage predicted peak 919 MiB: shadowmask fill 16 + encode scratch 40 + face map 16 + layer plane 228 + 8 partitions 512 + sections 90 + metadata 3 + cache metadata 0 + ownership metadata 14 (70 blocks on 11 bake layers of 2048²)
+[Compiler] CellResidencySet sampling: 1863 eye candidates (1840 in cell, 6 inset, 17 rejected; missed into solid 23, exterior 0, other cell 0), 0 camera cells without an eye point, 11076 walks (0 step-limited, 0 frustum fallback)
+[Compiler] CellResidencySet: 69 camera cells, 4247 entries (max 67 per camera), 35840 bytes, max lead 32 m, 0.020 s
+[Compiler] Lightmap runtime all-resident pool: 9 pool layers
+[ShadowmaskAtlas] peak per-face owner demand: 2 candidate light(s) on one face (capacity 4); 0 light(s) dropped above the floor
+[AnimatedLightChunks] 130 chunks, 4 animated lights, max 2 / chunk, mean 1.22 / chunk, 0 chunks bottomed out at min-extent floor
+[Compiler] PRL section footprint: id 23 (ChunkLightList), 3068 payload bytes
+[Compiler] PRL section footprint: id 24 (AnimatedLightChunks), 1612 payload bytes
+[Compiler] PRL section footprint: id 51 (CellResidencySet), 35840 payload bytes
+ChunkLightList    0.00s
+seals per mover: none (total 0)
+faces cut into sub-charts: 8 (extra charts 8)
+oversize SH cluster warnings: 4
+  SH cluster cell 115 is an indivisible singleton with 444 primitives, exceeding limit 64 by 380
+  SH cluster cell 226 is an indivisible singleton with 77 primitives, exceeding limit 64 by 13
+  SH cluster cell 115 is an indivisible singleton with 444 primitives, exceeding limit 64 by 380
+  SH cluster cell 226 is an indivisible singleton with 77 primitives, exceeding limit 64 by 13
+## stage timing table
+  Parsing           0.02s
+  Partitioning      0.03s
+  DataScript        0.00s
+  Visibility        0.01s
+  Geometry          0.00s
+  BVH Build         0.00s
+  Cell Visibility   0.00s
+  NavMesh           0.27s
+  TexValidation     0.01s
+  Materials         0.01s
+  SH Bake           0.79s
+  Delta SH Bake     0.11s
+  Direct SH Bake    0.13s
+  Animated Direct SH Bake   0.01s
+  EntityShadowLights   0.00s
+  Direct SH Delta Bake   0.02s
+  Billboard Direct Scatter Bake   0.09s
+  ChunkLightList    0.00s
+  Atlas Preparation   0.90s
+  Cell Residency Set   0.02s
+  Lightmap Bake     5.32s
+    TexelSteps      0.34s
+  ShadowmaskAtlas   0.92s
+  AnimLightChunks   0.00s
+  AnimWeightMaps    0.22s
+    TexelSteps      0.03s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.01s
+  Packing           0.52s
+  Total             9.98s
+## seal lines

@@ -1,0 +1,21 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+st:g5.3.0@180 18269 6707 0 PrlPortal { walk_reach: 1140 } 3692.79 3665.93 15
+st:g6.3.0@180 15448 5934 0 PrlPortal { walk_reach: 1025 } 3150.34 3126.22 15
+st:g5.4.0@180 16517 6098 0 PrlPortal { walk_reach: 1058 } 3317.44 3291.93 15
+st:g6.6.0@180 12715 4987 0 PrlPortal { walk_reach: 869 } 2613.53 2592.88 16
+st:g5.5.0@180 14503 5486 0 PrlPortal { walk_reach: 977 } 2946.48 2923.62 15
+st:g13.30.0@0 11788 4027 0 PrlPortal { walk_reach: 907 } 2399.65 2377.91 17
+st:g8.7.0@180 12316 4782 0 PrlPortal { walk_reach: 843 } 2511.61 2491.94 16
+st:g5.0.0@180 18513 6814 0 PrlPortal { walk_reach: 1207 } 3769.12 3739.95 15
+roof:B4.s2.c@180/-15 13416 5107 0 PrlPortal { walk_reach: 881 } 2734.12 2711.69 15
+roof:B3.s1.e@180/-15 4805 1679 0 PrlPortal { walk_reach: 380 } 998.94 989.41 40
+roof:B4.s2.e@180/-15 17520 6223 0 PrlPortal { walk_reach: 1083 } 3471.96 3446.18 15
+roof:B2.s1.e@135/-15 13680 5043 0 PrlPortal { walk_reach: 893 } 2754.07 2732.62 15
+roof:B3.s1.c@180/-15 11529 4409 0 PrlPortal { walk_reach: 796 } 2361.96 2343.37 17
+roof:B4.s2.c@225/0 13884 5538 0 PrlPortal { walk_reach: 911 } 2850.46 2828.64 15
+roof:A7.s2.c@225/-15 17598 6326 0 PrlPortal { walk_reach: 1089 } 3515.43 3489.69 15
+roof:A6.s2.e@225/-15 17463 6378 0 PrlPortal { walk_reach: 1079 } 3537.63 3511.68 15
+rd:plaza 3585 937 0 PrlPortal { walk_reach: 312 } 669.65 662.08 60
+rd:promenade 1925 609 0 PrlPortal { walk_reach: 207 } 372.78 367.66 106
+rd:elevated 2939 922 0 PrlPortal { walk_reach: 283 } 573.51 566.57 70
+rd:upperdeck 3771 1401 0 PrlPortal { walk_reach: 274 } 743.48 736.94 53

@@ -341,7 +341,7 @@ fn respawn_wait_tail_uses_captured_context_and_both_runtime_registries() {
         vec![],
     );
     let scheduler = ReactionScheduler::default();
-    scheduler.set_enabled(true);
+    scheduler.set_role(crate::scripting_systems::reaction_scheduler::SchedulerRole::Host);
     let mut sequences = SequencedPrimitiveRegistry::new();
     register_reaction_control_primitives(&mut sequences, scheduler.clone());
     register_sequenced_respawn_primitives(&mut sequences, world.script_ctx.clone());

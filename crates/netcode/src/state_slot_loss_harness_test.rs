@@ -501,6 +501,7 @@ fn snapshot_with_state(
         faction_sentiment_record: None,
         ghost_audio: None,
         server_script_time: 0.0,
+        level_tick: 0,
     }
 }
 

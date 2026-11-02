@@ -1,0 +1,72 @@
+warning: function `widget_contains_text` is never used
+    --> crates\postretro\src\main.rs:9620:8
+     |
+9620 |     fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `button_action` is never used
+    --> crates\postretro\src\main.rs:9637:8
+     |
+9637 |     fn button_action<'a>(
+     |        ^^^^^^^^^^^^^
+
+warning: function `find_button` is never used
+    --> crates\postretro\src\main.rs:9657:8
+     |
+9657 |     fn find_button<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `find_slider` is never used
+    --> crates\postretro\src\main.rs:9677:8
+     |
+9677 |     fn find_slider<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `workspace_root` is never used
+    --> crates\postretro\src\main.rs:9697:8
+     |
+9697 |     fn workspace_root() -> PathBuf {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `focus_button_action` is never used
+    --> crates\postretro\src\main.rs:9704:8
+     |
+9704 |     fn focus_button_action(
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ensure_scripts_build` is never used
+    --> crates\postretro\src\main.rs:9762:8
+     |
+9762 |     fn ensure_scripts_build() -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `postretro` (bin "postretro" test) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 1.44s
+     Running unittests src\main.rs (target\release\deps\postretro-e1b57fd488fe154d.exe)
+
+running 1 test
+PRL: target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.0 s
+bake read: id51=923de83fa3fd980c walk_epoch=4 size=35241461 mtime=1793316485 prl=target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 115682 frames in 1.0 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (2 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 104060 frames in 1.3 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (2 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+pose tour stress-warren-showcase.poses, 2 frames per pose: 10232 frames in 1.5 s; deferred 0 blocks / 0 texels, left behind 1484 blocks / 16000320 texels, 0 trip frames
+   pool: first 2 layers, peak 2 layers (2 occupied; headroom cost 0 layers, 0.0 MiB), growths 0
+bake-gap record written: target/occluder-10/head/stress-warren-showcase/stress-warren-showcase.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 0 (blocks 0); outside-baked-set blocks 58; trip frames 0 of 115682
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 0 (blocks 0); outside-baked-set blocks 71; trip frames 0 of 104060
+pose tour stress-warren-showcase.poses, 2 frames per pose
+  deferred texels 0 (blocks 0); left-behind texels 16000320 (blocks 1484); outside-baked-set blocks 0; trip frames 0 of 10232
+verdict: UNPAIRED (record only)
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 4.07s
+

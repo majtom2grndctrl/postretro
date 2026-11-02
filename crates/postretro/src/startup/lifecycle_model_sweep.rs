@@ -1,11 +1,17 @@
-//! CPU half of the level-load model sweep: one glTF parse per distinct model.
+//! Level-load model sweep: one glTF parse per distinct model, the `ModelSweep` trait and its windowed and
+//! prepared forms (commit-side install, miss fallback, over-prediction release), and `ModelClipEntry`.
 //! See: context/lib/boot_sequence.md §3
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(test, feature = "observability"))]
+use std::path::PathBuf;
 
-use postretro_model::gltf_loader::{self, LoadedModel, ModelLoadError};
+#[cfg(any(test, feature = "observability"))]
+use postretro_model::gltf_loader;
+use postretro_model::gltf_loader::{LoadedModel, ModelLoadError};
 
 use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
+use crate::scripting_systems::mesh_anim::MeshClipTables;
 
 /// One distinct sweep model, parsed once. The renderer upload borrows it and the
 /// hit-zone store then consumes it, so the file is read, parsed and its source
@@ -14,6 +20,11 @@ use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
 /// A failed parse stays in `result`: both consumers see the same error, and the
 /// [`ModelLoadWarningOwner`] the upload hook returns decides which of them
 /// reports it.
+///
+/// This sweep and its parse helpers serve the renderer-free installer
+/// (`install_world_cpu`: the headless driver and tests) and the main-thread
+/// oracle, so they compile only for tests and the `observability` feature.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) struct ParsedSweepModel {
     /// The verbatim handle: the renderer's cache key and `MeshComponent.model`.
     pub(crate) handle: String,
@@ -24,24 +35,322 @@ pub(crate) struct ParsedSweepModel {
 
 /// Parse every model in `models`, in order, on the calling thread. Parsing never
 /// depends on a renderer, so a headless install runs the same step.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn parse_sweep_models(models: &[String], content_root: &Path) -> Vec<ParsedSweepModel> {
     models
         .iter()
-        .map(|handle| {
-            let open_path = content_root.join(handle);
-            let result = gltf_loader::load_model(&open_path);
-            ParsedSweepModel {
-                handle: handle.clone(),
-                open_path,
-                result,
-            }
-        })
+        .map(|handle| parse_sweep_model(handle, content_root))
         .collect()
+}
+
+/// Parse one sweep model: the oracle sweep's per-model step. A level load's
+/// prep runs the same parse in two halves (`read_model_sources`, then
+/// `load_model_from_sources`), so it can key the bytes it read before
+/// parsing them. Pure.
+#[cfg(any(test, feature = "observability"))]
+pub(crate) fn parse_sweep_model(handle: &str, content_root: &Path) -> ParsedSweepModel {
+    let open_path = content_root.join(handle);
+    let result = gltf_loader::load_model(&open_path);
+    ParsedSweepModel {
+        handle: handle.to_string(),
+        open_path,
+        result,
+    }
+}
+
+/// One model's game-side clip-table entry: its clips' names and durations in
+/// glTF order, and its mesh's conservative local bound. A model that failed
+/// to parse gets the empty entry, zero bounds, as the renderer reports for a
+/// model it never cached.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ModelClipEntry {
+    pub(crate) clips: Vec<postretro_model::ClipMetadata>,
+    pub(crate) bounds: postretro_render_data::cone_frustum::Aabb,
+}
+
+/// The clip-table entry a parse yields. Pure: the windowed sweep builds its
+/// tables from it, and prep builds the same entry on its pool.
+pub(crate) fn model_clip_entry(result: &Result<LoadedModel, ModelLoadError>) -> ModelClipEntry {
+    match result {
+        Ok(model) => ModelClipEntry {
+            clips: model
+                .clips
+                .iter()
+                .map(|clip| postretro_model::ClipMetadata {
+                    name: clip.name.clone(),
+                    duration: clip.duration,
+                })
+                .collect(),
+            bounds: model.mesh.bounds(),
+        },
+        Err(_) => ModelClipEntry::default(),
+    }
+}
+
+impl ModelClipEntry {
+    /// Enter it in `tables` under `handle`.
+    pub(crate) fn insert_into(
+        &self,
+        tables: &mut crate::scripting_systems::mesh_anim::MeshClipTables,
+        handle: &str,
+    ) {
+        tables.insert_with_bounds(
+            postretro_model::ModelHandle::from(handle.to_string()),
+            &self.clips,
+            self.bounds,
+        );
+    }
+}
+
+/// How the install's model sweep turns the real sweep's handles into
+/// installed models: each one's renderer entry (windowed only), clip-table
+/// entry and hit-zone entry, in the sweep's order. A level load's commit
+/// installs its bundle's prepared products ([`WindowedModelSweep`] over
+/// [`LevelModels::Prepared`]); the renderer-free installer and the test
+/// oracle parse each handle on this thread instead (`ParsedModelSweep`, or
+/// `LevelModels::Parse`).
+pub(crate) trait ModelSweep {
+    /// Install every handle of `models`, recording the sweep's stages into
+    /// `timings`.
+    fn install_models(
+        &mut self,
+        models: &[String],
+        content_root: &Path,
+        clip_tables: &mut MeshClipTables,
+        hit_zone_store: &mut HitZoneStore,
+        timings: &mut crate::startup::StartupTimings,
+    );
+}
+
+/// A sweep over parsed models: each handle is parsed here, the closure gets
+/// the parses (the renderer upload and clip tables; a headless caller passes
+/// a no-op), and the hit zones install from the same parses
+/// (`install_parsed_models`). Only `install_world_cpu` builds one.
+#[cfg(any(test, feature = "observability"))]
+pub(crate) struct ParsedModelSweep<F>(pub(crate) F);
+
+#[cfg(any(test, feature = "observability"))]
+impl<F> ModelSweep for ParsedModelSweep<F>
+where
+    F: FnMut(&[ParsedSweepModel], &mut MeshClipTables) -> ModelLoadWarningOwner,
+{
+    fn install_models(
+        &mut self,
+        models: &[String],
+        content_root: &Path,
+        clip_tables: &mut MeshClipTables,
+        hit_zone_store: &mut HitZoneStore,
+        timings: &mut crate::startup::StartupTimings,
+    ) {
+        install_parsed_models(
+            models,
+            content_root,
+            clip_tables,
+            hit_zone_store,
+            timings,
+            &mut self.0,
+        );
+    }
+}
+
+/// The main-thread sweep: parse each model once, on this thread, then
+/// `upload` (the renderer upload and clip-table build, or a headless no-op)
+/// and the hit-zone build both read the same parses.
+#[cfg(any(test, feature = "observability"))]
+pub(crate) fn install_parsed_models(
+    models: &[String],
+    content_root: &Path,
+    clip_tables: &mut MeshClipTables,
+    hit_zone_store: &mut HitZoneStore,
+    timings: &mut crate::startup::StartupTimings,
+    upload: impl FnOnce(&[ParsedSweepModel], &mut MeshClipTables) -> ModelLoadWarningOwner,
+) {
+    let parsed_models = parse_sweep_models(models, content_root);
+    timings.record("model_parse");
+    let model_load_warning_owner = upload(&parsed_models, clip_tables);
+    timings.record("model_upload");
+    install_hit_zones(hit_zone_store, parsed_models, model_load_warning_owner);
+    timings.record("hit_zone_build");
+}
+
+/// The windowed install's model sweep: each model's renderer entry, its
+/// clip-table entry and its hit zones, from one of two sources.
+pub(crate) struct WindowedModelSweep<'a> {
+    pub(crate) renderer: &'a mut crate::render::Renderer,
+    pub(crate) prm_cache_root: &'a Path,
+    pub(crate) source: LevelModels<'a>,
+}
+
+/// Where a windowed sweep's models come from.
+pub(crate) enum LevelModels<'a> {
+    /// The main-thread oracle (test-only): parse each model here, upload it
+    /// into the renderer and build its clip-table entry from the same parse.
+    #[cfg(test)]
+    Parse,
+    /// A level load's commit: the bundle's prepared models, whose set
+    /// already holds their renderer entries.
+    Prepared(PreparedModelSweep<'a>),
+}
+
+/// A commit's model source: the bundle's prepared models (each one's clip
+/// entry and hit zones built on the load pool, its renderer entry in the
+/// published set), and the synchronous fallback for a handle the prediction
+/// missed, with what that fallback created.
+pub(crate) struct PreparedModelSweep<'a> {
+    pub(crate) models: crate::level_load::PreparedModels,
+    /// The install parameters the load keyed its models by; the miss
+    /// fallback keys and builds at them (their build tier is the dispatch
+    /// tier, not the live one).
+    pub(crate) params: crate::level_load::ModelInstallParams,
+    pub(crate) fallback: &'a mut crate::level_load::ModelMissFallback,
+    /// GPU objects the fallback created on this thread, added up: a counted
+    /// fallback.
+    pub(crate) fallback_created: &'a mut postretro_renderer::GpuCreationCounts,
+    /// The prepared models the real sweep does not draw, released from the
+    /// published set once the sweep is installed.
+    pub(crate) over_predictions: &'a mut crate::level_load::ModelOverPredictions,
+}
+
+impl ModelSweep for WindowedModelSweep<'_> {
+    fn install_models(
+        &mut self,
+        models: &[String],
+        content_root: &Path,
+        clip_tables: &mut MeshClipTables,
+        hit_zone_store: &mut HitZoneStore,
+        timings: &mut crate::startup::StartupTimings,
+    ) {
+        let Self {
+            renderer,
+            prm_cache_root,
+            source,
+        } = self;
+        match source {
+            #[cfg(test)]
+            LevelModels::Parse => install_parsed_models(
+                models,
+                content_root,
+                clip_tables,
+                hit_zone_store,
+                timings,
+                |parsed, clip_tables| {
+                    // Clear per-level transient mesh-pass state at the
+                    // model-cache install seam, then upload each distinct
+                    // model and build its game-side clip table from the same
+                    // parse (glTF index order), the values the renderer
+                    // caches. A failed parse warns here, caches nothing, and
+                    // gets the empty entry with zero bounds, so the table
+                    // maps no clips.
+                    renderer.clear_mesh_pass_for_level_load();
+                    for model in parsed {
+                        renderer.upload_parsed_skinned_model(
+                            &model.handle,
+                            &model.open_path,
+                            &model.result,
+                            prm_cache_root,
+                        );
+                        model_clip_entry(&model.result).insert_into(clip_tables, &model.handle);
+                    }
+                    if !parsed.is_empty() {
+                        log::info!(
+                            "[Model] uploaded {} distinct mesh model(s) for this level",
+                            parsed.len(),
+                        );
+                    }
+                    ModelLoadWarningOwner::Renderer
+                },
+            ),
+            LevelModels::Prepared(sweep) => sweep.install(
+                renderer,
+                prm_cache_root,
+                models,
+                content_root,
+                clip_tables,
+                hit_zone_store,
+                timings,
+            ),
+        }
+    }
+}
+
+impl PreparedModelSweep<'_> {
+    /// Install `models`, the real sweep, in its order: each handle's
+    /// prepared clip entry and hit zones, or, for a handle the prediction
+    /// missed, the synchronous fallback's (which loads it into the published
+    /// set). Parses nothing a prediction covered. The renderer never saw a
+    /// model that failed to parse, so the hit-zone store reports it. Then
+    /// every prepared model the sweep does not hold is released from the
+    /// published set, creating nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn install(
+        &mut self,
+        renderer: &mut crate::render::Renderer,
+        prm_cache_root: &Path,
+        models: &[String],
+        content_root: &Path,
+        clip_tables: &mut MeshClipTables,
+        hit_zone_store: &mut HitZoneStore,
+        timings: &mut crate::startup::StartupTimings,
+    ) {
+        let prepared = std::mem::take(&mut self.models);
+        let missed = prepared.misses(models).len();
+        let over: Vec<String> = prepared
+            .over_predictions(models)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let mut by_handle: std::collections::HashMap<String, crate::level_load::PreparedModel> =
+            prepared
+                .into_models()
+                .into_iter()
+                .map(|model| (model.handle.clone(), model))
+                .collect();
+        for handle in models {
+            let model = match by_handle.remove(handle) {
+                Some(model) => model,
+                None => {
+                    let before = postretro_renderer::gpu_creation_counts();
+                    let model = self.fallback.load(
+                        renderer,
+                        handle,
+                        content_root,
+                        prm_cache_root,
+                        self.params,
+                    );
+                    let created = postretro_renderer::gpu_creation_counts().since(before);
+                    *self.fallback_created =
+                        crate::level_load::add_creation_counts(*self.fallback_created, created);
+                    model
+                }
+            };
+            model.clip_entry.insert_into(clip_tables, handle);
+            hit_zone_store.insert_built(
+                handle,
+                &model.open_path,
+                model.parsed.map(|parsed| parsed.hit_zones),
+                ModelLoadWarningOwner::GameSide,
+            );
+        }
+        // What the prediction built that nothing in this level draws (pin
+        // P26: a model only a hot reload removed after dispatch) leaves the
+        // published set now, so the commit's cache sweep after this install
+        // frees it once nothing else references it.
+        drop(by_handle);
+        self.over_predictions.release(renderer, over);
+        if !models.is_empty() {
+            log::info!(
+                "[Model] installed {} distinct mesh model(s) for this level, {missed} missed by the prediction",
+                models.len(),
+            );
+        }
+        timings.record("model_install");
+    }
 }
 
 /// Install each parsed model's hit-zone entry, consuming the parses. Equivalent
 /// to calling [`HitZoneStore::insert_from_load`] on every handle, minus the
 /// second parse.
+#[cfg(any(test, feature = "observability"))]
 pub(crate) fn install_hit_zones(
     store: &mut HitZoneStore,
     parsed: Vec<ParsedSweepModel>,

@@ -1,0 +1,73 @@
+warning: function `widget_contains_text` is never used
+    --> crates\postretro\src\main.rs:9620:8
+     |
+9620 |     fn widget_contains_text(widget: &postretro_ui::descriptor::Widget, needle: &str) -> bool {
+     |        ^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `button_action` is never used
+    --> crates\postretro\src\main.rs:9637:8
+     |
+9637 |     fn button_action<'a>(
+     |        ^^^^^^^^^^^^^
+
+warning: function `find_button` is never used
+    --> crates\postretro\src\main.rs:9657:8
+     |
+9657 |     fn find_button<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `find_slider` is never used
+    --> crates\postretro\src\main.rs:9677:8
+     |
+9677 |     fn find_slider<'a>(
+     |        ^^^^^^^^^^^
+
+warning: function `workspace_root` is never used
+    --> crates\postretro\src\main.rs:9697:8
+     |
+9697 |     fn workspace_root() -> PathBuf {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `focus_button_action` is never used
+    --> crates\postretro\src\main.rs:9704:8
+     |
+9704 |     fn focus_button_action(
+     |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `ensure_scripts_build` is never used
+    --> crates\postretro\src\main.rs:9762:8
+     |
+9762 |     fn ensure_scripts_build() -> PathBuf {
+     |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `postretro` (bin "postretro" test) generated 7 warnings
+    Finished `release` profile [optimized] target(s) in 1.45s
+     Running unittests src\main.rs (target\release\deps\postretro-e1b57fd488fe154d.exe)
+
+running 1 test
+PRL: target/occluder-10/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 0.4 s
+bake read: id51=4c567b65504ac2ad walk_epoch=4 size=2700159992 mtime=1793317887 prl=target/occluder-10/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 96641 frames in 50.5 s; deferred 0 blocks / 0 texels, left behind 76 blocks / 85478080 texels, 0 trip frames
+   pool: first 15 layers, peak 38 layers (38 occupied; headroom cost 0 layers, 0.0 MiB), growths 3
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap has been running for over 60 seconds
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 98791 frames in 71.1 s; deferred 0 blocks / 0 texels, left behind 297 blocks / 280510320 texels, 0 trip frames
+   pool: first 15 layers, peak 38 layers (38 occupied; headroom cost 0 layers, 0.0 MiB), growths 6
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose: 9192 frames in 81.8 s; deferred 0 blocks / 0 texels, left behind 49099 blocks / 26222051632 texels, 0 trip frames
+   pool: first 15 layers, peak 26 layers (24 occupied; headroom cost 2 layers, 28.0 MiB), growths 2
+bake-gap record written: target/occluder-10/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.after.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 85478080 (blocks 76); outside-baked-set blocks 79; trip frames 0 of 96641
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 280510320 (blocks 297); outside-baked-set blocks 148; trip frames 0 of 98791
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose
+  deferred texels 0 (blocks 0); left-behind texels 26222051632 (blocks 49099); outside-baked-set blocks 130; trip frames 0 of 9192
+verdict: UNPAIRED (record only)
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2144 filtered out; finished in 204.14s
+

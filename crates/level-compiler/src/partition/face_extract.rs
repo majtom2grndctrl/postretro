@@ -11,12 +11,18 @@
 
 use glam::DVec3;
 
+use super::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use super::types::*;
 use crate::geometry_utils::split_polygon;
 use crate::map_data::{BrushVolume, Face};
 
-/// Matches the generous epsilon the BSP builder uses for face classification.
-const SPLIT_EPSILON: f64 = 0.1;
+/// Tolerance for splitting a brush side against BSP node planes. Derived from
+/// the BSP builder's region classification tolerance: a wider value here drops
+/// any exposed strip narrower than itself beside a splitting plane, while the
+/// BSP still calls that region open, leaving a see-through hole. A tighter
+/// value adds sliver triangles along sloped creases without closing their
+/// sub-millimetre cracks, and slows the lightmap bake.
+const SPLIT_EPSILON: f64 = REGION_CLASSIFICATION_EPSILON;
 
 /// Tight on purpose: the splitter pool reuses the same brush-side plane objects
 /// the walker reads back, so this checks for exact reuse, not approximate parallelism.
@@ -638,7 +644,7 @@ fn convex_contains(outer: &[DVec3], inner: &[DVec3], plane_normal: DVec3) -> boo
 /// Penetration below this is touching, not overlap, in meters. Matches
 /// `convex_contains`: abutting coplanar faces share an edge and must stay whole.
 const OVERLAP_TOLERANCE: f64 = 1e-3;
-/// Split epsilon for coplanar subtraction, in meters. Far tighter than
+/// Split epsilon for coplanar subtraction, in meters. Tighter than
 /// `SPLIT_EPSILON`: it cuts visible faces, so it must not round off real edges.
 const SUBTRACT_EPSILON: f64 = 1e-4;
 
@@ -1238,6 +1244,74 @@ mod tests {
                 face.normal, face.distance
             );
         }
+    }
+
+    #[test]
+    fn step_back_ledge_strip_narrower_than_ten_cm_keeps_its_face() {
+        // A box sits 2.54 cm (one inch) back from the box below it, exposing a
+        // strip of the lower box's top. The BSP splits at the upper box's wall
+        // plane and calls the strip open; a split tolerance of 0.1 m would drop
+        // it, leaving a see-through hole.
+        let inset = 0.0254;
+        let brushes = vec![
+            box_brush_with_sides(
+                DVec3::new(0.0, 0.0, 0.0),
+                DVec3::new(10.0, 10.0, 5.0),
+                "wall",
+            ),
+            box_brush_with_sides(
+                DVec3::new(inset, 0.0, 5.0),
+                DVec3::new(10.0, 10.0, 10.0),
+                "wall",
+            ),
+        ];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("stepped boxes should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        let strip_area: f64 = result
+            .faces
+            .iter()
+            .filter(|f| f.normal.z > 0.99 && (f.distance - 5.0).abs() < 1e-6)
+            .map(|f| polygon_area(&f.vertices, DVec3::Z))
+            .sum();
+        let expected = inset * 10.0;
+        assert!(
+            (strip_area - expected).abs() < 1e-6,
+            "exposed ledge strip must keep its full area: got {strip_area}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn sloped_side_strip_narrower_than_ten_cm_keeps_its_face() {
+        // A box buries a wedge's sloped side except an 8 cm band along one
+        // edge, the movement-feel shape: a sloped brush meeting a wall. The BSP
+        // splits at the box's wall plane and calls the band open; a split
+        // tolerance of 0.1 m would drop it, leaving a see-through hole.
+        let band = 0.08;
+        let brushes = vec![
+            wedge_brush_with_sides(
+                DVec3::ZERO,
+                DVec3::splat(10.0),
+                WedgeHalf::XLessEqualZ,
+                "wall",
+            ),
+            box_brush_with_sides(DVec3::new(0.0, band, 0.0), DVec3::splat(10.0), "wall"),
+        ];
+        let mut tree = build_bsp_from_brushes(&brushes).expect("wedge and box should build");
+        let result = extract_faces(&mut tree, &brushes);
+
+        let slope = DVec3::new(1.0, 0.0, -1.0).normalize();
+        let band_area: f64 = result
+            .faces
+            .iter()
+            .filter(|f| f.normal.dot(slope) > 0.99 && f.distance.abs() < 1e-6)
+            .map(|f| polygon_area(&f.vertices, slope))
+            .sum();
+        let expected = band * 10.0 * 2.0_f64.sqrt();
+        assert!(
+            (band_area - expected).abs() < 1e-6,
+            "exposed sloped band must keep its full area: got {band_area}, expected {expected}"
+        );
     }
 
     #[test]

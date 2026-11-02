@@ -26,6 +26,8 @@
 - **Cell→cell coupling relation / baked cell-visibility substrate / network relevance, audio occlusion, AI-perception broad phase, or VFX cull shared foundation** → `build_pipeline.md` §PRL section IDs
 - **Brush roles / which brushes participate in the BSP / occluder tier / which brushes shape cells and portals** → `build_pipeline.md` §Compiler pipeline
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs / compile working-set budget / lightmap bake scale** → `build_pipeline.md` §Compiler pipeline
+- **Bake ray tracing / BVH ray queries / watertight hit test and its tolerance τ / occluder cache / tracer epoch** → `build_pipeline.md` §Ray traversal
+- **Lightmap exact skips / reach cull / coverage proof and hole warnings / destructible or openable static geometry versus bake culls** → `build_pipeline.md` §Compiler pipeline step 12 (Exact skips)
 - **Build cache / warm vs cold builds / why a stage re-baked / cache disk footprint / stage epochs and keys** → `build_pipeline.md` §Build Cache
 - **Audio / spatial sound / positional sound events / descriptor sound fields / reverb zones** → `audio.md` · emitter token: `scripting.md` §12
 - **Entity model / game objects / sprites** → `entity_model.md`
@@ -61,13 +63,14 @@
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
 - **3D model / glTF import (scale, pivot, material format)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
-- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure** → `scripting.md` §12
+- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
+- **System reactions / system steps in a sequence** → `scripting.md` §10.4
 - **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md` · simulated lag, dev lag proxy, `POSTRETRO_NET_LAG`, Network tab: §Testing the conditioned link
 - **What reaches clients in co-op / networked-by-default classification / display copies / host-only light, fog, emitter changes as replicated state / join baseline budget / trigger presentation `audience`** → `networking.md` §Current contract · §Presentation events vs. replicated state · `scripting.md` §12 (Entity addressing)
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
-- **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
+- **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / host same-map restart and `Relevel` level life / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
 - **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
 - **Weapon descriptor vocabulary / one canonical weapon type / no player-vs-enemy weapon kind / wield restriction as attribute** → `entity_model.md` §Components (Weapon vocabulary)
@@ -96,8 +99,9 @@
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
-- **Level-load timing / log line C / per-stage install, texture, geometry and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
-- **Loading screen / loading tree pools / `loading.progress` / level-load progress counter / install deferral / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
+- **Level-load timing / log line C / dispatch, bundle, commit-frame, prep-kind and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary
+- **Staged level load / staged parse hand-outs / engine load pool / prep checks / upload thread / commit frame and counted fallbacks / load state machine, generations, cancellation and retirement / load failure route / uncaptured wgpu errors during a load / loading beside a running level** → `boot_sequence.md` §2, §3, §4 · per-load renderer sets, install pipelines, off-main set build: `rendering_pipeline.md` §3 · shared model cache: `resource_management.md` §8.2
+- **Loading screen / loading tree pools / `loading.progress` / phase-weighted level-load progress / supersede keeps the tree / mod `uiImages` / lazy loading-only images (decode on tree choice, release at load end, level-tree promotion)** → `boot_sequence.md` §1 (Loading screen), §2 · `ui.md` §5
 - **Full-window tree background / `Tree.background` / cover-fit image beneath a UI tree** → `ui.md` §1
 - **Experimental spikes / build-to-learn specs** → `experimental_spikes.md`
 - **3rd party library docs** → use `context7` tool (wgpu, winit, kira, glam).
@@ -130,6 +134,8 @@ Design inputs for every renderer, baker, and netcode decision, not stretch goals
 |-----------|-----------|
 | **Renderer owns GPU** | All wgpu calls live in the renderer module. Other subsystems never touch wgpu types. |
 | **Baked over computed** | Spatial data and indirect lighting are baked offline; portal traversal normally computes visibility per frame from baked portal geometry. Defined fallback cases use per-cell AABB frustum culling; an over-budget walk falls back too, bounded to frustum-culled sets that drive drawing and fog reach. Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
+| **Physical bake, stylized runtime** | Bake-time light transport may be physical: area emitters, soft shadows, coloured multi-bounce, energy conservation. Runtime shading stays a closed retro material vocabulary, never PBR (`rendering_pipeline.md` §13). An input only the compiler reads widens transport, not that vocabulary. |
+| **Defaults for novices, controls for experts** | Every author-facing control ships a default that looks right untouched; experienced authors opt into range. Look and mood live with the map or its assets, never in compiler flags — flags trade bake quality for time. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |

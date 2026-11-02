@@ -1,6 +1,7 @@
 // Direct-SH atlas resources shared by the dynamic-receiver compose passes.
 // See: context/lib/rendering_pipeline.md §4, §7.1
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
@@ -9,7 +10,6 @@ use postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H;
 use postretro_render_cpu::sh_volume::{
     BIND_DYNAMIC_DIRECT_PARAMS, BIND_SH_DIRECT_ATLAS, build_dynamic_direct_params_bytes,
 };
-use wgpu::util::DeviceExt;
 
 use super::residency::{ResidencyAllocationState, source_ids};
 pub(super) use super::sh_allocation::{DirectAtlasLayout, atlas_fits};
@@ -43,7 +43,7 @@ impl DirectShResources {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
         direct_section: Option<&DirectShVolumeSection>,
         direct_delta_section: Option<&DirectShDeltaVolumesSection>,
         animated_direct_delta_section: Option<&AnimatedDirectShDeltaVolumesSection>,
@@ -148,7 +148,7 @@ impl DirectShResources {
             ResidencyAllocationState::Data,
         );
         let dynamic_direct_params_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Dynamic Direct Params Uniform"),
                 contents: &dynamic_direct_params_bytes,
                 usage: dynamic_direct_params_allocation.usage,
@@ -187,7 +187,10 @@ impl DirectShResources {
     /// direct atlas, but its backing texture belongs to the shared renderer
     /// slot pool. Keep this small state transition here so all later dynamic
     /// direct updates continue to write the existing binding-16 uniform.
-    pub(super) fn enable_streamed_atlas(&mut self, queue: &wgpu::Queue) {
+    pub(super) fn enable_streamed_atlas(
+        &mut self,
+        queue: &dyn crate::render::queue_writes::QueueWrites,
+    ) {
         // Initial setup precedes frame writes. Pool growth revisits this method,
         // but must not directly overwrite pending dynamic-direct params.
         if self.has_direct {
@@ -240,7 +243,7 @@ pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayout
 /// Absent or unusable data binds a valid 4×4 BC6H dummy and clears `has_direct`.
 fn upload_direct_atlas_texture(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     section: Option<&DirectShVolumeSection>,
     direct_section_present: bool,
     ledger: &mut ShAllocationLedger,
@@ -279,7 +282,7 @@ fn upload_direct_atlas_texture(
     let allocation = direct_base_atlas_allocation(section);
     ledger.record_texture(allocation, &[35], false, ResidencyAllocationState::Data);
 
-    let texture = device.create_texture_with_data(
+    let texture = device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("SH Direct Octahedral Atlas")),
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -290,11 +293,11 @@ fn upload_direct_atlas_texture(
 
 fn upload_direct_atlas_dummy(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    queue: &dyn crate::render::queue_writes::QueueWrites,
     allocation: super::sh_allocation::TextureAllocation,
 ) -> wgpu::Texture {
     let zero_block = [0u8; 16];
-    device.create_texture_with_data(
+    device.new_texture_with_data(
         queue,
         &allocation.descriptor(Some("SH Direct Octahedral Atlas Dummy")),
         wgpu::util::TextureDataOrder::LayerMajor,
@@ -337,7 +340,7 @@ fn create_direct_composed_atlas_texture(
 ) -> wgpu::Texture {
     let allocation = direct_composed_atlas_allocation(kind, atlas_dimensions, layer_count);
     ledger.record_texture(allocation, sources, false, ResidencyAllocationState::Data);
-    device.create_texture(&allocation.descriptor(Some(label)))
+    device.new_texture(&allocation.descriptor(Some(label)))
 }
 
 #[cfg(test)]

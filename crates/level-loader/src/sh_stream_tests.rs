@@ -57,9 +57,9 @@ const PROBE_COUNT: u32 = 16 * 16 * 4;
 const AFFINITY_COUNT: u32 = 4 * 4;
 const STORED_TILES: u32 = PROBE_COUNT;
 
-struct StreamFixture {
+pub(crate) struct StreamFixture {
     _directory: tempfile::TempDir,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
     large_atlas_bytes: usize,
     id50_metadata_len: usize,
 }
@@ -347,12 +347,12 @@ fn read_file_span_rejects_ranges_outside_the_id50_payload_region() {
 }
 
 #[derive(Clone, Copy)]
-enum Id50Body {
+pub(crate) enum Id50Body {
     Valid,
     Malformed,
 }
 
-fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
+pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("cluster-stream.prl");
     let cells = fixture_cells();

@@ -187,6 +187,7 @@ impl ServerReplication {
 
         Some(RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence,
             server_tick,

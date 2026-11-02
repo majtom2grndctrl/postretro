@@ -2,11 +2,12 @@
 // direction-bearing reaction dispatch records. See: context/lib/scripting.md §§10–12.
 
 use super::ctx::ScriptCtx;
-use super::data_descriptors::CrossingCondition;
+use super::data_descriptors::{CrossingCondition, CrossingDescriptor};
 use super::data_registry::DataRegistry;
 use super::ir::{BakedIr, BoundProgram, CURRENT_IR_VERSION, IrType, IrValue, bind, eval_value};
 use super::ir_scopes::StoreScope;
-use super::slot_table::{SlotTable, SlotValue};
+use super::slot_table::{ReplicationScope, SlotTable, SlotValue};
+use postretro_entities::MachineSource;
 
 /// One active crossing watcher. A threshold watcher stores its condition as a
 /// fraction of `max` and arms from the first observed normalized value. A
@@ -279,6 +280,34 @@ impl CrossingDetector {
     #[cfg(test)]
     fn watcher_count(&self) -> usize {
         self.watchers.len()
+    }
+}
+
+/// Why a crossing fires on every machine, from the slots it reads: over shared
+/// slots alone it fires when replication arrives, the host's decision as each
+/// machine observes it; reading any own, owner-private or local slot, each
+/// machine fires it for its own player (`scripting.md` §12, Steps after a
+/// `wait`).
+pub fn crossing_machine_source(
+    crossing: &CrossingDescriptor,
+    slot_table: &SlotTable,
+) -> MachineSource {
+    let reads = match &crossing.condition {
+        CrossingCondition::Below { .. } | CrossingCondition::Above { .. } => {
+            crossing.slot.iter().cloned().collect()
+        }
+        CrossingCondition::Ir(root) => root.slot_read_names(),
+    };
+    let shared = |slot: &String| {
+        crate::player_slots::PlayerSlot::from_name(slot).is_none()
+            && slot_table.get(slot).is_some_and(|record| {
+                record.schema.network == ReplicationScope::SharedGlobal && !record.schema.per_owner
+            })
+    };
+    if reads.iter().all(shared) {
+        MachineSource::HostMirrored
+    } else {
+        MachineSource::OwnState
     }
 }
 

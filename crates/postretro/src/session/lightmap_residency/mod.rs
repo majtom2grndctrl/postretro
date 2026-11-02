@@ -17,6 +17,7 @@ use postretro_renderer::{
 use super::lightmap_streaming_diagnostics::{
     LightmapStreamingLogWindow, SectionReadBytes, assemble_live_diagnostics,
 };
+use crate::lightmap_streaming::block_map::LevelBlockMap;
 use crate::lightmap_streaming::controller::{LightmapPreloadReads, LightmapResidencyController};
 use crate::lightmap_streaming::demand::DemandFrame;
 #[cfg(feature = "capture")]
@@ -152,6 +153,22 @@ impl LightmapStreamingSession {
         Ok(session)
     }
 
+    /// As [`Self::new`], over the block map the level's load already built
+    /// and checked from `view` (`level_streaming::decode_streaming_level_data`).
+    pub(crate) fn with_block_map(view: LightmapLevelView<'_>, map: LevelBlockMap) -> Result<Self> {
+        let source: Arc<dyn LightmapBlockSource> =
+            Arc::new(ManifestBlockSource::new(Arc::clone(view.manifest)));
+        let controller = LightmapResidencyController::with_block_map(
+            Arc::clone(&source),
+            view.residency_set,
+            map,
+        )?;
+        let mut session = Self::over_controller(source, controller);
+        session.manifest = Some(Arc::downgrade(view.manifest));
+        session.read_counters = Some(Arc::clone(view.manifest.read_counters()));
+        Ok(session)
+    }
+
     pub(in crate::session) fn with_source(
         source: Arc<dyn LightmapBlockSource>,
         residency_set: &CellResidencySetSection,
@@ -159,13 +176,20 @@ impl LightmapStreamingSession {
     ) -> Result<Self> {
         let controller =
             LightmapResidencyController::new(Arc::clone(&source), residency_set, hints)?;
+        Ok(Self::over_controller(source, controller))
+    }
+
+    fn over_controller(
+        source: Arc<dyn LightmapBlockSource>,
+        controller: LightmapResidencyController,
+    ) -> Self {
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(&source),
             Arc::clone(controller.target_bitset()),
             Arc::clone(&ledger),
         );
-        Ok(Self {
+        Self {
             manifest: None,
             source,
             controller,
@@ -179,7 +203,7 @@ impl LightmapStreamingSession {
             declined: false,
             live: LightmapStreamingLiveDiagnostics::default(),
             log_window: LightmapStreamingLogWindow::default(),
-        })
+        }
     }
 
     pub(crate) fn is_for(&self, manifest: &Arc<LightmapStreamManifest>) -> bool {

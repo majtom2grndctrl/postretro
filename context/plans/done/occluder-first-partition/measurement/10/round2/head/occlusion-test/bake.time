@@ -1,0 +1,5 @@
+flags:  --cache-dir target/occluder-10r2/head/occlusion-test/cache
+binary: 441144d88369
+start: 2026-10-29 20:40:23
+exit: 0
+wall_seconds: 16

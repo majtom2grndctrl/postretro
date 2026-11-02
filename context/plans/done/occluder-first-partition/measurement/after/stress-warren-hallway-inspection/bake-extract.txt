@@ -1,0 +1,118 @@
+# log extract from target/occluder-after/stress-warren-hallway-inspection/bake.log (prl-build at 5426b60b4 + fragment-cull fix, RUST_LOG=info, -v)
+partition stage: 0.46 s (stamps 0.57 -> 1.03 Data script compilation)
+visibility stage: 0.07 s
+[Compiler] Occluder classification: 1608 brushes, 738 occlude alone; exempt alone: 3 under floor, 60 no open face, 799 short span, 8 low top; 65 clusters, 99 sections, 12 occlude (51 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[Compiler] Door recognition: 9 of 11 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5, 6, 7, 8
+BSP leaves: 5473 solid, 3366 empty
+BSP nodes: 8838
+BSP leaves: 8839
+BSP max depth: 33
+Total faces (after brush-side extraction): 11928
+[Compiler] Watertightness: 562 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+Exterior flood-fill: 416 exterior leaves, 2950 interior empty leaves
+[Compiler] Runtime cells: 4995 occluder-tier leaves; 7111 cells (1222 interior, 5473 solid, 416 exterior); 1771 runtime portals; full tree 8839 leaves, 7631 portals
+Visibility: 1638 non-solid cells, 1771 portals
+Vertices: 42806 (28 bytes each)
+Triangles: 21330
+Faces: 10738
+Interior cells: 1222
+Bvh: 21475 nodes (10737 internal, 10738 leaf), 10738 leaf entries
+Cell Visibility: 100%  ETA 0.0s
+[Compiler] DirectShVolume cull: 757 of 757 static-direct light(s) had cells dropped by the reach test
+retained 344 and dropped 276; retained 4755456 raw payload bytes, \
+retained 636 and dropped 5571; retained 8792064 raw payload bytes, \
+retained 327 and dropped 21; retained 4520448 raw payload bytes, \
+[ChunkLightList] grid 26x7x31 (5642 chunks), 344 static lights, avg 1.70 / chunk, max 8, total indices 9591, payload 83500 bytes
+[Compiler] lightmap stage predicted peak 3801 MiB: shadowmask fill 32 + encode scratch 40 + face map 16 + layer plane 228 + 8 partitions 512 + sections 2477 + metadata 23 + cache metadata 78 + ownership metadata 395 (1225 blocks on 315 bake layers of 2048²)
+[Compiler] CellResidencySet sampling: 32994 eye candidates (32363 in cell, 566 inset, 65 rejected; missed into solid 538, exterior 0, other cell 93), 0 camera cells without an eye point, 197574 walks (0 step-limited, 0 frustum fallback)
+[Compiler] CellResidencySet: 1222 camera cells, 183487 entries (max 309 per camera), 1496360 bytes, max lead 32 m, 0.158 s
+[Compiler] Lightmap runtime all-resident pool: 229 pool layers
+[ShadowmaskAtlas] peak per-face owner demand: 4 candidate light(s) on one face (capacity 4); 0 light(s) dropped above the floor
+[AnimatedLightChunks] 3789790 chunks, 6 animated lights, max 6 / chunk, mean 5.80 / chunk, 3774779 chunks bottomed out at min-extent floor
+[AnimatedLightChunks] 3774779 chunks exceeded cap 4 at the min-extent floor; 6822787 extra light entries retained beyond the cap
+[Compiler] PRL section footprint: id 23 (ChunkLightList), 83548 payload bytes
+[Compiler] PRL section footprint: id 24 (AnimatedLightChunks), 5437572 payload bytes
+[Compiler] PRL section footprint: id 51 (CellResidencySet), 1496360 payload bytes
+ChunkLightList    1.17s
+[Compiler] Watertightness: 562 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[AnimatedLightChunks] 3774779 chunks exceeded cap 4 at the min-extent floor; 6822787 extra light entries retained beyond the cap
+seals per mover: m0 x6, m1 x4, m2 x4, m3 x4, m4 x6, m5 x4, m6 x2, m7 x2, m8 x2 (total 34)
+faces cut into sub-charts: 23 (extra charts 23)
+oversize SH cluster warnings: 10
+  SH cluster cell 1298 is an indivisible singleton with 179 primitives, exceeding limit 64 by 115
+  SH cluster cell 1659 is an indivisible singleton with 184 primitives, exceeding limit 64 by 120
+  SH cluster cell 4345 is an indivisible singleton with 76 primitives, exceeding limit 64 by 12
+  SH cluster cell 4276 is an indivisible singleton with 74 primitives, exceeding limit 64 by 10
+  SH cluster cell 4989 is an indivisible singleton with 163 primitives, exceeding limit 64 by 99
+  SH cluster cell 1298 is an indivisible singleton with 179 primitives, exceeding limit 64 by 115
+  SH cluster cell 1659 is an indivisible singleton with 184 primitives, exceeding limit 64 by 120
+  SH cluster cell 4345 is an indivisible singleton with 76 primitives, exceeding limit 64 by 12
+  SH cluster cell 4276 is an indivisible singleton with 74 primitives, exceeding limit 64 by 10
+  SH cluster cell 4989 is an indivisible singleton with 163 primitives, exceeding limit 64 by 99
+## stage timing table
+  Parsing           0.55s
+  Partitioning      0.45s
+  DataScript        0.04s
+  Visibility        0.07s
+  Geometry          0.00s
+  BVH Build         0.01s
+  Cell Visibility   0.06s
+  NavMesh           2.37s
+  TexValidation     0.01s
+  Materials         0.14s
+  SH Bake           1.97s
+  Delta SH Bake     0.25s
+  Direct SH Bake    0.46s
+  Animated Direct SH Bake   0.02s
+  EntityShadowLights   0.02s
+  Direct SH Delta Bake   0.22s
+  Billboard Direct Scatter Bake   0.28s
+  ChunkLightList    1.17s
+  Atlas Preparation   0.35s
+  Cell Residency Set   0.16s
+  Lightmap Bake   1008.20s
+    TexelSteps    112.81s
+  ShadowmaskAtlas  25.19s
+  AnimLightChunks   1.38s
+  AnimWeightMaps   11.41s
+    TexelSteps      3.30s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.21s
+  Packing           7.15s
+  Total           1063.04s
+## seal lines
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 434
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 435
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 438
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 439
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 452
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 453
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 363
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 432
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 442
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 448
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 861
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 916
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 918
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 920
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 1359
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 1363
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 1364
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 1371
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 737
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 738
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 743
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 744
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 751
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 755
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 933
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 937
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 938
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 942
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 255
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 261
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 7 seals generated portal 822
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 7 seals generated portal 823
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 1721
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 1722

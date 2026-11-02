@@ -100,17 +100,8 @@ fn run_luau_data_script(app: &App, source: &str) {
 
 #[test]
 fn level_install_builds_environment_volumes_before_parity_digest_and_any_tick() {
-    let source = include_str!("lifecycle.rs")
-        .split("#[cfg(test)]\npub(crate) mod tests")
-        .next()
-        .unwrap();
-    let install = source
-        .split("fn install_level_payload(")
-        .nth(1)
-        .unwrap()
-        .split("\n    fn ")
-        .next()
-        .unwrap();
+    // The sequencer with every stage it calls spliced in at its call.
+    let install = super::lifecycle_test_fixtures::install_level_payload_source();
     let collision = install
         .find("crate::collision::CollisionWorld::from_level(")
         .expect("install builds static collision");
@@ -138,6 +129,33 @@ fn level_install_builds_environment_volumes_before_parity_digest_and_any_tick() 
         assert!(
             volumes < later,
             "the volumes must be installed before {what}"
+        );
+    }
+    // The commit, spliced the same way: its checks (the collision mesh was
+    // built in prep) precede the volumes, which precede the digest, parity
+    // and the renderer-less route.
+    let commit = super::lifecycle_test_fixtures::commit_level_bundle_source();
+    let checks = commit
+        .find("self.check_level_commit(")
+        .expect("the commit checks first");
+    let volumes = commit
+        .find("self.install_environment_volumes(")
+        .expect("the commit builds the environment volumes");
+    assert!(checks < volumes);
+    for (marker, what) in [
+        ("level_content_digest(", "the parity digest"),
+        ("endpoint.set_level_parity(", "publishing level parity"),
+        (
+            "self.install_level_without_renderer(",
+            "the renderer-less route",
+        ),
+    ] {
+        let later = commit
+            .find(marker)
+            .unwrap_or_else(|| panic!("the commit reaches {what}"));
+        assert!(
+            volumes < later,
+            "the commit installs the volumes before {what}"
         );
     }
 
@@ -951,19 +969,10 @@ const WADE_ONLY_WARNING: &str = "has no movement.swim block; this level has flui
 #[test]
 fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descriptor() {
     // The warning runs once per install, right after the boot pawn spawns.
-    let source = include_str!("lifecycle.rs")
-        .split("#[cfg(test)]\npub(crate) mod tests")
-        .next()
-        .unwrap();
-    let install = source
-        .split("fn install_level_payload(")
-        .nth(1)
-        .unwrap()
-        .split("\n    fn ")
-        .next()
-        .unwrap();
+    // The sequencer with every stage it calls spliced in at its call.
+    let install = super::lifecycle_test_fixtures::install_level_payload_source();
     let spawn = install
-        .find("install_world_cpu(")
+        .find("install_world_cpu_with_models(")
         .expect("install spawns the boot pawn");
     let warn = install
         .find("self.warn_if_local_player_cannot_swim();")
@@ -973,6 +982,19 @@ fn a_fluid_level_for_a_player_without_a_swim_block_warns_once_naming_the_descrip
         install.matches("warn_if_local_player_cannot_swim").count(),
         1,
         "once per install"
+    );
+    let commit = super::lifecycle_test_fixtures::commit_level_bundle_source();
+    let spawn = commit
+        .find("install_world_cpu_with_models(")
+        .expect("the commit spawns the boot pawn");
+    let warn = commit
+        .find("self.warn_if_local_player_cannot_swim();")
+        .expect("the commit warns about a wade-only player");
+    assert!(spawn < warn, "the commit's warning reads the spawned pawn");
+    assert_eq!(
+        commit.matches("warn_if_local_player_cannot_swim").count(),
+        1,
+        "once per commit"
     );
 
     let mut app = test_app();
@@ -1529,14 +1551,16 @@ fn a_staged_reload_flips_a_zero_opacity_fluids_draw_with_its_reflectivity() {
 // lattice, never the previous level's or a placeholder.
 #[test]
 fn fluid_surfaces_install_after_level_geometry_on_the_level_and_capture_paths() {
+    // Every file carved from `lifecycle.rs`, so "once" still spans all of them.
+    let lifecycle = super::lifecycle_test_fixtures::lifecycle_production_source();
     for (path, source) in [
-        ("startup/lifecycle.rs", include_str!("lifecycle.rs")),
+        ("startup/lifecycle*.rs", lifecycle.as_str()),
         (
             "capture/prepared.rs",
             include_str!("../capture/prepared.rs"),
         ),
     ] {
-        // Production code only: lifecycle.rs's own test module quotes these.
+        // Production code only: the lifecycle test modules quote these.
         let source = source
             .split("#[cfg(test)]\npub(crate) mod tests")
             .next()

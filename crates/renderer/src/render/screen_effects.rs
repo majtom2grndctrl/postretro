@@ -2,6 +2,7 @@
 // gameplay scene pass renders into, and the native-res UI layer it composites.
 // See: context/lib/rendering_pipeline.md §7.8
 
+use crate::render::gpu_create::GpuCreate;
 use std::collections::HashMap;
 
 use super::uploads::UploadQueue;
@@ -110,7 +111,7 @@ impl ScreenEffectsPass {
         });
 
         // Per-frame effect uniform, initialized at rest for a neutral resolve.
-        let effect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let effect_buffer = device.new_buffer(&wgpu::BufferDescriptor {
             label: Some("Screen Effects Uniform Buffer"),
             size: std::mem::size_of::<EffectUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -338,7 +339,7 @@ impl ScreenEffectsPass {
 /// single-sample. `RENDER_ATTACHMENT` (scene passes draw into it) +
 /// `TEXTURE_BINDING` (display and capture resolves load it).
 fn create_scene_color(device: &wgpu::Device, scene: Extent) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Scene Color Texture"),
         size: wgpu::Extent3d {
             width: scene.width,
@@ -368,7 +369,7 @@ const TEST_COPY_USAGE: wgpu::TextureUsages = if cfg!(test) {
 
 /// Allocate the UI layer at the surface extent.
 fn create_ui_layer(device: &wgpu::Device, surface: Extent) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let texture = device.new_texture(&wgpu::TextureDescriptor {
         label: Some("UI Layer Texture"),
         size: wgpu::Extent3d {
             width: surface.width,
@@ -389,7 +390,7 @@ fn create_ui_layer(device: &wgpu::Device, surface: Extent) -> (wgpu::Texture, wg
 }
 
 fn create_capture_color(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
-    device.create_texture(&wgpu::TextureDescriptor {
+    device.new_texture(&wgpu::TextureDescriptor {
         label: Some("Scene Capture Tonemap Texture"),
         size: wgpu::Extent3d {
             width: width.max(1),
@@ -412,7 +413,7 @@ fn create_resolve_pipeline(
     target_format: wgpu::TextureFormat,
     label: &'static str,
 ) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -449,7 +450,7 @@ fn create_bind_group(
     effect_buffer: &wgpu::Buffer,
     ui_layer_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Screen Effects Bind Group"),
         layout,
         entries: &[

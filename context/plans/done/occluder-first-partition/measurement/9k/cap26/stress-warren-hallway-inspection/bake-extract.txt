@@ -1,0 +1,55 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 1608 brushes, 738 occlude alone; exempt alone: 3 under floor, 60 no open face, 799 short span, 8 low top; 65 clusters, 99 sections, 12 occlude (51 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 9 of 11 kinematic movers seal a doorway at their closed pose: movers 0, 1, 2, 3, 4, 5, 6, 7, 8
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 1000 occluding faces, 164 ended by the length bound (2 × the face's longer broad extent)
+[INFO prl_build::partition] BSP leaves: 6337 solid, 5250 empty
+[INFO prl_build::partition] BSP leaves: 11587
+[INFO prl_build::partition] Total faces (after brush-side extraction): 14994
+[WARN prl_build::pipeline] [Compiler] Watertightness: 649 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[INFO prl_build::visibility] Exterior flood-fill: 416 exterior leaves, 4834 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 6973 occluder-tier leaves (18 holding several interior pockets); 10021 cells (3268 interior, 6337 solid, 416 exterior); 5357 runtime portals; full tree 11587 leaves, 11606 portals; cell-size cap 26.0096 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1484
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1520
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1529
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1530
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1534
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1535
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 0 seals generated portal 1566
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1212
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1213
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1475
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1480
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1541
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1548
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1556
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 1 seals generated portal 1561
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 2818
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 2966
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 2972
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 2 seals generated portal 2974
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4193
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4201
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4203
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4210
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4216
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4224
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 3 seals generated portal 4227
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2539
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2550
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2556
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 4 seals generated portal 2570
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3004
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3010
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3012
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3022
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3023
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3030
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 5 seals generated portal 3031
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 705
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 6 seals generated portal 725
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 7 seals generated portal 2732
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 5284
+[INFO prl_build::kinematic_geometry] [Compiler] kinematic mover 8 seals generated portal 5285
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 88236 eye candidates (86976 in cell, 598 inset, 662 rejected; missed into solid 1041, exterior 0, other cell 219), 0 camera cells without an eye point, 525444 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 3268 camera cells, 855367 entries (max 538 per camera), 6883040 bytes, max lead 32 m, 1.454 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 6883040 payload bytes
+  [WARN prl_build::pipeline] [Compiler] Watertightness: 649 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):

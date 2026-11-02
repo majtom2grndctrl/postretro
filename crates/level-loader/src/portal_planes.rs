@@ -37,17 +37,18 @@ impl LevelWorld {
     }
 }
 
-/// Orientation evidence is geometric. Cells are convex, so every portal of a
-/// cell lies on that cell's side of each of its other portals' planes, and
-/// the mean of a cell's portal centroids lies strictly on its side unless all
-/// of them are coplanar (a portal's own centroid sits on its plane and adds
-/// nothing). Both cells' means are read first; only when neither gives a side
-/// are the cell bounds tried, since fixtures and degenerate cells may share
-/// bounds. A cell's bounds give a side only when the whole box lies on it: no
-/// corner beyond `SIDE_EVIDENCE_EPSILON` on the far side, and at least one
-/// beyond it on the near side. A box's centre alone can sit on the wrong
-/// side of a slanted plane. Disagreement within a tier, or no evidence,
-/// leaves the portal unoriented.
+/// Orientation evidence is geometric. The compiler puts every portal of a
+/// cell on the boundary of one convex region holding the cell, so every
+/// portal of a cell lies on that cell's side of each of its other portals'
+/// planes, and the mean of a cell's portal centroids lies strictly on its
+/// side unless all of them are coplanar (a portal's own centroid sits on its
+/// plane and adds nothing). Both cells' means are read first; only when
+/// neither gives a side are the cell bounds tried, since fixtures and
+/// degenerate cells may share bounds. A cell's bounds give a side only when
+/// the whole box lies on it: no corner beyond `SIDE_EVIDENCE_EPSILON` on the
+/// far side, and at least one beyond it on the near side. A box's centre
+/// alone can sit on the wrong side of a slanted plane. Disagreement within a
+/// tier, or no evidence, leaves the portal unoriented.
 ///
 /// Orientation drives the walk's facing rule, so a change here can alter
 /// visible sets and must bump `postretro_visibility::PORTAL_WALK_EPOCH`.

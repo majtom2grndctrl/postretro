@@ -16,7 +16,7 @@ mod visibility;
 /// the step cap, the fallback set, or portal-plane orientation (built in
 /// `postretro-level-loader`'s `portal_planes`, which the facing rule reads).
 /// A pure speedup with identical output keeps it.
-pub const PORTAL_WALK_EPOCH: u32 = 3;
+pub const PORTAL_WALK_EPOCH: u32 = 4;
 
 pub use cpu_stages::VisibilityStage;
 pub use mirror_crop::{MIRROR_CROP_PAD_RADIANS, MirrorCropScratch, crop_mirror_view_proj};

@@ -102,11 +102,15 @@ Per-script deps:
 | `gen_stress_map.py` | none (stdlib only) |
 | `inspect_fbx_ascii.py` | none (stdlib only) |
 
-`gen_stress_map.py` imports two sibling helper modules, `stress_environment.py`
-(environment-volume shapes and particle emitters) and `stress_zones.py` (zoned
-layout for `--preset env-volumes`). Both are stdlib-only and are not entry
-points. See `content/dev/maps/stress-env-volumes.README.md` for the
-env-volumes fixture.
+`gen_stress_map.py` imports three sibling helper modules, `stress_environment.py`
+(environment-volume shapes and particle emitters), `stress_zones.py` (zoned
+layout for `--preset env-volumes`) and `stress_street.py` (the street map for
+`--preset street`). All are stdlib-only and are not entry points. See
+`content/dev/maps/stress-env-volumes.README.md` for the env-volumes fixture and
+`content/dev/maps/stress-street.README.md` for the street.
+
+The generator's tests run with the standard library:
+`python3 -m unittest discover -s tools/tests -p test_gen_stress_map.py`.
 
 `gen_normal.py` imports `numpy` inside a `try`/`except`: if it's missing, the
 script still runs but falls back to a flat/neutral normal map instead of the

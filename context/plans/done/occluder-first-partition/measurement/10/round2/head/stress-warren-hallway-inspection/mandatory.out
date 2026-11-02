@@ -1,0 +1,7 @@
+target/occluder-10r2/head/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl: L 16 m, 7881 camera cells; mandatory texels p50 0.0 M p95 61.2 M max 104.2 M (pool cap 15 layers ~62.9 M)
+  cell 4749: 104.2 M, 291 entries
+  cell 4706: 104.2 M, 291 entries
+  cell 4855: 103.3 M, 290 entries
+  cell 4829: 103.3 M, 263 entries
+  cell 4823: 103.3 M, 290 entries
+  cells over 62.9 M: 371

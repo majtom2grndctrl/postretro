@@ -1,0 +1,142 @@
+16:31:28 occlusion-test.fc_P1.before.r1 OK median=40.09 p95=41.79
+16:31:48 occlusion-test.fc_P1.cap19.r1 OK median=33.84 p95=34.21
+16:32:08 occlusion-test.fc_P1.cap26.r1 OK median=33.97 p95=35.72
+16:32:29 occlusion-test.fc_P2.before.r1 OK median=35.65 p95=36.91
+16:32:47 occlusion-test.fc_P2.cap19.r1 OK median=30.51 p95=30.98
+16:33:06 occlusion-test.fc_P2.cap26.r1 OK median=30.95 p95=33.09
+16:33:25 occlusion-test.fc_G1.before.r1 OK median=32.59 p95=33.31
+16:33:43 occlusion-test.fc_G1.cap19.r1 OK median=29.97 p95=30.64
+16:34:01 occlusion-test.fc_G1.cap26.r1 OK median=29.64 p95=30.53
+16:34:24 occlusion-test.fc_G2.before.r1 OK median=39.24 p95=39.86
+16:34:46 occlusion-test.fc_G2.cap19.r1 OK median=34.20 p95=34.47
+16:35:07 occlusion-test.fc_G2.cap26.r1 OK median=34.45 p95=36.32
+16:35:25 occlusion-test.fc_G3.before.r1 OK median=29.87 p95=30.26
+16:35:42 occlusion-test.fc_G3.cap19.r1 OK median=28.59 p95=28.88
+16:35:59 occlusion-test.fc_G3.cap26.r1 OK median=28.88 p95=29.18
+16:36:18 occlusion-test.fc_L2.before.r1 OK median=31.72 p95=32.32
+16:36:36 occlusion-test.fc_L2.cap19.r1 OK median=29.33 p95=29.65
+16:36:54 occlusion-test.fc_L2.cap26.r1 OK median=29.40 p95=29.76
+16:37:09 occlusion-test.fc_C1.before.r1 OK median=24.12 p95=25.14
+16:37:23 occlusion-test.fc_C1.cap19.r1 OK median=23.59 p95=23.81
+16:37:37 occlusion-test.fc_C1.cap26.r1 OK median=23.63 p95=23.84
+16:37:54 occlusion-test.fc_C2.before.r1 OK median=28.76 p95=28.99
+16:38:11 occlusion-test.fc_C2.cap19.r1 OK median=28.16 p95=28.44
+16:38:27 occlusion-test.fc_C2.cap26.r1 OK median=28.50 p95=28.75
+16:38:47 occlusion-test.fc_V1.before.r1 OK median=32.00 p95=32.74
+16:39:06 occlusion-test.fc_V1.cap19.r1 OK median=32.81 p95=33.88
+16:39:26 occlusion-test.fc_V1.cap26.r1 OK median=33.19 p95=34.20
+16:40:07 stress-street.st_g5.3.0_180.before.r1 OK median=66.39 p95=71.87
+16:40:46 stress-street.st_g5.3.0_180.cap19.r1 OK median=66.65 p95=67.38
+16:41:25 stress-street.st_g5.3.0_180.cap26.r1 OK median=66.65 p95=67.44
+16:42:05 stress-street.st_g6.3.0_180.before.r1 OK median=66.57 p95=72.97
+16:42:44 stress-street.st_g6.3.0_180.cap19.r1 OK median=66.49 p95=67.22
+16:43:22 stress-street.st_g6.3.0_180.cap26.r1 OK median=66.15 p95=67.20
+16:44:02 stress-street.st_g5.4.0_180.before.r1 OK median=66.45 p95=71.61
+16:44:43 stress-street.st_g5.4.0_180.cap19.r1 OK median=66.68 p95=67.79
+16:45:21 stress-street.st_g5.4.0_180.cap26.r1 OK median=65.99 p95=67.84
+16:45:59 stress-street.st_g6.6.0_180.before.r1 OK median=66.11 p95=70.19
+16:46:38 stress-street.st_g6.6.0_180.cap19.r1 OK median=66.59 p95=68.09
+16:47:16 stress-street.st_g6.6.0_180.cap26.r1 OK median=66.24 p95=68.95
+16:47:55 stress-street.st_g5.5.0_180.before.r1 OK median=66.63 p95=72.09
+16:48:34 stress-street.st_g5.5.0_180.cap19.r1 OK median=66.29 p95=67.22
+16:49:12 stress-street.st_g5.5.0_180.cap26.r1 OK median=66.57 p95=67.82
+16:50:01 stress-street.st_g13.30.0_0.before.r1 OK median=78.00 p95=83.48
+16:50:47 stress-street.st_g13.30.0_0.cap19.r1 OK median=77.72 p95=83.49
+16:51:31 stress-street.st_g13.30.0_0.cap26.r1 OK median=75.42 p95=82.21
+16:52:08 stress-street.st_g8.7.0_180.before.r1 OK median=61.25 p95=67.92
+16:52:46 stress-street.st_g8.7.0_180.cap19.r1 OK median=65.98 p95=71.71
+16:53:22 stress-street.st_g8.7.0_180.cap26.r1 OK median=62.98 p95=71.20
+16:54:03 stress-street.st_g5.0.0_180.before.r1 OK median=66.20 p95=73.32
+16:54:39 stress-street.st_g5.0.0_180.cap19.r1 OK median=63.71 p95=67.15
+16:55:12 stress-street.st_g5.0.0_180.cap26.r1 OK median=51.64 p95=67.00
+16:55:52 stress-street.roof_B4.s2.c_180_-15.before.r1 OK median=66.59 p95=70.54
+16:56:32 stress-street.roof_B4.s2.c_180_-15.cap19.r1 OK median=66.69 p95=69.19
+16:57:11 stress-street.roof_B4.s2.c_180_-15.cap26.r1 OK median=66.81 p95=71.93
+16:57:36 stress-street.roof_B3.s1.e_180_-15.before.r1 OK median=40.51 p95=41.59
+16:58:14 stress-street.roof_B3.s1.e_180_-15.cap19.r1 OK median=65.43 p95=71.72
+16:58:52 stress-street.roof_B3.s1.e_180_-15.cap26.r1 OK median=64.77 p95=71.01
+16:59:34 stress-street.roof_B4.s2.e_180_-15.before.r1 OK median=66.60 p95=73.52
+17:00:13 stress-street.roof_B4.s2.e_180_-15.cap19.r1 OK median=66.52 p95=68.47
+17:00:52 stress-street.roof_B4.s2.e_180_-15.cap26.r1 OK median=66.67 p95=67.49
+17:01:31 stress-street.roof_B2.s1.e_135_-15.before.r1 OK median=66.43 p95=69.43
+17:02:10 stress-street.roof_B2.s1.e_135_-15.cap19.r1 OK median=66.58 p95=71.26
+17:02:49 stress-street.roof_B2.s1.e_135_-15.cap26.r1 OK median=66.54 p95=69.67
+17:03:26 stress-street.roof_B3.s1.c_180_-15.before.r1 OK median=63.70 p95=67.53
+17:04:04 stress-street.roof_B3.s1.c_180_-15.cap19.r1 OK median=64.84 p95=70.57
+17:04:44 stress-street.roof_B3.s1.c_180_-15.cap26.r1 OK median=66.11 p95=72.03
+17:05:24 stress-street.roof_B4.s2.c_225_0.before.r1 OK median=66.67 p95=70.88
+17:06:03 stress-street.roof_B4.s2.c_225_0.cap19.r1 OK median=66.36 p95=68.75
+17:06:41 stress-street.roof_B4.s2.c_225_0.cap26.r1 OK median=66.52 p95=68.60
+17:07:22 stress-street.roof_A7.s2.c_225_-15.before.r1 OK median=66.50 p95=70.22
+17:07:57 stress-street.roof_A7.s2.c_225_-15.cap19.r1 OK median=63.75 p95=71.93
+17:08:31 stress-street.roof_A7.s2.c_225_-15.cap26.r1 OK median=61.55 p95=72.38
+17:09:11 stress-street.roof_A6.s2.e_225_-15.before.r1 OK median=66.47 p95=70.60
+17:09:51 stress-street.roof_A6.s2.e_225_-15.cap19.r1 OK median=65.25 p95=72.23
+17:10:28 stress-street.roof_A6.s2.e_225_-15.cap26.r1 OK median=65.11 p95=71.94
+17:10:53 stress-street.rd_plaza.before.r1 OK median=41.48 p95=42.52
+17:11:19 stress-street.rd_plaza.cap19.r1 OK median=43.28 p95=45.81
+17:11:44 stress-street.rd_plaza.cap26.r1 OK median=43.34 p95=45.46
+17:12:06 stress-street.rd_promenade.before.r1 OK median=33.11 p95=35.60
+17:12:35 stress-street.rd_promenade.cap19.r1 OK median=49.93 p95=62.23
+17:13:05 stress-street.rd_promenade.cap26.r1 OK median=49.87 p95=62.15
+17:13:28 stress-street.rd_elevated.before.r1 OK median=38.06 p95=39.41
+17:14:04 stress-street.rd_elevated.cap19.r1 OK median=63.51 p95=69.67
+17:14:40 stress-street.rd_elevated.cap26.r1 OK median=63.17 p95=70.12
+17:15:02 stress-street.rd_upperdeck.before.r1 OK median=34.19 p95=35.74
+17:15:26 stress-street.rd_upperdeck.cap19.r1 OK median=39.84 p95=40.36
+17:15:50 stress-street.rd_upperdeck.cap26.r1 OK median=41.87 p95=42.21
+17:15:52 campaign-test.ct_g5.26.0_0.before.r1 NO_REPORT
+17:15:59 campaign-test.ct_g5.26.0_0.before.r1.a2 NO_REPORT
+17:16:06 campaign-test.ct_g5.26.0_0.before.r1.a3 NO_REPORT
+17:16:13 campaign-test.ct_g5.26.0_0.cap19.r1 NO_REPORT
+17:16:19 campaign-test.ct_g5.26.0_0.cap19.r1.a2 NO_REPORT
+17:16:25 campaign-test.ct_g5.26.0_0.cap19.r1.a3 NO_REPORT
+17:16:32 campaign-test.ct_g5.26.0_0.cap26.r1 NO_REPORT
+17:16:38 campaign-test.ct_g5.26.0_0.cap26.r1.a2 NO_REPORT
+17:16:45 campaign-test.ct_g5.26.0_0.cap26.r1.a3 NO_REPORT
+17:16:51 campaign-test.ct_g0.8.0_270.before.r1 NO_REPORT
+17:16:58 campaign-test.ct_g0.8.0_270.before.r1.a2 NO_REPORT
+17:17:05 campaign-test.ct_g0.8.0_270.before.r1.a3 NO_REPORT
+17:17:11 campaign-test.ct_g0.8.0_270.cap19.r1 NO_REPORT
+17:17:18 campaign-test.ct_g0.8.0_270.cap19.r1.a2 NO_REPORT
+17:17:24 campaign-test.ct_g0.8.0_270.cap19.r1.a3 NO_REPORT
+17:17:31 campaign-test.ct_g0.8.0_270.cap26.r1 NO_REPORT
+17:17:37 campaign-test.ct_g0.8.0_270.cap26.r1.a2 NO_REPORT
+17:17:44 campaign-test.ct_g0.8.0_270.cap26.r1.a3 NO_REPORT
+17:17:50 campaign-test.ct_g15.17.1_0.before.r1 NO_REPORT
+17:17:57 campaign-test.ct_g15.17.1_0.before.r1.a2 NO_REPORT
+17:18:03 campaign-test.ct_g15.17.1_0.before.r1.a3 NO_REPORT
+17:18:09 campaign-test.ct_g15.17.1_0.cap19.r1 NO_REPORT
+17:18:16 campaign-test.ct_g15.17.1_0.cap19.r1.a2 NO_REPORT
+17:18:22 campaign-test.ct_g15.17.1_0.cap19.r1.a3 NO_REPORT
+17:18:28 campaign-test.ct_g15.17.1_0.cap26.r1 NO_REPORT
+17:18:35 campaign-test.ct_g15.17.1_0.cap26.r1.a2 NO_REPORT
+17:18:41 campaign-test.ct_g15.17.1_0.cap26.r1.a3 NO_REPORT
+17:18:48 campaign-test.ct_g1.9.0_270.before.r1 NO_REPORT
+17:18:54 campaign-test.ct_g1.9.0_270.before.r1.a2 NO_REPORT
+17:19:01 campaign-test.ct_g1.9.0_270.before.r1.a3 NO_REPORT
+17:19:07 campaign-test.ct_g1.9.0_270.cap19.r1 NO_REPORT
+17:19:14 campaign-test.ct_g1.9.0_270.cap19.r1.a2 NO_REPORT
+17:19:20 campaign-test.ct_g1.9.0_270.cap19.r1.a3 NO_REPORT
+17:19:27 campaign-test.ct_g1.9.0_270.cap26.r1 NO_REPORT
+17:19:33 campaign-test.ct_g1.9.0_270.cap26.r1.a2 NO_REPORT
+17:19:40 campaign-test.ct_g1.9.0_270.cap26.r1.a3 NO_REPORT
+17:20:04 stress-warren-showcase.ar_g8.3.0_180.before.r1 OK median=33.41 p95=33.77
+17:20:27 stress-warren-showcase.ar_g8.3.0_180.cap19.r1 OK median=35.62 p95=36.57
+17:20:48 stress-warren-showcase.ar_g8.3.0_180.cap26.r1 OK median=36.00 p95=36.82
+17:21:09 stress-warren-showcase.ar_g8.0.1_180.before.r1 OK median=37.33 p95=39.97
+17:21:31 stress-warren-showcase.ar_g8.0.1_180.cap19.r1 OK median=37.83 p95=38.71
+17:21:53 stress-warren-showcase.ar_g8.0.1_180.cap26.r1 OK median=37.54 p95=38.12
+17:22:16 stress-warren-showcase.ar_g8.25.1_0.before.r1 OK median=38.91 p95=39.61
+17:22:38 stress-warren-showcase.ar_g8.25.1_0.cap19.r1 OK median=37.98 p95=38.48
+17:23:01 stress-warren-showcase.ar_g8.25.1_0.cap26.r1 OK median=39.20 p95=40.00
+17:23:18 stress-warren-showcase.ar_g12.17.2_180.before.r1 OK median=28.27 p95=28.72
+17:23:34 stress-warren-showcase.ar_g12.17.2_180.cap19.r1 OK median=28.75 p95=29.31
+17:23:51 stress-warren-showcase.ar_g12.17.2_180.cap26.r1 OK median=28.99 p95=29.72
+17:24:13 stress-warren-hallway-inspection.hw_g13.16.2_0.before.r1 OK median=29.28 p95=30.21
+17:24:38 stress-warren-hallway-inspection.hw_g13.16.2_0.cap19.r1 OK median=32.50 p95=34.24
+17:25:01 stress-warren-hallway-inspection.hw_g13.16.2_0.cap26.r1 OK median=32.10 p95=34.20
+17:25:01 rep 1 done
+17:25:21 occlusion-test.fc_P1.cap19.r2 OK median=33.80 p95=34.09
+17:25:42 occlusion-test.fc_P1.cap26.r2 OK median=33.95 p95=34.65
+17:xx batch stopped by hand after rep 1 (completion-time quantization check)

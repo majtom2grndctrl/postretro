@@ -1,6 +1,7 @@
 // Source-derived upload ownership and staging-mechanism gates.
-// See: context/plans/in-progress/per-frame-upload-batching, AC 2/7/18
+// See: context/plans/done/per-frame-upload-batching, AC 2/7/18
 
+mod gpu_create_gate;
 mod scanner;
 use scanner::*;
 use std::path::Path;
@@ -16,7 +17,9 @@ fn renderer_direct_uploads_and_submissions_have_lifecycle_owners() {
     );
     for site in &sites {
         if site.method != "submit"
-            && (site.receiver == Receiver::RawQueue || site.method == "direct_write_buffer")
+            && (site.receiver == Receiver::RawQueue
+                || site.receiver == Receiver::Named(QUEUE_WRITES.into())
+                || site.method == "direct_write_buffer")
         {
             println!(
                 "{}: {}",
@@ -310,4 +313,79 @@ fn drift_scanner_restores_staged_receivers_between_match_arms_and_if_branches() 
         ]
     );
     assert_eq!(violations(&sites).len(), 4);
+}
+
+#[test]
+fn drift_scanner_admits_only_the_upload_thread_flush_and_its_job_queue() {
+    let sources = vec![Source {
+        path: "render/upload_thread.rs".into(),
+        syntax: syn::parse_file(
+            r#"
+            fn flush_staged_writes(queue: &wgpu::Queue) { queue.submit(std::iter::empty()); }
+            fn run_job(queue: &wgpu::Queue) { queue.submit(commands); }
+            fn begin(thread: &UploadThread) { thread.submit(job); }
+        "#,
+        )
+        .unwrap(),
+    }];
+    let (sites, _) = scan(&sources);
+    assert_eq!(sites.len(), 3);
+    assert_eq!(direct_class(&sites[0]), Some("off-main upload flush"));
+    assert_eq!(sites[2].receiver, Receiver::Named("UploadThread".into()));
+    let errors = violations(&sites);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("run_job"), "{errors:?}");
+}
+
+#[test]
+fn drift_scanner_classifies_routed_writes_and_admits_only_the_metered_writer() {
+    let parse = |source: &str| syn::parse_file(source).unwrap();
+    let sources = vec![
+        Source {
+            path: "render/upload_thread.rs".into(),
+            syntax: parse(
+                r#"
+                struct ChunkedWrites { queue: wgpu::Queue }
+                impl QueueWrites for ChunkedWrites {
+                    fn write_buffer(&self, b: &wgpu::Buffer, o: u64, d: &[u8]) {
+                        self.queue.write_buffer(b, o, d);
+                    }
+                }
+                struct Other { queue: wgpu::Queue }
+                impl Other {
+                    fn write_buffer(&self, b: &wgpu::Buffer) { self.queue.write_buffer(b, 0, d); }
+                }
+            "#,
+            ),
+        },
+        Source {
+            path: "render/frame.rs".into(),
+            syntax: parse(
+                r#"
+                fn frame(writes: &dyn QueueWrites) { writes.write_buffer(b, 0, d); }
+                fn routed(writes: &impl QueueWrites) { writes.write_texture(t, d, l, s); }
+            "#,
+            ),
+        },
+    ];
+    let (sites, _) = scan(&sources);
+    assert_eq!(
+        sites.iter().map(|site| &site.receiver).collect::<Vec<_>>(),
+        vec![
+            &Receiver::RawQueue,
+            &Receiver::RawQueue,
+            &Receiver::Named(QUEUE_WRITES.into()),
+            &Receiver::Named(QUEUE_WRITES.into()),
+        ]
+    );
+    assert_eq!(
+        direct_class(&sites[0]),
+        Some("off-main build write (metered, chunked submits)")
+    );
+    let errors = violations(&sites);
+    assert_eq!(
+        errors.len(),
+        3,
+        "only the metered writer is classified; a routed write still needs its own lifecycle class: {errors:?}"
+    );
 }

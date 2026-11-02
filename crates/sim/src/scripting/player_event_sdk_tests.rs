@@ -261,7 +261,7 @@ fn update_state_reading_by_player_on_player_writes_the_event_players_value_in_bo
         assert_eq!(
             global(&world, LAST_LEVEL_UP_XP),
             140.0,
-            "{script}: recordLevelUp writes the crossing player's XP"
+            "{script}: the level-up writes the crossing player's XP"
         );
         assert_eq!(
             per_seat(&world, LEVEL, Seat(2)),

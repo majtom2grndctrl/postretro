@@ -3,7 +3,7 @@
 // remains a type-level capability. Presentation-local cells below remain
 // separate and keep their `.get()`/`.set()` handle behavior.
 
-import type { PrimitiveReactionDescriptor } from "../data_script";
+import type { SystemReactionStep } from "../data_script";
 import type {
   ColorTween,
   LocalBindRef,
@@ -90,7 +90,7 @@ export type LocalStateHandle<T extends CellInit> = {
   /** The `{ local }` bind reference a widget's `bind` prop accepts. */
   get(): LocalBindRef;
   /** A `cellWrite` reaction descriptor writing `value` to this cell. */
-  set(value: T): PrimitiveReactionDescriptor;
+  set(value: T): SystemReactionStep;
   /**
    * An equality `Predicate` against this cell (`{ local, equals: value }`).
    * `value` is typed to the cell's `T`, so a mismatched comparand is a TS error.
@@ -144,7 +144,7 @@ export function createLocalState<I extends Record<string, CellInit>>(
       get(): LocalBindRef {
         return { local: name as string };
       },
-      set(value): PrimitiveReactionDescriptor {
+      set(value): SystemReactionStep {
         // A `cellWrite` reaction (NEVER `setState`): presentation cell, scoped.
         return {
           primitive: "cellWrite",

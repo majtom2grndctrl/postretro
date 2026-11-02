@@ -3,6 +3,8 @@
 //! Source-format brush entities are translated into [`MapStreamingHintRegion`]
 //! before this module runs. This is deliberately the later, engine-space seam:
 //! portal IDs and cell IDs do not exist until the BSP and portal passes finish.
+//! Seams resolve against the runtime portals, those between occluder-tier
+//! cells; the full tree's portals never reach here.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,7 +72,7 @@ pub(crate) fn resolve_streaming_hints(
         }
         anyhow::ensure!(
             matched,
-            "streaming_seam_volume {} matches no generated portal with positive-area through-hull overlap",
+            "streaming_seam_volume {} matches no runtime portal with positive-area through-hull overlap",
             hint_location(region),
         );
     }
@@ -484,7 +486,7 @@ mod tests {
         .expect_err("one-sided hull must not produce a seam");
         assert!(
             error.to_string().contains("streaming_seam_volume")
-                && error.to_string().contains("matches no generated portal"),
+                && error.to_string().contains("matches no runtime portal"),
             "error must name the authored hint: {error}",
         );
     }
@@ -510,7 +512,7 @@ mod tests {
         };
         let error = resolve_streaming_hints(&[region], &[], &[], &portals, &packed, &cells)
             .expect_err("the exact f32 hull plane leaves no portal-area overlap");
-        assert!(error.to_string().contains("matches no generated portal"));
+        assert!(error.to_string().contains("matches no runtime portal"));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/campaign-test/campaign-test.prl: L 16 m, 487 camera cells; mandatory texels p50 0.0 M p95 34.4 M max 37.3 M (pool cap 15 layers ~62.9 M)
+  cell 14: 37.3 M, 167 entries
+  cell 9: 37.3 M, 167 entries
+  cell 3: 37.3 M, 167 entries
+  cell 388: 35.4 M, 104 entries
+  cell 355: 35.4 M, 114 entries
+  cells over 62.9 M: 0

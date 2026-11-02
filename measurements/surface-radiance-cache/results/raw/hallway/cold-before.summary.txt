@@ -1,0 +1,33 @@
+Build Summary:
+  Parsing           0.53s
+  Partitioning      0.56s
+  DataScript        0.10s
+  Visibility        0.11s
+  Geometry          0.01s
+  BVH Build         0.01s
+  Cell Visibility   0.11s
+  NavMesh           2.37s
+  TexValidation     0.01s
+  Materials         0.25s
+  SH Bake         267.49s
+  Delta SH Bake    15.93s
+  Direct SH Bake    6.88s
+  Animated Direct SH Bake   0.65s
+  EntityShadowLights   0.02s
+  Direct SH Delta Bake   3.05s
+  Billboard Direct Scatter Bake   4.80s
+  ChunkLightList    1.29s
+  Atlas Preparation   0.33s
+  Cell Residency Set   0.34s
+  Lightmap Bake   865.96s
+    TexelSteps    105.39s
+  ShadowmaskAtlas  17.12s
+  AnimLightChunks   1.41s
+  AnimWeightMaps    8.85s
+    TexelSteps      3.24s
+  TextureMips       0.00s
+  Reflection Probes   0.00s
+  ClusterDirectory   0.40s
+  Packing          18.12s
+  Total           1235.83s
+

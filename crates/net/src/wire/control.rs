@@ -137,10 +137,33 @@ pub enum ClientControlMessage {
     JoinSeed {
         slots: BTreeMap<String, JoinSeedValue>,
     },
-    /// The level identity this client has revealed: the same opaque string as
-    /// its parity declaration's identity. `None` retracts a reveal at unload or
-    /// suspend. Re-sent on change; the host keeps the last one per slot.
-    Revealed(Option<String>),
+    /// The level install this client has revealed. `None` retracts a reveal
+    /// at unload or suspend. Re-sent on change; the host keeps the last one
+    /// per slot.
+    Revealed(Option<RevealedLevel>),
+}
+
+/// One revealed level install: which map, and which host install of it.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RevealedLevel {
+    /// The same opaque string as the parity declaration's level identity.
+    pub identity: String,
+    /// The host level life (`ServerControlMessage::Relevel`) this install
+    /// followed, or `None` for a level the host never named: an uncatalogued
+    /// one, or a reveal before the first relevel. On a catalog level the host
+    /// promotes only a reveal of its current life, so a reveal from before a
+    /// restart of the same map never counts.
+    pub level_life: Option<u64>,
+}
+
+impl RevealedLevel {
+    #[must_use]
+    pub fn new(identity: impl Into<String>, level_life: Option<u64>) -> Self {
+        Self {
+            identity: identity.into(),
+            level_life,
+        }
+    }
 }
 
 /// A terminal immutable-admission mismatch.
@@ -189,8 +212,8 @@ pub enum HoldingCause {
         identity: String,
     },
     /// Content parity holds and the host has revealed, but this client has not
-    /// declared that it revealed the host's level. Carries the host's level
-    /// identity.
+    /// declared that it revealed the host's installed level: that map, and on
+    /// a catalog level that install's life. Carries the host's level identity.
     ClientNotRevealed {
         identity: String,
     },
@@ -292,9 +315,16 @@ pub enum ServerControlMessage {
     /// Opaque engine-serialized tuning. Net is a registry-blind courier and must
     /// never decode, compare, or validate this descriptor payload.
     Tuning(Vec<u8>),
-    /// Host-selected map catalog id. The engine resolves it against the local
-    /// catalog and follows through its normal queued level-load path.
-    Relevel(String),
+    /// Host-selected map catalog id and the host install it names. The engine
+    /// resolves the id against the local catalog and follows through its
+    /// normal queued level-load path. `level_life` is the host's install
+    /// generation: it advances at every catalog install, a same-map restart
+    /// included, so a client can tell a restart of its active map from a
+    /// duplicate of the install it already follows.
+    Relevel {
+        catalog_id: String,
+        level_life: u64,
+    },
     /// Session-lifetime player roster. This stays deliberately registry-blind:
     /// seats are bare wire integers and carried seat contents remain host-local.
     ///
@@ -495,7 +525,10 @@ mod tests {
             )]),
         }));
         assert!(round_trips(&ClientControlMessage::Revealed(Some(
-            "map-a".to_string()
+            RevealedLevel::new("map-a", Some(4))
+        ))));
+        assert!(round_trips(&ClientControlMessage::Revealed(Some(
+            RevealedLevel::new("map-a", None)
         ))));
         assert!(round_trips(&ClientControlMessage::Revealed(None)));
         assert!(round_trips(&ServerControlMessage::Divergence(
@@ -512,9 +545,10 @@ mod tests {
             }),
         )));
         assert!(round_trips(&ServerControlMessage::Tuning(vec![1, 2, 3])));
-        assert!(round_trips(&ServerControlMessage::Relevel(
-            "e1m1".to_string()
-        )));
+        assert!(round_trips(&ServerControlMessage::Relevel {
+            catalog_id: "e1m1".to_string(),
+            level_life: 7,
+        }));
         assert!(round_trips(&ServerControlMessage::SessionRoster(
             SessionRosterMessage {
                 session_id: SessionId([0x21; 16]),

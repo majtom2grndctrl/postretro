@@ -93,6 +93,18 @@ pub fn clip_polygon_to_front(
     split_polygon(vertices, plane_normal, plane_distance, epsilon).0
 }
 
+/// Area of a simple planar polygon.
+pub fn polygon_area(vertices: &[DVec3]) -> f64 {
+    let Some(&first) = vertices.first() else {
+        return 0.0;
+    };
+    let mut twice_area = DVec3::ZERO;
+    for pair in vertices[1..].windows(2) {
+        twice_area += (pair[0] - first).cross(pair[1] - first);
+    }
+    twice_area.length() * 0.5
+}
+
 /// Build a large bounded polygon on an arbitrary plane.
 pub(crate) fn make_base_winding(normal: DVec3, distance: f64) -> Vec<DVec3> {
     // Pick a reference axis not near-parallel to the normal to form a stable basis.
@@ -227,7 +239,7 @@ mod tests {
             DVec3::NEG_Z,
         ] {
             let winding = make_base_winding(normal, 0.0);
-            let area = polygon_area_for_test(&winding);
+            let area = polygon_area(&winding);
             assert!(
                 area > 1.0,
                 "winding for normal {normal} has area {area}, expected large"
@@ -252,20 +264,5 @@ mod tests {
             assert!(v.x >= -0.01, "vertex {v} behind X plane");
             assert!(v.y >= -0.01, "vertex {v} behind Y plane");
         }
-    }
-
-    fn polygon_area_for_test(vertices: &[DVec3]) -> f64 {
-        if vertices.len() < 3 {
-            return 0.0;
-        }
-
-        let mut area = DVec3::ZERO;
-        let v0 = vertices[0];
-        for i in 1..vertices.len() - 1 {
-            let edge1 = vertices[i] - v0;
-            let edge2 = vertices[i + 1] - v0;
-            area += edge1.cross(edge2);
-        }
-        area.length() * 0.5
     }
 }

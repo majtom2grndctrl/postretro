@@ -14,7 +14,7 @@
 // animated direct is owned by `lm_anim`.
 //
 // For each reaching static light at a probe:
-//   radiance = incident_radiance_at_point(light, probe) * soft_visibility(probe, light)
+//   radiance = incident_radiance_at_point(light, probe) * soft visibility(probe, light)
 //   accumulate_sh_rgb along probe→light
 // then after all lights apply_cosine_lobe_rgb and pack into the octahedral atlas.
 //
@@ -29,9 +29,17 @@
 // unculled bake. The falloff and cone stages reject only cells outside the light's
 // reach; the portal stage shares the delta bake's disjoint-reach contract.
 //
+// Embedded emitters: a light whose emitter sphere reaches into geometry
+// (`texel_footprint::EmbeddedEmitters`, tested once per compile in the pipeline
+// with the penumbra floor on) traces its full sample set at every probe, here
+// and in the direct deltas and billboard scatter; the 4-probe early-out would
+// store a probe that misses the embedded cap too bright. Unflagged lights keep
+// the early-out and their bytes.
+//
 // See: context/lib/build_pipeline.md, context/lib/rendering_pipeline.md §4
 
 use crate::bake_control::BakeControl;
+use bvh::bvh::Bvh;
 use postretro_level_format::delta_sh_volumes::{
     AFFINITY_FACTOR as FORMAT_AFFINITY_FACTOR,
     DEFAULT_DELTA_PROBE_F16_STRIDE as FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE,
@@ -52,10 +60,13 @@ use crate::affinity_grid::{
     AFFINITY_FACTOR, AffinityReachInputs, AffinityReachPolicy, build_csr, csr_entry_cells,
     decompose_affinity_for_lights,
 };
+use crate::bake_content_keys::geometry_content_hash;
 use crate::bc6h;
+use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
 use crate::delta_sh_cache::{DeltaShCacheTally, bake_delta_subblocks_uncached};
-use crate::light_namespaces::AlphaLightsNs;
+use crate::geometry::GeometryResult;
+use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::map_data::{MapLight, ShadowType};
 use crate::portals::Portal;
 use crate::sh_bake::{
@@ -63,7 +74,7 @@ use crate::sh_bake::{
     pack_octahedral_irradiance_tile, probe_grid_layout, sh_atlas_array_layout, static_light_refs,
     vec3_from,
 };
-use crate::sh_group::geometry_content_hash;
+use crate::texel_footprint::{EmbeddedEmitters, ProbeEarlyOut, has_emitter_sphere};
 
 /// Cache stage id for the whole-section direct SH bake on the shared `StageCache`.
 pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
@@ -72,7 +83,7 @@ pub const DIRECT_SH_STAGE_ID: &str = "direct_sh_volume";
 /// assembly, the reach cull, atlas packing, or cached section payload layout).
 /// Versions independently from the indirect SH stages and from the
 /// section-internal `DIRECT_SH_VOLUME_VERSION` (which guards the on-disk format).
-pub const DIRECT_SH_STAGE_VERSION: u32 = 5;
+pub const DIRECT_SH_STAGE_VERSION: u32 = 6;
 
 /// Dormant cache stage id for raw entity-shadow direct-delta
 /// `(affinity cell, light)` sub-blocks: the stage bakes uncached. Kept so its
@@ -85,7 +96,7 @@ pub(crate) const DIRECT_SH_DELTA_STAGE_ID: &str = "direct_sh_delta_subblock";
 /// Kept, independent of the base direct-SH cache and the on-disk direct-delta
 /// section format, so the key fold the tests pin stays distinct.
 #[cfg(test)]
-pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 3;
+pub(crate) const DIRECT_SH_DELTA_STAGE_VERSION: u32 = 4;
 
 const TILE_DIMENSION: u32 = DEFAULT_IRRADIANCE_TILE_DIMENSION;
 const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
@@ -97,6 +108,99 @@ const TILE_BORDER: u32 = DEFAULT_IRRADIANCE_TILE_BORDER;
 pub struct DirectBakeInputs<'a, 'b> {
     pub sh_ctx: &'a ShBakeCtx<'b>,
     pub portals: &'a [Portal],
+    /// Static lights whose emitter sphere reaches into geometry, keyed by
+    /// position in `sh_ctx.static_lights` (the global index the seeds use):
+    /// [`probe_point_emitters`]. Flagged lights trace their full sample set.
+    pub(crate) embedded_emitters: &'a EmbeddedEmitters,
+}
+
+/// The bounce family's emitter tests: every static point or spot light with
+/// an emitter sphere, `sdf`-shadowed included, keyed by position in
+/// `static_lights`, with the penumbra floor on; empty with it off. The
+/// surface radiance cache's patch direct reads this set, since every static
+/// light bounces whatever direct path it takes; the probe-point set is
+/// filtered from it ([`probe_point_emitters`]).
+pub(crate) fn bounce_embedded_emitters(
+    scene: &EmitterScene<'_>,
+    penumbra_floor: bool,
+    control: &BakeControl,
+) -> EmbeddedEmitters {
+    if !penumbra_floor {
+        return EmbeddedEmitters::default();
+    }
+    EmbeddedEmitters::classify_bounce(
+        scene
+            .static_lights
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (index, entry.light)),
+        scene.bvh,
+        scene.primitives,
+        scene.geometry,
+        control,
+    )
+}
+
+/// The probe-point bakes' static emitter flags (direct SH, its entity-shadow
+/// deltas, billboard scatter), keyed by position in `static_lights`: the
+/// bounce family's set ([`bounce_embedded_emitters`]) kept for the lights
+/// those bakes test, `StaticLightMap` lights with an emitter sphere. A
+/// light's fraction reads only the light and the pre-cut geometry, so the
+/// kept flags, fractions and order, and so the
+/// [`EmbeddedEmitters::hash_keys`] bytes, are what testing those lights
+/// alone gives, and no light is traced twice. Empty when the bounce set is,
+/// as with the penumbra floor off, so `--no-penumbra-floor` probes keep
+/// their pre-floor bytes; the cached stages fold the flagged keys, so
+/// toggling the floor re-keys only when a light is flagged. The lightmap
+/// stage tests the same lights on the cut geometry, so the verdicts can
+/// differ only where a face cut passes through a light's sphere. This set
+/// does not warn: the lightmap stage takes it and warns once for each light
+/// either test flags.
+pub(crate) fn probe_point_emitters(
+    bounce: &EmbeddedEmitters,
+    static_lights: &StaticBakedLights<'_>,
+) -> EmbeddedEmitters {
+    let entries = static_lights.entries();
+    bounce.filtered(|key| {
+        entries.get(key).is_some_and(|entry| {
+            entry.light.shadow_type == ShadowType::StaticLightMap && has_emitter_sphere(entry.light)
+        })
+    })
+}
+
+/// What the static emitter tests read: the static lights and the pre-cut
+/// geometry they are tested against. No material or probe input, so the
+/// pipeline classifies before the material stage.
+pub(crate) struct EmitterScene<'a> {
+    pub(crate) static_lights: &'a StaticBakedLights<'a>,
+    pub(crate) bvh: &'a Bvh<f32, 3>,
+    pub(crate) primitives: &'a [BvhPrimitive],
+    pub(crate) geometry: &'a GeometryResult,
+}
+
+#[cfg(test)]
+impl<'a> EmitterScene<'a> {
+    pub(crate) fn of(ctx: &ShBakeCtx<'a>) -> Self {
+        Self {
+            static_lights: ctx.static_lights,
+            bvh: ctx.bvh,
+            primitives: ctx.primitives,
+            geometry: ctx.geometry,
+        }
+    }
+}
+
+/// Each of the static-direct lights' probe early-outs, from its global
+/// index's flag.
+pub(crate) fn direct_early_outs(
+    embedded_emitters: &EmbeddedEmitters,
+    global_indices: &[u64],
+) -> Vec<ProbeEarlyOut> {
+    global_indices
+        .iter()
+        .map(|&index| ProbeEarlyOut::for_probe_point(embedded_emitters.is_embedded(index as usize)))
+        .collect()
 }
 
 /// Build the empty (`grid_dimensions == [0,0,0]`) direct section for empty
@@ -236,6 +340,7 @@ pub fn bake_direct_sh_volume_controlled(
 
     let static_lights = static_light_refs(inputs.sh_ctx);
     let (direct_lights, global_indices) = static_direct_lights(&static_lights);
+    let early_outs = direct_early_outs(inputs.embedded_emitters, &global_indices);
     let reach = build_reach_index(inputs, &direct_lights, config.probe_spacing);
 
     let dims = layout.dims;
@@ -255,6 +360,7 @@ pub fn bake_direct_sh_volume_controlled(
                 &layout,
                 &direct_lights,
                 &global_indices,
+                &early_outs,
                 &reach,
                 probe_index,
                 nx,
@@ -583,6 +689,8 @@ fn bake_direct_delta_subblock(
         primitives: inputs.sh_ctx.primitives,
         geometry: inputs.sh_ctx.geometry,
     };
+    let early_out =
+        ProbeEarlyOut::for_probe_point(inputs.embedded_emitters.is_embedded(static_index as usize));
     let mut out =
         Vec::with_capacity(FORMAT_PROBES_PER_CELL * FORMAT_DEFAULT_DELTA_PROBE_F16_STRIDE);
 
@@ -601,6 +709,7 @@ fn bake_direct_delta_subblock(
                             probe_pos,
                             &[light],
                             &[static_index],
+                            &[early_out],
                             probe_index as u64,
                         );
                         pack_octahedral_irradiance_tile(
@@ -639,6 +748,7 @@ fn bake_probe_tile(
     layout: &ProbeGridLayout,
     direct_lights: &[&MapLight],
     global_indices: &[u64],
+    early_outs: &[ProbeEarlyOut],
     reach: &ReachIndex,
     probe_index: usize,
     nx: usize,
@@ -671,6 +781,8 @@ fn bake_probe_tile(
         .iter()
         .map(|&i| global_indices[i as usize])
         .collect();
+    let light_early_outs: Vec<ProbeEarlyOut> =
+        reaching.iter().map(|&i| early_outs[i as usize]).collect();
 
     let ctx = RaytracingCtx {
         // Direct-light visibility rays never bounce, so they stay colour-blind.
@@ -680,8 +792,14 @@ fn bake_probe_tile(
         geometry: inputs.sh_ctx.geometry,
     };
     let probe_pos = vec3_from(layout.probe_positions[probe_index]);
-    let coefficients =
-        bake_probe_direct_rgb(&ctx, probe_pos, &lights, &seed_indices, probe_index as u64);
+    let coefficients = bake_probe_direct_rgb(
+        &ctx,
+        probe_pos,
+        &lights,
+        &seed_indices,
+        &light_early_outs,
+        probe_index as u64,
+    );
     pack_octahedral_irradiance_tile(&coefficients, true, TILE_DIMENSION, TILE_BORDER)
 }
 
@@ -788,6 +906,12 @@ fn direct_cache_key(
         hasher.update(&(portal.back_leaf as u64).to_le_bytes());
     }
 
+    // Flagged embedded emitters trace their full set. The flags derive from the
+    // keyed lights and geometry, but only with the penumbra floor on, so the
+    // flagged set itself is folded: toggling the floor re-keys a map that
+    // flags a light, and no other.
+    inputs.embedded_emitters.hash_keys(&mut hasher);
+
     let digest = hasher.finalize();
     CacheKey::new(
         DIRECT_SH_STAGE_ID,
@@ -803,8 +927,8 @@ fn direct_cache_key(
 /// bake (matching the indirect cold path).
 ///
 /// The cull is the STRICT provably-zero falloff+portal+spot-cone test in BOTH warm
-/// and cold modes — it does NOT inherit warm SH's lossy bounded-light dilation — so the
-/// bake output is byte-identical whether or not a cache is present.
+/// and cold modes, so the bake output is byte-identical whether or not a cache is
+/// present.
 pub fn bake_direct_sh_volume_cached(
     inputs: &DirectBakeInputs<'_, '_>,
     config: &ShConfig,
@@ -1175,6 +1299,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let selected = EntityShadowLightsSection {
             light_indices: vec![0],
@@ -1303,6 +1428,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         bake_direct_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 })
     }
@@ -1402,6 +1528,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -1510,6 +1637,7 @@ mod tests {
         let inputs_culled = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         // Unculled reference: a portal connects the two leaves → the reach flood
         // keeps every cell, so every light is considered at every probe. The
@@ -1522,6 +1650,7 @@ mod tests {
         let inputs_unculled = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &portals,
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
 
         let culled_count = log_cull_savings(&inputs_culled, &config);
@@ -1578,6 +1707,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
         let section = bake_direct_sh_volume(&inputs, &config);
@@ -1707,6 +1837,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let selected = EntityShadowLightsSection {
             light_indices: vec![0, 2],
@@ -1848,6 +1979,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let selected = EntityShadowLightsSection {
             light_indices: vec![0],
@@ -2000,6 +2132,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -2069,6 +2202,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let section = bake_direct_sh_volume(&inputs, &ShConfig { probe_spacing: 1.0 });
         assert_eq!(section.grid_dimensions, [0, 0, 0]);
@@ -2109,6 +2243,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -2163,6 +2298,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -2409,6 +2545,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 
@@ -2495,6 +2632,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
 
         let config_a = ShConfig { probe_spacing: 1.0 };
@@ -2580,6 +2718,7 @@ mod tests {
         let inputs = DirectBakeInputs {
             sh_ctx: &sh_ctx,
             portals: &[],
+            embedded_emitters: &crate::texel_footprint::NO_EMBEDDED_EMITTERS,
         };
         let config = ShConfig { probe_spacing: 1.0 };
 

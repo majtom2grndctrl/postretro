@@ -21,7 +21,8 @@ use postretro_level_format::cell_residency_set::CellResidencySetSection;
 
 /// Each 64×64 corridor block fills one 64² pool layer, and the cap is one
 /// layer, so the camera's mandatory set grows the pool past its first
-/// generation.
+/// generation. A growth reserves the targeted set's layers times the pool's
+/// growth headroom (4/3): camera 0's three mandatory blocks reserve four.
 const LAYER_EDGE: u32 = 64;
 const CAP_LAYERS: u32 = 1;
 const STEP_LIMIT: VisibilityPath = VisibilityPath::PortalStepLimitFallback {
@@ -79,9 +80,10 @@ impl Corridor {
         self.driver.mirror().stats.deferred
     }
 
-    /// Frame 1 at camera 0 grows the pool for its mandatory blocks 0–2;
-    /// frame 2 moves to camera 3, whose mandatory blocks 1–5 need room the
-    /// retiring generation cannot give: 0 is evicted for 3, and 4 and 5 wait.
+    /// Frame 1 at camera 0 grows the pool to four layers for its mandatory
+    /// blocks 0–2; frame 2 moves to camera 3, whose mandatory blocks 1–5
+    /// need five: 0 is freed, 3 and 4 take its layer and the reserved one,
+    /// and 5 waits behind the retiring generation.
     fn grow_then_turn(&mut self) -> [FrameOutcome; 2] {
         let first = self.frame(0, PORTAL, &[0]);
         let second = self.frame(3, PORTAL, &[3, 4, 5]);
@@ -109,20 +111,20 @@ fn completed_reads_frame_counts_a_twice_deferred_block_once_and_retires_per_fram
     assert!(second.retiring_at_start);
     assert_eq!(
         (second.deferred, second.left_behind),
-        (2, 0),
-        "blocks 4 and 5 wait behind the retiring generation"
+        (1, 0),
+        "block 5 waits behind the retiring generation"
     );
 
     let before = corridor.deferred_drains();
     let third = corridor.frame(3, PORTAL, &[3, 4, 5]);
     assert_eq!(
         corridor.deferred_drains() - before,
-        2 * u64::from(COMPLETED_READS_DRAINS),
-        "both drains carried and deferred blocks 4 and 5"
+        u64::from(COMPLETED_READS_DRAINS),
+        "both drains carried and deferred block 5"
     );
     assert_eq!(
         (third.deferred, third.left_behind),
-        (2, 0),
+        (1, 0),
         "each drawn block counts once per frame, however many drains defer it"
     );
     assert!(
@@ -145,7 +147,7 @@ fn completed_reads_frame_counts_a_twice_deferred_block_once_and_retires_per_fram
 fn per_drain_retirement_releases_a_frame_early_under_two_drains_per_frame() {
     let mut corridor = Corridor::new(ReadsMode::CompletedReads, RetireClock::Drains);
     let [_, second] = corridor.grow_then_turn();
-    assert_eq!(second.deferred, 2);
+    assert_eq!(second.deferred, 1);
     let third = corridor.frame(3, PORTAL, &[3, 4, 5]);
     assert!(
         third.grew,
@@ -193,12 +195,13 @@ fn record(label: &str, frames: &[(VisibilityPath, FrameOutcome)]) -> RunRecord {
 fn paired_run_splits_frames_by_the_recorded_runs_trips() {
     // Both runs stand at camera 0; the spawn frame's growth has retired by
     // frame 3. There the recorded (pre-change) run trips, so it reads only
-    // the baked set while it draws cell 6. The rect run never trips: it
-    // demands cell 6's block as visible and grows its pool for it.
+    // the baked set while it draws cells 5 and 6. The rect run never trips:
+    // it demands their blocks as visible, one more than the spawn growth's
+    // reserved layer holds, and grows its pool for them.
     const TRIP_FRAME: usize = 3;
     let drawn = |frame: usize| {
         if frame == TRIP_FRAME {
-            &[0, 6][..]
+            &[0, 5, 6][..]
         } else {
             &[0][..]
         }
@@ -251,8 +254,8 @@ fn paired_run_splits_frames_by_the_recorded_runs_trips() {
     assert_eq!(split.held_after_trip, 2);
     assert_eq!(split.apart[1].trip_frames, 1);
     assert_eq!(
-        split.apart[1].left_behind, 1,
-        "the recorded run's undemanded draw on its trip frame is reported apart"
+        split.apart[1].left_behind, 2,
+        "the recorded run's undemanded draws on its trip frame are reported apart"
     );
     assert_eq!(
         (split.gate[0].not_resident(), split.gate[1].not_resident()),

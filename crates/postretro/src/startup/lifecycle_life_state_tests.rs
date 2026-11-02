@@ -226,7 +226,7 @@ impl World {
             crate::mod_digest::mod_compatibility_digest_from_registry(&ctx.data_registry.borrow()),
         ));
         client.set_level_parity(Some((LEVEL.into(), LEVEL_DIGEST)));
-        client.set_revealed_level(Some(LEVEL.into()));
+        client.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(LEVEL, None)));
         client.set_connected();
         client
     }
@@ -484,7 +484,7 @@ fn life_state_o22_held_dead_survives_app_suspend_reclaims_as_spectating_and_unlo
     let _ = world.poll();
     assert!(!script_ctx(&world.app).registry.borrow().exists(old));
     assert_eq!(world.carried_name().as_deref(), Some("dead"));
-    world.app.suspend_level_state();
+    world.app.suspend_platform();
     assert_eq!(world.carried_name().as_deref(), Some("dead"));
     world.restore_host_parity();
     world.client_id = CLIENT + 1;
@@ -525,7 +525,7 @@ fn life_state_o30_app_suspend_keeps_host_clock_and_demotes_remote_before_rejoin(
     world.enter(world.host, "down", 731, 0.0);
     world.enter(world.remote, "down", 600, 0.0);
     let old = world.remote;
-    world.app.suspend_level_state();
+    world.app.suspend_platform();
     world.assert_state(world.host, "down", 731);
     assert!(
         script_ctx(&world.app).registry.borrow().exists(old),
@@ -672,7 +672,7 @@ fn life_state_o39_actual_staged_app_reload_discards_a_parked_life_state_wait_tai
         .scripting
         .scheduler
         .clone();
-    scheduler.set_enabled(true);
+    scheduler.set_role(postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host);
     {
         let scripting = &mut world.app.session.as_mut().unwrap().scripting;
         register_reaction_control_primitives(&mut scripting.sequence_registry, scheduler.clone());

@@ -1,0 +1,18 @@
+{
+ "map": "content/dev/maps/ab-mover-setpiece-fill-1.prl",
+ "camera": {
+  "position": [
+   -21.14,
+   1.6,
+   -3.512
+  ],
+  "yaw_deg": 90.0,
+  "pitch_deg": -8.0,
+  "fov_deg": 100.0
+ },
+ "resolution": [
+  960,
+  540
+ ],
+ "output": "measurements/surface-radiance-cache/ab-captures/raw/mover-setpiece-v2-south-face-full-fill-1.png"
+}

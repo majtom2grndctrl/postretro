@@ -2,6 +2,7 @@
 // ghost draw recording.
 // See: context/lib/rendering_pipeline.md §7.9
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 use postretro_render_cpu::mesh_instances::MeshFramePlan;
 
@@ -89,7 +90,7 @@ pub(super) fn skinned_ghost_pipelines(
             GhostDrawStep::Depth => &depth_layout,
             GhostDrawStep::Colour => &layout,
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
@@ -134,6 +135,7 @@ impl MeshPass {
     pub(super) fn record_ghost_spans(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
+        models: &super::mesh_pass::LevelModels,
         plan: &MeshFramePlan,
         spans: &[SkinnedGhostSpan],
         mode: GhostTransparency,
@@ -148,7 +150,7 @@ impl MeshPass {
             let Some(group) = plan.groups.get(span.group as usize) else {
                 continue;
             };
-            let Some(model) = self.models.get(&group.model) else {
+            let Some(model) = models.get(&group.model) else {
                 continue;
             };
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));

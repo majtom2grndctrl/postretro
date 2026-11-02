@@ -55,6 +55,14 @@ pub fn reads_dispatch_input(args: &serde_json::Value, name: &str) -> bool {
     found
 }
 
+/// Whether `args` read any dispatch input (`on.rising`, `on.occupancy`): an
+/// input leaf named by its `@` wire spelling. A `wait` does not keep them.
+pub fn reads_any_dispatch_input(args: &serde_json::Value) -> bool {
+    let mut found = false;
+    for_each_input(args, &mut |input, _| found |= input.starts_with('@'));
+    found
+}
+
 /// Whether `args` hold a `byPlayer(on.player)` read.
 pub fn reads_event_player(args: &serde_json::Value) -> bool {
     let mut found = false;

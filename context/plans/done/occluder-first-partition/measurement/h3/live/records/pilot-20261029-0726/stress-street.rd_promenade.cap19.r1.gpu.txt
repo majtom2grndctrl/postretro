@@ -1,0 +1,15 @@
+gpu span_s=6.46 frame_ms=16.889 frames_by_time=383 resolve_passes=309 busy_frac=0.642 gpu_ms_per_frame=10.848 gfxcompute_frac=0.609 gfxcompute_ms_per_frame=10.290 counted_ms_per_frame=13.434
+  GFX          Textured Pass                                    n=   309 ms_per_frame=  5.124
+  SDMA0        Page On 65536 bytes  (postretro)                 n= 11409 ms_per_frame=  3.393
+  SDMA1_PAGE   GPU Execution  (postretro)                       n=  2901 ms_per_frame=  1.501
+  GFX          GPU Execution  (postretro)                       n=  1949 ms_per_frame=  1.409
+  GFX          Skinned Viewmodel Pass                           n=   309 ms_per_frame=  1.270
+  GFX          Screen Effects Resolve Pass                      n=   309 ms_per_frame=  0.517
+  GFX          Promoted Cube Entity Shadow Depth Pass           n=  3720 ms_per_frame=  0.503
+  GFX          Depth Pre-Pass                                   n=   310 ms_per_frame=  0.395
+  GFX          Bloom Bright Pass                                n=   308 ms_per_frame=  0.273
+  SDMA0        Per-frame Upload Copies                          n=   310 ms_per_frame=  0.155
+  GFX          Bloom Horizontal Gaussian Pass                   n=  1545 ms_per_frame=  0.129
+  GFX          Bloom Vertical Gaussian Pass                     n=  1545 ms_per_frame=  0.108
+  ComputeUQ4   (wgpu internal) Pre Pass                         n=   612 ms_per_frame=  0.092
+  GFX          UI Pass                                          n=   309 ms_per_frame=  0.081

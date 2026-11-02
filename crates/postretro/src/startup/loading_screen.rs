@@ -1,6 +1,6 @@
 // Loading screen: which UI tree a level load shows, the two `loading.*`
-// slots it publishes, the world-less frame it draws on, and the one frame of
-// delay between the worker's delivery and the install.
+// slots it publishes (the bar reads the whole load's phase-weighted
+// progress), and the world-less frame it draws on.
 // See: context/lib/boot_sequence.md §1, §4 · context/lib/ui.md §1, §3, §5
 
 use std::collections::HashSet;
@@ -8,14 +8,14 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use postretro_entities::slot_table::SlotValue;
-use postretro_level_loader::LoadProgress;
+use postretro_level_loader::{LevelLoadProgress, LoadPhase};
 use postretro_scripting_core::runtime::ModLoading;
 use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 use crate::app::ui_images::ManifestImageRefs;
+use crate::level_load::{LevelBundle, LevelLoadFailure};
 use crate::startup::LevelLoadEntry;
-use crate::startup::worker::LevelPayload;
 
 #[path = "loading_screen_images.rs"]
 mod images;
@@ -24,11 +24,6 @@ use images::{LoadingImages, wanted_loading_images};
 /// Registry name of the engine fallback loading tree (`core/ui/loadingScreen.json`).
 /// A mod tree under the same name shadows it.
 pub(crate) const LOADING_SCREEN_NAME: &str = "loadingScreen";
-
-/// Share of the bar the worker's parse fills. The rest stands for the
-/// main-thread install and the Settling hold: the bar holds here for the frame
-/// painted between delivery and install, then rises with the settle to 1.0.
-pub(crate) const LOAD_PARSE_SHARE: f32 = 0.85;
 
 const PROGRESS_SLOT: &str = "loading.progress";
 const LEVEL_NAME_SLOT: &str = "loading.levelName";
@@ -48,13 +43,15 @@ struct ActiveLoad {
     /// The tree this load shows, chosen once when it began. `None` when no
     /// candidate, not even the engine fallback, is registered.
     tree: Option<String>,
-    progress: Arc<LoadProgress>,
-    /// The last value written to `loading.progress`; it never decreases.
+    /// The whole load's counter, weighted across parse, prep, upload and
+    /// Settling. A superseding load swaps in its own.
+    progress: Arc<LevelLoadProgress>,
+    /// The last value written to `loading.progress`; it never decreases
+    /// within one load, and restarts at 0 when a load supersedes it.
     shown: f32,
     /// UI time for this load's frames, so tweens on the loading tree run.
+    /// A superseding load keeps it.
     ui_time: f64,
-    /// A delivered payload waiting one painted frame before it installs.
-    delivered: Option<LevelPayload>,
     /// The chosen tree's loading-only images: decoding, then uploaded until
     /// this load ends.
     images: LoadingImages,
@@ -80,10 +77,10 @@ impl LoadingScreenState {
 pub(crate) enum LoadingStep {
     /// Keep painting the loading screen.
     Paint,
-    /// Install this payload now.
-    Install(Box<LevelPayload>),
-    /// The load failed for this reason.
-    Fail(String),
+    /// Commit this bundle now, on the frame it became ready.
+    Commit(Box<LevelBundle>),
+    /// The load failed: its one failure.
+    Fail(LevelLoadFailure),
 }
 
 /// Pick a load's tree: a uniform pick among the registered names of the
@@ -134,9 +131,12 @@ fn random_index(len: usize) -> usize {
 impl App {
     /// Start the loading screen for `entry`: pick its tree, start decoding
     /// its loading-only images, publish the level name and zero progress.
-    /// Returns the counter the worker reports through.
-    pub(crate) fn begin_loading_screen(&mut self, entry: &LevelLoadEntry) -> Arc<LoadProgress> {
-        let progress = Arc::new(LoadProgress::new());
+    /// Returns the whole load's counter, which its stages credit.
+    pub(crate) fn begin_loading_screen(
+        &mut self,
+        entry: &LevelLoadEntry,
+    ) -> Arc<LevelLoadProgress> {
+        let progress = Arc::new(LevelLoadProgress::new());
         // A load replacing one still showing releases that load's images.
         self.end_active_load();
         let renderer = self.renderer.as_ref();
@@ -179,13 +179,18 @@ impl App {
                 renderer.expect_ui_image(key);
             }
         }
+        // The pool is built on the first load that wants an image.
+        let images = if wanted.is_empty() {
+            LoadingImages::default()
+        } else {
+            LoadingImages::start(self.load_pool.get_or_build(), &self.content_root, wanted)
+        };
         state.active = Some(ActiveLoad {
             tree,
             progress: progress.clone(),
             shown: 0.0,
             ui_time: 0.0,
-            delivered: None,
-            images: LoadingImages::start(&self.content_root, wanted),
+            images,
         });
         let ctx = session.scripting.script_ctx.clone();
         write_loading_slot(&ctx, LEVEL_NAME_SLOT, SlotValue::String(entry.name.clone()));
@@ -194,9 +199,8 @@ impl App {
     }
 
     /// End the loading screen — reveal, failure, abandon, relevel or suspend:
-    /// drop any undelivered payload, release the load's loading-only images
-    /// and discard decodes still in flight, and reset both slots to their
-    /// defaults.
+    /// release the load's loading-only images and discard decodes still in
+    /// flight, and reset both slots to their defaults.
     pub(crate) fn end_loading_screen(&mut self) {
         if !self.end_active_load() {
             return;
@@ -226,64 +230,77 @@ impl App {
         true
     }
 
-    /// Whether a delivered payload is waiting for its install frame. Counts as
-    /// a load in flight: no other request may start until it installs.
-    pub(crate) fn has_deferred_level_payload(&self) -> bool {
-        self.session.as_ref().is_some_and(|session| {
-            session
-                .loading_screen
-                .active
-                .as_ref()
-                .is_some_and(|load| load.delivered.is_some())
-        })
-    }
-
-    /// The payload delivered on the previous Loading frame, ready to install.
-    pub(crate) fn take_deferred_level_payload(&mut self) -> Option<LevelPayload> {
-        self.session
-            .as_mut()?
-            .loading_screen
-            .active
-            .as_mut()?
-            .delivered
-            .take()
-    }
-
-    /// Hold a just-delivered payload for one more loading frame, with the bar
-    /// at [`LOAD_PARSE_SHARE`], so the bar visibly arrives before the install
-    /// hitch. Hands the payload back when no loading screen is showing.
-    pub(crate) fn defer_level_payload(&mut self, payload: LevelPayload) -> Option<LevelPayload> {
-        let Some(session) = self.session.as_mut() else {
-            return Some(payload);
-        };
-        let Some(load) = session.loading_screen.active.as_mut() else {
-            return Some(payload);
-        };
-        load.delivered = Some(payload);
-        load.shown = load.shown.max(LOAD_PARSE_SHARE);
-        let shown = load.shown;
-        write_loading_slot(
-            &session.scripting.script_ctx,
-            PROGRESS_SLOT,
-            SlotValue::Number(shown),
-        );
-        None
+    /// A superseding load takes over the showing loading screen: the tree,
+    /// its UI clock and its images stay, the level name becomes `entry`'s,
+    /// and the bar restarts at 0 on a fresh counter, so nothing the
+    /// superseded load's stages still credit reaches it. `None` when no
+    /// loading screen is showing (the caller begins one).
+    pub(crate) fn supersede_loading_screen(
+        &mut self,
+        entry: &LevelLoadEntry,
+    ) -> Option<Arc<LevelLoadProgress>> {
+        let session = self.session.as_mut()?;
+        let load = session.loading_screen.active.as_mut()?;
+        let progress = Arc::new(LevelLoadProgress::new());
+        load.progress = Arc::clone(&progress);
+        load.shown = 0.0;
+        let ctx = session.scripting.script_ctx.clone();
+        write_loading_slot(&ctx, LEVEL_NAME_SLOT, SlotValue::String(entry.name.clone()));
+        write_loading_slot(&ctx, PROGRESS_SLOT, SlotValue::Number(0.0));
+        Some(progress)
     }
 
     /// Advance the load's presentation by `frame_dt`: UI time, and
-    /// `loading.progress` from the worker's counter (never decreasing).
+    /// `loading.progress` from the whole load's counter.
     pub(crate) fn advance_loading_screen(&mut self, frame_dt: f32) {
+        let Some(load) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.loading_screen.active.as_mut())
+        else {
+            return;
+        };
+        load.ui_time += f64::from(frame_dt);
+        self.publish_loading_progress();
+    }
+
+    /// Settling's share of the bar: `unsettled` is the settle set's
+    /// shortfall this frame (`None` while a streamed resource has not yet
+    /// been asked), which [`LoadPhase::Settling`] credits as it shrinks; a
+    /// shortfall that grows stalls the bar instead of moving it back. A
+    /// release finishes the whole counter, so the deciding frame paints
+    /// exactly 1.0, a timed-out release included: by then parse, prep and
+    /// upload are long done.
+    pub(crate) fn credit_settle_progress(&mut self, unsettled: Option<usize>, release: bool) {
+        let Some(load) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.loading_screen.active.as_ref())
+        else {
+            return;
+        };
+        let settling = load.progress.phase(LoadPhase::Settling);
+        if let Some(unsettled) = unsettled {
+            settling.credit_remaining(unsettled as u64);
+        }
+        if release {
+            for phase in LoadPhase::ALL {
+                load.progress.phase(phase).finish();
+            }
+        }
+        self.publish_loading_progress();
+    }
+
+    /// Write the counter's fraction to `loading.progress` when it rose. The
+    /// bar never moves back within a load.
+    fn publish_loading_progress(&mut self) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
         let Some(load) = session.loading_screen.active.as_mut() else {
             return;
         };
-        load.ui_time += f64::from(frame_dt);
-        if load.delivered.is_some() {
-            return;
-        }
-        let target = LOAD_PARSE_SHARE * load.progress.fraction().clamp(0.0, 1.0);
+        let target = load.progress.fraction().clamp(0.0, 1.0);
         if target > load.shown {
             load.shown = target;
             let shown = load.shown;
@@ -295,24 +312,15 @@ impl App {
         }
     }
 
-    /// Raise `loading.progress` to `progress` past the parse share, through
-    /// Settling. Never lowers the bar.
-    pub(crate) fn raise_loading_progress(&mut self, progress: f32) {
-        let Some(session) = self.session.as_mut() else {
-            return;
-        };
-        let Some(load) = session.loading_screen.active.as_mut() else {
-            return;
-        };
-        if progress > load.shown {
-            load.shown = progress.min(1.0);
-            let shown = load.shown;
-            write_loading_slot(
-                &session.scripting.script_ctx,
-                PROGRESS_SLOT,
-                SlotValue::Number(shown),
-            );
-        }
+    /// The showing loading screen's counter.
+    #[cfg(test)]
+    pub(crate) fn loading_screen_progress(&self) -> Option<Arc<LevelLoadProgress>> {
+        self.session
+            .as_ref()?
+            .loading_screen
+            .active
+            .as_ref()
+            .map(|load| Arc::clone(&load.progress))
     }
 
     /// Paint one Loading frame: the chosen loading tree as the frame's only UI

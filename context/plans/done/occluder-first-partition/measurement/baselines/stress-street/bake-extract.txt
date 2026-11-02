@@ -1,0 +1,48 @@
+# log extract from target/occluder-baselines/stress-street/bake.log (frozen prl-build 8a9a341, RUST_LOG=info, -v)
+[INFO prl_build::partition] BSP leaves: 1547 solid, 2162 empty
+[INFO prl_build::partition] BSP nodes: 3708
+[INFO prl_build::partition] BSP leaves: 3709
+[INFO prl_build::partition] Total faces (after brush-side extraction): 7834
+[INFO prl_build::partition] Average faces per leaf: 2.1
+[WARN prl_build::pipeline] [Compiler] Watertightness: 396 open edge(s) in world geometry — possible holes you can see through. Diagnostic only; the build still succeeds. Sample locations (world-space meters, showing up to 12):
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.101, 10.998, -106.121) — near brush 1170
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.101, 13.500, -106.096) — near brush 1244 in group Lamp post (19)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.000, 10.998, -106.147) — near brush 1170
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.000, 16.002, -106.096) — near brush 1244 in group Lamp post (19)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -134.099) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -133.921) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -120.078) — near brush 1205 in group Lamp post (6)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -119.901) — near brush 1205 in group Lamp post (6)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -104.076) — near brush 1202 in group Lamp post (5)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -103.899) — near brush 1202 in group Lamp post (5)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.902, -134.112) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.902, -134.087) — near brush 1209 in group Lamp post (7)
+[INFO prl_build::visibility] Exterior flood-fill: 177 exterior leaves, 1985 interior empty leaves
+[INFO prl_build::visibility] Visibility: 2162 empty leaves, 6706 portals
+[INFO prl_build::geometry] Vertices: 30629 (28 bytes each)
+[INFO prl_build::geometry] Triangles: 15315
+[INFO prl_build::geometry] Faces: 7657
+[INFO prl_build::geometry] Empty leaves: 1985
+[INFO prl_build::geometry] Unique textures: 12
+[INFO prl_build::bvh_build] Bvh: 15313 nodes (7656 internal, 7657 leaf), 7657 leaf entries
+  Cell Visibility: 100%  ETA 0.0s
+[INFO prl_build::chunk_light_list_bake] [ChunkLightList] grid 12x5x19 (1140 chunks), 25 static lights, avg 0.44 / chunk, max 7, total indices 503, payload 11132 bytes
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 53595 eye candidates (53547 in cell, 15 inset, 33 rejected; missed into solid 30, exterior 0, other cell 18), 0 camera cells without an eye point, 321372 walks (43457 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 1985 camera cells, 3606142 entries (max 1985 per camera), 28863992 bytes, max lead 32 m, 21.578 s
+[INFO prl_build::pipeline] [Compiler] Lightmap runtime all-resident pool: 2 pool layers
+[INFO prl_build::animated_light_chunks] [AnimatedLightChunks] 439 chunks, 2 animated lights, max 2 / chunk, mean 1.12 / chunk, 0 chunks bottomed out at min-extent floor
+[INFO prl_build::pipeline::animated_atlas_stage] [AnimatedLightWeightMaps] Packed layout: 248 blocks on 1 pages of 512² (3145728 bytes; identity layout 3 pages of 512², 9437184 bytes)
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 28863992 payload bytes
+## open-edge sample lines
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.101, 10.998, -106.121) — near brush 1170
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.101, 13.500, -106.096) — near brush 1244 in group Lamp post (19)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.000, 10.998, -106.147) — near brush 1170
+[WARN prl_build::pipeline] [Compiler]   open edge near (-73.000, 16.002, -106.096) — near brush 1244 in group Lamp post (19)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -134.099) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -133.921) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -120.078) — near brush 1205 in group Lamp post (6)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -119.901) — near brush 1205 in group Lamp post (6)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -104.076) — near brush 1202 in group Lamp post (5)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.801, -103.899) — near brush 1202 in group Lamp post (5)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.902, -134.112) — near brush 1208 in group Lamp post (7)
+[WARN prl_build::pipeline] [Compiler]   open edge near (-72.898, 4.902, -134.087) — near brush 1209 in group Lamp post (7)

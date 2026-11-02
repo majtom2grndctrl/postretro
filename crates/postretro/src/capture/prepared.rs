@@ -151,7 +151,7 @@ impl PreparedCapture {
         ) {
             streaming.pool_cap_layers = cap;
         }
-        renderer.install_level_geometry(&geometry, gpu_lighting_payloads);
+        renderer.install_level_geometry(&geometry, gpu_lighting_payloads)?;
         renderer.install_fluid_surfaces(
             &world.environment_volumes.volumes,
             world.reflection_probes.as_ref(),

@@ -1,0 +1,5 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+ar:g8.3.0@180 536 254 0 PrlPortal { walk_reach: 93 } 118.05 115.15 302
+ar:g8.0.1@180 436 191 0 PrlPortal { walk_reach: 71 } 94.83 92.40 401
+ar:g8.25.1@0 458 204 0 PrlPortal { walk_reach: 82 } 99.99 97.37 373
+ar:g12.17.2@180 80 25 0 PrlPortal { walk_reach: 18 } 16.22 15.06 2381

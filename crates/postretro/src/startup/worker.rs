@@ -1,18 +1,24 @@
-// Background level-load worker: PRL parse. Texture decode + GPU upload now
-// run on the main thread from baked `.prm` sidecars (which only the renderer
-// can address). The worker emits the compiled-material root path so the main
-// thread can locate the sidecars without re-deriving the layout.
+// The `.prm` root derivation every load reads at dispatch, and the retired
+// background level worker (PRL parse on its own thread), kept only as the
+// tests' oracle for the main-thread install: production loads run as staged
+// stages on the engine load pool (`level_load`), and no production path
+// compiles the worker.
 // See: context/lib/boot_sequence.md · context/lib/build_pipeline.md §PRL section IDs · §Baked texture mips
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::sync::{Arc, mpsc};
+#[cfg(test)]
 use std::thread::{self, JoinHandle};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use postretro_level_loader::{LevelWorld, LoadProgress};
 
 /// Delivered to the main thread after the worker completes. All fields are plain
-/// `Send` — no GPU handles.
+/// `Send` — no GPU handles. Test-only: the oracle install's input.
+#[cfg(test)]
 pub(crate) struct LevelPayload {
     pub level: Option<LevelWorld>,
     /// Compiled-material output directory holding the per-texture `.prm` mip
@@ -21,22 +27,25 @@ pub(crate) struct LevelPayload {
     /// absent or unusable directories surface per-texture warnings from
     /// `load_textures` and degrade those entries to placeholders.
     pub prm_cache_root: PathBuf,
-    /// Worker-thread stages, attached to `worker_delivered` in level-load `StartupTimings`
-    /// (they ran inside its interval, so they are shown with it, not added to it).
+    /// The oracle's `prl_parse` timing, read by tests. The production load's
+    /// timing marks come from `LevelBundle::line_c_marks`, not from here.
     pub timings: Vec<(&'static str, Duration)>,
 }
 
 // Compile-time guard: catches non-Send fields (Rc, Cell, etc.) before thread::spawn.
+#[cfg(test)]
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<LevelPayload>();
 };
 
+#[cfg(test)]
 pub(crate) type LoadOutcome = Result<LevelPayload, anyhow::Error>;
 
 /// Send errors are ignored — dropped receiver means the window closed during load.
-/// The worker advances `progress` as the PRL parse consumes the file; the main
-/// thread reads it for the loading screen.
+/// The worker advances `progress` as the PRL parse consumes the file. Test-only:
+/// the oracle's parse; no production path spawns it.
+#[cfg(test)]
 pub(crate) fn spawn_level_worker(
     map_path: PathBuf,
     content_root: PathBuf,
@@ -51,6 +60,7 @@ pub(crate) fn spawn_level_worker(
     })
 }
 
+#[cfg(test)]
 fn run_worker(
     map_path: &Path,
     content_root: &Path,

@@ -1,0 +1,125 @@
+07:37:29 batch full-20261029-0737 mode=full gate=57C min_pause=30s max_wait=600s reps=1 sentinel_every=9 caffeinate_pid=10482
+07:38:01 gate sentinel01: GATE_OK waited=30 temp=56
+07:38:14 SENTINEL batch-start: sentinel01 total_ms=16.521 rc=0 2026-10-29 07:38:14 util=0 inUseVidMemoryBytes=570839040 vramFreeBytes=2835546112 mhz=0 temp=62 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=19 screensaver=no locked=absent
+07:38:44 gate occlusion-test.fc_P1.before.r1: GATE_OK waited=30 temp=57
+07:40:33 [1/45] occlusion-test.fc_P1.before.r1 rc=0 total=16.632 work=8.990 portal_walk=0.607 walk_considered=2023.000 render_submit=5.943 walk_step_limit=0 us_per_test=0.300 gpu_ms_per_frame=12.693
+07:41:36 gate occlusion-test.fc_P1.cap26.r1: GATE_OK waited=63 temp=57
+07:43:22 [2/45] occlusion-test.fc_P1.cap26.r1 rc=0 total=16.546 work=7.087 portal_walk=0.099 walk_considered=310.000 render_submit=4.641 walk_step_limit=0 us_per_test=0.320 gpu_ms_per_frame=12.711
+07:44:20 gate occlusion-test.fc_P1.cap19.r1: GATE_OK waited=58 temp=57
+07:46:06 [3/45] occlusion-test.fc_P1.cap19.r1 rc=0 total=16.546 work=7.189 portal_walk=0.135 walk_considered=407.086 render_submit=4.734 walk_step_limit=0 us_per_test=0.332 gpu_ms_per_frame=12.566
+07:47:05 gate occlusion-test.fc_P2.cap26.r1: GATE_OK waited=59 temp=57
+07:48:51 [4/45] occlusion-test.fc_P2.cap26.r1 rc=0 total=16.547 work=7.032 portal_walk=0.114 walk_considered=377.000 render_submit=4.605 walk_step_limit=0 us_per_test=0.301 gpu_ms_per_frame=12.430
+07:49:48 gate occlusion-test.fc_P2.cap19.r1: GATE_OK waited=57 temp=57
+07:51:34 [5/45] occlusion-test.fc_P2.cap19.r1 rc=0 total=16.546 work=7.155 portal_walk=0.152 walk_considered=483.077 render_submit=4.707 walk_step_limit=0 us_per_test=0.314 gpu_ms_per_frame=12.592
+07:52:32 gate occlusion-test.fc_P2.before.r1: GATE_OK waited=58 temp=57
+07:54:21 [6/45] occlusion-test.fc_P2.before.r1 rc=0 total=16.559 work=8.953 portal_walk=0.622 walk_considered=2031.000 render_submit=5.855 walk_step_limit=0 us_per_test=0.306 gpu_ms_per_frame=13.061
+07:55:19 gate occlusion-test.fc_G1.cap19.r1: GATE_OK waited=58 temp=57
+07:57:10 [7/45] occlusion-test.fc_G1.cap19.r1 rc=0 total=16.543 work=7.056 portal_walk=0.029 walk_considered=68.000 render_submit=4.771 walk_step_limit=0 us_per_test=0.433 gpu_ms_per_frame=11.471
+07:58:10 gate occlusion-test.fc_G1.before.r1: GATE_OK waited=60 temp=57
+07:59:58 [8/45] occlusion-test.fc_G1.before.r1 rc=0 total=16.538 work=8.259 portal_walk=0.405 walk_considered=1262.000 render_submit=5.574 walk_step_limit=0 us_per_test=0.321 gpu_ms_per_frame=11.403
+08:00:59 gate occlusion-test.fc_G1.cap26.r1: GATE_OK waited=61 temp=57
+08:02:48 [9/45] occlusion-test.fc_G1.cap26.r1 rc=0 total=16.541 work=6.926 portal_walk=0.024 walk_considered=58.000 render_submit=4.619 walk_step_limit=0 us_per_test=0.411 gpu_ms_per_frame=11.412
+08:03:48 gate sentinel02: GATE_OK waited=60 temp=57
+08:04:02 SENTINEL periodic: sentinel02 total_ms=16.522 rc=0 2026-10-29 08:04:02 util=0 inUseVidMemoryBytes=582930432 vramFreeBytes=2785099776 mhz=0 temp=63 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=55 screensaver=no locked=absent
+08:04:32 gate occlusion-test.fc_G2.before.r1: GATE_OK waited=30 temp=57
+08:06:27 [10/45] occlusion-test.fc_G2.before.r1 rc=0 total=16.587 work=8.757 portal_walk=0.489 walk_considered=1595.000 render_submit=5.853 walk_step_limit=0 us_per_test=0.307 gpu_ms_per_frame=13.934
+08:07:37 gate occlusion-test.fc_G2.cap26.r1: GATE_OK waited=70 temp=57
+08:09:26 [11/45] occlusion-test.fc_G2.cap26.r1 rc=0 total=16.553 work=6.992 portal_walk=0.049 walk_considered=131.000 render_submit=4.723 walk_step_limit=0 us_per_test=0.377 gpu_ms_per_frame=13.233
+08:10:25 gate occlusion-test.fc_G2.cap19.r1: GATE_OK waited=59 temp=57
+08:12:13 [12/45] occlusion-test.fc_G2.cap19.r1 rc=0 total=16.539 work=7.038 portal_walk=0.061 walk_considered=165.000 render_submit=4.791 walk_step_limit=0 us_per_test=0.369 gpu_ms_per_frame=13.125
+08:13:13 gate occlusion-test.fc_G3.cap26.r1: GATE_OK waited=60 temp=57
+08:15:06 [13/45] occlusion-test.fc_G3.cap26.r1 rc=0 total=16.547 work=7.096 portal_walk=0.029 walk_considered=68.000 render_submit=4.761 walk_step_limit=0 us_per_test=0.420 gpu_ms_per_frame=11.310
+08:16:13 gate occlusion-test.fc_G3.cap19.r1: GATE_OK waited=67 temp=57
+08:18:06 [14/45] occlusion-test.fc_G3.cap19.r1 rc=0 total=16.548 work=6.932 portal_walk=0.027 walk_considered=63.000 render_submit=4.766 walk_step_limit=0 us_per_test=0.422 gpu_ms_per_frame=11.348
+08:19:06 gate occlusion-test.fc_G3.before.r1: GATE_OK waited=60 temp=57
+08:20:57 [15/45] occlusion-test.fc_G3.before.r1 rc=0 total=16.540 work=7.503 portal_walk=0.168 walk_considered=529.920 render_submit=5.101 walk_step_limit=0 us_per_test=0.316 gpu_ms_per_frame=11.270
+08:22:01 gate occlusion-test.fc_L2.cap19.r1: GATE_OK waited=64 temp=57
+08:23:55 [16/45] occlusion-test.fc_L2.cap19.r1 rc=0 total=16.531 work=7.229 portal_walk=0.074 walk_considered=223.000 render_submit=4.923 walk_step_limit=0 us_per_test=0.332 gpu_ms_per_frame=11.221
+08:24:53 gate occlusion-test.fc_L2.before.r1: GATE_OK waited=58 temp=57
+08:26:47 [17/45] occlusion-test.fc_L2.before.r1 rc=0 total=16.545 work=8.319 portal_walk=0.394 walk_considered=1279.000 render_submit=5.625 walk_step_limit=0 us_per_test=0.308 gpu_ms_per_frame=11.222
+08:27:49 gate occlusion-test.fc_L2.cap26.r1: GATE_OK waited=61 temp=57
+08:29:44 [18/45] occlusion-test.fc_L2.cap26.r1 rc=0 total=16.545 work=7.268 portal_walk=0.067 walk_considered=209.000 render_submit=4.905 walk_step_limit=0 us_per_test=0.322 gpu_ms_per_frame=11.223
+08:30:44 gate sentinel03: GATE_OK waited=60 temp=57
+08:30:58 SENTINEL periodic: sentinel03 total_ms=16.506 rc=0 2026-10-29 08:30:57 util=0 inUseVidMemoryBytes=578318336 vramFreeBytes=2753245184 mhz=0 temp=62 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=72 screensaver=no locked=absent
+08:31:28 gate occlusion-test.fc_C1.before.r1: GATE_OK waited=30 temp=57
+08:33:07 [19/45] occlusion-test.fc_C1.before.r1 rc=0 total=16.553 work=6.059 portal_walk=0.006 walk_considered=9.000 render_submit=4.419 walk_step_limit=0 us_per_test=0.658 gpu_ms_per_frame=10.461
+08:34:23 gate occlusion-test.fc_C1.cap26.r1: GATE_OK waited=76 temp=57
+08:35:59 [20/45] occlusion-test.fc_C1.cap26.r1 rc=0 total=16.539 work=5.949 portal_walk=0.006 walk_considered=9.000 render_submit=4.337 walk_step_limit=0 us_per_test=0.705 gpu_ms_per_frame=10.903
+08:37:27 gate occlusion-test.fc_C1.cap19.r1: GATE_OK waited=88 temp=57
+08:39:01 [21/45] occlusion-test.fc_C1.cap19.r1 rc=0 total=16.538 work=5.938 portal_walk=0.006 walk_considered=9.000 render_submit=4.321 walk_step_limit=0 us_per_test=0.709 gpu_ms_per_frame=11.066
+08:40:09 gate occlusion-test.fc_C2.cap26.r1: GATE_OK waited=68 temp=57
+08:41:53 [22/45] occlusion-test.fc_C2.cap26.r1 rc=0 total=16.543 work=6.833 portal_walk=0.013 walk_considered=25.000 render_submit=4.498 walk_step_limit=0 us_per_test=0.535 gpu_ms_per_frame=11.693
+08:43:00 gate occlusion-test.fc_C2.cap19.r1: GATE_OK waited=67 temp=57
+08:44:42 [23/45] occlusion-test.fc_C2.cap19.r1 rc=0 total=16.535 work=6.542 portal_walk=0.011 walk_considered=20.000 render_submit=4.393 walk_step_limit=0 us_per_test=0.561 gpu_ms_per_frame=11.781
+08:45:46 gate occlusion-test.fc_C2.before.r1: GATE_OK waited=64 temp=57
+08:47:30 [24/45] occlusion-test.fc_C2.before.r1 rc=0 total=16.534 work=6.785 portal_walk=0.016 walk_considered=33.000 render_submit=4.609 walk_step_limit=0 us_per_test=0.488 gpu_ms_per_frame=11.499
+08:48:34 gate occlusion-test.fc_V1.cap19.r1: GATE_OK waited=64 temp=57
+08:50:24 [25/45] occlusion-test.fc_V1.cap19.r1 rc=0 total=16.563 work=8.178 portal_walk=0.162 walk_considered=518.000 render_submit=6.097 walk_step_limit=0 us_per_test=0.314 gpu_ms_per_frame=11.672
+08:51:23 gate occlusion-test.fc_V1.before.r1: GATE_OK waited=59 temp=57
+08:53:15 [26/45] occlusion-test.fc_V1.before.r1 rc=0 total=16.549 work=8.245 portal_walk=0.506 walk_considered=1652.000 render_submit=5.806 walk_step_limit=0 us_per_test=0.306 gpu_ms_per_frame=10.761
+08:54:14 gate occlusion-test.fc_V1.cap26.r1: GATE_OK waited=59 temp=57
+08:56:02 [27/45] occlusion-test.fc_V1.cap26.r1 rc=0 total=16.560 work=8.153 portal_walk=0.142 walk_considered=442.000 render_submit=6.061 walk_step_limit=0 us_per_test=0.322 gpu_ms_per_frame=12.166
+08:57:05 gate sentinel04: GATE_OK waited=63 temp=57
+08:57:19 SENTINEL periodic: sentinel04 total_ms=16.518 rc=0 2026-10-29 08:57:19 util=0 inUseVidMemoryBytes=588091392 vramFreeBytes=2750468096 mhz=0 temp=63 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=66 screensaver=no locked=absent
+08:57:49 gate stress-street.rd_plaza.before.r1: GATE_OK waited=30 temp=56
+08:59:29 [28/45] stress-street.rd_plaza.before.r1 rc=0 total=16.771 work=12.059 portal_walk=0.948 walk_considered=3577.000 render_submit=7.148 walk_step_limit=0 us_per_test=0.265 gpu_ms_per_frame=11.741
+09:00:35 gate stress-street.rd_plaza.cap26.r1: GATE_OK waited=66 temp=57
+09:02:10 [29/45] stress-street.rd_plaza.cap26.r1 rc=0 total=16.981 work=14.959 portal_walk=0.824 walk_considered=3330.000 render_submit=7.924 walk_step_limit=0 us_per_test=0.247 gpu_ms_per_frame=11.192
+09:03:13 gate stress-street.rd_plaza.cap19.r1: GATE_OK waited=63 temp=57
+09:04:49 [30/45] stress-street.rd_plaza.cap19.r1 rc=0 total=16.872 work=14.454 portal_walk=0.857 walk_considered=3364.000 render_submit=7.816 walk_step_limit=0 us_per_test=0.255 gpu_ms_per_frame=10.997
+09:05:52 gate stress-street.rd_promenade.cap26.r1: GATE_OK waited=63 temp=57
+09:07:52 [31/45] stress-street.rd_promenade.cap26.r1 rc=0 total=16.886 work=14.281 portal_walk=0.563 walk_considered=1935.598 render_submit=9.576 walk_step_limit=0 us_per_test=0.291 gpu_ms_per_frame=10.898
+09:08:50 gate stress-street.rd_promenade.cap19.r1: GATE_OK waited=58 temp=57
+09:10:43 [32/45] stress-street.rd_promenade.cap19.r1 rc=0 total=16.915 work=14.423 portal_walk=0.580 walk_considered=1963.920 render_submit=9.683 walk_step_limit=0 us_per_test=0.295 gpu_ms_per_frame=10.840
+09:11:42 gate stress-street.rd_promenade.before.r1: GATE_OK waited=59 temp=57
+09:13:45 [33/45] stress-street.rd_promenade.before.r1 rc=0 total=16.586 work=10.238 portal_walk=0.516 walk_considered=1867.000 render_submit=6.673 walk_step_limit=0 us_per_test=0.276 gpu_ms_per_frame=11.056
+09:14:41 gate stress-street.rd_elevated.cap19.r1: GATE_OK waited=56 temp=57
+09:16:26 [34/45] stress-street.rd_elevated.cap19.r1 rc=0 total=16.990 work=15.268 portal_walk=0.761 walk_considered=2620.000 render_submit=10.639 walk_step_limit=0 us_per_test=0.290 gpu_ms_per_frame=10.935
+09:17:30 gate stress-street.rd_elevated.before.r1: GATE_OK waited=64 temp=57
+09:19:32 [35/45] stress-street.rd_elevated.before.r1 rc=0 total=16.588 work=10.962 portal_walk=0.721 walk_considered=2762.000 render_submit=7.220 walk_step_limit=0 us_per_test=0.261 gpu_ms_per_frame=11.058
+09:20:31 gate stress-street.rd_elevated.cap26.r1: GATE_OK waited=59 temp=57
+09:22:18 [36/45] stress-street.rd_elevated.cap26.r1 rc=0 total=16.997 work=15.090 portal_walk=0.750 walk_considered=2577.000 render_submit=10.327 walk_step_limit=0 us_per_test=0.291 gpu_ms_per_frame=11.013
+09:23:16 gate sentinel05: GATE_OK waited=58 temp=57
+09:23:30 SENTINEL periodic: sentinel05 total_ms=16.507 rc=0 2026-10-29 09:23:30 util=0 inUseVidMemoryBytes=583069696 vramFreeBytes=2746175488 mhz=0 temp=62 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=70 screensaver=no locked=absent
+09:24:00 gate stress-street.rd_upperdeck.before.r1: GATE_OK waited=30 temp=56
+09:26:04 [37/45] stress-street.rd_upperdeck.before.r1 rc=0 total=16.609 work=10.414 portal_walk=0.996 walk_considered=3793.000 render_submit=6.921 walk_step_limit=0 us_per_test=0.263 gpu_ms_per_frame=11.161
+09:27:05 gate stress-street.rd_upperdeck.cap26.r1: GATE_OK waited=61 temp=57
+09:29:07 [38/45] stress-street.rd_upperdeck.cap26.r1 rc=0 total=16.582 work=10.566 portal_walk=0.466 walk_considered=1795.000 render_submit=7.252 walk_step_limit=0 us_per_test=0.260 gpu_ms_per_frame=11.131
+09:30:10 gate stress-street.rd_upperdeck.cap19.r1: GATE_OK waited=63 temp=57
+09:32:12 [39/45] stress-street.rd_upperdeck.cap19.r1 rc=0 total=16.594 work=10.449 portal_walk=0.447 walk_considered=1802.000 render_submit=7.131 walk_step_limit=0 us_per_test=0.248 gpu_ms_per_frame=11.273
+09:33:09 gate stress-street.wk_g11.26.1_0.cap26.r1: GATE_OK waited=57 temp=57
+09:34:53 [40/45] stress-street.wk_g11.26.1_0.cap26.r1 rc=0 total=17.005 work=15.453 portal_walk=1.075 walk_considered=4155.908 render_submit=8.713 walk_step_limit=0 us_per_test=0.259 gpu_ms_per_frame=10.703
+09:35:49 gate stress-street.wk_g11.26.1_0.cap19.r1: GATE_OK waited=56 temp=57
+09:37:35 [41/45] stress-street.wk_g11.26.1_0.cap19.r1 rc=0 total=17.017 work=15.069 portal_walk=1.086 walk_considered=4152.990 render_submit=8.687 walk_step_limit=0 us_per_test=0.261 gpu_ms_per_frame=10.869
+09:38:33 gate stress-street.wk_g11.26.1_0.before.r1: GATE_OK waited=58 temp=57
+09:40:27 [42/45] stress-street.wk_g11.26.1_0.before.r1 rc=0 total=16.634 work=13.046 portal_walk=1.279 walk_considered=4812.000 render_submit=7.857 walk_step_limit=0 us_per_test=0.266 gpu_ms_per_frame=10.952
+09:41:25 gate stress-street.wk_roof_A0.s0.e_0_-15.cap19.r1: GATE_OK waited=58 temp=57
+09:43:39 [43/45] stress-street.wk_roof_A0.s0.e_0_-15.cap19.r1 rc=0 total=16.737 work=13.001 portal_walk=0.766 walk_considered=3478.000 render_submit=7.792 walk_step_limit=0 us_per_test=0.220 gpu_ms_per_frame=10.222
+09:44:37 gate stress-street.wk_roof_A0.s0.e_0_-15.before.r1: GATE_OK waited=58 temp=57
+09:46:43 [44/45] stress-street.wk_roof_A0.s0.e_0_-15.before.r1 rc=0 total=16.615 work=11.887 portal_walk=0.950 walk_considered=3771.000 render_submit=7.177 walk_step_limit=0 us_per_test=0.252 gpu_ms_per_frame=10.976
+09:47:43 gate stress-street.wk_roof_A0.s0.e_0_-15.cap26.r1: GATE_OK waited=60 temp=57
+09:49:49 [45/45] stress-street.wk_roof_A0.s0.e_0_-15.cap26.r1 rc=0 total=16.713 work=13.145 portal_walk=0.735 walk_considered=3382.000 render_submit=7.889 walk_step_limit=0 us_per_test=0.217 gpu_ms_per_frame=11.001
+09:50:49 gate sentinel06: GATE_OK waited=60 temp=57
+09:51:02 SENTINEL closing: sentinel06 total_ms=16.514 rc=0 2026-10-29 09:51:02 util=0 inUseVidMemoryBytes=579145728 vramFreeBytes=2745356288 mhz=0 temp=63 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=84 screensaver=no locked=absent
+09:51:02 in-process walk timing (CPU only)
+walk before occlusion-test r1 rc=0 18 poses
+walk before stress-street r1 rc=0 12 poses
+walk cap26 occlusion-test r1 rc=0 18 poses
+walk cap26 stress-street r1 rc=0 12 poses
+walk cap19 occlusion-test r1 rc=0 18 poses
+walk cap19 stress-street r1 rc=0 12 poses
+walk before occlusion-test r2 rc=0 18 poses
+walk before stress-street r2 rc=0 12 poses
+walk cap26 occlusion-test r2 rc=0 18 poses
+walk cap26 stress-street r2 rc=0 12 poses
+walk cap19 occlusion-test r2 rc=0 18 poses
+walk cap19 stress-street r2 rc=0 12 poses
+walk before occlusion-test r3 rc=0 18 poses
+walk before stress-street r3 rc=0 12 poses
+walk cap26 occlusion-test r3 rc=0 18 poses
+walk cap26 stress-street r3 rc=0 12 poses
+walk cap19 occlusion-test r3 rc=0 18 poses
+walk cap19 stress-street r3 rc=0 12 poses
+WALK_INPROC_DONE
+09:51:18 summary: /Users/dhiester/Projects/Personal/postretro/target/occluder-h3live/runs/full-20261029-0737/summary.md
+09:51:18 BATCH_DONE

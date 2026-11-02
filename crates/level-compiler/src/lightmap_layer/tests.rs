@@ -1517,8 +1517,8 @@ fn layer_key(
 /// Round-trip skip: with a real `StageCache`, the first per-light bake is a
 /// miss + put, the second build serves every layer from cache (hit) and
 /// re-bakes nothing. Proves the lightmap-layer half of the
-/// "build twice → all entries hit" AC (the sh_group half lives in
-/// `cache_round_trip_hits_on_second_build`).
+/// "build twice → all entries hit" AC (the SH base half lives in
+/// `surface_radiance`'s layer cache tests).
 #[test]
 fn layer_cache_round_trip_skips_rebake() {
     let mut geo = two_quad_geometry();
@@ -1608,9 +1608,9 @@ fn single_light_edit_invalidates_only_its_own_layer() {
 }
 
 /// Directional-light edit: the directional's own layer key changes, and no
-/// other (point) light's layer key is affected. (The "all SH groups re-bake"
-/// half of the directional-edit AC is covered in `sh_group.rs`; SH groups
-/// fold the whole-map geometry hash and a directional reaches every group.)
+/// other (point) light's layer key is affected. (The SH base keys each light's
+/// patch layer on that light's content alone; `surface_radiance`'s layer cache
+/// tests cover its edits.)
 #[test]
 fn directional_light_edit_does_not_disturb_point_layers() {
     let mut geo = two_quad_geometry();

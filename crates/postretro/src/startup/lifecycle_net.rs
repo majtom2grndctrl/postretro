@@ -5,45 +5,11 @@ use glam::Vec3;
 use crate::App;
 use crate::camera::Camera;
 use crate::frame_timing::InterpolableState;
-use crate::startup::BootState;
+use crate::startup::{BootState, LevelSource};
 use crate::trigger_bindings::TriggerBindingTable;
 use crate::trigger_pools::TriggerPoolInstallReport;
 
 impl App {
-    /// CPU/session half of suspend, after window, renderer and debug UI retire.
-    /// Harvest while live bindings exist; parity then demotes remote slots for
-    /// the resumed lifecycle drain. Held seats and queued respawns stay intact.
-    pub(crate) fn suspend_level_state(&mut self) {
-        if let Some(session) = self.session.as_mut() {
-            let registry = session.scripting.script_ctx.registry.borrow();
-            if let Some(seats) = session.seat_table.as_mut() {
-                // Harvest state but retain bindings until lifecycle events drain
-                // after resume; their durable fallback resolves the old pawn.
-                seats.harvest_bound_pawns(
-                    &registry,
-                    &session
-                        .scripting
-                        .script_ctx
-                        .data_registry
-                        .borrow()
-                        .life_state_names,
-                );
-            }
-        }
-        self.clear_net_level_parity();
-        self.discard_pending_system_commands();
-        self.clear_surface_lifetime_level_state();
-        self.clear_fluid_eye_presentation();
-        // Drop any in-flight level-load worker handoff. On resume the splash
-        // state machine starts over from frame 0 and will spawn a fresh
-        // worker; holding a stale receiver/handle would either block install
-        // forever or deliver into the wrong boot phase.
-        self.level_load = None;
-        self.level_rx = None;
-        self.level_worker = None;
-        self.reset_boot_state_after_suspend();
-    }
-
     /// Install the immutable admission identity and current mod-parity digest on
     /// an already-constructed endpoint. This is deliberately a no-op for
     /// single-player, keeping hash work out of the ordinary boot path.
@@ -372,12 +338,18 @@ impl App {
     /// installed level. A host records its own reveal, which may promote
     /// revealed, parity-matched clients; the world poll later this frame
     /// consumes that promotion and spawns their pawns. A client declares
-    /// its reveal to the host. A timed-out reveal publishes the same.
+    /// its reveal to the host, naming the host level life it followed when
+    /// the last relevel named the installed map. A timed-out reveal publishes
+    /// the same.
     pub(crate) fn publish_net_reveal(&mut self) {
         // The identity install published as parity, so the two match by
         // construction.
         let Some(identity) = self.published_level_identity.clone() else {
             return;
+        };
+        let level_life = match (&self.active_level_source, &self.last_relevel) {
+            (Some(LevelSource::Catalog(active)), Some((id, life))) if active == id => Some(*life),
+            _ => None,
         };
         let Some(endpoint) = self
             .session
@@ -386,6 +358,8 @@ impl App {
         else {
             return;
         };
-        endpoint.set_revealed_level(Some(identity));
+        endpoint.set_revealed_level(Some(postretro_net::wire::RevealedLevel::new(
+            identity, level_life,
+        )));
     }
 }

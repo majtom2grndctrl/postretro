@@ -1,0 +1,4 @@
+cap26 uncapped-street.txt: 2960 uncapped poses, 2960 record poses; untripped equal 2931, differ 0; tripped and over 5,000 uncapped 29, tripped but under 0
+cap26 uncapped-rooftop.txt: 608 uncapped poses, 608 record poses; untripped equal 582, differ 0; tripped and over 5,000 uncapped 26, tripped but under 0
+cap19 uncapped-street.txt: 2960 uncapped poses, 2960 record poses; untripped equal 2919, differ 0; tripped and over 5,000 uncapped 41, tripped but under 0
+cap19 uncapped-rooftop.txt: 608 uncapped poses, 608 record poses; untripped equal 571, differ 0; tripped and over 5,000 uncapped 37, tripped but under 0

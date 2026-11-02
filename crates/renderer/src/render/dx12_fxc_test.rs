@@ -4,8 +4,9 @@
 // sample inside a varying-length loop or by a dynamic write into an array
 // nested in a struct. Builds every full-init pipeline through the offscreen
 // renderer; wgpu's default error handler panics on the first one FXC refuses.
-// Pipelines that need level geometry (the cull passes, direct-SH promotion
-// compose) are built at level install and are not covered here.
+// The install pipelines (the cull passes, direct-SH promotion compose) build
+// once per renderer on the upload thread after full init, so they are not
+// covered here; an engine launch exercises them.
 //
 // Intentional exception to testing_guide.md §3 "No GPU context in tests": FXC
 // only runs inside a DX12 pipeline build. Windows-only, `#[ignore]`-gated

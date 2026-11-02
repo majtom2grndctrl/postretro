@@ -1,9 +1,8 @@
-// Loading-screen tree choice, slot lifecycle, and the deferred install frame.
+// Loading-screen tree choice, slot lifecycle, and the bar over the whole load's progress.
 // See: context/lib/boot_sequence.md §1 · context/lib/ui.md §1
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc;
 
 use postretro_entities::slot_table::SlotValue;
 use postretro_scripting_core::runtime::ModLoading;
@@ -14,6 +13,7 @@ use postretro_ui::modal_stack::ScopeTier;
 use super::*;
 use crate::startup::lifecycle::tests::test_app;
 use crate::startup::{BootState, LevelSource};
+use postretro_level_loader::LOAD_PHASE_WEIGHT_PARSE;
 
 fn names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| name.to_string()).collect()
@@ -67,25 +67,6 @@ fn entry(name: &str, loading_tree: &[&str]) -> LevelLoadEntry {
         name: name.to_string(),
         tags: Vec::new(),
         loading_tree: names(loading_tree),
-    }
-}
-
-/// A delivered payload carrying a minimal one-cell level.
-fn payload() -> LevelPayload {
-    LevelPayload {
-        level: Some(crate::runtime_movers::tests::single_cell_world(
-            Default::default(),
-        )),
-        prm_cache_root: PathBuf::from("baked/materials"),
-        timings: Vec::new(),
-    }
-}
-
-/// What the worker delivers when the map file is missing: no level.
-fn level_less_payload() -> LevelPayload {
-    LevelPayload {
-        level: None,
-        ..payload()
     }
 }
 
@@ -226,10 +207,14 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
     );
     assert_eq!(slot(&app, PROGRESS_SLOT), SlotValue::Number(0.0));
 
-    app.defer_level_payload(payload());
+    let counter = app
+        .loading_screen_progress()
+        .expect("the load shows its counter");
+    counter.phase(LoadPhase::Parse).finish();
+    app.advance_loading_screen(0.016);
     assert_eq!(
         slot(&app, PROGRESS_SLOT),
-        SlotValue::Number(LOAD_PARSE_SHARE)
+        SlotValue::Number(LOAD_PHASE_WEIGHT_PARSE as f32)
     );
 
     app.end_loading_screen();
@@ -239,8 +224,8 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
     );
     assert_eq!(slot(&app, PROGRESS_SLOT), SlotValue::Number(0.0));
     assert!(
-        !app.has_deferred_level_payload(),
-        "ending drops a held payload"
+        app.loading_screen_progress().is_none(),
+        "ending drops the load"
     );
 }
 
@@ -251,28 +236,37 @@ fn loading_slots_are_set_at_begin_and_reset_at_end() {
 /// none reaches Running without Settling.
 #[test]
 fn loading_screen_ends_at_reveal_and_on_failure() {
-    let source = include_str!("lifecycle.rs")
-        .split("#[cfg(test)]\npub(crate) mod tests")
-        .next()
-        .unwrap();
-    let success = source
-        .split("fn finish_level_payload(")
-        .nth(1)
-        .unwrap()
-        .split("fn finish_level_failure(")
-        .next()
-        .unwrap();
+    use crate::startup::lifecycle::lifecycle_test_fixtures::method_source;
+    let success =
+        method_source(include_str!("lifecycle_finish.rs"), "finish_level_payload").unwrap();
     let installed = success.find("self.install_level_payload(").unwrap();
-    let settling = success.find("self.enter_settling(").unwrap();
+    let settling = success
+        .find("self.enter_installed_level_settling();")
+        .unwrap();
     assert!(installed < settling);
-    assert!(
-        !success.contains("self.end_loading_screen();"),
-        "the loading tree stays active through Settling"
-    );
-    assert!(
-        !success.contains("BootState::Running"),
-        "install never enters Running directly"
-    );
+    // A level load's commit ends the same way, after its install stages.
+    let commit = method_source(include_str!("lifecycle_commit.rs"), "commit_level_bundle").unwrap();
+    let committed = commit.find("self.install_level_world_stages(").unwrap();
+    let commit_settling = commit
+        .find("self.enter_installed_level_settling();")
+        .unwrap();
+    assert!(committed < commit_settling);
+    let tail = method_source(
+        include_str!("lifecycle_finish.rs"),
+        "enter_installed_level_settling",
+    )
+    .unwrap();
+    assert!(tail.contains("self.enter_settling("));
+    for source in [success, commit, tail] {
+        assert!(
+            !source.contains("self.end_loading_screen();"),
+            "the loading tree stays active through Settling"
+        );
+        assert!(
+            !source.contains("BootState::Running"),
+            "install never enters Running directly"
+        );
+    }
 
     let settling_source = include_str!("settling.rs")
         .split("#[cfg(test)]")
@@ -285,13 +279,7 @@ fn loading_screen_ends_at_reveal_and_on_failure() {
         .unwrap();
     assert!(ended < running);
 
-    let failure = source
-        .split("fn finish_level_failure(")
-        .nth(1)
-        .unwrap()
-        .split("fn install_level_payload(")
-        .next()
-        .unwrap();
+    let failure = method_source(include_str!("lifecycle.rs"), "finish_level_failure").unwrap();
     let ended = failure.find("self.end_loading_screen();").unwrap();
     let boot_exit = failure.find("if was_boot_load {").unwrap();
     assert!(
@@ -301,79 +289,110 @@ fn loading_screen_ends_at_reveal_and_on_failure() {
 }
 
 #[test]
-fn loading_progress_follows_the_worker_scaled_to_the_parse_share_and_never_falls() {
+fn loading_progress_follows_the_whole_load_counter_and_never_falls() {
     let mut app = test_app();
     register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
     let progress = app.begin_loading_screen(&entry("Entryway", &[]));
-    progress.begin(100);
+    progress.phase(LoadPhase::Parse).begin(100);
 
-    progress.advance(50);
+    progress.phase(LoadPhase::Parse).advance(50);
     app.advance_loading_screen(0.016);
-    assert_eq!(
-        slot(&app, PROGRESS_SLOT),
-        SlotValue::Number(LOAD_PARSE_SHARE * 0.5)
+    let half_parse = (LOAD_PHASE_WEIGHT_PARSE * 0.5) as f32;
+    assert_eq!(slot(&app, PROGRESS_SLOT), SlotValue::Number(half_parse));
+    // The parse finishing moves the bar to the parse's share and no further:
+    // prep, upload and Settling remain (pin P15).
+    progress.phase(LoadPhase::Parse).finish();
+    app.advance_loading_screen(0.016);
+    let SlotValue::Number(after_parse) = slot(&app, PROGRESS_SLOT) else {
+        panic!("progress is a number");
+    };
+    assert!(
+        after_parse > half_parse && after_parse < 1.0,
+        "{after_parse}"
     );
 
     // A shown value is a floor even if the published counter reads lower.
     let session = app.session.as_mut().unwrap();
     let load = session.loading_screen.active.as_mut().unwrap();
-    load.progress = std::sync::Arc::new(postretro_level_loader::LoadProgress::new());
+    load.progress = std::sync::Arc::new(postretro_level_loader::LevelLoadProgress::new());
     app.advance_loading_screen(0.016);
-    assert_eq!(
-        slot(&app, PROGRESS_SLOT),
-        SlotValue::Number(LOAD_PARSE_SHARE * 0.5)
-    );
+    assert_eq!(slot(&app, PROGRESS_SLOT), SlotValue::Number(after_parse));
 }
 
+// A superseding load keeps the showing tree and its UI clock, takes the new
+// name, and restarts the bar at 0 on its own counter: the superseded
+// counter's later credit never reaches the bar.
 #[test]
-fn a_delivered_payload_installs_one_frame_after_delivery() {
+fn a_superseding_load_keeps_the_tree_and_clock_and_restarts_the_bar() {
     let mut app = test_app();
     register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
-    app.begin_loading_screen(&entry("Entryway", &[]));
-    app.boot_state = BootState::Loading;
-    let (tx, rx) = mpsc::channel();
-    app.level_rx = Some(rx);
-    tx.send(Ok(payload())).unwrap();
+    let old = app.begin_loading_screen(&entry("Entryway", &[]));
+    old.phase(LoadPhase::Parse).finish();
+    app.advance_loading_screen(0.5);
+    let before = app.loading_screen_snapshot().unwrap();
 
-    // Delivery frame: the payload is held and the bar shows the parse share.
-    assert!(matches!(app.next_loading_step(), LoadingStep::Paint));
-    assert!(app.level_rx.is_none(), "the worker channel is drained");
-    assert!(app.has_deferred_level_payload());
-    assert!(
-        app.level_load_in_flight(),
-        "a held payload blocks other level requests"
-    );
+    let new = app
+        .supersede_loading_screen(&entry("Next", &[]))
+        .expect("a loading screen is showing");
     assert_eq!(
-        slot(&app, PROGRESS_SLOT),
-        SlotValue::Number(LOAD_PARSE_SHARE)
+        slot(&app, LEVEL_NAME_SLOT),
+        SlotValue::String("Next".to_string())
     );
-    let snapshot = app
-        .loading_screen_snapshot()
-        .expect("delivery frame paints");
-    assert_eq!(snapshot.trees[0].name, LOADING_SCREEN_NAME);
-
-    // Next frame: install.
-    assert!(matches!(app.next_loading_step(), LoadingStep::Install(_)));
-    assert!(!app.has_deferred_level_payload());
-}
-
-#[test]
-fn a_level_less_payload_goes_to_the_failure_path_without_a_held_frame() {
-    let mut app = test_app();
-    register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
-    app.begin_loading_screen(&entry("Entryway", &[]));
-    app.boot_state = BootState::Loading;
-    let (tx, rx) = mpsc::channel();
-    app.level_rx = Some(rx);
-    tx.send(Ok(level_less_payload())).unwrap();
-
-    assert!(matches!(app.next_loading_step(), LoadingStep::Install(_)));
-    assert!(!app.has_deferred_level_payload());
+    assert_eq!(slot(&app, PROGRESS_SLOT), SlotValue::Number(0.0));
+    old.phase(LoadPhase::Prep).finish();
+    old.phase(LoadPhase::Upload).finish();
+    app.advance_loading_screen(0.25);
     assert_eq!(
         slot(&app, PROGRESS_SLOT),
         SlotValue::Number(0.0),
-        "the bar never shows the parse share for a load that failed"
+        "the superseded load's stages credit nothing"
     );
+    let after = app.loading_screen_snapshot().unwrap();
+    assert_eq!(after.trees[0].name, before.trees[0].name, "same tree");
+    assert!(
+        (after.time_seconds - before.time_seconds - 0.25).abs() < 1e-9,
+        "the UI clock runs on: {} then {}",
+        before.time_seconds,
+        after.time_seconds
+    );
+    new.phase(LoadPhase::Parse).finish();
+    app.advance_loading_screen(0.0);
+    assert_eq!(
+        slot(&app, PROGRESS_SLOT),
+        SlotValue::Number(LOAD_PHASE_WEIGHT_PARSE as f32)
+    );
+
+    app.end_loading_screen();
+    assert!(
+        app.supersede_loading_screen(&entry("None", &[])).is_none(),
+        "nothing to supersede once the screen ended"
+    );
+}
+
+// A load waits queued, painting, while nothing can dispatch it: no
+// renderer here, so no stage work ever starts and every Loading step
+// paints. The load still counts as in flight.
+#[test]
+fn a_queued_load_paints_until_it_can_dispatch() {
+    let mut app = test_app();
+    register(&mut app, LOADING_SCREEN_NAME, ScopeTier::Engine);
+    app.boot_state = BootState::Frontend;
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(LevelSource::Path(
+        PathBuf::from("content/dev/maps/queued.prl"),
+    )));
+    app.drain_level_requests();
+    assert_eq!(app.boot_state, BootState::Loading);
+    for _ in 0..3 {
+        assert!(matches!(app.next_loading_step(), LoadingStep::Paint));
+        assert!(app.level_load_in_flight());
+        assert!(!app.level_loads.is_staged(), "no stage work while queued");
+        let snapshot = app
+            .loading_screen_snapshot()
+            .expect("the queued load's frame paints its tree");
+        assert_eq!(snapshot.trees[0].name, LOADING_SCREEN_NAME);
+    }
+    assert!(app.load_pool.built().is_none(), "nothing ran on the pool");
+    crate::startup::lifecycle::tests::drop_in_flight_load(&mut app);
 }
 
 #[test]
@@ -458,16 +477,6 @@ fn staged_loading_fields_commit_only_with_a_committed_generation() {
         &committed,
     );
     assert!(mod_pool(&app).is_empty());
-}
-
-#[test]
-fn without_a_loading_screen_a_delivered_payload_installs_at_once() {
-    let mut app = test_app();
-    app.boot_state = BootState::Loading;
-    let (tx, rx) = mpsc::channel();
-    app.level_rx = Some(rx);
-    tx.send(Ok(payload())).unwrap();
-    assert!(matches!(app.next_loading_step(), LoadingStep::Install(_)));
 }
 
 #[test]
@@ -609,12 +618,12 @@ fn dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images() {
 #[test]
 fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
     const SIZE: [u32; 2] = [1280, 720];
-    let mut renderer = match crate::render::Renderer::new_offscreen(SIZE[0], SIZE[1]) {
-        Ok(renderer) => renderer,
-        Err(err) => {
-            eprintln!("loading frame capture skipped: {err:#}");
-            return;
-        }
+    let Some(mut renderer) = crate::level_load::test_support::offscreen_renderer_sized_or_skip(
+        "loading_frames_render_the_tree_over_the_splash_or_its_background",
+        SIZE[0],
+        SIZE[1],
+    ) else {
+        return;
     };
     let logo = crate::render::splash::load_splash(
         &crate::startup::SplashSource::Base,
@@ -708,8 +717,8 @@ fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
             tags: Vec::new(),
             loading_tree: pool,
         });
-        progress.begin(100);
-        progress.advance(60);
+        progress.phase(LoadPhase::Parse).begin(100);
+        progress.phase(LoadPhase::Parse).advance(60);
         // Two frames a second apart, so the bar's tween settles.
         let mut pixels = Vec::new();
         for dt in [0.016, 1.0] {
@@ -794,10 +803,9 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
             .find(&format!("fn {function}("))
             .unwrap_or_else(|| panic!("`{function}` exists"));
         let rest = &source[start + 3..];
-        &rest[..rest
-            .find("\n    fn ")
-            .or(rest.find("\n    pub"))
-            .unwrap_or(rest.len())]
+        // Methods sit at four-space indent: the first closing brace there ends
+        // this one, so the check reads its body and nothing after it.
+        &rest[..rest.find("\n    }\n").unwrap_or(rest.len())]
     }
     for (file, source, function) in [
         ("settling.rs", include_str!("settling.rs"), "reveal_level"),
@@ -815,6 +823,12 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
             "lifecycle_boot_state.rs",
             include_str!("lifecycle_boot_state.rs"),
             "reset_boot_state_after_suspend",
+        ),
+        // An unload request cancelling a load in flight.
+        (
+            "lifecycle_load.rs",
+            include_str!("lifecycle_load.rs"),
+            "abandon_level_load_for_frontend",
         ),
     ] {
         assert!(
@@ -837,12 +851,10 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
 fn loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends() {
     const SHOT: &str = "shots/e1m1";
     const TREE: &str = "load.e1m1";
-    let renderer = match crate::render::Renderer::new_offscreen(64, 64) {
-        Ok(renderer) => renderer,
-        Err(err) => {
-            eprintln!("loading-only image upload skipped: {err:#}");
-            return;
-        }
+    let Some(renderer) = crate::level_load::test_support::offscreen_renderer_or_skip(
+        "loading_only_images_upload_while_the_tree_shows_and_release_when_it_ends",
+    ) else {
+        return;
     };
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("ui")).unwrap();

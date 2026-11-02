@@ -14,7 +14,7 @@ use postretro_render_data::material::derive_material;
 use crate::texture_mips::build_srgb_to_linear_lut;
 
 /// Edge and checker square of the renderer's missing-diffuse placeholder
-/// (`loaded_texture.rs`): magenta and black, sRGB, one mip. World UVs
+/// (`loaded_texture/placeholders.rs`): magenta and black, sRGB, one mip. World UVs
 /// normalize by its size when a material has no diffuse.
 const PLACEHOLDER_EDGE: u32 = 64;
 const PLACEHOLDER_SQUARE: u32 = 8;

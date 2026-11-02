@@ -1,0 +1,24 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+loaded in 0.8 s
+bake read: id51=e091d1f17895632f walk_epoch=3 size=2801079325 mtime=1793155933 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-hallway-inspection/stress-warren-hallway-inspection.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 93837 frames in 43.5 s; deferred 0 blocks / 0 texels, left behind 75 blocks / 28869408 texels, 0 trip frames
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap has been running for over 60 seconds
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 95392 frames in 97.3 s; deferred 0 blocks / 0 texels, left behind 45 blocks / 40551792 texels, 0 trip frames
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose: 9192 frames in 88.4 s; deferred 0 blocks / 0 texels, left behind 44489 blocks / 23232976320 texels, 0 trip frames
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-hallway-inspection/stress-warren-hallway-inspection.before.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 28869408 (blocks 75); outside-baked-set blocks 129; trip frames 0 of 93837
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 40551792 (blocks 45); outside-baked-set blocks 112; trip frames 0 of 95392
+pose tour stress-warren-hallway-inspection.poses, 2 frames per pose
+  deferred texels 0 (blocks 0); left-behind texels 23232976320 (blocks 44489); outside-baked-set blocks 136; trip frames 0 of 9192
+verdict: UNPAIRED (record only)
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 230.28s
+
+POSTRETRO_WORLD_POSES_FILE=$R/$M.poses POSTRETRO_WORLD_POSES_OUT= $T     75.56s user 202.18s system 120% cpu 3:50.39 total

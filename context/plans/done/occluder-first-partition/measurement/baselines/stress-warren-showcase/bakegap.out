@@ -1,0 +1,23 @@
+
+running 1 test
+PRL: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+loaded in 0.0 s
+bake read: id51=76239ea11fe8366f walk_epoch=3 size=33143034 mtime=1793154499 prl=/Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.prl
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 98360 frames in 2.9 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads: 116745 frames in 2.3 s; deferred 0 blocks / 0 texels, left behind 0 blocks / 0 texels, 0 trip frames
+pose tour stress-warren-showcase.poses, 2 frames per pose: 10232 frames in 0.9 s; deferred 0 blocks / 0 texels, left behind 1606 blocks / 9264208 texels, 0 trip frames
+bake-gap record written: /Users/dhiester/Projects/Personal/postretro/target/occluder-baselines/stress-warren-showcase/stress-warren-showcase.before.bakegap
+
+=== bake-gap guard: deferred lightmap texel area, summed per sequence
+random walk | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 0 (blocks 0); outside-baked-set blocks 370; trip frames 0 of 98360
+far-point tour | L 16 m | cap 15 | HFOV 100 deg at 16:9, pitch 0 deg, completed reads
+  deferred texels 0 (blocks 0); left-behind texels 0 (blocks 0); outside-baked-set blocks 1614; trip frames 0 of 116745
+pose tour stress-warren-showcase.poses, 2 frames per pose
+  deferred texels 0 (blocks 0); left-behind texels 9264208 (blocks 1606); outside-baked-set blocks 8; trip frames 0 of 10232
+verdict: UNPAIRED (record only)
+test session::lightmap_residency::walk_measurement::world_poses::world_poses_bake_gap ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2147 filtered out; finished in 6.35s
+
+POSTRETRO_WORLD_POSES_FILE=$R/$M.poses POSTRETRO_WORLD_POSES_OUT= $T     6.00s user 0.46s system 101% cpu 6.386 total

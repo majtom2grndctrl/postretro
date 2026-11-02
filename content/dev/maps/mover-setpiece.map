@@ -1,0 +1,477 @@
+// Game: Postretro
+// Format: Standard
+// Mover set-piece: measurement and proof surface for LARGE theatrical movers.
+// See mover-setpiece.README.md for stations, waypoints and the measurement recipe.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/mover-setpiece.map -o content/dev/maps/mover-setpiece.prl
+// Layout, TrenchBroom units, 1 unit = 0.0254 m, floor top at z 0, ceiling at z 320.
+// Arena: x 0 to 1280, y 0 to 1024. Back room: x 0 to 1280, y 1088 to 1600.
+// Dividing wall y 1024 to 1088 with a 544 x 224 opening at x 96 to 640 and a
+// door pocket at x 640 to 1184, y 1040 to 1072, z 0 to 224.
+// Rising-room shaft under the arena floor: hole x 832 to 1152, y 160 to 480,
+// shaft floor top at z -192.
+// Every brush is an axis-aligned box. Keep comments free of braces and quotes.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// brush 0 ceiling
+{
+( -16 1616 320 ) ( -16 -16 336 ) ( -16 -16 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 336 ) ( 1296 -16 320 ) ( -16 -16 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 320 ) ( 1296 1616 320 ) ( -16 1616 320 ) debug_ceiling_grey 0 0 0 1 1
+( -16 1616 336 ) ( 1296 -16 336 ) ( -16 -16 336 ) debug_ceiling_grey 0 0 0 1 1
+( 1296 1616 336 ) ( -16 1616 336 ) ( -16 1616 320 ) debug_ceiling_grey 0 0 0 1 1
+( 1296 -16 320 ) ( 1296 1616 336 ) ( 1296 1616 320 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush 1 wall_west
+{
+( -16 1616 -16 ) ( -16 -16 320 ) ( -16 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 -16 320 ) ( 0 -16 -16 ) ( -16 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 -16 -16 ) ( 0 1616 -16 ) ( -16 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( -16 1616 320 ) ( 0 -16 320 ) ( -16 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1616 320 ) ( -16 1616 320 ) ( -16 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 -16 ) ( 0 1616 320 ) ( 0 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 2 wall_east
+{
+( 1280 1616 -16 ) ( 1280 -16 320 ) ( 1280 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 -16 320 ) ( 1296 -16 -16 ) ( 1280 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 -16 -16 ) ( 1296 1616 -16 ) ( 1280 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 1616 320 ) ( 1296 -16 320 ) ( 1280 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1296 1616 320 ) ( 1280 1616 320 ) ( 1280 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1296 -16 -16 ) ( 1296 1616 320 ) ( 1296 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 3 wall_south
+{
+( 0 0 -16 ) ( 0 -16 320 ) ( 0 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 320 ) ( 1280 -16 -16 ) ( 0 -16 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -16 -16 ) ( 1280 0 -16 ) ( 0 0 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 320 ) ( 1280 -16 320 ) ( 0 -16 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 0 320 ) ( 0 0 320 ) ( 0 0 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 -16 -16 ) ( 1280 0 320 ) ( 1280 0 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 4 wall_north
+{
+( 0 1616 -16 ) ( 0 1600 320 ) ( 0 1600 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1600 320 ) ( 1280 1600 -16 ) ( 0 1600 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1600 -16 ) ( 1280 1616 -16 ) ( 0 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1616 320 ) ( 1280 1600 320 ) ( 0 1600 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 1616 320 ) ( 0 1616 320 ) ( 0 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 1600 -16 ) ( 1280 1616 320 ) ( 1280 1616 -16 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 5 floor_arena_south
+{
+( 0 160 -16 ) ( 0 0 0 ) ( 0 0 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 1280 0 -16 ) ( 0 0 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -16 ) ( 1280 160 -16 ) ( 0 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 160 0 ) ( 1280 0 0 ) ( 0 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 160 0 ) ( 0 160 0 ) ( 0 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 0 -16 ) ( 1280 160 0 ) ( 1280 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 6 floor_arena_north
+{
+( 0 1024 -16 ) ( 0 480 0 ) ( 0 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 480 0 ) ( 1280 480 -16 ) ( 0 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 480 -16 ) ( 1280 1024 -16 ) ( 0 1024 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 1024 0 ) ( 1280 480 0 ) ( 0 480 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 1024 0 ) ( 0 1024 0 ) ( 0 1024 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 480 -16 ) ( 1280 1024 0 ) ( 1280 1024 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 7 floor_arena_west
+{
+( 0 480 -16 ) ( 0 160 0 ) ( 0 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 160 0 ) ( 832 160 -16 ) ( 0 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 160 -16 ) ( 832 480 -16 ) ( 0 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 480 0 ) ( 832 160 0 ) ( 0 160 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 832 480 0 ) ( 0 480 0 ) ( 0 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 832 160 -16 ) ( 832 480 0 ) ( 832 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 8 floor_arena_east
+{
+( 1152 480 -16 ) ( 1152 160 0 ) ( 1152 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1152 160 0 ) ( 1280 160 -16 ) ( 1152 160 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1152 160 -16 ) ( 1280 480 -16 ) ( 1152 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1152 480 0 ) ( 1280 160 0 ) ( 1152 160 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 480 0 ) ( 1152 480 0 ) ( 1152 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 160 -16 ) ( 1280 480 0 ) ( 1280 480 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 9 floor_back
+{
+( 0 1600 -16 ) ( 0 1024 0 ) ( 0 1024 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 1024 0 ) ( 1280 1024 -16 ) ( 0 1024 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 1024 -16 ) ( 1280 1600 -16 ) ( 0 1600 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 1600 0 ) ( 1280 1024 0 ) ( 0 1024 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 1600 0 ) ( 0 1600 0 ) ( 0 1600 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 1280 1024 -16 ) ( 1280 1600 0 ) ( 1280 1600 -16 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush 10 divider_jamb_west
+{
+( 0 1088 0 ) ( 0 1024 320 ) ( 0 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1024 320 ) ( 96 1024 0 ) ( 0 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1024 0 ) ( 96 1088 0 ) ( 0 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 1088 320 ) ( 96 1024 320 ) ( 0 1024 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 96 1088 320 ) ( 0 1088 320 ) ( 0 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 96 1024 0 ) ( 96 1088 320 ) ( 96 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 11 divider_lintel
+{
+( 96 1088 224 ) ( 96 1024 320 ) ( 96 1024 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 96 1024 320 ) ( 1184 1024 224 ) ( 96 1024 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 96 1024 224 ) ( 1184 1088 224 ) ( 96 1088 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 96 1088 320 ) ( 1184 1024 320 ) ( 96 1024 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1088 320 ) ( 96 1088 320 ) ( 96 1088 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1024 224 ) ( 1184 1088 320 ) ( 1184 1088 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 12 divider_pocket_front
+{
+( 640 1040 0 ) ( 640 1024 224 ) ( 640 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1024 224 ) ( 1184 1024 0 ) ( 640 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1024 0 ) ( 1184 1040 0 ) ( 640 1040 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1040 224 ) ( 1184 1024 224 ) ( 640 1024 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1040 224 ) ( 640 1040 224 ) ( 640 1040 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1024 0 ) ( 1184 1040 224 ) ( 1184 1040 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 13 divider_pocket_back
+{
+( 640 1088 0 ) ( 640 1072 224 ) ( 640 1072 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1072 224 ) ( 1184 1072 0 ) ( 640 1072 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1072 0 ) ( 1184 1088 0 ) ( 640 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 640 1088 224 ) ( 1184 1072 224 ) ( 640 1072 224 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1088 224 ) ( 640 1088 224 ) ( 640 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1072 0 ) ( 1184 1088 224 ) ( 1184 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 14 divider_pocket_end
+{
+( 1184 1088 0 ) ( 1184 1024 320 ) ( 1184 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1024 320 ) ( 1280 1024 0 ) ( 1184 1024 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1024 0 ) ( 1280 1088 0 ) ( 1184 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1184 1088 320 ) ( 1280 1024 320 ) ( 1184 1024 320 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 1088 320 ) ( 1184 1088 320 ) ( 1184 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 1280 1024 0 ) ( 1280 1088 320 ) ( 1280 1088 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush 15 shaft_west
+{
+( 816 496 -192 ) ( 816 144 -16 ) ( 816 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 144 -16 ) ( 832 144 -192 ) ( 816 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 144 -192 ) ( 832 496 -192 ) ( 816 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 496 -16 ) ( 832 144 -16 ) ( 816 144 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 496 -16 ) ( 816 496 -16 ) ( 816 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 144 -192 ) ( 832 496 -16 ) ( 832 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 16 shaft_east
+{
+( 1152 496 -192 ) ( 1152 144 -16 ) ( 1152 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 144 -16 ) ( 1168 144 -192 ) ( 1152 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 144 -192 ) ( 1168 496 -192 ) ( 1152 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 496 -16 ) ( 1168 144 -16 ) ( 1152 144 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 496 -16 ) ( 1152 496 -16 ) ( 1152 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 144 -192 ) ( 1168 496 -16 ) ( 1168 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 17 shaft_south
+{
+( 832 160 -192 ) ( 832 144 -16 ) ( 832 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 144 -16 ) ( 1152 144 -192 ) ( 832 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 144 -192 ) ( 1152 160 -192 ) ( 832 160 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 160 -16 ) ( 1152 144 -16 ) ( 832 144 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 160 -16 ) ( 832 160 -16 ) ( 832 160 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 144 -192 ) ( 1152 160 -16 ) ( 1152 160 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 18 shaft_north
+{
+( 832 496 -192 ) ( 832 480 -16 ) ( 832 480 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 480 -16 ) ( 1152 480 -192 ) ( 832 480 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 480 -192 ) ( 1152 496 -192 ) ( 832 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 496 -16 ) ( 1152 480 -16 ) ( 832 480 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 496 -16 ) ( 832 496 -16 ) ( 832 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 480 -192 ) ( 1152 496 -16 ) ( 1152 496 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 19 shaft_bottom
+{
+( 816 496 -208 ) ( 816 144 -192 ) ( 816 144 -208 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 144 -192 ) ( 1168 144 -208 ) ( 816 144 -208 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 144 -208 ) ( 1168 496 -208 ) ( 816 496 -208 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 816 496 -192 ) ( 1168 144 -192 ) ( 816 144 -192 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 496 -192 ) ( 816 496 -192 ) ( 816 496 -208 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1168 144 -208 ) ( 1168 496 -192 ) ( 1168 496 -208 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 20 enemy_marker_plinth
+{
+( 336 1264 0 ) ( 336 1200 8 ) ( 336 1200 0 ) debug_floor_red 0 0 0 1 1
+( 336 1200 8 ) ( 400 1200 0 ) ( 336 1200 0 ) debug_floor_red 0 0 0 1 1
+( 336 1200 0 ) ( 400 1264 0 ) ( 336 1264 0 ) debug_floor_red 0 0 0 1 1
+( 336 1264 8 ) ( 400 1200 8 ) ( 336 1200 8 ) debug_floor_red 0 0 0 1 1
+( 400 1264 8 ) ( 336 1264 8 ) ( 336 1264 0 ) debug_floor_red 0 0 0 1 1
+( 400 1200 0 ) ( 400 1264 8 ) ( 400 1264 0 ) debug_floor_red 0 0 0 1 1
+}
+}
+// Sliding wall: 8 panels, 4 columns by 2 rows, closed pose x 96 to 640,
+// y 1040 to 1072, z 0 to 224. Slides +x by 544 into the pocket.
+// entity 1
+{
+"classname" "kinematic_mover"
+"name" "setpiece_wall"
+"path" "setpiece_wall_closed"
+"speed" "2"
+"wait_ms" "3000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev mover_setpiece setpiece_wall"
+// brush 0 panel_c0_r0
+{
+( 96 1072 0 ) ( 96 1040 112 ) ( 96 1040 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 96 1040 112 ) ( 232 1040 0 ) ( 96 1040 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 96 1040 0 ) ( 232 1072 0 ) ( 96 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 96 1072 112 ) ( 232 1040 112 ) ( 96 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1072 112 ) ( 96 1072 112 ) ( 96 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1040 0 ) ( 232 1072 112 ) ( 232 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// brush 1 panel_c0_r1
+{
+( 96 1072 112 ) ( 96 1040 224 ) ( 96 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 96 1040 224 ) ( 232 1040 112 ) ( 96 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 96 1040 112 ) ( 232 1072 112 ) ( 96 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 96 1072 224 ) ( 232 1040 224 ) ( 96 1040 224 ) metal/metal_brushed_012 0 0 0 1 1
+( 232 1072 224 ) ( 96 1072 224 ) ( 96 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 232 1040 112 ) ( 232 1072 224 ) ( 232 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 2 panel_c1_r0
+{
+( 232 1072 0 ) ( 232 1040 112 ) ( 232 1040 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 232 1040 112 ) ( 368 1040 0 ) ( 232 1040 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 232 1040 0 ) ( 368 1072 0 ) ( 232 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 232 1072 112 ) ( 368 1040 112 ) ( 232 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 368 1072 112 ) ( 232 1072 112 ) ( 232 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 368 1040 0 ) ( 368 1072 112 ) ( 368 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 3 panel_c1_r1
+{
+( 232 1072 112 ) ( 232 1040 224 ) ( 232 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1040 224 ) ( 368 1040 112 ) ( 232 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1040 112 ) ( 368 1072 112 ) ( 232 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 232 1072 224 ) ( 368 1040 224 ) ( 232 1040 224 ) metal/metal_rough_046a 0 0 0 1 1
+( 368 1072 224 ) ( 232 1072 224 ) ( 232 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 368 1040 112 ) ( 368 1072 224 ) ( 368 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// brush 4 panel_c2_r0
+{
+( 368 1072 0 ) ( 368 1040 112 ) ( 368 1040 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 368 1040 112 ) ( 504 1040 0 ) ( 368 1040 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 368 1040 0 ) ( 504 1072 0 ) ( 368 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 368 1072 112 ) ( 504 1040 112 ) ( 368 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 504 1072 112 ) ( 368 1072 112 ) ( 368 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+( 504 1040 0 ) ( 504 1072 112 ) ( 504 1072 0 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// brush 5 panel_c2_r1
+{
+( 368 1072 112 ) ( 368 1040 224 ) ( 368 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 368 1040 224 ) ( 504 1040 112 ) ( 368 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 368 1040 112 ) ( 504 1072 112 ) ( 368 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 368 1072 224 ) ( 504 1040 224 ) ( 368 1040 224 ) metal/metal_brushed_012 0 0 0 1 1
+( 504 1072 224 ) ( 368 1072 224 ) ( 368 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 504 1040 112 ) ( 504 1072 224 ) ( 504 1072 112 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 6 panel_c3_r0
+{
+( 504 1072 0 ) ( 504 1040 112 ) ( 504 1040 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 504 1040 112 ) ( 640 1040 0 ) ( 504 1040 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 504 1040 0 ) ( 640 1072 0 ) ( 504 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 504 1072 112 ) ( 640 1040 112 ) ( 504 1040 112 ) metal/metal_brushed_012 0 0 0 1 1
+( 640 1072 112 ) ( 504 1072 112 ) ( 504 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 640 1040 0 ) ( 640 1072 112 ) ( 640 1072 0 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 7 panel_c3_r1
+{
+( 504 1072 112 ) ( 504 1040 224 ) ( 504 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 504 1040 224 ) ( 640 1040 112 ) ( 504 1040 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 504 1040 112 ) ( 640 1072 112 ) ( 504 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 504 1072 224 ) ( 640 1040 224 ) ( 504 1040 224 ) metal/metal_rough_046a 0 0 0 1 1
+( 640 1072 224 ) ( 504 1072 224 ) ( 504 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 640 1040 112 ) ( 640 1072 224 ) ( 640 1072 112 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 2
+{
+"classname" "kinematic_waypoint"
+"name" "setpiece_wall_closed"
+"next" "setpiece_wall_open"
+"origin" "368 1056 112"
+}
+// entity 3
+{
+"classname" "kinematic_waypoint"
+"name" "setpiece_wall_open"
+"origin" "912 1056 112"
+}
+// Rising room: 320 x 320 footprint at x 832 to 1152, y 160 to 480. Authored at
+// its lowered pose, roof top flush with the arena floor at z 0, floor slab
+// bottom on the shaft bottom at z -192. Rises +z by 176 so the floor top ends
+// at z 0. Doorway faces west, 96 wide, 128 tall.
+// entity 4
+{
+"classname" "kinematic_mover"
+"name" "setpiece_room"
+"path" "setpiece_room_lowered"
+"speed" "1"
+"wait_ms" "6000"
+"move_mode" "ping_pong"
+"start_on_spawn" "1"
+"_tags" "dev mover_setpiece setpiece_room"
+// brush 0 room_floor
+{
+( 832 480 -192 ) ( 832 160 -176 ) ( 832 160 -192 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 160 -176 ) ( 1152 160 -192 ) ( 832 160 -192 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 160 -192 ) ( 1152 480 -192 ) ( 832 480 -192 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 480 -176 ) ( 1152 160 -176 ) ( 832 160 -176 ) metal/metal_brushed_012 0 0 0 1 1
+( 1152 480 -176 ) ( 832 480 -176 ) ( 832 480 -192 ) metal/metal_brushed_012 0 0 0 1 1
+( 1152 160 -192 ) ( 1152 480 -176 ) ( 1152 480 -192 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 1 room_roof
+{
+( 832 480 -16 ) ( 832 160 0 ) ( 832 160 -16 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 160 0 ) ( 1152 160 -16 ) ( 832 160 -16 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 160 -16 ) ( 1152 480 -16 ) ( 832 480 -16 ) metal/metal_brushed_012 0 0 0 1 1
+( 832 480 0 ) ( 1152 160 0 ) ( 832 160 0 ) metal/metal_brushed_012 0 0 0 1 1
+( 1152 480 0 ) ( 832 480 0 ) ( 832 480 -16 ) metal/metal_brushed_012 0 0 0 1 1
+( 1152 160 -16 ) ( 1152 480 0 ) ( 1152 480 -16 ) metal/metal_brushed_012 0 0 0 1 1
+}
+// brush 2 room_wall_south
+{
+( 832 176 -176 ) ( 832 160 -16 ) ( 832 160 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 160 -16 ) ( 1152 160 -176 ) ( 832 160 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 160 -176 ) ( 1152 176 -176 ) ( 832 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 176 -16 ) ( 1152 160 -16 ) ( 832 160 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 176 -16 ) ( 832 176 -16 ) ( 832 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 160 -176 ) ( 1152 176 -16 ) ( 1152 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 3 room_wall_north
+{
+( 832 480 -176 ) ( 832 464 -16 ) ( 832 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 464 -16 ) ( 1152 464 -176 ) ( 832 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 464 -176 ) ( 1152 480 -176 ) ( 832 480 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 480 -16 ) ( 1152 464 -16 ) ( 832 464 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 480 -16 ) ( 832 480 -16 ) ( 832 480 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 464 -176 ) ( 1152 480 -16 ) ( 1152 480 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 4 room_wall_east
+{
+( 1136 464 -176 ) ( 1136 176 -16 ) ( 1136 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1136 176 -16 ) ( 1152 176 -176 ) ( 1136 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1136 176 -176 ) ( 1152 464 -176 ) ( 1136 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1136 464 -16 ) ( 1152 176 -16 ) ( 1136 176 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 464 -16 ) ( 1136 464 -16 ) ( 1136 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 1152 176 -176 ) ( 1152 464 -16 ) ( 1152 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 5 room_wall_west_s
+{
+( 832 272 -176 ) ( 832 176 -16 ) ( 832 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 176 -16 ) ( 848 176 -176 ) ( 832 176 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 176 -176 ) ( 848 272 -176 ) ( 832 272 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 272 -16 ) ( 848 176 -16 ) ( 832 176 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 272 -16 ) ( 832 272 -16 ) ( 832 272 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 176 -176 ) ( 848 272 -16 ) ( 848 272 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 6 room_wall_west_n
+{
+( 832 464 -176 ) ( 832 368 -16 ) ( 832 368 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 368 -16 ) ( 848 368 -176 ) ( 832 368 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 368 -176 ) ( 848 464 -176 ) ( 832 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 464 -16 ) ( 848 368 -16 ) ( 832 368 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 464 -16 ) ( 832 464 -16 ) ( 832 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 368 -176 ) ( 848 464 -16 ) ( 848 464 -176 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+// brush 7 room_door_lintel
+{
+( 832 368 -48 ) ( 832 272 -16 ) ( 832 272 -48 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 272 -16 ) ( 848 272 -48 ) ( 832 272 -48 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 272 -48 ) ( 848 368 -48 ) ( 832 368 -48 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 832 368 -16 ) ( 848 272 -16 ) ( 832 272 -16 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 368 -16 ) ( 832 368 -16 ) ( 832 368 -48 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+( 848 272 -48 ) ( 848 368 -16 ) ( 848 368 -48 ) 50-free-textures/concrete_stone_022 0 0 0 1 1
+}
+}
+// entity 5
+{
+"classname" "kinematic_waypoint"
+"name" "setpiece_room_lowered"
+"next" "setpiece_room_raised"
+"origin" "992 320 -96"
+}
+// entity 6
+{
+"classname" "kinematic_waypoint"
+"name" "setpiece_room_raised"
+"origin" "992 320 80"
+}
+// Carried dynamic light inside the rising room, authored at the lowered pose.
+// entity 7
+{
+"classname" "light_dynamic"
+"name" "setpiece_room_lamp"
+"carrier" "setpiece_room"
+"origin" "992 320 -56"
+"light" "300"
+"_color" "255 170 90"
+"_falloff_range" "320"
+"_tags" "dev mover_setpiece setpiece_room_lamp"
+}
+// Baked lights. Arena side, then back room. Falloffs reach across the wall and room.
+// entity 8
+{
+"classname" "light"
+"origin" "256 256 256"
+"light" "300"
+"_color" "255 244 230"
+"_falloff_range" "900"
+}
+// entity 9
+{
+"classname" "light"
+"origin" "640 320 192"
+"light" "300"
+"_color" "235 240 255"
+"_falloff_range" "900"
+}
+// entity 10
+{
+"classname" "light"
+"origin" "992 320 288"
+"light" "250"
+"_color" "255 255 255"
+"_falloff_range" "640"
+}
+// entity 11
+{
+"classname" "light_spot"
+"origin" "368 560 288"
+"light" "400"
+"_color" "255 250 240"
+"_falloff_range" "1100"
+"angles" "-21 90 0"
+"_cone" "30"
+"_cone2" "50"
+}
+// entity 12
+{
+"classname" "light"
+"origin" "240 1376 256"
+"light" "300"
+"_color" "200 220 255"
+"_falloff_range" "900"
+}
+// entity 13
+{
+"classname" "light"
+"origin" "1000 1376 256"
+"light" "300"
+"_color" "200 220 255"
+"_falloff_range" "900"
+}
+// Station 1: the sliding wall fills the view. Yaw 90 faces +y.
+// entity 14
+{
+"classname" "player_spawn"
+"origin" "368 720 48"
+"angles" "0 90 0"
+}

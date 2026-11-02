@@ -3,13 +3,14 @@
 // recording over the mover pass's geometry.
 // See: context/lib/rendering_pipeline.md §7.9
 
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::ghost_instance::{
     KINEMATIC_GHOST_INSTANCE_SIZE, KinematicGhostInstance, pack_kinematic_ghost_instance,
 };
 use postretro_render_cpu::ghost_transparency::GhostTransparency;
 
 use super::ghost_pipeline::{GhostDrawStep, GhostPipelines};
-use super::kinematic_brush::KinematicBrushPass;
+use super::kinematic_brush::KinematicLevelState;
 use super::kinematic_ghost_shape::{MoverGhostBounds, MoverGhostShape};
 use super::{GpuTexture, SCENE_COLOR_FORMAT};
 
@@ -120,7 +121,7 @@ impl KinematicGhostPass {
                 GhostDrawStep::Depth => &depth_layout,
                 GhostDrawStep::Colour => &layout,
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.new_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -173,7 +174,7 @@ impl KinematicGhostPass {
         device: &wgpu::Device,
         queue: &crate::render::uploads::UploadQueue,
         instances: &[KinematicGhostInstance],
-        brush: &KinematicBrushPass,
+        brush: &KinematicLevelState,
     ) {
         self.draws.clear();
         self.instance_bytes.clear();
@@ -221,7 +222,7 @@ impl KinematicGhostPass {
     /// bounds, and its mover's triangles as `brush` keeps them.
     pub(super) fn draw_shapes<'a>(
         &'a self,
-        brush: &'a KinematicBrushPass,
+        brush: &'a KinematicLevelState,
     ) -> impl Iterator<Item = MoverGhostShape<'a>> + 'a {
         self.draws.iter().map(move |draw| {
             MoverGhostShape::new(draw.bounds, brush.mover_triangles(draw.mover_id))
@@ -236,7 +237,7 @@ impl KinematicGhostPass {
     pub(super) fn record_ghost(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
-        brush: &KinematicBrushPass,
+        brush: &KinematicLevelState,
         materials: &[GpuTexture],
         draw: u32,
         mode: GhostTransparency,
@@ -270,7 +271,7 @@ impl KinematicGhostPass {
 }
 
 fn create_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    device.new_buffer(&wgpu::BufferDescriptor {
         label: Some("Kinematic Ghost Instance Buffer"),
         size: (capacity * KINEMATIC_GHOST_INSTANCE_SIZE) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -283,7 +284,7 @@ fn create_instance_bind_group(
     layout: &wgpu::BindGroupLayout,
     buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Kinematic Ghost Instance Bind Group"),
         layout,
         entries: &[wgpu::BindGroupEntry {

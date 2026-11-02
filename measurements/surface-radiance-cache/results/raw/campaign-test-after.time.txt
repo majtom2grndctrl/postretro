@@ -1,0 +1,2 @@
+pgrep-check: clean
+bin=after map=content/dev/maps/campaign-test.map rc=0 wall_s=27

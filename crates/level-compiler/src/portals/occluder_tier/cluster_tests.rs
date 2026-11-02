@@ -1,0 +1,839 @@
+// Cluster-section tests for the occluder classifier: coverage, step runs, the
+// occlusion-test map. See: context/plans/done/occluder-first-partition/index.md §Acceptance
+use std::collections::BTreeMap;
+use std::f64::consts::FRAC_PI_2;
+
+use glam::{DQuat, DVec3};
+
+use super::classification_test_fixtures::{
+    TierBuild, assert_apart, brush_at_quake_box, classification, occlusion_test_brushes,
+};
+use crate::map_data::BrushVolume;
+use crate::partition::TierRole;
+use crate::partition::occluder_classify::OCCLUDER_SEE_OVER_M;
+use crate::partition::occluder_classify::test_fixtures::Edge;
+use crate::partition::occluder_classify::{OccluderClassification, OccluderVerdict};
+use crate::partition::occluder_cluster::test_fixtures::{
+    self as fixtures, ClusterFixture, STEP_RUN_STEPS,
+};
+use crate::partition::occluder_cluster::{
+    COVERAGE_GRID_CELLS, OCCLUDER_COVERAGE_FRACTION, Section,
+};
+use crate::partition::region_polytope::RegionPolytope;
+
+const TURN: f64 = std::f64::consts::FRAC_PI_4;
+
+/// Classify `cf`, assert each brush the row adds is exempt alone, and return
+/// the classification.
+fn classify_exempt_added(cf: &ClusterFixture) -> OccluderClassification {
+    let classification = classification(&cf.fixture.brushes);
+    for brush in cf.added() {
+        assert_ne!(
+            classification.verdicts[brush],
+            OccluderVerdict::Occludes,
+            "{}: brush {brush} occludes alone",
+            cf.fixture.name
+        );
+    }
+    classification
+}
+
+/// Sections holding every one of `brushes`.
+fn sections_holding(
+    classification: &OccluderClassification,
+    brushes: impl IntoIterator<Item = usize> + Clone,
+) -> Vec<&Section> {
+    classification
+        .clusters
+        .iter()
+        .flat_map(|cluster| &cluster.sections)
+        .filter(|section| {
+            brushes
+                .clone()
+                .into_iter()
+                .all(|brush| section.members.contains(&brush))
+        })
+        .collect()
+}
+
+/// The fixture's occluder-tier interior leaves and tier portals match the
+/// room without the row's brushes.
+fn assert_adds_no_empty_cell_or_portal(cf: &ClusterFixture) {
+    let with = TierBuild::classified(&cf.fixture.brushes).interior_cells_and_portals();
+    let without = TierBuild::classified(&cf.without()).interior_cells_and_portals();
+    assert_eq!(
+        with, without,
+        "{}: (interior cells, portals) with the row's brushes vs without",
+        cf.fixture.name
+    );
+}
+
+/// The planes `section`'s members split at occluder rank, as `(normal,
+/// distance)`.
+fn flagged_planes(cf: &ClusterFixture, section: &Section) -> Vec<(DVec3, f64)> {
+    section
+        .members
+        .iter()
+        .zip(&section.outline)
+        .flat_map(|(&brush, flags)| cf.fixture.brushes[brush].planes.iter().zip(flags))
+        .filter(|&(_, &flagged)| flagged)
+        .map(|(plane, _)| (plane.normal, plane.distance))
+        .collect()
+}
+
+/// No brush the row adds reaches the occluder tier.
+fn assert_added_stay_exempt(cf: &ClusterFixture, classification: &OccluderClassification) {
+    let flags = classification.occluder_flags();
+    for brush in cf.added() {
+        assert!(
+            !flags[brush],
+            "{}: brush {brush} reaches the occluder tier",
+            cf.fixture.name
+        );
+    }
+}
+
+// A3, the cluster half (pin R30): occlusion-test's first-room east wall.
+
+#[test]
+fn occlusion_test_east_wall_occludes_as_one_cluster_section() {
+    // The doorway's two jambs and lintel are each exempt alone; their
+    // section, 6.5 × 3.25 m, covers 81% of its face and occludes.
+    let brushes = occlusion_test_brushes();
+    let classification = classification(&brushes);
+    let wall = [
+        brush_at_quake_box(&brushes, [256.0, 0.0, 0.0], [272.0, 96.0, 128.0]),
+        brush_at_quake_box(&brushes, [256.0, 160.0, 0.0], [272.0, 256.0, 128.0]),
+        brush_at_quake_box(&brushes, [256.0, 96.0, 96.0], [272.0, 160.0, 128.0]),
+    ];
+    for brush in wall {
+        assert_ne!(classification.verdicts[brush], OccluderVerdict::Occludes);
+    }
+    let sections = sections_holding(&classification, wall);
+    assert!(
+        sections.iter().any(|section| section.occludes),
+        "no occluding section holds the east wall: {sections:#?}"
+    );
+    let flags = classification.occluder_flags();
+    assert!(wall.iter().all(|&brush| flags[brush]));
+}
+
+/// Print the classifier's cluster output and the tier counts it makes,
+/// beside the counts brushes judged alone make.
+fn report(name: &str, brushes: &[BrushVolume], classification: &OccluderClassification) {
+    let alone_roles: Vec<TierRole> = classification
+        .verdicts
+        .iter()
+        .map(|&verdict| match verdict {
+            OccluderVerdict::Occludes => TierRole::Occluder,
+            _ => TierRole::Exempt,
+        })
+        .collect();
+    let alone: Vec<bool> = alone_roles
+        .iter()
+        .map(|r| *r == TierRole::Occluder)
+        .collect();
+    let flags = classification.occluder_flags();
+    let sections: Vec<&Section> = classification
+        .clusters
+        .iter()
+        .flat_map(|cluster| &cluster.sections)
+        .collect();
+    let occluding = sections.iter().filter(|section| section.occludes).count();
+    let promoted = (0..brushes.len())
+        .filter(|&i| flags[i] && !alone[i])
+        .count();
+    let alone_build = TierBuild::new(brushes, &alone_roles);
+    let cluster_build = TierBuild::new(brushes, &classification.tier_roles());
+    let tier_leaves = |build: &TierBuild| build.tier.leaves.len();
+    let today = super::classification_test_fixtures::FirstPass::of(brushes);
+    println!(
+        "{name}: {} brushes, {} occlude alone; {} clusters ({} brushes), {} sections, \
+         {occluding} occlude, {promoted} brushes promoted\n\
+         today:    {} leaves, {} portals\n\
+         alone:    {} tier leaves, (interior, portals) {:?}, full tree {} leaves\n\
+         clusters: {} tier leaves, (interior, portals) {:?}, full tree {} leaves",
+        brushes.len(),
+        alone.iter().filter(|&&f| f).count(),
+        classification.clusters.len(),
+        classification
+            .clusters
+            .iter()
+            .map(|cluster| cluster.members.len())
+            .sum::<usize>(),
+        sections.len(),
+        today.tree.leaves.len(),
+        crate::portals::generate_portals(&today.tree).len(),
+        tier_leaves(&alone_build),
+        alone_build.interior_cells_and_portals(),
+        alone_build.tree.leaves.len(),
+        tier_leaves(&cluster_build),
+        cluster_build.interior_cells_and_portals(),
+        cluster_build.tree.leaves.len(),
+    );
+    for section in sections {
+        println!(
+            "  section {:?} n={:.3?} centre {:.2?} extents {:.2?} box {:?} coverage {:.3} \
+             occludes {}",
+            section.members,
+            section.normal,
+            section.frame.center,
+            section.extents,
+            section.box_verdict,
+            section.coverage,
+            section.occludes
+        );
+    }
+}
+
+// A7, the coverage half (pin R12): coverage is strict.
+
+#[test]
+fn cluster_coverage_decides_strictly_at_the_constant() {
+    for edge in Edge::ALL {
+        let cf = fixtures::coverage_edge(edge);
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+        let section = sections[0];
+        assert_eq!(
+            section.box_verdict,
+            OccluderVerdict::Occludes,
+            "{}: the bounding face must pass the occluder rule",
+            cf.fixture.name
+        );
+        match edge {
+            Edge::Under | Edge::At => {
+                if edge == Edge::At {
+                    assert!(
+                        (section.coverage - OCCLUDER_COVERAGE_FRACTION).abs() < 1e-9,
+                        "{}: coverage {} should land at the constant",
+                        cf.fixture.name,
+                        section.coverage
+                    );
+                }
+                assert!(!section.occludes, "{}", cf.fixture.name);
+                assert_adds_no_empty_cell_or_portal(&cf);
+            }
+            Edge::Over => {
+                assert!(section.occludes, "{}", cf.fixture.name);
+                assert_apart(&cf.fixture);
+            }
+        }
+    }
+}
+
+// A11 (pins R13, R23): a strip facade bounds cells; spaced strips add none.
+
+#[test]
+fn strip_facade_bounds_cells_as_one_section_square_and_turned_45_degrees() {
+    for cf in [
+        fixtures::strip_facade(),
+        fixtures::strip_facade().turned(TURN),
+    ] {
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(
+            sections.len(),
+            1,
+            "{}: one section holds every strip",
+            cf.fixture.name
+        );
+        assert!(
+            sections[0].occludes,
+            "{}: {:#?}",
+            cf.fixture.name, sections[0]
+        );
+        assert_apart(&cf.fixture);
+    }
+}
+
+#[test]
+fn strip_facade_windows_join_the_cell_behind_and_cross_through_one_portal_each() {
+    // Owner ruling, one portal per window (plan.md §Block (Task 9),
+    // resolved). The facade's slab is z 20..20.3 in a hall 40 m deep; its
+    // -z face fronts the deeper space, so it bounds the section, and each
+    // window's air joins the cell behind it. Before, each window was its own
+    // cell with a portal on both faces: twice the windows.
+    let cf = fixtures::strip_facade();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert!(sections[0].occludes, "{:#?}", sections[0]);
+    assert_eq!(sections[0].bounding_face, glam::DVec3::NEG_Z);
+    assert_apart(&cf.fixture);
+
+    let build = TierBuild::classified(&cf.fixture.brushes);
+    let (x0, z0, z1) = (15.0, 20.0, 20.0 + 0.3);
+    let windows = fixtures::facade_windows(31.0, 15.0);
+    let behind = build.cell_at(glam::DVec3::new(30.5, 1.5, 25.0));
+    let tier_portals = build.portals();
+    let on_facade: Vec<glam::DVec3> = tier_portals
+        .iter()
+        .filter(|portal| {
+            portal
+                .polygon
+                .iter()
+                .all(|p| (p.z - z0).abs() < 1e-6 || (p.z - z1).abs() < 1e-6)
+        })
+        .map(|portal| portal.polygon.iter().sum::<glam::DVec3>() / portal.polygon.len() as f64)
+        .filter(|c| c.x > x0 && c.x < x0 + 31.0 && c.y > 0.0 && c.y < 15.0)
+        .collect();
+    assert_eq!(
+        on_facade.len(),
+        windows.len(),
+        "runtime portals across the facade, one per window"
+    );
+    for [a0, a1, y0, y1] in windows {
+        let centre = glam::DVec3::new(x0 + (a0 + a1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0);
+        assert_eq!(
+            build.cell_at(centre),
+            behind,
+            "window at {centre} is not in the cell behind the facade"
+        );
+        let inside = |c: &&glam::DVec3| c.x > x0 + a0 && c.x < x0 + a1 && c.y > y0 && c.y < y1;
+        assert_eq!(
+            on_facade.iter().filter(inside).count(),
+            1,
+            "window at {centre}"
+        );
+    }
+}
+
+#[test]
+fn strips_touching_only_through_the_floor_add_no_empty_cell_square_and_turned_45_degrees() {
+    for cf in [
+        fixtures::spaced_strips(),
+        fixtures::spaced_strips().turned(TURN),
+    ] {
+        let classification = classify_exempt_added(&cf);
+        assert!(
+            classification.clusters.is_empty(),
+            "{}: the occluding floor joins no cluster",
+            cf.fixture.name
+        );
+        assert_adds_no_empty_cell_or_portal(&cf);
+    }
+}
+
+// A12 (pin R26): near-planar sections.
+
+#[test]
+fn corner_facade_bounds_cells_on_each_arm() {
+    // As one cluster its bounding face is the footprint and covers a few
+    // percent; each arm is its own section.
+    let cf = fixtures::corner_facade();
+    let classification = classify_exempt_added(&cf);
+    assert_eq!(
+        classification.clusters.len(),
+        1,
+        "the arms touch at the corner"
+    );
+    let occluding = classification.clusters[0]
+        .sections
+        .iter()
+        .filter(|section| section.occludes)
+        .count();
+    assert_eq!(occluding, 2, "{:#?}", classification.clusters[0].sections);
+    assert_apart(&cf.fixture);
+}
+
+#[test]
+fn facades_joined_by_a_touching_sign_each_bound_cells() {
+    let cf = fixtures::joined_facades();
+    let classification = classify_exempt_added(&cf);
+    let sign = cf.base;
+    assert_eq!(
+        classification.clusters.len(),
+        1,
+        "the sign joins both facades"
+    );
+    assert!(
+        classification.clusters[0].members.contains(&sign),
+        "the sign is a cluster member"
+    );
+    let occluding: Vec<&Section> = classification.clusters[0]
+        .sections
+        .iter()
+        .filter(|section| section.occludes)
+        .collect();
+    assert_eq!(occluding.len(), 2, "{occluding:#?}");
+    assert_added_stay_exempt(&cf, &classification);
+    assert_apart(&cf.fixture);
+}
+
+// Orientation: every member's own normal is tried, a set is judged under
+// every normal it forms under, and the judgment that stands for it is chosen
+// by geometry, so world orientation decides only an exact geometric tie.
+
+#[test]
+fn facade_turned_45_degrees_bounds_cells_beside_a_sign_5_degrees_off_either_way() {
+    for tilt in [fixtures::OFF_TRUE_RAD, -fixtures::OFF_TRUE_RAD] {
+        let cf = fixtures::facade_with_tilted_sign(tilt).turned(TURN);
+        let classification = classify_exempt_added(&cf);
+        let facade = sections_holding(&classification, 6..cf.base);
+        assert!(
+            facade.iter().any(|section| section.occludes),
+            "{}: {facade:#?}",
+            cf.fixture.name
+        );
+        assert_added_stay_exempt(&cf, &classification);
+        assert_apart(&cf.fixture);
+    }
+}
+
+#[test]
+fn stacked_cubes_occlude_alike_turned_90_degrees() {
+    for cf in [
+        fixtures::stacked_cubes(),
+        fixtures::stacked_cubes().turned(std::f64::consts::FRAC_PI_2),
+    ] {
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+        assert!(
+            sections[0].occludes,
+            "{}: {:#?}",
+            cf.fixture.name, sections[0]
+        );
+        assert_apart(&cf.fixture);
+    }
+}
+
+#[test]
+fn stacked_posts_in_an_uneven_collar_split_alike_turned_90_degrees() {
+    // Both judgments occlude with one box and full coverage, so the tie
+    // reaches the bounding faces' open depth: the faces across z front the
+    // 1.225 m gaps, those across x the 1.2 m ones. Before, the first
+    // occluding judgment in world xyz order stood, the one across world z in
+    // both maps: across the posts' z square, across their x turned.
+    let turn = DQuat::from_rotation_y(FRAC_PI_2);
+    let [(square, square_planes), (turned, turned_planes)] = [
+        fixtures::stacked_posts_in_collar(),
+        fixtures::stacked_posts_in_collar().turned(FRAC_PI_2),
+    ]
+    .map(|cf| {
+        let classification = classify_exempt_added(&cf);
+        let sections = sections_holding(&classification, cf.added());
+        assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+        let section = sections[0].clone();
+        assert!(section.occludes, "{}: {section:#?}", cf.fixture.name);
+        assert_apart(&cf.fixture);
+        let planes = flagged_planes(&cf, &section);
+        (section, planes)
+    });
+    assert!(
+        square.normal.z.abs() > 1.0 - 1e-9,
+        "square, the faces across z bound the section: {square:#?}"
+    );
+    assert!(
+        (turn * square.normal).dot(turned.normal).abs() > 1.0 - 1e-9,
+        "section normal {} square, {} turned",
+        square.normal,
+        turned.normal
+    );
+    assert!(
+        (turn * square.bounding_face).dot(turned.bounding_face) > 1.0 - 1e-9,
+        "bounding face {} square, {} turned",
+        square.bounding_face,
+        turned.bounding_face
+    );
+    assert_eq!(
+        square_planes.len(),
+        turned_planes.len(),
+        "tier planes square {square_planes:?}, turned {turned_planes:?}"
+    );
+    for (normal, distance) in square_planes {
+        let normal = turn * normal;
+        assert!(
+            turned_planes
+                .iter()
+                .any(|&(n, d)| n.dot(normal) > 1.0 - 1e-9 && (d - distance).abs() < 1e-6),
+            "square tier plane ({normal}, {distance}), turned, is not a turned tier plane: \
+             {turned_planes:?}"
+        );
+    }
+}
+
+// An occluding section bounds the occluder tier even when no member is
+// square to its box.
+
+#[test]
+fn louvred_screen_off_square_to_its_section_bounds_cells() {
+    let cf = fixtures::louvred_screen();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert!(section.occludes, "{section:#?}");
+    let bounding_planes = section
+        .members
+        .iter()
+        .zip(&section.outline)
+        .flat_map(|(&brush, flags)| cf.fixture.brushes[brush].planes.iter().zip(flags))
+        .filter(|&(plane, &flagged)| flagged && plane.normal.dot(section.bounding_face) > 0.9)
+        .count();
+    assert!(
+        bounding_planes > 0,
+        "no member plane bounds the section's bounding face in the tier"
+    );
+    assert_apart(&cf.fixture);
+}
+
+#[test]
+fn louvred_screen_splits_once_on_each_face_of_its_box() {
+    // Regression: every member plane within the section angle that touched a
+    // box face bounded it, so the twelve louvres' faces, parallel and 9 cm
+    // apart, each cut the regions in front of the screen at occluder rank
+    // into strips: 30 interior cells and 68 portals, against 5 and 8 for the
+    // screen as one solid slab. Now 8 and 13.
+    let cf = fixtures::louvred_screen();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert!(section.occludes, "{section:#?}");
+    let planes = flagged_planes(&cf, section);
+    let (front, rest): (Vec<_>, Vec<_>) = planes
+        .iter()
+        .partition(|&&(normal, _)| normal.dot(section.bounding_face) > 0.9);
+    let &(normal, distance) = *front.first().expect("a plane bounds the bounding face");
+    assert!(
+        front
+            .iter()
+            .all(|&&(n, d)| n.dot(normal) > 1.0 - 1e-9 && (d - distance).abs() < 1e-3),
+        "planes on the bounding face: {front:?}"
+    );
+    assert!(
+        rest.iter()
+            .all(|&&(n, _)| n.dot(section.bounding_face).abs() < 0.2),
+        "planes off the bounding face lie on the box's edge faces: {rest:?}"
+    );
+
+    // The strips themselves: no cell outside the screen's box is thinner
+    // than half a metre across any plane the section splits on. Inside the
+    // box a pocket between members may be thinner, as the 1 cm gap between
+    // the rail's end and the end louvre's tilted face is.
+    let build = TierBuild::classified(&cf.fixture.brushes);
+    let frame = &section.frame;
+    let in_box = |point: DVec3| {
+        (0..3).all(|axis| {
+            (point - frame.center).dot(frame.axes[axis]).abs() <= frame.extents[axis] * 0.5 + 1e-3
+        })
+    };
+    let mut cell_vertices: BTreeMap<usize, Vec<DVec3>> = BTreeMap::new();
+    for (leaf, bsp_leaf) in build.tree.leaves.iter().enumerate() {
+        if bsp_leaf.is_solid || build.exterior.contains(&leaf) {
+            continue;
+        }
+        let mut region = RegionPolytope::from_aabb(&bsp_leaf.bounds);
+        for &(normal, distance) in &bsp_leaf.defining_planes {
+            region = region.clip(normal, distance).0;
+        }
+        cell_vertices
+            .entry(build.cells.leaf_cell[leaf])
+            .or_default()
+            .extend(region.vertices());
+    }
+    for (cell, vertices) in &cell_vertices {
+        if vertices.iter().all(|&point| in_box(point)) {
+            continue;
+        }
+        for &(normal, _) in &planes {
+            let (lo, hi) = vertices
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), vertex| {
+                    (lo.min(vertex.dot(normal)), hi.max(vertex.dot(normal)))
+                });
+            assert!(
+                hi - lo >= 0.5,
+                "cell {cell}, outside the screen's box, is {:.3} m thick across {normal}",
+                hi - lo
+            );
+        }
+    }
+
+    // And the count. The screen's members leave recesses the slab has none
+    // of: each gap between neighbouring louvres may close off one pocket
+    // behind the bounding plane, opening through it and at most the top and
+    // an end plane. So the slab's cells plus one per gap, and its portals
+    // plus three per gap; strips add cells and portals with every plane.
+    let gaps = cf.added().len() - 2;
+    let screen = build.interior_cells_and_portals();
+    let slab = TierBuild::classified(&fixtures::solid_screen()).interior_cells_and_portals();
+    assert!(
+        screen.0 <= slab.0 + gaps && screen.1 <= slab.1 + 3 * gaps,
+        "(interior cells, portals): screen {screen:?}, solid slab {slab:?}, {gaps} gaps"
+    );
+}
+
+// Roofline coverage (index.md §Decisions, Clusters; owner ruling after
+// Task 9): a section's face counts each column up to the higher of its
+// solid and the see-over height above the floor in front.
+
+#[test]
+fn abutting_facades_of_mixed_heights_occlude_under_their_roofline() {
+    let cf = fixtures::mixed_height_row();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(
+        sections.len(),
+        1,
+        "one section holds the row: {sections:#?}"
+    );
+    let section = sections[0];
+    assert_eq!(section.box_verdict, OccluderVerdict::Occludes);
+
+    // Each frontage alone, and the row over its bounding box (the rule
+    // before the roofline), from the strips' own areas.
+    let area = |rects: &[[f64; 4]]| -> f64 {
+        rects
+            .iter()
+            .map(|[a0, a1, y0, y1]| (a1 - a0) * (y1 - y0))
+            .sum()
+    };
+    let (mut solid, mut length, mut height) = (0.0, 0.0_f64, 0.0_f64);
+    for (l, h) in fixtures::MIXED_ROW_FRONTAGES {
+        let strips = area(&fixtures::facade_rects(l, h));
+        assert!(
+            strips / (l * h) > 0.6,
+            "a {l} × {h} m frontage covers its own face"
+        );
+        solid += strips;
+        length += l;
+        height = height.max(h);
+    }
+    let bounding_box_share = solid / (length * height);
+    assert!(
+        bounding_box_share <= OCCLUDER_COVERAGE_FRACTION,
+        "over its bounding box the row covers {bounding_box_share:.3}"
+    );
+    // Under the roofline the row reads as its frontages do.
+    let roofline_share: f64 = solid
+        / fixtures::MIXED_ROW_FRONTAGES
+            .iter()
+            .map(|(l, h)| l * h)
+            .sum::<f64>();
+    assert!(
+        (section.coverage - roofline_share).abs() < 0.01,
+        "coverage {:.3} vs the frontages' {roofline_share:.3}",
+        section.coverage
+    );
+    assert!(section.occludes, "{section:#?}");
+    assert_apart(&cf.fixture);
+}
+
+#[test]
+fn low_wall_between_tall_posts_stays_exempt_under_the_roofline() {
+    // Each wall column counts up to the 2.5 m see-over height, not its 1 m
+    // top: the posts fill their columns, and the wall columns cover 1 of the
+    // 2.5 m counted, 0.457 of the counted cells. Counted only to each
+    // column's own solid, the wall would read solid. Every edge and the
+    // line land on cell boundaries, so the share is exact.
+    let cf = fixtures::low_wall_between_posts();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(section.box_verdict, OccluderVerdict::Occludes);
+    let n = COVERAGE_GRID_CELLS as f64;
+    let rows = |metres: f64| metres / fixtures::LOW_WALL_POST_HEIGHT_M * n;
+    let post_columns = fixtures::LOW_WALL_POSTS.len() as f64 * fixtures::LOW_WALL_POST_M
+        / fixtures::LOW_WALL_LENGTH_M
+        * n;
+    let wall_columns = n - post_columns;
+    let expected = (post_columns * n + wall_columns * rows(fixtures::LOW_WALL_HEIGHT_M))
+        / (post_columns * n + wall_columns * rows(OCCLUDER_SEE_OVER_M));
+    assert!(
+        (section.coverage - expected).abs() < 1e-9,
+        "coverage {:.4} vs {expected:.4}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+#[test]
+fn balustrade_on_a_balcony_edge_reads_porous_under_its_deck_roofline_and_stays_exempt() {
+    // Only the deck face passes the occluder rule, so coverage counts under
+    // the see-over line 2.5 m above the deck: the posts' columns to their
+    // tops, the gaps' to the line, of which the rail covers 0.3 m.
+    let cf = fixtures::balcony_balustrade();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(
+        section.box_verdict,
+        OccluderVerdict::Occludes,
+        "{section:#?}"
+    );
+    let posts =
+        fixtures::BALUSTRADE_POSTS as f64 * fixtures::BALUSTRADE_POST_M / fixtures::BALCONY_WIDTH_M;
+    let height = fixtures::BALUSTRADE_HEIGHT_M;
+    let expected = (posts * height + (1.0 - posts) * fixtures::BALUSTRADE_RAIL_M)
+        / (posts * height + (1.0 - posts) * OCCLUDER_SEE_OVER_M);
+    assert!(
+        (section.coverage - expected).abs() < 0.02,
+        "coverage {:.3} vs {expected:.3}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+#[test]
+fn balustrade_over_a_stairwell_reads_each_column_s_own_floor_and_stays_exempt() {
+    // The Clusters Decision's roofline: each point counts up to the
+    // see-over height above the floor in front of it. The deck face's
+    // middle third fronts the stairwell, whose see-over line lies under the
+    // balustrade's foot, so its columns count only their solid; the outer
+    // two thirds count up to 2.5 m above the deck. Read with the stairwell's
+    // floor across the whole face, as before, every column counted only its
+    // solid, coverage was 1 and the balustrade occluded.
+    let cf = fixtures::balustrade_over_stairwell();
+    let classification = classify_exempt_added(&cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{sections:#?}");
+    let section = sections[0];
+    assert_eq!(
+        section.box_verdict,
+        OccluderVerdict::Occludes,
+        "{section:#?}"
+    );
+    // Each third holds four posts, a fifth of its width, as the whole
+    // balustrade does.
+    let posts =
+        fixtures::BALUSTRADE_POSTS as f64 * fixtures::BALUSTRADE_POST_M / fixtures::BALCONY_WIDTH_M;
+    let height = fixtures::BALUSTRADE_HEIGHT_M;
+    let solid = posts * height + (1.0 - posts) * fixtures::BALUSTRADE_RAIL_M;
+    let over_deck = posts * height + (1.0 - posts) * OCCLUDER_SEE_OVER_M;
+    let expected = 3.0 * solid / (2.0 * over_deck + solid);
+    assert!(
+        (section.coverage - expected).abs() < 0.02,
+        "coverage {:.3} vs {expected:.3}",
+        section.coverage
+    );
+    assert!(!section.occludes, "{section:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+// A13: sparse clusters a broad face of whose bounding box passes the rule
+// add no cell.
+
+#[test]
+fn l_lamp_post_in_an_alcove_adds_no_empty_cell() {
+    assert_sparse_section_adds_no_empty_cell(&fixtures::lamp_post_in_alcove());
+}
+
+#[test]
+fn colonnade_under_a_touching_beam_adds_no_empty_cell() {
+    assert_sparse_section_adds_no_empty_cell(&fixtures::colonnade());
+}
+
+/// Coverage alone decides: one section holds every added brush, a broad
+/// face of its bounding box passes the occluder rule, and its solid covers
+/// no more than the constant.
+fn assert_sparse_section_adds_no_empty_cell(cf: &ClusterFixture) {
+    let classification = classify_exempt_added(cf);
+    let sections = sections_holding(&classification, cf.added());
+    assert_eq!(sections.len(), 1, "{}: {sections:#?}", cf.fixture.name);
+    let section = sections[0];
+    assert_eq!(
+        section.box_verdict,
+        OccluderVerdict::Occludes,
+        "{section:#?}"
+    );
+    assert!(
+        section.coverage <= OCCLUDER_COVERAGE_FRACTION,
+        "{section:#?}"
+    );
+    assert!(!section.occludes);
+    assert_adds_no_empty_cell_or_portal(cf);
+}
+
+// A14 (pin R4): slab membership.
+
+#[test]
+fn pillar_on_touching_tiles_adds_no_portal_while_the_tiled_floor_bounds_cells() {
+    // The pillar touches the tiles, so it joins their cluster, but its broad
+    // faces stand across the floor's and it stays out of the floor's section.
+    let cf = fixtures::tiled_floor_with_pillar();
+    let classification = classify_exempt_added(&cf);
+    let pillar = cf.base;
+    assert!(
+        classification
+            .clusters
+            .iter()
+            .any(|cluster| cluster.members.contains(&pillar))
+    );
+    assert_added_stay_exempt(&cf, &classification);
+    assert_adds_no_empty_cell_or_portal(&cf);
+    assert_apart(&cf.fixture);
+}
+
+#[test]
+fn tiled_floor_bounds_cells_as_one_solid_slab_does() {
+    // The tiles' joints lie inside the section's box, so they split only the
+    // tile layer, never the room above or below it.
+    let tiled = fixtures::tiled_floor_with_pillar();
+    let solid = TierBuild::classified(&fixtures::solid_mezzanine()).interior_cells_and_portals();
+    let tiles = TierBuild::classified(&tiled.without()).interior_cells_and_portals();
+    assert_eq!(tiles, solid, "(interior cells, portals) tiled vs solid");
+}
+
+#[test]
+fn lamp_touching_a_strip_facade_adds_no_portal_while_the_facade_bounds_cells() {
+    // The lamp's broad face agrees with the facade's, but it stands proud of
+    // the facade's slab.
+    let cf = fixtures::facade_with_lamp();
+    let classification = classify_exempt_added(&cf);
+    assert_added_stay_exempt(&cf, &classification);
+    let facade = sections_holding(&classification, 6..cf.base);
+    assert!(facade.iter().any(|section| section.occludes), "{facade:#?}");
+    assert_adds_no_empty_cell_or_portal(&cf);
+    assert_apart(&cf.fixture);
+}
+
+// A15 (pin R19) and the stepped-solid check.
+
+#[test]
+fn touching_step_run_adds_no_empty_cell() {
+    let cf = fixtures::step_run(STEP_RUN_STEPS);
+    let classification = classify_exempt_added(&cf);
+    assert_added_stay_exempt(&cf, &classification);
+    assert_adds_no_empty_cell_or_portal(&cf);
+}
+
+#[test]
+fn step_runs_put_no_riser_or_tread_plane_in_the_occluder_tier() {
+    // Stepped-solid check (research §Stacked and stepped solids). Each step's
+    // broad face is its riser, and no two risers share a slab, so the run
+    // forms no section along its length and no side-profile section; only
+    // the two lowest steps, whose broad face is their tread, pair up. A run
+    // past the 20 m absolute length stays exempt the same way.
+    for steps in [STEP_RUN_STEPS, 30] {
+        let cf = fixtures::step_run(steps);
+        let classification = classify_exempt_added(&cf);
+        assert_added_stay_exempt(&cf, &classification);
+    }
+}
+
+// The street map, classified without a bake.
+
+#[test]
+#[ignore = "report: classifies the generated street map"]
+fn stress_street_classification_reports_occluders_and_sections() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/maps/stress-street.map");
+    let brushes = crate::parse::parse_map_file(&path, crate::map_format::MapFormat::IdTech2)
+        .expect("stress-street.map parses")
+        .brush_volumes;
+    let start = std::time::Instant::now();
+    let first_pass = super::classification_test_fixtures::FirstPass::of(&brushes);
+    let first_pass_time = start.elapsed();
+    let start = std::time::Instant::now();
+    let classification = first_pass.classification(&brushes);
+    let classify_time = start.elapsed();
+    println!("first pass {first_pass_time:?}, classification {classify_time:?}");
+    report("stress-street", &brushes, &classification);
+}

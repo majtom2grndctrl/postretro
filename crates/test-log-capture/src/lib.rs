@@ -207,6 +207,19 @@ impl LogCapture {
         }
     }
 
+    /// Assert that no record is more severe than `level`: "logs nothing above
+    /// debug" is `assert_nothing_above(Level::Debug)`.
+    pub fn assert_nothing_above(&self, level: Level) {
+        let count = self
+            .records()
+            .iter()
+            .filter(|record| record.level < level)
+            .count();
+        if count != 0 {
+            self.fail(format!("no record above {level}"), count);
+        }
+    }
+
     fn match_count(&self, level: Level, target_prefix: Option<&str>, body: &str) -> usize {
         self.records()
             .iter()

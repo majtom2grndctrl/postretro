@@ -122,7 +122,8 @@ fn quantize_lightmap_uv(uv: [f32; 2]) -> [u16; 2] {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FaceMeta {
-    /// Raw BSP leaf index this face belongs to (= runtime cell id).
+    /// Runtime cell id this face belongs to. The name predates cells that
+    /// group several BSP leaves.
     pub leaf_index: u32,
     /// Index into the TextureNames section. `NO_TEXTURE` (u32::MAX) = no texture.
     pub texture_index: u32,

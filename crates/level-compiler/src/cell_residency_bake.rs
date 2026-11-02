@@ -85,7 +85,7 @@ pub fn cell_residency_set_bake_cached(
             portals,
             locator,
             section,
-            teleporters.map(|input| input.tree),
+            teleporters.map(|input| input.hulls),
         )
     });
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
@@ -212,7 +212,7 @@ pub(crate) fn cell_residency_set_cache_key(
     portals: &PortalsSection,
     locator: &CellLocatorSection,
     teleporters: &TeleportersSection,
-    tree: Option<&crate::partition::BspTree>,
+    hulls: Option<&[crate::partition::CellHull]>,
 ) -> CacheKey {
     let mut hasher = blake3::Hasher::new();
     for bytes in [
@@ -224,25 +224,28 @@ pub(crate) fn cell_residency_set_cache_key(
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    // Exact classification reads f64 leaf geometry, which the encoded f32
+    // Exact classification reads f64 cell hulls, which the encoded f32
     // locator and Cells bounds alone cannot distinguish near a contact.
     if !teleporters.teleporters.is_empty() {
-        let tree = tree.expect("nonempty teleporters require final BSP geometry");
-        hasher.update(&(tree.leaves.len() as u64).to_le_bytes());
-        for leaf in &tree.leaves {
-            for value in leaf
-                .bounds
-                .min
-                .to_array()
-                .into_iter()
-                .chain(leaf.bounds.max.to_array())
-            {
-                hasher.update(&value.to_le_bytes());
-            }
-            hasher.update(&(leaf.defining_planes.len() as u64).to_le_bytes());
-            for &(normal, distance) in &leaf.defining_planes {
-                for value in normal.to_array().into_iter().chain([distance]) {
+        let hulls = hulls.expect("nonempty teleporters require final cell hulls");
+        hasher.update(&(hulls.len() as u64).to_le_bytes());
+        for hull in hulls {
+            hasher.update(&(hull.pieces.len() as u64).to_le_bytes());
+            for piece in &hull.pieces {
+                for value in piece
+                    .bounds
+                    .min
+                    .to_array()
+                    .into_iter()
+                    .chain(piece.bounds.max.to_array())
+                {
                     hasher.update(&value.to_le_bytes());
+                }
+                hasher.update(&(piece.defining_planes.len() as u64).to_le_bytes());
+                for &(normal, distance) in &piece.defining_planes {
+                    for value in normal.to_array().into_iter().chain([distance]) {
+                        hasher.update(&value.to_le_bytes());
+                    }
                 }
             }
         }

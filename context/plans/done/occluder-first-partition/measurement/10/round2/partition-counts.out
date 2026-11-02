@@ -1,0 +1,14 @@
+   Compiling postretro-level-compiler v0.1.0 (C:\Users\danhi\Projects\Personal\postretro\.claude\worktrees\mac-agent-review-panel-ee30a1\crates\level-compiler)
+    Finished `release` profile [optimized] target(s) in 2m 28s
+     Running unittests src\main.rs (target\release\deps\prl_build-7a23b88e393a34fc.exe)
+
+running 1 test
+ROW occlusion-test cells 510 interior 119 slivers 55 portals 270
+ROW stress-warren-hallway-inspection cells 7881 interior 1857 slivers 11 portals 2924
+ROW campaign-test cells 840 interior 136 slivers 66 portals 306
+ROW stress-warren-showcase cells 1528 interior 522 slivers 0 portals 823
+ROW stress-street cells 4864 interior 1648 slivers 1196 portals 3885
+test pipeline::runtime_cells::leak_tests::scratch_10_partition_counts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2071 filtered out; finished in 2.87s
+

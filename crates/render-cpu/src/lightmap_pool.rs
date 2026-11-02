@@ -4,6 +4,7 @@
 
 mod block_table;
 mod policy;
+mod static_plan;
 
 pub use block_table::{
     BLOCK_FLAG_NONE, BLOCK_FLAG_RESIDENT, BLOCK_TABLE_ENTRY_BYTES, BlockTableEntry,
@@ -11,11 +12,14 @@ pub use block_table::{
 };
 pub use policy::{
     BlockUpload, DrainPlan, DrainRequest, EvictionReason, LightmapPoolModel, NotAPlannedUpload,
-    PlannedEviction, PoolCopy, PoolGrowth, TableWrite,
+    POOL_POLICY_IDENTITY, PlannedEviction, PoolCopy, PoolGrowth, TableWrite,
 };
 pub use postretro_level_format::lightmap_pool::{
     AllResidentPool, BlockPlacement, BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree,
     place_all_resident,
+};
+pub use static_plan::{
+    StaticPool, StaticPoolPlan, StreamingPoolPlan, plan_static_pool, plan_streaming_pool,
 };
 
 #[cfg(test)]

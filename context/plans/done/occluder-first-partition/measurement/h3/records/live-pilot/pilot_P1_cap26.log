@@ -1,0 +1,13 @@
+[2026-10-28T22:21:09Z INFO  postretro] [Engine] Postretro starting
+[2026-10-28T22:21:09Z INFO  postretro::startup::session] [Engine] Content root: content/dev
+[2026-10-28T22:21:09Z INFO  postretro::startup::session] [Engine] Core root: core
+[2026-10-28T22:21:09Z INFO  postretro::startup::session] [Engine] Player data: config /Users/dhiester/Library/Application Support/postretro, data /Users/dhiester/Library/Application Support/postretro
+[2026-10-28T22:21:09Z INFO  postretro::startup::session] [Engine] Baked root: /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/baked (materials at /Users/dhiester/Projects/Personal/postretro/target/occluder-9g/baked/materials)
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] wgpu backend selection: Backends(VULKAN | METAL | DX12 | BROWSER_WEBGPU)
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] indirect-call validation: on (build default)
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] GPU adapter: AMD Radeon Pro 5300M (backend=Metal, type=DiscreteGpu, vendor=0x0000, device=0x0000, driver= )
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] Indirect execution supported (multi_draw_indexed_indirect)
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] Cube-array textures supported (dynamic point shadows enabled)
+[2026-10-28T22:21:10Z WARN  postretro_renderer::render::renderer_init_resources] [Renderer] POSTRETRO_GPU_TIMING=1 requested but adapter lacks TIMESTAMP_QUERY and/or TIMESTAMP_QUERY_INSIDE_ENCODERS support — running without GPU timing
+[2026-10-28T22:21:10Z INFO  postretro_renderer::render::renderer_init] [Renderer] vsync on
+[2026-10-28T22:21:10Z INFO  postretro] [Engine] Window ready

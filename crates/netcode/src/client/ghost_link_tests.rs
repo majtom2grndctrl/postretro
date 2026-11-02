@@ -68,6 +68,7 @@ fn snapshot(sequence: u32, server_tick: u32, records: Vec<EntityRecord>) -> Snap
         faction_sentiment_record: None,
         ghost_audio: None,
         server_script_time: 0.0,
+        level_tick: 0,
     }
 }
 

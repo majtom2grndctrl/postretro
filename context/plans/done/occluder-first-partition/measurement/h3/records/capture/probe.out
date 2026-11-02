@@ -1,0 +1,6 @@
+18:40:41 probe1 median 225.1 | idle pre: util=0 inUseVidMemoryBytes=1388474368 vramFreeBytes=1852604416 mhz=0 temp=66 
+18:43:26 probe2 median 224.9 | idle pre: util=0 inUseVidMemoryBytes=1471569920 vramFreeBytes=2521448448 mhz=0 temp=59 
+18:46:12 probe3 median 225.8 | idle pre: util=0 inUseVidMemoryBytes=1295421440 vramFreeBytes=2470031360 mhz=0 temp=56 
+18:48:59 probe4 median 224.9 | idle pre: util=0 inUseVidMemoryBytes=1442697216 vramFreeBytes=2427052032 mhz=0 temp=56 
+18:51:44 probe5 median 225.0 | idle pre: util=0 inUseVidMemoryBytes=1491365888 vramFreeBytes=2355605504 mhz=0 temp=58 
+18:54:29 probe6 median 223.3 | idle pre: util=0 inUseVidMemoryBytes=1244622848 vramFreeBytes=2338136064 mhz=0 temp=61 

@@ -654,5 +654,355 @@ def point_inside_planes(point, planes):
     return True
 
 
+
+# --- Street map (`--preset street`, tools/stress_street.py) -----------------
+
+STREET = GENERATOR.stress_street
+STREET_MAP = Path(__file__).parents[2] / "content" / "dev" / "maps" / "stress-street.map"
+GAP_M = 0.001   # the classifier's 1 mm touching epsilon
+
+
+def generate_street():
+    return STREET.generate(GENERATOR.box_brush, GENERATOR.SCRIPT_LIGHT_TAG)
+
+
+def boxes_of(street, role):
+    return [r.box for r in street.roles if r.role == role]
+
+
+def box_gap(a, b):
+    """Largest per-axis separation between two boxes; <= 0 means overlap or contact."""
+    return max(max(a[k] - b[k + 3], b[k] - a[k + 3]) for k in range(3))
+
+
+def boxes_overlap(a, b):
+    return box_gap(a, b) < -GAP_M
+
+
+def rect_box(rect, z0, z1):
+    return (rect[0], rect[1], z0, rect[2], rect[3], z1)
+
+
+def extents(box):
+    return sorted(box[k + 3] - box[k] for k in range(3))
+
+
+def kvps(entity):
+    out = {}
+    for line in entity:
+        if line.startswith('"'):
+            key, _, value = line[1:-1].partition('" "')
+            out[key] = value
+    return out
+
+
+def touching_components(boxes):
+    """Connected components of boxes under the 1 mm touching rule."""
+    seen, comps = set(), []
+    for start in range(len(boxes)):
+        if start in seen:
+            continue
+        stack, comp = [start], []
+        seen.add(start)
+        while stack:
+            n = stack.pop()
+            comp.append(n)
+            for m in range(len(boxes)):
+                if m not in seen and box_gap(boxes[n], boxes[m]) <= GAP_M:
+                    seen.add(m)
+                    stack.append(m)
+        comps.append(comp)
+    return comps
+
+
+class StreetMapTests(unittest.TestCase):
+    """Pins every feature the occluder-first-partition street-map Decision lists."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.street = generate_street()
+
+    def test_street_snakes_round_a_left_and_a_right_corner(self):
+        self.assertEqual(STREET.route_turns(), [1, -1])
+        axes = [s["axis"] for s in STREET.SEGMENTS]
+        self.assertEqual(axes, [0, 1, 0])
+
+    def test_promenade_runs_the_street_floor_under_the_elevated_street(self):
+        st = self.street
+        lower = boxes_of(st, "lower_deck")
+        # The promenade is the canyon floor from the plaza to the hull's far wall.
+        canyon = STREET.band(0.0, STREET.CANYON_W)
+        self.assertEqual(canyon[0][0], STREET.PLAZA[2])
+        self.assertEqual(canyon[-1][2], STREET.HULL_X)
+        soffit = min(b[2] for b in lower)
+        self.assertGreaterEqual(soffit, 5.0)
+        # Nothing but curbs and deck columns stands in the promenade under the
+        # deck; lamp posts are group entities, not world brushes.
+        volume = [rect_box(r, 0.0, soffit) for r in canyon]
+        for role in st.roles:
+            if role.role in ("curb", "column"):
+                continue
+            for v in volume:
+                self.assertFalse(boxes_overlap(role.box, v), (role.role, role.name, role.box))
+        # The elevated street covers the promenade along every segment.
+        for deck, floor in zip(lower, canyon):
+            self.assertGreater(deck[2], 0.0)
+            self.assertTrue(boxes_overlap(deck, rect_box(floor, deck[2], deck[5])))
+        # The curb and columns are the small brushes the classifier must exempt.
+        for curb in boxes_of(st, "curb"):
+            self.assertLess(extents(curb)[1], STREET.FLOOR_M)
+        for column in boxes_of(st, "column"):
+            self.assertLess(extents(column)[1], STREET.FLOOR_M)
+            self.assertEqual(column[2], 0.0)
+            self.assertEqual(column[5], soffit)
+
+    def test_upper_deck_carries_opposite_traffic_above_the_elevated_street(self):
+        st = self.street
+        lower, upper = boxes_of(st, "lower_deck"), boxes_of(st, "upper_deck")
+        (ld, (_, lower_top)), (ud, (upper_soffit, _)) = STREET.LOWER_DECK, STREET.UPPER_DECK
+        self.assertEqual([b[:2] + b[3:5] for b in lower],
+                         [r[:2] + r[2:] for r in STREET.band(*ld)])
+        self.assertEqual([b[:2] + b[3:5] for b in upper],
+                         [r[:2] + r[2:] for r in STREET.band(*ud)])
+        # One deck hangs off each facade, so the two directions run apart.
+        self.assertEqual(ld[1], STREET.CANYON_W)
+        self.assertEqual(ud[0], 0.0)
+        self.assertTrue(all(b[5] == lower_top for b in lower))
+        self.assertGreaterEqual(upper_soffit - lower_top, 4.0)   # headroom on the deck
+        # Ramps join plaza, elevated street and upper deck.
+        ramps = {r.name: r.box for r in st.roles if r.role == "ramp"}
+        self.assertEqual(ramps["plaza"][2], 0.0)
+        self.assertEqual(ramps["plaza"][5], lower_top)
+        self.assertEqual(ramps["deck"][2], lower_top)
+        self.assertEqual(ramps["deck"][5], upper[0][5])
+
+    def test_both_decks_snake_round_both_corners(self):
+        for role in ("lower_deck", "upper_deck"):
+            decks = boxes_of(self.street, role)
+            self.assertEqual(len(decks), len(STREET.SEGMENTS))
+            for deck, seg in zip(decks, STREET.SEGMENTS):
+                long_axis = 0 if deck[3] - deck[0] > deck[4] - deck[1] else 1
+                self.assertEqual(long_axis, seg["axis"], role)
+                # Every deck slab passes the absolute length on its long axis.
+                self.assertGreaterEqual(extents(deck)[2], STREET.ABSOLUTE_M)
+            for a, b in zip(decks, decks[1:]):
+                self.assertLessEqual(box_gap(a, b), 0.0, f"{role} breaks at a corner")
+                self.assertFalse(boxes_overlap(a, b))
+
+    def test_every_side_street_is_closed_by_a_barrier_and_a_deck_guard(self):
+        st = self.street
+        frontages, gaps = STREET.frontages()
+        self.assertGreaterEqual(len(gaps), 3)
+        self.assertEqual(len(st.side_streets), len(gaps))
+        barriers, guards = boxes_of(st, "barrier"), boxes_of(st, "deck_guard")
+        self.assertEqual(len(barriers), len(gaps))
+        self.assertEqual(len(guards), len(gaps))
+        lower_top = STREET.LOWER_DECK[1][1]
+        for g in st.side_streets:
+            rect = g["rect"]
+            width = (rect[2] - rect[0]) if STREET.SEGMENTS[g["seg"]]["axis"] == 0 else (rect[3] - rect[1])
+            # The ground barrier spans the side street wall to wall, stands on
+            # its floor and is taller than a player can reach.
+            ground = [b for b in barriers if boxes_overlap(b, rect_box(rect, 0.0, 1.0))]
+            self.assertEqual(len(ground), 1)
+            b = ground[0]
+            self.assertAlmostEqual(extents(b)[2], width)
+            self.assertEqual(b[2], 0.0)
+            self.assertGreater(b[5] - b[2], STREET.PLAYER_REACH_M)
+            # The guard closes the elevated street's edge across the gap.
+            gap_rect = STREET.span_rect(g["seg"], g["lo"], g["hi"], 0.0, STREET.SIDE_STREET_D[1])
+            deck_guard = [b for b in guards if boxes_overlap(b, rect_box(gap_rect, 0.0, 20.0))]
+            self.assertEqual(len(deck_guard), 1)
+            b = deck_guard[0]
+            self.assertAlmostEqual(extents(b)[2], width)
+            self.assertEqual(b[2], lower_top)
+            self.assertGreater(b[5] - b[2], STREET.PLAYER_REACH_M)
+            # Past the barrier the street dead-ends against solid: a block or the hull.
+            blocks = boxes_of(st, "block") + boxes_of(st, "hull")
+            self.assertTrue(any(box_gap(blk, rect_box(rect, 0.0, 1.0)) <= GAP_M
+                                and not boxes_overlap(blk, rect_box(rect, 0.0, 1.0))
+                                for blk in blocks))
+        # Side B is buildings and side streets only: they tile its facade band.
+        for i in range(len(STREET.SEGMENTS)):
+            spans = sorted([(f["lo"], f["hi"]) for f in frontages
+                            if f["side"] == "B" and f["seg"] == i]
+                           + [(g["lo"], g["hi"]) for g in gaps if g["seg"] == i])
+            lo, hi = STREET.band_along(i, STREET.CANYON_W, STREET.CANYON_W + STREET.FACADE_T)
+            self.assertEqual(spans[0][0], lo)
+            self.assertEqual(spans[-1][1], hi)
+            self.assertTrue(all(a[1] == b[0] for a, b in zip(spans, spans[1:])))
+
+    def test_abutting_row_is_continuous_round_both_corners(self):
+        frontages, gaps = STREET.frontages()
+        row = [f for f in frontages if f["side"] == "A"]
+        self.assertEqual({g["side"] for g in gaps}, {"B"})
+        for i in range(len(STREET.SEGMENTS)):
+            spans = [(f["lo"], f["hi"]) for f in row if f["seg"] == i]
+            lo, hi = STREET.band_along(i, -STREET.FACADE_T, 0.0)
+            self.assertEqual(spans[0][0], lo)
+            self.assertEqual(spans[-1][1], hi)
+            self.assertTrue(all(a[1] == b[0] for a, b in zip(spans, spans[1:])))
+        # The row's strips touch from the plaza to the hull, through both
+        # corners, so the whole row is one cluster.
+        strips = [r.box for r in self.street.roles
+                  if r.role == "facade_strip" and r.name.startswith("A")]
+        self.assertEqual(len(touching_components(strips)), 1)
+        self.assertGreaterEqual(len({f["name"] for f in row}), 6)
+
+    def test_facades_are_narrow_strips_round_windows(self):
+        st = self.street
+        frontages = {(f["name"], f["seg"], f["lo"]): f for f in st.frontages}
+        self.assertTrue(frontages)
+        for role in ("facade_strip", "free_strip"):
+            for box in boxes_of(st, role):
+                # Exempt alone: under the floor on one of the two broad axes.
+                self.assertLess(extents(box)[1], STREET.FLOOR_M, role)
+        coverages = []
+        for f in st.frontages:
+            self.assertGreater(f["height"], STREET.SEE_OVER_M)
+            # Windows: the strips leave openings, and they cover the face
+            # without overlapping.
+            self.assertLess(f["coverage"], 0.75)
+            self.assertGreater(f["coverage"], 0.4)
+            coverages.append(f["coverage"])
+            mine = [r.box for r in st.roles if r.role == "facade_strip"
+                    and r.name == f["name"]]
+            for a in range(len(mine)):
+                for b in range(a + 1, len(mine)):
+                    self.assertFalse(boxes_overlap(mine[a], mine[b]))
+        # Coverage brackets the 50 % cluster constant, so the sweep shows both.
+        self.assertTrue(any(c < STREET.COVERAGE for c in coverages))
+        self.assertTrue(any(c > STREET.COVERAGE for c in coverages))
+        # Each building's facade is one touching cluster, and the windows see
+        # into a room behind it (the room gets a roof) unless it is a corner piece.
+        for name in {f["name"] for f in st.frontages}:
+            mine = [r.box for r in st.roles if r.role == "facade_strip" and r.name == name]
+            self.assertEqual(len(touching_components(mine)), 1, name)
+        roofs = {r.name for r in st.roles if r.role == "roof"}
+        for f in st.frontages:
+            self.assertEqual(f["name"] in roofs, f["room"])
+        # Frontages straddle the absolute length.
+        lengths = [f["hi"] - f["lo"] for f in st.frontages]
+        self.assertTrue(any(v < STREET.ABSOLUTE_M for v in lengths))
+        self.assertTrue(any(v > STREET.ABSOLUTE_M for v in lengths))
+
+    def test_a_free_standing_building_stands_in_the_open_plaza(self):
+        st = self.street
+        strips = boxes_of(st, "free_strip")
+        roof = boxes_of(st, "free_roof")
+        self.assertEqual(len(roof), 1)
+        (x0, y0, x1, y1), storeys, _ = STREET.FREE_BUILDING
+        px0, py0, px1, py1 = STREET.PLAZA
+        self.assertTrue(px0 < x0 < x1 < px1 and py0 < y0 < y1 < py1)
+        # Four strip facades, one cluster with each corner closed.
+        self.assertEqual(len(touching_components(strips)), 1)
+        self.assertEqual(min(b[0] for b in strips), x0)
+        self.assertEqual(max(b[3] for b in strips), x1)
+        self.assertEqual(min(b[1] for b in strips), y0)
+        self.assertEqual(max(b[4] for b in strips), y1)
+        self.assertEqual(roof[0][5], STREET.building_height(storeys))
+        # Open on every side: no other solid comes within 8 m of it.
+        own = rect_box((x0, y0, x1, y1), 0.0, STREET.SKY_Z)
+        for r in st.roles:
+            if r.role in ("free_strip", "free_roof") or r.name in ("ground", "sky"):
+                continue
+            self.assertGreaterEqual(box_gap(own, r.box), 8.0, (r.role, r.name))
+        # One pair of faces passes the absolute length; the other does not.
+        self.assertGreater(y1 - y0, STREET.ABSOLUTE_M)
+        self.assertLess(x1 - x0, STREET.ABSOLUTE_M)
+
+    def test_lamp_posts_are_linked_groups_each_holding_a_light(self):
+        st = self.street
+        groups = [{**kvps(e), "_lines": e} for e in st.entities
+                  if kvps(e).get("classname") == "func_group"]
+        lights = [kvps(e) for e in st.entities if kvps(e).get("classname") == "light"]
+        self.assertEqual(len(groups), len(STREET.LAMPS))
+        self.assertGreaterEqual(len(groups), 20)
+        ids = [g["_tb_id"] for g in groups]
+        self.assertEqual(len(set(ids)), len(ids))
+        base = [box for _, box in STREET.LAMP_BASE]
+        for g in groups:
+            self.assertEqual(g["_tb_type"], "_tb_group")
+            self.assertEqual(g["_tb_linked_group_id"], STREET.LAMP_LINKED_GROUP)
+            self.assertRegex(g["_tb_linked_group_id"], r"^\{[0-9a-f-]{36}\}$")
+            matrix = tuple(int(v) for v in g["_tb_transformation"].split())
+            self.assertEqual(len(matrix), 16)
+            # Each instance is the base lamp under its own transformation.
+            brushes = "\n".join(g["_lines"])
+            for box in base:
+                tb = STREET.transform_box(matrix, box)
+                expect = GENERATOR.box_brush(*tb, STREET.LAMP_TEX, STREET.LAMP_TEX,
+                                             STREET.LAMP_TEX).rstrip("\n")
+                self.assertIn(expect, brushes)
+            self.assertEqual(brushes.count("// brush"), len(base))
+            held = [L for L in lights if L.get("_tb_group") == g["_tb_id"]]
+            self.assertEqual(len(held), 1)
+            origin = tuple(int(v) for v in held[0]["origin"].split())
+            self.assertEqual(origin, STREET.apply_transform(matrix, STREET.LAMP_LIGHT))
+        # The base lamp: touching pole, arm and head; the light under the head.
+        self.assertEqual(len(touching_components([tuple(v * STREET.UNIT_M for v in b)
+                                                  for b in base])), 1)
+        head = dict(STREET.LAMP_BASE)["head"]
+        self.assertLess(STREET.LAMP_LIGHT[2], head[2])
+        self.assertTrue(head[0] <= STREET.LAMP_LIGHT[0] <= head[3])
+        # Lamps stand on the promenade, both decks and the plaza.
+        floors = {t[2] for _, t in STREET.lamp_placements()}
+        self.assertEqual(floors, {0, STREET.u(6.0), STREET.u(11.0)})
+
+    def test_map_is_sealed_by_its_hull_with_a_player_start(self):
+        st = self.street
+        hull = {r.name: r.box for r in st.roles if r.role == "hull"}
+        self.assertEqual(set(hull), {"ground", "sky", "west", "east", "south", "north"})
+        inner = (0.0, 0.0, 0.0, STREET.HULL_X, STREET.HULL_Y, STREET.SKY_Z)
+        # The six slabs close the interior: each touches it on one face.
+        for box in hull.values():
+            self.assertLessEqual(box_gap(box, inner), 0.0)
+            self.assertFalse(boxes_overlap(box, inner))
+        eps = 1e-9
+        for r in st.roles:
+            if r.role == "hull":
+                continue
+            self.assertTrue(all(r.box[k] >= inner[k] - eps and r.box[k + 3] <= inner[k + 3] + eps
+                                for k in range(3)), (r.role, r.name, r.box))
+        # Every point entity sits in open air inside the hull, none buried.
+        solids = [brush_text_planes(b) for b in st.brushes]
+        for _, _, boxes, _ in st.lamps:
+            solids += [brush_text_planes(GENERATOR.box_brush(*b, "t", "t", "t")) for b in boxes]
+        points = [tuple(float(v) for v in kvps(e)["origin"].split())
+                  for e in st.entities if "origin" in kvps(e)]
+        points.append(tuple(float(v) for v in st.spawn))
+        self.assertGreaterEqual(len(points), len(STREET.LAMPS) + 2)
+        for p in points:
+            self.assertTrue(all(0 < p[k] < STREET.u(inner[k + 3]) for k in range(3)), p)
+            self.assertFalse(any(point_inside_planes(p, planes) for planes in solids), p)
+        # The player starts in the plaza on its floor.
+        sx, sy, sz = st.spawn
+        px0, py0, px1, py1 = STREET.PLAZA
+        self.assertTrue(STREET.u(px0) < sx < STREET.u(px1) and STREET.u(py0) < sy < STREET.u(py1))
+        self.assertEqual(sz, 32)
+
+    def test_committed_map_and_sidecar_match_the_generator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / STREET_MAP.name
+            with contextlib.redirect_stdout(io.StringIO()):
+                GENERATOR.main(["--preset", "street", "-o", str(out)])
+            text = out.read_text()
+            sidecar = out.with_name("stress-street.generated.ts").read_text()
+        self.assertIn('"data_script" "stress-street.generated.ts"', text)
+        # The sidecar pulses the map's tagged lights.
+        self.assertIn(GENERATOR.SCRIPT_LIGHT_TAG, sidecar)
+        self.assertEqual(text.count(f'"_tags" "{GENERATOR.SCRIPT_LIGHT_TAG}"'),
+                         len(STREET.NEON))
+        self.assertEqual(text, STREET_MAP.read_text(),
+                         "regenerate: python3 tools/gen_stress_map.py --preset street "
+                         "-o content/dev/maps/stress-street.map")
+        self.assertEqual(sidecar, STREET_MAP.with_name("stress-street.generated.ts").read_text())
+
+    def test_street_generation_is_deterministic(self):
+        again = generate_street()
+        self.assertEqual(again.brushes, self.street.brushes)
+        self.assertEqual(again.entities, self.street.entities)
+
+
 if __name__ == "__main__":
     unittest.main()

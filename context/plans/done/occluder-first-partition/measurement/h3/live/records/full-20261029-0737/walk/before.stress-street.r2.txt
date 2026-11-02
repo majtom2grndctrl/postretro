@@ -1,0 +1,13 @@
+# label considered accepted step_limit path visibility_us_med walk_us_med calls
+rd:plaza 3563 920 0 PrlPortal { walk_reach: 309 } 532.47 526.11 75
+rd:plaza~e150 3585 937 0 PrlPortal { walk_reach: 312 } 537.64 531.12 75
+rd:promenade 1840 583 0 PrlPortal { walk_reach: 206 } 289.23 284.90 137
+rd:promenade~e150 1925 609 0 PrlPortal { walk_reach: 207 } 300.60 296.21 133
+rd:elevated 2696 858 0 PrlPortal { walk_reach: 261 } 429.90 424.32 93
+rd:elevated~e150 2939 922 0 PrlPortal { walk_reach: 283 } 464.15 458.01 87
+rd:upperdeck 3731 1357 0 PrlPortal { walk_reach: 273 } 587.05 581.44 69
+rd:upperdeck~e150 3771 1401 0 PrlPortal { walk_reach: 274 } 600.88 595.15 66
+wk:g11.26.1@0 4726 1497 0 PrlPortal { walk_reach: 402 } 730.80 722.39 55
+wk:g11.26.1@0~e150 4083 1248 0 PrlPortal { walk_reach: 342 } 627.39 620.27 63
+wk:roof:A0.s0.e@0/-15 3711 925 0 PrlPortal { walk_reach: 258 } 531.22 525.40 76
+wk:roof:A0.s0.e@0/-15~e150 3917 975 0 PrlPortal { walk_reach: 267 } 557.85 551.97 70

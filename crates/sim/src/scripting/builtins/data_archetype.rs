@@ -264,24 +264,38 @@ fn is_directly_map_placeable(descriptor: &EntityTypeDescriptor) -> bool {
 /// connected client receives those pawns through snapshots. Neither path may
 /// upload models during gameplay, so install preloads the full descriptor set.
 pub fn movement_descriptor_mesh_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
+    distinct_descriptor_mesh_models(
+        descriptors
+            .iter()
+            .filter(|descriptor| descriptor.movement.is_some()),
+    )
+}
+
+/// The models a descriptor's mesh draws: its holder model, then its
+/// attachment models sorted, empty handles skipped. Duplicates stay; callers
+/// that union several descriptors dedupe.
+pub fn descriptor_mesh_models(descriptor: &EntityTypeDescriptor) -> Vec<&str> {
+    let Some(mesh) = descriptor.mesh.as_ref() else {
+        return Vec::new();
+    };
+    let mut attachment_models: Vec<&str> = mesh.attachments.values().map(String::as_str).collect();
+    attachment_models.sort_unstable();
+    std::iter::once(mesh.model.as_str())
+        .chain(attachment_models)
+        .filter(|model| !model.is_empty())
+        .collect()
+}
+
+/// [`descriptor_mesh_models`] over `descriptors`, first-seen and deduplicated.
+pub(crate) fn distinct_descriptor_mesh_models<'a>(
+    descriptors: impl IntoIterator<Item = &'a EntityTypeDescriptor>,
+) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut ordered = Vec::new();
     for descriptor in descriptors {
-        if descriptor.movement.is_none() {
-            continue;
-        }
-        let Some(mesh) = descriptor.mesh.as_ref() else {
-            continue;
-        };
-        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
-            ordered.push(mesh.model.clone());
-        }
-        let mut attachment_models: Vec<&str> =
-            mesh.attachments.values().map(String::as_str).collect();
-        attachment_models.sort_unstable();
-        for attachment_model in attachment_models {
-            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
-                ordered.push(attachment_model.to_string());
+        for model in descriptor_mesh_models(descriptor) {
+            if seen.insert(model) {
+                ordered.push(model.to_string());
             }
         }
     }
@@ -406,28 +420,11 @@ pub fn projectile_presentation_assets(
 /// Requiring both weapon and touchable authoring keeps this preload scoped to
 /// instances the drop path can actually restore as world items.
 pub fn touchable_wieldable_world_models(descriptors: &[EntityTypeDescriptor]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut ordered = Vec::new();
-    for descriptor in descriptors {
-        if descriptor.weapon.is_none() || descriptor.touchable.is_none() {
-            continue;
-        }
-        let Some(mesh) = descriptor.mesh.as_ref() else {
-            continue;
-        };
-        if !mesh.model.is_empty() && seen.insert(mesh.model.clone()) {
-            ordered.push(mesh.model.clone());
-        }
-        let mut attachment_models: Vec<&str> =
-            mesh.attachments.values().map(String::as_str).collect();
-        attachment_models.sort_unstable();
-        for attachment_model in attachment_models {
-            if !attachment_model.is_empty() && seen.insert(attachment_model.to_string()) {
-                ordered.push(attachment_model.to_string());
-            }
-        }
-    }
-    ordered
+    distinct_descriptor_mesh_models(
+        descriptors
+            .iter()
+            .filter(|descriptor| descriptor.weapon.is_some() && descriptor.touchable.is_some()),
+    )
 }
 
 /// Convert authored light tuning after placement overrides have been applied.
@@ -891,6 +888,16 @@ pub fn apply_data_archetype_dispatch(
 /// dispatch sweeps and processed by [`spawn_from_player_starts`].
 pub const PLAYER_START_CLASSNAME: &str = "player_spawn";
 
+/// The descriptor a player start spawns: its `entity_class` key, else
+/// `player`.
+pub fn player_spawn_entity_class(entity: &MapEntity) -> &str {
+    entity
+        .key_values
+        .get("entity_class")
+        .map(String::as_str)
+        .unwrap_or("player")
+}
+
 /// Materialize the first player at one `player_spawn`. A spawn point is a place
 /// a player can be put, never a pawn by itself: single player and a co-op host
 /// get exactly one pawn here, and the host gives each joiner a free spawn later
@@ -942,11 +949,7 @@ pub fn spawn_from_player_starts_with_carried_loadout(
 ) -> Option<PlayerSpawned> {
     for (placement, coop_only) in player_spawn::first_player_spawn_order(spawn_points) {
         let entity = &spawn_points[placement];
-        let entity_class = entity
-            .key_values
-            .get("entity_class")
-            .map(String::as_str)
-            .unwrap_or("player");
+        let entity_class = player_spawn_entity_class(entity);
 
         let Some(descriptor) = find_descriptor(descriptors, entity_class) else {
             log::warn!(

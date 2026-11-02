@@ -531,7 +531,7 @@ pub fn reveal_both(
     identity: &str,
 ) {
     server.set_revealed_level(Some(identity.to_owned()));
-    client.set_revealed_level(Some(identity.to_owned()));
+    client.set_revealed_level(Some(crate::wire::RevealedLevel::new(identity, None)));
 }
 
 #[cfg(test)]
@@ -671,6 +671,7 @@ mod tests {
     fn sample_snapshot() -> RawSnapshotMessage {
         RawSnapshotMessage {
             server_script_time: 0.0,
+            level_tick: 0,
             version: SNAPSHOT_VERSION,
             sequence: 1,
             server_tick: 42,

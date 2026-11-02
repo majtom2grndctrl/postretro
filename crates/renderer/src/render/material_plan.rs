@@ -2,6 +2,7 @@
 // See: context/lib/resource_management.md
 
 use super::*;
+use crate::render::gpu_create::GpuCreate;
 use postretro_render_cpu::material_plan::{MaterialUniformPlan, mip_lod_max_clamp};
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
 
@@ -31,7 +32,7 @@ const CHARACTER_MODEL_MIP_SAMPLER_FILTERING: MipSamplerFiltering = MipSamplerFil
 /// with `anisotropy_clamp = POST_RETRO_ANISO_CLAMP`, with a per-mip-count LOD
 /// clamp. wgpu validates that aniso > 1 requires all three filters to be
 /// Linear. One sampler per distinct mip count is kept in
-/// `Renderer::mip_count_aniso_samplers` so world and mover materials bind the
+/// the renderer's add-only `SamplerMaps::aniso` so world and mover materials bind the
 /// clamp that matches their uploaded mip chain. Bound at material binding 5.
 pub(crate) fn create_mip_aniso_sampler(device: &wgpu::Device, mip_count: u32) -> wgpu::Sampler {
     create_mip_sampler(
@@ -107,6 +108,9 @@ pub(crate) struct MaterialBinding {
     pub(crate) bind_group: wgpu::BindGroup,
     pub(crate) uniform_buffer: wgpu::Buffer,
     pub(crate) uniform_plan: MaterialUniformPlan,
+    /// The Surface Depth tier the uniform was packed at (tests).
+    #[cfg(test)]
+    pub(crate) built_at: SurfaceDepthQuality,
 }
 
 pub(crate) fn build_material_bind_group(
@@ -157,12 +161,12 @@ pub(crate) fn build_material_bind_group(
         }
     }
     let uniform_bytes = uniform_plan.uniform_bytes(surface_depth_quality);
-    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let uniform_buffer = device.new_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some(&format!("{label_prefix} Uniform")),
         contents: &uniform_bytes,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.new_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(&format!("{label_prefix} Bind Group")),
         layout: texture_bind_group_layout,
         entries: &[
@@ -199,6 +203,8 @@ pub(crate) fn build_material_bind_group(
         bind_group,
         uniform_buffer,
         uniform_plan,
+        #[cfg(test)]
+        built_at: surface_depth_quality,
     }
 }
 

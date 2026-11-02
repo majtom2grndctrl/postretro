@@ -1,0 +1,12 @@
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Occluder classification: 141 brushes, 29 occlude alone; exempt alone: 69 under floor, 1 no open face, 28 short span, 14 low top; 6 clusters, 11 sections, 5 occlude (17 member brushes); constants: floor 1.2 m, absolute length 20 m, span fraction 0.5, see-over 2.5 m, coverage 0.5
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Door recognition: 0 of 1 kinematic movers seal a doorway at their closed pose
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Shadow prisms: 8 occluding wall faces with a free end, 14 end planes, 3 ended by the length bound (2 × the face's longer broad extent); an end is free when at least 8 of its 15 probes 0.1 m past it are open
+[INFO prl_build::partition] BSP leaves: 255 solid, 572 empty
+[INFO prl_build::partition] BSP leaves: 827
+[INFO prl_build::partition] Total faces (after brush-side extraction): 1320
+[INFO prl_build::pipeline] [Compiler] Watertightness: world geometry is closed (0 open edges)
+[INFO prl_build::visibility] Exterior flood-fill: 136 exterior leaves, 436 interior empty leaves
+[INFO prl_build::pipeline::runtime_cells] [Compiler] Runtime cells: 350 occluder-tier leaves (0 holding several interior pockets); 521 cells (130 interior, 255 solid, 136 exterior); 298 runtime portals; full tree 827 leaves, 1757 portals; cell-size cap 19.5072 m, least piece 0.25, open slice over 0.5
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet sampling: 3510 eye candidates (3480 in cell, 29 inset, 1 rejected; missed into solid 30, exterior 0, other cell 0), 0 camera cells without an eye point, 21054 walks (0 step-limited, 0 frustum fallback)
+[INFO prl_build::cell_residency_bake] [Compiler] CellResidencySet: 130 camera cells, 16503 entries (max 129 per camera), 134128 bytes, max lead 32 m, 0.152 s
+[INFO prl_build::pack] [Compiler] PRL section footprint: id 51 (CellResidencySet), 134128 payload bytes

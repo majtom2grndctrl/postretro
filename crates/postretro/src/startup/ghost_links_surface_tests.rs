@@ -134,20 +134,17 @@ const UNRELATED_WARNINGS: [&str; 5] = [
     "[AI] enemy animation state",
 ];
 
-const LEVEL_REACTIONS: [&str; 16] = [
+const LEVEL_REACTIONS: [&str; 13] = [
     "echo.reveal",
-    "echo.swell",
     "echo.fight",
     "barrier.open",
     "closet.a1",
     "levelLoad",
     "split.arm",
     "split.settle",
-    "closet.a2",
-    "closet.b",
+    "split.landed",
     "swap.arm",
     "swap.settle",
-    "wave.start",
     "return.rise",
     "return.arm",
     "return.settle",
@@ -916,7 +913,7 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
         assert_eq!(
             data.teleport_events().len(),
             6,
-            "both split, the A-to-B split's closets, both swap and the return teleporter bind"
+            "both split, the A-to-B split's landing, both swap and the return teleporter bind"
         );
     }
     let manifest_of = |level: &Level| {
@@ -934,13 +931,16 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     assert_eq!(manifest_of(&ts), manifest_of(&luau));
 
     // `getMapEntities("ghostLink", { tag: "vault_echo" })` returned both
-    // links, in map order: `echo.reveal` arms, then filters, each in turn.
+    // links, in map order: `echo.reveal` arms, then filters, each in turn, and
+    // ends on the bus swell — `setGhostAudio` resolved from `postretro/audio`,
+    // a system step in the same body.
     for level in [&ts, &luau] {
         let links: Vec<EntityId> = level.links().into_iter().map(|(id, _)| id).collect();
         let ReactionDescriptor::Sequence(steps) = reaction(level, "echo.reveal") else {
             panic!("echo.reveal is a sequence");
         };
-        let targets: Vec<(&str, EntityId)> = steps
+        let (swell, entity_steps) = steps.split_last().expect("echo.reveal has steps");
+        let targets: Vec<(&str, EntityId)> = entity_steps
             .iter()
             .map(|step| match step.id {
                 SequenceTarget::Entity(id) => (step.primitive.as_str(), id),
@@ -956,22 +956,16 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
                 ("setGhostLinkColorFilter", links[1]),
             ]
         );
-        // `setGhostAudio` resolved from `postretro/audio`: a target-less
-        // primitive body.
-        let ReactionDescriptor::Primitive(swell) = reaction(level, "echo.swell") else {
-            panic!("echo.swell is a primitive body");
-        };
-        assert_eq!(swell.primitive, "setGhostAudio");
         assert_eq!(
-            (swell.kind, swell.tag.as_deref(), swell.target.as_deref()),
-            (None, None, None)
+            (&swell.id, swell.primitive.as_str()),
+            (&SequenceTarget::System, "setGhostAudio")
         );
         assert_eq!(
             swell.args,
             serde_json::json!({ "volume": 0.9, "lowPassHz": 5000, "periodMs": 1500 })
         );
-        // The north closet's timer: a 15 s wait, then a fire of `closet.a1`,
-        // so the levelLoad body itself holds no group step.
+        // The north closet's timer: a 15 s wait, a fire of `closet.a1`, so the
+        // levelLoad body itself holds no group step, then the klaxon.
         let ReactionDescriptor::Sequence(steps) = reaction(level, "levelLoad") else {
             panic!("the levelLoad timer is a sequence");
         };
@@ -988,8 +982,13 @@ fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
                     &SequenceTarget::Fire,
                     &serde_json::json!({ "event": "closet.a1" })
                 ),
+                (
+                    &SequenceTarget::System,
+                    &serde_json::json!({ "sound": "sfx/test_tone" })
+                ),
             ]
         );
+        assert_eq!(steps[2].primitive, "playSound");
     }
 }
 

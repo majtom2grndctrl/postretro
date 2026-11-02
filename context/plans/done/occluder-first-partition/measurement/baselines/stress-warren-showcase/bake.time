@@ -1,0 +1,4 @@
+flags: --sh-probe-spacing 10.0 --lightmap-density 0.25 --no-cache
+start: 2026-10-27 19:28:07
+exit: 0
+wall_seconds: 12

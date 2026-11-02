@@ -21,7 +21,7 @@ use postretro_level_format::sh_volume::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 
-pub(super) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
+pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("zero-share-growth.prl");
     let cells = CellsSection {

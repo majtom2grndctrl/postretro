@@ -185,6 +185,13 @@ impl Renderer {
         clear_color: ClearColor,
         scene: FrameScene,
     ) -> Result<bool> {
+        // With no active level set, every frame kind records what a world-less
+        // frame records: a clear, the UI and the resolve. No level pass runs.
+        let scene = if self.full().level.is_some() {
+            scene
+        } else {
+            FrameScene::Empty
+        };
         let render_world = scene.draws_world();
         // The drawable visible-cell set; candidate-cull eligibility derives
         // from `cam_vis` (set + path provenance) inside `record_pre_scene_compute`.
@@ -219,13 +226,18 @@ impl Renderer {
         // a light that would have no entity depth draw this frame.
         let selected_static_needs_mesh_gate = if render_world {
             let full = self.full();
-            full.shadow_candidate_lights
+            let level = full
+                .level
+                .as_ref()
+                .expect("a level-gated renderer path requires an active level set");
+            level
+                .shadow_candidate_lights
                 .iter()
                 .enumerate()
                 .any(|(candidate_index, light)| {
                     shadow_candidate_is_promoted_baked(
-                        &full.shadow_candidate_selection_indices,
-                        &full.shadow_candidate_animated_baked_indices,
+                        &level.shadow_candidate_selection_indices,
+                        &level.shadow_candidate_animated_baked_indices,
                         candidate_index,
                     ) && (light.light_type == postretro_level_loader::LightType::Spot
                         || (light.light_type == postretro_level_loader::LightType::Point
@@ -239,13 +251,17 @@ impl Renderer {
         // independent plans would overlap their bases. Static-light promotion
         // deliberately sees only the world partition.
         let mesh_frame_plans: Option<mesh_instances::MeshFramePlans> = if render_world
-            && self.full().mesh_pass.has_model()
+            && self
+                .full()
+                .level
+                .as_ref()
+                .is_some_and(|level| level.models.has_model())
             && !(self.full().mesh_draws.is_empty() && self.full().ghost_mesh_draws.is_empty())
         {
             Some(mesh_instances::plan_mesh_frame_plans(
                 &self.full().mesh_draws,
                 &self.full().ghost_mesh_draws,
-                &self.full().mesh_pass,
+                &self.level().models,
             ))
         } else {
             None
@@ -261,7 +277,7 @@ impl Renderer {
                 .as_ref()
                 .map(mesh_instances::MeshFramePlans::occupancy)
                 .unwrap_or_default();
-            self.full_mut()
+            self.level_mut()
                 .mirror_lighting
                 .set_mesh_occupancy(mesh_occupancy);
         }
@@ -270,9 +286,9 @@ impl Renderer {
             let light_slots_scope = cpu.scope(RenderStage::LightSlots);
             // mem::take avoids a simultaneous borrow of self; returned after call
             // to reuse the allocation.
-            let eff_brightness = std::mem::take(&mut self.full_mut().light_effective_brightness);
+            let eff_brightness = std::mem::take(&mut self.level_mut().light_effective_brightness);
             let animated_window_brightness =
-                std::mem::take(&mut self.full_mut().animated_light_window_brightness);
+                std::mem::take(&mut self.level_mut().animated_light_window_brightness);
             let last_camera_position = self.full().last_camera_position;
             self.update_dynamic_light_slots_with_capture_overrides(
                 last_camera_position,
@@ -298,8 +314,8 @@ impl Renderer {
                     camera_cell,
                 );
             }
-            self.full_mut().light_effective_brightness = eff_brightness;
-            self.full_mut().animated_light_window_brightness = animated_window_brightness;
+            self.level_mut().light_effective_brightness = eff_brightness;
+            self.level_mut().animated_light_window_brightness = animated_window_brightness;
             drop(light_slots_scope);
 
             let _pre_scene_scope = cpu.scope(RenderStage::PreScene);
@@ -397,8 +413,13 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_ref()
+                    .expect("a level-gated renderer path requires an active level set");
                 full.mesh_pass.plan_and_upload(
                     queue,
+                    &level.models,
                     &[&plans.world, &plans.viewmodel, &plans.ghost],
                     &mut full.bone_palette_scratch,
                     &cpu,
@@ -417,11 +438,15 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_mut()
+                    .expect("a level-gated renderer path requires an active level set");
                 full.mesh_pass.write_light_params(
                     queue,
-                    full.total_light_count,
-                    full.light_count,
-                    full.light_count + full.animated_baked_light_count as u32,
+                    level.total_light_count,
+                    level.light_count,
+                    level.light_count + level.animated_baked_light_count as u32,
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
@@ -434,7 +459,9 @@ impl Renderer {
             let full = self.full_mut();
             full.spot_entity_occluders_submitted = 0;
             full.dynamic_depth_cache_diagnostics.frame = Default::default();
-            full.shadow_world.begin_frame();
+            if let Some(level) = full.level.as_mut() {
+                level.shadow_world.begin_frame();
+            }
             full.promoted_depth_cache_frame_plan = PromotedDepthCacheFramePlan::default();
             full.promoted_depth_cache_promoted_count = 0;
             full.promoted_depth_cache_world_render_skips = 0;
@@ -535,27 +562,27 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if render_world && self.full().has_geometry && self.full().index_count > 0 {
+            if render_world && self.level().has_geometry && self.level().index_count > 0 {
                 render_pass.set_pipeline(&self.full().pipeline);
                 render_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                render_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-                render_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
-                render_pass.set_bind_group(4, &self.full().lightmap_resources.bind_group, &[]);
-                render_pass.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
+                render_pass.set_bind_group(2, &self.level().lighting_bind_group, &[]);
+                render_pass.set_bind_group(3, self.level().sh_bind_group(), &[]);
+                render_pass.set_bind_group(4, &self.level().lightmap_resources.bind_group, &[]);
+                render_pass.set_bind_group(5, &self.level().extent.spot_shadow, &[]);
                 render_pass.set_bind_group(
                     LIGHTMAP_BLOCK_TABLE_GROUP,
-                    &self.full().lightmap_resources.block_table_bind_group,
+                    &self.level().lightmap_resources.block_table_bind_group,
                     &[],
                 );
-                render_pass.set_vertex_buffer(0, self.full().vertex_buffer.slice(..));
-                render_pass.set_vertex_buffer(1, self.full().spec_owner_buffer.slice(..));
+                render_pass.set_vertex_buffer(0, self.level().vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, self.level().spec_owner_buffer.slice(..));
                 render_pass.set_index_buffer(
-                    self.full().index_buffer.slice(..),
+                    self.level().index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
 
-                if let Some(cull) = &self.full().compute_cull {
-                    let gpu_textures = &self.full().gpu_textures;
+                if let Some(cull) = &self.level().compute_cull {
+                    let gpu_textures = &self.level().gpu_textures;
                     cull.draw_indirect(
                         &mut render_pass,
                         Some(&|pass, bucket| {
@@ -573,9 +600,16 @@ impl Renderer {
 
         // Kinematic brush movers: local-space PRL brush payloads drawn as
         // dynamic objects after opaque world geometry and before skinned meshes.
-        // They write depth and use the mesh dynamic-object lighting bindings
-        // (baked SH indirect/static direct + runtime dynamic direct).
-        if render_world && self.full().kinematic_brush.has_draws() {
+        // Their depth is already in the pre-pass, so they test `Equal` with
+        // the depth attachment read-only, as the world forward pass does.
+        // They use the mesh dynamic-object lighting bindings (baked SH
+        // indirect/static direct + runtime dynamic direct).
+        if render_world
+            && self
+                .full()
+                .kinematic_brush
+                .has_draws(&self.level().kinematic)
+        {
             let _kinematic_scope = cpu.scope(RenderStage::KinematicBrush);
             let frame_light_term_mask = self.frame_light_term_mask();
             {
@@ -583,18 +617,27 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_mut()
+                    .expect("a level-gated renderer path requires an active level set");
                 // Total records bound the loop; the dynamic-tier count marks the promoted specular tail.
                 full.kinematic_brush.write_light_params(
                     queue,
-                    full.total_light_count,
-                    full.light_count,
-                    full.light_count + full.animated_baked_light_count as u32,
+                    level.total_light_count,
+                    level.light_count,
+                    level.light_count + level.animated_baked_light_count as u32,
                     full.mesh_dynamic_time,
                     frame_light_term_mask.bits(),
                     full.ambient_floor,
                     full.frame_indirect_scale,
                 );
             }
+            let kinematic_ts = self
+                .full()
+                .frame_timing
+                .as_ref()
+                .map(|t| t.render_pass_writes(TIMING_PAIR_KINEMATIC_BRUSH));
             let mut mover_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Kinematic Brush Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -608,20 +651,20 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.full().depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    }),
+                    depth_ops: None,
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: kinematic_ts,
                 ..Default::default()
             });
             mover_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            mover_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
-            self.full()
-                .kinematic_brush
-                .record_draws(&mut mover_pass, &self.full().gpu_textures);
+            mover_pass.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
+            self.full().kinematic_brush.record_draws(
+                &mut mover_pass,
+                &self.level().kinematic,
+                &self.level().gpu_textures,
+                MoverView::Main,
+            );
         }
 
         // Skinned-mesh forward pass — after the opaque world forward, before
@@ -664,8 +707,13 @@ impl Renderer {
             // group: shared SH entries the forward/billboard/fog passes hold PLUS
             // the dynamic-direct knobs (group 3 = instance data; group 2
             // unallocated).
-            mesh_enc.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
-            self.full_mut().mesh_pass.record_draws(&mut mesh_enc, plan);
+            mesh_enc.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
+            self.full().mesh_pass.record_draws(
+                &mut mesh_enc,
+                &self.level().models,
+                &self.level().mesh_lights,
+                plan,
+            );
         }
 
         // Ghosts: unlit, translucent, after every opaque pass so they depth-test
@@ -693,11 +741,15 @@ impl Renderer {
             let mode = self.ghost_transparency();
             {
                 let full = self.full_mut();
+                let level = full
+                    .level
+                    .as_ref()
+                    .expect("a world frame requires an active level set");
                 // The eye `view_proj` was built from, stored with it this frame.
                 let eye = full.last_camera_position;
                 full.ghost_order.build(
                     skinned_ghost_plan,
-                    full.kinematic_ghost.draw_shapes(&full.kinematic_brush),
+                    full.kinematic_ghost.draw_shapes(&level.kinematic),
                     view_proj,
                     eye,
                 );
@@ -731,15 +783,20 @@ impl Renderer {
             // materials; like the skinned ghosts, never part of shadow depth or
             // the occluder bounds recorded earlier.
             let full = self.full();
+            let level = full
+                .level
+                .as_ref()
+                .expect("a level-gated renderer path requires an active level set");
             ghost_pass.set_bind_group(0, &full.uniform_bind_group, &[]);
             full.ghost_order.record(
                 &mut ghost_pass,
                 &ghost_order::GhostDrawSources {
                     mesh_pass: &full.mesh_pass,
+                    models: &level.models,
                     skinned: skinned_ghost_plan,
                     movers: &full.kinematic_ghost,
-                    brush: &full.kinematic_brush,
-                    materials: &full.gpu_textures,
+                    brush: &level.kinematic,
+                    materials: &level.gpu_textures,
                 },
                 mode,
             );
@@ -756,7 +813,7 @@ impl Renderer {
         // billboards, so smoke above the water draws over it undimmed (and
         // smoke below it does too, the accepted draw-order limit). Gated on
         // its own visible draws, never on the smoke pass's particle gate.
-        if render_world && self.full().fluid_surface.has_draws() {
+        if render_world && self.full().fluid_surface.has_draws(self.fluid_surfaces()) {
             let _fluid_scope = cpu.scope(RenderStage::FluidSurface);
             // Only a drawing frame reads the scene inputs (fog weight,
             // reflection style, target scale). The weight is stored every
@@ -774,11 +831,11 @@ impl Renderer {
             // before the fluid pass samples it: the frame's reflecting draws,
             // by the same mask snapshot and tier the fluid pass picks variants
             // by. Off, Low and a frame with no reflecting draw record none.
-            if self
-                .full()
-                .fluid_surface
-                .has_reflecting_draws(frame_light_term_mask, frame_reflection_quality)
-            {
+            if self.full().fluid_surface.has_reflecting_draws(
+                self.fluid_surfaces(),
+                frame_light_term_mask,
+                frame_reflection_quality,
+            ) {
                 self.record_fluid_reflection_pass(
                     encoder,
                     frame_light_term_mask,
@@ -812,23 +869,21 @@ impl Renderer {
                 ..Default::default()
             });
             fluid_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            fluid_pass.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-            fluid_pass.set_bind_group(3, self.full().sh_bind_group(), &[]);
+            fluid_pass.set_bind_group(2, &self.level().lighting_bind_group, &[]);
+            fluid_pass.set_bind_group(3, self.level().sh_bind_group(), &[]);
             // The frame's group-0 mask and tier pick each draw's shader
             // variant.
             self.full().fluid_surface.record_draws(
                 &mut fluid_pass,
-                &self.full().gpu_textures,
+                self.fluid_surfaces(),
+                &self.level().gpu_textures,
                 frame_light_term_mask,
                 frame_reflection_quality,
             );
         }
 
         // After opaque forward, before wireframe. Alpha additive; depth test on, write off.
-        if render_world
-            && self.full().smoke_pass.has_any_sheet()
-            && !particle_collections.is_empty()
-        {
+        if render_world && self.level().smoke.has_any_sheet() && !particle_collections.is_empty() {
             let _smoke_scope = cpu.scope(RenderStage::Smoke);
             let smoke_ts = self
                 .full()
@@ -858,8 +913,8 @@ impl Renderer {
                 ..Default::default()
             });
             smoke_pass_enc.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(2, &self.full().lighting_bind_group, &[]);
-            smoke_pass_enc.set_bind_group(3, self.full().sh_bind_group(), &[]);
+            smoke_pass_enc.set_bind_group(2, &self.level().lighting_bind_group, &[]);
+            smoke_pass_enc.set_bind_group(3, self.level().sh_bind_group(), &[]);
             // One shared instance buffer, drawn per collection from its own
             // 256-byte-aligned dynamic offset.
             {
@@ -872,7 +927,12 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
+                let level = full
+                    .level
+                    .as_ref()
+                    .expect("a level-gated renderer path requires an active level set");
                 full.smoke_pass.record_draws(
+                    &level.smoke,
                     device,
                     queue,
                     &mut smoke_pass_enc,
@@ -906,9 +966,9 @@ impl Renderer {
                 ..Default::default()
             });
             ghost_pass.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-            let full = self.full();
-            full.billboard_ghost
-                .record_draws(&mut ghost_pass, &full.smoke_pass);
+            self.full()
+                .billboard_ghost
+                .record_draws(&mut ghost_pass, &self.level().smoke);
         }
 
         // Volumetric fog: low-res compute raymarch + additive composite.
@@ -918,8 +978,8 @@ impl Renderer {
         if render_world {
             let cell_mask = compute_fog_cell_mask(
                 fog_reachable,
-                self.full().fog_cell_masks.as_deref(),
-                self.full().fog.canonical_volume_count(),
+                self.level().fog_cell_masks.as_deref(),
+                self.level().fog.canonical_volume_count(),
                 camera_cell,
             );
             {
@@ -927,7 +987,12 @@ impl Renderer {
                 let full = full
                     .as_mut()
                     .expect("renderer full-init must complete before full-ready paths run");
-                full.fog.repack_active(queue, cell_mask, now_seconds);
+                let level = full
+                    .level
+                    .as_mut()
+                    .expect("a world frame requires an active level set");
+                full.fog
+                    .repack_active(&mut level.fog, queue, cell_mask, now_seconds);
             }
         }
         if render_world && self.full().fog.active() {
@@ -956,7 +1021,7 @@ impl Renderer {
                 );
             }
 
-            let (scatter_w, scatter_h) = self.full().fog.scatter_dims();
+            let (scatter_w, scatter_h) = self.level().extent.fog.scatter_dims();
             // 8×8 matches @workgroup_size(8,8); div_ceil covers edge pixels.
             let groups_x = scatter_w.div_ceil(8);
             let groups_y = scatter_h.div_ceil(8);
@@ -967,9 +1032,9 @@ impl Renderer {
                 });
                 raymarch.set_pipeline(&self.full().fog.raymarch_pipeline);
                 raymarch.set_bind_group(0, &self.full().uniform_bind_group, &[]);
-                raymarch.set_bind_group(3, self.full().sh_bind_group(), &[]);
-                raymarch.set_bind_group(5, &self.full().spot_shadow_pool.bind_group, &[]);
-                raymarch.set_bind_group(6, &self.full().fog.bind_group, &[]);
+                raymarch.set_bind_group(3, self.level().sh_bind_group(), &[]);
+                raymarch.set_bind_group(5, &self.level().extent.spot_shadow, &[]);
+                raymarch.set_bind_group(6, &self.level().extent.fog.bind_group, &[]);
                 raymarch.dispatch_workgroups(groups_x, groups_y, 1);
             }
 
@@ -988,7 +1053,7 @@ impl Renderer {
                 ..Default::default()
             });
             composite.set_pipeline(&self.full().fog.composite_pipeline);
-            composite.set_bind_group(0, &self.full().fog.composite_bind_group, &[]);
+            composite.set_bind_group(0, &self.level().extent.fog.composite_bind_group, &[]);
             composite.draw(0..3, 0..1); // fullscreen triangle from vertex_index — no vertex buffer
         }
 
@@ -1081,10 +1146,13 @@ impl Renderer {
                 self.full().mesh_pass.viewmodel_uniform_bind_group(),
                 &[],
             );
-            viewmodel_pass.set_bind_group(4, self.full().sh_mesh_bind_group(), &[]);
-            self.full_mut()
-                .mesh_pass
-                .record_draws(&mut viewmodel_pass, plan);
+            viewmodel_pass.set_bind_group(4, self.level().sh_mesh_bind_group(), &[]);
+            self.full().mesh_pass.record_draws(
+                &mut viewmodel_pass,
+                &self.level().models,
+                &self.level().mesh_lights,
+                plan,
+            );
         }
 
         // Game UI records into its native-res layer, never into `scene_color`,
@@ -1126,7 +1194,10 @@ impl Renderer {
         if swapchain_view.is_some()
             && (render_world || scene.composes_sh())
             && compose_succeeded
-            && let Some(streaming) = full.sh_streaming.as_mut()
+            && let Some(streaming) = full
+                .level
+                .as_mut()
+                .and_then(|level| level.sh_streaming.as_mut())
         {
             streaming.encode_probe_readback(&self.device, queue, encoder);
         }
@@ -1163,11 +1234,13 @@ impl Renderer {
             let full = full
                 .as_mut()
                 .expect("renderer full-init must complete before full-ready paths run");
-            if let Some(live_irradiance) = full.sh_probe_readback.post_submit(device) {
-                full.sh_volume_resources.probe_irradiance = live_irradiance;
-            }
-            if let Some(streaming) = full.sh_streaming.as_mut() {
-                streaming.post_submit_probe_readback(device);
+            if let Some(level) = full.level.as_mut() {
+                if let Some(live_irradiance) = level.sh_probe_readback.post_submit(device) {
+                    level.sh_volume_resources.probe_irradiance = live_irradiance;
+                }
+                if let Some(streaming) = level.sh_streaming.as_mut() {
+                    streaming.post_submit_probe_readback(device);
+                }
             }
         }
 
@@ -1180,7 +1253,11 @@ impl Renderer {
             let full = full
                 .as_mut()
                 .expect("renderer full-init must complete before full-ready paths run");
-            if let Some(candidate) = full.candidate_cull.as_mut() {
+            if let Some(candidate) = full
+                .level
+                .as_mut()
+                .and_then(|level| level.candidate_cull.as_mut())
+            {
                 candidate.post_submit(device);
             }
         }
@@ -1307,10 +1384,10 @@ mod tests {
 
         let pre_scene = include_str!("renderer_pre_scene.rs");
         let direct = pre_scene
-            .find("full.direct_sh_compose.dispatch_if_needed(")
+            .find("level.direct_sh_compose.dispatch_if_needed(")
             .expect("direct-SH compose dispatch must remain present");
         let scatter = pre_scene
-            .find("full.billboard_direct_scatter_compose.dispatch_if_needed(")
+            .find("level.billboard_direct_scatter_compose.dispatch_if_needed(")
             .expect("scatter compose dispatch must be recorded");
         assert!(
             direct < scatter,

@@ -52,9 +52,11 @@ impl LightmapPoolModel {
     /// lead first, then puts back each victim whose rect is still free. Failing
     /// that, the drain repacks in place: under the cap, then, in a pool
     /// already grown past the cap, within its layers. Failing that, it grows
-    /// a new generation. A pair that needs growth while a generation still
-    /// retires, or a layer past the device limit, is deferred. Band pairs
-    /// fit under the cap or are refused; they never repack or grow the pool.
+    /// a new generation sized to the whole targeted mandatory and visible
+    /// demand with headroom. A pair that needs growth while a generation
+    /// still retires, or a layer past the device limit, is deferred. Band
+    /// pairs fit under the cap or are refused; they never repack or grow the
+    /// pool.
     pub fn plan_drain(&mut self, request: DrainRequest<'_>) -> &DrainPlan {
         self.plan_drain_inner(request, false)
     }
@@ -258,7 +260,11 @@ impl LightmapPoolModel {
     /// No repack could fit every mandatory and visible block: grow past the
     /// current layers. One generation per drain, none while the last one is
     /// still retiring, and never past the device's layer limit; a pair that
-    /// needs growth then is deferred.
+    /// needs growth then is deferred. The first pair to grow reserves the
+    /// targeted demand's layers with headroom
+    /// ([`growth_reserve_layers`](Self::growth_reserve_layers)), so later
+    /// pairs, this drain or while the generation retires, land in layers
+    /// already allocated.
     ///
     /// Once a pair is deferred at the device limit, it failed with every
     /// band victim evicted, so a later pair this drain at least as wide and
@@ -304,10 +310,13 @@ impl LightmapPoolModel {
             };
             self.place(block, slot);
             if slot.layer >= self.layers {
-                if self.layers == start_layers {
+                let needed = slot.layer + 1;
+                self.layers = if self.layers == start_layers {
                     self.record_growth(start_layers);
-                }
-                self.layers = slot.layer + 1;
+                    self.growth_reserve_layers(needed)
+                } else {
+                    needed
+                };
             }
         }
         self.scratch.device_limited = limited;

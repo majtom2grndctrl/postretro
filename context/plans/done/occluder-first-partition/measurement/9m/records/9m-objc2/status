@@ -1,0 +1,15 @@
+GATE_OK waited=30 temp=64
+10:38:23 SENTINEL sentinel_a total_ms=16.516 rc=0 2026-10-29 10:38:23 util=5 inUseVidMemoryBytes=585392128 vramFreeBytes=2730045440 mhz=0 temp=68 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=100 screensaver=no locked=absent
+10:39:31 RUN stress-street.rd_elevated.cap26.head rc=0 GATE_OK waited=30 temp=63 total=17.431 work=15.070 submit=9.621 record=2.023 walk=0.815 tests=2577.000 val=validation: on (build default)
+10:40:25 RUN stress-street.rd_elevated.before.head rc=0 GATE_OK waited=30 temp=64 total=17.026 work=11.512 submit=6.835 record=1.899 walk=0.833 tests=2762.000 val=validation: on (build default)
+10:41:32 RUN stress-street.rd_elevated.before.nd rc=0 GATE_OK waited=30 temp=62 total=16.882 work=9.294 submit=4.091 record=2.153 walk=0.906 tests=2762.000 val=validation: on (build default)
+10:42:27 RUN stress-street.rd_elevated.cap26.nd rc=0 GATE_OK waited=30 temp=66 total=17.337 work=10.567 submit=4.341 record=2.565 walk=0.848 tests=2577.000 val=validation: on (build default)
+10:43:22 RUN stress-street.rd_promenade.cap26.nd rc=0 GATE_OK waited=30 temp=65 total=16.994 work=10.029 submit=4.342 record=2.319 walk=0.603 tests=1952.850 val=validation: on (build default)
+10:44:15 RUN stress-street.rd_promenade.before.nd rc=0 GATE_OK waited=30 temp=67 total=16.612 work=8.857 submit=4.021 record=2.074 walk=0.625 tests=1867.000 val=validation: on (build default)
+GATE_OK waited=31 temp=66
+10:44:59 SENTINEL sentinel_6 total_ms=16.528 rc=0 2026-10-29 10:44:59 util=5 inUseVidMemoryBytes=585244672 vramFreeBytes=2729979904 mhz=1 temp=72 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=27 screensaver=no locked=absent
+10:45:53 RUN stress-street.rd_promenade.before.head rc=0 GATE_OK waited=30 temp=67 total=16.873 work=10.945 submit=6.561 record=1.847 walk=0.577 tests=1867.000 val=validation: on (build default)
+10:46:54 RUN stress-street.rd_promenade.cap26.head rc=0 GATE_OK waited=36 temp=67 total=17.104 work=14.033 submit=8.969 record=1.866 walk=0.579 tests=1953.117 val=validation: on (build default)
+GATE_OK waited=57 temp=67
+10:48:04 SENTINEL sentinel_end total_ms=16.534 rc=0 2026-10-29 10:48:04 util=6 inUseVidMemoryBytes=585179136 vramFreeBytes=2729979904 mhz=0 temp=74 | cpu_speed_limit=100 cpu_sched_limit=100 cpus=16 thermal_warn=none perf_warn=none xcpm_thermal=55 screensaver=no locked=absent
+10:48:05 DONE

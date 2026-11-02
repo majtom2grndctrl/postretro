@@ -12,7 +12,7 @@ use super::capture::{
     RowCapture, SUPERSAMPLE_OFFSETS, TILE_INTERIOR, capture_row, encode_tile, octahedral_direction,
     sample_angle,
 };
-use super::capture_bounds::{Held, nearest_held};
+use super::capture_bounds::{HELD_DEPTH_SLACK_M, Held, nearest_held};
 use super::capture_exclusion::{CONTACT_TOLERANCE_M, RayOutcome};
 use super::capture_exclusion_test_fixtures::{
     BACK_WALL_X, CaptureFixture, PILLAR_MAX, PILLAR_MIN, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE,
@@ -1164,11 +1164,21 @@ fn a_kept_brush_behind_an_excluded_one_reads_its_front_past_the_excluded_far_sid
         // behind the excluded brush's exit.
         let (behind, _) = filter.contacts_of(slot(excluded));
         assert!(!behind.contains(&kept), "{behind:?}");
+        // The ray lies under the kept brush's top at its front, so it enters
+        // the kept brush there: the front is the depth the kept brush held
+        // at the block's exit, which the excluded brush, nearer, passed over.
+        // Reading it is the at-the-depth case of the carried depth, the read
+        // kept-first would have guarded.
+        assert!(
+            under_the_block(over, slope, 106.0) > CONTACT_GAP / UNITS_PER_METER,
+            "the kept brush's entry is its front"
+        );
         match scene.trace(origin, direction, &filter) {
             RayOutcome::Hit(hit) => {
                 assert_eq!(room.face_brush(hit.face), Some(kept), "{hit:?}");
                 assert!(
-                    (hit.distance - reaching(slope, 106.0)).abs() < 1e-3,
+                    (f64::from(hit.distance) - f64::from(reaching(slope, 106.0))).abs()
+                        <= HELD_DEPTH_SLACK_M,
                     "{hit:?}"
                 );
             }

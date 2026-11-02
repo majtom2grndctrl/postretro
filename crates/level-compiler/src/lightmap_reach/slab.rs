@@ -6,20 +6,13 @@ use glam::DVec3;
 
 use crate::chart_raster::{ChartGrid, chart_grid, chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::{Chart, RAY_EPSILON};
-use crate::lightmap_layer::exact_texel_local;
+use crate::lightmap_layer::{FRAME_NORM_LIMIT, FRAME_SKEW_LIMIT, exact_texel_local};
 use crate::partition::region_polytope::RegionPolytope;
 use crate::partition::{Aabb, BspChild, BspTree};
 use crate::texel_footprint::TexelFrame;
 
 use super::ChartReach;
 use super::flood::Emitter;
-
-/// Largest distance from 1 of a chart-frame axis's length for the slab to be
-/// built; `shaft_cull`'s limit.
-const FRAME_NORM_LIMIT: f64 = 1.0e-6;
-
-/// Largest `|dot|` between two chart-frame axes; `shaft_cull`'s limit.
-pub(super) const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
 
 /// Relative slack on the footprint radius: offsets go through `f32` texel
 /// steps along axes within [`FRAME_NORM_LIMIT`] of unit length.
@@ -194,7 +187,7 @@ impl ChartFrame {
         exact_texel_local(&self.grid, axis, texel)
     }
 
-    fn texel_box(&self, tx: i32, ty: i32) -> FrameBox {
+    pub(super) fn texel_box(&self, tx: i32, ty: i32) -> FrameBox {
         let centre = DVec3::new(self.local(0, tx), self.local(1, ty), 0.0);
         FrameBox {
             lo: centre + self.extent[0],
@@ -219,7 +212,7 @@ impl ChartFrame {
         self.origin + self.axes[0] * frame.x + self.axes[1] * frame.y + self.axes[2] * frame.z
     }
 
-    fn frame_coords(&self, world: DVec3) -> DVec3 {
+    pub(super) fn frame_coords(&self, world: DVec3) -> DVec3 {
         let offset = world - self.origin;
         DVec3::new(
             self.dual[0].dot(offset),

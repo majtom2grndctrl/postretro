@@ -30,8 +30,8 @@ fn reach_line(records: &[CapturedRecord]) -> &str {
 
 // A cold bake with verify on fills the cache. Warm with verify on, the stage
 // reads no memo and re-walks every culled pair; warm with it off, the stage
-// is served from the cache. Both warm bakes equal the cold one, at each
-// floor setting.
+// is served from the `lightmap_section` memo. Both warm bakes equal the
+// cold one, at each floor setting.
 #[test]
 fn reach_cull_two_rooms_warm_equals_cold_with_verify_on_and_off() {
     let fixture = ReachFixture::two_rooms(Wall::Solid);
@@ -69,7 +69,7 @@ fn reach_cull_two_rooms_warm_equals_cold_with_verify_on_and_off() {
         assert_eq!(
             (served.counts.baked, served.counts.walked),
             (0, 0),
-            "verify off: served from cache"
+            "verify off: served from the `lightmap_section` memo"
         );
         assert_eq!(
             reach_line(&served.records),

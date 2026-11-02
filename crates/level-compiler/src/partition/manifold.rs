@@ -51,8 +51,9 @@ const MIN_EDGE_LEN: f64 = 1e-6;
 /// than reported as holes, in meters. A hole you can see through is far larger.
 const MIN_OPEN_SPAN: f64 = 1e-3;
 /// Max open-edge locations to surface. Re-exported as `OPEN_EDGE_SAMPLE_CAP`,
-/// it also caps the coverage proof's hole-warning samples. A holed map can produce many open spans;
-/// the count conveys severity, the samples convey where to look.
+/// it also caps the coverage proof's hole-warning samples. A holed map can
+/// produce many open spans; the count conveys severity, the samples convey
+/// where to look.
 pub const MAX_SAMPLES: usize = 12;
 
 /// Quantized supporting line: `(direction, anchor)`, both component-quantized.
@@ -115,9 +116,10 @@ impl WatertightReport {
 /// Pass the `faces` from `PartitionResult` *before* exterior culling. Groups
 /// every face edge by its supporting line, then walks each line looking for
 /// sub-intervals covered an odd number of times — those are open boundaries,
-/// usually a dropped face but possibly spans that are not holes. T-junctions cancel because the interior surface is still
-/// fully covered there. Deterministic: coverage is order-independent and sampled
-/// locations are sorted before truncation.
+/// usually a dropped face but possibly spans that are not holes. T-junctions
+/// cancel because the interior surface is still fully covered there.
+/// Deterministic: coverage is order-independent and sampled locations are
+/// sorted before truncation.
 pub fn check_watertight(faces: &[Face]) -> WatertightReport {
     let mut lines: HashMap<LineKey, Vec<Interval>> = HashMap::new();
 

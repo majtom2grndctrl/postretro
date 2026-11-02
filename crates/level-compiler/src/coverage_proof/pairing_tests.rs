@@ -130,11 +130,13 @@ fn coverage_proof_window_is_measured_along_the_edges_not_the_cluster_axis() {
     }
 }
 
-// Welding moves each corner up to δ, so an edge under 2δ long can turn
-// round: 150 µm running +x, its ends welded 100 µm inward past each other,
-// runs −x welded. Beside a stored +x edge it read opposed, and two sub-mm
-// edges running one way could pair. Which way an edge runs is read from
-// its stored corners.
+// Welding never reverses an edge, but it can turn a short one by nearly
+// 90°. Two edges 180 µm long, both running +x, have each end welded 85 µm
+// along and 50 µm across: 98.6 µm from its own stored corner, within δ, and
+// 107.4 µm from the other, outside it, as the weld allows. One turns about
+// 84° one way and the other 84° the other way, so welded they run nearly
+// opposite, read opposed, and could pair. Which way an edge runs is read
+// from its stored corners.
 #[test]
 fn coverage_proof_reads_opposition_from_stored_directions_not_welded() {
     let edge = |from: DVec3, to: DVec3, weld_from: DVec3, weld_to: DVec3, face: u32| DirectedEdge {
@@ -146,19 +148,48 @@ fn coverage_proof_reads_opposition_from_stored_directions_not_welded() {
         triangle: 0,
         brush: None,
     };
-    let length = 1.5 * delta();
-    let x = |at: f64| DVec3::new(at, 0.0, 0.0);
-    let turned = edge(x(0.0), x(length), x(delta()), x(length - delta()), 0);
+    let (length, along, across) = (1.8 * delta(), 0.85 * delta(), 0.5 * delta());
+    // Apart by 3δ, so no corner of one edge welds with a corner of the other.
+    let at = |x: f64, y: f64, z: f64| DVec3::new(x, y, 3.0 * delta() * z);
+    // Stored +x on the line at `z`, its ends welded across it in opposite
+    // senses, so it turns toward −`sense` y.
+    let turned = |z: f64, sense: f64, face: u32| {
+        edge(
+            at(0.0, 0.0, z),
+            at(length, 0.0, z),
+            at(along, sense * across, z),
+            at(length - along, -sense * across, z),
+            face,
+        )
+    };
+    let (up, down) = (turned(0.0, -1.0, 0), turned(1.0, 1.0, 1));
+    for e in [&up, &down] {
+        for (welded, own, other) in [(e.weld_from, e.from, e.to), (e.weld_to, e.to, e.from)] {
+            assert!(
+                welded.distance(own) <= delta() && welded.distance(other) > delta(),
+                "each welded end lies within δ of its own corner only"
+            );
+        }
+        let turn = e.direction().dot(e.stored_direction());
+        assert!(
+            (0.0..0.15).contains(&turn),
+            "the weld turns the edge {}°: nearly 90°, never past it",
+            turn.acos().to_degrees()
+        );
+    }
     assert!(
-        turned.direction().dot(DVec3::X) < 0.0,
-        "the weld turns the edge round"
-    );
-    let along = edge(x(0.0), x(length), x(0.0), x(length), 1);
-    let against = edge(x(length), x(0.0), x(length), x(0.0), 1);
-    assert!(
-        turned.direction().dot(along.direction()) <= -0.5,
+        up.direction().dot(down.direction()) <= -0.5,
         "welded, the same-way edges read opposed"
     );
-    assert!(!opposed(&turned, &along));
-    assert!(opposed(&turned, &against));
+    assert!(!opposed(&up, &down));
+
+    // Stored −x, unwelded: opposed.
+    let against = edge(
+        at(length, 0.0, 1.0),
+        at(0.0, 0.0, 1.0),
+        at(length, 0.0, 1.0),
+        at(0.0, 0.0, 1.0),
+        2,
+    );
+    assert!(opposed(&up, &against));
 }

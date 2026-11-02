@@ -252,12 +252,15 @@ fn compile_fixture_for_layer_cache_order(
     output: &Path,
     cache_dir: Option<&Path>,
     uncompressed_irradiance: bool,
+    reach_verify: bool,
 ) -> Output {
     let mut command = prl_build();
+    if !reach_verify {
+        // A bake whose output is asserted for lightmap layer hits: verify
+        // mode never reads the layer cache.
+        command.env(REACH_VERIFY_ENV, "0");
+    }
     command
-        // The warm build asserts lightmap layer hits, which verify mode
-        // never reads.
-        .env(REACH_VERIFY_ENV, "0")
         .env("RUST_LOG", "info")
         .arg(input)
         .arg("-o")
@@ -912,8 +915,13 @@ fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
     );
 
     let temp = TempBuildDir::new();
-    let cold =
-        compile_fixture_for_layer_cache_order(&fixture, &temp.0.join("cold.prl"), None, false);
+    let cold = compile_fixture_for_layer_cache_order(
+        &fixture,
+        &temp.0.join("cold.prl"),
+        None,
+        false,
+        true,
+    );
     assert_success(&cold, 1);
     let cold_stderr = String::from_utf8_lossy(&cold.stderr);
     let cold_shadow_stage = cold_stderr
@@ -940,6 +948,7 @@ fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
         &temp.0.join("seeded.prl"),
         Some(&cache_dir),
         false,
+        true,
     );
     assert_success(&seeded, 1);
 
@@ -948,6 +957,7 @@ fn full_pipeline_closes_layer_cache_reads_at_the_fused_return_boundary() {
         &temp.0.join("warm.prl"),
         Some(&cache_dir),
         true,
+        false,
     );
     assert_success(&warm, 1);
     let warm_stderr = String::from_utf8_lossy(&warm.stderr);

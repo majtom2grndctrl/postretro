@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use crate::bake_control::BakeControl;
 use crate::lightmap_bake::Chart;
-use crate::lightmap_layer::{chart_texel_bounds, light_may_reach};
+use crate::lightmap_layer::{FRAME_SKEW_LIMIT, chart_texel_bounds, light_may_reach};
 use crate::map_data::{LightType, MapLight};
 use crate::partition::{BspTree, find_leaf_for_point};
 use crate::texel_footprint::TexelFrame;
@@ -19,7 +19,7 @@ mod flood;
 mod slab;
 
 use flood::{Emitter, PortalGraph, ball_flood, reach_radius};
-use slab::{ChartFrame, FRAME_SKEW_LIMIT};
+use slab::ChartFrame;
 
 /// A set of full-tree leaves, one bit each.
 #[derive(Debug, Clone)]
@@ -324,6 +324,8 @@ impl<'t> LightmapReachIndex<'t> {
 
 #[cfg(test)]
 mod seed_tests;
+#[cfg(test)]
+mod slab_tests;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 #[cfg(test)]

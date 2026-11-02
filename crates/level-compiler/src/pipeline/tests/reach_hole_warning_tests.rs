@@ -233,7 +233,8 @@ fn coverage_proof_holes_past_the_sample_cap_switch_the_cull_off_and_warn() {
         "{lines:?}"
     );
 
-    // Warm, with production's walk and caches: the stage is served from cache.
+    // Warm, with production's walk and caches: the stage is served from the
+    // `lightmap_section` memo.
     let (warm, warm_counts) = with_reach_verify(false, || holed(&map, root.path()));
     assert_eq!(hole_warnings(&warm), lines, "a warm rebuild warns the same");
     assert!(

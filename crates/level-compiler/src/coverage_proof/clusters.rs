@@ -17,9 +17,12 @@ use crate::governor::Governor;
 /// matched pair never runs the same way, whatever the rounding.
 const MIN_OPPOSITION: f64 = 0.5;
 
-/// Read on stored directions, not welded ones: welding moves each corner
-/// up to δ, which can turn an edge under 2δ long through any angle, even
-/// end for end, so two sub-mm edges running one way could read as opposed.
+/// Read on stored directions, not welded ones. Welding never reverses an
+/// edge: its corners lie in different clusters, so each welded end stays
+/// nearer its own stored corner than the other's, and the weld turns the
+/// edge by less than 90°. But a short edge can turn by nearly that much,
+/// so two edges running one way, turned about 85° in opposite senses,
+/// would read as opposed welded and could pair.
 pub(super) fn opposed(a: &DirectedEdge, b: &DirectedEdge) -> bool {
     a.stored_direction().dot(b.stored_direction()) <= -MIN_OPPOSITION
 }

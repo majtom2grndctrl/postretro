@@ -49,7 +49,7 @@ pub(crate) use chart_walk::{
     bake_light_layer_chart_without_clip_prepass, visit_light_chart_coverage_controlled,
 };
 pub(crate) use reach_walk::{ReachMismatchSlot, ReachTally, ReachWalk};
-pub(crate) use shaft_cull::ShaftScene;
+pub(crate) use shaft_cull::{FRAME_NORM_LIMIT, FRAME_SKEW_LIMIT, ShaftScene};
 #[cfg(test)]
 pub(crate) use shaft_cull::{SHAFT_TILE_TEXELS, ShaftCull};
 #[cfg(test)]

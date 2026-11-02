@@ -110,7 +110,7 @@ pub(crate) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f6
 /// expression rounds about ten times, each within 2⁻²⁴ of the magnitude of
 /// its terms: about 1.0e-6 m per metre across three components. This is
 /// four times that.
-pub(crate) const POSITION_SLACK_PER_METER: f64 = 4.0e-6;
+const POSITION_SLACK_PER_METER: f64 = 4.0e-6;
 
 /// Bound on the bake's `f32` rounding of a dot product of unit vectors: N·L,
 /// and the spot's `aim · (−L)`. The `to_light` difference, its normalizing

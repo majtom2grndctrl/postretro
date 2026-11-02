@@ -142,7 +142,7 @@ fn coverage_proof_reports_a_removed_strip_only_along_the_strip() {
     );
 }
 
-// P6: a crack wider than τ but narrower than 2τ is one the tracer blocks
+// A crack wider than τ but narrower than 2τ is one the tracer blocks
 // through its middle; the proof reads it as a hole.
 #[test]
 fn coverage_proof_proves_a_crease_crack_just_under_tau_and_not_just_over() {
@@ -286,7 +286,7 @@ fn coverage_proof_finds_a_far_crack_the_watertightness_weld_hides() {
     }
 }
 
-// P8: the four faces on a hinge cancel in pairs in every order.
+// The four faces on a hinge cancel in pairs in every order.
 #[test]
 fn coverage_proof_balances_a_hinge_in_every_face_order() {
     let (polygons, slots, _) = hinge(Frame::oblique(DVec3::new(1.0, 2.0, 3.0)));
@@ -301,7 +301,7 @@ fn coverage_proof_balances_a_hinge_in_every_face_order() {
     }
 }
 
-// P8: a hinge missing a face, or two faces whose hinge edges run the same
+// A hinge missing a face, or two faces whose hinge edges run the same
 // way, leaves an unproven span on the hinge itself, though every remaining
 // edge there lies on another face; the same spans in every order.
 #[test]

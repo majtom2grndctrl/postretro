@@ -17,9 +17,10 @@
 //   every piece within τ, as a dropped face leaves it, stays short, and so
 //   does a same-way surplus (an overlap). Closed shells stacked within τ
 //   raise both counts and can still carry a deficit along a line. That is
-//   inside the proof's named gap 3: a solid region whose remaining faces
-//   are missing, narrower than τ, or close within τ without enclosing it
-//   (deliberately built sub-mm shells). Verify mode guards it.
+//   inside a named gap of the reach cull (context/lib/build_pipeline.md,
+//   step 12): a solid region whose remaining faces are missing, narrower
+//   than τ, or close within τ without enclosing it (deliberately built
+//   sub-mm shells). Verify mode guards it.
 // - Distances are along the edges, not the axis: an edge at angle θ to the
 //   axis covers |cos θ| of axis per metre, so a skewed member would stretch
 //   an axis-unit τ to metres of real edge (a cluster linked across lines by
@@ -32,6 +33,14 @@
 //   past its cap, and two matchings in one bipartite graph covering those
 //   two sets combine into one covering both (Mendelsohn–Dulmage). No pair
 //   joins two stand-ins.
+// - An edge's side is its stored run along the axis, not its welded one.
+//   A short member tilted off the axis, its stored run near zero, can land
+//   on its twin's side; neither then partners the other, and both read
+//   unproven. That takes copies of a corner about δ apart on an edge
+//   between δ and about 1 mm long; the gate maps show none. It fails
+//   closed: a false hole, which turns the cull off map-wide, never an
+//   unsound proof. A welded side could misread such an edge the other way,
+//   into the wrong side's stand-in window, and loosen the cap.
 
 use glam::DVec3;
 

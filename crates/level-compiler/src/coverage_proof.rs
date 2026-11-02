@@ -130,7 +130,8 @@ pub(crate) struct CoverageReport {
 
 impl CoverageReport {
     /// Total length of the unproven spans, in meters: +0 when there are
-    /// none (a float `sum` of nothing is −0, which logs as "-0.000 m").
+    /// none (a float `sum` of nothing is −0, which logs as "-0.000 m"), and
+    /// not finite when a span's corners are not.
     pub(crate) fn unproven_length(&self) -> f64 {
         self.unproven
             .iter()

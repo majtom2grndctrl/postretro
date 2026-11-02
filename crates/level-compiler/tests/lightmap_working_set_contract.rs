@@ -75,15 +75,27 @@ fn build(
     cache: Option<&Path>,
     budget: Option<u64>,
 ) -> (Output, PathBuf) {
+    build_with_verify(input, scratch, label, cache, budget, true)
+}
+
+/// Like `build`, with reach verify mode on or off. A bake whose test
+/// asserts `lightmap_section` misses or hits passes `false`: verify mode
+/// never reads the memo, so it would log a bypass instead.
+fn build_with_verify(
+    input: &Path,
+    scratch: &Path,
+    label: &str,
+    cache: Option<&Path>,
+    budget: Option<u64>,
+    verify: bool,
+) -> (Output, PathBuf) {
     let output_path = scratch.join(format!("{label}.prl"));
     let mut command = command(input, &output_path, scratch);
+    if !verify {
+        command.env(REACH_VERIFY_ENV, "0");
+    }
     if let Some(cache) = cache {
-        // Cached builds assert `lightmap_section` misses and hits, which
-        // verify mode never reads.
-        command
-            .env(REACH_VERIFY_ENV, "0")
-            .arg("--cache-dir")
-            .arg(cache);
+        command.arg("--cache-dir").arg(cache);
     } else {
         command.arg("--no-cache");
     }
@@ -283,7 +295,8 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
     let scratch = tempfile::tempdir().unwrap();
     let cache = scratch.path().join("cache");
     let input = fixture();
-    let (seed, _) = build(&input, scratch.path(), "seed", Some(&cache), None);
+    // The seed asserts `lightmap_section` and `shadowmask_atlas` misses.
+    let (seed, _) = build_with_verify(&input, scratch.path(), "seed", Some(&cache), None, false);
     let log = assert_success(&seed);
     let delta = admitted_bytes(&log, SH_ADMITTED);
     let base = admitted_bytes(&log, SH_BASE_ADMITTED);
@@ -319,12 +332,14 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
     assert!(layers > 0);
 
     for (label, stage_cache) in [("cold", None), ("warm", Some(cache.as_path()))] {
-        let (at_budget, path) = build(
+        // The warm at-budget bake asserts memo hits.
+        let (at_budget, path) = build_with_verify(
             &input,
             scratch.path(),
             &format!("{label}-at"),
             stage_cache,
             Some(lightmap),
+            stage_cache.is_none(),
         );
         let at_log = assert_success(&at_budget);
         assert!(path.is_file());

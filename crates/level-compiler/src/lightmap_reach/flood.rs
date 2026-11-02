@@ -16,6 +16,7 @@ use super::LeafSet;
 /// The shipped set ([`PortalTolerance::SHIPPED`]) drops openings under 0.1 m²
 /// or about 1 cm wide, which a ray crosses; the flood must cross every
 /// opening a ray can.
+///
 /// A piece narrower than this tolerance lies between open/solid boundaries
 /// whose faces (the precondition the coverage proof checks) come within τ of
 /// any ray through it, so the tracer blocks that ray (build_pipeline.md step
@@ -44,9 +45,10 @@ const REACH_MARGIN_EPSILONS: f64 = 4.0;
 /// R's relative margin, per metre of range, size, footprint radius and the
 /// light's distance from the world origin. It covers the bake's `f32`
 /// distance rounding (`chart_cull`'s 4e-6 on range), the footprint radius
-/// slack (1e-5, `slab::RADIUS_SLACK`), and the few `f32` adds that place a
+/// slack (1e-5, `slab::RADIUS_SLACK`), the few `f32` adds that place a
 /// footprint point, its lift and its trace start (each 2⁻²⁴ of the
-/// coordinate).
+/// coordinate), and an emitter target's `f32` rounding past `size`, about
+/// 2⁻²⁴·(|centre| + size), under a three-hundredth of this margin.
 const REACH_SLACK_PER_METER: f64 = 2.0e-5;
 
 /// The portal graph over the full tree's leaves.
@@ -102,7 +104,9 @@ impl Emitter {
 /// every segment the sampler traces for a texel the light lights. A texel
 /// with a direct term lies within the clamped `falloff_range`; its traced
 /// points lie within a footprint radius and two `RAY_EPSILON`s of it; an
-/// emitter target lies within `size`.
+/// emitter target lies within `size` plus its `f32` rounding, which the
+/// relative margin covers; every point of a segment lies within the
+/// farther of its ends.
 pub(super) fn reach_radius(light: &MapLight, emitter: Emitter, footprint_radius: f64) -> f64 {
     let range = f64::from(light.falloff_range.max(1.0e-4));
     let terms = range + emitter.size + footprint_radius;

@@ -12472,6 +12472,18 @@ mod tests {
             Some(&SlotValue::Number(0.0)),
             "engine-owned player.immersion defaults 0 and is cloned",
         );
+        // The life-state slots default to 0 ms and "" (undeclared), so both
+        // are value-bearing.
+        assert_eq!(
+            snapshot.get("player.lifeStateMs"),
+            Some(&SlotValue::Number(0.0)),
+            "engine-owned player.lifeStateMs defaults 0 and is cloned",
+        );
+        assert_eq!(
+            snapshot.get("player.lifeState"),
+            Some(&SlotValue::String(String::new())),
+            "engine-owned player.lifeState defaults to \"\" and is cloned",
+        );
         assert!(
             !snapshot.contains_key("player.maxHealth"),
             "value-less slots are skipped",
@@ -12500,7 +12512,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            63,
+            65,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

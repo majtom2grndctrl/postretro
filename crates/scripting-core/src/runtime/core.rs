@@ -680,21 +680,21 @@ impl ScriptRuntime {
                     &registry,
                 )
             };
-            if crate::group_resolution::group_commands_apply_here(ctx) {
-                if let Err(reason) = super::staged_preflight::plan_retained_crouch_support(
+            if crate::group_resolution::group_commands_apply_here(ctx)
+                && let Err(reason) = super::staged_preflight::plan_retained_crouch_support(
                     &next_descriptors,
                     &ctx.registry.borrow(),
                     &mut refresh_plan,
-                ) {
-                    log::error!(
-                        "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
-                        result.generation,
-                    );
-                    return StagedManifestCommitOutcome::Rejected {
-                        generation: result.generation,
-                        reason,
-                    };
-                }
+                )
+            {
+                log::error!(
+                    "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
+                    result.generation,
+                );
+                return StagedManifestCommitOutcome::Rejected {
+                    generation: result.generation,
+                    reason,
+                };
             }
             for diagnostic in &refresh_plan.diagnostics {
                 log::debug!(

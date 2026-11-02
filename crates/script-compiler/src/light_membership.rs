@@ -581,6 +581,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineTriggerEvent",
     "npcs",
     "players",
+    "inLifeState",
     "becomes",
     "ceases",
     "wait",

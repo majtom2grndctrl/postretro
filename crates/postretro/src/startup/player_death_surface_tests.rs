@@ -165,14 +165,13 @@ fn player_death_twins_emit_identical_policy_and_down_vignette_wire() {
         for reaction in &manifest.reactions {
             if let postretro_entities::ReactionDescriptor::Primitive(primitive) =
                 &reaction.descriptor
+                && primitive.primitive == "vignette"
             {
-                if primitive.primitive == "vignette" {
-                    assert!(
-                        system
-                            .dispatch(&primitive.primitive, &primitive.args, &queue)
-                            .expect("authored vignette must be valid at runtime")
-                    );
-                }
+                assert!(
+                    system
+                        .dispatch(&primitive.primitive, &primitive.args, &queue)
+                        .expect("authored vignette must be valid at runtime")
+                );
             }
         }
         let commands = queue.take();

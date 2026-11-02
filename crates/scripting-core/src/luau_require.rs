@@ -437,6 +437,7 @@ mod tests {
                 "defineTriggerEvent",
                 "npcs",
                 "players",
+                "inLifeState",
                 "becomes",
                 "ceases",
                 "wait",

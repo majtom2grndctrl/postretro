@@ -174,7 +174,7 @@ impl App {
             },
         );
         crate::respawn_placements::publish(
-            &script_ctx,
+            script_ctx,
             &products.spawn_points,
             &script_ctx.data_registry.borrow().entities,
             session.seat_table.as_ref(),

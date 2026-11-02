@@ -177,7 +177,7 @@ impl World {
         else {
             unreachable!()
         };
-        *endpoint_server = Box::new(server);
+        **endpoint_server = server;
         let session = app.session.as_mut().unwrap();
         session.net_endpoint = Some(endpoint);
         session.seat_table = Some(seats);

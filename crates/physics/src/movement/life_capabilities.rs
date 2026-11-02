@@ -63,27 +63,28 @@ pub(super) fn posture(
             _ => {}
         }
     }
-    if forced && matches!(component.movement_state, MovementState::Normal) {
-        if let Some(crouch) = component.crouch.as_ref() {
-            let (height, eye) = (crouch.half_height, crouch.eye_height);
-            let anchor = if component.is_grounded() {
-                ResizeAnchor::Feet
-            } else {
-                ResizeAnchor::Head
-            };
-            if anchored_standup_clearance_probe(
-                component,
-                collision,
-                *position,
-                component.capsule.half_height,
-                height,
-                anchor,
-            ) {
-                let eye_current = component.capsule.eye_height;
-                position.y += resize_capsule(component, height, eye, anchor);
-                component.capsule.eye_height = eye_current;
-                component.movement_state = MovementState::Crouching { eye_current };
-            }
+    if forced
+        && matches!(component.movement_state, MovementState::Normal)
+        && let Some(crouch) = component.crouch.as_ref()
+    {
+        let (height, eye) = (crouch.half_height, crouch.eye_height);
+        let anchor = if component.is_grounded() {
+            ResizeAnchor::Feet
+        } else {
+            ResizeAnchor::Head
+        };
+        if anchored_standup_clearance_probe(
+            component,
+            collision,
+            *position,
+            component.capsule.half_height,
+            height,
+            anchor,
+        ) {
+            let eye_current = component.capsule.eye_height;
+            position.y += resize_capsule(component, height, eye, anchor);
+            component.capsule.eye_height = eye_current;
+            component.movement_state = MovementState::Crouching { eye_current };
         }
     }
     if component.movement_state.kind() != from {

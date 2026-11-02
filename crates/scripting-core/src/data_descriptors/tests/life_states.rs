@@ -76,7 +76,7 @@ fn life_state_parser_twins_lower_defaults_and_optional_rejoin() {
             &postretro_foundation::LifeStateProfile::default()
         );
         assert!(!js.state("down").unwrap().1.fire);
-        assert_eq!(js.rejoin.get("down").is_some(), rejoin);
+        assert_eq!(js.rejoin.contains_key("down"), rejoin);
     }
 }
 

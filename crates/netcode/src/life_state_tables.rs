@@ -107,7 +107,7 @@ impl LifeStateTables {
 mod tests {
     use super::*;
     use postretro_combat_model::{EnvironmentTuning, FluidMovementTable};
-    use postretro_foundation::enter_life_state;
+    use postretro_foundation::{LifeStateMovementProfile, enter_life_state};
 
     fn payload(revision: u8, profiles: Vec<(u8, LifeStateProfile)>) -> TuningPayload {
         let mut payload = TuningPayload::new(
@@ -138,9 +138,14 @@ mod tests {
 
     #[test]
     fn o26_snapshot_before_control_keeps_profile_and_rebases_replay_elapsed() {
-        let mut blocked = LifeStateProfile::default();
-        blocked.fire = false;
-        blocked.movement.speed_scale = 0.3;
+        let blocked = LifeStateProfile {
+            fire: false,
+            movement: LifeStateMovementProfile {
+                speed_scale: 0.3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let previous = pawn(1, 7, 40, &blocked);
         let mut tables = LifeStateTables::default();
         tables.install(&payload(7, vec![(1, blocked.clone())]), Some(7));
@@ -179,8 +184,10 @@ mod tests {
 
     #[test]
     fn o36_two_payloads_before_merge_resolve_each_pawns_own_revision() {
-        let mut blocked = LifeStateProfile::default();
-        blocked.fire = false;
+        let blocked = LifeStateProfile {
+            fire: false,
+            ..Default::default()
+        };
         let mut tables = LifeStateTables::default();
         tables.install(&payload(10, vec![(1, blocked.clone())]), Some(10));
         tables.install(
@@ -206,8 +213,10 @@ mod tests {
 
     #[test]
     fn o42_same_revision_profile_removal_keeps_stamps_until_host_remap() {
-        let mut blocked = LifeStateProfile::default();
-        blocked.fire = false;
+        let blocked = LifeStateProfile {
+            fire: false,
+            ..Default::default()
+        };
         let mut tables = LifeStateTables::default();
         tables.install(
             &payload(

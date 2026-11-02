@@ -1696,14 +1696,19 @@ mod tests {
     fn o26_reconcile_missing_table_preserves_life_stamps_and_counts_replay_once() {
         use crate::life_state_tables::LifeStateTables;
         use postretro_combat_model::{EnvironmentTuning, FluidMovementTable, TuningPayload};
-        use postretro_foundation::{LifeStateProfile, enter_life_state};
+        use postretro_foundation::{LifeStateMovementProfile, LifeStateProfile, enter_life_state};
         let world = floor_world();
         let mut registry = EntityRegistry::new();
         let mut prediction = ClientPrediction::new();
         let id = spawn_armed_pawn(&mut registry, &mut prediction, NetworkId(7));
-        let mut profile = LifeStateProfile::default();
-        profile.fire = false;
-        profile.movement.speed_scale = 0.3;
+        let profile = LifeStateProfile {
+            fire: false,
+            movement: LifeStateMovementProfile {
+                speed_scale: 0.3,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut previous = registry
             .get_component::<PlayerMovementComponent>(id)
             .unwrap()

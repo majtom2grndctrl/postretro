@@ -4,7 +4,7 @@
 use super::*;
 use crate::collision::CollisionWorld;
 use crate::predict_reconcile_harness_test_fixtures::{GRAVITY, floor_world, player_descriptor};
-use postretro_foundation::{LifeStateProfile, PlayerMovementComponent};
+use postretro_foundation::{LifeStateMovementProfile, LifeStateProfile, PlayerMovementComponent};
 
 fn life_payload(revision: u8, profiles: Vec<(u8, LifeStateProfile)>) -> TuningPayload {
     let mut payload = TuningPayload::new(
@@ -98,12 +98,22 @@ fn history_has(endpoint: &NetEndpoint, revision: u8) -> bool {
 #[test]
 fn life_state_o36_endpoint_installs_past_the_pawns_revision_restamp_under_its_pinned_table() {
     const R: u8 = 10;
-    let mut down = LifeStateProfile::default();
-    down.fire = false;
-    down.movement.speed_scale = 0.3;
-    let mut x = LifeStateProfile::default();
-    x.fire = false;
-    x.movement.speed_scale = 0.5;
+    let down = LifeStateProfile {
+        fire: false,
+        movement: LifeStateMovementProfile {
+            speed_scale: 0.3,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let x = LifeStateProfile {
+        fire: false,
+        movement: LifeStateMovementProfile {
+            speed_scale: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let (mut endpoint, mut registry, pawn) = armed_client(&life_payload(R, vec![(1, down)]));
     let world = floor_world();
     merge(&mut endpoint, &mut registry, pawn, &world, 1, (1, R, 50));
@@ -198,9 +208,14 @@ fn life_state_o36_endpoint_installs_past_the_pawns_revision_restamp_under_its_pi
 #[test]
 fn life_state_o42_endpoint_held_revision_drop_keeps_live_stamps_until_the_host_remap() {
     const R: u8 = 4;
-    let mut x = LifeStateProfile::default();
-    x.fire = false;
-    x.movement.speed_scale = 0.4;
+    let x = LifeStateProfile {
+        fire: false,
+        movement: LifeStateMovementProfile {
+            speed_scale: 0.4,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let (mut endpoint, mut registry, pawn) = armed_client(&life_payload(
         R,
         vec![(0, LifeStateProfile::default()), (2, x)],

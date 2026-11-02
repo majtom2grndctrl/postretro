@@ -50,7 +50,7 @@ const MIN_EDGE_LEN: f64 = 1e-6;
 const MIN_OPEN_SPAN: f64 = 1e-3;
 /// Max open-edge locations to surface. A holed map can produce many open spans;
 /// the count conveys severity, the samples convey where to look.
-const MAX_SAMPLES: usize = 12;
+pub const MAX_SAMPLES: usize = 12;
 
 /// Quantized supporting line: `(direction, anchor)`, both component-quantized.
 type LineKey = ([i64; 3], [i64; 3]);

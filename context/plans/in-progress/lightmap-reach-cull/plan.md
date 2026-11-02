@@ -12,6 +12,7 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 - `context/lib/build_pipeline.md` step 3 and step 12 already describe the reach cull and coverage proof as "decided, not yet built"; landing rewrites those to built, not adds them.
 - Spike prototypes live on local branch `spike/lightmap-flood-cull-sizing` (not on `origin`): `git show 'spike/lightmap-flood-cull-sizing:crates/level-compiler/src/lm_flood_sizing.rs'`.
 - `pipeline/lightmap_stage.rs` is 671 lines: new stage wiring (proof switch, stage line, verify switch) goes in new files under `pipeline/lightmap_stage/`, not that file.
+- Far-crack AC row ("past about 190 m"): the parity weld merges a 0.535 mm crack's lines only at 320 m (both direction and anchor cells must coincide); the test sits at 320 m and asserts `check_watertight` reports none there.
 - Gate-map geometry harness to reuse for the hallway proof run: `ray_traversal/census_tests.rs` `map_geometries` (pre- and post-cut geometry of a gate map).
 
 ## Delegated answers
@@ -55,7 +56,7 @@ Worktree: `.claude/worktrees/lightmap-reach-cull`, branch `feat/lightmap-reach-c
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Coverage proof module (oriented edge balance, bipartite matching per sub-span, τ from the tracer) + its unit tests; run it on hallway, hallway-mini and movement-feel post-cut geometry. Unproven spans on the outer shell → block for owner | delegated (Opus), integrated here | — | |
+| 1 | Coverage proof module (oriented edge balance, bipartite matching per sub-span, τ from the tracer) + its unit tests; run it on hallway, hallway-mini and movement-feel post-cut geometry. Unproven spans on the outer shell → block for owner | delegated (Opus), integrated here | — | done: `coverage_proof` 11 tests pass; gate maps 0 unproven (hallway 48,062 edges, 0.07 s; mini 23,914; movement-feel 1,698). End-stub rule (≤ τ at an edge's own ends) awaiting owner ruling |
 | 2 | `lightmap_reach` index: full-tree portals kept from `RuntimeCells::of_partition`, ball flood, R, chart slab leaves, per-texel mask | delegated (Opus), integrated here | 1 | |
 | 3 | Walk integration: `ExactSkips` reach flag, per-chart mask shared across lights, verify mode + `POSTRETRO_LIGHTMAP_REACH_VERIFY`, stage info line, hole and cull-off warnings, `check_watertight` to info | delegated (Opus), integrated here | 2 | |
 | 4 | Fixture suite (two rooms et al.) and coverage-proof fixture rows | delegated, integrated here | 3 | |

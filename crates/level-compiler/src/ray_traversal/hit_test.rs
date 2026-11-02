@@ -287,7 +287,7 @@ impl TraceRay {
 /// the in-plane distance, rounded at the corners. NaN for a degenerate
 /// (zero-area) triangle: its edge arms divide `0 / 0` (coincident corners
 /// reach it through edge AB), and its interior arm divides by a zero sum.
-pub(super) fn distance_squared_to_triangle(point: DVec3, corners: [DVec3; 3]) -> f64 {
+pub(crate) fn distance_squared_to_triangle(point: DVec3, corners: [DVec3; 3]) -> f64 {
     (point - closest_point_on_triangle(point, corners).0).length_squared()
 }
 

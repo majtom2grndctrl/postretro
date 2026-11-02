@@ -24,6 +24,7 @@ use crate::{
 mod animated_atlas_stage;
 mod atlas_stage;
 mod cell_partition;
+mod coverage_proof_stage;
 mod delta_working_set;
 mod finalized_publication;
 use delta_working_set::*;
@@ -1612,6 +1613,7 @@ fn run_after_parsing(
         stage_start,
         !prepared_atlas.charts.is_empty(),
     );
+    coverage_proof_stage::run_coverage_proof(&geo_result, &face_brushes);
 
     // Lightmap residency set (id 51): reads the partition plan's Cells and
     // Portals, the encoded locator, and for teleporter routes the id-55 section

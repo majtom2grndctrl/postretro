@@ -1,0 +1,149 @@
+// Coverage proof candidates: which edges may partner, and the connected groups they form.
+// See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Exact skips)
+
+use bvh::aabb::{Aabb, Bounded};
+use bvh::bounding_hierarchy::BHShape;
+use bvh::bvh::Bvh;
+use glam::DVec3;
+use nalgebra::Point3;
+use rayon::prelude::*;
+
+use super::edges::DirectedEdge;
+
+/// Two edges run opposite ways when their directions' dot product is at
+/// most minus this (120° apart or more). A pair matches only then, so a
+/// matched pair never runs the same way, whatever the rounding.
+const MIN_OPPOSITION: f64 = 0.5;
+
+pub(super) fn opposed(a: &DirectedEdge, b: &DirectedEdge) -> bool {
+    a.direction().dot(b.direction()) <= -MIN_OPPOSITION
+}
+
+/// The edges sharing a line, near enough: groups linked by opposed,
+/// overlapping pairs whose shorter edge lies within `link_radius` of the
+/// longer's line. Each group lists its edges ascending;
+/// groups come in order of their first edge. Linking only decides which
+/// edges a matching considers together, never whether a pair is proven.
+pub(super) fn clusters(edges: &[DirectedEdge], link_radius: f64) -> Vec<Vec<usize>> {
+    if edges.is_empty() {
+        return Vec::new();
+    }
+    let mut boxes: Vec<EdgeBox> = edges
+        .iter()
+        .enumerate()
+        .map(|(edge, e)| EdgeBox {
+            aabb: outward_box(e.from.min(e.to), e.from.max(e.to)),
+            edge,
+            node_index: 0,
+        })
+        .collect();
+    let index = Bvh::build(&mut boxes);
+    let links: Vec<(usize, usize)> = (0..edges.len())
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let e = &edges[i];
+            let pad = DVec3::splat(link_radius);
+            let query = outward_box(e.from.min(e.to) - pad, e.from.max(e.to) + pad);
+            let mut found: Vec<usize> = index
+                .traverse(&query, &boxes)
+                .into_iter()
+                .map(|shape| shape.edge)
+                .filter(|&j| j > i && linked(e, &edges[j], link_radius))
+                .collect();
+            found.sort_unstable();
+            found.into_iter().map(move |j| (i, j))
+        })
+        .collect();
+
+    let mut parent: Vec<usize> = (0..edges.len()).collect();
+    for (a, b) in links {
+        let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+        if ra != rb {
+            // The lower index roots the group, so roots do not depend on
+            // link order.
+            let (low, high) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            parent[high] = low;
+        }
+    }
+    let mut slot = vec![usize::MAX; edges.len()];
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for edge in 0..edges.len() {
+        let r = root(&mut parent, edge);
+        if slot[r] == usize::MAX {
+            slot[r] = groups.len();
+            groups.push(Vec::new());
+        }
+        groups[slot[r]].push(edge);
+    }
+    groups
+}
+
+fn root(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
+}
+
+/// Opposed, overlapping along each other's lines, and on one line: the
+/// shorter edge lies wholly within `radius` of the longer's line. Two edges
+/// meeting at a corner overlap only by the stub their rounded ends leave,
+/// and the shorter one's far end leaves the line, so they never merge two
+/// lines into one cluster.
+fn linked(a: &DirectedEdge, b: &DirectedEdge, radius: f64) -> bool {
+    let (long, short) = if a.length() >= b.length() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let axis = long.direction();
+    let off_line = |p: DVec3| {
+        let v = p - long.from;
+        (v - axis * v.dot(axis)).length()
+    };
+    opposed(a, b)
+        && overlaps(a, b)
+        && overlaps(b, a)
+        && off_line(short.from) <= radius
+        && off_line(short.to) <= radius
+}
+
+/// `b` projects onto `a`'s line over a stretch of `a` of positive length.
+fn overlaps(a: &DirectedEdge, b: &DirectedEdge) -> bool {
+    let (axis, length) = (a.direction(), a.length());
+    let (t0, t1) = ((b.from - a.from).dot(axis), (b.to - a.from).dot(axis));
+    t0.max(t1).min(length) > t0.min(t1).max(0.0)
+}
+
+/// An `f32` box holding the `f64` box `lo`..`hi`, rounded outward.
+fn outward_box(lo: DVec3, hi: DVec3) -> Aabb<f32, 3> {
+    let down = |v: f64| (v as f32).next_down();
+    let up = |v: f64| (v as f32).next_up();
+    Aabb::with_bounds(
+        Point3::new(down(lo.x), down(lo.y), down(lo.z)),
+        Point3::new(up(hi.x), up(hi.y), up(hi.z)),
+    )
+}
+
+struct EdgeBox {
+    aabb: Aabb<f32, 3>,
+    edge: usize,
+    node_index: usize,
+}
+
+impl Bounded<f32, 3> for EdgeBox {
+    fn aabb(&self) -> Aabb<f32, 3> {
+        self.aabb
+    }
+}
+
+impl BHShape<f32, 3> for EdgeBox {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
+    }
+}

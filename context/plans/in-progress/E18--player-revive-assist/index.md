@@ -405,6 +405,8 @@ This task builds the connected client's assist bars on Task 2a's surfaces, which
 | O57 | Radius changes from 0 to positive mid-hold | The helper gains a stat at tick N's pass; the host accumulates from N+1 | The client keeps the entry with no abstention, predicts from the new table's arrival and rebases upward on host samples; the bar never drops |
 | O58 | Stalled pair under correction | `required_ticks` 0 on host and client (O44) across several samples | No drop and no visible sawtooth; a rebase lands on the sample value |
 
+**Build notes (Task 2b, as built).** The rebase row counts every held tick after the acknowledged one (each ran on the host at the current value), not only ticks the client itself advanced: a client latched at U ahead of the host would otherwise rebase below U and dip. A rebase that lands below U clears a client-completion latch so the prediction resumes. The current increment is the current pair table's entry for the step's kept target. The client enumerates candidates through a new `ClientReplication::remote_assist_pawns` (entity-id order stands in for `players()` order). Task 2a's row-6 record now reads "did not advance" for a helper reset by the one-completion-per-target rule, so a listen host draws no alpha sliver above its 0.
+
 Delivers AC9, O6, O13, O14, O15, O16, O17, O18, O28, O30, O31, O32, O35, O36, O43, O46, O47, O48, O49, O56, O57, O58, and the bar halves of O12, O19, O22, O40, O42, O45 and O50.
 
 ### Task 3: Dev-mod Borderlands upgrade, tests and docs

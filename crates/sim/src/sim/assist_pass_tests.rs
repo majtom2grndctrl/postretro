@@ -452,6 +452,14 @@ fn assist_pass_ac6_o37_one_completion_per_target_earlier_helper_wins() {
     assert!(world.latched(0));
     assert!(!world.latched(1), "the losing helper resets unlatched");
     assert_eq!(world.progress(1), 0);
+    assert_eq!(
+        world.state.row6_record(world.pawns[1]),
+        Row6Record {
+            advanced_without_completing: false,
+            required_ticks: SIX
+        },
+        "the reset loser did not advance, so a listen host draws no alpha term above its 0"
+    );
 
     // Heal-only fire list: T stays down. B completes after a full count; A
     // completes nothing more while it keeps holding.

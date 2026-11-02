@@ -920,4 +920,5 @@ fn two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_correctio
     );
 }
 
+mod assist_samples;
 mod life_states;

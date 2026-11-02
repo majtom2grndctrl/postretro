@@ -117,8 +117,12 @@ impl AssistState {
         }
 
         // One completion per target per tick (AC6): the earlier helper in
-        // `players()` order wins; the others reset, unlatched.
+        // `players()` order wins; the others reset, unlatched. A loser's row-6
+        // record reads "did not advance": its slot reads 0 and its target was
+        // just completed, so a listen host's alpha term must not draw a sliver
+        // above that 0.
         let mut completions: Vec<AssistCompletion> = Vec::new();
+        let mut losers: Vec<EntityId> = Vec::new();
         for (helper, outcome) in &mut steps {
             if !outcome.completed {
                 continue;
@@ -128,6 +132,7 @@ impl AssistState {
                 outcome.completed = false;
                 outcome.latched = false;
                 outcome.progress = 0;
+                losers.push(*helper);
                 continue;
             }
             let pawn = pawns
@@ -155,7 +160,8 @@ impl AssistState {
                         },
                         row6: Row6Record {
                             advanced_without_completing: outcome.row == AssistRow::Advance
-                                && !outcome.completed,
+                                && !outcome.completed
+                                && !losers.contains(helper),
                             required_ticks: outcome.required_ticks,
                         },
                     },

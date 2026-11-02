@@ -167,3 +167,28 @@ fn level_unload_and_demotion_clear_assist_facts() {
     client.reset_for_demotion();
     assert!(client.remote_assist.get(NetworkId(7)).is_none());
 }
+
+/// The client assist step's candidate list: every retained remote pawn with
+/// its mapped entity, in entity-id order, into a reused buffer.
+#[test]
+fn remote_assist_pawns_list_every_retained_mapped_pawn_in_entity_order() {
+    let mut registry = EntityRegistry::new();
+    let mut client = ClientReplication::new();
+    client.apply_snapshot(
+        &mut registry,
+        &snapshot(
+            0,
+            vec![pawn(9, 1, false, 0, false), pawn(7, 1, false, 1, true)],
+        ),
+    );
+    let mut out = vec![(EntityId::from_raw(99), facts(0, false).unwrap())];
+    client.remote_assist_pawns(&mut out);
+    let nine = client.entity_for_network_id(NetworkId(9)).unwrap();
+    let seven = client.entity_for_network_id(NetworkId(7)).unwrap();
+    let mut expected = vec![
+        (nine, facts(0, false).unwrap()),
+        (seven, facts(1, true).unwrap()),
+    ];
+    expected.sort_by_key(|(entity, _)| *entity);
+    assert_eq!(out, expected, "the stale entry is cleared");
+}

@@ -7,6 +7,7 @@
 mod agent_diagnostics;
 mod app;
 mod camera;
+mod client_assist;
 #[cfg(test)]
 mod coop_fixture_tests;
 mod fluid_presentation;
@@ -285,6 +286,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
                 app.active_slot_resync.reset();
+                app.client_assist.reset();
                 app.observer_weapon_cues.clear();
                 // Received link state is dropped with every other replicated
                 // state; links ramp back to local spawn state.
@@ -1002,6 +1004,10 @@ pub(crate) struct App {
     /// Eased `player.lifeStateMs` HUD projection, applied at the frozen UI
     /// boundary. See: context/lib/scripting.md §5; context/lib/networking.md (life-state HUD time)
     life_state_display: life_state_display::LifeStateDisplay,
+    /// The connected client's predicted assist bar and its correction;
+    /// projected into the UI display map only. See: context/lib/networking.md
+    /// §What gates, and what replicates instead
+    client_assist: client_assist::ClientAssist,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the
     /// cell sets its demand joins.
@@ -3159,9 +3165,14 @@ impl App {
         ui_focused_id: Option<String>,
         frontend_menu_is_present: bool,
         life_state_projection: Option<life_state_display::UiProjection<'_>>,
+        assist_projection: Option<client_assist::UiProjection>,
     ) -> postretro_ui::UiReadSnapshot {
-        let slot_values =
-            Self::build_ui_display_slot_snapshot(slot_table, net_endpoint, life_state_projection);
+        let slot_values = Self::build_ui_display_slot_snapshot(
+            slot_table,
+            net_endpoint,
+            life_state_projection,
+            assist_projection,
+        );
         let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
@@ -3457,6 +3468,7 @@ impl App {
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
             None,
+            None,
         );
         ui_snapshot.wheel = self.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
@@ -3506,6 +3518,7 @@ impl App {
         slot_table: &postretro_entities::SlotTable,
         net_endpoint: Option<&netcode::NetEndpoint>,
         life_state_projection: Option<life_state_display::UiProjection<'_>>,
+        assist_projection: Option<client_assist::UiProjection>,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
         let mut values = Self::build_ui_slot_snapshot(slot_table);
         if let Some(netcode::NetEndpoint::Client { state_slots, .. }) = net_endpoint {
@@ -3515,6 +3528,9 @@ impl App {
             projection
                 .display
                 .project(&mut values, projection.sample, projection.frame_dt);
+        }
+        if let Some(projection) = assist_projection {
+            projection.project(&mut values);
         }
         values
     }
@@ -4633,6 +4649,13 @@ impl App {
                     // as an authoritative host without learning other seats.
                     sync_client_per_owner_projection(&mut slot_table, local_seat);
                 }
+                // A newly armed pawn starts with no hold; then this frame's
+                // host samples correct the helper's prediction, in order.
+                if apply_outcome.armed_local_pawn.is_some() {
+                    self.client_assist.reset();
+                }
+                self.client_assist
+                    .consume_samples(&apply_outcome.assist_progress_samples, replication);
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
                         .as_deref()
@@ -12820,6 +12843,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         cells.write(
             "title".to_string(),
@@ -12837,6 +12861,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
             None,
         );
         assert_eq!(
@@ -12865,6 +12890,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
             None,
         );
         assert_eq!(restored.trees[0].name, "title");

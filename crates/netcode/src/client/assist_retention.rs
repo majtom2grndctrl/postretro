@@ -28,6 +28,17 @@ pub struct AssistPairEntry {
     pub required_ticks: u32,
 }
 
+/// One host sample of the local pawn's committed `player.assistProgress`,
+/// paired with the input tick its snapshot acknowledged. The receive loop
+/// appends one per accepted snapshot whose state batch applied, whose
+/// local-pawn record carries an acknowledged tick, and whose slot was not held
+/// for a baseline refresh; the app's assist prediction corrects against it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AssistProgressSample {
+    pub acked_tick: u32,
+    pub progress: f32,
+}
+
 /// Keyed by identity, beside `remote_player_locomotion`, but cleared only when
 /// the identity ends: a meshless descriptor dropping locomotion keeps its facts.
 /// The local pawn's assist facts live here too, keyed by the identity whose
@@ -94,6 +105,22 @@ impl ClientReplication {
     pub fn remote_assist_facts(&self, entity_id: EntityId) -> Option<RemoteAssistFacts> {
         self.remote_assist
             .get(self.network_id_for_entity(entity_id)?)
+    }
+
+    /// Every remote pawn whose facts are retained and whose entity is mapped,
+    /// in entity-id order, written into `out` (cleared first) so a per-tick
+    /// caller reuses one buffer. The client's stand-in for `players()` order.
+    pub fn remote_assist_pawns(&self, out: &mut Vec<(EntityId, RemoteAssistFacts)>) {
+        out.clear();
+        out.extend(
+            self.remote_assist
+                .facts
+                .iter()
+                .filter_map(|(network_id, facts)| {
+                    Some((self.entity_for_network_id(*network_id)?, *facts))
+                }),
+        );
+        out.sort_unstable_by_key(|(entity, _)| *entity);
     }
 
     /// The local pawn's pair table as helper, from its newest accepted

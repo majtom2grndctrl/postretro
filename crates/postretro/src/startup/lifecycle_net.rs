@@ -171,6 +171,8 @@ impl App {
             if let Some(endpoint) = session.net_endpoint.as_mut() {
                 endpoint.reset_level_scoped_client_state();
             }
+            // No assist hold carries into the next level (O35).
+            self.client_assist.reset();
             if let Some(audio) = session.audio.as_mut() {
                 // No world-anchored sound outlives its level or follows an
                 // entity id into the next one (`audio.md` §5).

@@ -743,6 +743,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 let prediction_tick = app.run_client_predicted_tick(has_player_pawn, |app| {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
                     app.predict_client_weapon_command(&mut command, input_tick, tick_dt);
+                    app.predict_client_assist(&command, input_tick);
                     app.client_predict_movement_tick(&command, tick_dt)
                 });
                 if let Some(prediction_tick) = prediction_tick {
@@ -2669,6 +2670,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // second `app.session.as_mut()` here would alias it.
         let frontend_menu_is_present =
             frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
+        let assist_projection =
+            crate::client_assist::ui_projection(&app.client_assist, session, frame_result.alpha);
         let mut ui_snapshot = App::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
@@ -2687,6 +2690,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 display: &mut app.life_state_display,
                 frame_dt: std::time::Duration::from_secs_f32(frame_script_delta.max(0.0)),
             }),
+            Some(assist_projection),
         );
         ui_snapshot.wheel = app.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);

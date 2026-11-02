@@ -117,6 +117,7 @@ fn snapshot(app: &mut App, descriptor: &AnchoredTree, now: f64) -> UiReadSnapsho
         None,
         false,
         None,
+        None,
     )
 }
 

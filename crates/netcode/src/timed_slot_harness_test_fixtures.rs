@@ -673,6 +673,7 @@ impl TimedSlotHarness {
                 raw.server_tick,
                 &self.base.client_table,
                 &outcome,
+                0,
             );
             let (_, ramps) = self.debug();
             self.intakes.push(IntakeTrace {

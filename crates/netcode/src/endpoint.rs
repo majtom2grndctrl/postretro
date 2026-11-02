@@ -251,6 +251,9 @@ pub struct ClientApplyFrameOutcome {
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub mover_corrections: Vec<client::MoverCorrection>,
+    /// One (acknowledged input tick, committed `player.assistProgress`) pair
+    /// per accepted snapshot that yields a sample, in receive order.
+    pub assist_progress_samples: Vec<client::AssistProgressSample>,
     /// Every own-pawn reconcile this frame, in apply order, for the relay
     /// harness: production reads only the offset it seeds.
     #[cfg(test)]
@@ -1317,7 +1320,7 @@ mod tests {
                     &fingerprint,
                     &[record],
                 );
-                state_slots.accept_timed_slot_sample(tick, &table, &outcome);
+                state_slots.accept_timed_slot_sample(tick, &table, &outcome, 0);
                 state_slots.advance_timed_slot_targets(
                     Some(f64::from(tick)),
                     if tick == 100 { 0.0 } else { 2.0 / 60.0 },

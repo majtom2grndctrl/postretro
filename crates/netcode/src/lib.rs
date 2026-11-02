@@ -184,8 +184,8 @@ mod ingest_hit_harness_test;
 mod snapshot_regression_harness_test;
 
 pub use client::{
-    AssistPairEntry, ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection,
-    RemoteAssistFacts,
+    AssistPairEntry, AssistProgressSample, ClientPresentationInputs, ClientReplication,
+    GhostLinkUpdate, MoverCorrection, RemoteAssistFacts,
 };
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
@@ -985,7 +985,26 @@ pub fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
-            state_slots.accept_timed_slot_sample(snapshot.server_tick, slot_table, &state_outcome);
+            state_slots.accept_timed_slot_sample(
+                snapshot.server_tick,
+                slot_table,
+                &state_outcome,
+                replication.received_required_ticks(),
+            );
+            if let Some(acked_tick) = outcome
+                .local_reconcile
+                .as_ref()
+                .and_then(|local| local.acked_tick)
+                && let Some(progress) =
+                    state_slots.assist_progress_sample(slot_table, &state_outcome)
+            {
+                frame_outcome
+                    .assist_progress_samples
+                    .push(AssistProgressSample {
+                        acked_tick,
+                        progress,
+                    });
+            }
             let faction_sentiment_baseline = state_slots.apply_faction_sentiment(
                 factions,
                 faction_sentiment,

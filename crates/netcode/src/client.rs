@@ -87,7 +87,7 @@ mod replay_poses;
 mod teleporter_tests;
 mod teleporters;
 use assist_retention::RemoteAssistRetention;
-pub use assist_retention::{AssistPairEntry, RemoteAssistFacts};
+pub use assist_retention::{AssistPairEntry, AssistProgressSample, RemoteAssistFacts};
 use bindings::{ClientBindings, RegionBinding, is_presentation_payload};
 pub use ghost_links::GhostLinkUpdate;
 use late_baselines::LateBaselineHistory;

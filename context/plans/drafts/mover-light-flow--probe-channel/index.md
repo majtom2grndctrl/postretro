@@ -57,7 +57,7 @@ Bake and format:
 - [ ] A warm mover-only edit whose id-34 volume hits still re-bakes that mover's bounce states equal to cold, within the SH gate's prediction (P20).
 - [ ] Over one cache, a mover edit, then a static-light edit, then reverting both each build warm equal to cold, and the revert hits every direct, bounce and id-34 memo (P19).
 - [ ] A map with no movers, and a map whose movers change no direct term and no probe beyond the affected-probe bar, emit no section and pack byte-identical to the parent commit's PRL. This is an opt-in ignored test that fails on a missing baseline, after the foundation's parity test.
-- [ ] A malformed section, one naming a mover absent from id 43, a light outside its namespace, or an affinity grid unlike id 35's, each fail the load with a message naming the section.
+- [ ] A malformed section, one naming a mover absent from id 43, a light outside its namespace, an affinity grid unlike id 35's, or a ramp record that is non-finite or outside 0 ≤ s < e ≤ 1, each fail the load with a message naming the section.
 - [ ] A grep gate keeps every SH, probe and section type out of the game-side mover-state collector and the renderer setter's signature. The closet fixture's bounce-only section and a direct-only section each load and compose.
 
 Blend scalar:

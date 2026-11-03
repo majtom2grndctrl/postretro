@@ -1204,6 +1204,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // are client presentation only and never enter replication.
     app.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
     app.update_client_overlay_anchors(&script_ctx, frame_anim_time);
+    app.update_client_revive_markers(frame_anim_time);
     app.run_client_fire_path_post_loop(
         frame_dt,
         frame_anim_time,
@@ -1615,6 +1616,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 );
         }
     }
+    // Revive-marker range reads the authoritative pose the assist pass read;
+    // anchors follow the presented pose below.
+    app.select_host_revive_markers();
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::HostSend);
@@ -1632,6 +1636,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
     app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
+    app.anchor_host_revive_markers(frame_anim_time);
     // Every presented pose is written: ghost membership reads them, ahead of the
     // render collectors.
     app.update_ghost_links(frame_result.alpha, now);

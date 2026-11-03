@@ -1632,3 +1632,51 @@ fn authored_negative_shield_samples_normalize_without_losing_other_targets_over_
         );
     }
 }
+
+// Addendum revive-marker R13: with only the marker overlay declared, the host
+// roster and client anchor passes run with no damaged-enemy config every frame
+// and must clear nothing of the marker kind.
+#[test]
+fn no_damaged_enemy_config_host_and_client_passes_keep_revive_markers() {
+    use postretro_entities::PresentationTemplateHandle;
+    const MARKER: OverlayKind = OverlayKind::AssistableTeammates;
+
+    let mut host = Host::new(1, 2_000);
+    host.runtime.replace_presentation_overlays(Vec::new());
+    assert!(host.runtime.client_overlay_config().is_none());
+    let teammate = host.target(false);
+    assert!(host.pool.upsert_authoritative_overlay(
+        MARKER,
+        teammate,
+        PresentationTemplateHandle::from("reviveMarker"),
+        8,
+    ));
+    for time in [1.0, 1.1, 1.2, 5.0] {
+        update_host_overlay_roster(
+            &mut host.tracker,
+            &mut host.runtime,
+            &host.ctx.registry.borrow(),
+            &host.allocator,
+            &host.replicable,
+            &mut host.pool,
+            &host.zones,
+            &mut host.server,
+            time,
+            time,
+        );
+        assert!(host.pool.has_overlay(MARKER, teammate), "host at {time}");
+    }
+
+    let mut peer = Peer::connect(&mut host, 41);
+    let remote = peer.registry.spawn(Transform::default());
+    assert!(peer.pool.upsert_authoritative_overlay(
+        MARKER,
+        remote,
+        PresentationTemplateHandle::from("reviveMarker"),
+        8,
+    ));
+    for time in [10.0, 10.1, 20.0] {
+        peer.project_optional(None, time, Some(0.0));
+        assert!(peer.pool.has_overlay(MARKER, remote), "client at {time}");
+    }
+}

@@ -196,3 +196,54 @@ impl ClientReplication {
             .map_or(0, |(_, facts)| facts.received_required_ticks)
     }
 }
+
+#[cfg(feature = "test-support")]
+impl ClientReplication {
+    /// An empty client replication for another crate's tests.
+    pub fn new_for_test() -> Self {
+        Self::new()
+    }
+
+    /// Apply one snapshot from another crate's tests, as a receive with no
+    /// presentation bindings would, so a test can stand up retained assist
+    /// facts, entity mappings and interpolation buffers through the real path.
+    pub fn apply_snapshot_for_test(
+        &mut self,
+        registry: &mut postretro_entities::EntityRegistry,
+        snapshot: &postretro_net::wire::SnapshotMessage,
+    ) {
+        let _ = self.apply_snapshot_with_presentation(
+            registry,
+            snapshot,
+            snapshot.server_tick,
+            1.0 / 60.0,
+            &mut NoBindings,
+            0.0,
+        );
+    }
+}
+
+#[cfg(feature = "test-support")]
+struct NoBindings;
+
+#[cfg(feature = "test-support")]
+impl postretro_entities::presentation_binding::PresentationBindingResolver for NoBindings {
+    fn resolve(
+        &self,
+        _: &postretro_entities::EntityRegistry,
+        _: postretro_entities::presentation_binding::PresentationBindingKey,
+    ) -> Option<(EntityId, glam::Vec3)> {
+        None
+    }
+
+    fn key_for_entity(
+        &self,
+        _: &postretro_entities::EntityRegistry,
+        _: EntityId,
+    ) -> Option<(
+        postretro_entities::presentation_binding::PresentationBindingKey,
+        glam::Vec3,
+    )> {
+        None
+    }
+}

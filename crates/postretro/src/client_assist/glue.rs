@@ -12,7 +12,7 @@ use crate::sim::assist_pairs::PairValues;
 
 /// The local pawn as helper. Its entry count is never passed: the client runner
 /// compares ids alone.
-fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
+pub(super) fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
     let pawn = registry.local_player_movement_pawn()?;
     let movement = registry
         .get_component::<PlayerMovementComponent>(pawn)
@@ -32,12 +32,12 @@ fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
 /// Every remote pawn with retained facts, at its interpolated pose as of
 /// `render_server_tick`, with its pair-table entry when one has arrived. Every
 /// candidate reads the same source, whether or not a snapshot applied this
-/// frame.
-fn gather_candidates(
+/// frame. `local` (the local pawn, when there is one) is never a candidate.
+pub(super) fn gather_candidates(
     replication: &ClientReplication,
     render_server_tick: Option<f64>,
-    helper: &AssistHelper,
-    pawns: &mut Vec<(postretro_entities::EntityId, netcode::RemoteAssistFacts)>,
+    local: Option<EntityId>,
+    pawns: &mut Vec<(EntityId, netcode::RemoteAssistFacts)>,
     out: &mut Vec<AssistCandidate>,
 ) {
     out.clear();
@@ -47,7 +47,7 @@ fn gather_candidates(
     }
     let table = replication.assist_pair_table();
     out.extend(pawns.iter().filter_map(|(id, facts)| {
-        if *id == helper.id {
+        if Some(*id) == local {
             return None;
         }
         let position = replication.remote_assist_position(*id, render_server_tick)?;
@@ -121,7 +121,7 @@ impl crate::App {
             gather_candidates(
                 replication,
                 self.remote_player_presentation.render_server_tick,
-                &helper,
+                Some(helper.id),
                 &mut scratch.pawns,
                 &mut scratch.candidates,
             );

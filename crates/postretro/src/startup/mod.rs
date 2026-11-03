@@ -36,6 +36,8 @@ mod player_spawn_surface_tests;
 pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
+#[cfg(test)]
+mod revive_marker_surface_tests;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;

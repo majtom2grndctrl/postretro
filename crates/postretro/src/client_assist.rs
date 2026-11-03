@@ -11,11 +11,14 @@
 
 mod display;
 mod glue;
+mod markers;
 
 #[cfg(test)]
 pub(crate) use display::ClientDisplay;
 pub(crate) use display::UiProjection;
 pub(crate) use glue::ui_projection;
+#[cfg(test)]
+pub(crate) use markers::{MarkerScratch, anchor_host_markers, select_host_markers};
 
 use std::collections::VecDeque;
 
@@ -89,6 +92,8 @@ pub(crate) struct ClientAssist {
     armed_pawn: Option<EntityId>,
     /// Per-tick candidate buffers; kept across resets.
     scratch: glue::Scratch,
+    /// The revive markers' per-frame buffers; kept across resets.
+    markers: markers::MarkerScratch,
 }
 
 /// `a` is strictly after `b` in serial client-tick order.
@@ -136,12 +141,14 @@ impl ClientAssist {
         let mut lives = std::mem::take(&mut self.lives);
         let mut records = std::mem::take(&mut self.records);
         let scratch = std::mem::take(&mut self.scratch);
+        let markers = std::mem::take(&mut self.markers);
         lives.clear();
         records.clear();
         *self = Self {
             lives,
             records,
             scratch,
+            markers,
             ..Self::default()
         };
     }

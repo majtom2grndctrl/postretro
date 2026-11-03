@@ -275,11 +275,13 @@ fn valid_scale(value: f32, zero_allowed: bool) -> bool {
             value > 0.0
         }
 }
+
 fn invalid(path: &str, reason: &str) -> DescriptorError {
     DescriptorError::InvalidShape {
         reason: format!("`{path}` {reason}"),
     }
 }
+
 /// The rejection every capped scalar expression shares once it nests past
 /// [`MAX_ACTIVATION_IR_DEPTH`] or holds more than [`MAX_ACTIVATION_IR_NODES`].
 pub const ACTIVATION_IR_CAP_REASON: &str = "expression exceeds depth 32 or 256 nodes";

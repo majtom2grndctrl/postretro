@@ -169,9 +169,12 @@ reflections.
 
 ## `defineEntity` and entity descriptors
 
-`defineEntity(descriptor)` is a typed identity helper for entity archetypes.
-Return its result from `ModManifest.entities` to register the archetype for use
-across all levels.
+`defineEntity(descriptor)` declares an entity archetype. It types the
+descriptor and also lowers the references inside it: an `assistable` life-state
+expression and a loadout's weapon names resolve through it, so define player
+descriptors with `defineEntity` rather than passing a bare object. Return its
+result from `ModManifest.entities` to register the archetype for use across all
+levels.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -3230,9 +3233,9 @@ assistable = {
 
 An expression may read:
 
-- an engine per-player slot at a side's seat, as `player.health.byPlayer(assist.target)`;
-- a per-owner store value at a side's seat, as `stats.heal.byPlayer(assist.helper)`;
-- `assist.helper.inLifeState(name)` or `assist.target.inLifeState(name)` (`:inLifeState(name)` in Luau);
+- an engine per-player slot at a side's seat, as `player.health.byPlayer(assist.target)` (`player.health:byPlayer(Postretro.assist.target)` in Luau);
+- a per-owner store value at a side's seat, as `stats.heal.byPlayer(assist.helper)` (`stats.heal:byPlayer(Postretro.assist.helper)` in Luau);
+- `assist.helper.inLifeState(name)` or `assist.target.inLifeState(name)` (`Postretro.assist.helper:inLifeState(name)` or `Postretro.assist.target:inLifeState(name)` in Luau);
 - global store values.
 
 It may not read per-entity `@state.*` values, `player.assistProgress` or
@@ -3251,7 +3254,7 @@ write a reaction makes in tick N is seen by tick N+1's evaluation.
 | `holdMs` negative or non-finite, or a value it reads is missing | Progress is kept but does not advance, with one warning |
 
 Each warning appears once per descriptor, state and field, and re-arms on hot
-reload. The healer expression above goes negative once `heal` passes 150; wrap it
+reload and on every level install. The healer expression above goes negative once `heal` passes 150; wrap it
 in `.clamp(500, 3000)` to keep it in range.
 
 **The `assist` command.** `assist` is an engine command like `use`. Its engine
@@ -3259,7 +3262,8 @@ default is `hold` on `KeyE` and gamepad `west`, the same inputs Use takes by
 default; the two share the key by activator, so a quick tap fires Use and a hold
 past the threshold (0.2 s by default) fires `assist`. `assist` is relevant, and
 therefore bound, listed in the controls panel and drawn as a glyph, exactly when
-some player descriptor declares an `assistable` state. A mod with none leaves E
+some player descriptor declares an `assistable` state, or, in co-op, when the
+installed host tuning declares one. A mod with none leaves E
 as an ordinary Use press. The hold begins when `assist` resolves, so the revive
 takes the hold threshold plus `holdMs`, not `holdMs` from key-down. A mod that
 wants a label in the controls panel adds an entry with `label` and `category`
@@ -4000,7 +4004,8 @@ its threshold passes.
 descriptor carrying dash, `reload` with no magazine weapon — is unbound,
 missing from the controls panel, never part of a conflict, and draws no glyph.
 `show` overrides that. `assist` is relevant while any player descriptor
-declares an `assistable` life state; its engine default is `hold` on `KeyE`
+declares an `assistable` life state, and in co-op while the installed host
+tuning declares one; its engine default is `hold` on `KeyE`
 and gamepad `west` (see *Assisting a teammate*).
 
 **Validation.** Each command and device class is checked on its own. A

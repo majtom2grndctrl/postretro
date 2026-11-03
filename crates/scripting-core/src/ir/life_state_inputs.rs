@@ -1,4 +1,5 @@
-// Life-state predicate binding shared by player-event and local store scopes.
+// Life-state predicate binding shared by player-event and local store scopes,
+// and the impact-source scope (`EntityScope`, for `source.inLifeState`).
 // See: context/lib/scripting.md §12 (Player events)
 
 use crate::ctx::ScriptCtx;

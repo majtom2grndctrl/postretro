@@ -183,13 +183,13 @@ pub fn host_replicate(
     // The level-scoped Ghost bus fields ride every snapshot whole, so a late
     // joiner's first snapshot is its baseline and no ack path is needed.
     let ghost_audio = ghost_audio_to_wire(ghost_audio);
-    // One sequence shared across all clients in this 30 Hz batch — and shared with the
-    // state tracker's `produce_for_client` so one ack describes one server frame.
     // Each owner's assist facts, from the registry state the movement records
     // above read; authority metadata, so no baseline is minted.
     replication.ingest_assist_facts(crate::host_assist_facts::host_assist_facts(
         registry, slot_table, assist, owners, allocator,
     ));
+    // One sequence shared across all clients in this 30 Hz batch — and shared with the
+    // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
     for client_id in participating {
         // Registration also occurs on participation entry. Keep this idempotent

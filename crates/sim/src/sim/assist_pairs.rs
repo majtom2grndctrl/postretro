@@ -5,7 +5,7 @@
 //! The table binds every `assistable` expression once per level install or
 //! recompose against one [`InteractionPairScope`], keyed by (descriptor, state
 //! id). Each pass seeds that scope's sides once ([`AssistPairTable::seed_sides`])
-//! and then [`evaluate`]s pairs, applying AC13's results:
+//! and then [`evaluate`]s pairs, applying the results:
 //!
 //! | Result | [`PairValues`] |
 //! |---|---|

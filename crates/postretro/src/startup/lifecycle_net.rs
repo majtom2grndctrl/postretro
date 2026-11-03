@@ -159,7 +159,7 @@ impl App {
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     /// | level parity, published level identity, this peer's reveal | |
     /// | settle state and its timer, the active loading screen, undispatched system commands | |
-    /// | respawn requests and placements, carried life-state names (held seats too) | the bound assist pair table (rebound at install) |
+    /// | respawn requests and placements, carried life-state names (held seats too) | the bound assist pair table (built from the descriptor set, not level state; rebound at install) |
     /// | assist progress, latches, row-6 records, last-pass pair values, stored per-pawn life states | |
     pub(crate) fn unload_level(&mut self) {
         let unload_started = std::time::Instant::now();
@@ -171,7 +171,7 @@ impl App {
             if let Some(endpoint) = session.net_endpoint.as_mut() {
                 endpoint.reset_level_scoped_client_state();
             }
-            // No assist hold carries into the next level (O35).
+            // No assist hold carries into the next level.
             self.client_assist.reset();
             if let Some(audio) = session.audio.as_mut() {
                 // No world-anchored sound outlives its level or follows an
@@ -190,7 +190,7 @@ impl App {
             session.clear_level_streaming();
             crate::respawn_placements::clear_for_level_unload(&session.scripting.script_ctx);
             // Assist progress is level-scoped; the bound pair table survives
-            // until the next install rebinds it (O21, O51).
+            // until the next install rebinds it.
             session.assist_state.clear_for_level_unload();
             session
                 .scripting

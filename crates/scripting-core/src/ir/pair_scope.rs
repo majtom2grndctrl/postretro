@@ -59,8 +59,10 @@ pub const PAIR_FACT_PREFIX: &str = "@pair.";
 
 /// Per-player slots whose values depend on the pair evaluation itself, so a
 /// pair expression may not read them under any owner.
-pub const PAIR_EXCLUDED_SLOTS: [&str; 2] =
-    ["player.assistProgress", "player.assistReceivedProgress"];
+pub const PAIR_EXCLUDED_SLOTS: [&str; 2] = [
+    PlayerSlot::AssistProgress.name(),
+    PlayerSlot::AssistReceivedProgress.name(),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PairRole {

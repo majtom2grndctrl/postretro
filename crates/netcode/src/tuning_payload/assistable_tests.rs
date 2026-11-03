@@ -2,7 +2,7 @@
 // tuning payload, and carries payload IR without binding or evaluating it.
 use super::tests::full_payload;
 use super::*;
-use postretro_foundation::{IrNode, LifeStateProfile, NumberOrIr};
+use postretro_foundation::{Assistable, IrNode, LifeStateProfile, NumberOrIr};
 
 fn with_down(assistable: Assistable) -> TuningPayload {
     let mut payload = full_payload();

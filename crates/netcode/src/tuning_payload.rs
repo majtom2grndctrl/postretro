@@ -4,7 +4,6 @@
 //! avoids a wire mirror that would make the transport registry-aware.
 
 use postretro_combat_model::{TUNING_PAYLOAD_EPOCH, TuningPayload};
-use postretro_foundation::Assistable;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -20,7 +19,7 @@ pub(crate) enum TuningPayloadError {
     #[error("tuning payload has invalid weapon data: {0}")]
     InvalidWeapon(postretro_foundation::DescriptorError),
     #[error("tuning payload has invalid life states: {0}")]
-    InvalidLifeStates(&'static str),
+    InvalidLifeStates(String),
     #[error("tuning payload epoch mismatch: expected {expected}, received {received}")]
     EpochMismatch { expected: u32, received: u32 },
 }
@@ -90,7 +89,7 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
             .any(|pair| pair[0] >= pair[1])
     {
         return Err(TuningPayloadError::InvalidLifeStates(
-            "names must be sorted, unique and at most 255",
+            "names must be sorted, unique and at most 255".into(),
         ));
     }
     let mut seen = [false; 255];
@@ -98,7 +97,7 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
         let id = usize::from(*id);
         if id >= payload.life_state_names.len() || seen[id] {
             return Err(TuningPayloadError::InvalidLifeStates(
-                "profile ids must be unique and name an installed state",
+                "profile ids must be unique and name an installed state".into(),
             ));
         }
         seen[id] = true;
@@ -106,31 +105,21 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
             || !(0.0..=1.0).contains(&profile.movement.speed_scale)
         {
             return Err(TuningPayloadError::InvalidLifeStates(
-                "movement speedScale must be finite and within [0, 1]",
+                "movement speedScale must be finite and within [0, 1]".into(),
             ));
         }
-        // Literal fields only: the client never binds or evaluates payload IR.
-        match profile
+        if let Some(message) = profile
             .assistable
             .as_ref()
-            .and_then(Assistable::literal_fault)
+            .and_then(assistable::literal_fault_message)
         {
-            None => {}
-            Some(("radius", _)) => {
-                return Err(TuningPayloadError::InvalidLifeStates(
-                    "assistable radius must be finite and within (0, 16]",
-                ));
-            }
-            Some(_) => {
-                return Err(TuningPayloadError::InvalidLifeStates(
-                    "assistable holdMs must be finite and within [0, 60000]",
-                ));
-            }
+            return Err(TuningPayloadError::InvalidLifeStates(message));
         }
     }
     Ok(())
 }
 
+mod assistable;
 #[cfg(test)]
 mod assistable_tests;
 

@@ -116,7 +116,7 @@ impl AssistState {
             steps.push((helper.id, outcome));
         }
 
-        // One completion per target per tick (AC6): the earlier helper in
+        // One completion per target per tick: the earlier helper in
         // `players()` order wins; the others reset, unlatched. A loser's row-6
         // record reads "did not advance": its slot reads 0 and its target was
         // just completed, so a listen host's alpha term must not draw a sliver

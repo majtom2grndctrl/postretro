@@ -14,15 +14,15 @@ const PROGRESS_NAME: &str = "player.assistProgress";
 /// The connected client's step state as the display table reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientDisplay {
-    /// Abstaining (O43): the authoritative slot, no alpha term.
+    /// Abstaining: the authoritative slot, no alpha term.
     Abstaining,
     /// `assist` not held: 0. Host samples of a released hold reach only the
-    /// store (O36).
+    /// store.
     Released,
-    /// Following a drop: 0, no alpha term (O6).
+    /// Following a drop: 0, no alpha term.
     Following,
     /// The last forward-predicted tick ran row 6 without reaching U: the
-    /// prediction plus the alpha term (AC9, O15, O49).
+    /// prediction plus the alpha term.
     Advanced,
     /// Any other held state: the prediction.
     Held,
@@ -32,7 +32,7 @@ pub(crate) enum ClientDisplay {
 /// increment its last forward-predicted tick advanced by, or a listen host's
 /// or single player's row-6 record; and the frame's render alpha. The alpha
 /// term always uses the last tick's increment, never a pair table applied
-/// since (O49).
+/// since.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum UiProjection {
     Client {

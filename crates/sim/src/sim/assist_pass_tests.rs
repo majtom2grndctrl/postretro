@@ -18,6 +18,7 @@ use postretro_test_log_capture::LogCapture;
 
 use super::*;
 use crate::life_state_commands::set_life_state;
+use crate::sim::TickEvents;
 use crate::sim::assist::{PROGRESS_UNIT, increment, required_count};
 use crate::sim::assist_pairs::PairValues;
 use crate::sim::tests::{remote_command, sim_command, trigger_movement};
@@ -294,6 +295,83 @@ impl World {
         self.state
             .helper(self.pawns[index])
             .is_some_and(|record| record.progress.latched)
+    }
+}
+
+impl World {
+    /// One real fixed tick with the local pawn's `assist` level. `ingest` runs
+    /// where ready remote hits land, in the Projectiles stage, before the
+    /// accumulator pass.
+    fn real_tick(
+        &mut self,
+        assist_held: bool,
+        ingest: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
+    ) -> TickEvents {
+        use crate::ai_host::AiTickResult;
+        use crate::collision::CollisionWorld;
+        use crate::kinematic_mover::MoverTickStateTable;
+        use crate::scripting_systems::hit_zones::HitZoneStore;
+        use crate::sim::touch::TouchSystem;
+        use postretro_entities::FactionRegistry;
+        use postretro_scripting_core::reaction_dispatch::ProgressTracker;
+
+        let collision = CollisionWorld::new();
+        let hit_zones = HitZoneStore::new();
+        let edges = std::collections::HashMap::new();
+        let mut progress = ProgressTracker::new();
+        let mut movers = MoverTickStateTable::default();
+        let mut touch = TouchSystem::default();
+        let mut system = crate::sim::TriggerSystem::default();
+        let bridge = crate::sim::TriggerVolumeBridge::new();
+        let bindings = crate::sim::TriggerBindingTable::default();
+        let mut command = sim_command(false, false);
+        command.assist_held = assist_held;
+        crate::sim::simulate_tick_with_presentation_aim(
+            self.ctx.registry.clone(),
+            &collision,
+            &hit_zones,
+            None,
+            postretro_collision::EnvironmentView::level_only(0.0),
+            false,
+            0.0,
+            (0.0, 0.0),
+            &mut progress,
+            |_, _, _, _| AiTickResult {
+                events: vec![],
+                projectile_spawns: vec![],
+            },
+            &[],
+            &mut movers,
+            &[],
+            &command,
+            |_| crate::sim::PostMovementCommand {
+                aim_origin: Vec3::ZERO,
+                aim_direction: Vec3::NEG_Z,
+            },
+            1.0 / 60.0,
+            &mut touch,
+            &mut self.state,
+            &[],
+            0,
+            &FactionRegistry::default(),
+            &self.ctx.faction_sentiment,
+            None,
+            &edges,
+            &edges,
+            Some(crate::sim::TriggerTickContext {
+                teleporters: None,
+                system: &mut system,
+                bridge: &bridge,
+                bindings: &bindings,
+                slot_table: self.ctx.slot_table.clone(),
+                script_ctx: None,
+                auto_close_timers: None,
+                use_edges: &edges,
+            }),
+            ingest,
+            |_| {},
+            crate::sim::TimingGate::OFF,
+        )
     }
 }
 
@@ -903,15 +981,73 @@ fn assist_pass_o39_changed_per_owner_value_keeps_progress_and_applies_the_new_in
 }
 
 /// O54: a write made inside the tick before the pass (an impact effect in the
-/// Weapons stage) is read by that tick's own pass.
+/// Projectiles stage) is read by that tick's own pass. The helper's impact
+/// policy writes its per-owner `stats.heal` while tick N runs; the pass that
+/// closes tick N already prices the hold with it, where a between-ticks write
+/// would first show in tick N+1.
 #[test]
 fn assist_pass_o54_in_tick_write_is_read_by_the_same_pass() {
+    use postretro_entities::components::health::{
+        DamageContext, DamageProducer, HealthComponent, apply_damage_with_context,
+    };
+    use postretro_foundation::{DamagePayload, ImpactEventDescriptor};
+    use serde_json::json;
+
     let mut world = healer_world();
     world.enter(1, "down");
     world.set("world.hold", 1000.0);
-    world.tick(&[HOLD, IDLE]);
-    world.set_owned("stats.heal", 0, 90.0);
-    world.tick(&[HOLD, IDLE]);
+    let target = {
+        let mut registry = world.ctx.registry.borrow_mut();
+        let target = registry.spawn(Transform::default());
+        registry
+            .set_component(
+                target,
+                HealthComponent::from_descriptor(
+                    &postretro_entities::data_descriptors::HealthDescriptor {
+                        max: 100.0,
+                        hitbox: None,
+                        zone_multipliers: Default::default(),
+                    },
+                ),
+            )
+            .unwrap();
+        registry
+            .set_tags(target, vec!["enemy".to_string()])
+            .unwrap();
+        target
+    };
+    let mut runtime = crate::impact_policy::ImpactPolicyRuntime::new(world.ctx.clone());
+    runtime.replace_global_events(vec![ImpactEventDescriptor {
+        id: "heal-boost".into(),
+        is_override: false,
+        levels: Vec::new(),
+        filter_tag: Some("enemy".into()),
+        policy: vec![json!({
+            "primitive": "slot.set",
+            "target": "@impact.source",
+            "args": { "slot": "stats.heal", "value": { "op": "const", "value": 90.0 } },
+        })],
+    }]);
+    let helper = world.pawns[0];
+
+    world.real_tick(true, |_, _| {});
+    assert_eq!(world.progress(0), increment(required_count(1000.0)));
+
+    // Tick N: the hit lands where ready remote hits land, ahead of the pass.
+    world.real_tick(true, |registry, _| {
+        let mut context = DamageContext::new("o54", DamageProducer::InTick);
+        context.attacker = Some(helper);
+        apply_damage_with_context(
+            registry,
+            target,
+            &DamagePayload {
+                amount: 1.0,
+                impulse: Vec3::ZERO,
+            },
+            context,
+        );
+        runtime.evaluate_pending_in_registry(registry);
+    });
     assert_eq!(
         world.state.pair_values(world.pawns[0], world.pawns[1]),
         Some(PairValues {
@@ -1131,61 +1267,9 @@ fn assist_pass_received_progress_is_the_highest_helper_and_a_helper_reports_both
 /// tick wrappers that take no state build a default and record none.
 #[test]
 fn assist_pass_runs_in_the_fixed_tick_and_reports_completions_on_tick_events() {
-    use crate::ai_host::AiTickResult;
-    use crate::collision::CollisionWorld;
-    use crate::kinematic_mover::MoverTickStateTable;
-    use crate::scripting_systems::hit_zones::HitZoneStore;
-    use crate::sim::touch::TouchSystem;
-    use postretro_entities::FactionRegistry;
-    use postretro_scripting_core::reaction_dispatch::ProgressTracker;
-
     let mut world = World::new(Some(literal(1.5, 0.0)), 2);
     world.enter(1, "down");
-    let collision = CollisionWorld::new();
-    let hit_zones = HitZoneStore::new();
-    let edges = std::collections::HashMap::new();
-    let mut progress = ProgressTracker::new();
-    let mut movers = MoverTickStateTable::default();
-    let mut touch = TouchSystem::default();
-    let mut command = sim_command(false, false);
-    command.assist_held = true;
-    let events = crate::sim::simulate_tick_with_presentation_aim(
-        world.ctx.registry.clone(),
-        &collision,
-        &hit_zones,
-        None,
-        postretro_collision::EnvironmentView::level_only(0.0),
-        false,
-        0.0,
-        (0.0, 0.0),
-        &mut progress,
-        |_, _, _, _| AiTickResult {
-            events: vec![],
-            projectile_spawns: vec![],
-        },
-        &[],
-        &mut movers,
-        &[],
-        &command,
-        |_| crate::sim::PostMovementCommand {
-            aim_origin: Vec3::ZERO,
-            aim_direction: Vec3::NEG_Z,
-        },
-        1.0 / 60.0,
-        &mut touch,
-        &mut world.state,
-        &[],
-        0,
-        &FactionRegistry::default(),
-        &world.ctx.faction_sentiment,
-        None,
-        &edges,
-        &edges,
-        None,
-        |_, _| {},
-        |_| {},
-        crate::sim::TimingGate::OFF,
-    );
+    let events = world.real_tick(true, |_, _| {});
     assert_eq!(events.assist_completions.len(), 1);
     assert_eq!(events.assist_completions[0].helper, world.pawns[0]);
     assert_eq!(events.assist_completions[0].target, world.pawns[1]);

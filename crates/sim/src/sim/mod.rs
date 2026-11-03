@@ -1076,7 +1076,7 @@ where
     drop(stage);
     let death = run_death_sweep(&registry);
     // The assist accumulator reads the tick after the Weapons stage and the
-    // death sweep, so an in-tick self-revive or kill is seen (O8, O54).
+    // death sweep, so an in-tick self-revive or kill is seen.
     let assist_completions = assist_state.run_host_pass(
         &mut registry.borrow_mut(),
         assist_slot_table

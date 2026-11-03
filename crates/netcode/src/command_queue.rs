@@ -1087,8 +1087,9 @@ fn neutral_sim_command(facing_yaw: f32) -> SimCommand {
 }
 
 /// Carry movement, reload and the `assist` level across a packet gap without
-/// inventing an activation start or use/drop press. Committed shots advance on their own fixed-tick clock;
-/// retained starts and release/cancel edges are delivered separately. Reload's
+/// inventing an activation start or use/drop press. Committed shots advance on
+/// their own fixed-tick clock; retained starts and release/cancel edges are
+/// delivered separately. Reload's
 /// weapon-owned press latch prevents the carried level from restarting a reload;
 /// a non-advancing hold also forces the level low while a due reload press is
 /// held back behind older input (`hold_gated_reload`).

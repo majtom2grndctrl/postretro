@@ -131,7 +131,7 @@ fn abstains(helper: &AssistHelper, candidates: &[AssistCandidate]) -> bool {
 
 impl ClientAssist {
     /// Clear every hold: level unload, demotion, and a newly armed local pawn.
-    /// No hold carries onto a new level or pawn under a recurring id (O35).
+    /// No hold carries onto a new level or pawn under a recurring id.
     pub(crate) fn reset(&mut self) {
         let mut lives = std::mem::take(&mut self.lives);
         let mut records = std::mem::take(&mut self.records);

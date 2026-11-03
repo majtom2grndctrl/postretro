@@ -4,8 +4,8 @@
 //! §Version gates
 //!
 //! The snapshot build evaluates the pair table once per snapshot from the
-//! registry state the snapshot's movement records read (I5), so a frame-end
-//! write lands in both this table and the next tick's accumulator pass (O55).
+//! registry state the snapshot's movement records read, so a frame-end
+//! write lands in both this table and the next tick's accumulator pass.
 //! The received count reads the last pass's row-6 records and evaluates
 //! nothing.
 

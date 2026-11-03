@@ -5,10 +5,11 @@
 
 use std::collections::HashMap;
 
-use postretro_entities::EntityId;
+use postretro_entities::{EntityId, SlotTable};
 use postretro_net::wire::{NetworkId, WireAssistFacts, WirePlayerMovementState};
 
 use super::ClientReplication;
+use crate::state_slots::{ClientStateApply, StateApplyOutcome};
 
 /// What a connected client knows of a remote pawn's assist candidacy. The id
 /// is compared only for equality, never resolved through a name table.
@@ -37,6 +38,25 @@ pub struct AssistPairEntry {
 pub struct AssistProgressSample {
     pub acked_tick: u32,
     pub progress: f32,
+}
+
+impl AssistProgressSample {
+    /// The sample one applied state batch contributes: the local pawn's
+    /// acknowledged input tick paired with the committed `player.assistProgress`
+    /// the batch left, when both exist.
+    pub(crate) fn from_applied_batch(
+        acked_tick: Option<u32>,
+        state_slots: &ClientStateApply,
+        slot_table: &SlotTable,
+        state_outcome: &StateApplyOutcome,
+    ) -> Option<Self> {
+        let acked_tick = acked_tick?;
+        let progress = state_slots.assist_progress_sample(slot_table, state_outcome)?;
+        Some(Self {
+            acked_tick,
+            progress,
+        })
+    }
 }
 
 /// Keyed by identity, beside `remote_player_locomotion`, but cleared only when

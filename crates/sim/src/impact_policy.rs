@@ -25,13 +25,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
+use postretro_foundation::FACTION_STATE_FIELD;
 
 mod source_life_state;
 #[cfg(test)]
 mod source_life_state_ordering_tests;
 #[cfg(test)]
 mod source_life_state_tests;
-use postretro_foundation::FACTION_STATE_FIELD;
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///

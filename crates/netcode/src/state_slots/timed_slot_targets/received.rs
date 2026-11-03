@@ -5,7 +5,7 @@
 // Unlike `Ramp`, the slope is known before any two samples agree: one
 // increment of the host's received required ticks per server tick, the rule
 // the assist step counts by. So the first nonzero sample of an assist may step
-// up from 0 and the display rises continuously from it (O17), where `Ramp`
+// up from 0 and the display rises continuously from it, where `Ramp`
 // would show the first samples raw.
 
 use postretro_entities::SlotValue;

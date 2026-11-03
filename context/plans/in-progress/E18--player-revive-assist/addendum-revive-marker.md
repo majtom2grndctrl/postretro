@@ -61,26 +61,41 @@ The array form and the name `assistableTeammates` are settled (D12, D13).
 Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
 
 ### Automated
-- [ ] **R1** (unit, both runtimes): `presentationOverlays` accepts one descriptor, as today, or an array of them. An array that repeats an `over.kind` keeps the first descriptor and warns, naming the kind. TS and Luau lower the array to the same JSON. Existing single-descriptor manifests load unchanged.
-- [ ] **R2** (unit, both runtimes): `assistableTeammates()` lowers to `{ kind: "assistableTeammates" }`. Unknown keys are rejected. `defineOverlay` accepts the new source, and its existing checks (`worldAnchor`, `maxVisible` 1–64) still apply.
-- [ ] **R3** (unit, SDK validators and the Rust template validator): `Glyph({ command })` is accepted at a template root and nested inside stacks. An empty `command` is rejected. Every other kind that templates reject today is still rejected, with the same message, except that the TS and Luau messages' list of allowed kinds now names `glyph`.
-- [ ] **R4** (unit, app): for the same command and device family, a glyph inside a template draws exactly what a HUD glyph draws: art, label or nothing. It changes after a rebind or a device-family switch with no reload, and keeps its `visibleWhen`.
-- [ ] **R5** (unit, client producer): with retained facts present, a marker exists for every mapped remote pawn whose `assistable` is set, at any distance. No marker exists for an unassistable pawn, the local pawn, or an unmapped pawn. A marker is removed on the frame its facts flip to unassistable. `maxVisible` caps markers: the teammate a hold would revive always keeps a slot; the rest fill in `players()` order.
-- [ ] **R6** (unit, client producer): `inRange` is true only for the pawn that `assist_candidate` picks for the local pawn. It is false when:
+- [x] **R1** (unit, both runtimes): `presentationOverlays` accepts one descriptor, as today, or an array of them. An array that repeats an `over.kind` keeps the first descriptor and warns, naming the kind. TS and Luau lower the array to the same JSON. Existing single-descriptor manifests load unchanged.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `single_descriptor_and_one_element_array_lower_alike_in_both_runtimes`, `repeated_kind_keeps_the_first_descriptor_and_warns_naming_the_kind`, `both_overlay_kinds_lower_to_the_same_json_in_both_runtimes`, `malformed_entries_are_skipped_and_a_malformed_field_is_ignored` in `crates/scripting-core/src/data_descriptors/tests/presentation_overlay_drains.rs`; `assistable_teammates_overlay_with_glyph_template_matches_across_runtimes` in `crates/scripting-core/src/ir/presentation_overlay_sdk_tests.rs`.
+- [x] **R2** (unit, both runtimes): `assistableTeammates()` lowers to `{ kind: "assistableTeammates" }`. Unknown keys are rejected. `defineOverlay` accepts the new source, and its existing checks (`worldAnchor`, `maxVisible` 1–64) still apply.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `assistable_teammates_source_is_a_bare_kind_tag_and_rejects_unknown_keys` in `crates/scripting-core/src/data_descriptors/runtime_manifest.rs`; `assistable_teammates_overlay_with_glyph_template_matches_across_runtimes` and `overlay_and_template_rejections_match_across_runtimes` in `crates/scripting-core/src/ir/presentation_overlay_sdk_tests.rs`; `sdk/type-tests/presentation-overlays.ts` passes `tsc`.
+- [x] **R3** (unit, SDK validators and the Rust template validator): `Glyph({ command })` is accepted at a template root and nested inside stacks. An empty `command` is rejected. Every other kind that templates reject today is still rejected, with the same message, except that the TS and Luau messages' list of allowed kinds now names `glyph`.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `presentation_templates_admit_glyphs_at_the_root_and_nested` in `crates/scripting-core/src/data_descriptors/runtime_manifest.rs`; `overlay_and_template_rejections_match_across_runtimes` in `crates/scripting-core/src/ir/presentation_overlay_sdk_tests.rs`; `sdk/type-tests/presentation-overlays.ts` passes `tsc`.
+- [x] **R4** (unit, app): for the same command and device family, a glyph inside a template draws exactly what a HUD glyph draws: art, label or nothing. It changes after a rebind or a device-family switch with no reload, and keeps its `visibleWhen`.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Test: `revive_marker_r4_template_glyph_matches_the_hud_glyph_and_follows_input` in `crates/postretro/src/app/template_glyphs_tests.rs`.
+- [x] **R5** (unit, client producer): with retained facts present, a marker exists for every mapped remote pawn whose `assistable` is set, at any distance. No marker exists for an unassistable pawn, the local pawn, or an unmapped pawn. A marker is removed on the frame its facts flip to unassistable. `maxVisible` caps markers: the teammate a hold would revive always keeps a slot; the rest fill in `players()` order.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `revive_marker_r5_marks_every_assistable_remote_at_any_distance`, `revive_marker_r5_max_visible_caps_in_players_order`, `revive_marker_r5_cap_keeps_the_chosen_teammate` in `crates/postretro/src/client_assist/markers_tests.rs`.
+- [x] **R6** (unit, client producer): `inRange` is true only for the pawn that `assist_candidate` picks for the local pawn. It is false when:
   - the local pawn's state forbids `use`;
   - the pair entry has not arrived;
   - the radius is ≤ 0;
   - the distance is past the radius;
   - another downed teammate is nearer (on equal distance, the earlier pawn in `players()` order wins).
-- [ ] **R7** (unit, host and SP): R5 and R6 also hold on a listen host, using registry facts and `AssistState::pair_values`. Single player produces no markers.
-- [ ] **R8** (unit): when both overlay kinds are live, damaged-enemy roster retain, clear and cap never remove a marker, and the marker pass never removes a damaged-enemy bar. Level unload and staged reload clear both kinds.
-- [ ] **R9** (unit): with no posed socket, the anchor is the presented position plus `offsetY`. On a connected client that is the interpolated pose at `render_server_tick`. The hitbox top is never used.
-- [ ] **R10** (regression): no wire version bump. Adding or removing the marker overlay leaves the mod digest unchanged (extend the existing digest test).
-- [ ] **R11** (fixture): the dev mod registers the Scripting surface example. The mod-load and typecheck tests load it in both overlay slots alongside `damagedEnemyOverlay`.
-- [ ] **R13** (unit, host and client): with only the marker overlay declared, markers survive every frame. The damaged-enemy paths that run with no damaged-enemy config (host roster, client anchors) clear nothing of the marker kind, and the pool's per-frame linger expiry never removes a marker.
-- [ ] **R14** (unit, listen host): for a connected client's downed pawn, the marker's anchor follows the delayed pose the host draws for that pawn, not its authoritative pose. `inRange` is measured on the authoritative positions the host's assist pass reads, so it flips on the same tick a hold would start or stop choosing that pawn.
-- [ ] **R15** (unit, app): a template glyph draws what a HUD glyph draws on the first frame after each event that installs templates or changes glyph art, with no binding or device change in between: a staged reload that edits only the marker template, and glyph art that finishes loading after the templates were installed.
-- [ ] **R12** (review and grep): docs cover `presentationOverlays` in both forms, `assistableTeammates`, the `inRange` fact and template glyphs. Every command shown runs from an SDK bundle. No non-test source comment cites a spec ID.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Test: `revive_marker_r6_in_range_is_only_the_pawn_a_hold_would_revive` in `crates/postretro/src/client_assist/markers_tests.rs`.
+- [x] **R7** (unit, host and SP): R5 and R6 also hold on a listen host, using registry facts and `AssistState::pair_values`. Single player produces no markers.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `revive_marker_r7_host_marks_the_downed_teammate_and_prompts_in_reach`, `revive_marker_r7_a_downed_host_sees_only_a_plain_marker`, `revive_marker_r7_host_drops_the_marker_when_the_teammate_stands`, `revive_marker_r7_single_player_produces_no_markers` in `crates/postretro/src/startup/revive_marker_surface_tests.rs`.
+- [x] **R8** (unit): when both overlay kinds are live, damaged-enemy roster retain, clear and cap never remove a marker, and the marker pass never removes a damaged-enemy bar. Level unload and staged reload clear both kinds.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `one_entity_holds_independent_entries_per_kind`, `retain_and_clear_are_scoped_to_one_kind`, `linger_expiry_never_removes_an_authoritative_marker`, `authoritative_cap_is_applied_per_kind`, `local_cap_eviction_never_evicts_another_kind`, `reload_and_unload_clear_every_kind` in `crates/sim/src/sim/presentation_pool_overlays.rs`.
+- [x] **R9** (unit): with no posed socket, the anchor is the presented position plus `offsetY`. On a connected client that is the interpolated pose at `render_server_tick`. The hitbox top is never used.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `revive_marker_r9_client_anchor_is_the_interpolated_pose_plus_offset` in `crates/postretro/src/client_assist/markers_tests.rs`; `revive_marker_r9_host_anchor_falls_back_to_the_position_plus_offset` in `crates/postretro/src/startup/revive_marker_surface_tests.rs`.
+- [x] **R10** (regression): no wire version bump. Adding or removing the marker overlay leaves the mod digest unchanged (extend the existing digest test).
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Test: `digest_ignores_overlay_template_cap_linger_and_disable` in `crates/postretro/src/mod_digest.rs`. No wire or snapshot version change.
+- [x] **R11** (fixture): the dev mod registers the Scripting surface example. The mod-load and typecheck tests load it in both overlay slots alongside `damagedEnemyOverlay`.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Test: `dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images` in `crates/postretro/src/startup/loading_screen_tests.rs` bundles `content/dev/start-script.ts`, which declares `presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay]`; the template lives in `content/dev/scripts/revive-marker.ts`. `sdk/type-tests/presentation-overlays.ts` passes `tsc`.
+- [x] **R13** (unit, host and client): with only the marker overlay declared, markers survive every frame. The damaged-enemy paths that run with no damaged-enemy config (host roster, client anchors) clear nothing of the marker kind, and the pool's per-frame linger expiry never removes a marker.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `revive_marker_r13_client_markers_survive_the_no_config_damaged_enemy_pass` in `crates/postretro/src/client_assist/markers_tests.rs`; `revive_marker_r13_host_markers_survive_the_no_config_damaged_enemy_pass` in `crates/postretro/src/startup/revive_marker_surface_tests.rs`; `no_damaged_enemy_config_host_and_client_passes_keep_revive_markers` in `crates/netcode/src/presentation/overlay_tests.rs`; pool-only rows by `linger_expiry_never_removes_an_authoritative_marker` in `presentation_pool_overlays.rs`.
+- [x] **R14** (unit, listen host): for a connected client's downed pawn, the marker's anchor follows the delayed pose the host draws for that pawn, not its authoritative pose. `inRange` is measured on the authoritative positions the host's assist pass reads, so it flips on the same tick a hold would start or stop choosing that pawn.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Test: `revive_marker_r14_range_reads_the_authoritative_pose_and_the_anchor_the_presented_one` in `crates/postretro/src/startup/revive_marker_surface_tests.rs`. Proven at function level; the frame-loop call order is confirmed by M1.
+- [x] **R15** (unit, app): a template glyph draws what a HUD glyph draws on the first frame after each event that installs templates or changes glyph art, with no binding or device change in between: a staged reload that edits only the marker template, and glyph art that finishes loading after the templates were installed.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Tests: `revive_marker_r15_art_loaded_after_install_resends_the_templates`, `revive_marker_r15_template_only_reload_sends_resolved_glyphs` in `crates/postretro/src/app/template_glyphs_tests.rs`.
+- [x] **R12** (review and grep): docs cover `presentationOverlays` in both forms, `assistableTeammates`, the `inRange` fact and template glyphs. Every command shown runs from an SDK bundle. No non-test source comment cites a spec ID.
+  - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Verified by grep: no spec ID cites this work in non-test `crates/**` comments, `content/`, or `sdk/` (the only `E18` hits are pre-existing, unrelated timed-reaction and trap fixtures; other `R<n>` hits are hardware button names and a lightmap metric), and `docs/` has no `cargo run -p xtask`.
 
 ### Manual
 - [ ] **M1**: add this line to `manual-proof.md`. In a two-seat run at 150 ms RTT, on both the host and the client seat:
@@ -90,6 +105,7 @@ Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
   - the marker goes away when the teammate is revived or bleeds out;
   - a downed player never sees a marker on themselves;
   - with both players down, each sees the other's marker with no prompt.
+  - **Result:** **outstanding: owner playtest** with `POSTRETRO_NET_LAG=75`. Notes: check eye-level placement while crouched, now that main's capsule-sole mesh seating has merged in. A marker may appear before the body visibly falls, which is expected at the interpolation delay.
 
 ## Path
 
@@ -158,6 +174,15 @@ T1 and T2a can run at the same time. T2b and T3 start after T1, because they nee
 | `scripting-reference.md` has no presentation-template section today; `Glyph` documented at about line 4199 | `docs/scripting-reference.md` |
 
 Constraints: no spec IDs in non-test source comments. Every command in `docs/` must run from an SDK bundle.
+
+## Corrections
+
+Deviations of the build from the Path.
+
+- The pool overlay storage moved to the `presentation_pool_overlays.rs` child module of `crates/sim/src/sim/`.
+- `worldAnchor.socket` is optional in the SDK and is `Option<String>` in Rust. An explicit `""` is rejected everywhere.
+- The cap always keeps the chosen teammate (R5 reworded to match).
+- The `local_player_pawn()` guard applies on the client path.
 
 ## Open questions
 

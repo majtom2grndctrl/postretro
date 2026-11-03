@@ -287,6 +287,27 @@ Owner direction: record why bakes are believed safe, and where that belief stops
 
 **Where the position stops.** Any feature that rescales baked *bounce* by a runtime light change: today's id 27, the parked `surface-radiance-cache-animated`, and mover bounce on a light that also carries a curve. Runtime bounce that uses no precomputed transfer (for example ray-traced bounce) lacks (c)'s "radiance transfer parameter" and so is outside '451, though other filings may read on it; the engine does not pursue it (no RTX dependency).
 
+## Prior art for per-light bounce in probes × runtime scalar (2026-11-03)
+
+The id-27 shape: per animated light, a baked per-probe unit-brightness bounce response; at runtime base + Σ curve × response, trilinear, lighting dynamic objects. Against '451 claims 1, 5–6 (all predate the 2021-04-02 priority). Engineering triage, not a validity opinion. Verbatim means quoted from source code.
+
+| Art | Date | Evidence | What it covers | Closeness |
+|---|---|---|---|---|
+| q3map2 `-bounce N -bouncegrid` for Raven BSP games (JK2, JA, SOF2) | q3map2 2.5.11 changelog 2003-12-01; source public in GtkRadiant GPL import 2007-09-12 | Verbatim (`TTimo/GtkRadiant` `tools/quake3/q3map2/light_bounce.c`, `light.c`, `q3map2.h`): bounce lights inherit their source lightmap's style (`light->style = style;`); grid points store per style (`byte ambient[MAX_LIGHTMAPS][3]; byte directed[MAX_LIGHTMAPS][3]; byte styles[MAX_LIGHTMAPS]`); `if( bouncegrid ) … TraceGrid` | Bake side: bounce baked per light style into each grid probe | Same shape per style (group), not strictly per light; ambient + one directed term, not SH; ≤ 4 styles per point |
+| Jedi Academy renderer `R_SetupEntityLightingGrid` | Game 2003; source GPL 2013 (OpenJK) | Verbatim (`JACoders/OpenJK` `code/rd-vanilla/tr_light.cpp`): `ent->ambientLight[0] += factor * data->ambientLight[j][0] * styleColors[style][0] / 255.0f;`, same for `directedLight`, trilinear over 8 grid points | Runtime side: Σ style value × baked per-style grid value, interpolated, lighting dynamic entities | Claim 1 (a)–(c) with a scalar as the coefficient; claim 5 (probe-lit dynamic objects); claim 6 in part |
+| FTE `gl_rlight.c` RBSP grid | Code date unproven (RBSP commits 2005–2012) | Verbatim: "rbsp has up to 4 styles per grid element, which needs to be scaled by that style's current value" | Second runtime with the same lookup | Same; date to establish |
+| D3DX9 PRT `ComputeVolumeSamples` / `ComputeVolumeSamplesDirectSH` | June 2010 SDK header seen; first SDK not established | Verbatim (Microsoft `d3dx9mesh.h`): "…a form of 'neighborhood transfer.' The result is a linear operator (matrix) at every sample point, if you multiply this matrix by the distant SH lighting coefficients you get… local incident radiance" | Transfer stored at points in space for other objects × SH lighting coefficients | Closest shipped API for claims 1, 5–6, 7; distant SH lighting, not a per-light scalar |
+| Sloan, Kautz, Snyder, SIGGRAPH 2002 | 2002 | *(snippet)*: transfer "through a preprocessed object to neighboring points in space… cast onto arbitrary, dynamic receivers"; "a transfer matrix… within a simple 3D grid surrounding O" | Neighbourhood transfer on a 3D grid | Claims 1, 5, 7; body text and section not obtained |
+| Stefanov (and Gilabert), "Deferred Radiance Transfer Volumes", Far Cry 3, GDC 2012 | 2012 | *(snippet)*, GDC Vault abstract: probes "storing spherical harmonics coefficient matrices… can be relit on the fly… time of day changes… local lighting such as muzzle flashes" | Probe transfer relit by sun/sky SH coefficients | Strong on claims 1, 7, 8; use on dynamic objects unconfirmed |
+| Unity 5 Precomputed Realtime GI (Enlighten) | Blog 2014-09-18; Unity 5.0 2015 | *(snippet)*: "feeding the actual lights present into these previously computed light propagation paths"; probes updated at runtime for dynamic objects | Probes whose bounce follows runtime light values | Claims 1, 5; runtime solve, not a stored unit response |
+| Kristensen, Akenine-Möller, Jensen, SIGGRAPH 2005 | 2005 | *(snippet)*: per-vertex indirect "due to a set of input lights", "storing only the indirect component" | Per-light precomputed indirect | Per vertex, not per probe; runtime scaling unconfirmed |
+
+**Negative findings.** Source VRAD ambient cubes take style 0 only (`leaf_ambient_lighting.cpp`: "We only care about light style 0 here."); Quake 3 IBSP and DarkPlaces grids carry no styles; ericw-tools' lightgrid (2023) postdates the priority date.
+
+**Best single reference for the id-27 combination:** the q3map2 `-bouncegrid` bake with the Jedi Academy grid runtime (2003). No shipped map was proven compiled with `-bouncegrid`; the combination is a toolchain configuration. None of this art was before the '451 examiner. For counsel: it bears on validity (claims 1, 5–6) if "projection coefficient" is read to cover a scalar, which is the same broad reading that puts id 27 at risk.
+
+**Unread, hosts blocked this pass:** Far Cry 3 slides (gdcvault.com), Sloan 2002 body (dl.acm.org, jankautz.com), Kristensen PDF (lup.lub.lu.se), Unity 5 manual (docs.unity3d.com), the D3DX first SDK version (learn.microsoft.com).
+
 ## Summary
 
 | Piece | IP verdict | Watch | Bake Δ (est.) | Memory Δ (est.) | Runtime (est.) |

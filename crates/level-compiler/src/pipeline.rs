@@ -14,7 +14,7 @@ use crate::affinity_grid::{
 };
 use crate::bake_control::BakeControl;
 use crate::governor::Governor;
-use crate::reporter::{Reporter, StageProgress};
+use crate::reporter::{BuildSummary, Reporter, StageProgress};
 use crate::{
     Args, bake_model_textures, bake_sprite_textures, compile_worldspawn_data_script,
     lightmap_config, map_needs_sdf_atlas, resolve_content_root, resolve_data_script_source,
@@ -1965,6 +1965,13 @@ fn run_after_parsing(
         &map_data.carried_light_links,
     );
     crate::mover_light_gate::log_side_counts(&mover_poses, &mover_side_counts, light_label);
+    // The Build Summary block; its percentage waits for the packed bytes.
+    let mover_light_summary = crate::mover_light_gate::MoverLightSummary::new(
+        &mover_poses,
+        &mover_gate_lights,
+        &mover_light_rows,
+        &mover_side_counts,
+    );
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
         let stage_start = begin_stage(reporter.as_ref(), StageId::SdfAtlasBake);
@@ -2103,7 +2110,7 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Packing);
-    write_finalized_prl(FinalizedPrlPackInputs {
+    let footprint = write_finalized_prl(FinalizedPrlPackInputs {
         output: &args.output,
         geo_result: &geo_result,
         texture_cache_keys: &name_to_key,
@@ -2158,7 +2165,13 @@ fn run_after_parsing(
     if let Some(cache) = stage_cache.as_ref() {
         cache.finish_successful_build(args.cache_max_bytes);
     }
-    reporter.finalize(&timings, started.elapsed());
+    let lightmap_family_bytes =
+        footprint.payload_bytes_of(&crate::mover_light_gate::LIGHTMAP_FAMILY);
+    reporter.finalize(BuildSummary {
+        timings,
+        total: started.elapsed(),
+        details: mover_light_summary.lines(lightmap_family_bytes),
+    });
 
     Ok(())
 }

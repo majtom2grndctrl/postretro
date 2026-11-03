@@ -4,10 +4,13 @@
 
 mod prl_build_support;
 
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::process::Output;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use postretro_level_format::{SectionId, read_container};
 use prl_build_support::prl_build;
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
@@ -100,8 +103,13 @@ const ANIMATED: &str = "\"style\" \"1\"\n";
 const SDF_SHADOW: &str = "\"_shadow_type\" \"sdf\"\n";
 
 fn mover(name: &str, path: &str, brushes: &[String]) -> String {
+    mover_with(&format!("\"name\" \"{name}\"\n"), path, brushes)
+}
+
+/// A mover with `keys` (whole key lines, its name among them if any).
+fn mover_with(keys: &str, path: &str, brushes: &[String]) -> String {
     format!(
-        "{{\n\"classname\" \"kinematic_mover\"\n\"name\" \"{name}\"\n\"path\" \"{path}\"\n\
+        "{{\n\"classname\" \"kinematic_mover\"\n{keys}\"path\" \"{path}\"\n\
          \"speed\" \"2\"\n{}\n}}",
         brushes.join("\n")
     )
@@ -120,14 +128,20 @@ fn waypoint(name: &str, next: &str, origin: [i32; 3]) -> String {
 /// SH probes sit 1 m apart, so several lie between the room's floor and a
 /// plate.
 fn compile(map_text: &str) -> String {
+    compile_keeping_prl(map_text).0
+}
+
+/// [`compile`], also returning the packed PRL's bytes.
+fn compile_keeping_prl(map_text: &str) -> (String, Vec<u8>) {
     let temp = TempBuildDir::new();
     let input = temp.maps_dir().join("mover-light-gate.map");
+    let prl = temp.0.join("mover-light-gate.prl");
     std::fs::write(&input, format!("{map_text}\n")).expect("write fixture map");
     let output: Output = prl_build()
         .env("RUST_LOG", "debug")
         .arg(&input)
         .arg("-o")
-        .arg(temp.0.join("mover-light-gate.prl"))
+        .arg(&prl)
         .arg("--no-cache")
         .arg("--no-tui")
         .arg("-v")
@@ -153,8 +167,21 @@ fn compile(map_text: &str) -> String {
         "the gate never warns:\n{}",
         warned.join("\n")
     );
-    logs
+    let bytes = std::fs::read(&prl).expect("read the packed PRL");
+    (logs, bytes)
 }
+
+/// The Build Summary's mover-lighting line starting with `prefix`.
+fn summary_line<'a>(logs: &'a str, prefix: &str) -> &'a str {
+    let lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.starts_with(prefix))
+        .collect();
+    assert_eq!(lines.len(), 1, "one summary line `{prefix}`\n{logs}");
+    lines[0]
+}
+
+const SUMMARY: &str = "Mover lighting: ";
 
 /// One debug row's texel counts and estimates.
 #[derive(Debug)]
@@ -475,6 +502,11 @@ fn levels_without_static_lightmap_lights_complete_and_analyse_every_mover() {
             !logs.contains("[MoverLight] kinematic_mover 'plate' not analysed"),
             "{logs}"
         );
+        let summary = summary_line(logs, SUMMARY);
+        assert!(
+            summary.starts_with("Mover lighting: 1 mover(s) analysed, 0 not analysed;"),
+            "the Build Summary prints with the mover analysed: {summary}"
+        );
     }
     for logs in [&no_baked, &sdf_only] {
         assert!(
@@ -531,5 +563,354 @@ fn an_animated_light_gates_the_texels_and_probes_it_would_as_a_static_light() {
         let (from_weights, from_layers) = (counts(&animated), counts(&baked_static));
         assert!(row_counts(&from_weights).gated > 0, "{from_weights}");
         assert_eq!(from_weights, from_layers);
+    }
+}
+
+/// One Quake map unit in engine metres.
+const UNIT: f64 = 0.0254;
+
+/// A row's gated texel centres, engine metres: (min, max).
+fn gated_centres(line: &str) -> ([f64; 3], [f64; 3]) {
+    let corners = line
+        .split("gated centres (")
+        .nth(1)
+        .and_then(|rest| rest.split(") m").next())
+        .unwrap_or_else(|| panic!("gated centre bounds in {line}"));
+    let numbers: Vec<f64> = corners
+        .replace(")..(", ", ")
+        .split(", ")
+        .map(|number| number.parse().expect("a coordinate"))
+        .collect();
+    assert_eq!(numbers.len(), 6, "two corners: {line}");
+    (
+        [numbers[0], numbers[1], numbers[2]],
+        [numbers[3], numbers[4], numbers[5]],
+    )
+}
+
+/// A row's counts and bounds: the text after its label.
+fn row_text(line: &str) -> &str {
+    line.split_once(": ")
+        .map(|(_, counts)| counts)
+        .unwrap_or_else(|| panic!("counts follow the label: {line}"))
+}
+
+#[test]
+fn the_mask_estimate_is_a_share_of_the_same_prls_lightmap_family_bytes() {
+    // A static and an animated light over the plate, so ids 22 and 25 ship.
+    let [plate, plate_a, plate_b] = sliding_plate();
+    let (logs, prl) = compile_keeping_prl(&room_map(&[
+        light([-32, 0, 224]),
+        light_with([32, 0, 224], 512, ANIMATED),
+        plate,
+        plate_a,
+        plate_b,
+    ]));
+
+    let container = read_container(&mut Cursor::new(&prl)).expect("read PRL container");
+    let packed = |id: SectionId| {
+        container
+            .find_section(id as u32)
+            .map_or(0, |section| section.size)
+    };
+    let (lightmap, weights) = (
+        packed(SectionId::Lightmap),
+        packed(SectionId::AnimatedLightWeightMaps),
+    );
+    assert!(lightmap > 0 && weights > 0, "ids 22 and 25 ship");
+    let family = lightmap + weights + packed(SectionId::ShadowmaskAtlas);
+
+    let line = summary_line(&logs, "  mask est.: ");
+    assert_eq!(number_before(line, " B lightmap family"), family, "{line}");
+    let share = |bytes: u64| format!("{:.2}%", bytes as f64 * 100.0 / family as f64);
+    let every_gated = number_before(line, " B every gated");
+    let differing_only = number_before(line, " B differing only");
+    assert!(every_gated > 0, "{line}");
+    for (bytes, label) in [
+        (every_gated, "every gated"),
+        (differing_only, "differing only"),
+    ] {
+        assert!(
+            line.contains(&format!("{bytes} B {label} ({})", share(bytes))),
+            "{line}"
+        );
+    }
+
+    // The block's estimates total the debug rows'.
+    let rows: Vec<RowCounts> = logs
+        .lines()
+        .filter(|line| line.starts_with("[DEBUG") && line.contains(" gated texel(s) est."))
+        .map(row_counts)
+        .collect();
+    assert!(!rows.is_empty(), "{logs}");
+    assert_eq!(
+        rows.iter().map(|row| row.every_gated_bytes).sum::<u64>(),
+        every_gated
+    );
+    assert_eq!(
+        rows.iter().map(|row| row.differing_only_bytes).sum::<u64>(),
+        differing_only
+    );
+}
+
+#[test]
+fn a_level_without_movers_prints_only_the_zero_mover_summary_line() {
+    let logs = compile(&room_map(&[light([0, 0, 224])]));
+    let summary: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            line.starts_with(SUMMARY)
+                || line.starts_with("  gated est.: ")
+                || line.starts_with("  side count: ")
+                || line.starts_with("  mask est.: ")
+        })
+        .collect();
+    assert_eq!(summary, ["Mover lighting: 0 movers"], "{logs}");
+    let gate_lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.contains("[MoverLight]"))
+        .collect();
+    assert!(
+        gate_lines.is_empty(),
+        "no gate line at info or debug:\n{}",
+        gate_lines.join("\n")
+    );
+}
+
+/// A cage open to +x: a back wall at −x, two side walls and a roof, each
+/// its own brush, around an interior x −96..64, y −80..80, z 0..144.
+fn cage() -> Vec<String> {
+    vec![
+        box_brush([-112, -80, 0], [-96, 80, 144]),
+        box_brush([-112, 80, 0], [64, 96, 160]),
+        box_brush([-112, -96, 0], [64, -80, 160]),
+        box_brush([-112, -80, 144], [64, 80, 160]),
+    ]
+}
+
+#[test]
+fn a_hollow_mover_is_posed_as_its_brushes_not_its_hull() {
+    // The light sits in the cage, 64 u or more from every brush. Every
+    // segment from the room's +x wall, or the floor before it, leaves the
+    // cage through its open side under the roof and between the side walls.
+    let origin = [0, 0, 64];
+    let logs = compile(&room_map(&[
+        light(origin),
+        mover("cage", "cage_a", &cage()),
+        waypoint("cage_a", "cage_b", [-24, 0, 80]),
+        waypoint("cage_b", "", [-136, 0, 80]),
+    ]));
+
+    let rows = light_rows(
+        &logs,
+        "kinematic_mover 'cage' at first waypoint 'cage_a'",
+        origin,
+    );
+    assert_eq!(rows.len(), 1, "{logs}");
+    assert!(
+        !light_inside(rows[0]),
+        "a light between the brushes is not inside: {}",
+        rows[0]
+    );
+    assert!(row_counts(rows[0]).gated > 0, "the walls gate: {}", rows[0]);
+    // Engine z is −(Quake x): no gated texel lies at Quake x 230 or more,
+    // where the open side's segments land; the side walls gate up to x 205.
+    let (min, _) = gated_centres(rows[0]);
+    assert!(
+        min[2] > -230.0 * UNIT,
+        "a segment through the open side is not counted: {}",
+        rows[0]
+    );
+}
+
+/// A plate over the floor's centre, `z` its bottom in map units, sliding
+/// 192 u along `y_step` from waypoint `{name}_a`.
+fn stacked_plate(name: &str, z: i32, y_step: i32) -> [String; 3] {
+    let (first, last) = (format!("{name}_a"), format!("{name}_b"));
+    [
+        mover(name, &first, &[box_brush([-48, -48, z], [48, 48, z + 8])]),
+        waypoint(&first, &last, [0, 0, z + 4]),
+        waypoint(&last, "", [0, y_step, z + 4]),
+    ]
+}
+
+#[test]
+fn each_mover_is_posed_alone_so_a_texel_behind_two_movers_counts_in_both() {
+    // The floor's centre lies behind both plates. Posed together, the upper
+    // plate would hide the lower one's floor; posed alone, each counts it.
+    let origin = [0, 0, 224];
+    let upper = stacked_plate("upper", 160, 192);
+    let lower = stacked_plate("lower", 64, -192);
+    let mut both = vec![light(origin)];
+    both.extend(upper);
+    both.extend(lower.clone());
+    let mut lower_alone = vec![light(origin)];
+    lower_alone.extend(lower);
+    let (both, lower_alone) = (compile(&room_map(&both)), compile(&room_map(&lower_alone)));
+
+    let first_row = |logs: &str, name: &str| -> String {
+        let rows = light_rows(
+            logs,
+            &format!("kinematic_mover '{name}' at first waypoint '{name}_a'"),
+            origin,
+        );
+        assert_eq!(rows.len(), 1, "{logs}");
+        rows[0].to_string()
+    };
+    let upper = first_row(&both, "upper");
+    let lower = first_row(&both, "lower");
+    assert!(row_counts(&lower).gated > 0, "{lower}");
+    assert_eq!(
+        row_text(&lower),
+        row_text(&first_row(&lower_alone, "lower")),
+        "the upper plate changes nothing in the lower plate's row"
+    );
+    // The lower plate's shadow lies inside the upper's, so its gated texels
+    // count in both rows.
+    let ((upper_min, upper_max), (lower_min, lower_max)) =
+        (gated_centres(&upper), gated_centres(&lower));
+    for axis in 0..3 {
+        assert!(
+            upper_min[axis] <= lower_min[axis] && lower_max[axis] <= upper_max[axis],
+            "{upper}\n{lower}"
+        );
+    }
+}
+
+/// One build holding two spin-axis movers and an unnamed zero-axis one.
+fn spin_logs() -> &'static str {
+    static LOGS: OnceLock<String> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        compile(&room_map(&[
+            light([0, 0, 224]),
+            // A spin axis with no speed: scripts may still spin it.
+            mover_with(
+                "\"name\" \"fan\"\n\"spin_axis\" \"0 0 1\"\n",
+                "fan_a",
+                &[box_brush([-200, -200, 96], [-152, -152, 112])],
+            ),
+            waypoint("fan_a", "fan_b", [-176, -176, 104]),
+            waypoint("fan_b", "", [-176, 0, 104]),
+            // A one-waypoint spinner.
+            mover_with(
+                "\"name\" \"spinner\"\n\"spin_axis\" \"0 0 1\"\n\"spin_speed\" \"90\"\n",
+                "spin_hub",
+                &[box_brush([152, 152, 96], [200, 200, 112])],
+            ),
+            waypoint("spin_hub", "", [176, 176, 104]),
+            // A zero axis, unnamed, under the light.
+            mover_with(
+                "\"spin_axis\" \"0 0 0\"\n",
+                "still_a",
+                &[box_brush([32, -96, 96], [96, -32, 112])],
+            ),
+            waypoint("still_a", "still_b", [64, -64, 104]),
+            waypoint("still_b", "", [64, 128, 104]),
+        ]))
+    })
+}
+
+/// The unnamed mover's label: its brush-bounds centre, Quake (64, −64, 104)
+/// in engine metres.
+fn unnamed_label() -> String {
+    format!(
+        "kinematic_mover at ({:.3}, {:.3}, {:.3}) m",
+        64.0 * UNIT,
+        104.0 * UNIT,
+        -64.0 * UNIT
+    )
+}
+
+#[test]
+fn spin_axis_movers_are_not_analysed_and_a_zero_axis_mover_is() {
+    let logs = spin_logs();
+    for name in ["fan", "spinner"] {
+        let reason = format!(
+            "[MoverLight] kinematic_mover '{name}' not analysed: spin axis set, so its parked \
+             rotation is unknowable at compile time"
+        );
+        assert!(
+            logs.lines()
+                .any(|line| line.starts_with("[DEBUG") && line.ends_with(&reason)),
+            "{name} is not analysed, with its reason\n{logs}"
+        );
+    }
+    let still = unnamed_label();
+    assert!(
+        logs.lines().any(|line| line.starts_with("[DEBUG")
+            && line.contains(&format!("[MoverLight] {still} side count: "))),
+        "the zero-axis mover is analysed\n{logs}"
+    );
+    assert!(!logs.contains(&format!("{still} not analysed")), "{logs}");
+    let summary = summary_line(logs, SUMMARY);
+    assert!(
+        summary.starts_with("Mover lighting: 1 mover(s) analysed, 2 not analysed;"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn an_unnamed_movers_info_line_names_it_by_its_brush_bounds_centre() {
+    let logs = spin_logs();
+    let label = unnamed_label();
+    let info: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.starts_with("[INFO") && line.contains("[MoverLight]"))
+        .filter(|line| line.contains(&format!("{label} at first waypoint 'still_a' gates ")))
+        .collect();
+    assert_eq!(info.len(), 1, "{logs}");
+    assert!(
+        info[0].contains(" gates 1 baked light(s): ") && info[0].ends_with(&at_origin([0, 0, 224])),
+        "{}",
+        info[0]
+    );
+}
+
+#[test]
+fn a_three_waypoint_mover_is_posed_at_its_first_and_last_waypoints_only() {
+    // `corner` lights the floor 72 u under it, 96 u at most; only the plate
+    // parked at `tour_b`, just above the floor there, lies in its reach.
+    let overhead = [0, 0, 224];
+    let corner = [-176, -176, 72];
+    let plate = || box_brush([-48, -48, 96], [48, 48, 104]);
+    let logs = compile(&room_map(&[
+        light(overhead),
+        light_with(corner, 96, ""),
+        mover("tour", "tour_a", &[plate()]),
+        waypoint("tour_a", "tour_b", [0, 0, 100]),
+        waypoint("tour_b", "tour_c", [-176, -176, 44]),
+        waypoint("tour_c", "", [176, 176, 100]),
+        // The same plate ending at the middle pose shows that pose gates it.
+        mover("control", "control_a", &[plate()]),
+        waypoint("control_a", "control_b", [0, 0, 100]),
+        waypoint("control_b", "", [-176, -176, 44]),
+    ]));
+
+    assert_eq!(
+        light_rows(
+            &logs,
+            "kinematic_mover 'control' at last waypoint 'control_b'",
+            corner
+        )
+        .len(),
+        1,
+        "parked at the middle pose, the plate gates the corner light\n{logs}"
+    );
+    let tour_lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.contains("[MoverLight] kinematic_mover 'tour' "))
+        .collect();
+    assert!(
+        !tour_lines
+            .iter()
+            .any(|line| line.contains(&at_origin(corner)) || line.contains("'tour_b'")),
+        "the middle waypoint is never posed:\n{}",
+        tour_lines.join("\n")
+    );
+    for prefix in [
+        "kinematic_mover 'tour' at first waypoint 'tour_a'",
+        "kinematic_mover 'tour' at last waypoint 'tour_c'",
+    ] {
+        assert_eq!(light_rows(&logs, prefix, overhead).len(), 1, "{logs}");
     }
 }

@@ -198,7 +198,17 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
     );
 
     let rows = rows(logs, CLOSED);
-    let mut origins: Vec<&str> = rows.iter().map(|row| row.origin.as_str()).collect();
+    // The info line names the first four rows' lights, in report order, by
+    // origin; the fifth is the "1 more".
+    let named: Vec<&str> = info[0]
+        .split("at origin \"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().expect("a closing quote"))
+        .collect();
+    let in_order: Vec<&str> = rows.iter().map(|row| row.origin.as_str()).collect();
+    assert_eq!(named, in_order[..4], "{}", info[0]);
+
+    let mut origins = in_order;
     origins.sort_unstable();
     let mut expected: Vec<&str> = ARENA_LIGHTS
         .iter()
@@ -341,6 +351,22 @@ fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
     assert!(
         wall.ends_with("side count: 0 carried dynamic light(s); 0 other dynamic light(s)"),
         "{wall}"
+    );
+
+    // The Build Summary totals both movers' side counts, every mover analysed.
+    let summary: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.starts_with("Mover lighting: ") || line.starts_with("  side count: "))
+        .collect();
+    assert_eq!(summary.len(), 2, "{logs}");
+    assert!(
+        summary[0].starts_with("Mover lighting: 2 mover(s) analysed, 0 not analysed;"),
+        "{}",
+        summary[0]
+    );
+    assert_eq!(
+        summary[1],
+        "  side count: 1 carried dynamic light(s), 0 other"
     );
 
     let elsewhere: Vec<&str> = logs

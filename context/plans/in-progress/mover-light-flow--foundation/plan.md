@@ -53,6 +53,8 @@ read at: af1aab9ef
 - **Blocks across layers.** Per-partition distinct block counts are summed per row. This is exact because each `CellBlock` sits in one layer, and a partition is one (light, layer).
 - **Probes inside a posed brush** count as gated, as texels do ("covered means dark").
 - **Animated weights.** The weight bake drops weights ≤ 1e-6, so "lit" for an animated texel means a stored weight.
+- **Summary totals.** These are sums over rows, so a shared texel counts once per terminus, matching what two per-state masks would store. The estimate is per row too.
+  - `mover-setpiece` cold: 14 rows; mask est. 3,374,282 B every gated (10.58%) and 2,153,066 B differing only (6.75%) of 31,879,968 B lightmap family.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
 ## AC-to-proof
@@ -93,9 +95,9 @@ Rows are numbered in brief order: Automated, then Manual.
 | 3 | Probe gate: reuse the SH stage's `ProbeGridLayout`, per light in parallel under permits | worker | 1 | done: `pipeline/mover_light_stage.rs`, runs before atlas prep; row 9 unit tests (4 exclusions); setpiece rows 1–2 probe halves; 4 ms on `mover-setpiece` |
 | 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | done: rows 8, 10, 13, 14, 17 in `mover_light_gate_compile` (6 pass); animated-vs-static parity test |
 | 5 | Side count: dynamic lights vs swept bounds, carried via `carried_light_links` | worker | 1 | done: `mover_light_gate_setpiece` row 5 (room: lamp carried, 0 other; wall: 0/0) |
-| 6 | Report: Build Summary through `Reporter` (3 implementors), id 22/25/42 bytes from `pack.rs`, pinned ordering | worker | 2, 5 | |
+| 6 | Report: Build Summary through `Reporter` (3 implementors), id 22/25/42 bytes from `pack.rs`, pinned ordering | worker | 2, 5 | done: `mover_light_gate/summary.rs`, `BuildSummary` through all 3 reporters; row 7 (unit + PRL section-table divisor), row 20; `compiler_cli_contract` green |
 | 7 | Two memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | integrating executor | 2–4 | |
-| 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | |
+| 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | done: `mover_light_gate_compile` 13 pass (rows 3, 4, 7, 8, 10–15, 17, 20), `mover_light_gate_setpiece` 3 pass (rows 1, 2, 5, 15) |
 | 9 | Determinism (16) and warm rows (18) | worker | 7 | |
 | 10 | PRL parity test (19) | worker | — | test written (`mover_light_gate_prl_parity`, ignored, `POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR`); baselines built at the gate run |
 | 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | |

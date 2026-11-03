@@ -65,6 +65,33 @@ impl StageProgress {
     }
 }
 
+/// A successful build's closing summary: stage timings, then detail blocks.
+#[derive(Debug)]
+pub struct BuildSummary {
+    pub timings: Vec<(&'static str, Duration)>,
+    pub total: Duration,
+    /// Lines printed after the timings and a blank line, each carrying its
+    /// own indent: the mover-lighting block.
+    pub details: Vec<String>,
+}
+
+impl BuildSummary {
+    /// Print to stdout; every frontend prints the same text.
+    pub fn print(&self) {
+        println!("\nBuild Summary:");
+        for (name, duration) in &self.timings {
+            println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
+        }
+        println!("  {: <15} {:>6.2}s", "Total", self.total.as_secs_f32());
+        if !self.details.is_empty() {
+            println!();
+            for line in &self.details {
+                println!("{line}");
+            }
+        }
+    }
+}
+
 /// Presentation contract shared by plain and TUI compiler frontends.
 ///
 /// Exactly one terminal method must win: `finalize` commits/records a complete
@@ -83,7 +110,7 @@ pub trait Reporter: Send + Sync {
     fn declare_progress(&self, id: StageId, progress: StageProgress);
     fn finish_stage(&self, id: StageId);
     fn skip_stage(&self, id: StageId);
-    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration);
+    fn finalize(&self, summary: BuildSummary);
     fn finalize_failure(&self);
 }
 
@@ -288,7 +315,7 @@ impl Reporter for PlainReporter {
         eprintln!("  {}: skipped", id.label());
     }
 
-    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
+    fn finalize(&self, summary: BuildSummary) {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -300,11 +327,7 @@ impl Reporter for PlainReporter {
         drop(state);
         self.drain_logs();
 
-        println!("\nBuild Summary:");
-        for (name, duration) in timings {
-            println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
-        }
-        println!("  {: <15} {:>6.2}s", "Total", total.as_secs_f32());
+        summary.print();
 
         self.logs.print_warning_summary();
     }

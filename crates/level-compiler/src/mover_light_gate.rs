@@ -9,6 +9,7 @@ mod report;
 mod rows;
 mod segment;
 mod side_count;
+mod summary;
 mod tally;
 mod texels;
 
@@ -22,5 +23,6 @@ pub(crate) use probes::{LightProbes, ProbeScene, gate_probes};
 pub(crate) use report::{log_rows, log_side_counts};
 pub(crate) use rows::MoverTexels;
 pub(crate) use side_count::side_counts;
+pub(crate) use summary::{LIGHTMAP_FAMILY, MoverLightSummary};
 pub(crate) use tally::GateTally;
 pub(crate) use texels::{CandidateMover, gate_partition, light_candidates};

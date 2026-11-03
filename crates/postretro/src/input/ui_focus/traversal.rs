@@ -201,3 +201,47 @@ mod scroll_clip_tests {
         assert_eq!(at(10.0, 20.0), Some("title"));
     }
 }
+
+#[cfg(test)]
+mod window_corner_tests {
+    use super::*;
+    use postretro_ui::descriptor::AnchoredTree;
+    use postretro_ui::tree::{CellValues, ImageSizes, UiTree};
+
+    /// Export the focus rects of a one-button tree anchored at `anchor`.
+    fn exported(anchor: &str, device: [u32; 2]) -> FocusRectList {
+        let json = format!(
+            r#"{{"anchor":"{anchor}","offset":[0.0,0.0],"root":{{"kind":"button","id":"corner","label":"OK","onPress":"pick"}}}}"#
+        );
+        let tree: AnchoredTree = serde_json::from_str(&json).expect("fixture parses");
+        let mut ui =
+            UiTree::from_descriptor(&tree, &postretro_ui::theme::UiTheme::engine_default());
+        let slots = std::collections::HashMap::new();
+        let mut fonts = postretro_ui::text::build_font_system();
+        ui.build_draw_data(device, &mut fonts, &ImageSizes::new(), &slots);
+        ui.export_focus_rects(&tree, device, &slots, &CellValues::new())
+    }
+
+    // A cursor in the window's real corner, in device pixels, hits the stop
+    // anchored to that corner on wide and tall windows alike.
+    #[test]
+    fn a_click_in_the_window_corner_hits_the_corner_anchored_stop() {
+        for device in [[3440u32, 1440u32], [2560, 1080], [1080, 1920], [1000, 1000]] {
+            let (w, h) = (f64::from(device[0]), f64::from(device[1]));
+            for (anchor, x, y) in [
+                ("topLeft", 1.0, 1.0),
+                ("topRight", w - 1.0, 1.0),
+                ("bottomLeft", 1.0, h - 1.0),
+                ("bottomRight", w - 1.0, h - 1.0),
+            ] {
+                let rects = exported(anchor, device);
+                assert_eq!(
+                    hit_test_topmost(&rects, PointerPos { x, y }),
+                    Some("corner"),
+                    "{anchor} on {device:?}: {:?}",
+                    rects.rects[0].rect
+                );
+            }
+        }
+    }
+}

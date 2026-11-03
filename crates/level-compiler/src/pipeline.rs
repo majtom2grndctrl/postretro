@@ -32,6 +32,7 @@ mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
+mod mover_light_stage;
 pub(crate) mod runtime_cells;
 mod sdf_stage;
 mod sh_working_set_gates;
@@ -1561,6 +1562,22 @@ fn run_after_parsing(
         true,
     );
 
+    // The mover light gate's probe pass reads the SH family's probe grid and
+    // pre-cut world, so it runs before atlas preparation cuts and rebuilds it.
+    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    );
+    let mover_gate_lights =
+        crate::mover_light_gate::GateLights::resolve(&static_baked_lights, &animated_baked_lights);
+    let mover_light_probes = mover_light_stage::probe_gate(
+        &mover_poses,
+        &mover_gate_lights,
+        &sh_ctx,
+        &sh_config,
+        &governor,
+    );
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
     // An oversize face is cut here; the face-identity set (leaf face ranges,
     // BVH, CellDrawIndex) is then rebuilt over the cut geometry, and the
@@ -1677,10 +1694,6 @@ fn run_after_parsing(
     let shadowmask_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
-    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
-        &map_data.kinematic_movers,
-        &map_data.kinematic_waypoints,
-    );
     let fused_lighting = lightmap_stage::bake_fused_prepared(
         args,
         stage_cache.as_ref(),
@@ -1715,24 +1728,6 @@ fn run_after_parsing(
         mover_light,
         ..
     } = fused_lighting;
-    let light_label = |source: usize| {
-        map_data
-            .light_source_labels
-            .get(source)
-            .cloned()
-            .unwrap_or_else(|| format!("light {source}"))
-    };
-    crate::mover_light_gate::log_static_rows(
-        &mover_poses,
-        &mover_light.unwrap_or_default(),
-        light_label,
-    );
-    let mover_side_counts = crate::mover_light_gate::side_counts(
-        &mover_poses,
-        &map_data.lights,
-        &map_data.carried_light_links,
-    );
-    crate::mover_light_gate::log_side_counts(&mover_poses, &mover_side_counts, light_label);
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
         charts: face_charts,
@@ -1936,6 +1931,40 @@ fn run_after_parsing(
                 animated_light_weight_maps_section,
             )
         };
+
+    // Every tier's rows are in: the static walk's, the probe pass's, and the
+    // animated weights' gated here from the finished sections.
+    let mover_light_rows = mover_light_stage::merge_rows(
+        &mover_poses,
+        mover_light,
+        mover_light_probes,
+        mover_light_stage::AnimatedInputs {
+            lights: &animated_baked_lights,
+            chunks: animated_light_chunks_section.as_ref(),
+            weight_maps: animated_light_weight_maps_section.as_ref(),
+            face_charts: &face_charts,
+        },
+        &governor,
+    );
+    let light_label = |source: usize| {
+        map_data
+            .light_source_labels
+            .get(source)
+            .cloned()
+            .unwrap_or_else(|| format!("light {source}"))
+    };
+    crate::mover_light_gate::log_rows(
+        &mover_poses,
+        &mover_gate_lights,
+        &mover_light_rows,
+        light_label,
+    );
+    let mover_side_counts = crate::mover_light_gate::side_counts(
+        &mover_poses,
+        &map_data.lights,
+        &map_data.carried_light_links,
+    );
+    crate::mover_light_gate::log_side_counts(&mover_poses, &mover_side_counts, light_label);
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {
         let stage_start = begin_stage(reporter.as_ref(), StageId::SdfAtlasBake);

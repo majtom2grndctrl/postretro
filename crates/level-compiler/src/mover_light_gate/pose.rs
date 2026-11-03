@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::DVec3;
 
+use super::segment::{segment_may_touch_box, segment_touches_brush};
 use crate::map_data::{BrushVolume, MapKinematicMover, MapKinematicWaypoint};
 use crate::partition::Aabb;
 
@@ -72,6 +73,16 @@ pub(crate) struct Pose {
 }
 
 impl Pose {
+    /// Whether the closed segment `start..=end` touches one of the posed
+    /// brushes.
+    pub(crate) fn segment_touches(&self, start: DVec3, end: DVec3) -> bool {
+        segment_may_touch_box(start, end, &self.bounds)
+            && self
+                .brushes
+                .iter()
+                .any(|brush| segment_touches_brush(start, end, brush))
+    }
+
     fn new(waypoint: &str, brushes: &[BrushVolume], offset: DVec3) -> Self {
         // A brush without bounds has no face, so it covers nothing.
         let brushes: Vec<PosedBrush> = brushes

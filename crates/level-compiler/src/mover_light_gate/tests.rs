@@ -1,15 +1,24 @@
-use glam::DVec3;
+use glam::{DVec3, Vec3};
+use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+use postretro_level_format::texture_names::TextureNamesSection;
 
+use super::lights::GateLight;
 use super::pose::{MoverPoses, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus};
+use super::probes::{ProbeScene, gate_probes};
 use super::segment::{CONTACT_TOLERANCE_M, point_touches_brush, segment_touches_brush};
 use super::side_count::{SideCount, side_counts};
-use super::texels::{CandidateMover, light_candidates};
+use super::texels::{CandidateMover, TexelGate, light_candidates};
+use crate::bake_control::BakeControl;
+use crate::bvh_build::build_bvh;
+use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_reach::test_fixtures::point_light;
 use crate::map_data::{
-    BrushPlane, BrushVolume, CarriedLightLink, KinematicMoveMode, MapKinematicMover,
+    BrushPlane, BrushVolume, CarriedLightLink, KinematicMoveMode, LightType, MapKinematicMover,
     MapKinematicWaypoint, MapLight,
 };
 use crate::partition::Aabb;
+use crate::ray_traversal::RAY_EPSILON;
+use crate::sh_bake::ProbeGridLayout;
 
 fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
     let planes = [
@@ -409,4 +418,197 @@ fn side_count_splits_lights_this_mover_carries_from_the_rest() {
             },
         ]
     );
+}
+
+/// A 9 m plate 1 m above a line of probes at x −4 to 4, y 0, under a light
+/// 3 m above the middle probe. The plate covers every probe at its first
+/// waypoint and leaves for 100 m up at its last.
+fn plate_over_probes() -> MoverPoses {
+    let movers = vec![mover(
+        0,
+        "plate",
+        "low",
+        vec![box_brush(
+            DVec3::new(-4.5, 1.0, -0.5),
+            DVec3::new(4.5, 1.1, 0.5),
+        )],
+    )];
+    let waypoints = vec![
+        waypoint("low", "high", DVec3::new(0.0, 1.05, 0.0)),
+        waypoint("high", "", DVec3::new(0.0, 101.05, 0.0)),
+    ];
+    MoverPoses::resolve(&movers, &waypoints)
+}
+
+const PROBE_LIGHT: DVec3 = DVec3::new(0.0, 3.0, 0.0);
+
+/// Nine valid probes 1 m apart along x, at x −4 to 4.
+fn probe_line() -> ProbeGridLayout {
+    let world_min = DVec3::new(-4.0, 0.0, 0.0);
+    ProbeGridLayout {
+        world_min,
+        dims: [9, 1, 1],
+        cell_size: [1.0; 3],
+        far_sentinel: 1.0,
+        probe_positions: (0..9)
+            .map(|x| world_min + DVec3::X * f64::from(x))
+            .collect(),
+        validity: vec![1; 9],
+    }
+}
+
+fn geometry_of(triangles: &[[[f32; 3]; 3]]) -> GeometryResult {
+    let vertex = |position| {
+        Vertex::new(
+            position,
+            [0.0; 2],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            true,
+            [0.0; 2],
+            0,
+        )
+    };
+    GeometryResult {
+        geometry: GeometrySection {
+            vertices: triangles.iter().flatten().map(|&p| vertex(p)).collect(),
+            indices: (0..triangles.len() as u32 * 3).collect(),
+            faces: triangles
+                .iter()
+                .map(|_| FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                })
+                .collect(),
+        },
+        texture_names: TextureNamesSection { names: Vec::new() },
+        face_index_ranges: (0..triangles.len() as u32)
+            .map(|face| FaceIndexRange {
+                index_offset: face * 3,
+                index_count: 3,
+            })
+            .collect(),
+    }
+}
+
+/// Per terminus, the probes `light` gates on `layout` against `triangles`.
+fn gated_probes(
+    light: MapLight,
+    layout: &ProbeGridLayout,
+    triangles: &[[[f32; 3]; 3]],
+) -> [u64; 2] {
+    let poses = plate_over_probes();
+    let geometry = geometry_of(triangles);
+    let (bvh, primitives, _) = build_bvh(&geometry).expect("bvh");
+    let lights = [GateLight {
+        source_index: 0,
+        light: &light,
+    }];
+    let probes = gate_probes(
+        &poses,
+        &lights,
+        &ProbeScene {
+            layout,
+            bvh: &bvh,
+            primitives: &primitives,
+            geometry: &geometry,
+        },
+        &BakeControl::unrestricted(),
+    );
+    match probes.as_slice() {
+        [] => [0, 0],
+        [light] => {
+            assert_eq!(light.movers.len(), 1);
+            light.movers[0].gated
+        }
+        _ => panic!("one light gated: {probes:?}"),
+    }
+}
+
+#[test]
+fn a_probe_behind_a_posed_brush_counts_when_the_light_reaches_it() {
+    let gated = gated_probes(point_light(PROBE_LIGHT, 100.0), &probe_line(), &[]);
+    assert_eq!(
+        gated,
+        [9, 0],
+        "every probe under the plate, none once it leaves"
+    );
+}
+
+#[test]
+fn an_invalid_probe_behind_a_posed_brush_is_never_counted() {
+    let mut layout = probe_line();
+    layout.validity[0] = 0;
+    layout.validity[4] = 0;
+    let gated = gated_probes(point_light(PROBE_LIGHT, 100.0), &layout, &[]);
+    assert_eq!(gated, [7, 0]);
+}
+
+#[test]
+fn a_probe_behind_a_posed_brush_past_the_falloff_range_is_not_counted() {
+    // In range when √(x² + 9) ≤ 4, so |x| ≤ 2.
+    let gated = gated_probes(point_light(PROBE_LIGHT, 4.0), &probe_line(), &[]);
+    assert_eq!(gated, [5, 0]);
+}
+
+#[test]
+fn a_probe_behind_a_posed_brush_outside_a_spots_outer_cone_is_not_counted() {
+    // Aimed straight down: probe x sits atan(|x| / 3) off the axis, 18° at
+    // |x| = 1 and 34° at |x| = 2, so a 25° outer cone holds |x| ≤ 1.
+    let mut spot = point_light(PROBE_LIGHT, 100.0);
+    spot.light_type = LightType::Spot;
+    spot.cone_direction = Some([0.0, -1.0, 0.0]);
+    spot.cone_angle_inner = Some(20f32.to_radians());
+    spot.cone_angle_outer = Some(25f32.to_radians());
+    let gated = gated_probes(spot, &probe_line(), &[]);
+    assert_eq!(gated, [3, 0]);
+}
+
+#[test]
+fn a_probe_behind_a_posed_brush_and_static_geometry_is_not_counted() {
+    // Probe x's segment crosses y 2 at x / 3, so a static slab there over
+    // x 0.2 to 5 shades the probes at x 1 to 4.
+    let slab = [
+        [[0.2, 2.0, -1.0], [5.0, 2.0, -1.0], [5.0, 2.0, 1.0]],
+        [[0.2, 2.0, -1.0], [5.0, 2.0, 1.0], [0.2, 2.0, 1.0]],
+    ];
+    let gated = gated_probes(point_light(PROBE_LIGHT, 100.0), &probe_line(), &slab);
+    assert_eq!(gated, [5, 0]);
+}
+
+/// A sun shining straight down, with no soft angle.
+fn overhead_sun() -> MapLight {
+    let mut sun = point_light(DVec3::ZERO, 0.0);
+    sun.light_type = LightType::Directional;
+    sun.cone_direction = Some([0.0, -1.0, 0.0]);
+    sun
+}
+
+#[test]
+fn a_directional_light_gates_the_probes_a_mover_covers_toward_it() {
+    // A sun's segment runs 10 km toward it, so the plate parked 100 m up
+    // still covers every probe.
+    let gated = gated_probes(overhead_sun(), &probe_line(), &[]);
+    assert_eq!(gated, [9, 9]);
+}
+
+#[test]
+fn a_directional_light_gates_the_texels_a_mover_covers_toward_it() {
+    // Floor texels at y 0: one under the plate, one 10 m along x past its
+    // edge. The plate covers the first at both termini, 100 m up included.
+    let poses = plate_over_probes();
+    let sun = overhead_sun();
+    let candidates = light_candidates(&sun, &poses);
+    let mut gate = TexelGate::new(&poses, &sun, &candidates);
+    let bounds = (Vec3::new(-0.5, -0.1, -0.5), Vec3::new(10.5, 0.1, 0.5));
+    assert!(gate.begin_chart(bounds), "the plate lies over the chart");
+    let lift = Vec3::Y * RAY_EPSILON;
+    for centre in [Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)] {
+        gate.add_texel(centre, centre + lift, 3);
+    }
+    let movers = gate.finish();
+    assert_eq!(movers.len(), 1);
+    assert_eq!(movers[0].gated, [1, 1]);
+    assert_eq!(movers[0].both, 1);
+    assert_eq!(movers[0].blocks[0], [3]);
 }

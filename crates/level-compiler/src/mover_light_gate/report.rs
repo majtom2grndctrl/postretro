@@ -2,18 +2,22 @@
 // is today's normal.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
+use super::lights::GateLights;
 use super::pose::{MoverPoses, Terminus};
 use super::side_count::SideCount;
 use super::tally::{GateTally, RowKey, RowTally};
+use crate::partition::Aabb;
 
 /// Lights an `info` line names before "and N more".
 const NAMED_LIGHTS: usize = 4;
 
-/// Log each not-analysed mover at debug, then per (mover, terminus) with
-/// rows one `info` line naming its gated lights, and per row one debug line
-/// with its counts. `light_label` names a light by source index.
-pub(crate) fn log_static_rows(
+/// Log each not-analysed mover and, when a mover is analysed, each
+/// not-analysed light at debug. Then per (mover, terminus) with rows one
+/// `info` line naming its gated lights, and per row one debug line with its
+/// counts. `light_label` names a light by source index.
+pub(crate) fn log_rows(
     poses: &MoverPoses,
+    lights: &GateLights<'_>,
     tally: &GateTally,
     light_label: impl Fn(usize) -> String,
 ) {
@@ -23,6 +27,15 @@ pub(crate) fn log_static_rows(
             mover.label,
             mover.reason
         );
+    }
+    if !poses.analysed.is_empty() {
+        for light in &lights.not_analysed {
+            log::debug!(
+                "[MoverLight] {} not analysed: {}",
+                light_label(light.source_index),
+                light.reason
+            );
+        }
     }
     let rows: Vec<(&RowKey, &RowTally)> = tally.rows().collect();
     for group in
@@ -43,7 +56,8 @@ pub(crate) fn log_static_rows(
             log::debug!(
                 "[MoverLight] {} {at}, {}: {} gated texel(s) est. ({} shared, {} differing) \
                  in {} cell block(s) ({} differing), mask est. {} B every gated, \
-                 {} B differing only, light inside: {}, gated centres {}",
+                 {} B differing only; {} gated probe(s) est. ({} shared, {} differing); \
+                 light inside: {}, gated centres {}, gated probe centres {}",
                 mover.label,
                 light_label(key.source_index),
                 row.gated_texels,
@@ -53,19 +67,12 @@ pub(crate) fn log_static_rows(
                 row.differing_blocks,
                 row.every_gated_estimate(),
                 row.differing_only_estimate(),
+                row.gated_probes,
+                row.shared_probes,
+                row.differing_probes(),
                 if row.light_inside { "yes" } else { "no" },
-                row.texel_centres.as_ref().map_or_else(
-                    || "none".to_string(),
-                    |bounds| format!(
-                        "({:.3}, {:.3}, {:.3})..({:.3}, {:.3}, {:.3}) m",
-                        bounds.min.x,
-                        bounds.min.y,
-                        bounds.min.z,
-                        bounds.max.x,
-                        bounds.max.y,
-                        bounds.max.z
-                    ),
-                ),
+                centres_phrase(row.texel_centres.as_ref()),
+                centres_phrase(row.probe_centres.as_ref()),
             );
         }
     }
@@ -110,6 +117,19 @@ fn name_lights(
         named.push(format!("and {} more", total - NAMED_LIGHTS));
     }
     named.join(", ")
+}
+
+/// Bounds as two corners in metres, or "none".
+fn centres_phrase(bounds: Option<&Aabb>) -> String {
+    bounds.map_or_else(
+        || "none".to_string(),
+        |bounds| {
+            format!(
+                "({:.3}, {:.3}, {:.3})..({:.3}, {:.3}, {:.3}) m",
+                bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z
+            )
+        },
+    )
 }
 
 fn terminus_phrase(waypoint: &str, terminus: Terminus) -> String {

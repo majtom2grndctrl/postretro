@@ -38,11 +38,12 @@ read at: af1aab9ef
 ## Delegated answers
 
 - **Module home.** `src/mover_light_gate.rs` plus `mover_light_gate/` (pose, segment, rows, probes, animated, side_count, report, cache). A thin adapter, `pipeline/lightmap_stage/mover_gate.rs`, keeps the large stage files small.
-- **Caching shape.** Two memos:
+- **Caching shape.** Three memos:
   - static-texel tallies, inside the lightmap stage;
-  - animated-texel and probe tallies, after `StageId::AnimatedWeightMaps`.
+  - probe tallies, at the probe gate before atlas prep, where it computes `probe_grid_layout` and traces the pre-cut BVH the SH bakes trace (corrected in task 3: the SH stage keeps no layout);
+  - animated-texel tallies, after `StageId::AnimatedWeightMaps`.
 
-  An animated-only edit (P7) then reruns only the second. Labels, side counts, not-analysed lists and the percentage are recomputed every build.
+  An animated-only edit (P7) reruns only the probe and animated memos. Labels, side counts, not-analysed lists and the percentage are recomputed every build.
 - **Subsystem tag.** `[MoverLight]`. Row 17 filters warn lines by this tag.
 - **Fixtures.** Integration tests generate small maps in-test as `tests/buried_lights_compile.rs` does. One hand map, `content/dev/maps/test_mover_light_gate.map`, serves the in-process window test. The crate is binary-only (`fixture_pipeline.rs:3-8`), so in-process tests live inside the crate.
 - **Side count.**
@@ -50,6 +51,8 @@ read at: af1aab9ef
   - A light reaches a mover when its falloff sphere at its authored origin touches the swept bounds; a sun always reaches. Spot cones are not narrowed.
   - For a carried light this test is a superset of the exact one, because the light moves with its mover.
 - **Blocks across layers.** Per-partition distinct block counts are summed per row. This is exact because each `CellBlock` sits in one layer, and a partition is one (light, layer).
+- **Probes inside a posed brush** count as gated, as texels do ("covered means dark").
+- **Animated weights.** The weight bake drops weights ≤ 1e-6, so "lit" for an animated texel means a stored weight.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
 ## AC-to-proof
@@ -66,8 +69,8 @@ Rows are numbered in brief order: Automated, then Manual.
 | 6 shared + differing = union; estimates ordered; P5 | proptest in `mover_light_gate/rows.rs` + P5 generated map | achievable as stated |
 | 7 single-block estimate; percentage divisor; n/a | unit tests (arithmetic, n/a) + subprocess divisor check against the PRL section table | achievable as stated |
 | 8 non-meeting light has no row; probe-only row | compile file | achievable as stated |
-| 9 probe exclusions (range, cone, static, invalid) | compile file + unit test on a hand-built probe layout | achievable as stated |
-| 10 directional, animated ordering, SDF not analysed | compile file | achievable as stated |
+| 9 probe exclusions (range, cone, static, invalid) | unit tests on a hand-built probe line (`mover_light_gate::tests`) | achievable as stated |
+| 10 directional, animated ordering, SDF not analysed | compile file (animated, SDF) + unit tests on `TexelGate` and `gate_probes` (directional: no sun lights anything in a sealed generated map) | achievable as stated |
 | 11 spin-axis movers not analysed; zero axis analysed | compile file | achievable as stated |
 | 12 three-waypoint mover uses first and last | compile file | achievable as stated |
 | 13 inside flag at one terminus only (P6) | compile file | achievable as stated |
@@ -87,8 +90,8 @@ Rows are numbered in brief order: Automated, then Manual.
 |---|---|---|---|---|
 | 1 | Thinnest slice: termini, posing, inclusive segment-vs-brush test, inside test, static gate on the producing worker (compose path, uncached), `debug`/`info` rows; `setpiece_wall` closed rows green | worker | — | done: `mover_light_gate_setpiece` (1, 11.4 s, not ignored), `mover_light_gate::tests` (7); closed rows = the five non-shaft lights, gated-centre AABBs on the far side of the wall; packed PRL byte-identical; gate ≈0.64 s CPU, wall time within noise |
 | 2 | Shared/differing sets, touched (row, block), both estimates, proptest | worker | 1 | done: `rows::tests` proptest (row 6) + single-block estimate (row 7), `mover_light_gate_compile` P5 |
-| 3 | Probe gate: reuse the SH stage's `ProbeGridLayout`, per light in parallel under permits | worker | 1 | |
-| 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | |
+| 3 | Probe gate: reuse the SH stage's `ProbeGridLayout`, per light in parallel under permits | worker | 1 | done: `pipeline/mover_light_stage.rs`, runs before atlas prep; row 9 unit tests (4 exclusions); setpiece rows 1–2 probe halves; 4 ms on `mover-setpiece` |
+| 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | done: rows 8, 10, 13, 14, 17 in `mover_light_gate_compile` (6 pass); animated-vs-static parity test |
 | 5 | Side count: dynamic lights vs swept bounds, carried via `carried_light_links` | worker | 1 | done: `mover_light_gate_setpiece` row 5 (room: lamp carried, 0 other; wall: 0/0) |
 | 6 | Report: Build Summary through `Reporter` (3 implementors), id 22/25/42 bytes from `pack.rs`, pinned ordering | worker | 2, 5 | |
 | 7 | Two memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | integrating executor | 2–4 | |

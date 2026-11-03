@@ -1,5 +1,6 @@
-//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks when closed, and where;
-//! each mover's side count.
+//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks when closed and
+//! `setpiece_room` blocks at either end, the texels and probes they gate and where; each
+//! mover's side count.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod prl_build_support;
@@ -31,6 +32,11 @@ const ARENA_LIGHTS: [&str; 3] = ["256 256 256", "640 320 192", "368 560 288"];
 const BACK_ROOM_LIGHTS: [&str; 2] = ["240 1376 256", "1000 1376 256"];
 const SHAFT_LIGHT: &str = "992 320 288";
 const CLOSED: &str = "kinematic_mover 'setpiece_wall' at first waypoint 'setpiece_wall_closed'";
+const LOWERED: &str = "kinematic_mover 'setpiece_room' at first waypoint 'setpiece_room_lowered'";
+const RAISED: &str = "kinematic_mover 'setpiece_room' at last waypoint 'setpiece_room_raised'";
+/// The arena's point lights; the spot is aimed at the wall, away from the
+/// shaft.
+const ARENA_POINT_LIGHTS: [&str; 2] = ["256 256 256", "640 320 192"];
 /// `setpiece_room_lamp`, the dynamic light `setpiece_room` carries.
 const ROOM_LAMP: &str = "'light_dynamic' at origin \"992 320 -56\"";
 
@@ -75,17 +81,68 @@ fn compile_setpiece() -> String {
     logs
 }
 
-/// One closed-terminus debug row: the light's authored origin and the world
-/// bounds of its gated texel centres.
-struct Row {
-    origin: String,
-    min_x: f64,
-    max_x: f64,
+/// World bounds of gated centres, as a row prints them.
+#[derive(Debug, Clone, Copy)]
+struct Bounds {
+    min: [f64; 3],
+    max: [f64; 3],
 }
 
-fn closed_rows(logs: &str) -> Vec<Row> {
+/// The bounds after `marker` in `line`; `None` when it prints "none".
+fn bounds_after(line: &str, marker: &str) -> Option<Bounds> {
+    let rest = line
+        .split(marker)
+        .nth(1)
+        .unwrap_or_else(|| panic!("`{marker}` in {line}"));
+    if rest.starts_with("none") {
+        return None;
+    }
+    let corners = rest
+        .strip_prefix('(')
+        .and_then(|rest| rest.split(") m").next())
+        .unwrap_or_else(|| panic!("bounds after `{marker}` in {line}"));
+    let numbers: Vec<f64> = corners
+        .replace(")..(", ", ")
+        .split(", ")
+        .map(|number| number.parse().expect("a coordinate"))
+        .collect();
+    assert_eq!(numbers.len(), 6, "two corners: {line}");
+    Some(Bounds {
+        min: [numbers[0], numbers[1], numbers[2]],
+        max: [numbers[3], numbers[4], numbers[5]],
+    })
+}
+
+/// The number before `marker` in `text`.
+fn number_before(text: &str, marker: &str) -> u64 {
+    let head = text
+        .split(marker)
+        .next()
+        .filter(|head| head.len() < text.len())
+        .unwrap_or_else(|| panic!("`{marker}` in {text}"));
+    head.rsplit([' ', '('])
+        .next()
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("a count before `{marker}` in {text}"))
+}
+
+/// One debug row: its light's authored origin, counts and gated bounds.
+#[derive(Debug)]
+struct Row {
+    origin: String,
+    gated_texels: u64,
+    shared_texels: u64,
+    differing_texels: u64,
+    gated_probes: u64,
+    shared_probes: u64,
+    texels: Option<Bounds>,
+    probes: Option<Bounds>,
+}
+
+/// The debug rows of `prefix`, a mover at one terminus.
+fn rows(logs: &str, prefix: &str) -> Vec<Row> {
     logs.lines()
-        .filter(|line| line.starts_with("[DEBUG") && line.contains(&format!("{CLOSED}, ")))
+        .filter(|line| line.starts_with("[DEBUG") && line.contains(&format!("{prefix}, ")))
         .map(|line| {
             let origin = line
                 .split("at origin \"")
@@ -93,30 +150,25 @@ fn closed_rows(logs: &str) -> Vec<Row> {
                 .and_then(|rest| rest.split('"').next())
                 .unwrap_or_else(|| panic!("row names its light by origin: {line}"))
                 .to_string();
-            let bounds = line
-                .split("gated centres (")
-                .nth(1)
-                .unwrap_or_else(|| panic!("row carries gated centres: {line}"));
-            let numbers: Vec<f64> = bounds
-                .trim_end_matches(") m")
-                .replace(")..(", ", ")
-                .split(", ")
-                .map(|number| number.parse().expect("a coordinate"))
-                .collect();
-            assert_eq!(numbers.len(), 6, "two corners: {line}");
+            let (_, probes) = line
+                .split_once("; ")
+                .unwrap_or_else(|| panic!("probe counts follow the texel estimate: {line}"));
             Row {
                 origin,
-                min_x: numbers[0],
-                max_x: numbers[3],
+                gated_texels: number_before(line, " gated texel(s)"),
+                shared_texels: number_before(line, " shared,"),
+                differing_texels: number_before(line, " differing) in"),
+                gated_probes: number_before(probes, " gated probe(s)"),
+                shared_probes: number_before(probes, " shared,"),
+                texels: bounds_after(line, "gated centres "),
+                probes: bounds_after(line, "gated probe centres "),
             }
         })
         .collect()
 }
 
-#[test]
-fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_wall() {
-    let logs = setpiece_logs();
-
+/// No gate line at warn or above.
+fn assert_gate_never_warns(logs: &str) {
     let warned: Vec<&str> = logs
         .lines()
         .filter(|line| line.contains("[MoverLight]"))
@@ -127,6 +179,12 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         "the gate never warns:\n{}",
         warned.join("\n")
     );
+}
+
+#[test]
+fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_wall() {
+    let logs = setpiece_logs();
+    assert_gate_never_warns(logs);
 
     let info: Vec<&str> = logs
         .lines()
@@ -139,7 +197,7 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         info[0]
     );
 
-    let rows = closed_rows(logs);
+    let rows = rows(logs, CLOSED);
     let mut origins: Vec<&str> = rows.iter().map(|row| row.origin.as_str()).collect();
     origins.sort_unstable();
     let mut expected: Vec<&str> = ARENA_LIGHTS
@@ -158,38 +216,96 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         "the shaft light is in no setpiece_wall row"
     );
 
-    // Where the gated texels lie: an arena light's never reach past the
-    // wall's arena face into the arena, and reach the back room; a back-room
-    // light's mirror that.
+    // Where the gated texels and probes lie: an arena light's never reach
+    // past the wall's arena face into the arena, and reach the back room; a
+    // back-room light's mirror that. A probe inside the closed wall counts:
+    // covered means dark.
     for row in &rows {
-        if ARENA_LIGHTS.contains(&row.origin.as_str()) {
-            assert!(
-                row.max_x <= engine_x(WALL_ARENA_FACE_Y) + SLACK_M,
-                "arena light {} gates a texel on the arena side: max x {}",
-                row.origin,
-                row.max_x
-            );
-            assert!(
-                row.min_x < engine_x(BACK_ROOM_EDGE_Y),
-                "arena light {} gates no back-room texel: min x {}",
-                row.origin,
-                row.min_x
-            );
-        } else {
-            assert!(
-                row.min_x >= engine_x(WALL_BACK_FACE_Y) - SLACK_M,
-                "back-room light {} gates a texel on the back-room side: min x {}",
-                row.origin,
-                row.min_x
-            );
-            assert!(
-                row.max_x > engine_x(ARENA_EDGE_Y),
-                "back-room light {} gates no arena texel: max x {}",
-                row.origin,
-                row.max_x
-            );
+        assert!(row.gated_probes > 0, "light {} gates no probe", row.origin);
+        let texels = row.texels.expect("gated texel bounds");
+        let probes = row.probes.expect("gated probe bounds");
+        for (what, bounds) in [("texel", texels), ("probe", probes)] {
+            let (min_x, max_x) = (bounds.min[0], bounds.max[0]);
+            if ARENA_LIGHTS.contains(&row.origin.as_str()) {
+                assert!(
+                    max_x <= engine_x(WALL_ARENA_FACE_Y) + SLACK_M,
+                    "arena light {} gates a {what} on the arena side: max x {max_x}",
+                    row.origin,
+                );
+                assert!(
+                    min_x < engine_x(BACK_ROOM_EDGE_Y),
+                    "arena light {} gates no back-room {what}: min x {min_x}",
+                    row.origin,
+                );
+            } else {
+                assert!(
+                    min_x >= engine_x(WALL_BACK_FACE_Y) - SLACK_M,
+                    "back-room light {} gates a {what} on the back-room side: min x {min_x}",
+                    row.origin,
+                );
+                assert!(
+                    max_x > engine_x(ARENA_EDGE_Y),
+                    "back-room light {} gates no arena {what}: max x {max_x}",
+                    row.origin,
+                );
+            }
         }
     }
+}
+
+/// The rising room's shaft, in engine metres: Quake x 832 to 1152 and y 160
+/// to 480 under the arena floor (engine y 0), down to the shaft floor.
+fn inside_shaft(bounds: &Bounds) -> bool {
+    let (x_min, x_max) = (engine_x(480.0), engine_x(160.0));
+    let (z_min, z_max) = (-1152.0 * UNIT, -832.0 * UNIT);
+    let floor = -192.0 * UNIT;
+    bounds.min[0] >= x_min - SLACK_M
+        && bounds.max[0] <= x_max + SLACK_M
+        && bounds.min[2] >= z_min - SLACK_M
+        && bounds.max[2] <= z_max + SLACK_M
+        && bounds.min[1] >= floor - SLACK_M
+        && bounds.max[1] <= SLACK_M
+}
+
+#[test]
+fn setpiece_room_gates_the_shaft_lowered_and_the_arena_floor_raised() {
+    let logs = setpiece_logs();
+    assert_gate_never_warns(logs);
+    let lowered = rows(logs, LOWERED);
+    let raised = rows(logs, RAISED);
+
+    for light in ARENA_POINT_LIGHTS {
+        let at = |rows: &[Row]| -> usize {
+            rows.iter()
+                .position(|row| row.origin == light)
+                .unwrap_or_else(|| panic!("a row for arena light {light}\n{logs}"))
+        };
+        let (low, high) = (&lowered[at(&lowered)], &raised[at(&raised)]);
+
+        // Lowered, the roof closes the shaft: the arena light's gated texels
+        // and probes all lie in it, and the raised room's floor, flush with
+        // the arena floor, still covers each of them.
+        assert!(low.gated_texels > 0 && low.gated_probes > 0, "{low:?}");
+        assert!(inside_shaft(&low.texels.expect("texels")), "{low:?}");
+        assert!(inside_shaft(&low.probes.expect("probes")), "{low:?}");
+        assert_eq!(low.shared_texels, low.gated_texels, "{low:?}");
+        assert_eq!(low.shared_probes, low.gated_probes, "{low:?}");
+        assert_eq!(high.shared_texels, low.shared_texels, "{high:?}");
+
+        // Raised, it gates texels the lowered room left lit, beyond the
+        // shaft's footprint.
+        assert!(high.differing_texels > 0, "{high:?}");
+        assert!(!inside_shaft(&high.texels.expect("texels")), "{high:?}");
+    }
+    // The light nearest the arena floor's far corner gates nothing above the
+    // floor raised: its texels beyond the shaft are arena floor in the
+    // room's shadow.
+    let corner = raised
+        .iter()
+        .find(|row| row.origin == ARENA_POINT_LIGHTS[0])
+        .expect("a raised row");
+    let texels = corner.texels.expect("texels");
+    assert!(texels.max[1].abs() <= SLACK_M, "{corner:?}");
 }
 
 /// The `debug` side-count line of mover `name`.
@@ -208,6 +324,7 @@ fn side_count_line<'a>(logs: &'a str, name: &str) -> &'a str {
 #[test]
 fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
     let logs = setpiece_logs();
+    assert_gate_never_warns(logs);
 
     let room = side_count_line(logs, "setpiece_room");
     let carried = room

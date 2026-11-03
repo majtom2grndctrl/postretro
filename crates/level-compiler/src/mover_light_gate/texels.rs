@@ -1,14 +1,12 @@
-// Gating one light's lit texels in one lightmap partition, at both termini of
-// every mover the light may meet.
+// Gating one light's lit texels at both termini of every mover the light may
+// meet; here, over one static lightmap partition.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use glam::Vec3;
 
 use super::pose::{MoverPoses, Terminus};
 use super::rows::MoverTexels;
-use super::segment::{
-    BOX_SLACK_M, boxes_may_touch, point_touches_brush, segment_may_touch_box, segment_touches_brush,
-};
+use super::segment::{BOX_SLACK_M, boxes_may_touch, point_touches_brush};
 use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::hard_ray_target;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
@@ -75,60 +73,96 @@ pub(crate) fn gate_partition(
     partition: &LightmapLayer,
     charts: impl Iterator<Item = (usize, Option<(Vec3, Vec3)>)>,
 ) -> Vec<MoverTexels> {
-    let mut tallies: Vec<MoverTexels> = candidates.iter().map(MoverTexels::new).collect();
-    // Per chart: which candidate poses its segments can reach at all.
-    let mut live: Vec<[bool; 2]> = vec![[false; 2]; candidates.len()];
+    let mut gate = TexelGate::new(poses, light, candidates);
     for (chart_index, bounds) in charts {
-        let Some(hull) = bounds.map(|bounds| segment_hull(light, bounds)) else {
-            continue;
-        };
-        let mut any_live = false;
-        for (slot, candidate) in candidates.iter().enumerate() {
-            let analysed = &poses.analysed[candidate.mover];
-            live[slot] = Terminus::BOTH.map(|terminus| match candidate.inside[terminus.index()] {
-                None => false,
-                Some(true) => true,
-                Some(false) => boxes_may_touch(&hull, &analysed.pose(terminus).bounds),
-            });
-            any_live |= live[slot].contains(&true);
-        }
-        if !any_live {
+        if !bounds.is_some_and(|bounds| gate.begin_chart(bounds)) {
             continue;
         }
         let block = shared.layout.chart_blocks[chart_index];
         for_each_lit_texel(shared, partition, chart_index, |centre, lifted| {
-            let end = hard_ray_target(centre, light).as_dvec3();
-            let (start, centre) = (lifted.as_dvec3(), centre.as_dvec3());
-            for (slot, candidate) in candidates.iter().enumerate() {
-                let analysed = &poses.analysed[candidate.mover];
-                let mut mask = 0u8;
-                for terminus in Terminus::BOTH {
-                    let k = terminus.index();
-                    if !live[slot][k] {
-                        continue;
-                    }
-                    let pose = analysed.pose(terminus);
-                    let gated = candidate.inside[k] == Some(true)
-                        || (segment_may_touch_box(start, end, &pose.bounds)
-                            && pose
-                                .brushes
-                                .iter()
-                                .any(|brush| segment_touches_brush(start, end, brush)));
-                    if gated {
-                        mask |= terminus.bit();
-                    }
-                }
-                if mask != 0 {
-                    tallies[slot].add(mask, centre, block);
-                }
-            }
+            gate.add_texel(centre, lifted, block);
         });
     }
-    tallies.retain(|tally| tally.gated.iter().any(|&count| count > 0));
-    for tally in &mut tallies {
-        tally.finish();
+    gate.finish()
+}
+
+/// One light's texel gate over the charts it lit, shared by the static
+/// partitions and the animated weights so both tiers test a texel alike.
+pub(crate) struct TexelGate<'a> {
+    poses: &'a MoverPoses,
+    light: &'a MapLight,
+    candidates: &'a [CandidateMover],
+    tallies: Vec<MoverTexels>,
+    /// Per candidate, for the current chart: which termini its segments can
+    /// reach at all.
+    live: Vec<[bool; 2]>,
+}
+
+impl<'a> TexelGate<'a> {
+    pub(crate) fn new(
+        poses: &'a MoverPoses,
+        light: &'a MapLight,
+        candidates: &'a [CandidateMover],
+    ) -> Self {
+        Self {
+            poses,
+            light,
+            candidates,
+            tallies: candidates.iter().map(MoverTexels::new).collect(),
+            live: vec![[false; 2]; candidates.len()],
+        }
     }
-    tallies
+
+    /// Start a chart whose padded texel bounds are `bounds`; `false` when no
+    /// candidate pose can meet its segments, so its texels need no test.
+    pub(crate) fn begin_chart(&mut self, bounds: (Vec3, Vec3)) -> bool {
+        let hull = segment_hull(self.light, bounds);
+        let mut any_live = false;
+        for (live, candidate) in self.live.iter_mut().zip(self.candidates) {
+            let analysed = &self.poses.analysed[candidate.mover];
+            *live = Terminus::BOTH.map(|terminus| match candidate.inside[terminus.index()] {
+                None => false,
+                Some(true) => true,
+                Some(false) => boxes_may_touch(&hull, &analysed.pose(terminus).bounds),
+            });
+            any_live |= live.contains(&true);
+        }
+        any_live
+    }
+
+    /// Gate one lit texel of the current chart, in cell block `block`:
+    /// `centre` is where the bake anchored it, `lifted` where its segments
+    /// start.
+    pub(crate) fn add_texel(&mut self, centre: Vec3, lifted: Vec3, block: u32) {
+        let end = hard_ray_target(centre, self.light).as_dvec3();
+        let start = lifted.as_dvec3();
+        for (slot, candidate) in self.candidates.iter().enumerate() {
+            let analysed = &self.poses.analysed[candidate.mover];
+            let mut mask = 0u8;
+            for terminus in Terminus::BOTH {
+                let k = terminus.index();
+                let gated = self.live[slot][k]
+                    && (candidate.inside[k] == Some(true)
+                        || analysed.pose(terminus).segment_touches(start, end));
+                if gated {
+                    mask |= terminus.bit();
+                }
+            }
+            if mask != 0 {
+                self.tallies[slot].add(mask, centre.as_dvec3(), block);
+            }
+        }
+    }
+
+    /// The movers with a gated texel, block lists made distinct.
+    pub(crate) fn finish(mut self) -> Vec<MoverTexels> {
+        self.tallies
+            .retain(|tally| tally.gated.iter().any(|&count| count > 0));
+        for tally in &mut self.tallies {
+            tally.finish();
+        }
+        self.tallies
+    }
 }
 
 /// World bounds of every segment a chart's texels trace toward `light`,

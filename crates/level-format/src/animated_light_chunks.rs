@@ -26,8 +26,10 @@ pub const MAX_ANIMATED_LIGHTS_PER_CHUNK: usize = 4;
 /// record independent of atlas packing changes.
 ///
 /// `(index_offset, index_count)` points into the section's flat
-/// `light_indices` pool. Light indices are into the **filtered** light list
-/// (same namespace as `AlphaLightsSection` / `LightInfluenceSection`).
+/// `light_indices` pool. Light indices are animated baked light slots: the
+/// GPU `AnimationDescriptor` buffer's namespace, shared with
+/// `TexelLight::light_index` in id 25, not the `AlphaLightsSection` /
+/// `LightInfluenceSection` namespace.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnimatedLightChunk {
     pub aabb_min: [f32; 3],

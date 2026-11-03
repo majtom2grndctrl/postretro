@@ -42,9 +42,20 @@ pub(super) struct SectionFootprint {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct PrlFootprint {
+pub(crate) struct PrlFootprint {
     pub(super) sections: Vec<SectionFootprint>,
     pub(super) payload_bytes: u64,
+}
+
+impl PrlFootprint {
+    /// Summed payload bytes of the sections in `ids`; an absent section adds 0.
+    pub(crate) fn payload_bytes_of(&self, ids: &[SectionId]) -> u64 {
+        self.sections
+            .iter()
+            .filter(|section| section.section_name.is_some_and(|name| ids.contains(&name)))
+            .map(|section| section.payload_bytes)
+            .sum()
+    }
 }
 
 /// Summarize the planned payloads without invoking their one-shot encoders.
@@ -722,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn section_footprint_includes_optional_sections_only_when_emitted() {
+    fn section_footprint_includes_optional_sections_only_when_emitted_and_sums_them_by_id() {
         let required = SectionDescriptor {
             section_id: SectionId::Geometry as u32,
             version: 1,
@@ -755,6 +766,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![SectionId::Geometry as u32, SectionId::Lightmap as u32]
         );
+        let family = [SectionId::Lightmap, SectionId::ShadowmaskAtlas];
+        assert_eq!(without_optional.payload_bytes_of(&family), 0);
+        assert_eq!(with_optional.payload_bytes_of(&family), 5);
     }
 
     #[test]

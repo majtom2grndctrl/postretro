@@ -17,6 +17,8 @@ pub(in crate::pipeline) struct MetadataCounts {
     pub(in crate::pipeline) eligible_lights: usize,
     pub(in crate::pipeline) primitives: usize,
     largest_light_input: usize,
+    /// Movers the mover light gate poses; zero leaves the gate out.
+    pub(in crate::pipeline) analysed_movers: usize,
 }
 
 impl MetadataCounts {
@@ -56,6 +58,15 @@ impl MetadataCounts {
                 })
                 .max()
                 .unwrap_or(0),
+            analysed_movers: 0,
+        }
+    }
+
+    /// The counts with the mover light gate's analysed movers.
+    pub(in crate::pipeline) fn with_movers(self, analysed_movers: usize) -> Self {
+        Self {
+            analysed_movers,
+            ..self
         }
     }
 }
@@ -75,6 +86,19 @@ pub(super) fn hash_table_bytes(entries: u64, entry_bytes: usize) -> u64 {
         .saturating_mul(4)
         .saturating_mul(entry_bytes as u64 + 1)
         .saturating_add(128)
+}
+
+/// Charts on the most crowded bake layer: the most one partition walks.
+fn largest_layer_charts(prepared: &PreparedAtlas) -> u64 {
+    let mut per_layer: Vec<u64> = Vec::new();
+    for placement in &prepared.placements {
+        let layer = placement.layer as usize;
+        if per_layer.len() <= layer {
+            per_layer.resize(layer + 1, 0);
+        }
+        per_layer[layer] += 1;
+    }
+    per_layer.into_iter().max().unwrap_or(0)
 }
 
 pub(super) fn predicted_metadata(
@@ -120,7 +144,14 @@ pub(super) fn predicted_metadata(
     // Each admitted partition may be writing through the cache's 64 KiB
     // BufWriter beside its serialized payload; section writers also use it.
     let io_scratch = (window as u64).saturating_add(2).saturating_mul(64 * 1024);
+    let gate = super::mover_gate::predicted_gate_bytes(
+        lights,
+        counts.analysed_movers as u64,
+        workers,
+        largest_layer_charts(prepared),
+    );
     let stage = prefixes
+        .saturating_add(gate)
         .saturating_add(light_lists)
         .saturating_add(key_scratch)
         .saturating_add(chart_lists)
@@ -129,13 +160,23 @@ pub(super) fn predicted_metadata(
         .saturating_add(io_scratch);
     // Every Cartesian pair is still touched, including empty partitions. The
     // stage itself stores no such matrix, but StageCache retains one key/length
-    // record per touched entry until final journal publication.
-    let cache_entries = layers.saturating_mul(lights).saturating_add(2);
+    // record per touched entry until final journal publication. With a mover,
+    // each layer light may touch one gate memo entry too.
+    let (gate_entries, stage_maps) = if counts.analysed_movers > 0 {
+        (lights, 4)
+    } else {
+        (0, 3)
+    };
+    let cache_entries = layers
+        .saturating_mul(lights)
+        .saturating_add(gate_entries)
+        .saturating_add(2);
     let cache = hash_table_bytes(cache_entries, size_of::<([u8; 32], u64)>())
-        // StageCache's outer B-tree holds three stage maps. Final publication
-        // also flattens the per-stage maps and serializes key/length records.
+        // StageCache's outer B-tree holds one map per stage the walk touches.
+        // Final publication also flattens the per-stage maps and serializes
+        // key/length records.
         .saturating_add(cache_entries.saturating_mul(3 * 41 + 40 + 16))
-        .saturating_add(3 * 1024);
+        .saturating_add(stage_maps * 1024);
     let ownership = crate::shadowmask_bake::metadata_bytes(
         prepared,
         counts.spec_lights,

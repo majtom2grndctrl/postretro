@@ -170,8 +170,11 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) metadata: FinalizedClusterMetadata<'a>,
 }
 
-/// Publish a final PRL using the previously baked metadata and exact SH view.
-pub(super) fn write_finalized_prl(inputs: FinalizedPrlPackInputs<'_>) -> anyhow::Result<()> {
+/// Publish a final PRL using the previously baked metadata and exact SH view;
+/// the payload footprint of the sections written.
+pub(super) fn write_finalized_prl(
+    inputs: FinalizedPrlPackInputs<'_>,
+) -> anyhow::Result<crate::pack::PrlFootprint> {
     let FinalizedPrlPackInputs {
         output,
         geo_result,

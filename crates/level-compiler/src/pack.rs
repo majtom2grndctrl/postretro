@@ -95,6 +95,7 @@ pub use spatial::{encode_cell_locator, encode_cells, encode_portals};
 #[path = "pack_output.rs"]
 mod pack_output;
 
+pub(crate) use pack_output::PrlFootprint;
 #[cfg(test)]
 use pack_output::write_and_validate_sections;
 use pack_output::{
@@ -499,8 +500,10 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         animated_billboard_direct_scatter_delta_volumes,
         None,
     )
+    .map(|_| ())
 }
 
+/// Pack and publish the PRL; the payload footprint of the sections written.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
     output: &Path,
@@ -558,7 +561,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         FinalizedShPack<'_>,
         &crate::cluster_directory_bake::ClusterDirectoryBake,
     )>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PrlFootprint> {
     let texture_cache_keys_section = TextureCacheKeysSection {
         keys: geo_result
             .texture_names
@@ -732,7 +735,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         footprint.payload_bytes,
     );
 
-    Ok(())
+    Ok(footprint)
 }
 
 #[cfg(test)]

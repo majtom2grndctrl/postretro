@@ -24,6 +24,9 @@ Derived from source. The owner can veto these.
 - **D9. One producer fact.** The marker template binds one stable fact, `inRange` (Bool). Nothing else is stamped: no distance and no progress, since the HUD bars already show progress.
 - **D10. Anchor.** The marker reads the template's `worldAnchor` like any overlay, with one change: its fallback is the pawn's presented origin plus `offsetY`, never the hitbox top. A pawn's origin is its capsule centre, which drops when posture is `crouch`. The dev player's hitbox spans the standing capsule whatever the posture (`content/dev/scripts/player.ts`), so a hitbox-top anchor would float half a metre above a downed pawn. A posed socket still wins when the model has one.
 - **D11. Markers and damaged-enemy bars have separate pool keys.** Keeping, clearing or capping one overlay kind never removes the other kind's instances. Level unload and staged reload clear both.
+- **D12. SDK shape (was Q1).** `presentationOverlays` accepts one descriptor or an array, at most one per kind. No second manifest field.
+- **D13. Source name (was Q2).** The source builder is `assistableTeammates()`. Its `kind` string is `"assistableTeammates"`. Overlays are host-local manifest data and never cross the wire.
+- **D14. Prompt scope (was Q3).** The prompt shows only on the teammate a hold would revive (see D8), not on every teammate in range.
 
 ### Scripting surface
 
@@ -42,7 +45,7 @@ export const reviveMarker = definePresentationTemplate({
   ]),
   lifetimeMs: 1, motion: { rise: 0, easing: "linear" }, fade: { startMs: 1 },
   spawnScatter: { radius: 0 },
-  worldAnchor: { socket: "head", offsetY: 0.6 },
+  worldAnchor: { offsetY: 0.6 }, // `socket` is optional; the dev player model has no `head` socket
 });
 
 export const reviveMarkerOverlay = defineOverlay({
@@ -51,7 +54,7 @@ export const reviveMarkerOverlay = defineOverlay({
 // defineMod({ ..., presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay] })
 ```
 
-The array form and the name `assistableTeammates` are proposals. See Open questions.
+The array form and the name `assistableTeammates` are settled (D12, D13).
 
 ## Acceptance
 
@@ -93,17 +96,31 @@ Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
 Non-binding.
 
 - **Overlay surface (rival).** `PresentationOverlaySource` is already a kind-tagged enum. Internally the manifest already carries `Vec<PresentationOverlay>`, and `replace_presentation_overlays` documents "disjoint key namespace" as the planned extension. Growing the existing field to accept one descriptor or an array, with at most one per kind, follows that design. The rival is a second manifest field per kind. It avoids changing the accepted shape, but every future kind would need its own field, drain and typedef.
-- **Pool keys (riskiest; build this first).** `PresentationPool.overlays` is keyed by `EntityId`. The damaged-enemy paths call `retain_overlays` and `clear_overlays` on the whole map. Key the map by (source kind, entity), or split it into one map per kind, and scope those calls to their kind. Prove R8 before building anything on top.
+- **Pool keys (riskiest; build this first).** `PresentationPool.overlays` is keyed by `EntityId`. Change the key to (overlay kind, entity) before anything else in T2. Every whole-map operation becomes kind-scoped:
+  - `retain_overlays` and `clear_overlays`;
+  - linger expiry (`presentation_pool.rs:109`);
+  - the caps in `refresh_overlay` and `upsert_authoritative_overlay` (`:270`, `:315`);
+  - the tracked-id iterator (`impact_policy.rs:942`).
+
+  Create markers as authoritative overlays, or linger expiry deletes them every frame. Prove R8 and R13 before building on top.
+- **No-config clears.** With no damaged-enemy config, the host roster path and the client anchor path both call `pool.clear_overlays()` (`overlays.rs:246`, `:371`). Those clears must touch only the damaged-enemy kind. R13 covers this.
+- **Listen-host pose timing.** Measure in-range before `host_present_client_pawns` (`frame_loop/mod.rs:1634`), against the authoritative pose, as the assist pass does. Stamp the marker anchor after it, from the presented (delayed) pose, including the socket lookup. R14 covers this.
+- **Template glyph re-resolution.** Resolve glyphs at both sites where raw templates reach the renderer: `staged_manifest_lifecycle.rs:287` and `splash_lifecycle.rs:628`. Add a token that changes when glyph art finishes loading, because `GlyphArtState` loads lazily once the renderer is ready, after templates install. Re-resolve when only the template changes on a reload, which does not bump the binding generation (`binding_state.rs:104`). R15 covers this.
 - **Client config.** `client_overlay_config()` reads `.first()`, and `replace_presentation_overlays` rejects more than one overlay. Both need per-kind lookup. Binding an `assistableTeammates` overlay needs no IR.
 - **Producer home.** Put the producer in a new `client_assist/markers.rs`, not in `impact_policy.rs` (4172 lines) or `main.rs`. Like `glue::ui_projection`, it dispatches on endpoint: the client reads `ClientReplication`, and the host and SP read the registry and `session.assist_state`. Call it once per frame after the overlay updates (`frame_loop` after `update_client_overlay_anchors`, and after the host or SP overlay branch). Reuse `gather_candidates` and `local_helper` from `glue.rs`, and widen their visibility rather than copying them. On the host, build `AssistCandidate`s the way `assist_pass` does.
-- **Template glyphs.** The renderer stores raw templates (`UiPass::replace_presentation_templates`), and `resolve_snapshot_glyphs` only walks the snapshot's trees. Resolve template roots app-side with the same `resolve_in`. Re-send them through `set_presentation_templates` only when the glyph inputs change: the binding table, device family or art generation. A re-send clears the instance layouts, which is acceptable at that rate.
+- **Template glyphs.** The renderer stores raw templates (`UiPass::replace_presentation_templates`), and `resolve_snapshot_glyphs` only walks the snapshot's trees. Resolve template roots app-side with the same `resolve_in`. Re-send them through `set_presentation_templates` only when the glyph inputs change: the binding table, device family, the art-loaded token, or the templates themselves. A re-send clears the instance layouts, which is acceptable at that rate.
 
 **Suggested split:**
 - **T1 [Opus]:** SDK and scripting-core contract. Covers the array form in the JS and Luau drains, `assistableTeammates` in both runtimes, `Glyph` in all three validators, the typedef template and regenerated `sdk/types`, and the per-kind runtime config. Delivers R1–R3 and R10.
-- **T2 [Opus]:** pool key split, the producer for both roles, the anchor fallback, and app-side template glyph resolution. Delivers R4–R9.
+- **T2a [Opus]:** the pool key split to (overlay kind, entity) and kind-scoped retain, clear, linger expiry, caps and tracked-id iterator, with markers created as authoritative. Delivers R8 and R13's pool-only rows.
+- **T2b [Opus]:** the marker producer for both roles, the anchor fallback, the no-config clears, listen-host pose timing, and app-side template glyph resolution with its re-resolve token. Delivers R4–R7, R9, R13 (no-config clears), R14 and R15.
 - **T3 [Sonnet]:** the dev-mod template (in `combat-presentation.ts` or a new `revive-marker.ts`), wiring in `start-script.ts`, the docs (a short presentation-overlay section in `docs/scripting-reference.md`; `ui.md` §1 and §4; one sentence in `networking.md` that markers never cross the wire), and the M1 line. Delivers R11, R12 and M1.
 
-T1 and the pool split can run at the same time. T3 starts after T1.
+T1 and T2a can run at the same time. T2b and T3 start after T1, because they need the `AssistableTeammates` variant and per-kind config.
+
+**Builder notes:**
+- A resolved glyph label is fixed at font size 16, next to the template's 14 pt text.
+- The dev player model has no `head` socket, so M1 exercises the fallback anchor.
 
 ## Research pins
 
@@ -144,7 +161,6 @@ Constraints: no spec IDs in non-test source comments. Every command in `docs/` m
 
 ## Open questions
 
-- **Q1.** What shape should the SDK surface take: `presentationOverlays` accepting one descriptor or an array (recommended), or a second manifest field? This is a one-way door for modders. — owner — **blocks build**
-- **Q2.** What should the source builder be called? `assistableTeammates()` (recommended, since it names the selector, `assistable`) or `downedTeammates()`, which reads more naturally but assumes the mod's state is a "down". It also becomes the wire `kind` string. — owner — **blocks build**
-- **Q3.** Should the prompt show only on the teammate a hold would revive (D8), or on every teammate in range? D8 picks the first because a prompt on a second teammate would be false. — owner — not blocking (D8 stands unless vetoed)
-- **Q4.** How should the posed-socket anchor behave for remote pawns on a client? On a snapshot-apply frame the socket reads the registry pose, while the fallback reads the interpolated pose. — **delegated**
+Nothing is owner-blocking. Q1–Q3 are closed as D12–D14.
+
+- **Q4.** How should the posed-socket anchor behave for remote pawns on a client? On a snapshot-apply frame the socket reads the registry pose, while the fallback reads the interpolated pose. — builder note, **delegated**

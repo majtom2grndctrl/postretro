@@ -3,7 +3,9 @@
 
 mod pose;
 mod report;
+mod rows;
 mod segment;
+mod side_count;
 mod tally;
 mod texels;
 
@@ -11,6 +13,8 @@ mod texels;
 mod tests;
 
 pub(crate) use pose::MoverPoses;
-pub(crate) use report::log_static_rows;
+pub(crate) use report::{log_side_counts, log_static_rows};
+pub(crate) use rows::MoverTexels;
+pub(crate) use side_count::side_counts;
 pub(crate) use tally::GateTally;
-pub(crate) use texels::{CandidateMover, MoverTexels, gate_partition, light_candidates};
+pub(crate) use texels::{CandidateMover, gate_partition, light_candidates};

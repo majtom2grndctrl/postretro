@@ -3,6 +3,7 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use super::pose::{MoverPoses, Terminus};
+use super::side_count::SideCount;
 use super::tally::{GateTally, RowKey, RowTally};
 
 /// Lights an `info` line names before "and N more".
@@ -32,29 +33,26 @@ pub(crate) fn log_static_rows(
             continue;
         };
         let at = terminus_phrase(&mover.pose(key.terminus).waypoint, key.terminus);
-        let mut named: Vec<String> = group
-            .iter()
-            .take(NAMED_LIGHTS)
-            .map(|(key, _)| light_label(key.source_index))
-            .collect();
-        if group.len() > NAMED_LIGHTS {
-            named.push(format!("and {} more", group.len() - NAMED_LIGHTS));
-        }
         log::info!(
             "[MoverLight] {} {at} gates {} baked light(s): {}",
             mover.label,
             group.len(),
-            named.join(", "),
+            name_lights(group.iter().map(|(key, _)| key.source_index), &light_label),
         );
         for (key, row) in group {
             log::debug!(
-                "[MoverLight] {} {at}, {}: {} gated texel(s) est. ({} shared, {} differing), \
-                 light inside: {}, gated centres {}",
+                "[MoverLight] {} {at}, {}: {} gated texel(s) est. ({} shared, {} differing) \
+                 in {} cell block(s) ({} differing), mask est. {} B every gated, \
+                 {} B differing only, light inside: {}, gated centres {}",
                 mover.label,
                 light_label(key.source_index),
                 row.gated_texels,
                 row.shared_texels,
                 row.differing_texels(),
+                row.touched_blocks,
+                row.differing_blocks,
+                row.every_gated_estimate(),
+                row.differing_only_estimate(),
                 if row.light_inside { "yes" } else { "no" },
                 row.texel_centres.as_ref().map_or_else(
                     || "none".to_string(),
@@ -71,6 +69,47 @@ pub(crate) fn log_static_rows(
             );
         }
     }
+}
+
+/// Each analysed mover's side count at debug, naming its lights.
+pub(crate) fn log_side_counts(
+    poses: &MoverPoses,
+    counts: &[SideCount],
+    light_label: impl Fn(usize) -> String,
+) {
+    for count in counts {
+        let Some(mover) = poses.mover(count.mover_id) else {
+            continue;
+        };
+        let group = |lights: &[usize]| {
+            if lights.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", name_lights(lights.iter().copied(), &light_label))
+            }
+        };
+        log::debug!(
+            "[MoverLight] {} side count: {} carried dynamic light(s){}; {} other dynamic light(s){}",
+            mover.label,
+            count.carried.len(),
+            group(&count.carried),
+            count.others.len(),
+            group(&count.others),
+        );
+    }
+}
+
+/// Up to [`NAMED_LIGHTS`] light labels, then "and N more".
+fn name_lights(
+    lights: impl ExactSizeIterator<Item = usize>,
+    light_label: &impl Fn(usize) -> String,
+) -> String {
+    let total = lights.len();
+    let mut named: Vec<String> = lights.take(NAMED_LIGHTS).map(light_label).collect();
+    if total > NAMED_LIGHTS {
+        named.push(format!("and {} more", total - NAMED_LIGHTS));
+    }
+    named.join(", ")
 }
 
 fn terminus_phrase(waypoint: &str, terminus: Terminus) -> String {

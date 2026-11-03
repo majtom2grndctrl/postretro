@@ -45,6 +45,11 @@ read at: af1aab9ef
   An animated-only edit (P7) then reruns only the second. Labels, side counts, not-analysed lists and the percentage are recomputed every build.
 - **Subsystem tag.** `[MoverLight]`. Row 17 filters warn lines by this tag.
 - **Fixtures.** Integration tests generate small maps in-test as `tests/buried_lights_compile.rs` does. One hand map, `content/dev/maps/test_mover_light_gate.map`, serves the in-process window test. The crate is binary-only (`fixture_pipeline.rs:3-8`), so in-process tests live inside the crate.
+- **Side count.**
+  - Dynamic lights marked bake-only have no runtime presence, so they are left out.
+  - A light reaches a mover when its falloff sphere at its authored origin touches the swept bounds; a sun always reaches. Spot cones are not narrowed.
+  - For a carried light this test is a superset of the exact one, because the light moves with its mover.
+- **Blocks across layers.** Per-partition distinct block counts are summed per row. This is exact because each `CellBlock` sits in one layer, and a partition is one (light, layer).
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
 ## AC-to-proof
@@ -81,15 +86,15 @@ Rows are numbered in brief order: Automated, then Manual.
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 1 | Thinnest slice: termini, posing, inclusive segment-vs-brush test, inside test, static gate on the producing worker (compose path, uncached), `debug`/`info` rows; `setpiece_wall` closed rows green | worker | — | done: `mover_light_gate_setpiece` (1, 11.4 s, not ignored), `mover_light_gate::tests` (7); closed rows = the five non-shaft lights, gated-centre AABBs on the far side of the wall; packed PRL byte-identical; gate ≈0.64 s CPU, wall time within noise |
-| 2 | Shared/differing sets, touched (row, block), both estimates, proptest | worker | 1 | |
+| 2 | Shared/differing sets, touched (row, block), both estimates, proptest | worker | 1 | done: `rows::tests` proptest (row 6) + single-block estimate (row 7), `mover_light_gate_compile` P5 |
 | 3 | Probe gate: reuse the SH stage's `ProbeGridLayout`, per light in parallel under permits | worker | 1 | |
 | 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | |
-| 5 | Side count: dynamic lights vs swept bounds, carried via `carried_light_links` | worker | 1 | |
+| 5 | Side count: dynamic lights vs swept bounds, carried via `carried_light_links` | worker | 1 | done: `mover_light_gate_setpiece` row 5 (room: lamp carried, 0 other; wall: 0/0) |
 | 6 | Report: Build Summary through `Reporter` (3 implementors), id 22/25/42 bytes from `pack.rs`, pinned ordering | worker | 2, 5 | |
 | 7 | Two memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | integrating executor | 2–4 | |
 | 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | |
 | 9 | Determinism (16) and warm rows (18) | worker | 7 | |
-| 10 | PRL parity test (19) | worker | — | |
+| 10 | PRL parity test (19) | worker | — | test written (`mover_light_gate_prl_parity`, ignored, `POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR`); baselines built at the gate run |
 | 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | |
 
 Tasks 2, 3, 5 and 10 can run concurrently once task 1 lands. Tasks 6 and 7 share no files.

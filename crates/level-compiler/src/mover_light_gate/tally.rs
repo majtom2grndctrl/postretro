@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use super::pose::{MoverPoses, Terminus};
-use super::texels::MoverTexels;
+use super::rows::{MoverTexels, mask_estimate};
 use crate::partition::Aabb;
 
 /// A row's key. Field order is the report's order: `mover_id`, then
@@ -29,12 +29,26 @@ pub(crate) struct RowTally {
     pub(crate) light_inside: bool,
     /// World bounds of the gated texel centres.
     pub(crate) texel_centres: Option<Aabb>,
+    /// Distinct lightmap cell blocks holding a gated texel.
+    pub(crate) touched_blocks: u64,
+    /// Distinct lightmap cell blocks holding a differing texel.
+    pub(crate) differing_blocks: u64,
 }
 
 impl RowTally {
     /// Gated here and not at the other terminus.
     pub(crate) fn differing_texels(&self) -> u64 {
         self.gated_texels - self.shared_texels
+    }
+
+    /// Estimated bytes of a mask over every gated texel.
+    pub(crate) fn every_gated_estimate(&self) -> u64 {
+        mask_estimate(self.gated_texels, self.touched_blocks)
+    }
+
+    /// Estimated bytes of a mask over the differing texels alone.
+    pub(crate) fn differing_only_estimate(&self) -> u64 {
+        mask_estimate(self.differing_texels(), self.differing_blocks)
     }
 }
 
@@ -47,6 +61,11 @@ pub(crate) struct GateTally {
 
 impl GateTally {
     /// Fold one partition's per-mover counts for light `source_index`.
+    ///
+    /// Block counts add across a light's partitions without double counting:
+    /// a partition holds one bake layer, and a cell block lies wholly in one
+    /// layer (`CellBlock::layer`), so no block reaches two partitions of one
+    /// light.
     pub(crate) fn add_partition(
         &mut self,
         poses: &MoverPoses,
@@ -71,6 +90,8 @@ impl GateTally {
                 row.gated_texels += counts.gated[k];
                 row.shared_texels += counts.both;
                 row.light_inside |= counts.light_inside[k];
+                row.touched_blocks += counts.blocks[k].len() as u64;
+                row.differing_blocks += counts.differing_blocks[k].len() as u64;
                 if let Some(centres) = &counts.centres[k] {
                     row.texel_centres
                         .get_or_insert_with(Aabb::empty)

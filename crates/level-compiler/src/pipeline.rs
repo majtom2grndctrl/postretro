@@ -1715,17 +1715,24 @@ fn run_after_parsing(
         mover_light,
         ..
     } = fused_lighting;
+    let light_label = |source: usize| {
+        map_data
+            .light_source_labels
+            .get(source)
+            .cloned()
+            .unwrap_or_else(|| format!("light {source}"))
+    };
     crate::mover_light_gate::log_static_rows(
         &mover_poses,
         &mover_light.unwrap_or_default(),
-        |source| {
-            map_data
-                .light_source_labels
-                .get(source)
-                .cloned()
-                .unwrap_or_else(|| format!("light {source}"))
-        },
+        light_label,
     );
+    let mover_side_counts = crate::mover_light_gate::side_counts(
+        &mover_poses,
+        &map_data.lights,
+        &map_data.carried_light_links,
+    );
+    crate::mover_light_gate::log_side_counts(&mover_poses, &mover_side_counts, light_label);
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
         charts: face_charts,

@@ -1,10 +1,12 @@
-//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks when closed, and where.
+//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks when closed, and where;
+//! each mover's side count.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 mod prl_build_support;
 
 use std::path::PathBuf;
 use std::process::Output;
+use std::sync::OnceLock;
 
 use prl_build_support::prl_build;
 
@@ -29,6 +31,8 @@ const ARENA_LIGHTS: [&str; 3] = ["256 256 256", "640 320 192", "368 560 288"];
 const BACK_ROOM_LIGHTS: [&str; 2] = ["240 1376 256", "1000 1376 256"];
 const SHAFT_LIGHT: &str = "992 320 288";
 const CLOSED: &str = "kinematic_mover 'setpiece_wall' at first waypoint 'setpiece_wall_closed'";
+/// `setpiece_room_lamp`, the dynamic light `setpiece_room` carries.
+const ROOM_LAMP: &str = "'light_dynamic' at origin \"992 320 -56\"";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,6 +40,12 @@ fn workspace_root() -> PathBuf {
         .and_then(|crates| crates.parent())
         .expect("workspace root")
         .to_path_buf()
+}
+
+/// The one cold build every test here reads.
+fn setpiece_logs() -> &'static str {
+    static LOGS: OnceLock<String> = OnceLock::new();
+    LOGS.get_or_init(compile_setpiece)
 }
 
 fn compile_setpiece() -> String {
@@ -105,7 +115,7 @@ fn closed_rows(logs: &str) -> Vec<Row> {
 
 #[test]
 fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_wall() {
-    let logs = compile_setpiece();
+    let logs = setpiece_logs();
 
     let warned: Vec<&str> = logs
         .lines()
@@ -129,7 +139,7 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         info[0]
     );
 
-    let rows = closed_rows(&logs);
+    let rows = closed_rows(logs);
     let mut origins: Vec<&str> = rows.iter().map(|row| row.origin.as_str()).collect();
     origins.sort_unstable();
     let mut expected: Vec<&str> = ARENA_LIGHTS
@@ -180,4 +190,50 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
             );
         }
     }
+}
+
+/// The `debug` side-count line of mover `name`.
+fn side_count_line<'a>(logs: &'a str, name: &str) -> &'a str {
+    let lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            line.starts_with("[DEBUG")
+                && line.contains(&format!("kinematic_mover '{name}' side count: "))
+        })
+        .collect();
+    assert_eq!(lines.len(), 1, "one side-count line for {name}\n{logs}");
+    lines[0]
+}
+
+#[test]
+fn setpiece_room_side_count_is_its_carried_lamp_and_the_wall_has_none() {
+    let logs = setpiece_logs();
+
+    let room = side_count_line(logs, "setpiece_room");
+    let carried = room
+        .split("side count: ")
+        .nth(1)
+        .expect("counts follow the label");
+    assert!(
+        carried.starts_with("1 carried dynamic light(s): ")
+            && carried.contains(ROOM_LAMP)
+            && carried.ends_with("; 0 other dynamic light(s)"),
+        "{room}"
+    );
+    let wall = side_count_line(logs, "setpiece_wall");
+    assert!(
+        wall.ends_with("side count: 0 carried dynamic light(s); 0 other dynamic light(s)"),
+        "{wall}"
+    );
+
+    let elsewhere: Vec<&str> = logs
+        .lines()
+        .filter(|line| line.contains("[MoverLight]") && line.contains(ROOM_LAMP))
+        .filter(|line| !line.contains(" side count: "))
+        .collect();
+    assert!(
+        elsewhere.is_empty(),
+        "a dynamic light is in no row and no not-analysed line:\n{}",
+        elsewhere.join("\n")
+    );
 }

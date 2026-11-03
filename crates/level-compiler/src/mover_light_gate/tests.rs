@@ -2,10 +2,12 @@ use glam::DVec3;
 
 use super::pose::{MoverPoses, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Terminus};
 use super::segment::{CONTACT_TOLERANCE_M, point_touches_brush, segment_touches_brush};
+use super::side_count::{SideCount, side_counts};
 use super::texels::{CandidateMover, light_candidates};
 use crate::lightmap_reach::test_fixtures::point_light;
 use crate::map_data::{
-    BrushPlane, BrushVolume, KinematicMoveMode, MapKinematicMover, MapKinematicWaypoint,
+    BrushPlane, BrushVolume, CarriedLightLink, KinematicMoveMode, MapKinematicMover,
+    MapKinematicWaypoint, MapLight,
 };
 use crate::partition::Aabb;
 
@@ -314,4 +316,97 @@ fn a_one_waypoint_path_without_spin_is_not_analysed() {
     let poses = MoverPoses::resolve(&movers, &waypoints);
     assert!(poses.analysed.is_empty());
     assert_eq!(poses.not_analysed[0].reason, ONE_WAYPOINT_REASON);
+}
+
+fn dynamic_light(origin: DVec3, range: f32) -> MapLight {
+    MapLight {
+        is_dynamic: true,
+        ..point_light(origin, range)
+    }
+}
+
+fn carried_by(source_light_index: usize, mover_id: u32) -> CarriedLightLink {
+    CarriedLightLink {
+        source_light_index,
+        mover_id,
+        local_offset: [0.0; 3],
+    }
+}
+
+#[test]
+fn side_count_reaches_the_swept_bounds_at_every_waypoint_not_only_the_termini() {
+    let movers = vec![mover(
+        0,
+        "lift",
+        "bottom",
+        vec![box_brush(DVec3::ZERO, DVec3::ONE)],
+    )];
+    let waypoints = vec![
+        waypoint("bottom", "middle", DVec3::ZERO),
+        waypoint("middle", "top", DVec3::new(9.0, 0.0, 0.0)),
+        waypoint("top", "", DVec3::new(0.0, 5.0, 0.0)),
+    ];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    assert_eq!(poses.analysed[0].swept.max, DVec3::new(10.0, 6.0, 1.0));
+
+    let lights = vec![
+        // Beside the middle pose only.
+        dynamic_light(DVec3::new(10.5, 0.5, 0.5), 1.0),
+        // Too far from any pose.
+        dynamic_light(DVec3::new(20.0, 20.0, 0.5), 1.0),
+        // A baked light beside the middle pose is the gate's, not the side count's.
+        point_light(DVec3::new(10.5, 0.5, 0.5), 1.0),
+        // A dynamic bake-only light has no runtime shadow to price.
+        MapLight {
+            bake_only: true,
+            ..dynamic_light(DVec3::new(0.5, 0.5, 0.5), 1.0)
+        },
+    ];
+    assert_eq!(
+        side_counts(&poses, &lights, &[]),
+        vec![SideCount {
+            mover_id: 0,
+            carried: Vec::new(),
+            others: vec![0],
+        }]
+    );
+}
+
+#[test]
+fn side_count_splits_lights_this_mover_carries_from_the_rest() {
+    let (mut movers, mut waypoints) = sliding_door();
+    movers.push(mover(
+        1,
+        "cage",
+        "cage_a",
+        vec![box_brush(
+            DVec3::new(0.0, 3.0, 0.0),
+            DVec3::new(1.0, 4.0, 1.0),
+        )],
+    ));
+    waypoints.push(waypoint("cage_a", "cage_b", DVec3::new(0.5, 3.5, 0.5)));
+    waypoints.push(waypoint("cage_b", "", DVec3::new(0.5, 3.5, 4.5)));
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+
+    // Light 0 rides the door, light 1 the cage; both reach both movers.
+    let lights = vec![
+        dynamic_light(DVec3::new(0.5, 1.0, 0.5), 5.0),
+        dynamic_light(DVec3::new(0.5, 3.5, 0.5), 5.0),
+    ];
+    let links = [carried_by(0, 0), carried_by(1, 1)];
+    assert_eq!(
+        side_counts(&poses, &lights, &links),
+        vec![
+            SideCount {
+                mover_id: 0,
+                carried: vec![0],
+                others: vec![1],
+            },
+            SideCount {
+                mover_id: 1,
+                carried: vec![1],
+                others: vec![0],
+            },
+        ]
+    );
 }

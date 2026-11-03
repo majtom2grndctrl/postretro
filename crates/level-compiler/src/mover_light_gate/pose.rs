@@ -99,6 +99,9 @@ pub(crate) struct AnalysedMover {
     pub(crate) label: String,
     /// Indexed by [`Terminus::index`].
     pub(crate) poses: [Pose; 2],
+    /// Union of the posed brush bounds at every waypoint on the path, not
+    /// only the termini; invalid for a mover with no brush.
+    pub(crate) swept: Aabb,
 }
 
 impl AnalysedMover {
@@ -144,20 +147,36 @@ impl MoverPoses {
         for mover in movers {
             let label = mover_label(mover);
             // A spin axis admits scripted spin even at zero authored speed.
-            let termini = if mover.spin_axis != [0.0; 3] {
+            let path = if mover.spin_axis != [0.0; 3] {
                 Err(SPIN_REASON)
             } else {
-                path_termini(&mover.path, &by_name)
+                path_waypoints(&mover.path, &by_name)
             };
-            match termini {
-                Ok((first, last)) => poses.analysed.push(AnalysedMover {
-                    mover_id: mover.mover_id,
-                    label,
-                    poses: [
+            match path {
+                Ok(path) => {
+                    let (first, last) = (path[0], path[path.len() - 1]);
+                    let poses_at = [
                         Pose::new(&first.name, &mover.brush_volumes, DVec3::ZERO),
                         Pose::new(&last.name, &mover.brush_volumes, last.origin - first.origin),
-                    ],
-                }),
+                    ];
+                    let authored = &poses_at[Terminus::First.index()].bounds;
+                    let mut swept = Aabb::empty();
+                    if authored.is_valid() {
+                        for waypoint in &path {
+                            let offset = waypoint.origin - first.origin;
+                            swept.expand_aabb(&Aabb {
+                                min: authored.min + offset,
+                                max: authored.max + offset,
+                            });
+                        }
+                    }
+                    poses.analysed.push(AnalysedMover {
+                        mover_id: mover.mover_id,
+                        label,
+                        poses: poses_at,
+                        swept,
+                    });
+                }
                 Err(reason) => poses.not_analysed.push(NotAnalysedMover {
                     mover_id: mover.mover_id,
                     label,
@@ -178,27 +197,30 @@ impl MoverPoses {
     }
 }
 
-/// The first and last waypoint of the `next` chain starting at `start`.
-/// Parse keeps only the chain's names in order, so it is walked again here.
-fn path_termini<'w>(
+/// The waypoints of the `next` chain starting at `start`, in path order,
+/// at least two. Parse keeps only the chain's names, so it is walked again
+/// here.
+fn path_waypoints<'w>(
     start: &str,
     by_name: &HashMap<&str, &'w MapKinematicWaypoint>,
-) -> Result<(&'w MapKinematicWaypoint, &'w MapKinematicWaypoint), &'static str> {
+) -> Result<Vec<&'w MapKinematicWaypoint>, &'static str> {
     let first = *by_name.get(start).ok_or(BROKEN_PATH_REASON)?;
-    let mut last = first;
+    let mut path = vec![first];
     let mut seen = HashSet::from([first.name.as_str()]);
     // Parse rejects cycles; the seen set only bounds the walk.
+    let mut last = first;
     while !last.next.trim().is_empty() {
         let next = *by_name.get(last.next.as_str()).ok_or(BROKEN_PATH_REASON)?;
         if !seen.insert(next.name.as_str()) {
             break;
         }
+        path.push(next);
         last = next;
     }
-    if std::ptr::eq(first, last) {
+    if path.len() < 2 {
         return Err(ONE_WAYPOINT_REASON);
     }
-    Ok((first, last))
+    Ok(path)
 }
 
 /// The mover's name, or for an unnamed mover the centre of its authored

@@ -2,9 +2,10 @@
 // every mover the light may meet.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
-use glam::{DVec3, Vec3};
+use glam::Vec3;
 
 use super::pose::{MoverPoses, Terminus};
+use super::rows::MoverTexels;
 use super::segment::{
     BOX_SLACK_M, boxes_may_touch, point_touches_brush, segment_may_touch_box, segment_touches_brush,
 };
@@ -61,46 +62,6 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
         .collect()
 }
 
-/// One mover's gated texels in one partition, at each terminus by
-/// [`Terminus::index`].
-#[derive(Debug, Clone)]
-pub(crate) struct MoverTexels {
-    pub(crate) mover: usize,
-    pub(crate) gated: [u64; 2],
-    /// Texels gated at both termini.
-    pub(crate) both: u64,
-    pub(crate) light_inside: [bool; 2],
-    /// World bounds of the gated texel centres, unlifted.
-    pub(crate) centres: [Option<Aabb>; 2],
-}
-
-impl MoverTexels {
-    fn new(candidate: &CandidateMover) -> Self {
-        Self {
-            mover: candidate.mover,
-            gated: [0; 2],
-            both: 0,
-            light_inside: candidate.inside.map(|inside| inside == Some(true)),
-            centres: [None, None],
-        }
-    }
-
-    fn add(&mut self, mask: u8, centre: DVec3) {
-        for terminus in Terminus::BOTH {
-            if mask & terminus.bit() == 0 {
-                continue;
-            }
-            let k = terminus.index();
-            self.gated[k] += 1;
-            let bounds = self.centres[k].get_or_insert_with(Aabb::empty);
-            bounds.expand_point(centre);
-        }
-        if mask == Terminus::First.bit() | Terminus::Last.bit() {
-            self.both += 1;
-        }
-    }
-}
-
 /// Gate `partition`, one light's records on one bake layer, over `charts`
 /// with their padded texel bounds. A texel counts at a terminus when the
 /// bake lit it and its segment from the lifted centre toward the light
@@ -134,6 +95,7 @@ pub(crate) fn gate_partition(
         if !any_live {
             continue;
         }
+        let block = shared.layout.chart_blocks[chart_index];
         for_each_lit_texel(shared, partition, chart_index, |centre, lifted| {
             let end = hard_ray_target(centre, light).as_dvec3();
             let (start, centre) = (lifted.as_dvec3(), centre.as_dvec3());
@@ -157,12 +119,15 @@ pub(crate) fn gate_partition(
                     }
                 }
                 if mask != 0 {
-                    tallies[slot].add(mask, centre);
+                    tallies[slot].add(mask, centre, block);
                 }
             }
         });
     }
     tallies.retain(|tally| tally.gated.iter().any(|&count| count > 0));
+    for tally in &mut tallies {
+        tally.finish();
+    }
     tallies
 }
 

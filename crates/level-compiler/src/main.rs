@@ -52,6 +52,7 @@ mod lightmap_residency_dry_run;
 pub mod logger;
 pub mod map_data;
 pub mod map_format;
+pub(crate) mod mover_light_gate;
 pub mod navmesh_bake;
 pub mod pack;
 pub mod parse;

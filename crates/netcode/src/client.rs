@@ -62,7 +62,8 @@ use postretro_entities::{
 };
 
 use super::interpolation::{
-    ObservedTeleport, RemoteInterpolationBuffer, TeleportSample, TransformSample,
+    MovementOnlySample, ObservedTeleport, RemoteInterpolationBuffer, TeleportSample,
+    TransformSample,
 };
 use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
@@ -446,6 +447,10 @@ pub struct ClientReplication {
     /// Remote pawns' life-state id and `assistable` bool from their movement
     /// payloads; see [`Self::remote_assist_facts`].
     remote_assist: RemoteAssistRetention,
+    /// Descriptor capsule radius per remote player avatar. The avatar carries no
+    /// movement component, so presentation seats its feet-authored mesh on the
+    /// sole of a capsule of this radius and the replicated live half-height.
+    remote_player_capsule_radii: HashMap<NetworkId, f32>,
     /// Current-frame aim and lower-body heading extracted from the exact presented
     /// interpolation poses. Cleared before each sample pass and copied to App after
     /// interpolation so the later pose-input pass shares this frame's trajectory.
@@ -817,6 +822,7 @@ impl ClientReplication {
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.remote_assist.clear();
+        self.remote_player_capsule_radii.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
@@ -869,6 +875,7 @@ impl ClientReplication {
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
         self.remote_assist.clear();
+        self.remote_player_capsule_radii.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
         self.local_pawn_entity_class = None;
@@ -1862,6 +1869,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
         self.remote_assist.forget_remote(network_id);
+        self.remote_player_capsule_radii.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
         self.bindings.region_network_ids.remove(&network_id);
         outcome.armed_local_pawn = Some(ArmedLocalPawn {
@@ -1968,6 +1976,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
         self.remote_assist.forget(network_id);
+        self.remote_player_capsule_radii.remove(&network_id);
         self.presented_player_inputs.aim_pitches.remove(&network_id);
         self.presented_player_inputs
             .heading_yaws
@@ -2054,6 +2063,8 @@ impl ClientReplication {
             record_movement.map(|movement| Vec3::from_array(movement.velocity));
         let record_stance = record_movement.map(super::movement_state::wire_locomotion_stance);
         let record_aim_pitch = record_movement.map_or(0.0, |movement| movement.aim_pitch);
+        let record_capsule_half_height =
+            record_movement.map(|movement| movement.capsule_half_height);
         let record_teleport = record_movement.map(|movement| TeleportSample {
             generation: movement.teleport.generation,
             last_teleporter: movement.teleport.last_teleporter,
@@ -2198,6 +2209,7 @@ impl ClientReplication {
                                 transform,
                                 intrinsic_velocity: record_intrinsic_velocity,
                                 stance: record_stance,
+                                capsule_half_height: record_capsule_half_height,
                                 aim_pitch: record_aim_pitch,
                             },
                         );
@@ -2273,6 +2285,7 @@ impl ClientReplication {
         if !record_has_transform
             && let Some(intrinsic_velocity) = record_intrinsic_velocity
             && let Some(stance) = record_stance
+            && let Some(capsule_half_height) = record_capsule_half_height
             && !is_local
             && mover_apply.is_none()
             && !invalid_bound_mover_payload
@@ -2281,10 +2294,13 @@ impl ClientReplication {
             self.interp.record_intrinsic_velocity(
                 network_id,
                 server_tick,
-                intrinsic_velocity,
-                stance,
-                record_aim_pitch,
-                record_teleport,
+                MovementOnlySample {
+                    intrinsic_velocity,
+                    stance,
+                    capsule_half_height,
+                    aim_pitch: record_aim_pitch,
+                    teleport: record_teleport,
+                },
             );
         }
         true
@@ -2456,6 +2472,12 @@ impl ClientReplication {
                 transform.scale = Vec3::splat(facts.model_scale);
             }
             let _ = registry.set_presentation_transform(entity_id, transform);
+            self.present_remote_player_capsule(
+                registry,
+                network_id,
+                entity_id,
+                pose.capsule_half_height,
+            );
             // Diagnostics-only: record the presented remote pose to detect stepped /
             // low-effective-rate interpolation output (position + orientation).
             self.netdiag.record_remote(
@@ -2572,8 +2594,19 @@ impl ClientReplication {
                 || (self.bindings.mover_network_ids.contains_key(&network_id)
                     || self.bindings.region_network_ids.contains_key(&network_id))
                 || self.bindings.is_presentation_bound(network_id)
-                || !self.remote_player_locomotion.contains_key(&network_id)
             {
+                continue;
+            }
+            // The held body is the newest applied pose, so it stands on the
+            // newest replicated capsule.
+            let capsule_half_height = self.interp.newest_capsule_half_height(network_id);
+            self.present_remote_player_capsule(
+                registry,
+                network_id,
+                entity_id,
+                capsule_half_height,
+            );
+            if !self.remote_player_locomotion.contains_key(&network_id) {
                 continue;
             }
             if let Some(aim_pitch) = self.interp.newest_aim_pitch(network_id) {
@@ -2640,6 +2673,43 @@ impl ClientReplication {
     pub(crate) fn cache_remote_entity_class(&mut self, network_id: NetworkId, entity_class: &str) {
         self.remote_entity_classes
             .insert(network_id, entity_class.to_string());
+    }
+
+    /// Record (or clear) a remote player avatar's descriptor capsule radius,
+    /// beside its locomotion reference at materialization.
+    pub(crate) fn cache_remote_player_capsule_radius(
+        &mut self,
+        network_id: NetworkId,
+        radius: Option<f32>,
+    ) {
+        match radius.filter(|radius| radius.is_finite()) {
+            Some(radius) => {
+                self.remote_player_capsule_radii.insert(network_id, radius);
+            }
+            None => {
+                self.remote_player_capsule_radii.remove(&network_id);
+            }
+        }
+    }
+
+    /// Seat a remote player avatar's feet-authored mesh on the sole of the
+    /// capsule presented with its pose. The transform is the host's capsule
+    /// centre, which a crouch or low life-state posture lowers with the feet
+    /// planted; the materialized offset is the standing one, so without this
+    /// the crouched body sinks into the floor and its cull point leaves every
+    /// visible cell. A pose with no movement state keeps the current offset.
+    fn present_remote_player_capsule(
+        &self,
+        registry: &mut EntityRegistry,
+        network_id: NetworkId,
+        entity_id: EntityId,
+        capsule_half_height: Option<f32>,
+    ) {
+        if let Some(&radius) = self.remote_player_capsule_radii.get(&network_id)
+            && let Some(half_height) = capsule_half_height
+        {
+            crate::sim::set_player_mesh_capsule_origin(registry, entity_id, radius, half_height);
+        }
     }
 
     /// Record immutable descriptor locomotion data after remote-player mesh
@@ -6632,6 +6702,127 @@ mod tests {
         resolve_pending_animation_stamps(&mut registry, 1.0);
         client.sample_into_registry(&mut registry, 110.0, 1.1);
         assert_eq!(presented_state(&registry), "walk_forward");
+    }
+
+    // Regression: a crouched remote avatar vanished for its observer. The host
+    // replicates the capsule centre, which a feet-planted crouch lowers, but the
+    // materialized mesh kept the standing centre-to-feet offset: the body sank
+    // into the floor and its cull point left every visible cell. Presentation
+    // seats the mesh on the sole of the replicated live capsule instead.
+    #[test]
+    fn remote_player_mesh_stands_on_the_presented_capsule_sole() {
+        const RADIUS: f32 = 0.2;
+        const STANDING: f32 = 0.8;
+        const CROUCHED: f32 = 0.4;
+        let movement = |state, half_height| {
+            let mut payload = movement_payload_with([0.0; 3], 0.0, state);
+            if let ComponentPayload::PlayerMovementState(movement) = &mut payload {
+                movement.capsule_half_height = half_height;
+            }
+            payload
+        };
+        let crouching = WireMovementState::Crouching { eye_current: 0.3 };
+        let crouched_center = CROUCHED + RADIUS;
+        let standing_center = STANDING + RADIUS;
+        let mut registry = EntityRegistry::new();
+        let mut client = ClientReplication::new();
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                0,
+                100,
+                vec![full_baseline(
+                    7,
+                    1,
+                    vec![
+                        transform_payload_at([0.0, crouched_center, 0.0], 0.0),
+                        movement(crouching, CROUCHED),
+                    ],
+                )],
+            ),
+        );
+        let id = *client.map().get(&NetworkId(7)).expect("remote mapped");
+        registry
+            .set_component(
+                id,
+                remote_player_mesh().with_origin_offset(
+                    postretro_entities::components::mesh::player_capsule_feet_origin_offset(
+                        RADIUS, STANDING,
+                    ),
+                ),
+            )
+            .unwrap();
+        client.cache_remote_player_capsule_radius(NetworkId(7), Some(RADIUS));
+        let feet = |registry: &EntityRegistry| {
+            let position = registry.get_component::<Transform>(id).unwrap().position;
+            let offset = registry
+                .get_component::<MeshComponent>(id)
+                .unwrap()
+                .origin_offset;
+            (position + offset).y
+        };
+
+        // Before time sync the held newest pose is already seated.
+        client.apply_held_remote_player_presentation(&mut registry, 0.0);
+        assert!(
+            feet(&registry).abs() < 1e-5,
+            "held crouch: {}",
+            feet(&registry)
+        );
+
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                1,
+                110,
+                vec![delta(
+                    7,
+                    1,
+                    2,
+                    vec![
+                        transform_payload_at([0.0, standing_center, 0.0], 0.0),
+                        movement(WireMovementState::Normal, STANDING),
+                    ],
+                )],
+            ),
+        );
+        // Standing up from 100 to 110: the half-height blends with the centre,
+        // so the sole holds through the segment.
+        for target in [100.0, 102.0, 105.0, 109.0, 110.0] {
+            client.sample_into_registry(&mut registry, target, target / 100.0);
+            assert!(
+                feet(&registry).abs() < 1e-5,
+                "standing up at {target}: {}",
+                feet(&registry)
+            );
+        }
+
+        // Crouching back down: a stepped half-height sank this blend under the
+        // floor, culling the body, until the crouched sample was reached.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                120,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![
+                        transform_payload_at([0.0, crouched_center, 0.0], 0.0),
+                        movement(crouching, CROUCHED),
+                    ],
+                )],
+            ),
+        );
+        for target in [112.0, 115.0, 119.0, 120.0] {
+            client.sample_into_registry(&mut registry, target, target / 100.0);
+            assert!(
+                feet(&registry).abs() < 1e-5,
+                "crouching at {target}: {}",
+                feet(&registry)
+            );
+        }
     }
 
     // A host one-shot refused because this client's phase has not reached it

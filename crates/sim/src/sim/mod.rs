@@ -75,7 +75,8 @@ use postretro_entities::components::brain::BrainComponent;
 #[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+    MeshAnimation, MeshComponent, SwitchResult, player_capsule_feet_origin_offset,
+    switch_animation_state,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
@@ -736,6 +737,10 @@ where
             }
         }
     }
+    // Movement may have resized a capsule (crouch, stand, slide, life posture)
+    // with the feet planted; reseat the mesh before this tick's projectile and
+    // weapon hit zones read the offset against the moved centre.
+    sync_player_mesh_origin_offsets(&mut registry.borrow_mut());
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
@@ -1405,7 +1410,8 @@ fn clip_duration(
 /// Produce renderer-facing pose inputs from the registry's currently displayed
 /// transforms. The fixed tick calls this after steering; connected clients call
 /// it after remote interpolation because they intentionally skip `simulate_tick`.
-/// This mutates presentation-only mesh inputs and never enters replication.
+/// It also reseats each movement pawn's mesh origin offset on its live capsule
+/// (which hit zones read too). None of it enters replication.
 pub struct PresentationPoseInputs<'a> {
     pub camera_aim: (f32, f32),
     pub remote_player_aims: &'a HashMap<EntityId, (f32, f32)>,
@@ -1436,6 +1442,7 @@ pub fn update_presentation_pose_inputs(
         remote_network_ids,
         local_pawn_owns_direction,
     } = presentation;
+    sync_player_mesh_origin_offsets(registry);
     update_pose_inputs(
         registry,
         camera_aim,
@@ -1453,6 +1460,56 @@ pub fn update_presentation_pose_inputs(
         hit_zone_store,
         anim_time,
     );
+}
+
+/// Keep every player pawn's mesh render origin on its live capsule's sole.
+///
+/// The descriptor seeds the offset from the standing capsule, but crouch, slide
+/// and a low life-state posture shrink the capsule with the feet planted and so
+/// lower the centre the transform tracks. Left at the standing size, the model
+/// sinks by the half-height difference and its cull point lands below the floor,
+/// outside every visible cell, so the pawn vanishes. The fixed tick runs it right
+/// after Movement, so that tick's hit zones read the resized body, and again in
+/// the presentation pose pass ahead of the pose and foot probes, which also
+/// covers a connected client's predicted pawn. Remote
+/// avatars on a connected client carry no movement component; their offset is
+/// written from the replicated half-height when their pose is presented.
+fn sync_player_mesh_origin_offsets(registry: &mut EntityRegistry) {
+    let pawns: Vec<(EntityId, f32, f32)> = registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .filter_map(|(id, value)| match value {
+            ComponentValue::PlayerMovement(movement) => {
+                Some((id, movement.capsule.radius, movement.capsule.half_height))
+            }
+            _ => None,
+        })
+        .collect();
+    for (id, radius, half_height) in pawns {
+        set_player_mesh_capsule_origin(registry, id, radius, half_height);
+    }
+}
+
+/// Seat a player pawn's mesh render origin on the sole of a capsule of `radius`
+/// and cylinder `half_height` (see [`sync_player_mesh_origin_offsets`]). The
+/// offset is presentation and hit-zone placement only and never crosses the
+/// wire, so it is written in place without a replication-visible component
+/// replace. Non-finite dimensions and meshless pawns are left untouched.
+pub fn set_player_mesh_capsule_origin(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    radius: f32,
+    half_height: f32,
+) {
+    if !radius.is_finite() || !half_height.is_finite() {
+        return;
+    }
+    let offset = player_capsule_feet_origin_offset(radius, half_height);
+    if let Ok(ComponentValue::Mesh(mesh)) =
+        registry.get_component_value_mut(id, ComponentKind::Mesh)
+        && mesh.origin_offset != offset
+    {
+        mesh.origin_offset = offset;
+    }
 }
 
 /// Write same-tick presentation inputs after AI and steering have settled the

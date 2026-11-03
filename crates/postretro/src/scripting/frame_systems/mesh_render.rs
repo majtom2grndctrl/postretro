@@ -1035,6 +1035,61 @@ mod tests {
     }
 
     #[test]
+    fn crouched_player_mesh_stays_in_the_visible_cell_above_its_floor() {
+        // Regression: crouch shrinks a player's capsule with the feet planted,
+        // lowering the centre its transform tracks. With the standing
+        // centre-to-feet offset the model origin, which is also the cull point,
+        // sank below the floor into the cell beneath, so the pawn vanished. The
+        // live-capsule offset keeps it on the floor of its visible room.
+        use postretro_entities::components::mesh::player_capsule_feet_origin_offset;
+        let (radius, standing, crouched) = (0.2, 0.8, 0.4);
+        let mut world = two_cell_world_split_at_x_zero();
+        // Cell 0 is the room above the floor at y = 0; cell 1 lies beneath it.
+        world.cell_locator_nodes[0].plane_normal = Vec3::Y;
+        let crouched_center = Vec3::new(0.0, crouched + radius, 0.0);
+        let collect = |offset: Vec3| {
+            let mut registry = EntityRegistry::new();
+            let mut collector = MeshRenderCollector::new();
+            let id = registry.spawn(Transform {
+                position: crouched_center,
+                ..Transform::default()
+            });
+            registry
+                .set_component(
+                    id,
+                    MeshComponent::stateless("avatar".into()).with_origin_offset(offset),
+                )
+                .unwrap();
+            collector.collect(
+                &registry,
+                &world,
+                &VisibleCells::Culled(vec![0]),
+                1.0,
+                0.0,
+                &MeshClipTables::new(),
+                glam::Vec3::ZERO,
+            );
+            collector
+                .instances()
+                .iter()
+                .find(|instance| instance.forward_visible)
+                .map(|instance| instance.transform.w_axis.y)
+        };
+
+        assert_eq!(
+            collect(player_capsule_feet_origin_offset(radius, standing)),
+            None,
+            "the standing offset buries a crouched pawn's cull point under the floor",
+        );
+        let feet = collect(player_capsule_feet_origin_offset(radius, crouched))
+            .expect("a crouched pawn on the live-capsule offset is drawn");
+        assert!(
+            feet.abs() < 1e-5,
+            "crouched model origin sits on the floor, got {feet}"
+        );
+    }
+
+    #[test]
     fn collect_emits_two_instances_of_same_model_at_distinct_transforms() {
         let mut registry = EntityRegistry::new();
         let mut collector = MeshRenderCollector::new();

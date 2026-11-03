@@ -946,6 +946,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
         &config,
         prepared,
         None,
+        None,
     )
     .expect("fixture fused lighting stage");
     // The fixture's one vertical triangle faces away from its lights, so no

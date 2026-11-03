@@ -3,11 +3,11 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::logger::{CapturedRecord, LogSink};
 use crate::pipeline::{StageDescriptor, StageId};
-use crate::reporter::{Reporter, StageProgress};
+use crate::reporter::{BuildSummary, Reporter, StageProgress};
 
 mod tui_config;
 mod tui_progress;
@@ -88,18 +88,13 @@ impl StepState {
     }
 }
 
-#[derive(Default)]
-struct FinalSummary {
-    timings: Vec<(&'static str, Duration)>,
-    total: Option<Duration>,
-}
-
 struct TuiState {
     steps: Vec<StepState>,
     logs: Vec<CapturedRecord>,
     log_revision: usize,
     log_scroll: LogScroll,
-    final_summary: FinalSummary,
+    /// Set by `finalize`; printed once the terminal is restored.
+    final_summary: Option<BuildSummary>,
     next_begin_seq: u64,
 }
 
@@ -173,7 +168,7 @@ impl TuiState {
             logs: Vec::new(),
             log_revision: 0,
             log_scroll: LogScroll::default(),
-            final_summary: FinalSummary::default(),
+            final_summary: None,
             next_begin_seq: 0,
         }
     }
@@ -271,12 +266,8 @@ impl TuiReporter {
         }
         self.drain_logs();
         let state = self.lock();
-        if let Some(total) = state.final_summary.total {
-            println!("\nBuild Summary:");
-            for (name, duration) in &state.final_summary.timings {
-                println!("  {: <15} {:>6.2}s", name, duration.as_secs_f32());
-            }
-            println!("  {: <15} {:>6.2}s", "Total", total.as_secs_f32());
+        if let Some(summary) = &state.final_summary {
+            summary.print();
         }
         drop(state);
 
@@ -315,14 +306,12 @@ impl Reporter for TuiReporter {
         self.drain_logs();
     }
 
-    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
+    fn finalize(&self, summary: BuildSummary) {
         if self.finalized.swap(true, Ordering::AcqRel) {
             return;
         }
         self.drain_logs();
-        let mut state = self.lock();
-        state.final_summary.timings = timings.to_vec();
-        state.final_summary.total = Some(total);
+        self.lock().final_summary = Some(summary);
     }
 
     fn finalize_failure(&self) {
@@ -340,7 +329,7 @@ impl Reporter for TuiReporter {
                 step.status = StepStatus::Failed;
             }
         }
-        state.final_summary = FinalSummary::default();
+        state.final_summary = None;
     }
 }
 
@@ -358,6 +347,8 @@ impl Drop for TuiReporter {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn descriptor(id: StageId) -> StageDescriptor {
@@ -500,19 +491,31 @@ mod tests {
     #[test]
     fn first_terminal_finalization_wins() {
         let reporter = TuiReporter::new(&[], LogSink::default());
-        reporter.finalize(&[("parse", Duration::from_secs(1))], Duration::from_secs(1));
+        let summary = || BuildSummary {
+            timings: vec![("parse", Duration::from_secs(1))],
+            total: Duration::from_secs(1),
+            details: vec!["Mover lighting: 0 movers".to_string()],
+        };
+        reporter.finalize(summary());
         reporter.finalize_failure();
         reporter.finalize_failure();
 
         assert!(reporter.finalized.load(Ordering::Acquire));
         assert_eq!(
-            reporter.lock().final_summary.total,
-            Some(Duration::from_secs(1))
+            reporter
+                .lock()
+                .final_summary
+                .as_ref()
+                .map(|summary| (summary.total, summary.details.clone())),
+            Some((
+                Duration::from_secs(1),
+                vec!["Mover lighting: 0 movers".to_string()]
+            ))
         );
 
         let failed = TuiReporter::new(&[], LogSink::default());
         failed.finalize_failure();
-        failed.finalize(&[("parse", Duration::from_secs(1))], Duration::from_secs(1));
-        assert!(failed.lock().final_summary.total.is_none());
+        failed.finalize(summary());
+        assert!(failed.lock().final_summary.is_none());
     }
 }

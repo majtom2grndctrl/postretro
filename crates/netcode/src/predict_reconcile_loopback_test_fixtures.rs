@@ -60,8 +60,7 @@ use crate::kinematic_mover::{
 use crate::movement::MovementEvents;
 use crate::netcode::{
     ClientPredictionTickContext, NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn,
-    client_environment_view, client_fluid_table, replace_client_tuning, stamped_client_input,
-    tuning_payload_for_pawn,
+    client_environment_view, client_fluid_table, replace_client_tuning, tuning_payload_for_pawn,
 };
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -416,19 +415,6 @@ impl LoopbackHarness {
         // mid-run to simulate an input gap, then resume sending.)
         self.drain_target_tick = None;
         self.ticks_since_cursor_caught = 0;
-    }
-
-    /// A zero-tick-frame send: one stamped command outside the predicted tick
-    /// cadence, built by the same production helper as
-    /// `client_send_input_command_in_registry`. Nothing is predicted for it.
-    pub(crate) fn client_send_zero_tick(&mut self, command: &SimCommand) -> u32 {
-        let input = stamped_client_input(&mut self.prediction, command, &self.client_registry);
-        let client_tick = input.client_tick;
-        self.client_send_message(&ClientMessage::Input(input));
-        self.last_sent_client_tick = Some(client_tick);
-        self.drain_target_tick = None;
-        self.ticks_since_cursor_caught = 0;
-        client_tick
     }
 
     /// Queue one client message on the client's framed Input channel, as any

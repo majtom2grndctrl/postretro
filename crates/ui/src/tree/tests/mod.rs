@@ -14,6 +14,7 @@ mod gating;
 mod image;
 mod layout;
 mod local_state;
+mod predicate_compare;
 mod ring;
 mod scroll;
 mod slider;

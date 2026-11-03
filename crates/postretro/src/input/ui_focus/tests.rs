@@ -1528,7 +1528,7 @@ fn export_from_json(json: &str) -> FocusRectList {
         serde_json::from_str(json).expect("test descriptor parses");
     let theme = postretro_ui::theme::UiTheme::engine_default();
     let mut ui = postretro_ui::tree::UiTree::from_descriptor(&tree, &theme);
-    let mut font_system = postretro_ui::text::build_font_system();
+    let mut font_system = postretro_ui::text::build_embedded_font_system();
     let slots = std::collections::HashMap::new();
     let cells = postretro_ui::tree::CellValues::new();
     ui.build_draw_data(

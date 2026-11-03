@@ -555,13 +555,7 @@ mod tests {
         let command = crate::build_sim_command(
             &crate::input::ActionSnapshot::neutral(),
             &camera,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
+            crate::sim_intents::SimIntents::default(),
         );
         let events = postretro_sim::sim::run_host_movement_tick(
             &mut registry,
@@ -611,13 +605,7 @@ mod tests {
                 let command = crate::build_sim_command(
                     &crate::input::ActionSnapshot::neutral(),
                     &camera,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents::default(),
                 );
                 registry.snapshot_transforms();
                 let events = postretro_sim::sim::run_host_movement_tick(

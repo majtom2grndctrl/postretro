@@ -624,9 +624,7 @@ impl App {
         self.apply_mod_reflection_profile(committed_render_profile);
         self.apply_mod_ghost_transparency(committed_render_profile);
         self.apply_mod_audio_profile(committed_audio_profile);
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_presentation_templates(committed_presentation_templates);
-        }
+        self.install_presentation_templates(committed_presentation_templates);
         self.switching = committed_switching;
         if let Some(session) = self.session.as_mut() {
             session.scripting.mover_auto_close_ms = committed_mover_auto_close_ms;

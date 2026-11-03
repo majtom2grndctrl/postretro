@@ -142,6 +142,7 @@ fn draw_data(app: &mut App) -> UiDrawData {
         app.ui_focused_id.clone(),
         false,
         None,
+        None,
     );
     let top = snapshot.trees.last().expect("a shipped modal is active");
     let mut ui = UiTree::from_descriptor(&top.descriptor, &UiTheme::engine_default());

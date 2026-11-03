@@ -202,6 +202,14 @@ declare module "postretro" {
     posture?: LifeStatePosture;
   };
 
+  /** A teammate may assist a pawn in this state. Each field is a literal or a Number expression over `assist.helper` and `assist.target`, evaluated on the host for each pair. */
+  export type LifeStateAssistable = {
+    /** Reach between pawn origins in metres. A literal must be in (0, 16]; an expression result clamps to 16, and at or below 0 this helper cannot assist this target. Defaults to 1.5. */
+    radius?: NumberValue;
+    /** Hold time in milliseconds, rounded up to whole ticks. A literal must be in [0, 60000]; an expression result clamps to 60000, and a negative result holds progress without advancing it. Defaults to 3000. */
+    holdMs?: NumberValue;
+  };
+
   /** Closed engine capabilities for one author-named player life state. Every boolean defaults to true. Declaring life states hands zero-HP behavior to authored transitions; HP never changes the life state automatically. */
   export type LifeStateProfile = {
     /** Movement scaling, abilities and posture. Omission permits full movement. */
@@ -222,6 +230,8 @@ declare module "postretro" {
     occupancy?: boolean;
     /** Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior. */
     damageable?: boolean;
+    /** A teammate holding `assist` in range revives or otherwise assists this pawn. Omitted: not assistable. `{}` takes every default. */
+    assistable?: LifeStateAssistable;
   };
 
   /** Author-named player life states; requires components.movement. Names use the engine ASCII identifier syntax. At most 255 distinct names may appear across the mod. Unknown profile keys reject content. */
@@ -1360,7 +1370,7 @@ declare module "postretro" {
     ghost?: AudioGhostProfile;
   };
 
-  /** Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`. */
+  /** Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `assist`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`. */
   export type CommandId =
     /** Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`. */
     | "move_forward"
@@ -1388,6 +1398,8 @@ declare module "postretro" {
     | "crouch"
     /** Use or interact. */
     | "use"
+    /** Assist a teammate (revive). Accepts `press` or `hold`; the engine default is `hold` on Use's inputs. Relevant only when a life state declares `assistable`. */
+    | "assist"
     /** Drop the wielded item. */
     | "drop"
     /** Primary fire. Accepts only `press`. */
@@ -1625,8 +1637,8 @@ declare module "postretro" {
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
-    /** One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning. */
-    presentationOverlays?: PresentationOverlay;
+    /** Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. The declaration is host-local: in single player it is local, and in co-op the host selects damaged enemies for every machine while assistable-teammate markers are derived on each machine. */
+    presentationOverlays?: PresentationOverlays;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
@@ -1647,7 +1659,7 @@ declare module "postretro" {
     crossings?: ReadonlyArray<CrossingDescriptor>;
     /** Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here. */
     triggerEvents?: ReadonlyArray<TriggerEventDescriptor>;
-    /** Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once. */
+    /** Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction, or a repeated assist source and reaction, binds once. */
     playerEvents?: ReadonlyArray<PlayerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
@@ -1801,6 +1813,8 @@ declare module "postretro" {
     readonly player: {
       readonly ammo: PlayerComputedRef<number>;
       readonly ammoReserve: PlayerComputedRef<number>;
+      readonly assistProgress: PlayerComputedRef<number>;
+      readonly assistReceivedProgress: PlayerComputedRef<number>;
       readonly cell: PlayerComputedRef<number>;
       readonly cellCapacity: PlayerComputedRef<number>;
       readonly health: PlayerComputedRef<number>;
@@ -2378,10 +2392,14 @@ declare module "postretro" {
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions read impact-target facts and state only: v1 has no source-scoped fact vocabulary. */
+    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Whether the damager is a player pawn in life state `name` at this fire. False for a damager that is not a player. An unknown name skips the policy. */
+    inLifeState(name: string): BoolRef;
+    /** Put the damager player pawn into life state `name` in-tick, as `setLifeState`: a change restarts its elapsed time, the current state is a no-op. A fire with no damager skips it; a damager lacking the state warns and skips. */
+    setLifeState(name: string): Effect;
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
@@ -2526,26 +2544,34 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
-    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
+    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
     on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
   }
   /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
   export type PlayerEventEdgeWord = "becomes" | "ceases";
+  /** A discrete player-event source: an assist completed on this player (`assistReceived`) or by this player (`assistGiven`). */
+  export type PlayerEventDiscreteWord = "assistReceived" | "assistGiven";
   const playerEventEdgeBrand: unique symbol;
-  /** A condition paired with its edge word. Build it with `becomes(cond)` or `ceases(cond)`. */
+  /** What a player event fires on. Build it with `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`. */
   export type PlayerEventEdge = Readonly<{ readonly [playerEventEdgeBrand]: true }>;
   /** A reaction a player event fires: a sourceless or player-event-scoped handle, or a bare name. */
   export type PlayerEventReaction = Reaction<{}> | Reaction<PlayerEventParams> | string;
   /** `levels` scopes a `ModManifest` entry to matching map tags; a level script's entry must omit it. */
   export type PlayerEventOptions = { levels?: string[] };
-  /** One `playerEvents` entry, as `players().on` builds it. */
-  export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** One `playerEvents` entry, as `players().on` builds it. A discrete source carries no condition. */
+  export type PlayerEventDescriptor =
+    | { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] }
+    | { edge: PlayerEventDiscreteWord; fire: string[]; levels?: string[] };
   /** Test the evaluated player in player events, or the local player in crossings. */
   export function inLifeState(name: string): BoolRef;
   /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
   export function becomes(cond: BoolRef): PlayerEventEdge;
   /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */
   export function ceases(cond: BoolRef): PlayerEventEdge;
+  /** Fire when an assist completes on a player: `on.player` is the target. The completion applies in that tick's player-event pass before any condition is evaluated, so that tick's conditions see the fire's writes; it changes no life state or health itself. No condition. */
+  export function assistReceived(): PlayerEventEdge;
+  /** Fire when a player completes an assist: `on.player` is the helper. Fires right after the target's `assistReceived()` subscriptions. No condition. */
+  export function assistGiven(): PlayerEventEdge;
   /** Address NPCs, optionally narrowed to those carrying `tag`. Resolved when each command takes effect, sequence steps included. */
   export function npcs(filter?: NpcGroupFilter): NpcGroup;
   /** Address every seat-bound player pawn. Resolved when each command takes effect, sequence steps included. */
@@ -2574,14 +2600,14 @@ declare module "postretro" {
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
   /** The wire owner a `byPlayer` read or write addresses. */
-  export type OwnerToken = "@impact.source" | "@player";
+  export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target";
   export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: OwnerToken; readonly [stateRefValueBrand]: T };
   export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
-  /** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
-  export type PlayerOwner = SourceHandle | PlayerTarget;
+  /** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
+  export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
   /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
   export type PlayerComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
   /** Writable form of `PlayerComputedRef`. */
@@ -2647,6 +2673,17 @@ declare module "postretro" {
   export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
   /** Build a deferred impact-effect group guarded by a Bool expression. */
   export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
+  const assistSideBrand: unique symbol;
+  /** One side of an assist pair expression, evaluated on the host for each helper and target. */
+  export interface AssistSide {
+    readonly [assistSideBrand]: true;
+    /** Whether this side's pawn is in life state `name`. An unknown name rejects the mod at load. */
+    inLifeState(name: string): BoolRef;
+  }
+  /** The two sides an `assistable` `radius` or `holdMs` expression reads: `byPlayer(assist.helper)`, `assist.target.inLifeState(name)`. */
+  export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
+  /** The helper and target of an assist pair, for `assistable.radius` and `assistable.holdMs` expressions. */
+  export const assist: Assist;
 
 
   // -------------------------------------------------------------------------
@@ -2692,8 +2729,8 @@ declare module "postretro" {
     motion: { rise: number; easing: PresentationEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    /** Overlay-only authored socket and vertical world offset. */
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only authored socket (optional) and vertical world offset. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** Recently damaged target source. Shield values remain raw IR expressions. */
   export type DamagedEnemiesOverlay = {
@@ -2702,17 +2739,21 @@ declare module "postretro" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   };
-  /** Passive target-keyed overlay declaration consumed only by the host. */
+  /** Marker over every remote teammate who can be assisted; stamps the `inRange` Bool fact. */
+  export type AssistableTeammatesOverlay = { kind: "assistableTeammates" };
+  /** Passive overlay declaration. The declaration is host-local and never crosses the wire. In single player it is local; in co-op the host selects damaged enemies for every machine, while assistable-teammate markers are derived on each machine. */
   export type PresentationOverlay = {
-    over: DamagedEnemiesOverlay;
+    over: DamagedEnemiesOverlay | AssistableTeammatesOverlay;
     template: string;
     maxVisible: number;
   };
+  /** `ModManifest.presentationOverlays`: one overlay, or an array with at most one per source kind. */
+  export type PresentationOverlays = PresentationOverlay | readonly PresentationOverlay[];
   /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;
@@ -3065,8 +3106,12 @@ declare module "postretro/ui" {
   /** Producer-stamped scalar available only while laying out a passive presentation instance. */
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
+  /** The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`, `"atLeast"` (>=), `"atMost"` (<=). */
+  export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+  /** A numeric comparison against a Number source. Built by `stateCompare`. */
+  export type PredicateCompare = { op: PredicateCompareOp; value: number };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
@@ -3092,7 +3137,8 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only anchor. `socket` names a model socket or hit-zone tag; without one, or when the model lacks it, the overlay source's fallback anchor applies. `offsetY` lifts the anchor in world units. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -3102,7 +3148,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    worldAnchor?: { socket?: string; offsetY: number };
   }>;
   export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
   export type DamagedEnemiesProps = {
@@ -3119,8 +3165,12 @@ declare module "postretro/ui" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   }>;
+  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY` when no socket is posed. At most `maxVisible` markers show; the teammate a hold would revive always keeps its marker and others fill the rest in player order. */
+  export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
+  /** Every source an overlay can bind to. */
+  export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;
   export type PresentationOverlay = Readonly<{
-    over: DamagedEnemiesSource;
+    over: PresentationOverlaySource;
     template: string;
     maxVisible: number;
   }>;
@@ -3135,8 +3185,10 @@ declare module "postretro/ui" {
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
   /** Build a damaged-enemy source selected by the host in co-op or locally in single player. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
-  /** Bind an overlay source to a world-anchored presentation template. */
-  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Build the assistable-teammate marker source. It takes no options: the engine picks the teammates on each machine and stamps the `inRange` Bool fact. */
+  export function assistableTeammates(options?: Record<string, never>): AssistableTeammatesSource;
+  /** Bind an overlay source to a world-anchored presentation template. `maxVisible` is an integer from 1 to 64. Register one result as `presentationOverlays`, or several as an array with at most one per source kind. */
+  export function defineOverlay(props: { over: PresentationOverlaySource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Bind producer-stamped per-instance values inside a presentation template. */
   export const fact: PresentationFactApi;
   /** Add a passive visual effect to an impact policy `do:` array. */
@@ -3230,6 +3282,8 @@ declare module "postretro/ui" {
   export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
+  /** Build a numeric comparison predicate on a Number state ref, e.g. `stateCompare(player.assistProgress, "greaterThan", 0)`. Throws on a non-number ref, an unknown op, or a non-finite `value`. */
+  export function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
   export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };

@@ -29,7 +29,21 @@ pub const LINE_HEIGHT_FACTOR: f32 = 1.25;
 /// Build a `FontSystem` with the embedded Inter (body) and JetBrains Mono (mono)
 /// faces registered.
 pub fn build_font_system() -> FontSystem {
-    let mut font_system = FontSystem::new();
+    with_embedded_faces(FontSystem::new())
+}
+
+/// `build_font_system` without reading the host: no system font scan, and an
+/// `en-US` locale instead of the host's. Test fixtures use it so a machine's
+/// installed fonts or missing locale (cosmic-text warns when `LANG` is unset)
+/// cannot change what they shape or log.
+pub fn build_embedded_font_system() -> FontSystem {
+    with_embedded_faces(FontSystem::new_with_locale_and_db(
+        "en-US".to_owned(),
+        cosmic_text::fontdb::Database::new(),
+    ))
+}
+
+fn with_embedded_faces(mut font_system: FontSystem) -> FontSystem {
     font_system.db_mut().load_font_data(UI_FONT_TTF.to_vec());
     font_system
         .db_mut()
@@ -107,6 +121,19 @@ mod tests {
         let mut fs = FontSystem::new();
         fs.db_mut().load_font_data(UI_FONT_TTF.to_vec());
         assert!(font_family_is_registered(&fs, UI_FONT_FAMILY));
+    }
+
+    // Regression: a fixture font system read the host locale, and cosmic-text's
+    // "no system locale" warning failed zero-warning tests in a container.
+    #[test]
+    fn embedded_font_system_holds_only_engine_faces_and_logs_nothing() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let fs = build_embedded_font_system();
+        capture.assert_nothing_above(log::Level::Info);
+        assert!(font_family_is_registered(&fs, UI_FONT_FAMILY));
+        assert!(font_family_is_registered(&fs, UI_MONO_FONT_FAMILY));
+        assert_eq!(fs.db().faces().count(), 2, "no host faces");
+        assert_eq!(fs.locale(), "en-US");
     }
 
     #[test]

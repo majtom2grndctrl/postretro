@@ -733,6 +733,30 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::OwnerPrivatePlayer,
     },
     EngineStateCatalogEntry {
+        wire_name: "player.assistProgress",
+        sdk_path: &["player", "assistProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // The pawn's assist progress as helper, written by the host
+        // accumulator every tick.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "player.assistReceivedProgress",
+        sdk_path: &["player", "assistReceivedProgress"],
+        value_type: EngineStateValueType::Number,
+        default: EngineStateDefault::Number(0.0),
+        range: Some(NumericRange { min: 0.0, max: 1.0 }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        // The highest progress among the pawn's helpers; 0 while its state
+        // declares no `assistable`.
+        network: ReplicationScope::OwnerPrivatePlayer,
+    },
+    EngineStateCatalogEntry {
         wire_name: "player.lifeState",
         sdk_path: &["player", "lifeState"],
         value_type: EngineStateValueType::String,
@@ -1449,6 +1473,8 @@ mod tests {
                 "options.windowMode",
                 "player.ammo",
                 "player.ammoReserve",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
                 "player.cell",
                 "player.cellCapacity",
                 "player.health",
@@ -1845,6 +1871,8 @@ mod tests {
             "player.cellCapacity",
             "player.swimming",
             "player.immersion",
+            "player.assistProgress",
+            "player.assistReceivedProgress",
         ] {
             let entry = entries
                 .iter()
@@ -1895,6 +1923,8 @@ mod tests {
                 "player.immersion",
                 "player.lifeState",
                 "player.lifeStateMs",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
             ]
             .contains(&entry.wire_name)
             {

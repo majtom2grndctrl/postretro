@@ -90,6 +90,11 @@ The contract:
 - **Records are retained in order**, so exactly-once and negative assertions are both
   available. Negative assertions carry half the value: "warns here and nowhere else" is
   the common shape.
+- **`tracing` events are records; `tracing` spans are not.** The harness also sets the
+  process's `tracing` dispatcher, so a dependency's `tracing::warn!` arrives at its own
+  level and target. Without it, `tracing`'s `log` feature — forced on in Linux
+  `dev-tools` builds by `calloop` — logs every span's creation at the span's level, and
+  swc opens its passes at `ERROR`.
 - **Records logged on a thread with no guard are counted, not captured.** A worker thread's
   output does not reach the test that spawned it; the count surfaces in failure messages so
   an empty capture is explained rather than mysterious.

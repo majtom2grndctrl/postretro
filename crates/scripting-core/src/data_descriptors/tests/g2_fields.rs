@@ -292,6 +292,7 @@ fn expected_value_text() -> Vec<ValueTextCase> {
     let is = |slot: &str, value: bool| Predicate {
         source: BindSource::Slot { slot: slot.into() },
         equals: Some(PredicateValue::Boolean(value)),
+        compare: None,
     };
     vec![
         ValueTextCase {

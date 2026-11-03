@@ -1,4 +1,5 @@
-// Display targets derived from host-stamped weapon timers, independent of the store.
+// Display targets derived from host-stamped weapon timers and the received
+// assist progress, independent of the store.
 // See: context/lib/networking.md §What gates, and what replicates instead
 
 use crate::weapon::{ReplicatedWeaponProjection, SlotSample};
@@ -6,7 +7,9 @@ use postretro_entities::SlotValue;
 
 mod client;
 mod ramp;
+mod received;
 use ramp::Ramp;
+use received::ReceivedProgressStream;
 
 pub(crate) const SLOPE_TOLERANCE: f64 = 0.08;
 pub(crate) const HOLD_CAP_TICKS: f64 = 16.0;
@@ -23,6 +26,9 @@ pub(crate) const NAMES: [&str; 4] = [
 pub(super) struct TimedSlotTargets {
     timeline: Option<f64>,
     ramps: [Ramp; 4],
+    /// The received-assist stream, outside `NAMES`: its slope is known in
+    /// advance, so it never waits for agreeing samples as a `Ramp` does.
+    received: ReceivedProgressStream,
 }
 
 impl TimedSlotTargets {
@@ -65,11 +71,20 @@ impl TimedSlotTargets {
         }
     }
 
+    /// Feed the received-assist stream one committed sample, with the
+    /// received required ticks the same snapshot carried.
+    pub(super) fn accept_received(&mut self, tick: u32, sample: Option<f32>, required_ticks: u32) {
+        if let Some(sample) = sample {
+            self.received.accept(tick, sample, required_ticks);
+        }
+    }
+
     pub(super) fn advance(&mut self, estimate: Option<f64>, dt: f64) {
         let Some(estimate) = estimate.filter(|tick| tick.is_finite()) else {
             for ramp in &mut self.ramps {
                 ramp.show_raw();
             }
+            self.received.advance(None);
             return;
         };
         let timeline = match self.timeline {
@@ -88,6 +103,7 @@ impl TimedSlotTargets {
         for ramp in &mut self.ramps {
             ramp.advance(timeline);
         }
+        self.received.advance(Some(timeline));
     }
 
     pub(super) fn apply(&self, values: &mut std::collections::HashMap<String, SlotValue>) {
@@ -98,6 +114,7 @@ impl TimedSlotTargets {
                 *value = SlotValue::Number(target);
             }
         }
+        self.received.apply(values);
     }
 }
 
@@ -114,7 +131,13 @@ pub(crate) struct TimedSlotDebug {
 #[cfg(test)]
 impl TimedSlotTargets {
     pub(super) fn is_reset(&self) -> bool {
-        self.timeline.is_none() && self.ramps.iter().all(|ramp| ramp.target().is_none())
+        self.timeline.is_none()
+            && self.ramps.iter().all(|ramp| ramp.target().is_none())
+            && self.received.is_reset()
+    }
+
+    pub(super) fn received_displayed(&self) -> Option<f64> {
+        self.received.displayed()
     }
 
     pub(super) fn debug(&self) -> TimedSlotDebug {

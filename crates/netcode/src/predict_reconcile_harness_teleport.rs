@@ -877,19 +877,17 @@ fn multi_tick_walk(spec: Spec, lead: usize) -> Option<(Rig, usize, usize)> {
     None
 }
 
-// Commands sampled on a later tick of a multi-tick client frame, and
-// a command sent on a zero-tick frame, carry the teleport frame their facing was
-// sampled in, so the host runs them exactly as forward prediction did.
+// Commands sampled on a later tick of a multi-tick client frame carry the
+// teleport frame their facing was sampled in, so the host runs them exactly as
+// forward prediction did. A zero-tick frame sends nothing: a client tick is
+// only ever a predicted step.
 #[test]
-fn teleport_input_sampling_seams_multi_tick_and_zero_tick_frames() {
+fn teleport_input_sampling_seam_multi_tick_frames() {
     for spec in [classic_entry(), seamless_entry()] {
         // Phase the walk so the teleport is not the last tick of its frame.
         let (mut rig, first, offset) = (0..3)
             .find_map(|lead| multi_tick_walk(spec, lead))
             .expect("some phase predicts the teleport before a frame's last tick");
-        // A zero-tick frame right after: one extra send at the turned view.
-        let zero_facing = rig.camera_yaw;
-        let zero_tick = rig.h.client_send_zero_tick(&rig.command(IDLE));
         for _ in 0..30 {
             rig.step(FORWARD);
         }
@@ -920,22 +918,6 @@ fn teleport_input_sampling_seams_multi_tick_and_zero_tick_frames() {
             later.facing,
             arrival_yaw,
             "the later tick sampled the turned view",
-        );
-        let zero = rig
-            .h
-            .host_trace
-            .iter()
-            .filter_map(|entry| entry.resolved.as_ref())
-            .find(|resolved| resolved.client_tick == zero_tick)
-            .expect("the host resolved the zero-tick command");
-        assert_yaw(
-            zero.command.movement.facing_yaw,
-            zero_facing,
-            "zero-tick facing",
-        );
-        assert!(
-            (zero.teleport_yaw_stamp - rig.client_teleport().accumulated_yaw).abs() < YAW_EPS,
-            "stamped with the frame its facing was sampled in"
         );
     }
 }

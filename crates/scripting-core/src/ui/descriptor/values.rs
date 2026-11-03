@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::predicate_compare::PredicateCompare;
+
 /// A color slot on a widget: either a literal linear-RGBA value or a named theme
 /// token resolved against the active theme (resolution is a later step — the wire
 /// model only records which form was authored). Untagged so the wire form stays a
@@ -167,7 +169,7 @@ pub enum PredicateValue {
 }
 
 /// A reactive predicate (M13 G2): a [`BindSource`] read against an optional
-/// `equals` comparand. With `equals` present the predicate is true when the bound
+/// `equals` comparand or an optional numeric `compare`. With `equals` present the predicate is true when the bound
 /// value equals the comparand; with `equals` absent it is the bound value's own
 /// truthiness (a later task — Task 2a — defines resolution). Carried by a widget's
 /// `visibleWhen`, a button's `selected`/`checked`, and accepted as a `bind` source
@@ -188,6 +190,11 @@ pub struct Predicate {
     pub source: BindSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<PredicateValue>,
+    /// Numeric comparison against a Number source (`stateCompare`). Mutually
+    /// exclusive with `equals`; omitted on the wire when absent, so existing
+    /// predicates round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compare: Option<PredicateCompare>,
 }
 
 /// Declared initial value for a presentation cell (M13 G1b, Task 5). Mirrors the

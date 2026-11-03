@@ -10,6 +10,7 @@ import {
   defineUiTree,
   getGameState,
   getDesignTokens,
+  stateCompare,
   stateEquals,
 } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
@@ -312,6 +313,70 @@ export const bleedOutMeterTree = defineUiTree({
           width: 220,
           height: 12,
           fill: color.critical,
+          background: color.hud.health.background,
+        }),
+      ],
+    ),
+  ),
+});
+
+export const revivingMeterTree = defineUiTree({
+  name: "hud.reviving",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "center", offset: [0, 100] },
+    VStack(
+      {
+        gap: 6,
+        align: "center",
+        visibleWhen: stateCompare(player.assistProgress, "greaterThan", 0),
+      },
+      [
+        Text({
+          content: "REVIVING",
+          color: color.ok,
+          font: font.hud.status,
+          fontSize: 18,
+        }),
+        Bar({
+          bind: bindState(player.assistProgress),
+          max: 1.0,
+          width: 220,
+          height: 12,
+          fill: color.ok,
+          background: color.hud.health.background,
+        }),
+      ],
+    ),
+  ),
+});
+
+// Shown only while a helper's progress on this player is above 0; the bleed-out
+// meter already covers the rest of the time spent down.
+export const beingRevivedMeterTree = defineUiTree({
+  name: "hud.beingRevived",
+  alwaysOn: true,
+  tree: Tree(
+    { anchor: "center", offset: [0, 124] },
+    VStack(
+      {
+        gap: 6,
+        align: "center",
+        visibleWhen: stateCompare(player.assistReceivedProgress, "greaterThan", 0),
+      },
+      [
+        Text({
+          content: "BEING REVIVED",
+          color: color.ok,
+          font: font.hud.status,
+          fontSize: 18,
+        }),
+        Bar({
+          bind: bindState(player.assistReceivedProgress),
+          max: 1.0,
+          width: 220,
+          height: 12,
+          fill: color.ok,
           background: color.hud.health.background,
         }),
       ],

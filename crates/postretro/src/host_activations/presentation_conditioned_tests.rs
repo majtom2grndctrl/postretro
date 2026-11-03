@@ -1161,9 +1161,11 @@ fn conditioned_trigger_audiences_player_residual_wait_and_positioned_mover_sound
     );
     ctx.data_registry.borrow_mut().set_level_player_events(vec![
         postretro_entities::PlayerEventDescriptor {
-            edge: postretro_entities::PlayerEventEdge::Becomes,
-            condition: postretro_foundation::IrNode::Const {
-                value: postretro_foundation::IrValue::Bool(true),
+            trigger: postretro_entities::PlayerEventTrigger::Edge {
+                edge: postretro_entities::PlayerEventEdge::Becomes,
+                condition: postretro_foundation::IrNode::Const {
+                    value: postretro_foundation::IrValue::Bool(true),
+                },
             },
             fire: vec!["player.effect".into()],
             levels: vec![],
@@ -1173,7 +1175,7 @@ fn conditioned_trigger_audiences_player_residual_wait_and_positioned_mover_sound
     ctx.data_registry.borrow_mut().recompose(&[]);
     let mut table = PlayerEventTable::build(&ctx, Default::default(), Default::default(), None);
     let mut residuals = Vec::new();
-    table.run_tick(&ctx, &mut residuals);
+    table.run_tick(&ctx, &[], &mut residuals);
     assert_eq!(residuals.len(), 3);
     let session = h.host.session.as_ref().unwrap();
     let mut follow = Vec::new();

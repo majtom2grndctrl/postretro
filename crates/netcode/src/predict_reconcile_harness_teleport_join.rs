@@ -161,6 +161,7 @@ fn teleport_join_unmerged_refresh_paces_failing_merges_at_the_resend_cadence() {
                 sequence,
                 server_tick: sequence,
                 records: vec![EntityRecord::FullBaseline {
+                    assist_facts: None,
                     network_id: 7,
                     baseline_id: sequence,
                     last_processed_client_tick: None,

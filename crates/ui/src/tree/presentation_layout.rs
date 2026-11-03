@@ -16,7 +16,7 @@ use super::build::build_node;
 use super::draw::{UiDrawData, bar_max_value, bar_slot_value};
 use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::PRESENTATION_FACT_SCOPE;
-use super::predicate::resolve_predicate;
+use super::predicate::evaluate_predicate;
 use super::scroll::{ScrollState, ScrollViews};
 use super::ui_tree::canvas_available_space;
 use super::ui_tree_collect::collect_draw_data_from_layout_into;
@@ -310,9 +310,8 @@ impl PresentationTemplateLayout {
         self.visibility_flips.clear();
         self.capture_bar_exit.clear();
         for (node, state) in &mut self.visibility {
-            let resolved = resolve_predicate(
-                &state.predicate.source,
-                state.predicate.equals.as_ref(),
+            let resolved = evaluate_predicate(
+                &state.predicate,
                 state.scope.as_deref(),
                 slot_values,
                 cell_values,
@@ -661,6 +660,7 @@ mod tests {
                 fact: "shown".to_string(),
             },
             equals: None,
+            compare: None,
         });
         let root = Widget::Bar(bar);
         let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());

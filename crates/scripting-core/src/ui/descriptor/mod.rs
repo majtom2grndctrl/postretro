@@ -9,6 +9,7 @@ mod envelope;
 mod focus;
 mod image;
 mod image_refs;
+mod predicate_compare;
 mod values;
 mod widgets;
 
@@ -21,6 +22,9 @@ pub use accessibility::implicit_role;
 pub use envelope::{AnchoredTree, CaptureMode, TreeBackground};
 pub use focus::{FocusKind, FocusNeighbors, FocusPolicy, RepeatPolicy};
 pub use image::ImageWidget;
+pub use predicate_compare::{
+    CompareOp, PredicateCompare, unknown_compare_op_reason, validate_predicate_compare,
+};
 pub use values::{
     Align, BindSource, Border, BoundScalar, CellInit, ColorValue, Easing, LocalState, Predicate,
     PredicateValue, ScalarValue, SpacingValue, TextTween,

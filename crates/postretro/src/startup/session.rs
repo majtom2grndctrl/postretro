@@ -353,6 +353,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         ),
         fluid_eye: Default::default(),
         life_state_display: Default::default(),
+        client_assist: Default::default(),
         planar_render: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),

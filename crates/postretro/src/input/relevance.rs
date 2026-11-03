@@ -16,6 +16,8 @@ pub struct RelevanceFacts {
     pub magazine: bool,
     /// Any weapon declares a secondary activation.
     pub secondary: bool,
+    /// Any life-state profile declares `assistable`.
+    pub assistable: bool,
 }
 
 impl RelevanceFacts {
@@ -26,6 +28,7 @@ impl RelevanceFacts {
         crouch: true,
         magazine: true,
         secondary: true,
+        assistable: true,
     };
 
     /// The union of two fact sets: co-op relevance is local derivation plus
@@ -36,6 +39,7 @@ impl RelevanceFacts {
             crouch: self.crouch || other.crouch,
             magazine: self.magazine || other.magazine,
             secondary: self.secondary || other.secondary,
+            assistable: self.assistable || other.assistable,
         }
     }
 }
@@ -60,6 +64,7 @@ pub const fn derived_relevance(command: Command, facts: RelevanceFacts) -> Relev
         Command::Crouch => facts.crouch,
         Command::Reload => facts.magazine,
         Command::AltFire => facts.secondary,
+        Command::Assist => facts.assistable,
         Command::MoveUp | Command::MoveDown => return Relevance::DevOnly,
         Command::MoveForward
         | Command::MoveBack
@@ -144,12 +149,14 @@ mod tests {
             crouch: true,
             magazine: true,
             secondary: true,
+            assistable: true,
         };
         for command in [
             Command::Dash,
             Command::Crouch,
             Command::Reload,
             Command::AltFire,
+            Command::Assist,
         ] {
             assert_eq!(derived_relevance(command, none), Relevance::Irrelevant);
             assert_eq!(derived_relevance(command, all), Relevance::Relevant);

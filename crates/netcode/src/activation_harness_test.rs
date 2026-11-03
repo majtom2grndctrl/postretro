@@ -28,6 +28,7 @@ fn program(charge: bool) -> ActivationProgram {
 }
 fn command(tick: u32, activation: ActivationInput) -> wire::InputCommand {
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: glam::Vec2::ZERO,

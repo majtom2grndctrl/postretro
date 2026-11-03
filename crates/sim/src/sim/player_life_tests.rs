@@ -504,6 +504,7 @@ fn life_state_o16_o35_trigger_transition_blocks_weapons_but_keeps_stage_pickup_p
                 },
                 1.0 / 60.0,
                 touch,
+                &mut Default::default(),
                 &[],
                 0,
                 &FactionRegistry::default(),

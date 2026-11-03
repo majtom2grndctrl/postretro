@@ -6,7 +6,8 @@ use super::*;
 use postretro_entities::ScriptCtx;
 use postretro_entities::data_descriptors::{
     EntityTypeDescriptor, HealthDescriptor, InventoryDescriptor, LifeStatesDescriptor,
-    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor, ReactionDescriptor,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventTrigger, PrimitiveDescriptor,
+    ReactionDescriptor,
 };
 use postretro_foundation::{
     Capability, IrNode, IrValue, LifeStateProfile, Seat, player_capability,
@@ -179,15 +180,17 @@ impl LifeFixture {
                 }),
             }]);
             data.set_level_player_events(vec![PlayerEventDescriptor {
-                edge: PlayerEventEdge::Becomes,
-                condition: IrNode::Le {
-                    a: Box::new(IrNode::Input {
-                        name: "player.health".into(),
-                        owner: None,
-                    }),
-                    b: Box::new(IrNode::Const {
-                        value: IrValue::Number(0.0),
-                    }),
+                trigger: PlayerEventTrigger::Edge {
+                    edge: PlayerEventEdge::Becomes,
+                    condition: IrNode::Le {
+                        a: Box::new(IrNode::Input {
+                            name: "player.health".into(),
+                            owner: None,
+                        }),
+                        b: Box::new(IrNode::Const {
+                            value: IrValue::Number(0.0),
+                        }),
+                    },
                 },
                 fire: vec!["enter-down".into()],
                 levels: Vec::new(),
@@ -226,7 +229,7 @@ impl LifeFixture {
         self.fixture.step(self.next_tick, command);
         self.next_tick += 1;
         let mut residuals = Vec::new();
-        self.events.run_tick(&self.ctx, &mut residuals);
+        self.events.run_tick(&self.ctx, &[], &mut residuals);
         assert!(
             residuals.is_empty(),
             "setLifeState is an in-tick player command"

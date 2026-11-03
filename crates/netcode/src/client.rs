@@ -69,6 +69,11 @@ use super::{payload_is_finite, wire_to_transform};
 use crate::collision::moving::{MoverPose, MoverPoseSource};
 use crate::kinematic_mover::{advance_mover_phase_one_tick, mover_pose_for_current_phase};
 
+#[cfg(test)]
+mod assist_facts_tests;
+mod assist_retention;
+#[cfg(test)]
+mod assist_retention_tests;
 mod bindings;
 #[cfg(test)]
 mod ghost_link_tests;
@@ -82,6 +87,8 @@ mod replay_poses;
 #[cfg(test)]
 mod teleporter_tests;
 mod teleporters;
+use assist_retention::RemoteAssistRetention;
+pub use assist_retention::{AssistPairEntry, AssistProgressSample, RemoteAssistFacts};
 use bindings::{ClientBindings, RegionBinding, is_presentation_payload};
 pub use ghost_links::GhostLinkUpdate;
 use late_baselines::LateBaselineHistory;
@@ -437,6 +444,9 @@ pub struct ClientReplication {
     /// Presence is also the durable signal that a transform-only remote mesh is a
     /// player avatar rather than an AI presentation.
     remote_player_locomotion: HashMap<NetworkId, RemotePlayerLocomotion>,
+    /// Remote pawns' life-state id and `assistable` bool from their movement
+    /// payloads; see [`Self::remote_assist_facts`].
+    remote_assist: RemoteAssistRetention,
     /// Descriptor capsule radius per remote player avatar. The avatar carries no
     /// movement component, so presentation seats its feet-authored mesh on the
     /// sole of a capsule of this radius and the replicated live half-height.
@@ -811,6 +821,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.clear();
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
+        self.remote_assist.clear();
         self.remote_player_capsule_radii.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
@@ -863,6 +874,7 @@ impl ClientReplication {
         self.remote_enemy_walk_playback.clear();
         self.remote_presentation_complete.clear();
         self.remote_player_locomotion.clear();
+        self.remote_assist.clear();
         self.remote_player_capsule_radii.clear();
         self.presented_player_inputs = ClientPresentationInputs::default();
         self.local_pawn = None;
@@ -1120,6 +1132,7 @@ impl ClientReplication {
                     baseline_id,
                     components,
                     local_player,
+                    assist_facts,
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
@@ -1202,6 +1215,11 @@ impl ClientReplication {
                             *last_processed_client_tick,
                             &mut outcome,
                         );
+                        self.remote_assist.retain_local(
+                            NetworkId(*network_id),
+                            *local_player,
+                            assist_facts.as_ref(),
+                        );
                     }
                 }
                 EntityRecord::Delta {
@@ -1210,6 +1228,7 @@ impl ClientReplication {
                     new_baseline_id,
                     components,
                     local_player,
+                    assist_facts,
                     last_processed_client_tick,
                     entity_class,
                     active_weapon_archetype,
@@ -1308,6 +1327,8 @@ impl ClientReplication {
                         *last_processed_client_tick,
                         &mut outcome,
                     );
+                    self.remote_assist
+                        .retain_local(nid, *local_player, assist_facts.as_ref());
                 }
                 EntityRecord::Despawn {
                     network_id,
@@ -1847,6 +1868,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.remote_assist.forget_remote(network_id);
         self.remote_player_capsule_radii.remove(&network_id);
         self.bindings.mover_network_ids.remove(&network_id);
         self.bindings.region_network_ids.remove(&network_id);
@@ -1953,6 +1975,7 @@ impl ClientReplication {
         self.interp.forget(network_id);
         self.remote_enemy_walk_playback.remove(&network_id);
         self.remote_player_locomotion.remove(&network_id);
+        self.remote_assist.forget(network_id);
         self.remote_player_capsule_radii.remove(&network_id);
         self.presented_player_inputs.aim_pitches.remove(&network_id);
         self.presented_player_inputs
@@ -2192,7 +2215,7 @@ impl ClientReplication {
                         );
                     }
                 }
-                ComponentPayload::PlayerMovementState(_) => {
+                ComponentPayload::PlayerMovementState(wire) => {
                     // Merge ONLY onto an entity that already has a descriptor-derived
                     // PlayerMovementComponent. The wire subset is not a full component
                     // and must never construct one (entity_model.md §7b: movement is
@@ -2212,6 +2235,7 @@ impl ClientReplication {
                         "movement payload discriminant drifted"
                     );
                     if !has_local && !is_local {
+                        self.remote_assist.retain(network_id, wire);
                         outcome
                             .ignored
                             .push(IgnoredPayload::MovementWithoutLocalComponent {
@@ -3401,6 +3425,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
@@ -3569,6 +3594,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             // Generic non-local fixture: intentionally omits `local_player`/
@@ -3591,6 +3617,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,
@@ -4569,6 +4596,7 @@ mod tests {
     #[test]
     fn stale_mapping_repair_respawn_reuses_network_id_with_clean_presentation_state() {
         let baseline = |baseline_id, x, aim_pitch| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7340,6 +7368,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             last_processed_client_tick: None,
@@ -7362,6 +7391,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,
@@ -7592,6 +7622,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id,
             baseline_id,
             last_processed_client_tick: None,
@@ -7612,6 +7643,7 @@ mod tests {
         components: Vec<ComponentPayload>,
     ) -> EntityRecord {
         EntityRecord::Delta {
+            assist_facts: None,
             network_id,
             baseline_ref,
             new_baseline_id,

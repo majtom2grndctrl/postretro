@@ -150,18 +150,19 @@ export type PlayerGroup = {
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
 
---- A condition paired with its edge word. Build it with `becomes(cond)` or
---- `ceases(cond)`.
+--- What a player event fires on. Build it with `becomes(cond)`,
+--- `ceases(cond)`, `assistReceived()` or `assistGiven()`.
 export type PlayerEventEdge = { __playerEventEdge: true }
 
 --- `levels` scopes a `ModManifest` entry to matching map tags; a level
 --- script's entry must omit it.
 export type PlayerEventOptions = { levels: {string}? }
 
---- One `playerEvents` entry, as `players():on` builds it.
+--- One `playerEvents` entry, as `players():on` builds it. A discrete source
+--- (`assistReceived` / `assistGiven`) carries no condition.
 export type PlayerEventDescriptor = {
-  edge: "becomes" | "ceases",
-  condition: RuntimeValue,
+  edge: "becomes" | "ceases" | "assistReceived" | "assistGiven",
+  condition: RuntimeValue?,
   fire: {string},
   levels: {string}?,
 }
@@ -448,6 +449,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
@@ -480,17 +482,35 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1. Amount expressions read
-  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  --- effect; app-drain impacts run no policy in v1.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1. Amount
-  --- expressions remain impact-target scoped; v1 has no source facts.
+  --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Whether the damager is a player pawn in life state `name` at this fire.
+  --- False for a damager that is not a player. An unknown name skips the policy.
+  inLifeState: (self: SourceHandle, name: string) -> BoolRef,
+  --- Put the damager player pawn into life state `name` in-tick, as
+  --- `setLifeState`: a change restarts its elapsed time, the current state is a
+  --- no-op. A fire with no damager skips it; a damager lacking the state warns
+  --- and skips.
+  setLifeState: (self: SourceHandle, name: string) -> Effect,
   --- Adjust this faction's sentiment toward another impact recipient. Negative
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
+
+--- One side of an assist pair expression, evaluated on the host for each
+--- helper and target.
+export type AssistSide = {
+  __assistSideBrand: true,
+  --- Whether this side's pawn is in life state `name`. An unknown name rejects
+  --- the mod at load.
+  inLifeState: (self: AssistSide, name: string) -> BoolRef,
+}
+--- The two sides an `assistable` `radius` or `holdMs` expression reads:
+--- `store.slot:byPlayer(assist.helper)`, `assist.target:inLifeState(name)`.
+export type Assist = { helper: AssistSide, target: AssistSide }
 
 export type Impact = {
   target: TargetHandle,
@@ -559,12 +579,13 @@ export type StoreDeclaration = {
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
-export type OwnerToken = "@impact.source" | "@player"
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target"
 export type OwnerAddressedComputedRef<T> = ComputedRef<T> & { owner: OwnerToken }
 export type OwnerAddressedRef<T> = Ref<T> & { owner: OwnerToken }
---- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
---- event's player (`on.player`).
-export type PlayerOwner = SourceHandle | PlayerTarget
+--- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
+--- event's player (`on.player`), or a side of an assist pair expression
+--- (`assist.helper`, `assist.target`).
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide
 type StoreComputedRef<T> = ComputedRef<T> & {
   byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T>,
 }
@@ -585,13 +606,13 @@ local storeDeclarations = setmetatable({}, { __mode = "k" })
 -- shared dispatch params as `defineReaction`.
 local dataScriptParts = __postretroDataScriptParts
 local DISPATCH_PARAMS = dataScriptParts.reactions.DISPATCH_PARAMS
-local PLAYER_TARGET = dataScriptParts.commands.PLAYER_TARGET
 
 local expressionRefs = __postretroExpressionRefs
 local numberNode = expressionRefs.numberNode
 local boolNode = expressionRefs.boolNode
 local numberRef = expressionRefs.numberRef
 local boolRef = expressionRefs.boolRef
+local loweredValue = expressionRefs.loweredValue
 
 --- Test the evaluated player in player events, or the local player in crossings.
 function DataScriptSdk.inLifeState(name: string): BoolRef
@@ -705,10 +726,34 @@ IMPACT_SOURCE = table.freeze({
   grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
     return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
   end,
+  inLifeState = function(_self: SourceHandle, name: string): BoolRef
+    return boolRef({ op = "input", owner = "@impact.source", name = "player.inLifeState:" .. name })
+  end,
+  setLifeState = function(_self: SourceHandle, name: string): Effect
+    return sourceImpactEffect("setLifeState", { state = name })
+  end,
   adjustSentimentToward = function(_self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue): Effect
     return sentimentImpactEffect("@impact.source", toward, delta)
   end,
 }) :: any
+
+local function assistSide(wire: string): AssistSide
+  return table.freeze({
+    __assistSideBrand = true,
+    -- `byPlayer` recognizes each side by this wire spelling.
+    __wire = wire,
+    inLifeState = function(_self: AssistSide, name: string): BoolRef
+      return boolRef({ op = "input", owner = wire, name = "player.inLifeState:" .. name })
+    end,
+  }) :: any
+end
+
+--- The helper and target of an assist pair, for `assistable.radius` and
+--- `assistable.holdMs` expressions.
+DataScriptSdk.assist = table.freeze({
+  helper = assistSide("@assist.helper"),
+  target = assistSide("@assist.target"),
+}) :: Assist
 
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
@@ -884,8 +929,32 @@ local function lowerLoadoutReferences(descriptor: EntityTypeDescriptor)
   end
 end
 
+-- Replace each fluent ref in a life state's `assistable` with its IR: a ref
+-- keeps its node outside the table, so it would not survive serialization.
+local function lowerAssistableReferences(descriptor: EntityTypeDescriptor)
+  local components = (descriptor :: any).components
+  if type(components) ~= "table" or type(components.lifeStates) ~= "table" then
+    return
+  end
+  local states = components.lifeStates.states
+  if type(states) ~= "table" then
+    return
+  end
+  for _, profile in pairs(states) do
+    local assistable = if type(profile) == "table" then profile.assistable else nil
+    if type(assistable) == "table" then
+      for _, field in { "radius", "holdMs" } do
+        if assistable[field] ~= nil then
+          assistable[field] = loweredValue(assistable[field])
+        end
+      end
+    end
+  end
+end
+
 function DataScriptSdk.defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
   lowerLoadoutReferences(descriptor)
+  lowerAssistableReferences(descriptor)
   return descriptor
 end
 
@@ -895,7 +964,7 @@ end
 --- first committed id and version remain active across staged reloads. Optional
 --- arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`,
 --- `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
---- `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+--- `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. Pure: no engine side
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
@@ -1033,6 +1102,11 @@ local function cloneAndFreeze(value: any, seenOrNil: any?, visitingOrNil: any?, 
   return table.freeze(clone)
 end
 
+-- Owner tokens `byPlayer` accepts, by the `__wire` spelling each owner handle
+-- carries. The drift guard in postretro-sim holds this list to the engine's
+-- `BY_PLAYER_OWNER_TOKENS`.
+local BY_PLAYER_OWNER_TOKENS = table.freeze({ ["@player"] = true, ["@impact.source"] = true, ["@assist.helper"] = true, ["@assist.target"] = true })
+
 local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): StateRef<any>
   local ref = { slot = slot, kind = kind }
   local methods = {
@@ -1040,10 +1114,15 @@ local function storeRef(slot: string, kind: StateRefKind, perOwner: boolean): St
       if not perOwner then
         error("state slot `" .. slot .. "` is global and cannot be addressed with byPlayer", 2)
       end
-      local token = if rawequal(owner, IMPACT_SOURCE)
-        then "@impact.source"
-        elseif rawequal(owner, PLAYER_TARGET) then "@player"
-        else "@invalid"
+      -- `pcall`: an opaque SDK target raises on any field it does not serve.
+      local wire = nil
+      if type(owner) == "table" then
+        local ok, value = pcall(function()
+          return (owner :: any).__wire
+        end)
+        wire = if ok then value else nil
+      end
+      local token = if type(wire) == "string" and BY_PLAYER_OWNER_TOKENS[wire] then wire else "@invalid"
       return table.freeze({
         slot = slot,
         kind = kind,

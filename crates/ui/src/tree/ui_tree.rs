@@ -21,7 +21,7 @@ use super::bindings::{
 use super::build::build_node;
 use super::draw::{UiDrawData, anchor_fractions, bar_max_value, bar_slot_value};
 use super::node_context::ValueText;
-use super::predicate::{resolve_predicate, resolve_value_text};
+use super::predicate::{evaluate_predicate, resolve_value_text};
 use super::scroll::{Placement, ScrollInput, ScrollViews};
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
@@ -597,9 +597,8 @@ impl UiTree {
                     if style_ranges.is_some()
                         && let Some(predicate) = predicate_bind
                     {
-                        let resolved = resolve_predicate(
-                            &predicate.source,
-                            predicate.equals.as_ref(),
+                        let resolved = evaluate_predicate(
+                            predicate,
                             predicate_scope.as_deref(),
                             slot_values,
                             cell_values,
@@ -707,9 +706,8 @@ impl UiTree {
         let mut visibility_flips: Vec<(NodeId, Display)> = Vec::new();
         let mut capture_bar_exit: Vec<NodeId> = Vec::new();
         for (node, state) in self.visibility.iter_mut() {
-            let resolved = resolve_predicate(
-                &state.predicate.source,
-                state.predicate.equals.as_ref(),
+            let resolved = evaluate_predicate(
+                &state.predicate,
                 state.scope.as_deref(),
                 slot_values,
                 cell_values,

@@ -673,6 +673,7 @@ impl TimedSlotHarness {
                 raw.server_tick,
                 &self.base.client_table,
                 &outcome,
+                0,
             );
             let (_, ramps) = self.debug();
             self.intakes.push(IntakeTrace {
@@ -941,6 +942,7 @@ fn resource_descriptor(resource: serde_json::Value, recovery_ms: f32) -> WeaponD
 
 fn idle_command(tick: u32, reload: bool) -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: tick,
         movement: MovementInput {
             wish_dir: Vec2::ZERO,

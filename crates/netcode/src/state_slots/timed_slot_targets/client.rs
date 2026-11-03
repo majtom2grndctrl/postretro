@@ -1,19 +1,28 @@
-// State-apply and UI handoff for the four display-only timer streams.
+// State-apply and UI handoff for the four display-only timer streams and the
+// received-assist stream, and the helper's committed assist-progress sample.
 // See: context/lib/networking.md §What gates, and what replicates instead
 
 use super::super::{ClientStateApply, StateApplyOutcome};
 use super::NAMES;
+use super::received::RECEIVED_NAME;
 use postretro_entities::{SlotTable, SlotValue};
+
+const ASSIST_PROGRESS_NAME: &str = "player.assistProgress";
 
 impl ClientStateApply {
     /// Observe one accepted newest snapshot only after its state batch commits.
     /// Omitted and held-id records sample the committed value, while refresh
     /// exclusions cannot masquerade as a held-value sample.
+    /// `received_required_ticks` is the local pawn's
+    /// `ClientReplication::received_required_ticks()` after the same snapshot,
+    /// so the received stream's slope belongs to the helper whose progress the
+    /// sample reports.
     pub(crate) fn accept_timed_slot_sample(
         &mut self,
         server_tick: u32,
         slot_table: &SlotTable,
         outcome: &StateApplyOutcome,
+        received_required_ticks: u32,
     ) {
         if !outcome.state_batch_applied {
             return;
@@ -43,6 +52,46 @@ impl ClientStateApply {
             }));
         self.timed_slot_targets
             .accept(server_tick, &self.weapon_projection, excluded);
+        let received = self.committed_number_sample(slot_table, outcome, RECEIVED_NAME);
+        self.timed_slot_targets
+            .accept_received(server_tick, received, received_required_ticks);
+    }
+
+    /// The committed `player.assistProgress` after this snapshot's state
+    /// batch, under the guards the timer samples use: none for a batch that
+    /// did not apply or a slot held for a baseline refresh. A batch with no
+    /// record for the slot samples the value the client already holds.
+    pub(crate) fn assist_progress_sample(
+        &self,
+        slot_table: &SlotTable,
+        outcome: &StateApplyOutcome,
+    ) -> Option<f32> {
+        self.committed_number_sample(slot_table, outcome, ASSIST_PROGRESS_NAME)
+    }
+
+    fn committed_number_sample(
+        &self,
+        slot_table: &SlotTable,
+        outcome: &StateApplyOutcome,
+        name: &str,
+    ) -> Option<f32> {
+        if !outcome.state_batch_applied {
+            return None;
+        }
+        let held_for_refresh = self.schema.as_ref().is_some_and(|schema| {
+            outcome.refresh_requests.iter().any(|request| {
+                schema
+                    .entry_for(postretro_net::state_slots::StateSlotId(request.slot_id))
+                    .is_some_and(|entry| entry.name == name)
+            })
+        });
+        if held_for_refresh {
+            return None;
+        }
+        match slot_table.get(name)?.value.as_ref()? {
+            SlotValue::Number(value) => Some(*value),
+            _ => None,
+        }
     }
 
     /// Advance the sample timeline once per client frame. `sample_tick` is the
@@ -98,5 +147,10 @@ impl ClientStateApply {
     #[cfg(test)]
     pub(crate) fn timed_slot_debug(&self) -> super::TimedSlotDebug {
         self.timed_slot_targets.debug()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn received_assist_displayed(&self) -> Option<f64> {
+        self.timed_slot_targets.received_displayed()
     }
 }

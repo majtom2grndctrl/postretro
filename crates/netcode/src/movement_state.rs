@@ -44,6 +44,7 @@ pub(crate) fn movement_state_to_wire(
         life_state: component.life_state,
         life_state_elapsed_ticks: component.life_state_elapsed_ticks,
         life_state_table_revision: component.life_state_table_revision,
+        assistable: component.assistable,
         teleport: postretro_net::wire::WireTeleportState::new(
             component.teleport.generation,
             component.teleport.accumulated_yaw,
@@ -136,6 +137,8 @@ pub(crate) fn merge_wire_into_movement_state_checked(
     component.life_state = wire.life_state;
     component.life_state_elapsed_ticks = wire.life_state_elapsed_ticks;
     component.life_state_table_revision = wire.life_state_table_revision;
+    // `wire.assistable` is not merged: the local stamp stays derived from the
+    // installed profile, like every other life-state stamp.
     // The live capsule dimensions are mutable tick state (the crouch intent
     // shrinks them); the standing reference dimensions are descriptor-owned and
     // deliberately not touched.
@@ -380,6 +383,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
@@ -486,6 +490,7 @@ mod tests {
         component.life_state = 7;
         component.life_state_elapsed_ticks = 98765;
         component.life_state_table_revision = 241;
+        component.assistable = true;
         component.velocity = Vec3::new(2.0, -0.5, 9.0);
         component.knockback_velocity = Vec3::new(1.0, 0.0, 6.0);
         component.push_velocity = Vec3::new(-2.5, 0.0, 0.75);
@@ -508,6 +513,10 @@ mod tests {
         component.capsule.eye_height = 0.25;
 
         let wire = movement_state_to_wire(&component, 0.75);
+        assert!(
+            wire.assistable,
+            "the stamp rides the wire for remote readers"
+        );
         let mut rebuilt = PlayerMovementComponent::from_descriptor(&rich_descriptor());
         assert!(merge_wire_into_movement_state_checked(
             &mut rebuilt,
@@ -515,6 +524,8 @@ mod tests {
             |_| true
         ));
 
+        // The local stamp is derived from the installed profile, never the wire.
+        assert!(!rebuilt.assistable);
         assert_eq!(rebuilt.life_state, component.life_state);
         assert_eq!(
             rebuilt.life_state_elapsed_ticks,

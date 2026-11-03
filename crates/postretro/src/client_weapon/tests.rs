@@ -62,13 +62,7 @@ fn command(pressed: bool, active: bool) -> sim::SimCommand {
     let mut command = crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     );
     command.fire_button = weapon::FireButtonState { pressed, active };
     command
@@ -386,7 +380,6 @@ fn client_weapon_zero_tick_suspend_refocus_then_fixed_cancel_produces_no_shot() 
         .unwrap();
     frame.suspend(&registry);
     capture.suspend();
-    assert_eq!(capture.take_cancel(), Some(token));
     assert_eq!(
         *registry
             .get_component::<WeaponComponent>(id)
@@ -398,7 +391,6 @@ fn client_weapon_zero_tick_suspend_refocus_then_fixed_cancel_produces_no_shot() 
         before,
         "no semantic advance on zero-tick frames"
     );
-    assert_eq!(capture.take_cancel(), None); // refocus still has no fixed tick
     let mut next = command(false, false);
     next.activation = capture.command(9);
     predict(&mut frame, &mut registry, &mut next, 9);
@@ -1912,13 +1904,7 @@ fn teleporting_shooter() -> crate::App {
     let facing = crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     )
     .movement
     .facing_yaw;
@@ -1944,13 +1930,7 @@ fn shooter_tick(app: &mut crate::App, tick: u32, fire: bool) -> (Vec3, Vec3, boo
         let mut command = crate::build_sim_command(
             &crate::input::ActionSnapshot::neutral(),
             &app.camera,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
+            crate::sim_intents::SimIntents::default(),
         );
         command.fire_button = weapon::FireButtonState {
             pressed: fire,

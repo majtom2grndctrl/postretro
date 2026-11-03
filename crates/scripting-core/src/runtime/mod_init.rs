@@ -179,6 +179,17 @@ impl ScriptRuntime {
                 reason: format!("mod-init: state-store declarations rejected: {error}"),
             })?;
 
+        // Pair expressions read per-owner store values, which only meet the
+        // descriptors here; refuse the load before the live table changes.
+        crate::ir_pair_validation::validate_assistable_expressions(
+            &manifest.entities,
+            &manifest.store_declarations,
+            &self.script_ctx.slot_table.borrow(),
+        )
+        .map_err(|reason| ScriptError::InvalidArgument {
+            reason: format!("mod-init: {reason}"),
+        })?;
+
         // Identity validation joins the same whole-attempt gate as schema
         // reconciliation. Nothing below this point mutates the live table.
         let validated_identity = if self.cfg.skip_identity_enforcement {

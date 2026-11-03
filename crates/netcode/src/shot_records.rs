@@ -305,6 +305,7 @@ mod activation_tests {
                     teleport_yaw_stamp: 0.0,
                     client_tick: tick,
                     movement: wire::WireMovementInput {
+                        assist_held: false,
                         wish_dir: [0.0, 0.0],
                         jump_pressed: false,
                         dash_pressed: false,

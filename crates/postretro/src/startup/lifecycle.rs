@@ -6,6 +6,9 @@
 mod lifecycle_beside;
 #[path = "lifecycle_boot_state.rs"]
 mod lifecycle_boot_state;
+#[cfg(test)]
+#[path = "lifecycle_client_assist_tests.rs"]
+mod lifecycle_client_assist_tests;
 #[path = "lifecycle_commit.rs"]
 mod lifecycle_commit;
 #[cfg(test)]

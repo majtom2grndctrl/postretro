@@ -524,10 +524,14 @@
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions read impact-target facts and state only: v1 has no source-scoped fact vocabulary. */
+    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. Amount expressions remain impact-target scoped; v1 has no source facts. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Whether the damager is a player pawn in life state `name` at this fire. False for a damager that is not a player. An unknown name skips the policy. */
+    inLifeState(name: string): BoolRef;
+    /** Put the damager player pawn into life state `name` in-tick, as `setLifeState`: a change restarts its elapsed time, the current state is a no-op. A fire with no damager skips it; a damager lacking the state warns and skips. */
+    setLifeState(name: string): Effect;
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
@@ -672,26 +676,34 @@
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
-    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
+    /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
     on(edge: PlayerEventEdge, fire: PlayerEventReaction[], options?: PlayerEventOptions): PlayerEventDescriptor;
   }
   /** The edge a player event fires on: `becomes` (false → true) or `ceases` (true → false). */
   export type PlayerEventEdgeWord = "becomes" | "ceases";
+  /** A discrete player-event source: an assist completed on this player (`assistReceived`) or by this player (`assistGiven`). */
+  export type PlayerEventDiscreteWord = "assistReceived" | "assistGiven";
   const playerEventEdgeBrand: unique symbol;
-  /** A condition paired with its edge word. Build it with `becomes(cond)` or `ceases(cond)`. */
+  /** What a player event fires on. Build it with `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`. */
   export type PlayerEventEdge = Readonly<{ readonly [playerEventEdgeBrand]: true }>;
   /** A reaction a player event fires: a sourceless or player-event-scoped handle, or a bare name. */
   export type PlayerEventReaction = Reaction<{}> | Reaction<PlayerEventParams> | string;
   /** `levels` scopes a `ModManifest` entry to matching map tags; a level script's entry must omit it. */
   export type PlayerEventOptions = { levels?: string[] };
-  /** One `playerEvents` entry, as `players().on` builds it. */
-  export type PlayerEventDescriptor = { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] };
+  /** One `playerEvents` entry, as `players().on` builds it. A discrete source carries no condition. */
+  export type PlayerEventDescriptor =
+    | { edge: PlayerEventEdgeWord; condition: RuntimeValue; fire: string[]; levels?: string[] }
+    | { edge: PlayerEventDiscreteWord; fire: string[]; levels?: string[] };
   /** Test the evaluated player in player events, or the local player in crossings. */
   export function inLifeState(name: string): BoolRef;
   /** Fire when `cond` turns true for a player. Inside `cond`, a plain read of a per-player slot (an engine player slot or a mod per-owner slot) means the player being evaluated. A player first observed while `cond` holds fires too, so guard a milestone with a condition its fire makes false. */
   export function becomes(cond: BoolRef): PlayerEventEdge;
   /** Fire when `cond` turns false for a player who was observed with it true. Inside `cond`, a plain read of a per-player slot means the player being evaluated. */
   export function ceases(cond: BoolRef): PlayerEventEdge;
+  /** Fire when an assist completes on a player: `on.player` is the target. The completion applies in that tick's player-event pass before any condition is evaluated, so that tick's conditions see the fire's writes; it changes no life state or health itself. No condition. */
+  export function assistReceived(): PlayerEventEdge;
+  /** Fire when a player completes an assist: `on.player` is the helper. Fires right after the target's `assistReceived()` subscriptions. No condition. */
+  export function assistGiven(): PlayerEventEdge;
   /** Address NPCs, optionally narrowed to those carrying `tag`. Resolved when each command takes effect, sequence steps included. */
   export function npcs(filter?: NpcGroupFilter): NpcGroup;
   /** Address every seat-bound player pawn. Resolved when each command takes effect, sequence steps included. */
@@ -720,14 +732,14 @@
   export type NumericArrayStateValue = ReadonlyArray<number>;
   export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array";
   /** The wire owner a `byPlayer` read or write addresses. */
-  export type OwnerToken = "@impact.source" | "@player";
+  export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target";
   export type OwnerAddressedComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly owner: OwnerToken; readonly [stateRefValueBrand]: T };
   export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
-  /** Who `byPlayer` addresses: the impact damager (`impact.source`) or a player event's player (`on.player`). */
-  export type PlayerOwner = SourceHandle | PlayerTarget;
+  /** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
+  export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
   /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
   export type PlayerComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
   /** Writable form of `PlayerComputedRef`. */
@@ -793,6 +805,17 @@
   export function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) => NumberValue): Effect;
   /** Build a deferred impact-effect group guarded by a Bool expression. */
   export function when(cond: BoolRef, effects: readonly Effect[]): GatedEffect;
+  const assistSideBrand: unique symbol;
+  /** One side of an assist pair expression, evaluated on the host for each helper and target. */
+  export interface AssistSide {
+    readonly [assistSideBrand]: true;
+    /** Whether this side's pawn is in life state `name`. An unknown name rejects the mod at load. */
+    inLifeState(name: string): BoolRef;
+  }
+  /** The two sides an `assistable` `radius` or `holdMs` expression reads: `byPlayer(assist.helper)`, `assist.target.inLifeState(name)`. */
+  export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
+  /** The helper and target of an assist pair, for `assistable.radius` and `assistable.holdMs` expressions. */
+  export const assist: Assist;
 
   // -------------------------------------------------------------------------
   // UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -897,8 +920,12 @@
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
+  /** The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`, `"atLeast"` (>=), `"atMost"` (<=). */
+  export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+  /** A numeric comparison against a Number source. Built by `stateCompare`. */
+  export type PredicateCompare = { op: PredicateCompareOp; value: number };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
@@ -1027,6 +1054,8 @@
   export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
+  /** Build a numeric comparison predicate on a Number state ref, e.g. `stateCompare(player.assistProgress, "greaterThan", 0)`. Throws on a non-number ref, an unknown op, or a non-finite `value`. */
+  export function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate;
 
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];
@@ -1045,7 +1074,7 @@
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;

@@ -30,6 +30,7 @@ use crate::wire::{
 #[cfg(test)]
 mod presentation_budget_tests;
 
+mod assist_facts;
 mod encode;
 use encode::ClientReplicationState;
 
@@ -173,6 +174,9 @@ pub struct ServerReplication {
     pending_despawn_reasons: HashMap<u32, DespawnReason>,
     /// Per-client ack/refresh state.
     clients: HashMap<u64, ClientReplicationState>,
+    /// Each recipient's current assist facts, keyed by owner client id
+    /// ([`ServerReplication::ingest_assist_facts`]).
+    assist_facts: HashMap<u64, crate::wire::WireAssistFacts>,
 }
 
 impl Default for ServerReplication {
@@ -187,6 +191,7 @@ impl Default for ServerReplication {
             tombstones: HashMap::new(),
             pending_despawn_reasons: HashMap::new(),
             clients: HashMap::new(),
+            assist_facts: HashMap::new(),
         }
     }
 }
@@ -207,6 +212,7 @@ impl ServerReplication {
         self.tombstones.clear();
         self.pending_despawn_reasons.clear();
         self.clients.clear();
+        self.assist_facts.clear();
     }
 
     /// Forget a bound map presentation identity while clients retain their own
@@ -486,6 +492,7 @@ impl ServerReplication {
         if latest_snapshot_sequence > state.last_acked_sequence {
             state.last_acked_sequence = latest_snapshot_sequence;
         }
+        state.assist.confirm(latest_snapshot_sequence);
         // A client cannot legitimately ack an id the server never issued. The
         // allocators name the *next* id to hand out, so the highest issued id is
         // `next_* - 1`; anything strictly above that is a forged or buggy ack.
@@ -828,6 +835,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

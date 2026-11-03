@@ -40,6 +40,6 @@ impl ClientStateApply {
         let outcome =
             self.apply_snapshot_state(table, identity, sequence, schema.fingerprint(), &records);
         assert!(outcome.state_batch_applied, "test snapshot must commit");
-        self.accept_timed_slot_sample(tick, table, &outcome);
+        self.accept_timed_slot_sample(tick, table, &outcome, 0);
     }
 }

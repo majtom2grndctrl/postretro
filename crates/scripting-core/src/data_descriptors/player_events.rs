@@ -5,7 +5,9 @@
 // See: context/lib/scripting.md §12 (Player events)
 
 use super::*;
-use postretro_entities::data_descriptors::{PlayerEventDescriptor, PlayerEventEdge};
+use postretro_entities::data_descriptors::{
+    PlayerEventDescriptor, PlayerEventEdge, PlayerEventTrigger,
+};
 
 /// The manifest a `playerEvents` array arrived in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,22 +81,44 @@ fn player_event_from_json(
             reason: "player-event entry must be an object".into(),
         });
     };
-    let edge = match entry.get("edge") {
-        Some(serde_json::Value::String(word)) => {
-            PlayerEventEdge::from_wire(word).ok_or_else(|| DescriptorError::InvalidShape {
-                reason: format!("unknown edge `{word}`; expected `becomes` or `ceases`"),
-            })?
-        }
+    const EXPECTED: &str = "`becomes`, `ceases`, `assistReceived` or `assistGiven`";
+    let word = match entry.get("edge") {
+        Some(serde_json::Value::String(word)) => word.clone(),
         _ => {
             return Err(DescriptorError::InvalidShape {
-                reason: "`edge` must be `becomes` or `ceases`".into(),
+                reason: format!("`edge` must be {EXPECTED}"),
             });
         }
     };
-    let condition = ir_node_from_json(
-        entry.remove("condition").unwrap_or(serde_json::Value::Null),
-        "player-event entry `condition`",
-    )?;
+    let condition = entry.remove("condition");
+    let trigger = match (word.as_str(), PlayerEventEdge::from_wire(&word)) {
+        (_, Some(edge)) => PlayerEventTrigger::Edge {
+            edge,
+            condition: ir_node_from_json(
+                condition.unwrap_or(serde_json::Value::Null),
+                "player-event entry `condition`",
+            )?,
+        },
+        ("assistReceived" | "assistGiven", None) => {
+            // A discrete source has no condition to filter it; one authored
+            // anyway would read as a filter the engine never applies.
+            if condition.is_some_and(|value| !value.is_null()) {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("`{word}` takes no condition"),
+                });
+            }
+            if word == "assistReceived" {
+                PlayerEventTrigger::AssistReceived
+            } else {
+                PlayerEventTrigger::AssistGiven
+            }
+        }
+        _ => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("unknown edge `{word}`; expected {EXPECTED}"),
+            });
+        }
+    };
     let fire = string_list(entry.remove("fire"), "fire")?.unwrap_or_default();
     let levels = string_list(entry.remove("levels"), "levels")?;
     if site == PlayerEventSite::Level && levels.is_some() {
@@ -104,8 +128,7 @@ fn player_event_from_json(
         return Ok(None);
     }
     Ok(Some(PlayerEventDescriptor {
-        edge,
-        condition,
+        trigger,
         fire,
         levels: levels.unwrap_or_default(),
         authored_index: index,

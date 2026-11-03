@@ -362,7 +362,7 @@ fn assert_upload_hold_keeps_main_thread_clear(
     );
 
     let polls = app.level_loads.test.transport_polls;
-    let mut font_system = postretro_ui::text::build_font_system();
+    let mut font_system = postretro_ui::text::build_embedded_font_system();
     for held_frame in 0..12 {
         let before = gpu_creation_counts();
         let step = frame(&mut app, &exit);
@@ -867,7 +867,7 @@ fn frontend_boot_builds_pipelines_without_blocking() {
     };
     let mut app = app_with(renderer, &dev_content_root());
     let exit = TestExit::default();
-    let mut font_system = postretro_ui::text::build_font_system();
+    let mut font_system = postretro_ui::text::build_embedded_font_system();
     for _ in 0..4 {
         let started = Instant::now();
         assert_eq!(frame(&mut app, &exit), None, "a Frontend frame");
@@ -3158,6 +3158,9 @@ const NOT_LOAD_PROGRESS: &[&str] = &[
     "StageProgress",
     // The level compiler's TUI worker: a detached bake's stage counts.
     "DetachProgress",
+    // The assist accumulator's per-helper revive/assist progress: gameplay
+    // state in the sim crate, unrelated to level loading.
+    "HelperProgress",
 ];
 
 /// Files whose `fn fraction(` is not a progress counter.

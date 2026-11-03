@@ -9,6 +9,8 @@
 
 use std::path::Path;
 
+use postretro_scripting_core::data_descriptors::validate_retained_widget_sources;
+
 use super::core_root::CoreRoot;
 use super::descriptor::AnchoredTree;
 use super::modal_stack::{ScopeTier, UiTreeRegistry};
@@ -36,7 +38,18 @@ pub fn load_named_tree(path: &Path) -> Option<AnchoredTree> {
         }
     };
     match serde_json::from_str::<AnchoredTree>(&bytes) {
-        Ok(tree) => Some(tree),
+        Ok(tree) => {
+            // Engine JSON skips the script bridges, so run their predicate
+            // checks (`equals` xor `compare`, threshold range, slot type) here.
+            if let Err(reason) = validate_retained_widget_sources(&tree.root) {
+                log::warn!(
+                    "[UI] tree asset '{}' is invalid ({reason}); that screen is unavailable",
+                    path.display()
+                );
+                return None;
+            }
+            Some(tree)
+        }
         Err(err) => {
             log::warn!(
                 "[UI] tree asset '{}' failed to deserialize ({err}); that screen is unavailable",
@@ -121,6 +134,33 @@ mod tests {
             loaded.is_none(),
             "invalid bar JSON is contained as an unavailable tree"
         );
+    }
+
+    #[test]
+    fn load_named_tree_with_equals_and_compare_degrades_to_none() {
+        // The script bridges reject `equals` beside `compare`; engine JSON must
+        // meet the same rule rather than register a predicate with two tests.
+        let path = std::env::temp_dir().join(format!(
+            "postretro-ui-equals-and-compare-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"text","content":"x","fontSize":16.0,"color":"ok","visibleWhen":{"slot":"player.assistProgress","equals":1.0,"compare":{"op":"greaterThan","value":0.0}}}}"#,
+        )
+        .expect("write invalid predicate fixture");
+        let loaded = load_named_tree(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(loaded.is_none(), "equals + compare is contained");
+
+        std::fs::write(
+            &path,
+            r#"{"anchor":"center","offset":[0.0,0.0],"root":{"kind":"text","content":"x","fontSize":16.0,"color":"ok","visibleWhen":{"slot":"player.assistProgress","compare":{"op":"greaterThan","value":0.0}}}}"#,
+        )
+        .expect("write valid predicate fixture");
+        let loaded = load_named_tree(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(loaded.is_some(), "a lone compare loads");
     }
 
     /// The shipped HUD asset deserializes through the standard wire path to a

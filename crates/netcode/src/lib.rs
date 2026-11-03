@@ -53,6 +53,7 @@ pub use ghost_link_wire::{ghost_color_filter_from_wire, ghost_link_state_to_wire
 pub mod frame_order;
 mod host;
 mod host_address;
+mod host_assist_facts;
 mod host_input;
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
@@ -182,7 +183,10 @@ mod ingest_hit_harness_test;
 #[cfg(test)]
 mod snapshot_regression_harness_test;
 
-pub use client::{ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection};
+pub use client::{
+    AssistPairEntry, AssistProgressSample, ClientPresentationInputs, ClientReplication,
+    GhostLinkUpdate, MoverCorrection, RemoteAssistFacts,
+};
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{
@@ -981,7 +985,23 @@ pub fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
-            state_slots.accept_timed_slot_sample(snapshot.server_tick, slot_table, &state_outcome);
+            state_slots.accept_timed_slot_sample(
+                snapshot.server_tick,
+                slot_table,
+                &state_outcome,
+                replication.received_required_ticks(),
+            );
+            frame_outcome
+                .assist_progress_samples
+                .extend(AssistProgressSample::from_applied_batch(
+                    outcome
+                        .local_reconcile
+                        .as_ref()
+                        .and_then(|local| local.acked_tick),
+                    state_slots,
+                    slot_table,
+                    &state_outcome,
+                ));
             let faction_sentiment_baseline = state_slots.apply_faction_sentiment(
                 factions,
                 faction_sentiment,
@@ -1384,33 +1404,12 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-/// Zero-tick sends must sample the same pawn teleport frame as their facing.
-/// The prediction identity is armed throughout the first-record gate; until that
-/// record merges the pawn's movement component is absent or descriptor-default,
-/// so the stamp is zero.
-pub fn client_send_input_command_in_registry(
-    endpoint: Option<&mut NetEndpoint>,
-    command: &SimCommand,
-    registry: &EntityRegistry,
-) -> Option<u32> {
-    let Some(NetEndpoint::Client {
-        client, prediction, ..
-    }) = endpoint
-    else {
-        return None;
-    };
-    let input = stamped_client_input(prediction, command, registry);
-    let client_tick = input.client_tick;
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
-    prediction.diag_record_fire_send();
-    Some(client_tick)
-}
-
 /// Allocate the next command tick and stamp it with the teleport frame its facing
 /// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
 /// registry state the camera follows. Before the client's first record for its pawn
 /// (and after a level unload disarms prediction) nothing has turned the facing, so
-/// the stamp is zero. Every outbound movement command goes through here.
+/// the stamp is zero. Only [`client_predict_tick`] calls this: one client tick is
+/// one predicted step, and nothing else (a cancel included) allocates a tick.
 pub(crate) fn stamped_client_input(
     prediction: &mut ClientPrediction,
     command: &SimCommand,
@@ -3804,6 +3803,7 @@ mod tests {
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3841,6 +3841,7 @@ mod tests {
             0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
         assert!(sampled.is_empty());
@@ -3896,6 +3897,7 @@ mod tests {
             0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
@@ -5240,6 +5242,7 @@ mod tests {
             teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 0.0],
                 jump_pressed: false,
                 dash_pressed: false,
@@ -5477,6 +5480,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick,
                 movement: wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -6932,6 +6936,7 @@ mod tests {
     #[test]
     fn descriptor_class_snapshots_require_descriptor_table() {
         let classed = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -6943,6 +6948,7 @@ mod tests {
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 8,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -7132,6 +7138,7 @@ mod tests {
     #[test]
     fn client_sample_interpolation_reports_the_render_tick_remotes_were_sampled_at() {
         let record = |baseline_id, x: f32| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7218,6 +7225,7 @@ mod tests {
                 sequence: 0,
                 server_tick: 100,
                 records: vec![EntityRecord::FullBaseline {
+                    assist_facts: None,
                     network_id: 7,
                     baseline_id: 1,
                     last_processed_client_tick: None,
@@ -7307,6 +7315,7 @@ mod tests {
                 life_state: 255,
                 life_state_elapsed_ticks: 0,
                 life_state_table_revision: 0,
+                assistable: false,
                 teleport: Default::default(),
                 knockback_velocity: [0.0; 3],
                 push_velocity: [0.0; 3],
@@ -7327,6 +7336,7 @@ mod tests {
             })
         };
         let record = |baseline_id, transform_x, aim_pitch| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7910,6 +7920,7 @@ mod tests {
                     server_tick: 10,
                     records: vec![
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 7,
                             baseline_id: 1,
                             last_processed_client_tick: None,
@@ -7928,6 +7939,7 @@ mod tests {
                                     life_state: 255,
                                     life_state_elapsed_ticks: 0,
                                     life_state_table_revision: 0,
+                                    assistable: false,
                                     teleport: Default::default(),
                                     knockback_velocity: [0.0; 3],
                                     push_velocity: [0.0; 3],
@@ -7949,6 +7961,7 @@ mod tests {
                             ],
                         },
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 8,
                             baseline_id: 1,
                             last_processed_client_tick: None,

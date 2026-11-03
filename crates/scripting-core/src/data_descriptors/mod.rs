@@ -26,11 +26,12 @@ pub use super::runtime::{
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
     AnchoredTree, AnnounceWidget, BarMax, BarMaxStateRef, BarWidget, BindSource, Border,
-    BoundScalar, ButtonWidget, CaptureMode, CellInit, ColorValue, ContainerWidget, FocusNeighbors,
-    FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween, PanelWidget,
-    Predicate, PredicateValue, Priority, RepeatPolicy, RingRadiusRange, RingWidget, Role,
-    ScalarValue, SliderBind, SliderValueDisplay, SliderWidget, SpacerWidget, SpacingValue,
-    TextBind, TextTween, TextWidget, ValueTextCase, Widget,
+    BoundScalar, ButtonWidget, CaptureMode, CellInit, ColorValue, CompareOp, ContainerWidget,
+    FocusNeighbors, FocusPolicy, GridWidget, ImageWidget, LocalState, PanelBind, PanelTween,
+    PanelWidget, Predicate, PredicateCompare, PredicateValue, Priority, RepeatPolicy,
+    RingRadiusRange, RingWidget, Role, ScalarValue, SliderBind, SliderValueDisplay, SliderWidget,
+    SpacerWidget, SpacingValue, TextBind, TextTween, TextWidget, ValueTextCase, Widget,
+    unknown_compare_op_reason,
 };
 #[allow(unused_imports)]
 pub use crate::ui::layout::Anchor;
@@ -69,6 +70,7 @@ mod life_states;
 mod loading_manifest;
 mod movement_sounds;
 mod player_events;
+mod presentation_overlays;
 mod reaction_args;
 mod runtime_manifest;
 mod swim_block;
@@ -122,6 +124,7 @@ pub use ghost_styles::{drain_ghost_styles_js, drain_ghost_styles_lua};
 pub(crate) use life_states::*;
 pub(crate) use movement_sounds::*;
 pub use player_events::{PlayerEventSite, drain_player_events_js, drain_player_events_lua};
+pub use presentation_overlays::{drain_presentation_overlays_js, drain_presentation_overlays_lua};
 pub use runtime_manifest::*;
 pub(crate) use swim_block::*;
 pub use validate::*;
@@ -132,10 +135,11 @@ pub use vm_adapters::*;
 pub use postretro_entities::data_descriptors::{
     ComposedPlayerEvent, CrossingCondition, CrossingDescriptor, EntityTypeDescriptor, GroupKind,
     GroupTarget, InventoryDescriptor, LifeStatesDescriptor, LocomotionDescriptor, MeshDescriptor,
-    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PrimitiveDescriptor,
-    ProgressDescriptor, RawAnimationState, RawMeshDescriptor, ReactionDescriptor, SequenceStep,
-    SequenceTarget, TeleportEventDescriptor, TriggerEventDescriptor, TriggerPoolArm,
-    TriggerPoolDescriptor, VolumeTriggerEventDescriptor, build_crossing, build_predicate_crossing,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventSource, PlayerEventTrigger,
+    PrimitiveDescriptor, ProgressDescriptor, RawAnimationState, RawMeshDescriptor,
+    ReactionDescriptor, SequenceStep, SequenceTarget, TeleportEventDescriptor,
+    TriggerEventDescriptor, TriggerPoolArm, TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
+    build_crossing, build_predicate_crossing,
 };
 pub use postretro_foundation::data_descriptors::LightDescriptor;
 pub use postretro_foundation::data_descriptors::types::{

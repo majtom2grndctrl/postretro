@@ -398,6 +398,24 @@ local function buildPredicate(value: any, field: string, factory: string): any?
     end
     out.equals = e
   end
+  if value.compare ~= nil then
+    if value.equals ~= nil then
+      error(`{factory}: \`{field}\` cannot carry both \`equals\` and \`compare\``)
+    end
+    local c = value.compare
+    if type(c) ~= "table" then
+      error(`{factory}: \`{field}.compare\` must be an object`)
+    end
+    local op = c.op
+    if op ~= "greaterThan" and op ~= "lessThan" and op ~= "atLeast" and op ~= "atMost" then
+      error(`{factory}: \`{field}.compare.op\` must be one of greaterThan, lessThan, atLeast, atMost`)
+    end
+    local v = c.value
+    if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then
+      error(`{factory}: \`{field}.compare.value\` must be a finite number`)
+    end
+    out.compare = { op = op, value = v }
+  end
   return out
 end
 

@@ -31,19 +31,32 @@ pub(crate) fn registry_facts(entities: &[EntityTypeDescriptor]) -> RelevanceFact
                 entity_facts.magazine = matches!(weapon.resource, Some(WeaponResource::Ammo(_)));
                 entity_facts.secondary = weapon.secondary.is_some();
             }
+            entity_facts.assistable = entity.life_states.as_ref().is_some_and(|states| {
+                states
+                    .states
+                    .values()
+                    .any(|profile| profile.assistable.is_some())
+            });
             facts.union(entity_facts)
         })
 }
 
-/// Relevance facts from installed host tuning: the pawn's movement and its
-/// carried wieldables. Tuning sites keep no local fallback, so a host value
-/// the local registry lacks must still bind its command.
+/// Relevance facts from installed host tuning: the pawn's movement, its
+/// life-state profiles and its carried wieldables. Tuning sites keep no local
+/// fallback, so a host value the local registry lacks must still bind its
+/// command.
 pub(crate) fn tuning_facts(tuning: &TuningPayload) -> RelevanceFacts {
-    let movement = tuning
-        .movement
-        .as_ref()
-        .map(movement_facts)
-        .unwrap_or_default();
+    let movement = RelevanceFacts {
+        assistable: tuning
+            .life_state_profiles
+            .iter()
+            .any(|(_, profile)| profile.assistable.is_some()),
+        ..tuning
+            .movement
+            .as_ref()
+            .map(movement_facts)
+            .unwrap_or_default()
+    };
     tuning
         .wieldables
         .iter()

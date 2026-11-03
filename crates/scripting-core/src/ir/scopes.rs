@@ -14,7 +14,9 @@ use crate::ctx::ScriptCtx;
 use crate::group_resolution::is_player_pawn;
 use crate::ir::scope::{BindingScope, ResolvedInput, ResolvedOutput};
 use crate::ir::{IrType, IrValue};
-use crate::life_state_inputs::{LIFE_STATE_INPUT_PREFIX, resolve_life_state_id};
+use crate::life_state_inputs::{
+    LIFE_STATE_INPUT_PREFIX, life_state_name_declared, player_life_state, resolve_life_state_id,
+};
 use crate::player_event_scope::EVENT_PLAYER_TOKEN;
 use crate::player_slots::{PlayerSlot, player_slot_value};
 use crate::registry::{EntityId, EntityRegistry};
@@ -149,6 +151,17 @@ impl StoreScope {
             },
             ir_type,
         })
+    }
+
+    /// A record's projected IR type and per-owner flag, for the pair read
+    /// table (`ir/pair_scope.rs`).
+    pub(crate) fn store_record(&self, name: &str) -> Option<(Option<IrType>, bool)> {
+        let table = self.ctx.slot_table.borrow();
+        let record = table.get(name)?;
+        Some((
+            Self::project(&record.schema.slot_type),
+            record.schema.per_owner,
+        ))
     }
 
     fn per_owner_slot(&self, name: &str) -> Option<bool> {
@@ -434,6 +447,9 @@ pub enum EntityInputHandle {
     /// An engine per-player slot of the impact source, from the fire's
     /// snapshot of that pawn.
     OwnedEngine(PlayerSlot),
+    /// `source.inLifeState(name)`: the resolved id against the source pawn's
+    /// life state from the fire's snapshot.
+    OwnedLifeState(u8),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -473,16 +489,19 @@ pub struct EntityScope {
     /// `owner_seat`. A source that is not a player pawn (an NPC damager, a
     /// pawnless hazard) has none.
     owner_engine: [Option<IrValue>; PlayerSlot::ALL.len()],
+    /// The impact source pawn's life-state id, refreshed with `owner_seat`;
+    /// none for a source that is not a player pawn.
+    owner_life_state: Option<u8>,
     /// Engine owner reads already warned about, one bit per
     /// `PlayerSlot::index()`: an absent value warns once per scope, not once
     /// per hit.
-    warned_owned_engine: std::cell::Cell<u16>,
+    warned_owned_engine: std::cell::Cell<u32>,
     /// Per-owner store reads already warned about for a seatless source.
     warned_owned_store: RefCell<Vec<String>>,
 }
 
 // `warned_owned_engine` holds one bit per engine per-player slot.
-const _: () = assert!(PlayerSlot::ALL.len() <= u16::BITS as usize);
+const _: () = assert!(PlayerSlot::ALL.len() <= u32::BITS as usize);
 
 impl EntityScope {
     /// Construct the host-authoritative impact-policy composite scope.
@@ -501,6 +520,7 @@ impl EntityScope {
             store_snapshot: RefCell::new(Vec::new()),
             owner_seat: None,
             owner_engine: [None; PlayerSlot::ALL.len()],
+            owner_life_state: None,
             warned_owned_engine: std::cell::Cell::new(0),
             warned_owned_store: RefCell::new(Vec::new()),
         }
@@ -576,6 +596,8 @@ impl EntityScope {
         // `byPlayer(impact.source)` names a player: an NPC damager's own
         // components are never "the source player's" value.
         let player_source = source.filter(|source| is_player_pawn(registry, *source));
+        self.owner_life_state =
+            player_source.and_then(|source| player_life_state(registry, source));
         for slot in PlayerSlot::ALL {
             self.owner_engine[slot.index()] = player_source.and_then(|source| {
                 StoreScope::project_slot_value(
@@ -588,7 +610,7 @@ impl EntityScope {
 
     fn read_owned_engine(&self, slot: PlayerSlot) -> IrValue {
         self.owner_engine[slot.index()].unwrap_or_else(|| {
-            let bit = 1u16 << slot.index();
+            let bit = 1u32 << slot.index();
             let warned = self.warned_owned_engine.get();
             if warned & bit == 0 {
                 self.warned_owned_engine.set(warned | bit);
@@ -651,6 +673,12 @@ impl EntityScope {
     /// ordinary outputs continue through the StoreScope write path.
     pub fn per_owner_store_slot(&self, name: &str) -> Option<bool> {
         self.dispatch.store.per_owner_slot(name)
+    }
+
+    /// Whether the mod-wide life-state name table holds `name`. Unlogged, so
+    /// the binding caller's error is the one report of an unknown name.
+    pub fn declares_life_state(&self, name: &str) -> bool {
+        life_state_name_declared(&self.dispatch.store.ctx, name)
     }
 
     /// Owner-addressed impact writes bypass the ordinary output handle, which
@@ -739,6 +767,13 @@ impl BindingScope for EntityScope {
         if owner != IMPACT_SOURCE_TOKEN {
             return None;
         }
+        if let Some(state) = name.strip_prefix(LIFE_STATE_INPUT_PREFIX) {
+            let id = resolve_life_state_id(&self.dispatch.store.ctx, state)?;
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::OwnedLifeState(id),
+                ir_type: IrType::Bool,
+            });
+        }
         if let Some(slot) = PlayerSlot::from_name(name) {
             return Some(ResolvedInput {
                 handle: EntityInputHandle::OwnedEngine(slot),
@@ -790,6 +825,10 @@ impl BindingScope for EntityScope {
                 .unwrap_or(IrValue::Number(0.0)),
             EntityInputHandle::OwnedStore(handle) => self.read_owned_store(handle),
             EntityInputHandle::OwnedEngine(slot) => self.read_owned_engine(*slot),
+            // A non-player source holds no state: false, and unwarned.
+            EntityInputHandle::OwnedLifeState(id) => {
+                IrValue::Bool(self.owner_life_state == Some(*id))
+            }
         }
     }
 

@@ -19,7 +19,7 @@ pub(crate) enum TuningPayloadError {
     #[error("tuning payload has invalid weapon data: {0}")]
     InvalidWeapon(postretro_foundation::DescriptorError),
     #[error("tuning payload has invalid life states: {0}")]
-    InvalidLifeStates(&'static str),
+    InvalidLifeStates(String),
     #[error("tuning payload epoch mismatch: expected {expected}, received {received}")]
     EpochMismatch { expected: u32, received: u32 },
 }
@@ -89,7 +89,7 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
             .any(|pair| pair[0] >= pair[1])
     {
         return Err(TuningPayloadError::InvalidLifeStates(
-            "names must be sorted, unique and at most 255",
+            "names must be sorted, unique and at most 255".into(),
         ));
     }
     let mut seen = [false; 255];
@@ -97,7 +97,7 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
         let id = usize::from(*id);
         if id >= payload.life_state_names.len() || seen[id] {
             return Err(TuningPayloadError::InvalidLifeStates(
-                "profile ids must be unique and name an installed state",
+                "profile ids must be unique and name an installed state".into(),
             ));
         }
         seen[id] = true;
@@ -105,12 +105,23 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
             || !(0.0..=1.0).contains(&profile.movement.speed_scale)
         {
             return Err(TuningPayloadError::InvalidLifeStates(
-                "movement speedScale must be finite and within [0, 1]",
+                "movement speedScale must be finite and within [0, 1]".into(),
             ));
+        }
+        if let Some(message) = profile
+            .assistable
+            .as_ref()
+            .and_then(assistable::literal_fault_message)
+        {
+            return Err(TuningPayloadError::InvalidLifeStates(message));
         }
     }
     Ok(())
 }
+
+mod assistable;
+#[cfg(test)]
+mod assistable_tests;
 
 #[cfg(test)]
 mod tests {
@@ -333,7 +344,7 @@ mod tests {
         }
     }
 
-    fn full_payload() -> TuningPayload {
+    pub(super) fn full_payload() -> TuningPayload {
         TuningPayload::new(
             Some(movement_descriptor()),
             weapon_slots(),
@@ -355,7 +366,7 @@ mod tests {
         assert_eq!(decode_tuning_payload(&encoded).unwrap(), payload);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["epoch"],
-            16
+            TUNING_PAYLOAD_EPOCH
         );
     }
 

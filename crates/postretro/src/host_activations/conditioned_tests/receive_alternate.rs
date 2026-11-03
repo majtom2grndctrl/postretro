@@ -486,6 +486,7 @@ impl Fixture {
             self.tick.is_multiple_of(2),
             &mut receive.last_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
     }
 

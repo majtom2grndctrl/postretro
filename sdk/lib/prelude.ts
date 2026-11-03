@@ -84,12 +84,20 @@ export type {
   OverlayEntity,
   DamagedEnemiesProps,
   DamagedEnemiesSource,
+  AssistableTeammatesSource,
+  PresentationOverlaySource,
   PresentationOverlay,
   PresentationFactApi,
   NumberFactOptions,
   ScalarFactOptions,
 } from "./ui/presentation";
-export { defineOverlay, definePresentationTemplate, damagedEnemies, fact } from "./ui/presentation";
+export {
+  assistableTeammates,
+  defineOverlay,
+  definePresentationTemplate,
+  damagedEnemies,
+  fact,
+} from "./ui/presentation";
 export { present } from "./data_script";
 
 export type {
@@ -97,7 +105,7 @@ export type {
   LocalStateBundle,
   StateBindOptionsFor,
 } from "./ui/state";
-export { bindState, stateEquals, createLocalState, ui, Switch } from "./ui/state";
+export { bindState, stateEquals, stateCompare, createLocalState, ui, Switch } from "./ui/state";
 
 export type {
   ThemeColorValue,

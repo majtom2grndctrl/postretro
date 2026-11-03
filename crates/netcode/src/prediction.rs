@@ -314,12 +314,6 @@ impl ClientPrediction {
         self.send_diag.record_predict_send();
     }
 
-    /// Diagnostics: one same-frame zero-tick fire `Input` send
-    /// (`client_send_input_command_in_registry`).
-    pub(crate) fn diag_record_fire_send(&mut self) {
-        self.send_diag.record_fire_path_send();
-    }
-
     /// Whether prediction is armed and may drive the local pawn this frame. Before
     /// arming the client may still SEND input commands to the host, but it must not
     /// spawn or advance a provisional local pawn. Test-only; no production caller
@@ -796,6 +790,7 @@ mod tests {
             activation: postretro_net::wire::WireActivationInput::default(),
             client_tick,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 1.0],
                 jump_pressed: false,
                 dash_pressed,

@@ -21,6 +21,12 @@ pub(super) fn register_types(registry: &mut PrimitiveRegistry) {
         .field("posture?", "LifeStatePosture", "Forced posture. Defaults to stand, which keeps normal crouch input and stand-up clearance.")
         .finish();
     registry
+        .register_type("LifeStateAssistable")
+        .doc("A teammate may assist a pawn in this state. Each field is a literal or a Number expression over `assist.helper` and `assist.target`, evaluated on the host for each pair.")
+        .field("radius?", "NumberValue", "Reach between pawn origins in metres. A literal must be in (0, 16]; an expression result clamps to 16, and at or below 0 this helper cannot assist this target. Defaults to 1.5.")
+        .field("holdMs?", "NumberValue", "Hold time in milliseconds, rounded up to whole ticks. A literal must be in [0, 60000]; an expression result clamps to 60000, and a negative result holds progress without advancing it. Defaults to 3000.")
+        .finish();
+    registry
         .register_type("LifeStateProfile")
         .doc("Closed engine capabilities for one author-named player life state. Every boolean defaults to true. Declaring life states hands zero-HP behavior to authored transitions; HP never changes the life state automatically.")
         .field("movement?", "LifeStateMovementProfile", "Movement scaling, abilities and posture. Omission permits full movement.")
@@ -32,6 +38,7 @@ pub(super) fn register_types(registry: &mut PrimitiveRegistry) {
         .field("touch?", "bool", "Allow new trigger Touch entries, pickups and teleporter entry. Defaults to true; disabling it preserves volume membership and paired Exit behavior.")
         .field("occupancy?", "bool", "Include this pawn in trigger occupant counts. Defaults to true.")
         .field("damageable?", "bool", "Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior.")
+        .field("assistable?", "LifeStateAssistable", "A teammate holding `assist` in range revives or otherwise assists this pawn. Omitted: not assistable. `{}` takes every default.")
         .finish();
     registry
         .register_type("LifeStatesDescriptor")

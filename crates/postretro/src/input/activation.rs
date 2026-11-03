@@ -8,7 +8,6 @@ pub struct ActivationInputCapture {
     released: [bool; 2],
     active: Option<ActivationToken>,
     pending_cancel: Option<ActivationToken>,
-    cancel_sent: bool,
     local_tick: u32,
 }
 impl ActivationInputCapture {
@@ -23,18 +22,9 @@ impl ActivationInputCapture {
             && self.pending_cancel != Some(token)
         {
             self.pending_cancel = Some(token);
-            self.cancel_sent = false;
         }
         self.pressed = [false; 2];
         self.released = [false; 2];
-    }
-    pub fn take_cancel(&mut self) -> Option<ActivationToken> {
-        if self.cancel_sent {
-            return None;
-        }
-        let token = self.pending_cancel?;
-        self.cancel_sent = true;
-        Some(token)
     }
     /// Predicted idle/recovery logic calls this for a held restart; no host path
     /// invents a restart from a synthetic held command.
@@ -60,7 +50,6 @@ impl ActivationInputCapture {
             cancel: self.pending_cancel.take(),
             ..ActivationInput::default()
         };
-        self.cancel_sent = false;
         let lane = if self.pressed[1] {
             Some(ActivationLane::Secondary)
         } else if self.pressed[0] {
@@ -135,28 +124,18 @@ mod tests {
             "stale terminal cannot clear newer token"
         );
     }
+    /// A suspension on a frame with no fixed tick latches its cancel for the
+    /// next ticked command, once, however often UI capture repeats before it.
     #[test]
-    fn activation_capture_zero_tick_cancel_sends_once_and_remains_for_fixed_tick() {
+    fn activation_capture_zero_tick_cancel_rides_the_next_fixed_tick_once() {
         let mut capture = ActivationInputCapture::default();
         capture.request_restart(ActivationLane::Primary);
         let token = capture.command(8).initiation.unwrap();
         capture.suspend();
-        assert_eq!(capture.take_cancel(), Some(token));
-        assert_eq!(capture.take_cancel(), None);
         // A UI capture/refocus can repeat without any real command.
         capture.set_active(Some(token));
         capture.suspend();
-        assert_eq!(capture.take_cancel(), None);
         assert_eq!(capture.command(9).cancel, Some(token));
         assert_eq!(capture.command(10).cancel, None);
-    }
-    #[test]
-    fn activation_capture_suspends_with_correlated_cancel_without_a_tick() {
-        let mut capture = ActivationInputCapture::default();
-        capture.request_restart(ActivationLane::Primary);
-        let token = capture.command(8).initiation.unwrap();
-        capture.suspend();
-        assert_eq!(capture.take_cancel(), Some(token));
-        assert!(capture.take_cancel().is_none());
     }
 }

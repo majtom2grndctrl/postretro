@@ -217,15 +217,13 @@ impl HostQueueDiag {
 // C: client input send rate
 // =============================================================================
 
-/// Client-side send-rate aggregator. Lives on `ClientPrediction`; fed from the two
-/// engine sites that emit `ClientMessage::Input` (the per-fixed-tick predict path and
-/// the same-frame zero-tick fire path).
+/// Client-side send-rate aggregator. Lives on `ClientPrediction`; fed from the one
+/// engine site that emits `ClientMessage::Input`, the per-fixed-tick predict path.
 #[derive(Debug, Default)]
 pub(crate) struct ClientSendDiag {
     started: Option<Instant>,
     input_sends: u32,
     predict_ticks: u32,
-    fire_path_sends: u32,
 }
 
 impl ClientSendDiag {
@@ -241,7 +239,6 @@ impl ClientSendDiag {
                 self.started = Some(now);
                 self.input_sends = 0;
                 self.predict_ticks = 0;
-                self.fire_path_sends = 0;
             }
             None => self.started = Some(now),
             _ => {}
@@ -251,11 +248,10 @@ impl ClientSendDiag {
     fn emit(&self) {
         log::debug!(
             target: "postretro::netdiag::send",
-            "input_sends={} predict_ticks={} fire_path_sends={} \
+            "input_sends={} predict_ticks={} \
              (expect input_sends ~= predict_ticks ~= 60/s at a 60 Hz tick)",
             self.input_sends,
             self.predict_ticks,
-            self.fire_path_sends,
         );
     }
 
@@ -268,18 +264,6 @@ impl ClientSendDiag {
         let now = Instant::now();
         self.advance_window(now);
         self.predict_ticks += 1;
-        self.input_sends += 1;
-    }
-
-    /// One same-frame zero-tick fire send (`client_send_input_command_in_registry`):
-    /// an extra `Input` command outside the fixed-tick cadence.
-    pub(crate) fn record_fire_path_send(&mut self) {
-        if !Self::enabled() {
-            return;
-        }
-        let now = Instant::now();
-        self.advance_window(now);
-        self.fire_path_sends += 1;
         self.input_sends += 1;
     }
 }

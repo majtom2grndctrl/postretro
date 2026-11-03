@@ -257,6 +257,7 @@ pub fn luau_public_sdk_lib_block() -> String {
         "--- Build `{ slot, equals }` for scalar state refs.",
     );
     remove_doc_and_decl_line(&mut block, "declare function stateEquals");
+    remove_doc_and_decl_line(&mut block, "declare function stateCompare");
     remove_doc_and_decl_line(&mut block, "declare function createLocalState");
     remove_doc_and_decl_line(&mut block, "declare function Switch");
     remove_decl_line(&mut block, "declare ui:");

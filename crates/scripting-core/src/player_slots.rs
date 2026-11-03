@@ -37,6 +37,8 @@ pub enum PlayerSlot {
     Swimming,
     Immersion,
     LifeStateMs,
+    AssistProgress,
+    AssistReceivedProgress,
 }
 
 impl PlayerSlot {
@@ -56,6 +58,8 @@ impl PlayerSlot {
         PlayerSlot::Swimming,
         PlayerSlot::Immersion,
         PlayerSlot::LifeStateMs,
+        PlayerSlot::AssistProgress,
+        PlayerSlot::AssistReceivedProgress,
     ];
 
     /// The stable dotted wire name.
@@ -76,6 +80,8 @@ impl PlayerSlot {
             PlayerSlot::Swimming => "player.swimming",
             PlayerSlot::Immersion => "player.immersion",
             PlayerSlot::LifeStateMs => "player.lifeStateMs",
+            PlayerSlot::AssistProgress => "player.assistProgress",
+            PlayerSlot::AssistReceivedProgress => "player.assistReceivedProgress",
         }
     }
 
@@ -96,7 +102,9 @@ impl PlayerSlot {
             | PlayerSlot::ReloadProgress
             | PlayerSlot::WeaponCooldownMs
             | PlayerSlot::Immersion
-            | PlayerSlot::LifeStateMs => IrType::Number,
+            | PlayerSlot::LifeStateMs
+            | PlayerSlot::AssistProgress
+            | PlayerSlot::AssistReceivedProgress => IrType::Number,
         }
     }
 
@@ -108,7 +116,9 @@ impl PlayerSlot {
             | PlayerSlot::MaxHealth
             | PlayerSlot::Swimming
             | PlayerSlot::Immersion
-            | PlayerSlot::LifeStateMs => false,
+            | PlayerSlot::LifeStateMs
+            | PlayerSlot::AssistProgress
+            | PlayerSlot::AssistReceivedProgress => false,
             PlayerSlot::Ammo
             | PlayerSlot::AmmoReserve
             | PlayerSlot::Heat
@@ -212,6 +222,19 @@ pub fn player_slot_value_with(
                 life_state_milliseconds(movement.life_state_elapsed_ticks) as f32,
             ));
         }
+        PlayerSlot::AssistProgress | PlayerSlot::AssistReceivedProgress => {
+            let movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .ok()?;
+            // Received progress reads 0 while the pawn's state declares no
+            // `assistable`, so a target revived in the pass reads 0 at once.
+            let value = match slot {
+                PlayerSlot::AssistProgress => movement.assist_progress,
+                _ if movement.assistable => movement.assist_received_progress,
+                _ => 0.0,
+            };
+            return Some(SlotValue::Number(value));
+        }
         PlayerSlot::Swimming => {
             let movement = registry
                 .get_component::<PlayerMovementComponent>(pawn)
@@ -247,7 +270,9 @@ pub fn weapon_slot_value(
         | PlayerSlot::MaxHealth
         | PlayerSlot::Swimming
         | PlayerSlot::Immersion
-        | PlayerSlot::LifeStateMs => None,
+        | PlayerSlot::LifeStateMs
+        | PlayerSlot::AssistProgress
+        | PlayerSlot::AssistReceivedProgress => None,
         PlayerSlot::Ammo => weapon
             .effective()
             .ammo

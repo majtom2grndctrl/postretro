@@ -49,6 +49,7 @@ fn install() -> (World, EntityId, EntityId) {
 
 fn neutral_command() -> crate::sim::SimCommand {
     crate::sim::SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: glam::Vec2::ZERO,
@@ -78,7 +79,7 @@ fn neutral_command() -> crate::sim::SimCommand {
     }
 }
 
-fn tick(world: &World, mut ai: impl FnMut(&mut EntityRegistry)) -> TickEvents {
+pub(crate) fn tick(world: &World, mut ai: impl FnMut(&mut EntityRegistry)) -> TickEvents {
     simulate_tick(
         world.script_ctx.registry.clone(),
         &CollisionWorld::new(),

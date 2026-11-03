@@ -126,17 +126,22 @@ fn player_events_twins_emit_byte_identical_wire_data() {
         "the low-health vignette stays a local crossing"
     );
 
-    let edges: Vec<(PlayerEventEdge, Vec<&str>)> = ts_manifest
+    let edges: Vec<(&str, Vec<&str>)> = ts_manifest
         .player_events
         .iter()
-        .map(|event| (event.edge, event.fire.iter().map(String::as_str).collect()))
+        .map(|event| {
+            (
+                event.trigger.as_wire(),
+                event.fire.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
     assert_eq!(
         edges,
         vec![
-            (PlayerEventEdge::Becomes, vec!["leveling.levelUp"]),
-            (PlayerEventEdge::Becomes, vec!["heat.scald"]),
-            (PlayerEventEdge::Ceases, vec!["heat.cooled"]),
+            (PlayerEventEdge::Becomes.as_wire(), vec!["leveling.levelUp"]),
+            (PlayerEventEdge::Becomes.as_wire(), vec!["heat.scald"]),
+            (PlayerEventEdge::Ceases.as_wire(), vec!["heat.cooled"]),
         ]
     );
     assert!(
@@ -240,7 +245,7 @@ fn install_level(script: &str) -> (crate::App, Vec<CapturedRecord>) {
 fn player_event_frame(app: &mut crate::App) -> Vec<(Recipients, SystemReactionCommand)> {
     let ctx = script_ctx(app);
     let mut residuals = Vec::new();
-    app.player_events.run_tick(&ctx, &mut residuals);
+    app.player_events.run_tick(&ctx, &[], &mut residuals);
     let session = app.session.as_ref().expect("test app session installed");
     drain_frame_residuals(
         &[],

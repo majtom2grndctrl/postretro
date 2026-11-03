@@ -5,6 +5,8 @@ mod activation;
 mod activator;
 #[cfg(test)]
 mod activator_tests;
+#[cfg(test)]
+mod assist_tests;
 mod author_layer;
 #[cfg(test)]
 mod author_layer_tests;

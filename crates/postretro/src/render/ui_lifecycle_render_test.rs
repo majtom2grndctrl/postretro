@@ -25,7 +25,7 @@ use postretro_ui::theme::{ThemeDescriptor, UiTheme};
 use postretro_ui::tree::{CellValues, ImageSizes, UiDrawData, UiTree};
 
 fn font_system() -> postretro_ui::text::FontSystem {
-    postretro_ui::text::build_font_system()
+    postretro_ui::text::build_embedded_font_system()
 }
 
 fn no_images() -> ImageSizes {

@@ -501,6 +501,7 @@ mod tests {
             activation: postretro_net::wire::WireActivationInput::default(),
             client_tick,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 1.0],
                 jump_pressed: false,
                 dash_pressed,
@@ -530,6 +531,7 @@ mod tests {
             activation: postretro_net::wire::WireActivationInput::default(),
             client_tick,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 0.0],
                 jump_pressed: false,
                 dash_pressed: false,

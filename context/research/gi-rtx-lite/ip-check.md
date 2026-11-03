@@ -269,6 +269,24 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 
 **Not found:** a blend keyed to mover position; per-(occluder pose, light) probe data; the combination. These are where the design is new, not exposure: no live claim charted so far (Take-Two '688/'404, '451) reads on it. Blocked this pass: wiki.beyondunreal.com, docs.unity3d.com, dev.epicgames.com, moddb.com, gamedev.net, quakewiki.org.
 
+## Bake position against '451 (2026-11-03)
+
+Owner direction: record why bakes are believed safe, and where that belief stops. Engineering reading for counsel, not an opinion.
+
+**Fair reason to believe a bake alone does not practise '451.** Claim 1 (and device claim 9, media claim 17) is a runtime method whose every element hangs off a light change: (a) light source change information "when a light source changes", (b) the changed light's coefficient, (c) indirect from transfer × that coefficient. A bake computes data before any light changes, so it performs none of (a)–(c). The bake appears only in dependent claim 7, which inherits claim 1's runtime steps; a dependent claim cannot be met unless its independent claim is. So a bake infringes only through what the runtime does with its output.
+
+**What follows, by output.**
+
+| Output | Runtime use | Position |
+|---|---|---|
+| Static lightmaps, shadowmask, id 34 summed bounce, id 35 direct SH | Read as-is; no light changes | Safe on this reading: (a)–(c) absent |
+| Mover state channels (direct SH, world surfaces) | Blended by mover position; direct only; lights unchanged | Safe on this reading: (a), (b), (c) absent |
+| id 25 animated weights, id 45 animated direct deltas | × curve at runtime; direct only | Safe on this reading while id 25 carries no bounce: (c) absent |
+| id 27 animated indirect deltas | Baked per-light unit bounce × curve at runtime | **Not covered by this position.** The bake is fine; its runtime rescale is '451's shape. Counsel question 1 |
+| Surface radiance cache (bake intermediate, never shipped) | None; dropped before packing | Safe: no runtime element |
+
+**Where the position stops.** Any feature that rescales baked *bounce* by a runtime light change: today's id 27, the parked `surface-radiance-cache-animated`, and mover bounce on a light that also carries a curve. Runtime bounce that uses no precomputed transfer (for example ray-traced bounce) lacks (c)'s "radiance transfer parameter" and so is outside '451, though other filings may read on it; the engine does not pursue it (no RTX dependency).
+
 ## Summary
 
 | Piece | IP verdict | Watch | Bake Δ (est.) | Memory Δ (est.) | Runtime (est.) |
@@ -284,7 +302,7 @@ Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirme
 **Top IP risks.** (1) Tencent US12293451B2 claim 1 against the shipped animated SH deltas and any light-change-triggered update; keep per-light terms scalar. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
 
 **Questions for counsel, ranked.**
-0. Obtain '451's verbatim claims (Google Patents rate-limited this session; USPTO and Patentscope automated access blocked).
+0. ~~Obtain '451's verbatim claims~~ — read 2026-11-03 (§US12293451B2 claim text). Next: its US file history (rejections, cited art, amendments; how claim 1 was allowed over Sloan 2002 PRT), any PTAB or court proceeding, any CNIPA invalidation of CN112927341B, and maintenance-fee status.
 1. Can '451 claim 1 read on a per-light scalar curve × a baked per-light, per-probe delta? Is the light bridge's dirty upload "light source change information"? Weigh Quake lightstyles, Suntracker 2017, Sloan PRT 2002, NVIDIA's application.
 2. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
 3. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.

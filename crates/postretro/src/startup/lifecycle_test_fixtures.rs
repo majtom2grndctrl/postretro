@@ -86,7 +86,7 @@ pub(crate) fn test_app() -> App {
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
             modal_stack: postretro_ui::modal_stack::ModalStack::new(),
-            font_system: postretro_ui::text::build_font_system(),
+            font_system: postretro_ui::text::build_embedded_font_system(),
             scripting: crate::session::ScriptingCore {
                 command_diagnostics: Default::default(),
                 auto_close_timers: Default::default(),

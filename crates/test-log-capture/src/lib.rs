@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, Once};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
+mod tracing_events;
+
 /// An owned log record retained after `log::Log::log` returns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedRecord {
@@ -95,6 +97,9 @@ fn install_logger() {
         let installed = log::set_logger(&LOGGER).is_ok();
         LOGGER_INSTALLED.store(installed, Ordering::Release);
         log::set_max_level(LevelFilter::Trace);
+        if installed {
+            tracing_events::install();
+        }
     });
 
     assert!(
@@ -301,6 +306,34 @@ mod tests {
         } else {
             "non-string panic payload".to_owned()
         }
+    }
+
+    // Regression: with `tracing/log` on, swc's ERROR-level `tree-shaker` pass span
+    // reached the capture as an Error record and failed zero-warning tests.
+    #[test]
+    fn tracing_spans_are_not_records_and_tracing_events_keep_their_level() {
+        let capture = LogCapture::start();
+        {
+            let _span = tracing::error_span!("tree-shaker", pass = 1).entered();
+            tracing::warn!(target: TEST_TARGET, pass = 1, "[Test] tracing event");
+        }
+        tracing::error!(target: TEST_TARGET, "[Test] tracing error");
+
+        assert_eq!(
+            capture.records(),
+            vec![
+                CapturedRecord {
+                    level: Level::Warn,
+                    target: TEST_TARGET.to_owned(),
+                    message: "[Test] tracing event pass=1".to_owned(),
+                },
+                CapturedRecord {
+                    level: Level::Error,
+                    target: TEST_TARGET.to_owned(),
+                    message: "[Test] tracing error".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

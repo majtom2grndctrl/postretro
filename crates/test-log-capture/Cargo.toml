@@ -8,3 +8,11 @@ license.workspace = true
 
 [dependencies]
 log.workspace = true
+# The capture's `tracing` dispatcher: routes `tracing` events into the capture and
+# keeps span lifecycle out of it (`src/tracing_events.rs`).
+tracing-core.workspace = true
+
+[dev-dependencies]
+# `log` reproduces the feature unification `calloop` imposes on Linux `dev-tools`
+# engine test builds: without a dispatcher, span creation becomes a `log` record.
+tracing = { workspace = true, features = ["log"] }

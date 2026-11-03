@@ -47,20 +47,39 @@ Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Eve
 Bake and format:
 - [ ] Each stored q_k equals the bake's soft visibility for that probe and light, with the posed brushes added to its occluders, divided by its baked visibility, under the same seed (unit test against the direct-SH probe bake). A light whose samples never meet the posed mover stores no entry for that mover.
 - [ ] `mover-setpiece`: `setpiece_wall` closed stores q < 1 at back-room probes for both arena point lights and the spot, and at arena probes for both back-room lights. It stores no entry for the shaft light (992, 320, 288). `setpiece_room` raised stores q < 1 at its interior probes for the shaft light.
-- [ ] Dark-closet fixture (new, below): with the door closed, S^b_0 at closet probes valid in both bakes equals id 34 of a reference build where the door is a static brush at its closed pose, within id 34's encode tolerance. With the door open, S^b_1 equals today's id 34 within the same tolerance. The bright room's probes beyond the doorway's reach store no entry.
+- [ ] Dark-closet fixture (new, below): with the door closed, the composed base at closet probes valid in both bakes (S^b_0, or id 34 where a probe stores no entry) equals id 34 of a reference build where the door is a static brush at its closed pose, within id 34's encode tolerance. With the door open, S^b_1 equals today's id 34 within the same tolerance. The bright room's probes beyond the doorway's reach store no entry.
 - [ ] `mover-setpiece`: `setpiece_room` raised stores indirect entries at its interior probes, each no brighter than today's id 34 there. A mover whose poses change no probe beyond tolerance stores no indirect entry.
+- [ ] On the dark-closet fixture and `mover-setpiece`, a test-only re-bake of every valid probe at each terminus differs from id 34 beyond tolerance only at probes the derived domain admits.
+- [ ] `mover-setpiece`: every id-34 and id-35 cell under a probe with a direct or bounce entry stores no coarser than a grid-matched delta entry, and cells elsewhere keep the parent build's levels.
+- [ ] A directional light a mover blocks stores q < 1 under the posed brushes, and a spinner stores no entry.
+- [ ] Adding an animated light to the dark-closet fixture's bright room leaves every bounce-state byte unchanged; its id-27 deltas compose unchanged at every t′.
 - [ ] Section bytes are identical across `-j 1` and `-j 4` and across two cold builds.
+- [ ] The SH gate's prediction covers the measured peak of the mover bounce bake on every fixture, counting the resident patch cache, per-pose shading, the accumulated bounce states and the memo writes. A map whose prediction exceeds the budget fails with the SH gate's named error before any bounce ray, at the same probe spacing.
+- [ ] A cold build drops the patch cache exactly once, after the mover bounce bake and before atlas preparation, and the SH gate's prediction covers the measured peak of every stage it outlives (P21).
 - [ ] Moving one mover's last waypoint: on a warm build, the bakes behind ids 34, 35, 41 and 45 trace nothing, only lights reaching the old or new pose re-bake direct entries, only that mover's bounce states re-bake, and the PRL equals the cold PRL of the edited map. Editing one static light's colour re-bakes every mover's bounce states and no direct entry of another light; the PRL equals cold.
+- [ ] A warm mover-only edit whose id-34 volume hits still re-bakes that mover's bounce states equal to cold, within the SH gate's prediction (P20).
+- [ ] Over one cache, a mover edit, then a static-light edit, then reverting both each build warm equal to cold, and the revert hits every direct, bounce and id-34 memo (P19).
 - [ ] A map with no movers, and a map whose movers gate no baked light, emit no section and pack byte-identical to the parent commit's PRL. This is an opt-in ignored test that fails on a missing baseline, after the foundation's parity test.
 - [ ] A malformed section, one naming a mover absent from id 43, a light outside its namespace, or an affinity grid unlike id 35's, each fail the load with a message naming the section.
+- [ ] A grep gate keeps every SH, probe and section type out of the game-side mover-state collector and the renderer setter's signature. The closet fixture's bounce-only section and a direct-only section each load and compose.
 
 Blend scalar:
-- [ ] t reads 0 docked at the first waypoint and 1 at the last. It reads the arc-length fraction mid-travel, and that fraction at the middle waypoint of a three-waypoint path. A wait or a blocked stop holds t.
-- [ ] With default ramp keys, t′ = t at every sample above. With s = 0.6, e = 0.9: t′ is 0 at t = 0.6 and below, 1 at t = 0.9 and above, and 0.5 at t = 0.75, both rising and after a reversal. Parse accepts s = 0, e = 1 and s = 0.6, e = 0.9; it rejects s = e, s > e, s < 0 and e > 1, each with an error naming the mover.
+- [ ] t reads 0 docked at the first waypoint and 1 at the last. It reads the arc-length fraction mid-travel, and that fraction at the middle waypoint of a three-waypoint path whose two segments differ in length. A wait or a blocked stop holds t.
+- [ ] With default ramp keys, t′ = t at every sample above. With s = 0.6, e = 0.9: t′ is 0 at t = 0.6 and below, 1 at t = 0.9 and above, and 0.5 at t = 0.75, both rising and after a reversal. Parse accepts s = 0, e = 1 and s = 0.6, e = 0.9; it rejects s = e, s > e, s < 0, e > 1, s = nan, a non-numeric value, and e = 0 with s left at its default, each with an error naming the mover.
 - [ ] A reversal mid-travel, in either direction, continues from the current t with no jump.
 - [ ] Two movers advancing on one tick each report their own t for that frame.
 - [ ] A mover that reaches its last waypoint on tick N reads t = 1 in frame N's state, the same frame its blocked-portal state changes.
 - [ ] Host and client derive equal t from one predicted phase at a terminus, mid-travel and after a reversal, as `client_predicted_mover_phase_matches_host_door_occlusion_phase` does for the docked predicate.
+- [ ] A door an auto-close drove home reads t = 0 docked, and a completed `once` mover reads t = 1 at its last waypoint, though neither has a segment left to traverse; neither is handed over as no state (P9).
+- [ ] A mover that reaches its first waypoint on tick N reads t = 0 in frame N's state, and its sealed portals block from tick N + 1; no frame has them blocked while its t is above 0 (P11).
+- [ ] Two frames presented between one pair of ticks hand the renderer the same t, and the second recomposes no channel row. A frame that runs two ticks composes only the second tick's t (P10).
+- [ ] After a relevel whose new level reuses a mover id, and after a restart that re-seeds a mover, the first composed frame (held settling frames included) uses the new seeded t, never the old level's or the pre-restart value (P13).
+- [ ] A client whose mover phase arrives mid-travel in a snapshot, with no local tick, composes that snapshot's t the frame it applies; a reconciliation that moves the phase back recomposes at the corrected t (P14).
+- [ ] A mover outside the frame's drawn cells still hands the renderer its t, and a receiver it gates composes gated (P15).
+- [ ] A mover whose path has zero length, or one degenerate interior segment, hands over a finite t, and no composed texel is NaN (P23).
+- [ ] A `start_on_spawn` mover's first composed frame, before its first tick, is gated at t = 0 from its seeded phase (P4).
+- [ ] A mover with s = 0.6 at t = 0.6 hands the renderer 0, and the gated light composes S₀.
+- [ ] After warm-up, a frame's t pass over two travelling movers allocates nothing (allocation probe).
 
 Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] At a probe gated only at terminus 0, the gated light's composed term is S₀ at t = 0, ungated at t = 1, and their exact linear mix at t = 0.5. A second light that the mover does not gate at that probe is unchanged at every t.
@@ -71,6 +90,12 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] A promoted gated static light contributes (1 − w) × its gated term at every t, and nothing at w = 1. A promoted gated animated light also carries its curve.
 - [ ] A frame where no mover's t changed and no other trigger fired recomposes no channel row. A changing t recomposes only rows its entries cover. A row that enters residency or the view gate while a mover travels composes with that frame's t before any consumer samples it.
 - [ ] Streaming `off` and `sync-proof` compose identical channel output.
+- [ ] A t change on a frame that records no compose, or whose encode fails, recomposes its rows on the next recording frame though t no longer changes, on the streamed planner and on the legacy compose (P12).
+- [ ] With two movers, one held and one travelling, only rows carrying the travelling mover's entries recompose, and a shared row composes the held mover's unchanged t (P16).
+- [ ] A slot re-tenanted the frame its row is evicted, while a mover travels, composes the new row's own channel entries at that frame's t, and today's term where it has none (P17).
+- [ ] A travelling mover recomposes only the passes its entries feed: bounce entries the indirect pass, id-45 entries Pass B, static entries Pass A and then Pass B at those rows (P18).
+- [ ] A gated light with no surviving id-41 or id-45 entry at a cell (not selected, or dropped by the exact-zero policy) carries its own tile there and composes S₀ at t′ = 0 as an id-41-backed light does (P22).
+- [ ] Toggling the baked-direct light-term mask while a mover travels recomposes every resident channel row at that frame's t (P8).
 
 ### Manual
 - [ ] Dark-closet fixture, door closed (owner judges the outcome; today's build and the static-wall reference render shown beside it): the closet reads dark. The closet floor and walls near the doorway show no bright-room glow, and the door's closet face reads dark. Opening the door ramps the glow in with its travel; closing ramps it out. This bar is not relaxed to "matches the reference": if the reference itself glows, the diagnosis step below stops the build.
@@ -78,9 +103,10 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] A skinned-mesh entity on the enemy spot darkens while the wall is closed and relights as it opens (owner A/B against today).
 - [ ] A mover's own faces, lit by a light it does not block from them, are no darker than today: the wall's south face under the arena lights, and the room's west face under (640, 320, 192).
 - [ ] On a gated light, promotion w = 0 and w = 1 agree within `LIT_ENDPOINT_DRIFT` on the receiver's lit texels, at the mover's closed terminus and at mid-travel.
-- [ ] 5300M, `mover-setpiece`, GPU timing: direct compose with both movers travelling, minus both docked, is ≤ 0.2 ms per mover.
+- [ ] 5300M, `mover-setpiece`, `POSTRETRO_GPU_TIMING=1`, streaming `async` and `off`: the `direct_sh_compose` plus `animated_direct_sh_compose` passes with both movers travelling, minus both docked, are ≤ 0.2 ms per mover.
+- [ ] 5300M, `mover-setpiece`, `POSTRETRO_GPU_TIMING=1`: the `sh_compose` pass with both movers travelling, minus both docked, is ≤ 0.2 ms per mover.
 - [ ] `research.md` records section bytes, direct and indirect halves apart, against id 35, ids 41 + 45 and id 34, for the foundation's five maps (measure and report).
-- [ ] Full-hallway cold build against the parent, idle machine, same `-j`: SH Bake growth and peak RSS growth from the indirect half, reported. The owner sets the gate at review (open question).
+- [ ] Full-hallway cold build against the parent, idle machine (class named), one named `-j`, `--no-cache`: SH Bake growth and peak RSS growth from the indirect half (RSS tool named), reported with the SH gate's logged prediction and its admission. The owner sets the gate at review (open question).
 
 ## Path
 

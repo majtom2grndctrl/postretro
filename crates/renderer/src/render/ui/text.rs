@@ -421,20 +421,22 @@ impl UiTextRenderer {
             // drawing it would read stale vertices under a partial count.
             slot.key_valid = false;
             slot.prepares = slot.prepares.saturating_add(1);
-            let areas = span
-                .texts
-                .iter()
-                .zip(&slot.buffers)
-                .zip(span.clips)
-                .map(|((t, buffer), clip)| TextArea {
-                    buffer,
-                    left: t.position[0],
-                    top: t.position[1],
-                    scale: 1.0,
-                    bounds: text_bounds(*clip, pass.viewport),
-                    default_color: GlyphColor::rgba(t.color[0], t.color[1], t.color[2], t.color[3]),
-                    custom_glyphs: &[],
-                });
+            let areas =
+                span.texts
+                    .iter()
+                    .zip(&slot.buffers)
+                    .zip(span.clips)
+                    .map(|((t, buffer), clip)| TextArea {
+                        buffer,
+                        left: t.position[0],
+                        top: t.position[1],
+                        scale: 1.0,
+                        bounds: text_bounds(*clip, pass.viewport),
+                        default_color: GlyphColor::rgba(
+                            t.color[0], t.color[1], t.color[2], t.color[3],
+                        ),
+                        custom_glyphs: &[],
+                    });
             let depths = span.depths;
             match slot.renderer.prepare_with_depth(
                 device,

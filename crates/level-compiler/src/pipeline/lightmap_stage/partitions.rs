@@ -28,7 +28,8 @@ use super::texel_steps::StepDetector;
 use super::window::PartitionSource;
 
 /// Layer-major Cartesian work, indexed without a layer-by-light allocation.
-/// The shadowmask-only pass borrows an ascending subset of light positions.
+/// The re-read pass after a section memo hit borrows an ascending subset of
+/// light positions.
 #[derive(Clone, Copy)]
 pub(super) struct LayerItems<'a> {
     layers: u32,
@@ -138,9 +139,10 @@ pub(super) struct LayerPartitions<'a> {
     /// charts skip the all-clear probe early-out.
     embedded_emitters: &'a EmbeddedEmitters,
     /// The texel-step detector, on the pass that composes the lightmap; the
-    /// shadowmask-only pass after a memo hit replays the memo's report.
+    /// re-read pass after a memo hit replays the memo's report.
     steps: Option<&'a StepDetector<'a>>,
-    /// The mover light gate, on the pass that composes the lightmap.
+    /// The mover light gate, for the lights its memo did not serve; on
+    /// either pass.
     gate: Option<&'a MoverGateDetector<'a>>,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
@@ -237,6 +239,9 @@ impl<'a> LayerPartitions<'a> {
     fn inspect(&self, item: usize, partition: &lightmap_layer::LightmapLayer) {
         let (layer, light) = self.items.get(item);
         let gate = self.gate.filter(|gate| gate.wants(light));
+        if let Some(gate) = gate {
+            gate.note_inspected(light);
+        }
         if (self.steps.is_none() && gate.is_none()) || partition.texels.is_empty() {
             return;
         }
@@ -253,7 +258,6 @@ impl<'a> LayerPartitions<'a> {
         }
         if let Some(gate) = gate {
             gate.detect(
-                item,
                 light,
                 partition,
                 reached().map(|chart| (chart, self.chart_bounds[chart])),

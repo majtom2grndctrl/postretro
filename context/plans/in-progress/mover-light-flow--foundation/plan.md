@@ -55,6 +55,13 @@ read at: af1aab9ef
 - **Animated weights.** The weight bake drops weights ≤ 1e-6, so "lit" for an animated texel means a stored weight.
 - **Summary totals.** These are sums over rows, so a shared texel counts once per terminus, matching what two per-state masks would store. The estimate is per row too.
   - `mover-setpiece` cold: 14 rows; mask est. 3,374,282 B every gated (10.58%) and 2,153,066 B differing only (6.75%) of 31,879,968 B lightmap family.
+- **Memo grain (task 7).** All three memos are per light. The payload is that light's rows keyed by mover id, so adding a light (which shifts source indices) still hits.
+  - Every key folds `GATE_EPOCH`, the whole `MapLight`, and each candidate mover's id and posed brushes at both termini.
+  - Static: the light's layer hashes (which cover partitions, chart frames and placement, blocks and the tracer epoch) plus the layer count. Irradiance format is excluded, so `--uncompressed-irradiance` hits.
+  - Probes: `TRACER_EPOCH`, `geometry_content_hash`, and the probe grid. A retexture re-gates probes; that costs time but is never wrong.
+  - Animated: serialized ids 24/25, the atlas fingerprint, the light's slot.
+- **P3 evidence (`mover-setpiece`, open waypoint 912 → 848).** Section and shadowmask hits; texel and probe memos 5 of 6 lights re-gate; "no pair walked"; 25 layer hits, 0 misses; warm report equals cold.
+- **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
 ## AC-to-proof
@@ -96,9 +103,9 @@ Rows are numbered in brief order: Automated, then Manual.
 | 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | done: rows 8, 10, 13, 14, 17 in `mover_light_gate_compile` (6 pass); animated-vs-static parity test |
 | 5 | Side count: dynamic lights vs swept bounds, carried via `carried_light_links` | worker | 1 | done: `mover_light_gate_setpiece` row 5 (room: lamp carried, 0 other; wall: 0/0) |
 | 6 | Report: Build Summary through `Reporter` (3 implementors), id 22/25/42 bytes from `pack.rs`, pinned ordering | worker | 2, 5 | done: `mover_light_gate/summary.rs`, `BuildSummary` through all 3 reporters; row 7 (unit + PRL section-table divisor), row 20; `compiler_cli_contract` green |
-| 7 | Two memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | integrating executor | 2–4 | |
+| 7 | Memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | worker | 2–4 | done: `mover_light_gate/cache.rs`; per-light memos `mover_light_texels`, `mover_light_probes`, `mover_light_animated`; post-hit union re-read; `MetadataCounts::with_movers`; `mover_gate_tests` (5) |
 | 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | done: `mover_light_gate_compile` 13 pass (rows 3, 4, 7, 8, 10–15, 17, 20), `mover_light_gate_setpiece` 3 pass (rows 1, 2, 5, 15) |
-| 9 | Determinism (16) and warm rows (18) | worker | 7 | |
+| 9 | Determinism (16) and warm rows (18) | worker | 7 | done: `mover_light_gate_cache` 11 pass (3.9 s): P3, P8, every row-18 edit, `-j 1` vs `-j 4`, two cold builds; windows 1/3/8 in `mover_gate_tests` |
 | 10 | PRL parity test (19) | worker | — | test written (`mover_light_gate_prl_parity`, ignored, `POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR`); baselines built at the gate run |
 | 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | |
 

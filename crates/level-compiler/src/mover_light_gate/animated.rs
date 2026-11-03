@@ -39,11 +39,12 @@ pub(crate) struct LightTexels {
 /// lifted as that bake lifts it: the static walk's anchor and lift. Output
 /// follows the namespace's order, which is source order, and holds only
 /// lights with a gated texel. SDF-shadow lights own no weight, so none is
-/// gated.
+/// gated. Only slots `wanted` marks are gated; a memo served the rest.
 pub(crate) fn gate_animated(
     poses: &MoverPoses,
     lights: &AnimatedBakedLights<'_>,
     scene: &AnimatedScene<'_>,
+    wanted: &[bool],
     control: &BakeControl,
 ) -> Vec<LightTexels> {
     if poses.analysed.is_empty() || scene.weight_maps.chunk_rects.is_empty() {
@@ -71,7 +72,7 @@ pub(crate) fn gate_animated(
         .zip(light_chunks)
         .enumerate()
         .filter_map(|(slot, (entry, chunks))| {
-            if entry.light.shadow_type == ShadowType::Sdf || chunks.is_empty() {
+            if !wanted[slot] || entry.light.shadow_type == ShadowType::Sdf || chunks.is_empty() {
                 return None;
             }
             let _permit = control.governor().enter();

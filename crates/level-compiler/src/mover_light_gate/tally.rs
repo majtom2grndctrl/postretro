@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use super::cache::LightRows;
 use super::pose::{MoverPoses, Terminus};
 use super::probes::MoverProbes;
 use super::rows::{MoverTexels, mask_estimate};
@@ -64,6 +65,26 @@ impl RowTally {
     pub(crate) fn differing_only_estimate(&self) -> u64 {
         mask_estimate(self.differing_texels(), self.differing_blocks)
     }
+
+    /// Fold another tally of the same row in. Counts add, the inside flag
+    /// ors and bounds join, so any fold order gives the same row.
+    pub(crate) fn merge(&mut self, other: &RowTally) {
+        self.gated_texels += other.gated_texels;
+        self.shared_texels += other.shared_texels;
+        self.light_inside |= other.light_inside;
+        self.touched_blocks += other.touched_blocks;
+        self.differing_blocks += other.differing_blocks;
+        self.gated_probes += other.gated_probes;
+        self.shared_probes += other.shared_probes;
+        for (mine, theirs) in [
+            (&mut self.texel_centres, &other.texel_centres),
+            (&mut self.probe_centres, &other.probe_centres),
+        ] {
+            if let Some(theirs) = theirs {
+                mine.get_or_insert_with(Aabb::empty).expand_aabb(theirs);
+            }
+        }
+    }
 }
 
 /// Every row with a gated texel or probe, in report order whatever order
@@ -74,6 +95,9 @@ pub(crate) struct GateTally {
 }
 
 impl GateTally {
+    /// One row's bytes as a tally stores it, before container overhead.
+    pub(crate) const ROW_BYTES: usize = std::mem::size_of::<(RowKey, RowTally)>();
+
     /// Fold one partition's per-mover texel counts for light
     /// `source_index`: a static light's partition on one bake layer, or an
     /// animated light's whole weight map.
@@ -153,5 +177,40 @@ impl GateTally {
 
     pub(crate) fn rows(&self) -> impl Iterator<Item = (&RowKey, &RowTally)> {
         self.rows.iter()
+    }
+
+    /// Fold every row of `other` in.
+    pub(crate) fn merge(&mut self, other: &GateTally) {
+        for (key, row) in &other.rows {
+            self.rows.entry(*key).or_default().merge(row);
+        }
+    }
+
+    /// Fold one light's memoized rows in, under its current source index.
+    pub(crate) fn add_light_rows(&mut self, source_index: usize, rows: &LightRows) {
+        for (mover_id, terminus, row) in rows {
+            self.rows
+                .entry(RowKey {
+                    mover_id: *mover_id,
+                    terminus: *terminus,
+                    source_index,
+                })
+                .or_default()
+                .merge(row);
+        }
+    }
+
+    /// Each light's rows as a memo stores them, ascending by (mover id,
+    /// terminus), by source index. A light that gates nothing is absent.
+    pub(crate) fn rows_by_light(&self) -> BTreeMap<usize, LightRows> {
+        let mut by_light: BTreeMap<usize, LightRows> = BTreeMap::new();
+        for (key, row) in &self.rows {
+            by_light.entry(key.source_index).or_default().push((
+                key.mover_id,
+                key.terminus,
+                row.clone(),
+            ));
+        }
+        by_light
     }
 }

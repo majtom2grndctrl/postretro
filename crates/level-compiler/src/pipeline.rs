@@ -1575,6 +1575,7 @@ fn run_after_parsing(
         &mover_gate_lights,
         &sh_ctx,
         &sh_config,
+        stage_cache.as_ref(),
         &governor,
     );
 
@@ -1622,7 +1623,8 @@ fn run_after_parsing(
                 &static_baked_lights,
                 &alpha_lights_ns,
                 bvh_primitives.len(),
-            ),
+            )
+            .with_movers(mover_poses.analysed.len()),
             lightmap_config.uncompressed_irradiance,
         );
     }
@@ -1943,7 +1945,12 @@ fn run_after_parsing(
             chunks: animated_light_chunks_section.as_ref(),
             weight_maps: animated_light_weight_maps_section.as_ref(),
             face_charts: &face_charts,
+            placements: &face_placements,
+            atlas_width,
+            atlas_height,
+            layout: &lightmap_layout,
         },
+        stage_cache.as_ref(),
         &governor,
     );
     let light_label = |source: usize| {

@@ -402,9 +402,12 @@ fn setpiece_wall_open_gates_the_pocket_it_fills_and_shares_what_the_closed_wall_
 
 #[test]
 fn setpiece_wall_open_only_texels_of_the_mouth_plane_light_lie_within_one_column_of_the_mouth() {
-    // None of its texels is gated closed, so all are open-only. Each lies
-    // within 1.5 pitches of the mouth plane, so its footprint reaches the
-    // one-texel strip there.
+    // The static-edge bias of the one-segment estimate, bounded for the one
+    // light whose open-only texels come only from it: none is gated closed,
+    // so all are open-only, and each lies within 1.5 pitches of the mouth
+    // plane, so its footprint reaches the one-texel strip there. Other
+    // lights' open-only texels follow the closed wall's shadow edge into
+    // the pocket, wherever their placement puts it.
     let logs = setpiece_logs();
     let row = rows(logs, OPEN)
         .into_iter()
@@ -417,33 +420,6 @@ fn setpiece_wall_open_only_texels_of_the_mouth_plane_light_lie_within_one_column
         pitches <= 1.5,
         "{pitches:.2} pitches from the mouth: {bounds:?}"
     );
-}
-
-#[test]
-#[ignore = "open-only texels lie past one texel column of the mouth: the spot's and the \
-            west back-room light's gated centres reach about 0.49 m and 1.11 m (19 and 44 \
-            pitches) into the pocket, along their shadow edges; the clause awaits a ruling"]
-fn setpiece_wall_open_only_texels_lie_within_one_texel_column_of_the_pocket_mouth() {
-    // A texel covered open whose centre segment misses the closed wall is
-    // one the bake lit only through off-centre samples. Each must lie within
-    // 1.5 pitches of the mouth plane, so its footprint reaches the
-    // one-texel strip there.
-    let logs = setpiece_logs();
-    let measured: Vec<(String, f64)> = rows(logs, OPEN)
-        .iter()
-        .filter_map(|row| {
-            differing_centres(logs, OPEN, &row.origin)
-                .map(|bounds| (row.origin.clone(), pitches_from_mouth(&bounds)))
-        })
-        .collect();
-    assert!(!measured.is_empty(), "{logs}");
-    for (origin, pitches) in &measured {
-        assert!(
-            *pitches <= 1.5,
-            "light {origin}: open-only texels reach {pitches:.2} pitches from the mouth \
-             (all rows: {measured:?})"
-        );
-    }
 }
 
 /// The `debug` side-count line of mover `name`.

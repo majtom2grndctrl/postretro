@@ -46,7 +46,7 @@ Report rows run `prl-build -v`; rows that read per-row counts set `RUST_LOG=debu
   - Arena lights (256, 256, 256), (640, 320, 192) and the spot each gate back-room texels and probes.
   - Back-room lights (240, 1376, 256) and (1000, 1376, 256) each gate arena texels and probes.
   - The shaft light appears in no `setpiece_wall` row.
-  - Open, the wall gates pocket texels it covers. Each one whose segment crosses the closed pose is shared; any open-only texel lies within one texel column of the pocket's mouth (pin P1).
+  - Open, the wall gates pocket texels it covers, and each one whose segment crosses the closed pose is shared (pin P1).
 - [ ] `mover-setpiece`: `setpiece_room` lowered gates the arena lights' lit texels and valid probes inside the shaft. Raised, it gates arena-floor texels in the room's shadow. Shaft texels gated at both termini are shared.
 - [ ] A hollow mover is posed as its brushes: a light between its brushes and touching none is not flagged as inside, and a segment through its doorway that touches no brush is not counted.
 - [ ] Each mover is posed alone: a texel whose segment crosses two movers' posed brushes counts in both movers' rows.

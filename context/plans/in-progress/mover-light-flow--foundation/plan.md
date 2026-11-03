@@ -6,6 +6,9 @@ read at: af1aab9ef
 
 ## Corrections
 
+- **Row 1 restated (owner, 2026-11-02).** The open half now reads "Open, the wall gates pocket texels it covers, and each one whose segment crosses the closed pose is shared (pin P1)". The one-texel-column bound is dropped.
+  - It encoded light placement on one map. The spot's and the west back-room light's open-only texels lie 19 and 44 pitches into the pocket, along the closed wall's shadow edge, and they are real per-state differences.
+  - Measurements are in `research.md`. The mask bake's per-state sample-set requirement is on the roadmap.
 - **Spinner side counts (owner, 2026-11-02).** Spinning movers, which are not analysed, still get a side count. Their swept bounds are padded to cover every rotation about the pivot. They still get no gated rows, and they stay on the not-analysed list. This follows the brief's "for each mover"; a spinner carrying a lamp is a case slab shadows must price.
 - **Row 14 restated (owner, 2026-11-02).** An animated-only level bakes no id-25 weights: with `StaticBakedLights` empty, atlas prep plans no placements (`lightmap_bake/atlas_layout.rs:156,236`), and `build_placed_animated_light_chunks` returns empty (`animated_light_chunks.rs:36-45`). The owner chose restatement (a): that level reports gated probes and zero gated texels. No SDF-dependent fixture was added, because SDF shadows are soft-deprecated. Rows 10, 14 and 18 still list SDF-shadow lights as not analysed.
 - **Partition order.** The brief says partitions are consumed "in global light order". In fact items run layer-major: all lights for layer 0, then layer 1 (`pipeline/lightmap_stage.rs:501-505`). The gate keys tallies by `(mover_id, terminus, source_index)`. The report sorts in one light order, so arrival order never reaches the output.
@@ -79,7 +82,7 @@ read at: af1aab9ef
   - the P1 open-terminus test; doc and comment drift.
 
   `GATE_EPOCH` is now 2. Skipped: printing unnamed movers in map units, which would put Quake axes into a shared stage (§Source-format neutrality); an adapter-written mover label is the follow-up. Gate: every focused test green, clippy clean.
-- **P1 measured.** Open-only texels by light: (640, 320, 192) 1.20 texel pitches from the mouth; spot (368, 560, 288) 19.48; (240, 1376, 256) 44.48 (pitch 0.025 m). The full clause is `#[ignore]`d pending the owner.
+- **P1 measured.** Open-only texels by light: (640, 320, 192) 1.20 texel pitches from the mouth; spot (368, 560, 288) 19.48; (240, 1376, 256) 44.48 (pitch 0.025 m). The clause was restated by the owner (see Corrections).
 - **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 

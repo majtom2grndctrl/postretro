@@ -28,7 +28,7 @@ Read at e3b0772, a6a40a1 and 56ec2e6, 2026-10-30/31.
 
 | id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Sliding wall's open terminus fills a pocket whose faces the bake lit through the opening | The bake lights pocket texels with the wall absent, some only by off-centre footprint and emitter samples past the mouth's static corner; posed open, the wall covers their lifted centres; posed closed, most centre segments cross the wall | Covered texels count open. Those whose segment crosses the closed pose are shared; penumbra texels whose centre segment is blocked by the static corner may be open-only (differing), within one texel column of the mouth |
+| P1 | Sliding wall's open terminus fills a pocket whose faces the bake lit through the opening | The bake lights pocket texels with the wall absent, some only by off-centre footprint and emitter samples past the mouth's static corner; posed open, the wall covers their lifted centres; posed closed, most centre segments cross the wall | Covered texels count open. Those whose segment crosses the closed pose are shared. Open-only (differing) texels are those lit with the wall closed: penumbra texels at the mouth's static corner, and texels along the closed wall's shadow edge inside the pocket for lights that see into it obliquely |
 | P2 | Movers present with no static lightmap lights, only SDF-shadow ones, or only animated ones | With no static lights the walk returns before any consumer; with only SDF-shadow static lights it runs with no layer lights | The summary still prints and movers count as analysed; animated and probe gating still run |
 | P3 | Warm build after a mover-only edit | The lightmap-section and ShadowmaskAtlas memos hit inside the lightmap stage and skip reading partitions; the gating memo key changed | Gating misses its memo and reads each needed partition from the per-light layer cache once, tracing no visibility while those entries are present; a missing entry re-bakes as the ShadowmaskAtlas re-read does; the report equals the cold report |
 | P4 | Static and animated lights in one report | Static gating finishes inside the walk; animated gating after `AnimatedWeightMaps` | Lines sort by one light order across both tiers, never by arrival or worker |
@@ -36,6 +36,22 @@ Read at e3b0772, a6a40a1 and 56ec2e6, 2026-10-30/31.
 | P6 | Light inside a posed brush at one terminus only | Termini evaluated independently, inside-test per terminus | Flagged on that terminus's row only; texels lit and ungated at the other terminus are differing |
 | P7 | Edit touches only an animated light | Static gating results are unchanged; animated gating reruns after `AnimatedWeightMaps` | Lines merge in the one light order; report equals cold |
 | P8 | Mover edit plus an owner-eligibility edit: section hit, ShadowmaskAtlas miss, gating miss | Both consumers need partitions after the section hit | Each partition is read once and feeds both; report equals cold |
+
+## Centre-segment estimate at shadow edges
+
+Measured on `mover-setpiece`, `setpiece_wall` open, texel pitch 0.025 m. The figures are the farthest open-only texel from the pocket's mouth plane.
+
+| Light | Open-only texels | Farthest from mouth |
+|---|---|---|
+| (640, 320, 192), on the mouth plane | 464 | 1.20 pitches |
+| spot (368, 560, 288) | 477 | 19.48 pitches |
+| (240, 1376, 256), west back room | 504 | 44.48 pitches |
+
+- **The mouth-plane light.** Its strip is the static-edge bias: the bake lit those texels only through off-centre samples.
+- **The other two lights.** Their strips run along the closed wall's shadow edge inside the pocket: lit with the wall closed, covered with it open. They are real per-state differences.
+- **Bias.** One centre segment per texel misclassifies texels at soft shadow edges. That's acceptable for sizing; the mask bake must use the bake's own samples per state (roadmap).
+
+The owner dropped the brief's original one-texel-column bound on 2026-11-02. It encoded where this map's lights stand, not a property of the analysis.
 
 ## Report totals
 

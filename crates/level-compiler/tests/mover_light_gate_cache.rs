@@ -82,9 +82,10 @@ fn waypoint(name: &str, next: &str, origin: [i32; 3]) -> String {
     )
 }
 
-/// A sealed 512 u room, interior z 0 to 256: two static lights, an animated
-/// one and a dynamic one; a plate sliding under the lights, a shutter rising
-/// beside them, and a lift in a corner no baked light reaches.
+/// A sealed 512 u room, interior z 0 to 256: three static lights, an
+/// animated one and a dynamic one; a plate sliding under the lights, a
+/// shutter rising beside them, and a lift in a corner no baked light reaches.
+/// One static light reaches only the plate's first pose.
 fn map(scene: &Scene) -> String {
     let world = [
         box_brush_scaled([-272, -272, -16], [272, 272, 0], scene.floor_top_scale),
@@ -104,6 +105,7 @@ fn map(scene: &Scene) -> String {
     entities.extend([
         light([0, 0, 224], 288, ""),
         light(scene.static_light, 288, ""),
+        light(FIRST_POSE_LIGHT, 128, ""),
         light(scene.animated_light, 256, "\"style\" \"1\"\n"),
         light(scene.dynamic_light, 48, "").replacen("\"light\"\n", "\"light_dynamic\"\n", 1),
         mover(
@@ -130,6 +132,10 @@ fn map(scene: &Scene) -> String {
     ]);
     entities.join("\n") + "\n"
 }
+
+/// A light 96 u from the plate's first pose and at least 143 u from every
+/// other pose, the plate's last one moved or not; its range is 128 u.
+const FIRST_POSE_LIGHT: [i32; 3] = [0, -160, 104];
 
 /// A temp directory whose `maps/` holds the input, so the content root sits
 /// inside it.
@@ -210,14 +216,12 @@ const SUMMARY_PREFIXES: [&str; 4] = [
     "  mask est.: ",
 ];
 
-/// The report: every `[MoverLight]` line at info and debug, its timing
-/// lines left out, then the Build Summary block.
+/// The report: every `[MoverLight]` line at info and debug, then the Build
+/// Summary block.
 fn report(logs: &str) -> Vec<String> {
     let lines: Vec<String> = logs
         .lines()
-        .filter(|line| {
-            line.contains("[MoverLight]") && !line.ends_with(" ms") && !line.contains(" ms ")
-        })
+        .filter(|line| line.contains("[MoverLight]"))
         .chain(logs.lines().filter(|line| {
             SUMMARY_PREFIXES
                 .iter()
@@ -297,6 +301,24 @@ fn assert_not_logged(logs: &str, needle: &str) {
     );
 }
 
+/// A memo's miss share, `(re-gated, probed)`, from its
+/// `[cache] <stage> miss (k of N light(s) re-gate)` line.
+fn miss_share(logs: &str, stage: &str) -> (usize, usize) {
+    let marker = format!("[cache] {stage} miss (");
+    let line = logs
+        .lines()
+        .find(|line| line.contains(&marker))
+        .unwrap_or_else(|| panic!("a {stage} miss line\n{logs}"));
+    let share = &line[line.find(&marker).unwrap() + marker.len()..];
+    let mut words = share.split(' ');
+    let regated = words.next().and_then(|count| count.parse().ok());
+    let probed = words.nth(1).and_then(|count| count.parse().ok());
+    match (regated, probed) {
+        (Some(regated), Some(probed)) => (regated, probed),
+        _ => panic!("a miss share in {line}"),
+    }
+}
+
 /// The reach cull's stage line.
 fn reach_line(logs: &str) -> &str {
     logs.lines()
@@ -318,7 +340,9 @@ fn base_partitions() -> u64 {
         .unwrap_or_else(|| panic!("a partition count in {line}"))
 }
 
-// Pin P3.
+// Moving one mover's last waypoint re-gates only the lights reaching its old
+// or new last pose, from the memos and cached partitions: no lightmap
+// visibility traces, and the light reaching only its first pose still hits.
 #[test]
 fn moving_one_movers_last_waypoint_builds_warm_from_the_memos_without_tracing_lightmap_visibility()
 {
@@ -339,6 +363,14 @@ fn moving_one_movers_last_waypoint_builds_warm_from_the_memos_without_tracing_li
         "the warm build walks no lightmap pair: {reach}"
     );
     assert_not_logged(&warm, "[cache] lightmap_layer miss");
+    for stage in ["mover_light_texels", "mover_light_probes"] {
+        let (regated, probed) = miss_share(&warm, stage);
+        assert_eq!(
+            regated + 1,
+            probed,
+            "every {stage} light but the first-pose one re-gates\n{warm}"
+        );
+    }
     assert_ne!(
         report(&warm),
         report(&base().1),
@@ -357,7 +389,8 @@ fn editing_one_static_light_rebuilds_a_warm_report_equal_to_cold() {
     );
 }
 
-// Pin P7: static gating results stand; the animated gate reruns.
+// Moving an animated light leaves the static rows standing; only the
+// animated gate reruns.
 #[test]
 fn moving_one_animated_light_rebuilds_a_warm_report_equal_to_cold() {
     let warm = warm_equals_cold(
@@ -458,10 +491,10 @@ fn toggling_uncompressed_irradiance_hits_the_gating_memo_and_moves_only_the_perc
     assert_ne!(report(&warm), report(&base().1), "the percentage moves");
 }
 
-// Pin P8: a lightmap memo hit with both a shadowmask and a gating miss reads
-// each partition once for both consumers.
+// A lightmap memo hit with both a shadowmask and a gating miss reads each
+// partition once, for both.
 #[test]
-fn a_mover_edit_and_an_owner_index_shift_read_each_partition_once_for_both_consumers() {
+fn a_mover_edit_and_an_owner_index_shift_read_each_partition_once_for_shadowmask_and_gate() {
     let warm = warm_equals_cold(
         &Scene {
             plate_last: [0, 128, 104],
@@ -473,7 +506,7 @@ fn a_mover_edit_and_an_owner_index_shift_read_each_partition_once_for_both_consu
     assert_logged(&warm, "[cache] lightmap_section hit");
     assert_logged(&warm, "[cache] shadowmask_atlas miss");
     assert_logged(&warm, "[cache] mover_light_texels miss");
-    // Both static lights own, so the union is every partition the cold base
+    // Every static light owns, so the union is every partition the cold base
     // build walked; a second consumer reading its own would double it.
     let partitions = base_partitions();
     let reach = reach_line(&warm);
@@ -491,8 +524,8 @@ fn a_mover_edit_and_an_owner_index_shift_read_each_partition_once_for_both_consu
     assert_not_logged(&warm, "[cache] lightmap_layer miss");
 }
 
-// Row 16: the report is identical across cold builds and worker counts, and
-// a (mover, terminus) without rows logs no info line.
+// The report is identical across cold builds and worker counts, and a
+// (mover, terminus) without rows logs no info line.
 #[test]
 fn the_report_is_identical_across_cold_builds_and_worker_counts() {
     let text = map(&Scene::default());

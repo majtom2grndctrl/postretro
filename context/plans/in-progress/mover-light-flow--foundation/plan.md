@@ -6,6 +6,7 @@ read at: af1aab9ef
 
 ## Corrections
 
+- **Spinner side counts (owner, 2026-11-02).** Spinning movers, which are not analysed, still get a side count. Their swept bounds are padded to cover every rotation about the pivot. They still get no gated rows, and they stay on the not-analysed list. This follows the brief's "for each mover"; a spinner carrying a lamp is a case slab shadows must price.
 - **Row 14 restated (owner, 2026-11-02).** An animated-only level bakes no id-25 weights: with `StaticBakedLights` empty, atlas prep plans no placements (`lightmap_bake/atlas_layout.rs:156,236`), and `build_placed_animated_light_chunks` returns empty (`animated_light_chunks.rs:36-45`). The owner chose restatement (a): that level reports gated probes and zero gated texels. No SDF-dependent fixture was added, because SDF shadows are soft-deprecated. Rows 10, 14 and 18 still list SDF-shadow lights as not analysed.
 - **Partition order.** The brief says partitions are consumed "in global light order". In fact items run layer-major: all lights for layer 0, then layer 1 (`pipeline/lightmap_stage.rs:501-505`). The gate keys tallies by `(mover_id, terminus, source_index)`. The report sorts in one light order, so arrival order never reaches the output.
 - **Serial consumer.** The window's serial callback (`lightmap_stage.rs:553-585`) costs about 273 s on the full hallway (roadmap, lightmap stage scheduling). A third consumer there would add straight to wall time.
@@ -64,6 +65,21 @@ read at: af1aab9ef
 - **Parity baselines.** `campaign-test` packs its light script's absolute source path (`…/content/dev/scripts/arena-lights.ts`). A baseline built in a differently named worktree differed by exactly that string's 4-byte length difference. Baselines built at the merge-base in this same checkout match: `campaign-test` sha256 `695e7f5e…`, `mover-setpiece` `e7519115…`, 2 maps compared, passed.
   - Pre-existing and outside this brief: a PRL carrying a machine-specific absolute path may matter for shipped builds. Roadmap follow-up candidate.
 - **Preflight (d5b1f4d00 + docs).** `cargo fmt --check` clean; workspace clippy `-D warnings` clean; `cargo test --workspace` about 14,000 passed, 0 failed (level compiler 2,570 passed, 63 ignored).
+- **Review round 1 (2026-11-02).** 10 reviewers. Fixed:
+  - 🔴 the texel memo key now folds `LAYER_FORMAT_VERSION`;
+  - per-terminus key fold, so moving one end re-gates only lights reaching that end;
+  - timing lines retagged `[Compiler]`, with no test carve-out;
+  - the animated key folds `TRACER_EPOCH`;
+  - peak term priced by the largest layer;
+  - inside-test bounds clamp; strict-interior inside flag;
+  - not-analysed reasons logged whenever a mover exists;
+  - ` (id N)` on duplicate names;
+  - spinner side counts (owner ruling);
+  - a texel-reconstruction test against the bake walk;
+  - the P1 open-terminus test; doc and comment drift.
+
+  `GATE_EPOCH` is now 2. Skipped: printing unnamed movers in map units, which would put Quake axes into a shared stage (§Source-format neutrality); an adapter-written mover label is the follow-up. Gate: every focused test green, clippy clean.
+- **P1 measured.** Open-only texels by light: (640, 320, 192) 1.20 texel pitches from the mouth; spot (368, 560, 288) 19.48; (240, 1376, 256) 44.48 (pitch 0.025 m). The full clause is `#[ignore]`d pending the owner.
 - **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
@@ -88,7 +104,7 @@ Rows are numbered in brief order: Automated, then Manual.
 | 13 inside flag at one terminus only (P6) | compile file | achievable as stated |
 | 14 no-baked / SDF-only / animated-only levels; animated-only reports probes, zero texels (P2) | compile file | achievable as restated |
 | 15 `info` line names mover and ≤4 lights, "and N more"; unnamed by bounds centre | setpiece file + generated unnamed mover | achievable as stated |
-| 16 pinned order; identical across cold builds, workers, windows (P4) | subprocess `-j 1` vs `-j 4` + in-process windows 1/3/8 in `pipeline/lightmap_stage/tests.rs` | achievable as stated |
+| 16 pinned order; identical across cold builds, workers, windows (P4) | subprocess `-j 1` vs `-j 4` + in-process windows 1/3/8 in `pipeline/lightmap_stage/tests/mover_gate_tests.rs` | achievable as stated |
 | 17 no analysis line at warn or above | every subprocess test filters by `[MoverLight]` | achievable as stated |
 | 18 warm rows (P3, P7, P8 and the listed edits) | `tests/mover_light_gate_cache.rs`, subprocess, shared `--cache-dir`, verify `0` on warm builds | achievable as stated |
 | 19 packed PRL byte-identical to parent for `campaign-test`, `mover-setpiece` | `tests/mover_light_gate_prl_parity.rs`, `#[ignore]`, fails on missing baseline, asserts 2 compared | achievable as stated |

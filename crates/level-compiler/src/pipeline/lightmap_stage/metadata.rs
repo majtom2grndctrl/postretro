@@ -88,6 +88,19 @@ pub(super) fn hash_table_bytes(entries: u64, entry_bytes: usize) -> u64 {
         .saturating_add(128)
 }
 
+/// Charts on the most crowded bake layer: the most one partition walks.
+fn largest_layer_charts(prepared: &PreparedAtlas) -> u64 {
+    let mut per_layer: Vec<u64> = Vec::new();
+    for placement in &prepared.placements {
+        let layer = placement.layer as usize;
+        if per_layer.len() <= layer {
+            per_layer.resize(layer + 1, 0);
+        }
+        per_layer[layer] += 1;
+    }
+    per_layer.into_iter().max().unwrap_or(0)
+}
+
 pub(super) fn predicted_metadata(
     prepared: &PreparedAtlas,
     counts: MetadataCounts,
@@ -135,7 +148,7 @@ pub(super) fn predicted_metadata(
         lights,
         counts.analysed_movers as u64,
         workers,
-        faces,
+        largest_layer_charts(prepared),
     );
     let stage = prefixes
         .saturating_add(gate)

@@ -14,7 +14,7 @@ use crate::partition::Aabb;
 /// Folded into every gate memo key. Bump on any change to the test all three
 /// tiers share: posing, the segment and point tests and their tolerances,
 /// the influence prefilter, or the hard-ray target a segment ends on.
-pub(crate) const GATE_EPOCH: u32 = 1;
+pub(crate) const GATE_EPOCH: u32 = 2;
 
 /// One gate memo's cache stage. Bump `version` when its payload or its
 /// tier's own gate changes; [`GATE_EPOCH`] covers what the tiers share.
@@ -29,7 +29,10 @@ pub(crate) const TEXEL_MEMO: MemoStage = MemoStage {
     id: "mover_light_texels",
     version: 1,
 };
-/// Probe tallies, per analysed light, at the probe gate.
+/// Probe tallies, per analysed light, at the probe gate. Its reach test
+/// borrows the SH bakes' `sh_bake::light_reaches_point` and
+/// `spot_cone_parameters`, which no key names: a change to either that can
+/// move a reached probe must bump this version.
 pub(crate) const PROBE_MEMO: MemoStage = MemoStage {
     id: "mover_light_probes",
     version: 1,
@@ -54,9 +57,11 @@ pub(crate) fn gate_key_hasher() -> blake3::Hasher {
 
 /// Fold one light's own key piece: the whole light, as the lightmap layer key
 /// folds it (a field the gate never reads only re-gates that one light), then
-/// each candidate mover's id and its posed brushes at both termini. Candidates
-/// are every mover the light's influence reaches, so an edit to any other
-/// mover leaves this key alone.
+/// each candidate mover's id and, per terminus, the light's inside tag there,
+/// with the posed brushes only when its influence reaches that pose. The gate
+/// never reads a pose the influence misses, so moving one terminus re-gates
+/// only the lights reaching its old or new pose, and an edit to a mover that
+/// is no candidate leaves this key alone.
 pub(crate) fn fold_gate_light(
     hasher: &mut blake3::Hasher,
     light: &MapLight,
@@ -71,6 +76,15 @@ pub(crate) fn fold_gate_light(
         let mover = &poses.analysed[candidate.mover];
         hasher.update(&mover.mover_id.to_le_bytes());
         for terminus in Terminus::BOTH {
+            let inside = candidate.inside[terminus.index()];
+            hasher.update(&[match inside {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            }]);
+            if inside.is_none() {
+                continue;
+            }
             let pose = mover.pose(terminus);
             fold_aabb(hasher, &pose.bounds);
             hasher.update(&(pose.brushes.len() as u32).to_le_bytes());

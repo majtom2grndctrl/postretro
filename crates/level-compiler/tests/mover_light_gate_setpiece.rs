@@ -1,5 +1,5 @@
-//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks when closed and
-//! `setpiece_room` blocks at either end, the texels and probes they gate and where; each
+//! Mover light gate on `mover-setpiece`: the lights `setpiece_wall` blocks closed and open
+//! and `setpiece_room` blocks at either end, the texels and probes they gate and where; each
 //! mover's side count.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
@@ -27,6 +27,12 @@ const ARENA_EDGE_Y: f64 = 1024.0;
 const BACK_ROOM_EDGE_Y: f64 = 1088.0;
 /// Rounding slack on a gated texel centre, far under one texel.
 const SLACK_M: f64 = 1.0e-3;
+/// The pocket the open wall fills starts at Quake x 640: its mouth plane,
+/// engine z = −(Quake x) in metres.
+const MOUTH_Z: f64 = -640.0 * UNIT;
+/// The lightmap texel pitch: the compiler's default density, since the map
+/// sets none and the build passes no `--lightmap-density`.
+const TEXEL_PITCH_M: f64 = 0.025;
 
 const ARENA_LIGHTS: [&str; 3] = ["256 256 256", "640 320 192", "368 560 288"];
 const BACK_ROOM_LIGHTS: [&str; 2] = ["240 1376 256", "1000 1376 256"];
@@ -34,6 +40,16 @@ const SHAFT_LIGHT: &str = "992 320 288";
 const CLOSED: &str = "kinematic_mover 'setpiece_wall' at first waypoint 'setpiece_wall_closed'";
 const LOWERED: &str = "kinematic_mover 'setpiece_room' at first waypoint 'setpiece_room_lowered'";
 const RAISED: &str = "kinematic_mover 'setpiece_room' at last waypoint 'setpiece_room_raised'";
+const OPEN: &str = "kinematic_mover 'setpiece_wall' at last waypoint 'setpiece_wall_open'";
+/// The baked lights that light the pocket through its mouth. The other
+/// arena light and the shaft light lie past their falloff from it, and the
+/// east back-room light lies east of the mouth, so no segment from the
+/// pocket reaches it.
+const POCKET_LIGHTS: [&str; 3] = ["640 320 192", "368 560 288", "240 1376 256"];
+/// The arena light on the mouth plane. Every centre segment the open wall
+/// gates for it crosses static wall beside the mouth, never the closed
+/// wall, so the bake lit those texels only through off-centre samples.
+const MOUTH_PLANE_LIGHT: &str = "640 320 192";
 /// The arena's point lights; the spot is aimed at the wall, away from the
 /// shaft.
 const ARENA_POINT_LIGHTS: [&str; 2] = ["256 256 256", "640 320 192"];
@@ -48,7 +64,8 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The one cold build every test here reads.
+/// The one cold build every test here reads. The report module logs at
+/// trace too, for the differing-centre bounds of rows gated this build.
 fn setpiece_logs() -> &'static str {
     static LOGS: OnceLock<String> = OnceLock::new();
     LOGS.get_or_init(compile_setpiece)
@@ -60,7 +77,10 @@ fn compile_setpiece() -> String {
     assert!(input.exists(), "fixture map missing: {}", input.display());
     let temp = tempfile::tempdir().expect("create output directory");
     let output: Output = prl_build()
-        .env("RUST_LOG", "debug")
+        .env(
+            "RUST_LOG",
+            "debug,prl_build::mover_light_gate::report=trace",
+        )
         .arg(&input)
         .arg("-o")
         .arg(temp.path().join("mover-setpiece.prl"))
@@ -167,6 +187,32 @@ fn rows(logs: &str, prefix: &str) -> Vec<Row> {
         .collect()
 }
 
+/// The differing texel centres of `prefix`'s row for the light at
+/// `origin`, from its trace line; `None` when no texel differs.
+fn differing_centres(logs: &str, prefix: &str, origin: &str) -> Option<Bounds> {
+    let lines: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            line.starts_with("[TRACE")
+                && line.contains(&format!("{prefix}, "))
+                && line.contains(&format!("at origin \"{origin}\": differing centres "))
+        })
+        .collect();
+    assert!(lines.len() <= 1, "one differing-centre line per row");
+    lines
+        .first()
+        .and_then(|line| bounds_after(line, "differing centres "))
+}
+
+/// How far the bounds reach from the pocket's mouth plane, in texel
+/// pitches: the larger of its two z extremes' distances.
+fn pitches_from_mouth(bounds: &Bounds) -> f64 {
+    let farthest = (bounds.min[2] - MOUTH_Z)
+        .abs()
+        .max((bounds.max[2] - MOUTH_Z).abs());
+    farthest / TEXEL_PITCH_M
+}
+
 /// No gate line at warn or above.
 fn assert_gate_never_warns(logs: &str) {
     let warned: Vec<&str> = logs
@@ -226,10 +272,10 @@ fn setpiece_wall_closed_gates_every_baked_light_but_the_shaft_light_across_the_w
         "the shaft light is in no setpiece_wall row"
     );
 
-    // Where the gated texels and probes lie: an arena light's never reach
-    // past the wall's arena face into the arena, and reach the back room; a
-    // back-room light's mirror that. A probe inside the closed wall counts:
-    // covered means dark.
+    // Where the gated texels and probes lie. An arena light's lie at or
+    // past the wall's arena face, none in the arena, and some in the back
+    // room; a back-room light's mirror that. A probe inside the closed wall
+    // counts: covered means dark.
     for row in &rows {
         assert!(row.gated_probes > 0, "light {} gates no probe", row.origin);
         let texels = row.texels.expect("gated texel bounds");
@@ -307,15 +353,97 @@ fn setpiece_room_gates_the_shaft_lowered_and_the_arena_floor_raised() {
         assert!(high.differing_texels > 0, "{high:?}");
         assert!(!inside_shaft(&high.texels.expect("texels")), "{high:?}");
     }
-    // The light nearest the arena floor's far corner gates nothing above the
-    // floor raised: its texels beyond the shaft are arena floor in the
-    // room's shadow.
+    // Raised, the room shades the arena light farthest from it on the floor
+    // alone: its gated texels reach the arena floor (engine y 0) and
+    // nothing above it.
     let corner = raised
         .iter()
         .find(|row| row.origin == ARENA_POINT_LIGHTS[0])
         .expect("a raised row");
     let texels = corner.texels.expect("texels");
     assert!(texels.max[1].abs() <= SLACK_M, "{corner:?}");
+}
+
+#[test]
+fn setpiece_wall_open_gates_the_pocket_it_fills_and_shares_what_the_closed_wall_gates() {
+    let logs = setpiece_logs();
+    assert_gate_never_warns(logs);
+    let open = rows(logs, OPEN);
+    let closed = rows(logs, CLOSED);
+
+    let mut origins: Vec<&str> = open.iter().map(|row| row.origin.as_str()).collect();
+    origins.sort_unstable();
+    let mut expected = POCKET_LIGHTS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(origins, expected, "open-wall rows\n{logs}");
+
+    for row in &open {
+        // The open wall lies wholly past the mouth plane and every light
+        // here lies on or before it, so a segment from a texel before the
+        // plane never reaches the wall: every gated centre is past it.
+        assert!(row.gated_texels > 0, "{row:?}");
+        let texels = row.texels.expect("gated texel bounds");
+        assert!(texels.max[2] <= MOUTH_Z + SLACK_M, "{row:?}");
+
+        // A texel gated at both termini counts as shared in both rows.
+        let at_closed = closed
+            .iter()
+            .find(|closed| closed.origin == row.origin)
+            .unwrap_or_else(|| panic!("a closed row for {}\n{logs}", row.origin));
+        assert_eq!(row.shared_texels, at_closed.shared_texels, "{row:?}");
+        assert_eq!(row.shared_probes, at_closed.shared_probes, "{row:?}");
+        assert_eq!(
+            row.differing_texels > 0,
+            differing_centres(logs, OPEN, &row.origin).is_some(),
+            "a row with differing texels bounds them: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn setpiece_wall_open_only_texels_of_the_mouth_plane_light_lie_within_one_column_of_the_mouth() {
+    // None of its texels is gated closed, so all are open-only. Each lies
+    // within 1.5 pitches of the mouth plane, so its footprint reaches the
+    // one-texel strip there.
+    let logs = setpiece_logs();
+    let row = rows(logs, OPEN)
+        .into_iter()
+        .find(|row| row.origin == MOUTH_PLANE_LIGHT)
+        .unwrap_or_else(|| panic!("an open row for {MOUTH_PLANE_LIGHT}\n{logs}"));
+    assert_eq!(row.shared_texels, 0, "{row:?}");
+    let bounds = differing_centres(logs, OPEN, MOUTH_PLANE_LIGHT).expect("differing centres");
+    let pitches = pitches_from_mouth(&bounds);
+    assert!(
+        pitches <= 1.5,
+        "{pitches:.2} pitches from the mouth: {bounds:?}"
+    );
+}
+
+#[test]
+#[ignore = "open-only texels lie past one texel column of the mouth: the spot's and the \
+            west back-room light's gated centres reach about 0.49 m and 1.11 m (19 and 44 \
+            pitches) into the pocket, along their shadow edges; the clause awaits a ruling"]
+fn setpiece_wall_open_only_texels_lie_within_one_texel_column_of_the_pocket_mouth() {
+    // A texel covered open whose centre segment misses the closed wall is
+    // one the bake lit only through off-centre samples. Each must lie within
+    // 1.5 pitches of the mouth plane, so its footprint reaches the
+    // one-texel strip there.
+    let logs = setpiece_logs();
+    let measured: Vec<(String, f64)> = rows(logs, OPEN)
+        .iter()
+        .filter_map(|row| {
+            differing_centres(logs, OPEN, &row.origin)
+                .map(|bounds| (row.origin.clone(), pitches_from_mouth(&bounds)))
+        })
+        .collect();
+    assert!(!measured.is_empty(), "{logs}");
+    for (origin, pitches) in &measured {
+        assert!(
+            *pitches <= 1.5,
+            "light {origin}: open-only texels reach {pitches:.2} pitches from the mouth \
+             (all rows: {measured:?})"
+        );
+    }
 }
 
 /// The `debug` side-count line of mover `name`.

@@ -30,6 +30,8 @@ pub(crate) struct MoverTexels {
     pub(crate) light_inside: [bool; 2],
     /// World bounds of the gated texel centres, unlifted.
     pub(crate) centres: [Option<Aabb>; 2],
+    /// World bounds of the centres gated at this terminus only.
+    pub(crate) differing_centres: [Option<Aabb>; 2],
     /// Cell blocks holding a gated texel; sorted and distinct after
     /// [`Self::finish`].
     pub(crate) blocks: [Vec<u32>; 2],
@@ -43,8 +45,9 @@ impl MoverTexels {
             mover: candidate.mover,
             gated: [0; 2],
             both: 0,
-            light_inside: candidate.inside.map(|inside| inside == Some(true)),
+            light_inside: candidate.light_inside,
             centres: [None, None],
+            differing_centres: [None, None],
             blocks: [Vec::new(), Vec::new()],
             differing_blocks: [Vec::new(), Vec::new()],
         }
@@ -53,7 +56,6 @@ impl MoverTexels {
     /// Fold one texel of cell block `block` with gate `mask`, one
     /// [`Terminus::bit`] per terminus that gates it.
     pub(crate) fn add(&mut self, mask: u8, centre: DVec3, block: u32) {
-        let both = Terminus::First.bit() | Terminus::Last.bit();
         for terminus in Terminus::BOTH {
             if mask & terminus.bit() == 0 {
                 continue;
@@ -64,11 +66,14 @@ impl MoverTexels {
                 .get_or_insert_with(Aabb::empty)
                 .expand_point(centre);
             push_block(&mut self.blocks[k], block);
-            if mask != both {
+            if mask != Terminus::BOTH_BITS {
+                self.differing_centres[k]
+                    .get_or_insert_with(Aabb::empty)
+                    .expand_point(centre);
                 push_block(&mut self.differing_blocks[k], block);
             }
         }
-        if mask == both {
+        if mask == Terminus::BOTH_BITS {
             self.both += 1;
         }
     }
@@ -124,6 +129,7 @@ mod tests {
         CandidateMover {
             mover: 0,
             inside: [Some(false); 2],
+            light_inside: [false; 2],
         }
     }
 

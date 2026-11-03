@@ -47,7 +47,7 @@ impl MoverProbes {
             mover: candidate.mover,
             gated: [0; 2],
             both: 0,
-            light_inside: candidate.inside.map(|inside| inside == Some(true)),
+            light_inside: candidate.light_inside,
             centres: [None, None],
         }
     }
@@ -132,18 +132,7 @@ fn gate_light_probes(
                 let (start, end) = (probe.as_dvec3(), target.as_dvec3());
                 let mut any = false;
                 for (mask, candidate) in masks.iter_mut().zip(candidates) {
-                    let analysed = &poses.analysed[candidate.mover];
-                    *mask = 0;
-                    for terminus in Terminus::BOTH {
-                        let gated = match candidate.inside[terminus.index()] {
-                            None => false,
-                            Some(true) => true,
-                            Some(false) => analysed.pose(terminus).segment_touches(start, end),
-                        };
-                        if gated {
-                            *mask |= terminus.bit();
-                        }
-                    }
+                    *mask = candidate.mask(poses, [true; 2], start, end);
                     any |= *mask != 0;
                 }
                 if !any
@@ -161,7 +150,7 @@ fn gate_light_probes(
                                 .expand_point(layout.probe_positions[index]);
                         }
                     }
-                    if mask == Terminus::First.bit() | Terminus::Last.bit() {
+                    if mask == Terminus::BOTH_BITS {
                         tally.both += 1;
                     }
                 }
@@ -173,7 +162,11 @@ fn gate_light_probes(
 }
 
 /// Grid index ranges, per axis, of the probes inside the box around the
-/// light's falloff sphere; the whole grid for a sun.
+/// light's falloff sphere; the whole grid for a sun. Only a loop bound,
+/// so it takes the falloff exactly: `light_reaches_point` then tests each
+/// probe as the SH bake does, and no probe past the falloff is reached. The
+/// slack the mover prefilter adds bounds segments against grown brushes,
+/// not probes.
 fn influence_ranges(light: &MapLight, layout: &ProbeGridLayout) -> [Range<usize>; 3] {
     let whole = layout.dims.map(|count| 0..count as usize);
     match light.light_type {

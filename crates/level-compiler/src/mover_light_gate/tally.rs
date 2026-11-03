@@ -92,11 +92,18 @@ impl RowTally {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GateTally {
     rows: BTreeMap<RowKey, RowTally>,
+    /// World bounds of each row's differing texel centres, for rows whose
+    /// texels gated this build. Memos never store them, so a row served from
+    /// a memo has none; they stay out of [`RowTally`] and the report, which
+    /// must read the same warm and cold.
+    differing_centres: BTreeMap<RowKey, Aabb>,
 }
 
 impl GateTally {
-    /// One row's bytes as a tally stores it, before container overhead.
-    pub(crate) const ROW_BYTES: usize = std::mem::size_of::<(RowKey, RowTally)>();
+    /// One row's bytes as a tally stores it, before container overhead: its
+    /// counts and its differing-centre bounds.
+    pub(crate) const ROW_BYTES: usize =
+        std::mem::size_of::<(RowKey, RowTally)>() + std::mem::size_of::<(RowKey, Aabb)>();
 
     /// Fold one partition's per-mover texel counts for light
     /// `source_index`: a static light's partition on one bake layer, or an
@@ -119,14 +126,18 @@ impl GateTally {
                 if counts.gated[k] == 0 {
                     continue;
                 }
-                let row = self
-                    .rows
-                    .entry(RowKey {
-                        mover_id,
-                        terminus,
-                        source_index,
-                    })
-                    .or_default();
+                let key = RowKey {
+                    mover_id,
+                    terminus,
+                    source_index,
+                };
+                if let Some(centres) = &counts.differing_centres[k] {
+                    self.differing_centres
+                        .entry(key)
+                        .or_insert_with(Aabb::empty)
+                        .expand_aabb(centres);
+                }
+                let row = self.rows.entry(key).or_default();
                 row.gated_texels += counts.gated[k];
                 row.shared_texels += counts.both;
                 row.light_inside |= counts.light_inside[k];
@@ -179,10 +190,22 @@ impl GateTally {
         self.rows.iter()
     }
 
+    /// Bounds of row `key`'s differing texel centres, when its texels gated
+    /// this build and some differ.
+    pub(crate) fn differing_centres(&self, key: &RowKey) -> Option<&Aabb> {
+        self.differing_centres.get(key)
+    }
+
     /// Fold every row of `other` in.
     pub(crate) fn merge(&mut self, other: &GateTally) {
         for (key, row) in &other.rows {
             self.rows.entry(*key).or_default().merge(row);
+        }
+        for (key, centres) in &other.differing_centres {
+            self.differing_centres
+                .entry(*key)
+                .or_insert_with(Aabb::empty)
+                .expand_aabb(centres);
         }
     }
 
@@ -200,8 +223,10 @@ impl GateTally {
         }
     }
 
-    /// Each light's rows as a memo stores them, ascending by (mover id,
-    /// terminus), by source index. A light that gates nothing is absent.
+    /// The memo payload of every light with a row: map from source index to
+    /// that light's rows, each row ascending by (mover id, terminus). A light
+    /// that gates nothing has no entry. Differing-centre bounds are left
+    /// out, as memos never store them.
     pub(crate) fn rows_by_light(&self) -> BTreeMap<usize, LightRows> {
         let mut by_light: BTreeMap<usize, LightRows> = BTreeMap::new();
         for (key, row) in &self.rows {

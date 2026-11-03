@@ -1,5 +1,6 @@
-//! The mover light gate inside the fused walk: light-window independence, its texel memo, and
-//! the post-hit pass that re-reads only the partitions a memo miss needs.
+//! The mover light gate inside the fused walk: light-window independence, its texel memo, the
+//! post-hit pass that re-reads only the partitions a memo miss needs, and its share of the
+//! predicted peak.
 use super::*;
 use crate::fixture_pipeline::{FixturePipeline, load_fixture};
 use crate::light_namespaces::AnimatedBakedLights;
@@ -94,7 +95,7 @@ fn report(fx: &FixturePipeline, poses: &MoverPoses, output: &FusedLightingOutput
         .collect()
 }
 
-/// Move `mover`'s last waypoint by `offset`, engine metres.
+/// Move the last waypoint named `waypoint` by `offset`, engine metres.
 fn move_last_waypoint(fx: &mut FixturePipeline, waypoint: &str, offset: DVec3) {
     let at = fx
         .kinematic_waypoints
@@ -104,7 +105,7 @@ fn move_last_waypoint(fx: &mut FixturePipeline, waypoint: &str, offset: DVec3) {
     fx.kinematic_waypoints[at].origin += offset;
 }
 
-// Pin P4: the static gate's rows and report never depend on the window.
+// The static gate's rows and report never depend on the light window.
 #[test]
 fn mover_gate_rows_and_report_match_across_light_window_sizes() {
     let fx = load_fixture(FIXTURE);
@@ -136,9 +137,9 @@ fn mover_gate_rows_and_report_match_across_light_window_sizes() {
     }
 }
 
-// Pin P3 in process: a warm bake serves every light from the memo; a moved
-// mover re-gates only its lights, from cached partitions, with no visibility
-// trace, and its rows and bytes equal a cold bake's.
+// A warm bake serves every light from the memo; a moved mover re-gates only
+// its lights, from cached partitions, with no visibility trace, and its rows
+// and bytes equal a cold bake's.
 #[test]
 fn mover_gate_memo_serves_unchanged_lights_and_a_moved_mover_regates_from_cached_partitions() {
     let mut fx = load_fixture(FIXTURE);
@@ -209,9 +210,8 @@ fn mover_gate_memo_serves_unchanged_lights_and_a_moved_mover_regates_from_cached
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Pin P8 in process: a mover edit plus a spec-index shift misses both the
-// shadowmask and the gate memo over a reused lightmap; one read per partition
-// feeds both.
+// A mover edit plus a spec-index shift misses both the shadowmask and the
+// gate memo over a reused lightmap; one read per partition feeds both.
 #[test]
 fn a_shadowmask_and_gate_miss_over_a_reused_lightmap_read_each_partition_once() {
     let mut fx = load_fixture(FIXTURE);
@@ -343,6 +343,9 @@ fn a_gate_miss_rebakes_a_partition_whose_layer_entry_is_gone() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// The gate's bytes enter the peak only with an analysed mover, and its
+// per-partition lists are charged over the most crowded layer's charts, since
+// a partition walks one layer.
 #[test]
 fn predicted_peak_charges_the_gate_only_when_a_mover_is_analysed() {
     let fx = load_fixture(FIXTURE);
@@ -358,9 +361,19 @@ fn predicted_peak_charges_the_gate_only_when_a_mover_is_analysed() {
         false,
         LIGHTMAP_PARTITION_WINDOW,
     );
-    assert!(
-        with.metadata > without.metadata,
-        "the gate's tallies and lists"
+    let mut layer_charts = vec![0u64; prepared.layer_count as usize];
+    for placement in &prepared.placements {
+        layer_charts[placement.layer as usize] += 1;
+    }
+    let largest_layer = layer_charts.into_iter().max().unwrap_or(0);
+    let lights = counts.layer_lights as u64;
+    let workers = (LIGHTMAP_PARTITION_WINDOW as u64).min(lights);
+    let gate = super::super::mover_gate::predicted_gate_bytes(lights, 2, workers, largest_layer);
+    assert!(gate > 0, "the gate's tallies and lists");
+    assert_eq!(
+        with.metadata - without.metadata,
+        gate,
+        "the gate's bound, over the largest layer's charts"
     );
     assert!(
         with.cache_metadata > without.cache_metadata,

@@ -1,4 +1,5 @@
-// Inclusive point and segment tests against one posed brush.
+// Inclusive point and segment tests against one posed brush, and the box
+// and sphere tests that prefilter them.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use glam::DVec3;
@@ -17,12 +18,25 @@ pub(crate) const CONTACT_TOLERANCE_M: f64 = 1.0e-4;
 /// ten bands hold every corner wider than about 11°.
 pub(crate) const BOX_SLACK_M: f64 = 10.0 * CONTACT_TOLERANCE_M;
 
-/// Whether `point` lies inside `brush` or on its surface.
+/// Whether `point` lies inside `brush` or on its surface. The grown bounds
+/// clamp first, as in [`segment_touches_brush`]: past an acute edge the grown
+/// half-spaces alone reach `CONTACT_TOLERANCE_M / sin(θ/2)` beyond the tip,
+/// over a centimetre at 1°.
 pub(crate) fn point_touches_brush(point: DVec3, brush: &PosedBrush) -> bool {
+    point_may_touch_box(point, &brush.bounds)
+        && brush
+            .planes
+            .iter()
+            .all(|&(normal, distance)| normal.dot(point) - distance <= CONTACT_TOLERANCE_M)
+}
+
+/// Whether `point` lies in `brush`'s interior, at least the contact band
+/// inside every face. A point on a face, within the band, is not.
+pub(crate) fn point_inside_brush(point: DVec3, brush: &PosedBrush) -> bool {
     brush
         .planes
         .iter()
-        .all(|&(normal, distance)| normal.dot(point) - distance <= CONTACT_TOLERANCE_M)
+        .all(|&(normal, distance)| normal.dot(point) - distance <= -CONTACT_TOLERANCE_M)
 }
 
 /// Whether the closed segment `start..=end` meets `brush`: crossing it,
@@ -77,6 +91,17 @@ pub(crate) fn segment_may_touch_box(start: DVec3, end: DVec3, bounds: &Aabb) -> 
         }
     }
     true
+}
+
+/// Whether `point` lies in `bounds` grown by [`BOX_SLACK_M`].
+fn point_may_touch_box(point: DVec3, bounds: &Aabb) -> bool {
+    let slack = DVec3::splat(BOX_SLACK_M);
+    (bounds.min - slack).cmple(point).all() && point.cmple(bounds.max + slack).all()
+}
+
+/// Whether the closed ball of `radius` about `centre` meets `bounds`.
+pub(crate) fn sphere_touches_box(centre: DVec3, radius: f64, bounds: &Aabb) -> bool {
+    centre.distance(centre.clamp(bounds.min, bounds.max)) <= radius
 }
 
 /// Whether two boxes overlap once `b` grows by [`BOX_SLACK_M`].

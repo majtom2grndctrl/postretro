@@ -1,5 +1,5 @@
 // The gate's `-v` and debug lines. Never warn: light through a closed mover
-// is today's normal.
+// is expected, as movers are absent from every bake.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use super::lights::GateLights;
@@ -11,10 +11,14 @@ use crate::partition::Aabb;
 /// Lights an `info` line names before "and N more".
 const NAMED_LIGHTS: usize = 4;
 
-/// Log each not-analysed mover and, when a mover is analysed, each
-/// not-analysed light at debug. Then per (mover, terminus) with rows one
-/// `info` line naming its gated lights, and per row one debug line with its
-/// counts. `light_label` names a light by source index.
+/// Log each not-analysed mover and, when the level has a mover, each
+/// not-analysed light at debug, as the Build Summary counts them. Then per
+/// (mover, terminus) with rows one `info` line naming its gated lights, and
+/// per row one debug line with its counts. A row whose texels gated this
+/// build also logs the bounds of its differing texel centres at trace: a
+/// memo-served row has none, so that line sits outside the report, whose
+/// text must match warm and cold. `light_label` names a light by source
+/// index.
 pub(crate) fn log_rows(
     poses: &MoverPoses,
     lights: &GateLights<'_>,
@@ -28,7 +32,7 @@ pub(crate) fn log_rows(
             mover.reason
         );
     }
-    if !poses.analysed.is_empty() {
+    if !(poses.analysed.is_empty() && poses.not_analysed.is_empty()) {
         for light in &lights.not_analysed {
             log::debug!(
                 "[MoverLight] {} not analysed: {}",
@@ -74,18 +78,27 @@ pub(crate) fn log_rows(
                 centres_phrase(row.texel_centres.as_ref()),
                 centres_phrase(row.probe_centres.as_ref()),
             );
+            if let Some(centres) = tally.differing_centres(key) {
+                log::trace!(
+                    "[MoverLight] {} {at}, {}: differing centres {}",
+                    mover.label,
+                    light_label(key.source_index),
+                    centres_phrase(Some(centres)),
+                );
+            }
         }
     }
 }
 
-/// Each analysed mover's side count at debug, naming its lights.
+/// Each side-counted mover's count at debug, analysed or not, naming its
+/// lights.
 pub(crate) fn log_side_counts(
     poses: &MoverPoses,
     counts: &[SideCount],
     light_label: impl Fn(usize) -> String,
 ) {
     for count in counts {
-        let Some(mover) = poses.mover(count.mover_id) else {
+        let Some(label) = poses.label(count.mover_id) else {
             continue;
         };
         let group = |lights: &[usize]| {
@@ -96,8 +109,7 @@ pub(crate) fn log_side_counts(
             }
         };
         log::debug!(
-            "[MoverLight] {} side count: {} carried dynamic light(s){}; {} other dynamic light(s){}",
-            mover.label,
+            "[MoverLight] {label} side count: {} carried dynamic light(s){}; {} other dynamic light(s){}",
             count.carried.len(),
             group(&count.carried),
             count.others.len(),

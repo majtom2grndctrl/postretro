@@ -743,7 +743,7 @@ pub(crate) fn bake_fused_with_movers(
     let mover_light = gate.map(|gate| {
         let (tally, elapsed) = gate.finish(stage_cache, prepared.layer_count);
         log::debug!(
-            "[MoverLight] static gate: {:.1} ms summed over workers",
+            "[Compiler] mover light gate: static tier {:.1} ms summed over workers",
             elapsed.as_secs_f64() * 1000.0
         );
         tally

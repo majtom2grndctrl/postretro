@@ -125,8 +125,6 @@ fn waypoint(name: &str, next: &str, origin: [i32; 3]) -> String {
 
 /// Compile `map_text` cold with `-v` and `RUST_LOG=debug`, asserting
 /// success and that the gate warns nowhere; the combined log.
-/// SH probes sit 1 m apart, so several lie between the room's floor and a
-/// plate.
 fn compile(map_text: &str) -> String {
     compile_keeping_prl(map_text).0
 }
@@ -145,6 +143,8 @@ fn compile_keeping_prl(map_text: &str) -> (String, Vec<u8>) {
         .arg("--no-cache")
         .arg("--no-tui")
         .arg("-v")
+        // SH probes 1 m apart, so several lie between the room's floor and
+        // a plate.
         .arg("--sh-probe-spacing")
         .arg("1")
         .arg("--lightmap-density")
@@ -259,7 +259,8 @@ fn rows<'a>(logs: &'a str, prefix: &str) -> Vec<&'a str> {
         .collect()
 }
 
-// Pin P5: a path that returns to its start poses both termini alike.
+// A path that returns to its start poses both termini alike, so every
+// gated texel is shared.
 #[test]
 fn a_mover_whose_last_waypoint_returns_to_its_first_reports_no_differing_texels() {
     // A plate between the ceiling light and the floor; its path runs out
@@ -367,18 +368,21 @@ fn a_light_that_never_meets_a_mover_has_no_row_and_a_probe_only_light_rows_with_
 #[test]
 fn an_animated_light_rows_from_its_weights_among_the_static_lights_and_sdf_lights_are_not_analysed()
 {
-    // Entity order: static, animated, static, then the two SDF-shadow lights.
+    // Entity order: the static SDF-shadow light, then static, animated,
+    // static, then the animated SDF-shadow light. The SDF light leads, so
+    // each analysed static light's lightmap-layer position is one less than
+    // its static index: a row keyed by the wrong one names the wrong light.
+    let static_sdf = [0, -32, 224];
     let first_static = [-32, 0, 224];
     let animated = [0, 0, 224];
     let last_static = [32, 0, 224];
-    let static_sdf = [0, -32, 224];
     let animated_sdf = [0, 32, 224];
     let [plate, plate_a, plate_b] = sliding_plate();
     let logs = compile(&room_map(&[
+        light_with(static_sdf, 512, SDF_SHADOW),
         light(first_static),
         light_with(animated, 512, ANIMATED),
         light(last_static),
-        light_with(static_sdf, 512, SDF_SHADOW),
         light_with(animated_sdf, 512, &format!("{ANIMATED}{SDF_SHADOW}")),
         plate,
         plate_a,
@@ -420,7 +424,8 @@ fn an_animated_light_rows_from_its_weights_among_the_static_lights_and_sdf_light
     }
 }
 
-// Pin P6: termini are tested independently, the inside test included.
+// Each terminus runs its own inside test, so a light buried at one
+// terminus is flagged there alone.
 #[test]
 fn a_light_inside_a_posed_brush_at_one_terminus_is_flagged_there_alone_and_its_texels_differ() {
     // The block wraps the light at `box_a` and parks 3.25 m east of it at
@@ -476,8 +481,8 @@ fn side_count_lines(logs: &str) -> Vec<&str> {
         .collect()
 }
 
-// Pin P2: with no static lightmap light, the walk returns before any
-// consumer; probes and animated weights still gate.
+// With no static lightmap light the lightmap walk gates nothing, yet every
+// mover is analysed and probes and animated weights still gate.
 #[test]
 fn levels_without_static_lightmap_lights_complete_and_analyse_every_mover() {
     let level = |lights: &[String]| {
@@ -837,9 +842,9 @@ fn spin_axis_movers_are_not_analysed_and_a_zero_axis_mover_is() {
     }
     let still = unnamed_label();
     assert!(
-        logs.lines().any(|line| line.starts_with("[DEBUG")
-            && line.contains(&format!("[MoverLight] {still} side count: "))),
-        "the zero-axis mover is analysed\n{logs}"
+        logs.lines().any(|line| line.starts_with("[INFO")
+            && line.contains(&format!("[MoverLight] {still} at first waypoint "))),
+        "the zero-axis mover is analysed: it gates rows\n{logs}"
     );
     assert!(!logs.contains(&format!("{still} not analysed")), "{logs}");
     let summary = summary_line(logs, SUMMARY);
@@ -913,4 +918,57 @@ fn a_three_waypoint_mover_is_posed_at_its_first_and_last_waypoints_only() {
     ] {
         assert_eq!(light_rows(&logs, prefix, overhead).len(), 1, "{logs}");
     }
+}
+
+#[test]
+fn a_spinner_counts_the_lamp_it_carries_and_gates_no_row() {
+    // A one-waypoint spinner under the baked light, carrying a dynamic lamp
+    // just below its blade.
+    let lamp = [-176, -176, 80];
+    let logs = compile(&room_map(&[
+        light([0, 0, 224]),
+        mover_with(
+            "\"name\" \"fan\"\n\"spin_axis\" \"0 0 1\"\n\"spin_speed\" \"90\"\n",
+            "fan_hub",
+            &[box_brush([-200, -200, 96], [-152, -152, 112])],
+        ),
+        waypoint("fan_hub", "", [-176, -176, 104]),
+        format!(
+            "{{\n\"classname\" \"light_dynamic\"\n\"carrier\" \"fan\"\n\"origin\" \"{} {} {}\"\n\
+             \"light\" \"300\"\n\"_falloff_range\" \"64\"\n}}",
+            lamp[0], lamp[1], lamp[2]
+        ),
+    ]));
+
+    let counts: Vec<&str> = side_count_lines(&logs)
+        .into_iter()
+        .filter(|line| line.contains("[MoverLight] kinematic_mover 'fan' side count: "))
+        .collect();
+    assert_eq!(counts.len(), 1, "the spinner has a side count\n{logs}");
+    assert!(
+        counts[0].contains("side count: 1 carried dynamic light(s): ")
+            && counts[0].contains(&at_origin(lamp))
+            && counts[0].ends_with("; 0 other dynamic light(s)"),
+        "{}",
+        counts[0]
+    );
+    assert!(
+        logs.contains("[MoverLight] kinematic_mover 'fan' not analysed: spin axis set"),
+        "the spinner stays not analysed, with its reason\n{logs}"
+    );
+    assert!(
+        !logs
+            .lines()
+            .any(|line| line.contains("[MoverLight] kinematic_mover 'fan' at ")),
+        "a spinner gates no row\n{logs}"
+    );
+    assert!(
+        summary_line(&logs, SUMMARY)
+            .starts_with("Mover lighting: 0 mover(s) analysed, 1 not analysed; 0 row(s);"),
+        "{logs}"
+    );
+    assert_eq!(
+        summary_line(&logs, "  side count: "),
+        "  side count: 1 carried dynamic light(s), 0 other"
+    );
 }

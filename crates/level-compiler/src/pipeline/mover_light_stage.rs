@@ -31,8 +31,8 @@ use crate::sh_bake::{self, ProbeGridLayout, ShBakeCtx, ShConfig};
 ///
 /// The memo is per analysed light. Its key holds what every light's probe
 /// gate reads (the whole static world the trace sees, the grid's probes and
-/// validity, the tracer epoch), then the light and the posed brushes of
-/// each mover its influence reaches.
+/// validity, the tracer epoch), then the light and each mover pose its
+/// influence reaches.
 pub(super) fn probe_gate(
     poses: &MoverPoses,
     lights: &GateLights<'_>,
@@ -105,7 +105,7 @@ pub(super) fn probe_gate(
     }
     tally.merge(&gated);
     log::debug!(
-        "[MoverLight] probe gate: {:.1} ms over {} probes",
+        "[Compiler] mover light gate: probe tier {:.1} ms over {} probes",
         started.elapsed().as_secs_f64() * 1000.0,
         layout.total_probes(),
     );
@@ -174,7 +174,7 @@ pub(super) fn merge_rows(
             governor,
         ));
         log::debug!(
-            "[MoverLight] animated gate: {:.1} ms",
+            "[Compiler] mover light gate: animated tier {:.1} ms",
             started.elapsed().as_secs_f64() * 1000.0
         );
     }
@@ -187,9 +187,9 @@ pub(super) fn merge_rows(
 /// The animated tier's rows, behind a per-light memo. Its key holds the
 /// finished ids 24 and 25 (every weight, rect and block the gate reads) and
 /// the static atlas their chunks resolve charts in, then the light's slot,
-/// the light and the posed brushes of each mover its influence reaches. Any
-/// weight edit re-gates every animated light; a mover edit re-gates only
-/// the lights that reach it.
+/// the light and each mover pose its influence reaches. Any weight edit
+/// re-gates every animated light; a mover edit re-gates only the lights
+/// reaching its old or new pose.
 fn animated_rows(
     poses: &MoverPoses,
     animated: &AnimatedInputs<'_>,
@@ -257,14 +257,17 @@ fn animated_rows(
     tally
 }
 
-/// The gate epoch, the finished ids 24 and 25, and the static atlas layout:
-/// chart frames, placements and the cell-block table.
+/// The gate epoch, the tracer epoch (a texel's segment starts at the bake's
+/// ray lift, which the weights alone do not fix), the finished ids 24 and
+/// 25, and the static atlas layout: chart frames, placements and the
+/// cell-block table.
 fn animated_key_prefix(
     animated: &AnimatedInputs<'_>,
     chunks: &AnimatedLightChunksSection,
     weight_maps: &AnimatedLightWeightMapsSection,
 ) -> blake3::Hasher {
     let mut hasher = gate_key_hasher();
+    hasher.update(&crate::ray_traversal::TRACER_EPOCH.to_le_bytes());
     for section in [chunks.to_bytes(), weight_maps.to_bytes()] {
         hasher.update(&(section.len() as u64).to_le_bytes());
         hasher.update(&section);

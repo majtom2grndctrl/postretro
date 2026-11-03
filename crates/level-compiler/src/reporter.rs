@@ -71,7 +71,7 @@ pub struct BuildSummary {
     pub timings: Vec<(&'static str, Duration)>,
     pub total: Duration,
     /// Lines printed after the timings and a blank line, each carrying its
-    /// own indent: the mover-lighting block.
+    /// own indent: e.g. the mover-lighting block.
     pub details: Vec<String>,
 }
 

@@ -2,11 +2,13 @@
 // meet; here, over one static lightmap partition.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 
 use super::pose::{MoverPoses, Terminus};
 use super::rows::MoverTexels;
-use super::segment::{BOX_SLACK_M, boxes_may_touch, point_touches_brush};
+use super::segment::{
+    BOX_SLACK_M, boxes_may_touch, point_inside_brush, point_touches_brush, sphere_touches_box,
+};
 use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::hard_ray_target;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
@@ -15,12 +17,40 @@ use crate::partition::Aabb;
 use crate::ray_traversal::RAY_EPSILON;
 
 /// One mover a light may meet, by index into [`MoverPoses::analysed`].
-/// `inside[k]` is `None` when the light's influence misses the pose at
-/// terminus `k`, else whether the light sits inside one of its brushes.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CandidateMover {
     pub(crate) mover: usize,
+    /// Per terminus: `None` when the light's influence misses the pose,
+    /// else whether the light touches one of its brushes, inside or on a
+    /// face. Touching, every lit texel counts: each segment ends on the
+    /// light, so it touches that brush.
     pub(crate) inside: [Option<bool>; 2],
+    /// Per terminus: whether the light lies in a posed brush's interior,
+    /// past the contact band. The row's inside flag; a light on a face is
+    /// not flagged, though its texels count as above.
+    pub(crate) light_inside: [bool; 2],
+}
+
+impl CandidateMover {
+    /// The gate mask of the segment `start..=end`: one [`Terminus::bit`] per
+    /// terminus where `live` holds and the light touches the pose or the
+    /// segment does. `live` lets a caller skip termini a cheaper bound
+    /// already rules out.
+    pub(crate) fn mask(&self, poses: &MoverPoses, live: [bool; 2], start: DVec3, end: DVec3) -> u8 {
+        let analysed = &poses.analysed[self.mover];
+        Terminus::BOTH
+            .into_iter()
+            .filter(|&terminus| {
+                let k = terminus.index();
+                live[k]
+                    && match self.inside[k] {
+                        None => false,
+                        Some(true) => true,
+                        Some(false) => analysed.pose(terminus).segment_touches(start, end),
+                    }
+            })
+            .fold(0, |mask, terminus| mask | terminus.bit())
+    }
 }
 
 /// The posed movers a light's influence sphere reaches; every pose for a
@@ -40,11 +70,19 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
                 match light.light_type {
                     LightType::Directional => Some(false),
                     LightType::Point | LightType::Spot => {
-                        // A lit texel lies within the falloff range, so its
-                        // whole segment lies inside the influence sphere.
-                        let nearest = light.origin.clamp(pose.bounds.min, pose.bounds.max);
+                        // The bake records a texel only where the falloff
+                        // at its centre is above zero and N·L > 0: the centre
+                        // lies within range r, with the light on the side its
+                        // normal faces. The lift moves the segment's start
+                        // toward that side, so the start stays within r plus
+                        // a vanishing ε²/2r of the light. The segment ends on
+                        // the light, so by the ball's convexity all of it
+                        // lies within that reach. It can touch a brush only
+                        // inside the bounds grown by the box slack, so the
+                        // slack widens the reach; it also absorbs the f32
+                        // rounding of centres and of the light's target.
                         let reach = f64::from(light.falloff_range.max(1.0e-4)) + BOX_SLACK_M;
-                        (light.origin.distance(nearest) <= reach).then(|| {
+                        sphere_touches_box(light.origin, reach, &pose.bounds).then(|| {
                             pose.brushes
                                 .iter()
                                 .any(|brush| point_touches_brush(light.origin, brush))
@@ -52,10 +90,22 @@ pub(crate) fn light_candidates(light: &MapLight, poses: &MoverPoses) -> Vec<Cand
                     }
                 }
             });
+            let light_inside = Terminus::BOTH.map(|terminus| {
+                inside[terminus.index()] == Some(true)
+                    && analysed
+                        .pose(terminus)
+                        .brushes
+                        .iter()
+                        .any(|brush| point_inside_brush(light.origin, brush))
+            });
             inside
                 .iter()
                 .any(Option::is_some)
-                .then_some(CandidateMover { mover, inside })
+                .then_some(CandidateMover {
+                    mover,
+                    inside,
+                    light_inside,
+                })
         })
         .collect()
 }
@@ -137,17 +187,7 @@ impl<'a> TexelGate<'a> {
         let end = hard_ray_target(centre, self.light).as_dvec3();
         let start = lifted.as_dvec3();
         for (slot, candidate) in self.candidates.iter().enumerate() {
-            let analysed = &self.poses.analysed[candidate.mover];
-            let mut mask = 0u8;
-            for terminus in Terminus::BOTH {
-                let k = terminus.index();
-                let gated = self.live[slot][k]
-                    && (candidate.inside[k] == Some(true)
-                        || analysed.pose(terminus).segment_touches(start, end));
-                if gated {
-                    mask |= terminus.bit();
-                }
-            }
+            let mask = candidate.mask(self.poses, self.live[slot], start, end);
             if mask != 0 {
                 self.tallies[slot].add(mask, centre.as_dvec3(), block);
             }
@@ -188,7 +228,7 @@ fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
 /// Each texel of chart `chart_index` the bake lit in `partition`, as its
 /// centre and the centre lifted along the chart normal as the bake lifts it.
 /// Records are sorted by atlas index, so each row is one range.
-fn for_each_lit_texel(
+pub(super) fn for_each_lit_texel(
     shared: &SharedAtlas<'_>,
     partition: &LightmapLayer,
     chart_index: usize,

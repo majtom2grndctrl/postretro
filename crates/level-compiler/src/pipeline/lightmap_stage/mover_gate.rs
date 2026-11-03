@@ -9,23 +9,25 @@ use glam::Vec3;
 
 use crate::cache::{CacheKey, StageCache};
 use crate::light_namespaces::StaticBakedEntry;
-use crate::lightmap_layer::{LayerKeyContext, LightmapLayer, SharedAtlas};
+use crate::lightmap_layer::{LAYER_FORMAT_VERSION, LayerKeyContext, LightmapLayer, SharedAtlas};
 use crate::mover_light_gate::{
-    CandidateMover, GateMemo, GateTally, MoverPoses, TEXEL_MEMO, fold_gate_light, gate_key_hasher,
-    gate_partition, light_candidates,
+    CandidateMover, GateMemo, GateTally, MoverPoses, MoverTexels, TEXEL_MEMO, fold_gate_light,
+    gate_key_hasher, gate_partition, light_candidates,
 };
 
 /// Gates each partition a pass bakes or loads, on the worker that produced
-/// it, as the texel-step detector does. The serial consumer never waits on
-/// it, and worker order never reaches the tally: rows fold commutatively.
+/// it, as the texel-step detector does. The consumer never holds a permit or
+/// lock the gate needs, since an item's gate runs before the item is ready,
+/// and worker order never reaches the tally: rows fold commutatively.
 ///
 /// The memo is per layer light: one entry holds the light's static rows over
-/// every bake layer. Its key is the light's layer keys, which fold the light,
-/// its geometry slice, every chart's frame and placement and the cell-block
-/// layout (all the gate reads of a partition and its charts), then the
-/// posed brushes of each mover the light's influence reaches. Moving one
-/// mover re-gates only the lights that reach it, at either its old or new
-/// pose; a light that misses re-reads its own partitions, once each.
+/// every bake layer. Its key is the layer payload's format version and the
+/// light's layer hashes, which fold the light, its geometry slice, every
+/// chart's frame and placement and the cell-block layout (all the gate reads
+/// of a partition and its charts), then each mover pose the light's
+/// influence reaches. Moving one terminus re-gates only the lights that
+/// reach it, at either its old or new pose; a light that misses re-reads its
+/// own partitions, once each.
 pub(super) struct MoverGateDetector<'a> {
     poses: &'a MoverPoses,
     shared: &'a SharedAtlas<'a>,
@@ -92,11 +94,8 @@ impl<'a> MoverGateDetector<'a> {
                 continue;
             }
             let entry = self.layer_lights[light];
-            let mut hasher = gate_key_hasher();
-            hasher.update(&layer_count.to_le_bytes());
-            for layer in 0..layer_count {
-                hasher.update(&LayerKeyContext::layer_hash(&layer_prefixes[light], layer));
-            }
+            let mut hasher =
+                texel_key_hasher(LAYER_FORMAT_VERSION, &layer_prefixes[light], layer_count);
             fold_gate_light(&mut hasher, entry.light, self.poses, candidates);
             let key = memo.key(&hasher);
             if read {
@@ -189,15 +188,41 @@ impl<'a> MoverGateDetector<'a> {
     }
 }
 
+/// The start of a light's texel memo key: the gate epoch, the layer
+/// payload's `format_version`, and the light's hash on each of `layer_count`
+/// layers from its `layer_prefix`. A layer hash digests inputs only (the
+/// layer cache adds the version to its own key), so without the version a
+/// payload change would serve rows gated from the old payload.
+fn texel_key_hasher(
+    format_version: u32,
+    layer_prefix: &blake3::Hasher,
+    layer_count: u32,
+) -> blake3::Hasher {
+    let mut hasher = gate_key_hasher();
+    hasher.update(&format_version.to_le_bytes());
+    hasher.update(&layer_count.to_le_bytes());
+    for layer in 0..layer_count {
+        hasher.update(&LayerKeyContext::layer_hash(layer_prefix, layer));
+    }
+    hasher
+}
+
 /// A bound on the gate's bytes over `lights` layer lights, `movers`
-/// analysed movers, `workers` concurrent partitions and `charts` charts.
-/// Retained: per light its candidate list, key, flags and counter; per
-/// (light, mover) a candidate and both termini's rows in the served and
-/// gated tallies, the per-light copy the memo writes and the merged tally,
-/// each row allowed twice for B-tree node slack. Transient: per partition in
-/// flight, each mover's four block lists, at most one entry per chart before
-/// their dedup.
-pub(super) fn predicted_gate_bytes(lights: u64, movers: u64, workers: u64, charts: u64) -> u64 {
+/// analysed movers, `workers` concurrent partitions and `layer_charts`
+/// charts on the most crowded bake layer. Retained: per light its candidate
+/// list, key, flags and counter; per (light, mover) a candidate and both
+/// termini's rows in the served and gated tallies, the per-light copy the
+/// memo writes and the merged tally, each row allowed twice for B-tree node
+/// slack. Transient: per (partition in flight, mover), its tally, its live
+/// flags and four block lists. A partition holds one layer, so a list holds
+/// at most one entry per chart of that layer before its dedup, allowed twice
+/// for Vec growth.
+pub(super) fn predicted_gate_bytes(
+    lights: u64,
+    movers: u64,
+    workers: u64,
+    layer_charts: u64,
+) -> u64 {
     use std::mem::size_of;
     if movers == 0 {
         return 0;
@@ -207,12 +232,28 @@ pub(super) fn predicted_gate_bytes(lights: u64, movers: u64, workers: u64, chart
         + size_of::<bool>()
         + size_of::<AtomicU32>()) as u64;
     let per_pair = (size_of::<CandidateMover>() + 2 * 4 * 2 * GateTally::ROW_BYTES) as u64;
-    let block_lists = workers
+    let tally = (size_of::<MoverTexels>() + size_of::<[bool; 2]>()) as u64;
+    let block_lists = layer_charts.saturating_mul(2 * 4 * size_of::<u32>() as u64);
+    let in_flight = workers
         .saturating_mul(movers)
-        .saturating_mul(charts)
-        .saturating_mul(4 * size_of::<u32>() as u64);
+        .saturating_mul(tally.saturating_add(block_lists));
     lights
         .saturating_mul(per_light)
         .saturating_add(lights.saturating_mul(movers).saturating_mul(per_pair))
-        .saturating_add(block_lists)
+        .saturating_add(in_flight)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A layer payload format bump re-keys every texel memo entry, as it
+    // re-keys the layers, so a warm build never serves rows gated from a
+    // payload of the old format.
+    #[test]
+    fn the_texel_memo_key_moves_with_the_layer_format_version() {
+        let prefix = blake3::Hasher::new();
+        let key = |version| *texel_key_hasher(version, &prefix, 2).finalize().as_bytes();
+        assert_ne!(key(LAYER_FORMAT_VERSION), key(LAYER_FORMAT_VERSION + 1));
+    }
 }

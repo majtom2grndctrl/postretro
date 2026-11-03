@@ -19,13 +19,15 @@ pub(crate) enum Terminus {
 
 impl Terminus {
     pub(crate) const BOTH: [Terminus; 2] = [Terminus::First, Terminus::Last];
+    /// A gate mask with both termini's bits: gated at both, so shared.
+    pub(crate) const BOTH_BITS: u8 = Terminus::First.bit() | Terminus::Last.bit();
 
-    pub(crate) fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self as usize
     }
 
     /// This terminus's bit in a texel's two-bit gate mask.
-    pub(crate) fn bit(self) -> u8 {
+    pub(crate) const fn bit(self) -> u8 {
         1 << self.index()
     }
 
@@ -127,6 +129,10 @@ pub(crate) struct NotAnalysedMover {
     pub(crate) mover_id: u32,
     pub(crate) label: String,
     pub(crate) reason: &'static str,
+    /// What the side count reads: the bounds its brushes sweep over every
+    /// waypoint at any rotation about the spin pivot; invalid for a broken
+    /// path or a mover with no brush, which gets no side count.
+    pub(crate) swept: Aabb,
 }
 
 /// Every mover, analysed or not, each list ascending by `mover_id`.
@@ -145,7 +151,8 @@ pub(crate) const BROKEN_PATH_REASON: &str = "path names a waypoint the map lacks
 impl MoverPoses {
     /// Pose each mover at its path's first and last waypoint: its authored
     /// brushes, which sit at the first waypoint, translated by
-    /// (waypoint k − waypoint 0).
+    /// (waypoint k − waypoint 0). A mover the gate cannot pose still keeps
+    /// its swept bounds, so a spinner gets a side count.
     pub(crate) fn resolve(
         movers: &[MapKinematicMover],
         waypoints: &[MapKinematicWaypoint],
@@ -154,46 +161,47 @@ impl MoverPoses {
             .iter()
             .map(|waypoint| (waypoint.name.as_str(), waypoint))
             .collect();
+        let mut name_uses: HashMap<&str, usize> = HashMap::new();
+        for mover in movers {
+            *name_uses.entry(mover.name.trim()).or_default() += 1;
+        }
         let mut poses = Self::default();
         for mover in movers {
-            let label = mover_label(mover);
+            let name = mover.name.trim();
+            let unique = name_uses.get(name).is_some_and(|&uses| uses == 1);
+            let label = mover_label(mover, unique);
             // A spin axis admits scripted spin even at zero authored speed.
-            let path = if mover.spin_axis != [0.0; 3] {
-                Err(SPIN_REASON)
-            } else {
-                path_waypoints(&mover.path, &by_name)
+            let spins = mover.spin_axis != [0.0; 3];
+            let path = path_waypoints(&mover.path, &by_name);
+            let swept = path.as_ref().map_or_else(
+                |_| Aabb::empty(),
+                |path| swept_bounds(&mover.brush_volumes, path, spins),
+            );
+            let reason = match &path {
+                _ if spins => Some(SPIN_REASON),
+                Err(reason) => Some(*reason),
+                Ok(path) if path.len() < 2 => Some(ONE_WAYPOINT_REASON),
+                Ok(_) => None,
             };
-            match path {
-                Ok(path) => {
-                    let (first, last) = (path[0], path[path.len() - 1]);
-                    let poses_at = [
-                        Pose::new(&first.name, &mover.brush_volumes, DVec3::ZERO),
-                        Pose::new(&last.name, &mover.brush_volumes, last.origin - first.origin),
-                    ];
-                    let authored = &poses_at[Terminus::First.index()].bounds;
-                    let mut swept = Aabb::empty();
-                    if authored.is_valid() {
-                        for waypoint in &path {
-                            let offset = waypoint.origin - first.origin;
-                            swept.expand_aabb(&Aabb {
-                                min: authored.min + offset,
-                                max: authored.max + offset,
-                            });
-                        }
-                    }
-                    poses.analysed.push(AnalysedMover {
-                        mover_id: mover.mover_id,
-                        label,
-                        poses: poses_at,
-                        swept,
-                    });
-                }
-                Err(reason) => poses.not_analysed.push(NotAnalysedMover {
+            let (Ok(path), None) = (path, reason) else {
+                poses.not_analysed.push(NotAnalysedMover {
                     mover_id: mover.mover_id,
                     label,
-                    reason,
-                }),
-            }
+                    reason: reason.unwrap_or(BROKEN_PATH_REASON),
+                    swept,
+                });
+                continue;
+            };
+            let (first, last) = (path[0], path[path.len() - 1]);
+            poses.analysed.push(AnalysedMover {
+                mover_id: mover.mover_id,
+                label,
+                poses: [
+                    Pose::new(&first.name, &mover.brush_volumes, DVec3::ZERO),
+                    Pose::new(&last.name, &mover.brush_volumes, last.origin - first.origin),
+                ],
+                swept,
+            });
         }
         poses.analysed.sort_by_key(|mover| mover.mover_id);
         poses.not_analysed.sort_by_key(|mover| mover.mover_id);
@@ -206,10 +214,41 @@ impl MoverPoses {
             .ok()
             .map(|at| &self.analysed[at])
     }
+
+    /// Mover `mover_id`'s label, analysed or not.
+    pub(crate) fn label(&self, mover_id: u32) -> Option<&str> {
+        self.mover(mover_id)
+            .map(|mover| mover.label.as_str())
+            .or_else(|| {
+                self.not_analysed
+                    .iter()
+                    .find(|mover| mover.mover_id == mover_id)
+                    .map(|mover| mover.label.as_str())
+            })
+    }
+
+    /// The movers the side count covers, with their swept bounds, ascending
+    /// by `mover_id`: every analysed mover, and each not-analysed one whose
+    /// path and brushes give it bounds.
+    pub(crate) fn swept(&self) -> Vec<(u32, &Aabb)> {
+        let mut swept: Vec<(u32, &Aabb)> = self
+            .analysed
+            .iter()
+            .map(|mover| (mover.mover_id, &mover.swept))
+            .chain(
+                self.not_analysed
+                    .iter()
+                    .filter(|mover| mover.swept.is_valid())
+                    .map(|mover| (mover.mover_id, &mover.swept)),
+            )
+            .collect();
+        swept.sort_by_key(|(mover_id, _)| *mover_id);
+        swept
+    }
 }
 
 /// The waypoints of the `next` chain starting at `start`, in path order,
-/// at least two. Parse keeps only the chain's names, so it is walked again
+/// at least one. Parse keeps only the chain's names, so it is walked again
 /// here.
 fn path_waypoints<'w>(
     start: &str,
@@ -228,17 +267,71 @@ fn path_waypoints<'w>(
         path.push(next);
         last = next;
     }
-    if path.len() < 2 {
-        return Err(ONE_WAYPOINT_REASON);
-    }
     Ok(path)
 }
 
-/// The mover's name, or for an unnamed mover the centre of its authored
-/// brushes' bounds.
-fn mover_label(mover: &MapKinematicMover) -> String {
-    if !mover.name.trim().is_empty() {
-        return format!("kinematic_mover '{}'", mover.name);
+/// The bounds `brushes` sweep over every waypoint of `path`, translated by
+/// (waypoint − first waypoint); invalid when no brush has bounds.
+///
+/// A mover that `spins` may park at any rotation, so each waypoint
+/// contributes the box around the sphere its brushes sweep about the spin
+/// pivot. The pivot is the mover's origin, the first waypoint, where its
+/// geometry's local frame is rooted; the radius is the farthest brush-bounds
+/// corner from it, which encloses every brush at every rotation.
+fn swept_bounds(brushes: &[BrushVolume], path: &[&MapKinematicWaypoint], spins: bool) -> Aabb {
+    let Some(first) = path.first() else {
+        return Aabb::empty();
+    };
+    let mut authored = Aabb::empty();
+    for brush in brushes.iter().filter(|brush| brush.aabb.is_valid()) {
+        authored.expand_aabb(&brush.aabb);
+    }
+    if !authored.is_valid() {
+        return authored;
+    }
+    let pivot = first.origin;
+    if spins {
+        let radius = brushes
+            .iter()
+            .filter(|brush| brush.aabb.is_valid())
+            .flat_map(|brush| {
+                let (min, max) = (brush.aabb.min, brush.aabb.max);
+                (0..8).map(move |corner: u32| {
+                    DVec3::new(
+                        if corner & 1 == 0 { min.x } else { max.x },
+                        if corner & 2 == 0 { min.y } else { max.y },
+                        if corner & 4 == 0 { min.z } else { max.z },
+                    )
+                })
+            })
+            .map(|corner| corner.distance(pivot))
+            .fold(0.0_f64, f64::max);
+        authored = Aabb {
+            min: pivot - DVec3::splat(radius),
+            max: pivot + DVec3::splat(radius),
+        };
+    }
+    let mut swept = Aabb::empty();
+    for waypoint in path {
+        let offset = waypoint.origin - pivot;
+        swept.expand_aabb(&Aabb {
+            min: authored.min + offset,
+            max: authored.max + offset,
+        });
+    }
+    swept
+}
+
+/// The mover's name, with its id when another mover shares it, or for an
+/// unnamed mover the centre of its authored brushes' bounds.
+fn mover_label(mover: &MapKinematicMover, unique_name: bool) -> String {
+    let name = mover.name.trim();
+    if !name.is_empty() {
+        return if unique_name {
+            format!("kinematic_mover '{}'", mover.name)
+        } else {
+            format!("kinematic_mover '{}' (id {})", mover.name, mover.mover_id)
+        };
     }
     let mut bounds = Aabb::empty();
     for brush in mover.brush_volumes.iter().filter(|b| b.aabb.is_valid()) {

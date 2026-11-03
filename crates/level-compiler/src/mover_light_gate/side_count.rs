@@ -3,10 +3,11 @@
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use super::pose::MoverPoses;
+use super::segment::sphere_touches_box;
 use crate::map_data::{CarriedLightLink, LightType, MapLight};
 
-/// One analysed mover's side count. Lights are by source index, ascending,
-/// which is authored entity order.
+/// One mover's side count. Lights are by source index, ascending, which is
+/// authored entity order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SideCount {
     pub(crate) mover_id: u32,
@@ -16,11 +17,14 @@ pub(crate) struct SideCount {
     pub(crate) others: Vec<usize>,
 }
 
-/// Side counts of every analysed mover, ascending by `mover_id`.
+/// Side counts of every mover with swept bounds, analysed or not (a
+/// spinner's bounds cover any rotation), ascending by `mover_id`.
 ///
 /// A light's influence is its falloff sphere at its authored origin, every
-/// direction for a sun. A dynamic bake-only light is skipped: it has no
-/// runtime presence, so no shadow to price.
+/// direction for a sun, tested exactly: this is the count's definition,
+/// not a prefilter ahead of a segment test, so it takes no contact slack. A
+/// dynamic bake-only light is skipped: it has no runtime presence, so no
+/// shadow to price.
 pub(crate) fn side_counts(
     poses: &MoverPoses,
     lights: &[MapLight],
@@ -33,15 +37,15 @@ pub(crate) fn side_counts(
         .map(|(source_index, _)| source_index)
         .collect();
     poses
-        .analysed
-        .iter()
-        .map(|mover| {
+        .swept()
+        .into_iter()
+        .map(|(mover_id, swept)| {
             let mut count = SideCount {
-                mover_id: mover.mover_id,
+                mover_id,
                 carried: Vec::new(),
                 others: Vec::new(),
             };
-            if !mover.swept.is_valid() {
+            if !swept.is_valid() {
                 return count;
             }
             for &source_index in &dynamic {
@@ -49,15 +53,14 @@ pub(crate) fn side_counts(
                 let reaches = match light.light_type {
                     LightType::Directional => true,
                     LightType::Point | LightType::Spot => {
-                        let nearest = light.origin.clamp(mover.swept.min, mover.swept.max);
-                        light.origin.distance(nearest) <= f64::from(light.falloff_range)
+                        sphere_touches_box(light.origin, f64::from(light.falloff_range), swept)
                     }
                 };
                 if !reaches {
                     continue;
                 }
                 let carried = carried_links.iter().any(|link| {
-                    link.source_light_index == source_index && link.mover_id == mover.mover_id
+                    link.source_light_index == source_index && link.mover_id == mover_id
                 });
                 if carried {
                     count.carried.push(source_index);

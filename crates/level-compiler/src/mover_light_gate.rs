@@ -25,6 +25,7 @@ pub(crate) use lights::{GateLight, GateLights};
 pub(crate) use pose::MoverPoses;
 pub(crate) use probes::{ProbeScene, gate_probes};
 pub(crate) use report::{log_rows, log_side_counts};
+pub(crate) use rows::MoverTexels;
 pub(crate) use side_count::side_counts;
 pub(crate) use summary::{LIGHTMAP_FAMILY, MoverLightSummary};
 pub(crate) use tally::GateTally;

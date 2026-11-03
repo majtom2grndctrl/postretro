@@ -1,4 +1,8 @@
-use glam::{DVec3, Vec3};
+// Mover light gate unit tests: posing, the point and segment tests, the
+// inside flag, probe and texel gating, texel anchors, and side counts.
+// See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
+
+use glam::{DQuat, DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
 use postretro_level_format::texture_names::TextureNamesSection;
 
@@ -7,10 +11,15 @@ use super::pose::{MoverPoses, ONE_WAYPOINT_REASON, PosedBrush, SPIN_REASON, Term
 use super::probes::{ProbeScene, gate_probes};
 use super::segment::{CONTACT_TOLERANCE_M, point_touches_brush, segment_touches_brush};
 use super::side_count::{SideCount, side_counts};
-use super::texels::{CandidateMover, TexelGate, light_candidates};
+use super::texels::{CandidateMover, TexelGate, for_each_lit_texel, light_candidates};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
 use crate::geometry::{FaceIndexRange, GeometryResult};
+use crate::light_namespaces::StaticBakedLights;
+use crate::lightmap_bake::{BlockOrdering, prepare_atlas_within};
+use crate::lightmap_layer::{
+    LayerTexel, LightmapLayer, SharedAtlas, for_each_light_layer_chart_texel,
+};
 use crate::lightmap_reach::test_fixtures::point_light;
 use crate::map_data::{
     BrushPlane, BrushVolume, CarriedLightLink, KinematicMoveMode, LightType, MapKinematicMover,
@@ -253,14 +262,21 @@ fn a_light_inside_a_posed_brush_is_flagged_and_one_in_a_doorway_is_not() {
             mover: 0,
             // Raised 10 m, the last pose lies past the light's reach.
             inside: [Some(true), None],
+            light_inside: [true, false],
         }]
     );
 
-    let on_face = point_light(DVec3::new(1.0, 1.0, 0.5), 2.0);
+    // On a face, every segment ends on the brush, so all lit texels count;
+    // the flag marks only a light in a brush's interior.
+    let on_face = light_candidates(&point_light(DVec3::new(1.0, 1.0, 0.5), 2.0), &poses);
     assert_eq!(
-        light_candidates(&on_face, &poses)[0].inside[0],
+        on_face[0].inside[0],
         Some(true),
-        "a light on a posed face counts as inside"
+        "a light on a posed face touches it"
+    );
+    assert!(
+        !on_face[0].light_inside[0],
+        "a light on a posed face is not flagged inside"
     );
 
     let in_doorway = point_light(DVec3::new(1.5, 1.0, 0.5), 2.0);
@@ -268,6 +284,71 @@ fn a_light_inside_a_posed_brush_is_flagged_and_one_in_a_doorway_is_not() {
         light_candidates(&in_doorway, &poses)[0].inside[0],
         Some(false),
         "a light between a hollow mover's brushes is not inside"
+    );
+}
+
+#[test]
+fn a_point_past_a_thin_wedges_tip_does_not_touch_it() {
+    // A 1° wedge along +x, its tip at the origin and its back at x −1. Its
+    // faces grown by the contact band still overlap about 11 mm past the tip.
+    let half = 0.5_f64.to_radians();
+    let (sin, cos) = half.sin_cos();
+    let wedge = PosedBrush {
+        planes: vec![
+            (DVec3::new(sin, cos, 0.0), 0.0),
+            (DVec3::new(sin, -cos, 0.0), 0.0),
+            (DVec3::NEG_X, 1.0),
+            (DVec3::Z, 1.0),
+            (DVec3::NEG_Z, 1.0),
+        ],
+        bounds: Aabb {
+            min: DVec3::new(-1.0, -half.tan(), -1.0),
+            max: DVec3::new(0.0, half.tan(), 1.0),
+        },
+    };
+    let past_tip = DVec3::new(5.0e-3, 0.0, 0.0);
+    assert!(
+        wedge
+            .planes
+            .iter()
+            .all(|&(normal, distance)| normal.dot(past_tip) - distance <= CONTACT_TOLERANCE_M),
+        "the grown faces alone reach 5 mm past the tip"
+    );
+    assert!(!point_touches_brush(past_tip, &wedge));
+    assert!(!segment_touches_brush(past_tip, past_tip, &wedge));
+    assert!(point_touches_brush(DVec3::ZERO, &wedge), "the tip touches");
+    assert!(point_touches_brush(DVec3::new(-0.5, 0.0, 0.0), &wedge));
+}
+
+#[test]
+fn movers_sharing_a_name_are_labelled_with_their_ids() {
+    let brush = || vec![box_brush(DVec3::ZERO, DVec3::ONE)];
+    let movers = vec![
+        mover(0, "door", "a", brush()),
+        mover(1, "door", "c", brush()),
+        mover(2, "gate", "e", brush()),
+    ];
+    let waypoints = vec![
+        waypoint("a", "b", DVec3::ZERO),
+        waypoint("b", "", DVec3::X),
+        waypoint("c", "d", DVec3::ZERO),
+        waypoint("d", "", DVec3::X),
+        waypoint("e", "f", DVec3::ZERO),
+        waypoint("f", "", DVec3::X),
+    ];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let labels: Vec<&str> = poses
+        .analysed
+        .iter()
+        .map(|mover| mover.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "kinematic_mover 'door' (id 0)",
+            "kinematic_mover 'door' (id 1)",
+            "kinematic_mover 'gate'",
+        ]
     );
 }
 
@@ -377,6 +458,66 @@ fn side_count_reaches_the_swept_bounds_at_every_waypoint_not_only_the_termini() 
             mover_id: 0,
             carried: Vec::new(),
             others: vec![0],
+        }]
+    );
+}
+
+/// Whether `point` lies in `bounds`.
+fn contains(bounds: &Aabb, point: DVec3) -> bool {
+    bounds.min.cmple(point).all() && point.cmple(bounds.max).all()
+}
+
+#[test]
+fn a_spinners_swept_bounds_hold_its_brushes_at_any_rotation_and_reach_its_side_count() {
+    // An off-centre block on a spinner whose pivot, its first waypoint, is
+    // the origin; it spins about y and travels 5 m along x.
+    let (min, max) = (DVec3::new(1.0, 0.0, 0.0), DVec3::new(3.0, 1.0, 1.0));
+    let mut spinner = mover(0, "fan", "hub", vec![box_brush(min, max)]);
+    spinner.spin_axis = [0.0, 1.0, 0.0];
+    let waypoints = vec![
+        waypoint("hub", "end", DVec3::ZERO),
+        waypoint("end", "", DVec3::new(5.0, 0.0, 0.0)),
+    ];
+    let poses = MoverPoses::resolve(&[spinner], &waypoints);
+    assert!(poses.analysed.is_empty());
+    assert_eq!(poses.not_analysed[0].reason, SPIN_REASON);
+    let swept = &poses.not_analysed[0].swept;
+
+    let corners: Vec<DVec3> = (0..8)
+        .map(|corner: u32| {
+            DVec3::new(
+                if corner & 1 == 0 { min.x } else { max.x },
+                if corner & 2 == 0 { min.y } else { max.y },
+                if corner & 4 == 0 { min.z } else { max.z },
+            )
+        })
+        .collect();
+    for degrees in [45.0_f64, 90.0] {
+        let rotation = DQuat::from_axis_angle(DVec3::Y, degrees.to_radians());
+        for offset in [DVec3::ZERO, DVec3::new(5.0, 0.0, 0.0)] {
+            for &corner in &corners {
+                let posed = rotation * corner + offset;
+                assert!(
+                    contains(swept, posed),
+                    "{posed} at {degrees}° outside {swept:?}"
+                );
+            }
+        }
+    }
+    // Turned 90°, the block's far corner lies 3 m along −z, past its
+    // unrotated bounds (z 0 to 1): only the rotation padding reaches it.
+    let turned =
+        DQuat::from_axis_angle(DVec3::Y, 90.0_f64.to_radians()) * DVec3::new(3.0, 0.0, 0.0);
+    assert!(turned.z < -2.9 && contains(swept, turned));
+
+    // A lamp the spinner carries there is in its side count.
+    let lamp = dynamic_light(DVec3::new(0.0, 0.5, -3.2), 0.5);
+    assert_eq!(
+        side_counts(&poses, &[lamp], &[carried_by(0, 0)]),
+        vec![SideCount {
+            mover_id: 0,
+            carried: vec![0],
+            others: Vec::new(),
         }]
     );
 }
@@ -611,4 +752,106 @@ fn a_directional_light_gates_the_texels_a_mover_covers_toward_it() {
     assert_eq!(movers[0].gated, [1, 1]);
     assert_eq!(movers[0].both, 1);
     assert_eq!(movers[0].blocks[0], [3]);
+}
+
+/// `count` floor triangles with legs `leg` m, 1 m apart along x from
+/// `x`, each one face facing +y.
+fn floor_triangles(count: usize, leg: f32, x: f32) -> Vec<[[f32; 3]; 3]> {
+    (0..count)
+        .map(|at| {
+            let x = x + at as f32 * (leg + 1.0);
+            [[x, 0.0, 0.0], [x, 0.0, leg], [x + leg, 0.0, 0.0]]
+        })
+        .collect()
+}
+
+#[test]
+fn the_gate_anchors_and_lifts_each_texel_where_the_bake_walk_does() {
+    // At 0.25 m/texel under a 64-texel layer edge, each 12 m triangle needs
+    // a layer of its own and the 2 m ones share: several layers, several
+    // charts on one.
+    let mut triangles = floor_triangles(3, 12.0, 0.0);
+    triangles.extend(floor_triangles(4, 2.0, 40.0));
+    let mut geometry = geometry_of(&triangles);
+    let lights = [point_light(DVec3::new(20.0, 3.0, 6.0), 100.0)];
+    let prepared = prepare_atlas_within(
+        &mut geometry,
+        &StaticBakedLights::from_lights(&lights),
+        0.25,
+        &[],
+        BlockOrdering::by_cell_id(2),
+        64,
+        &BakeControl::unrestricted(),
+    )
+    .expect("the atlas packs");
+    assert!(
+        prepared.layer_count > 1,
+        "{} layer(s)",
+        prepared.layer_count
+    );
+    let mut charts_per_layer = vec![0usize; prepared.layer_count as usize];
+    for placement in &prepared.placements {
+        charts_per_layer[placement.layer as usize] += 1;
+    }
+    assert!(
+        charts_per_layer.iter().any(|&charts| charts > 1),
+        "{charts_per_layer:?}"
+    );
+    let shared = SharedAtlas {
+        charts: &prepared.charts,
+        placements: &prepared.placements,
+        atlas_width: prepared.atlas_width,
+        atlas_height: prepared.atlas_height,
+        layout: &prepared.layout,
+    };
+
+    for layer in 0..prepared.layer_count {
+        let charts: Vec<usize> = (0..prepared.charts.len())
+            .filter(|&chart| prepared.placements[chart].layer == layer)
+            .collect();
+        // The bake walk's sites: index, anchored centre, lifted ray origin.
+        let walked: Vec<Vec<(u32, Vec3, Vec3)>> = charts
+            .iter()
+            .map(|&chart| {
+                let mut sites = Vec::new();
+                for_each_light_layer_chart_texel(&shared, chart, |sample| {
+                    sites.push((
+                        sample.idx,
+                        sample.world_p,
+                        sample.world_p + sample.surface_normal * RAY_EPSILON,
+                    ));
+                });
+                sites
+            })
+            .collect();
+        // Every walked texel lit, as one partition of this layer.
+        let mut texels: Vec<LayerTexel> = walked
+            .iter()
+            .flatten()
+            .map(|&(idx, _, _)| LayerTexel {
+                idx,
+                raw_visibility: 1.0,
+            })
+            .collect();
+        texels.sort_by_key(|texel| texel.idx);
+        let partition = LightmapLayer {
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            layer_count: prepared.layer_count,
+            target_layer: layer,
+            texels,
+        };
+        for (&chart, sites) in charts.iter().zip(&walked) {
+            let mut gated = Vec::new();
+            for_each_lit_texel(&shared, &partition, chart, |centre, lifted| {
+                gated.push((centre, lifted));
+            });
+            let expected: Vec<(Vec3, Vec3)> = sites
+                .iter()
+                .map(|&(_, centre, lifted)| (centre, lifted))
+                .collect();
+            assert!(!expected.is_empty(), "chart {chart} walks texels");
+            assert_eq!(gated, expected, "chart {chart} on layer {layer}");
+        }
+    }
 }

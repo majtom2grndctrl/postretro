@@ -60,7 +60,7 @@ Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
 ### Automated
 - [ ] **R1** (unit, both runtimes): `presentationOverlays` accepts one descriptor, as today, or an array of them. An array that repeats an `over.kind` keeps the first descriptor and warns, naming the kind. TS and Luau lower the array to the same JSON. Existing single-descriptor manifests load unchanged.
 - [ ] **R2** (unit, both runtimes): `assistableTeammates()` lowers to `{ kind: "assistableTeammates" }`. Unknown keys are rejected. `defineOverlay` accepts the new source, and its existing checks (`worldAnchor`, `maxVisible` 1–64) still apply.
-- [ ] **R3** (unit, SDK validators and the Rust template validator): `Glyph({ command })` is accepted at a template root and nested inside stacks. An empty `command` is rejected. Every other kind that templates reject today is still rejected, with the same message.
+- [ ] **R3** (unit, SDK validators and the Rust template validator): `Glyph({ command })` is accepted at a template root and nested inside stacks. An empty `command` is rejected. Every other kind that templates reject today is still rejected, with the same message, except that the TS and Luau messages' list of allowed kinds now names `glyph`.
 - [ ] **R4** (unit, app): for the same command and device family, a glyph inside a template draws exactly what a HUD glyph draws: art, label or nothing. It changes after a rebind or a device-family switch with no reload, and keeps its `visibleWhen`.
 - [ ] **R5** (unit, client producer): with retained facts present, a marker exists for every mapped remote pawn whose `assistable` is set, at any distance. No marker exists for an unassistable pawn, the local pawn, or an unmapped pawn. A marker is removed on the frame its facts flip to unassistable. `maxVisible` caps markers in `players()` order.
 - [ ] **R6** (unit, client producer): `inRange` is true only for the pawn that `assist_candidate` picks for the local pawn. It is false when:
@@ -74,6 +74,9 @@ Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
 - [ ] **R9** (unit): with no posed socket, the anchor is the presented position plus `offsetY`. On a connected client that is the interpolated pose at `render_server_tick`. The hitbox top is never used.
 - [ ] **R10** (regression): no wire version bump. Adding or removing the marker overlay leaves the mod digest unchanged (extend the existing digest test).
 - [ ] **R11** (fixture): the dev mod registers the Scripting surface example. The mod-load and typecheck tests load it in both overlay slots alongside `damagedEnemyOverlay`.
+- [ ] **R13** (unit, host and client): with only the marker overlay declared, markers survive every frame. The damaged-enemy paths that run with no damaged-enemy config (host roster, client anchors) clear nothing of the marker kind, and the pool's per-frame linger expiry never removes a marker.
+- [ ] **R14** (unit, listen host): for a connected client's downed pawn, the marker's anchor follows the delayed pose the host draws for that pawn, not its authoritative pose. `inRange` is measured on the authoritative positions the host's assist pass reads, so it flips on the same tick a hold would start or stop choosing that pawn.
+- [ ] **R15** (unit, app): a template glyph draws what a HUD glyph draws on the first frame after each event that installs templates or changes glyph art, with no binding or device change in between: a staged reload that edits only the marker template, and glyph art that finishes loading after the templates were installed.
 - [ ] **R12** (review and grep): docs cover `presentationOverlays` in both forms, `assistableTeammates`, the `inRange` fact and template glyphs. Every command shown runs from an SDK bundle. No non-test source comment cites a spec ID.
 
 ### Manual
@@ -127,6 +130,14 @@ T1 and the pool split can run at the same time. T3 starts after T1.
 | Fact-bool `visibleWhen` already works in templates | `crates/ui/src/tree/presentation_layout.rs` test `presentation_bool_fact_drives_visibility_without_local_state` |
 | Overlays are left out of the compat digest | `crates/postretro/src/mod_digest.rs:1107` |
 | Dev wiring | `content/dev/start-script.ts:179`; HUD bars `content/dev/scripts/hud.ts:332`, `:365` |
+| Whole-map overlay operations beyond retain and clear: linger expiry, the caps in `refresh_overlay` and `upsert_authoritative_overlay`, and the tracked-id iterator the single-player damage path samples | `presentation_pool.rs:109`, `:270`, `:315`, `:433`; `impact_policy.rs:942` |
+| With no damaged-enemy config, host and client clear the whole pool every frame | `overlays.rs:244`–`:246` (host), `:369`–`:371` (client) |
+| Host overlay branch runs before the delayed client-pawn pose is written (Transform is authoritative there) | `frame_loop/mod.rs:1591` vs `:1634` (`host_present_client_pawns`); `networking.md` §Host-side remote-pawn presentation |
+| Socket lookup reads the registry Transform too | `crates/sim/src/scripting_systems/hit_zones.rs:337` (`posed_socket_world`) |
+| Dev player model has no `head` socket (only `hand_l`, `hand_r`), so the dev marker always takes the D10 fallback | `content/dev/models/exo_red/model.gltf` node extras; model named at `player.ts:59` |
+| Raw templates reach the renderer at two install sites | `crates/postretro/src/startup/staged_manifest_lifecycle.rs:287`, `startup/splash_lifecycle.rs:628` |
+| Glyph inputs: binding table has a generation; glyph art has none (keyed by dirs and staged-reload generation, loaded lazily once the renderer is full-ready) | `crates/postretro/src/input/binding_state.rs:104`; `glyph_art.rs:21`, `:146` |
+| Host pair values cover only helpers permitting `use` and assistable targets, from the last fixed-tick pass | `crates/sim/src/sim/assist_pass.rs:68`–`:83` |
 | `scripting-reference.md` has no presentation-template section today; `Glyph` documented at about line 4199 | `docs/scripting-reference.md` |
 
 Constraints: no spec IDs in non-test source comments. Every command in `docs/` must run from an SDK bundle.

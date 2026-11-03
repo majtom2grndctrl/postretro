@@ -489,6 +489,14 @@ mod tests {
             "delayed standing: {}",
             feet(&registry)
         );
+        // Blending into the crouch (target 2.5): the half-height blends with the
+        // centre, so the sole holds.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 5, 0.5);
+        assert!(
+            feet(&registry).abs() < POS_EPS,
+            "crouching: {}",
+            feet(&registry)
+        );
         // The newest sample is the crouch.
         present_client_pawns(&buffer, &owners, &allocator, &mut registry, 6, 0.0);
         assert!(

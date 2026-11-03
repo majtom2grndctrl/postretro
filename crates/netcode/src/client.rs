@@ -2651,9 +2651,6 @@ impl ClientReplication {
             .insert(network_id, entity_class.to_string());
     }
 
-    /// Record immutable descriptor locomotion data after remote-player mesh
-    /// materialization. `None` leaves an unusual/meshless descriptor transform-only
-    /// and prevents it from being mistaken for an avatar by the pose-input pass.
     /// Record (or clear) a remote player avatar's descriptor capsule radius,
     /// beside its locomotion reference at materialization.
     pub(crate) fn cache_remote_player_capsule_radius(
@@ -2691,6 +2688,9 @@ impl ClientReplication {
         }
     }
 
+    /// Record immutable descriptor locomotion data after remote-player mesh
+    /// materialization. `None` leaves an unusual/meshless descriptor transform-only
+    /// and prevents it from being mistaken for an avatar by the pose-input pass.
     pub(crate) fn cache_remote_player_locomotion(
         &mut self,
         network_id: NetworkId,
@@ -6758,19 +6758,43 @@ mod tests {
                 )],
             ),
         );
-        // Still presenting the crouched sample: the capsule steps with posture.
-        client.sample_into_registry(&mut registry, 100.0, 1.0);
-        assert!(
-            feet(&registry).abs() < 1e-5,
-            "crouched: {}",
-            feet(&registry)
+        // Standing up from 100 to 110: the half-height blends with the centre,
+        // so the sole holds through the segment.
+        for target in [100.0, 102.0, 105.0, 109.0, 110.0] {
+            client.sample_into_registry(&mut registry, target, target / 100.0);
+            assert!(
+                feet(&registry).abs() < 1e-5,
+                "standing up at {target}: {}",
+                feet(&registry)
+            );
+        }
+
+        // Crouching back down: a stepped half-height sank this blend under the
+        // floor, culling the body, until the crouched sample was reached.
+        client.apply_snapshot(
+            &mut registry,
+            &snapshot(
+                2,
+                120,
+                vec![delta(
+                    7,
+                    2,
+                    3,
+                    vec![
+                        transform_payload_at([0.0, crouched_center, 0.0], 0.0),
+                        movement(crouching, CROUCHED),
+                    ],
+                )],
+            ),
         );
-        client.sample_into_registry(&mut registry, 110.0, 1.1);
-        assert!(
-            feet(&registry).abs() < 1e-5,
-            "standing: {}",
-            feet(&registry)
-        );
+        for target in [112.0, 115.0, 119.0, 120.0] {
+            client.sample_into_registry(&mut registry, target, target / 100.0);
+            assert!(
+                feet(&registry).abs() < 1e-5,
+                "crouching at {target}: {}",
+                feet(&registry)
+            );
+        }
     }
 
     // A host one-shot refused because this client's phase has not reached it

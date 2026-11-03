@@ -716,6 +716,10 @@ where
             }
         }
     }
+    // Movement may have resized a capsule (crouch, stand, slide, life posture)
+    // with the feet planted; reseat the mesh before this tick's projectile and
+    // weapon hit zones read the offset against the moved centre.
+    sync_player_mesh_origin_offsets(&mut registry.borrow_mut());
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
@@ -1373,7 +1377,8 @@ fn clip_duration(
 /// Produce renderer-facing pose inputs from the registry's currently displayed
 /// transforms. The fixed tick calls this after steering; connected clients call
 /// it after remote interpolation because they intentionally skip `simulate_tick`.
-/// This mutates presentation-only mesh inputs and never enters replication.
+/// It also reseats each movement pawn's mesh origin offset on its live capsule
+/// (which hit zones read too). None of it enters replication.
 pub struct PresentationPoseInputs<'a> {
     pub camera_aim: (f32, f32),
     pub remote_player_aims: &'a HashMap<EntityId, (f32, f32)>,
@@ -1430,8 +1435,10 @@ pub fn update_presentation_pose_inputs(
 /// and a low life-state posture shrink the capsule with the feet planted and so
 /// lower the centre the transform tracks. Left at the standing size, the model
 /// sinks by the half-height difference and its cull point lands below the floor,
-/// outside every visible cell, so the pawn vanishes. Runs before the pose and
-/// foot-probe passes so both read the offset the body is drawn with. Remote
+/// outside every visible cell, so the pawn vanishes. The fixed tick runs it right
+/// after Movement, so that tick's hit zones read the resized body, and again in
+/// the presentation pose pass ahead of the pose and foot probes, which also
+/// covers a connected client's predicted pawn. Remote
 /// avatars on a connected client carry no movement component; their offset is
 /// written from the replicated half-height when their pose is presented.
 fn sync_player_mesh_origin_offsets(registry: &mut EntityRegistry) {

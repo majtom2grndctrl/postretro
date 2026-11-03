@@ -63,7 +63,10 @@ impl MeshAttachment {
 /// interpolation. It is zero for authored world-origin props. Descriptor AI
 /// meshes use it to render feet-at-origin art from capsule-center gameplay
 /// transforms, including remote enemies that intentionally carry no local
-/// `AgentComponent`.
+/// `AgentComponent`. Player pawns hang from their *live* capsule's sole
+/// ([`player_capsule_feet_origin_offset`]), reseated as crouch or posture
+/// resizes the capsule (`entity_model.md` §7b). Hit zones and foot probes read
+/// the same offset, so it is not purely presentational.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshComponent {
     pub model: String,

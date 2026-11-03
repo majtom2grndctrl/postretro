@@ -542,8 +542,9 @@ pub(crate) struct PresentedPose {
     /// so a takeoff or apex lands on the tick the host saw it. Standing and
     /// grounded when no movement state is known.
     pub(crate) stance: LocomotionStance,
-    /// Replicated live capsule half-height at or before the presented tick,
-    /// stepped like `stance`. `None` when no movement state is known.
+    /// Replicated live capsule half-height presented with `transform`: blended
+    /// with it between two samples, otherwise the sample's own (stepped like
+    /// `stance`). `None` when no movement state is known.
     pub(crate) capsule_half_height: Option<f32>,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
@@ -693,7 +694,7 @@ impl EntityBuffer {
                     horizontal_velocity: xz_velocity_between(a, b),
                     intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
                     stance: self.stance_at_or_before(at.server_tick),
-                    capsule_half_height: self.capsule_half_height_at_or_before(at.server_tick),
+                    capsule_half_height: self.interpolated_capsule_half_height(a, b, alpha),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
@@ -817,6 +818,25 @@ impl EntityBuffer {
     fn stance_at_or_before(&self, server_tick: u32) -> LocomotionStance {
         self.movement_field_at_or_before(server_tick, |sample| sample.stance)
             .unwrap_or_default()
+    }
+
+    /// Capsule half-height blended with the transform between `a` and `b`. The
+    /// transform is the capsule centre, which a resize moves linearly with the
+    /// half-height whether the feet or the head stay put, so blending both keeps
+    /// the hung mesh's sole where the host had it. Stepping the half-height
+    /// instead would sink a crouching body below its floor for the whole segment.
+    /// Falls back to the earlier sample's value when either end has none.
+    fn interpolated_capsule_half_height(
+        &self,
+        a: &TransformSample,
+        b: &TransformSample,
+        alpha: f32,
+    ) -> Option<f32> {
+        let from = self.capsule_half_height_at_or_before(a.server_tick);
+        match (from, self.capsule_half_height_at_or_before(b.server_tick)) {
+            (Some(from), Some(to)) => Some(from + (to - from) * alpha),
+            _ => from,
+        }
     }
 
     /// Most recent replicated live capsule half-height at or before

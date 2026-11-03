@@ -183,9 +183,10 @@ There is no `.get()`, `.set()`, `gameState` global, `playerState` global, `gameS
 
 - `bindState(ref, options)` adds bind-only options such as `format` or `tween`;
 - `stateEquals(ref, value)` builds an equality predicate;
+- `stateCompare(ref, op, value)` builds a numeric comparison predicate on a number ref (`ui.md` §3);
 - `updateState(ref, value)` builds a `setState` reaction descriptor. `value` is a literal or a fluent value — any `read(…)` expression, `byPlayer` reads included — in TypeScript and Luau.
 
-The retained wire stays dotted-name based. State references are SDK authoring descriptors, not live values. `read(ref)` lifts a number or boolean ref into the fluent impact-expression algebra; `fromRuntime.number(...)` and `.bool(...)` bridge a raw `runtime.*` node into that public algebra; `set(ref, value)` builds an absolute impact slot write; and `update(ref, cur => expression)` builds a frozen-snapshot read-modify-write while naming the slot once. `when(condition, effects)` is the deferred impact guard — a native `if` would inspect the author-time descriptor object, not a live value. UI/reaction helpers remain separate: `bindState`, `stateEquals`, and `updateState` operate on their own descriptor and dispatch path.
+The retained wire stays dotted-name based. State references are SDK authoring descriptors, not live values. `read(ref)` lifts a number or boolean ref into the fluent impact-expression algebra; `fromRuntime.number(...)` and `.bool(...)` bridge a raw `runtime.*` node into that public algebra; `set(ref, value)` builds an absolute impact slot write; and `update(ref, cur => expression)` builds a frozen-snapshot read-modify-write while naming the slot once. `when(condition, effects)` is the deferred impact guard — a native `if` would inspect the author-time descriptor object, not a live value. UI/reaction helpers remain separate: `bindState`, `stateEquals`, `stateCompare`, and `updateState` operate on their own descriptor and dispatch path.
 
 TypeScript and Luau expose the same vocabulary. Luau reserves `and`, `or`, and `not`, so boolean fluent composition uses bracket spelling: `ref["and"](ref, other)` rather than method syntax.
 

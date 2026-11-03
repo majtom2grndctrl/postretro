@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use super::super::descriptor::{BindSource, PredicateValue};
+use super::super::descriptor::{BindSource, Predicate, PredicateValue};
 use postretro_entities::SlotValue;
 
 use super::CellValues;
@@ -83,6 +83,33 @@ pub fn resolve_predicate(
     }
 }
 
+/// Resolve a whole [`Predicate`] — `equals`, truthiness, or numeric `compare` —
+/// to `0.0`/`1.0`. Every predicate consumer (`visibleWhen`, `selected`,
+/// `checked`, a button's `bind`, `valueText.when`) routes through here, so all
+/// read the same target value (`ui.md` §3). A `compare` holds only on a
+/// `Number` value that satisfies it: an absent source, a non-Number value, or
+/// NaN resolves `0.0`, as an absent or mismatched `equals` does.
+pub fn evaluate_predicate(
+    predicate: &Predicate,
+    scope: Option<&str>,
+    slots: &HashMap<String, SlotValue>,
+    cells: &CellValues,
+) -> f32 {
+    let Some(compare) = &predicate.compare else {
+        return resolve_predicate(
+            &predicate.source,
+            predicate.equals.as_ref(),
+            scope,
+            slots,
+            cells,
+        );
+    };
+    match lookup_bound(&predicate.source, scope, slots, cells) {
+        Some(SlotValue::Number(value)) if compare.holds(*value) => 1.0,
+        _ => 0.0,
+    }
+}
+
 /// Whether a resolved `SlotValue` equals a `PredicateValue` comparand. Number and
 /// boolean compare exactly; a `String` comparand matches both `String` and `Enum`
 /// slots by name (an enum's wire form is its name). Any other pairing is a type
@@ -118,13 +145,7 @@ pub fn resolve_value_text<'a>(
         .iter()
         .find(|case| {
             case.when.iter().all(|condition| {
-                resolve_predicate(
-                    &condition.source,
-                    condition.equals.as_ref(),
-                    value_text.scope.as_deref(),
-                    slots,
-                    cells,
-                ) >= 0.5
+                evaluate_predicate(condition, value_text.scope.as_deref(), slots, cells) >= 0.5
             })
         })
         .map_or(fallback, |case| case.text.as_str())

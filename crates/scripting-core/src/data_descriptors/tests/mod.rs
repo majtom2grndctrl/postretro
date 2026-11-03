@@ -29,6 +29,7 @@ mod movement_vault;
 mod movement_view_feel;
 mod movement_view_pose;
 mod player_events;
+mod predicate_compare;
 mod reactions;
 mod respawn_args;
 mod sounds;

@@ -920,8 +920,12 @@
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   /** A scalar comparand for UI visibility/selection predicates: number, boolean, or string. Arrays are intentionally excluded from equality predicates. */
   export type PredicateValue = number | boolean | string;
+  /** The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`, `"atLeast"` (>=), `"atMost"` (<=). */
+  export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+  /** A numeric comparison against a Number source. Built by `stateCompare`. */
+  export type PredicateCompare = { op: PredicateCompareOp; value: number };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
   /** Accessibility role override. Valid values: `"tab"`, `"tablist"`, `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`, `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's implicit role. */
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   /** Live-region announcement urgency. Valid values: `"polite"` (default, interrupt less) and `"assertive"` (interrupt sooner). */
@@ -1050,6 +1054,8 @@
   export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build `{ slot, equals }` for scalar state refs. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
+  /** Build a numeric comparison predicate on a Number state ref, e.g. `stateCompare(player.assistProgress, "greaterThan", 0)`. Throws on a non-number ref, an unknown op, or a non-finite `value`. */
+  export function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate;
 
   /** A presentation-cell initial value (`CellInit` wire shapes). */
   type CellInit = number | boolean | string | [number, number, number, number];

@@ -735,6 +735,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         &[
             "bindState",
             "stateEquals",
+            "stateCompare",
             "createLocalState",
             "ui",
             "Switch",

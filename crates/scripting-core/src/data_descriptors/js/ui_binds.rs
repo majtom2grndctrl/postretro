@@ -419,9 +419,57 @@ pub fn predicate_opt_from_js<'js>(
     let Some(pred_obj) = optional_object_js(obj, field)? else {
         return Ok(None);
     };
-    let source = bind_source_from_js(&pred_obj)?;
-    let equals = predicate_value_opt_from_js(&pred_obj, field)?;
-    Ok(Some(Predicate { source, equals }))
+    predicate_from_js(&pred_obj, field).map(Some)
+}
+
+/// Read one predicate object: its source, optional `equals`, and optional
+/// numeric `compare`. Shared by single-predicate fields and `valueText.when`.
+pub fn predicate_from_js<'js>(
+    pred_obj: &Object<'js>,
+    field: &str,
+) -> Result<Predicate, DescriptorError> {
+    let source = bind_source_from_js(pred_obj)?;
+    let equals = predicate_value_opt_from_js(pred_obj, field)?;
+    let compare = predicate_compare_opt_from_js(pred_obj, field)?;
+    Ok(Predicate {
+        source,
+        equals,
+        compare,
+    })
+}
+
+/// Read a predicate's optional `compare: { op, value }`. The op must name a
+/// [`CompareOp`] and `value` must be a number; finiteness and the slot's type
+/// are checked later with the full key path (`validate_predicate_compare`).
+pub fn predicate_compare_opt_from_js<'js>(
+    obj: &Object<'js>,
+    field: &str,
+) -> Result<Option<PredicateCompare>, DescriptorError> {
+    if !obj.contains_key("compare").map_err(js_err)? {
+        return Ok(None);
+    }
+    let raw: JsValue = obj.get("compare").map_err(js_err)?;
+    if raw.is_null() || raw.is_undefined() {
+        return Ok(None);
+    }
+    let compare = Object::from_value(raw).map_err(|_| DescriptorError::InvalidShape {
+        reason: format!("`{field}.compare` must be an `{{ op, value }}` object"),
+    })?;
+    let op: JsValue = compare.get("op").map_err(js_err)?;
+    let op = match op.as_string() {
+        Some(name) => CompareOp::from_name(&name.to_string().map_err(js_err)?),
+        None => None,
+    }
+    .ok_or_else(|| DescriptorError::InvalidShape {
+        reason: unknown_compare_op_reason(field),
+    })?;
+    let value: JsValue = compare.get("value").map_err(js_err)?;
+    let value = value
+        .as_number()
+        .ok_or_else(|| DescriptorError::InvalidShape {
+            reason: format!("`{field}.compare.value` must be a number"),
+        })?;
+    Ok(Some(PredicateCompare { op, value }))
 }
 
 /// Read a predicate's optional `equals` comparand (M13 G2). Number/bool/string

@@ -23,7 +23,7 @@ export type WidgetColor = { number } | ColorToken
 export type WidgetSpacing = number | SpacingToken
 
 --- `fact` is legal only when the container belongs to a presentation template.
-export type Predicate = { slot: string?, ["local"]: string?, fact: string?, equals: any? }
+export type Predicate = { slot: string?, ["local"]: string?, fact: string?, equals: any?, compare: { op: string, value: number }? }
 export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none"
 
 --- A flat descriptor table a container factory produces.
@@ -246,6 +246,24 @@ local function buildPredicate(value: any, field: string, factory: string): any?
       error(`{factory}: \`{field}.equals\` number must be finite`)
     end
     out.equals = e
+  end
+  if value.compare ~= nil then
+    if value.equals ~= nil then
+      error(`{factory}: \`{field}\` cannot carry both \`equals\` and \`compare\``)
+    end
+    local c = value.compare
+    if type(c) ~= "table" then
+      error(`{factory}: \`{field}.compare\` must be an object`)
+    end
+    local op = c.op
+    if op ~= "greaterThan" and op ~= "lessThan" and op ~= "atLeast" and op ~= "atMost" then
+      error(`{factory}: \`{field}.compare.op\` must be one of greaterThan, lessThan, atLeast, atMost`)
+    end
+    local v = c.value
+    if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then
+      error(`{factory}: \`{field}.compare.value\` must be a finite number`)
+    end
+    out.compare = { op = op, value = v }
   end
   return out
 end

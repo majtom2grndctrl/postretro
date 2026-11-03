@@ -3328,8 +3328,11 @@ export const secondWind = defineImpactEvent("second-wind", { tag: "enemy" }, (im
 
 Give `down` the empty `assistable: {}` shown above. The HUD bars bind
 `player.assistProgress` (a "Reviving" bar, `max: 1`) and
-`player.assistReceivedProgress` (a "Being revived" bar, visible while
-`stateEquals(player.lifeState, "down")`), built like the bleed-out bar.
+`player.assistReceivedProgress` (a "Being revived" bar), built like the
+bleed-out bar. Gate each label and bar on its own progress with
+`stateCompare(player.assistProgress, "greaterThan", 0)` and
+`stateCompare(player.assistReceivedProgress, "greaterThan", 0)`, so each shows
+only while a revive is under way.
 
 **Recipe: L4D-style.** Only a teammate revives: no second wind, no bonus, a
 longer hold from farther away.
@@ -4902,23 +4905,47 @@ two places, so the highlight and the announced state can never disagree.
 ### The predicate `bind` — author-wired highlight
 
 A **`Predicate`** is a bind source (a `{ local }` cell or a `{ slot }` store
-reference) plus an optional `equals` comparand. It resolves to `1.0` (true) or
-`0.0` (false):
+reference) plus an optional `equals` comparand or an optional numeric `compare`
+(never both). It resolves to `1.0` (true) or `0.0` (false):
 
-- **No `equals`** — the source must be a boolean cell/slot; the predicate is its
+- **Neither** — the source must be a boolean cell/slot; the predicate is its
   truthiness.
 - **With `equals`** — the resolved value is compared to the comparand (`1.0` iff
   equal). Comparands are **number / boolean / string** only (strings/enums match by
   name); an array/color comparand is a load-time error.
+- **With `compare`** — `{ op, value }` tests a Number source against a finite
+  threshold. `op` is `"greaterThan"`, `"lessThan"`, `"atLeast"` (≥) or `"atMost"`
+  (≤). A missing value, a non-number value, or NaN resolves false.
 
-Construct one with a local-state handle's `.is(v)`, or with `stateEquals(ref, v)`
-for authoritative state refs:
+Construct one with a local-state handle's `.is(v)`, with `stateEquals(ref, v)`
+for authoritative state refs, or with `stateCompare(ref, op, value)` for a
+Number state ref:
 
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
 sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
 stateEquals(opts.muted, true); // { slot: "fixtureOpts.muted", equals: true }
+stateCompare(player.assistProgress, "greaterThan", 0);
+// { slot: "player.assistProgress", compare: { op: "greaterThan", value: 0 } }
 ```
+
+`stateCompare` throws when the ref is not a number ref, the op is unknown, or the
+value is not finite. Loading a tree also rejects a `compare` on an engine slot
+that is not a Number (say, `player.lifeState`), a non-finite threshold, or a
+predicate carrying both `equals` and `compare`. The error names the widget path,
+such as ``UI tree `root`.children[0].visibleWhen.compare``. A comparison reads the
+slot's target value, the same value `stateEquals` and a bound bar read, so a
+revive bar's label can show only while its progress is above 0:
+
+```typescript
+VStack({ visibleWhen: stateCompare(player.assistProgress, "greaterThan", 0) }, [
+  Text({ content: "REVIVING" }),
+  Bar({ bind: bindState(player.assistProgress), max: 1, fill: "ok", background: "panel.default" }),
+]);
+```
+
+In Luau the constructor is `UI.stateCompare(ref, op, value)` from
+`require("postretro/ui")`, with the same ops and the same errors.
 
 A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
 (`Text` / `Panel` / `Bar` / `Button`). The predicate resolves to a `0/1` number

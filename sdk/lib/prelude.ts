@@ -97,7 +97,7 @@ export type {
   LocalStateBundle,
   StateBindOptionsFor,
 } from "./ui/state";
-export { bindState, stateEquals, createLocalState, ui, Switch } from "./ui/state";
+export { bindState, stateEquals, stateCompare, createLocalState, ui, Switch } from "./ui/state";
 
 export type {
   ThemeColorValue,

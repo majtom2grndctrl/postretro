@@ -10605,6 +10605,7 @@ mod tests {
                 local: "tab".into(),
             },
             equals: Some(PredicateValue::String(key.into())),
+            compare: None,
         };
 
         let tab_strip = options_root
@@ -10807,6 +10808,7 @@ mod tests {
         let is = |slot: &str, value: bool| Predicate {
             source: BindSource::Slot { slot: slot.into() },
             equals: Some(PredicateValue::Boolean(value)),
+            compare: None,
         };
         for (id, field, cases) in [
             (
@@ -10993,6 +10995,7 @@ mod tests {
                     slot: "options.windowMode".into(),
                 },
                 equals: Some(PredicateValue::String(value.into())),
+                compare: None,
             };
             let label = display_label
                 .children
@@ -11077,6 +11080,7 @@ mod tests {
                             slot: "window.displayModeCanApply".into(),
                         },
                         equals: Some(PredicateValue::Boolean(!*disabled)),
+                        compare: None,
                     };
                     assert!(
                         control_widgets.iter().any(|widget| match widget {

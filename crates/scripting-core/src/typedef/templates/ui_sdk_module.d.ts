@@ -88,8 +88,12 @@ declare module "postretro/ui" {
   /** Producer-stamped scalar available only while laying out a passive presentation instance. */
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
+  /** The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`, `"atLeast"` (>=), `"atMost"` (<=). */
+  export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+  /** A numeric comparison against a Number source. Built by `stateCompare`. */
+  export type PredicateCompare = { op: PredicateCompareOp; value: number };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
@@ -253,6 +257,8 @@ declare module "postretro/ui" {
   export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
+  /** Build a numeric comparison predicate on a Number state ref, e.g. `stateCompare(player.assistProgress, "greaterThan", 0)`. Throws on a non-number ref, an unknown op, or a non-finite `value`. */
+  export function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
   export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };

@@ -21,7 +21,7 @@ use super::draw::{
     project_quad, project_rect, resolve_panel_fill, resolve_text, style_text_value, style_value,
 };
 use super::node_context::{NodeContext, RingScalar, VisibilityState};
-use super::predicate::resolve_predicate;
+use super::predicate::evaluate_predicate;
 use super::scroll::{ScrollState, scroll_offset};
 use super::ui_tree::UiTree;
 
@@ -468,9 +468,8 @@ fn collect_node(
                     // predicate, so it reads the bound numeric slot via
                     // `style_text_value` (the eased tween display when active).
                     let value = match predicate_bind {
-                        Some(p) => Some(resolve_predicate(
-                            &p.source,
-                            p.equals.as_ref(),
+                        Some(p) => Some(evaluate_predicate(
+                            p,
                             predicate_scope.as_deref(),
                             slot_values,
                             cell_values,

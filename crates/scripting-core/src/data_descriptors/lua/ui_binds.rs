@@ -397,9 +397,52 @@ pub fn predicate_opt_from_lua(
     let Some(pred) = optional_table_lua(table, field)? else {
         return Ok(None);
     };
-    let source = bind_source_from_lua(&pred)?;
-    let equals = predicate_value_opt_from_lua(&pred, field)?;
-    Ok(Some(Predicate { source, equals }))
+    predicate_from_lua(&pred, field).map(Some)
+}
+
+/// Lua twin of [`predicate_from_js`]: read one predicate table.
+pub fn predicate_from_lua(pred: &Table, field: &str) -> Result<Predicate, DescriptorError> {
+    let source = bind_source_from_lua(pred)?;
+    let equals = predicate_value_opt_from_lua(pred, field)?;
+    let compare = predicate_compare_opt_from_lua(pred, field)?;
+    Ok(Predicate {
+        source,
+        equals,
+        compare,
+    })
+}
+
+/// Lua twin of [`predicate_compare_opt_from_js`]: read `compare: { op, value }`.
+pub fn predicate_compare_opt_from_lua(
+    table: &Table,
+    field: &str,
+) -> Result<Option<PredicateCompare>, DescriptorError> {
+    let compare = match table.get::<LuaValue>("compare").map_err(lua_err)? {
+        LuaValue::Nil => return Ok(None),
+        LuaValue::Table(compare) => compare,
+        _ => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}.compare` must be an `{{ op, value }}` object"),
+            });
+        }
+    };
+    let op = match compare.get::<LuaValue>("op").map_err(lua_err)? {
+        LuaValue::String(name) => CompareOp::from_name(&name.to_str().map_err(lua_err)?),
+        _ => None,
+    }
+    .ok_or_else(|| DescriptorError::InvalidShape {
+        reason: unknown_compare_op_reason(field),
+    })?;
+    let value = match compare.get::<LuaValue>("value").map_err(lua_err)? {
+        LuaValue::Integer(i) => i as f64,
+        LuaValue::Number(n) => n,
+        _ => {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{field}.compare.value` must be a number"),
+            });
+        }
+    };
+    Ok(Some(PredicateCompare { op, value }))
 }
 
 /// Lua twin of [`predicate_value_opt_from_js`]: read a predicate's optional

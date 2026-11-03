@@ -37,6 +37,8 @@ pub mod ir {
     mod parity_tests;
     #[cfg(test)]
     pub mod test_scope;
+    #[cfg(test)]
+    mod ui_predicate_parity_tests;
 }
 
 #[path = "ir/scopes.rs"]

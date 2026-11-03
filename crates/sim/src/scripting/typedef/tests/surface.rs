@@ -178,6 +178,7 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "defineUiTree",
         "bindState",
         "stateEquals",
+        "stateCompare",
         "createLocalState",
         "Switch",
         "defineTheme",

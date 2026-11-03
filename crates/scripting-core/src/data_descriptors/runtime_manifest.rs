@@ -120,8 +120,20 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
         }
         Ok(())
     };
+    let one_predicate = |predicate: &Predicate, field: &str| {
+        source(&predicate.source, field)?;
+        match &predicate.compare {
+            Some(compare) => crate::ui::descriptor::validate_predicate_compare(
+                predicate.source.slot(),
+                predicate.equals.is_some(),
+                compare,
+                &format!("{path}.{field}"),
+            ),
+            None => Ok(()),
+        }
+    };
     let predicate = |predicate: &Option<Predicate>, field: &str| match predicate {
-        Some(predicate) => source(&predicate.source, field),
+        Some(predicate) => one_predicate(predicate, field),
         None => Ok(()),
     };
 
@@ -163,8 +175,8 @@ fn validate_widget_sources(widget: &Widget, path: &str, allow_facts: bool) -> Re
             predicate(&button.checked, "checked")?;
             predicate(&button.bind, "bind")?;
             for (index, case) in button.value_text.iter().enumerate() {
-                for condition in &case.when {
-                    source(&condition.source, &format!("valueText[{index}].when"))?;
+                for (when_index, condition) in case.when.iter().enumerate() {
+                    one_predicate(condition, &format!("valueText[{index}].when[{when_index}]"))?;
                 }
             }
             predicate(&button.visible_when, "visibleWhen")

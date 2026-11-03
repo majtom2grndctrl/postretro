@@ -1490,10 +1490,16 @@ export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive condition used by `visibleWhen`, `selected`, and `checked`.
+--- The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`,
+--- `"atLeast"` (>=), `"atMost"` (<=).
+export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost"
+--- A numeric comparison against a Number source. Built by `stateCompare`.
+export type PredicateCompare = { op: PredicateCompareOp, value: number }
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`:
+--- an `equals` comparand or a numeric `compare`, never both.
 --- Stamped facts are accepted only inside `definePresentationTemplate`; ordinary
 --- UI trees reject them during manifest validation.
-export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue?, compare: PredicateCompare? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -1690,6 +1696,8 @@ declare bindState: ((ComputedRef<number>, NumberStateBindOptions?) -> ComputedRe
   & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions)
 --- Build `{ slot, equals }` for scalar state refs.
 declare function stateEquals<T>(ref: ComputedRef<T>, value: T): Predicate
+--- Build `{ slot, compare }` for a Number state ref; errors on a non-number ref, unknown op, or non-finite value.
+declare function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate
 
 --- A presentation-cell handle (`ui.createLocalState`): `:get()` yields a `{ ["local"] }`
 --- bind ref; `:set(v)` emits a `cellWrite` reaction (NEVER `setState`); `:is(v)` produces

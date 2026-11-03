@@ -332,10 +332,15 @@ fn player_death_dev_registration_and_hud_consume_the_authored_policy() {
     let meter = bar(&hud).expect("bleed-out bar exists");
     assert_eq!(meter["bind"]["slot"], "player.lifeStateMs");
     assert_eq!(meter["max"].as_f64(), Some(15000.0));
-    // AC11: "Reviving" on the helper's progress, "Being revived" on the target's.
-    for (tree, slot) in [
-        ("hud.reviving", "player.assistProgress"),
-        ("hud.beingRevived", "player.assistReceivedProgress"),
+    // AC11: "Reviving" on the helper's progress, "Being revived" on the target's;
+    // each label and bar shows only while its progress is above 0.
+    for (tree, slot, label) in [
+        ("hud.reviving", "player.assistProgress", "REVIVING"),
+        (
+            "hud.beingRevived",
+            "player.assistReceivedProgress",
+            "BEING REVIVED",
+        ),
     ] {
         let registered = manifest
             .ui_trees
@@ -347,6 +352,13 @@ fn player_death_dev_registration_and_hud_consume_the_authored_policy() {
         let meter = bar(&json).unwrap_or_else(|| panic!("`{tree}` has a bar"));
         assert_eq!(meter["bind"]["slot"], slot);
         assert_eq!(meter["max"].as_f64(), Some(1.0));
+        let gate = json!({"slot": slot, "compare": {"op": "greaterThan", "value": 0.0}});
+        let root = &json["root"];
+        assert_eq!(root["visibleWhen"], gate, "`{tree}` shows while {slot} > 0");
+        assert_eq!(
+            root["children"][0]["content"], label,
+            "`{tree}` labels its bar `{label}` under the same gate"
+        );
     }
     let down = &states.states["down"];
     assert!(

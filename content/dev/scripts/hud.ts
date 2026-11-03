@@ -10,6 +10,7 @@ import {
   defineUiTree,
   getGameState,
   getDesignTokens,
+  stateCompare,
   stateEquals,
 } from "postretro/ui";
 import { progression } from "./combat-lifecycle";
@@ -319,26 +320,39 @@ export const bleedOutMeterTree = defineUiTree({
   ),
 });
 
-// The Reviving bar is bare: a Predicate cannot test "above 0" on a Number slot,
-// so there is nothing to gate a label on. Its track is transparent, leaving
-// nothing on screen until the helper's progress rises.
 export const revivingMeterTree = defineUiTree({
   name: "hud.reviving",
   alwaysOn: true,
   tree: Tree(
     { anchor: "center", offset: [0, 100] },
-    Bar({
-      bind: bindState(player.assistProgress),
-      max: 1.0,
-      width: 220,
-      height: 12,
-      fill: color.ok,
-      background: [0, 0, 0, 0],
-    }),
+    VStack(
+      {
+        gap: 6,
+        align: "center",
+        visibleWhen: stateCompare(player.assistProgress, "greaterThan", 0),
+      },
+      [
+        Text({
+          content: "REVIVING",
+          color: color.ok,
+          font: font.hud.status,
+          fontSize: 18,
+        }),
+        Bar({
+          bind: bindState(player.assistProgress),
+          max: 1.0,
+          width: 220,
+          height: 12,
+          fill: color.ok,
+          background: color.hud.health.background,
+        }),
+      ],
+    ),
   ),
 });
 
-// The target is down for the whole revive, so its own state gates the label and bar.
+// Shown only while a helper's progress on this player is above 0; the bleed-out
+// meter already covers the rest of the time spent down.
 export const beingRevivedMeterTree = defineUiTree({
   name: "hud.beingRevived",
   alwaysOn: true,
@@ -348,7 +362,7 @@ export const beingRevivedMeterTree = defineUiTree({
       {
         gap: 6,
         align: "center",
-        visibleWhen: stateEquals(player.lifeState, "down"),
+        visibleWhen: stateCompare(player.assistReceivedProgress, "greaterThan", 0),
       },
       [
         Text({

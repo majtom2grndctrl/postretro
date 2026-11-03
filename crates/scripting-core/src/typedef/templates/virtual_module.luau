@@ -68,6 +68,8 @@ export type PostretroUiModule = {
     & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions),
   --- Build a scalar equality predicate for visibility, selection, or checked state.
   stateEquals: <T>(ref: ComputedRef<T>, value: T) -> Predicate,
+  --- Build a numeric comparison predicate on a Number state ref (e.g. assist progress above 0).
+  stateCompare: (ref: ComputedRef<number>, op: PredicateCompareOp, value: number) -> Predicate,
   --- Declare presentation-local cells. Values may be number, boolean, string, or RGBA tuple.
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },

@@ -332,10 +332,7 @@ fn value_text_from_js<'js>(obj: &Object<'js>) -> Result<Vec<ValueTextCase>, Desc
                     Object::from_value(item).map_err(|_| DescriptorError::InvalidShape {
                         reason: format!("`valueText[{i}].when[{j}]` must be a predicate object"),
                     })?;
-                when.push(Predicate {
-                    source: bind_source_from_js(&condition)?,
-                    equals: predicate_value_opt_from_js(&condition, "valueText.when")?,
-                });
+                when.push(predicate_from_js(&condition, "valueText.when")?);
             }
         }
         out.push(ValueTextCase {

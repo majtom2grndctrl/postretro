@@ -286,10 +286,7 @@ fn value_text_from_lua(table: &Table) -> Result<Vec<ValueTextCase>, DescriptorEr
             for j in 1..=(count as i64) {
                 let condition =
                     lua_table(conditions.get(j).map_err(lua_err)?, "`valueText[].when[]`")?;
-                when.push(Predicate {
-                    source: bind_source_from_lua(&condition)?,
-                    equals: predicate_value_opt_from_lua(&condition, "valueText.when")?,
-                });
+                when.push(predicate_from_lua(&condition, "valueText.when")?);
             }
         }
         out.push(ValueTextCase {

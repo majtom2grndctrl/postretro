@@ -298,6 +298,7 @@ const UI_DATA_SCRIPT_FIELDS: &[&str] = &["present"];
 const UI_STATE_MODULE_FIELDS: &[&str] = &[
     "bindState",
     "stateEquals",
+    "stateCompare",
     "createLocalState",
     "ui",
     "Switch",
@@ -345,6 +346,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "getGameState",
     "bindState",
     "stateEquals",
+    "stateCompare",
     "createLocalState",
     "ui",
     "Switch",

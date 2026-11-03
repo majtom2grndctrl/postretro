@@ -496,6 +496,7 @@ mod tests {
                 "getGameState",
                 "bindState",
                 "stateEquals",
+                "stateCompare",
                 "createLocalState",
                 "ui",
                 "Switch",

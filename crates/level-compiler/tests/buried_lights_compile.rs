@@ -1,14 +1,18 @@
 //! Buried-light wiring: a compiled PRL omits the buried light from AlphaLights and the build warns.
 //! See: context/lib/build_pipeline.md §Compiler pipeline (Buried lights)
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::alpha_lights::AlphaLightsSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 /// Quake map units to engine meters.
@@ -106,7 +110,7 @@ fn compile(temp: &TempBuildDir, map_text: &str, rust_log: &str) -> (Output, Path
     let output_path = temp.0.join("buried-light.prl");
     std::fs::write(&input, format!("{map_text}\n")).expect("write fixture map");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", rust_log)
         .arg(&input)
         .arg("-o")

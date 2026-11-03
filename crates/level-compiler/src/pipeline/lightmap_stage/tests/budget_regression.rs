@@ -160,6 +160,7 @@ fn layer_budget_sections_match_pre_change_cold_and_warm() {
         &prims,
         &config(false),
         prepared,
+        None,
     )
     .unwrap();
     let id22 = out.lightmap.section.to_bytes();

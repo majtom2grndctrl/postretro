@@ -24,7 +24,10 @@ use crate::{
 mod animated_atlas_stage;
 mod atlas_stage;
 mod cell_partition;
+mod coverage_proof_stage;
 mod delta_working_set;
+#[cfg(test)]
+pub(crate) mod face_removal_seam;
 mod finalized_publication;
 use delta_working_set::*;
 mod lightmap_pool_gate;
@@ -503,16 +506,16 @@ fn run_after_parsing(
         );
     }
 
-    // Watertightness diagnostic. Surfaces holes in the static world geometry
-    // (faces the clipper dropped, or T-junction cracks) so they can be fixed.
-    // A warning, never a build failure: a compiler bug must not block a level
-    // designer, only become visible. Runs on the pre-exterior-cull face set.
+    // Watertightness diagnostic: edge parity over the pre-exterior-cull face
+    // set. Parity flags spans that are not holes and hides narrow cracks, so
+    // it logs at info; the coverage proof (after atlas preparation) owns the
+    // author-facing hole warning.
     let watertight = partition::check_watertight(&result.faces);
     if watertight.open_edge_count > 0 {
-        log::warn!(
-            "[Compiler] Watertightness: {} open edge(s) in world geometry — possible holes \
-             you can see through. Diagnostic only; the build still succeeds. Sample locations \
-             (world-space meters, showing up to {}):",
+        log::info!(
+            "[Compiler] Watertightness (edge parity): {} odd-covered edge span(s) in world \
+             geometry. A parity diagnostic, not a hole test: the coverage proof reports holes. \
+             Sample locations (world-space meters, showing up to {}):",
             watertight.open_edge_count,
             watertight.samples.len(),
         );
@@ -522,8 +525,8 @@ fn run_after_parsing(
                 &map_data.brush_assembly,
                 &map_data.assemblies,
             ) {
-                log::warn!(
-                    "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {} in group {}",
+                log::info!(
+                    "[Compiler]   odd-covered span near ({:.3}, {:.3}, {:.3}) — near brush {} in group {}",
                     edge.midpoint.x,
                     edge.midpoint.y,
                     edge.midpoint.z,
@@ -531,8 +534,8 @@ fn run_after_parsing(
                     provenance,
                 );
             } else {
-                log::warn!(
-                    "[Compiler]   open edge near ({:.3}, {:.3}, {:.3}) — near brush {}",
+                log::info!(
+                    "[Compiler]   odd-covered span near ({:.3}, {:.3}, {:.3}) — near brush {}",
                     edge.midpoint.x,
                     edge.midpoint.y,
                     edge.midpoint.z,
@@ -577,6 +580,8 @@ fn run_after_parsing(
         &runtime.cells.tree,
         &runtime.cells.exterior_cells,
     );
+    #[cfg(test)]
+    face_removal_seam::remove_faces(&mut geo_result);
     let carried_lights_by_mover = kinematic_geometry::member_lights_by_mover(
         &map_data.kinematic_movers,
         &map_data.carried_light_links,
@@ -1612,6 +1617,12 @@ fn run_after_parsing(
         stage_start,
         !prepared_atlas.charts.is_empty(),
     );
+    let coverage = coverage_proof_stage::run_coverage_proof(&geo_result, &face_brushes, &governor);
+    coverage_proof_stage::warn_coverage_holes(
+        &coverage,
+        &map_data.brush_assembly,
+        &map_data.assemblies,
+    );
 
     // Lightmap residency set (id 51): reads the partition plan's Cells and
     // Portals, the encoded locator, and for teleporter routes the id-55 section
@@ -1681,6 +1692,11 @@ fn run_after_parsing(
         &bvh_primitives,
         &lightmap_config,
         prepared_atlas,
+        Some(lightmap_stage::ReachInputs {
+            tree: &result.tree,
+            exterior: &full_exterior_leaves,
+            holes: coverage.unproven.len(),
+        }),
     )?;
     if args.verbose {
         log::info!("[Compiler] fused lightmap/shadowmask stage returned");

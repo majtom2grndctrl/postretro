@@ -13,7 +13,9 @@ mod hit_test;
 mod occlusion;
 mod pad;
 
-pub(crate) use hit_test::{TRACER_TOLERANCE_METERS, TraceRay, closest_point_on_triangle};
+pub(crate) use hit_test::{
+    TRACER_TOLERANCE_METERS, TraceRay, closest_point_on_triangle, distance_squared_to_triangle,
+};
 #[cfg(test)]
 pub(crate) use hit_test::{with_planted_t, with_tolerance};
 pub(crate) use occlusion::{

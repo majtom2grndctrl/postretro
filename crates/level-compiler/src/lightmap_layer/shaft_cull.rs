@@ -50,11 +50,11 @@ const EMITTER_CLEARANCE: f64 = 5.0;
 
 /// Largest `|dot|` between two chart-frame axes for the slab to hold
 /// lead-ins, whose direction is any world direction.
-const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
+pub(crate) const FRAME_SKEW_LIMIT: f64 = 1.0e-3;
 
 /// Largest distance from 1 of a chart-frame axis's length, for the same
 /// containment.
-const FRAME_NORM_LIMIT: f64 = 1.0e-6;
+pub(crate) const FRAME_NORM_LIMIT: f64 = 1.0e-6;
 
 /// Relative slack on the footprint radius: offsets go through `f32` texel
 /// steps along axes within [`FRAME_NORM_LIMIT`] of unit length.

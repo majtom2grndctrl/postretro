@@ -6,6 +6,8 @@
 //!
 //! See: context/lib/build_pipeline.md §Compiler pipeline (atlas preparation)
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,6 +16,8 @@ use postretro_level_format::SectionId;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use postretro_level_format::{read_container, read_section_data};
+
+use prl_build_support::REACH_VERIFY_ENV;
 
 fn workspace_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -48,6 +52,7 @@ fn compile(map: &str, extra: &[&str]) -> PathBuf {
         .arg("-o")
         .arg(&output)
         .args(extra)
+        .env(REACH_VERIFY_ENV, "1")
         .current_dir(&ws)
         .status()
         .expect("spawn prl-build");
@@ -242,6 +247,7 @@ fn compile_logged(map: &str, dir: &Path, name: &str, extra: &[String]) -> (PathB
         .arg(&output)
         .arg("--verbose")
         .args(extra)
+        .env(REACH_VERIFY_ENV, "1")
         .current_dir(&ws)
         .output()
         .expect("spawn prl-build");

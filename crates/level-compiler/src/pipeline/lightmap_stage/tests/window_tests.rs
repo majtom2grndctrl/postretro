@@ -95,6 +95,7 @@ fn bake_window_with_irradiance(
                 &primitives,
                 &config,
                 prepared,
+                None,
                 window,
             )
             .expect("window fixture bake");
@@ -457,6 +458,7 @@ fn cull_bake(
                 &primitives,
                 &config,
                 prepared,
+                None,
                 &window,
             )
             .expect("cull fixture bake");

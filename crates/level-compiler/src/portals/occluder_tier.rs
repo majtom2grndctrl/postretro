@@ -8,7 +8,8 @@ mod pockets;
 use glam::DVec3;
 
 use super::{
-    MIN_PORTAL_AREA_M2, PlaneEntry, Portal, distribute_winding, make_node_portal, polygon_area,
+    MIN_PORTAL_AREA_M2, PlaneEntry, Portal, PortalTolerance, distribute_winding, make_node_portal,
+    polygon_area,
 };
 use crate::partition::{BspChild, BspTree, CellTree, OccluderTier};
 use openings::openings;
@@ -73,7 +74,9 @@ fn generate_recursive(
     let node = &tree.nodes[node_idx];
     let (normal, distance) = (node.plane_normal, node.plane_distance);
 
-    if let Some(winding) = make_node_portal(normal, distance, ancestor_planes) {
+    if let Some(winding) =
+        make_node_portal(normal, distance, ancestor_planes, PortalTolerance::SHIPPED)
+    {
         let in_tier = |n: usize| tier.node_is_tier[n];
         let mut tier_pairs: Vec<(Vec<DVec3>, BspChild, BspChild)> = Vec::new();
         distribute_winding(
@@ -82,7 +85,7 @@ fn generate_recursive(
             &node.front,
             &node.back,
             &in_tier,
-            MIN_PORTAL_AREA_M2,
+            PortalTolerance::SHIPPED,
             &mut |piece, front, back| {
                 tier_pairs.push((piece.to_vec(), front.clone(), back.clone()))
             },
@@ -102,7 +105,10 @@ fn generate_recursive(
                 &front,
                 &back,
                 &|_| true,
-                FRAGMENT_DUST_AREA_M2,
+                PortalTolerance {
+                    min_area: FRAGMENT_DUST_AREA_M2,
+                    ..PortalTolerance::SHIPPED
+                },
                 &mut |fragment, front_leaf, back_leaf| {
                     let (BspChild::Leaf(f), BspChild::Leaf(b)) = (front_leaf, back_leaf) else {
                         return;

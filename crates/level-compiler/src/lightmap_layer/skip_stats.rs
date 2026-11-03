@@ -1,9 +1,11 @@
-// Test-only tallies of the light-layer bake's exact skips: dropped pairs and
-// each walked chart's shaft-cull tiles.
+// Test-only tallies of the light-layer bake's exact skips: dropped pairs, each
+// walked chart's shaft-cull tiles and texels, and the reach cull's permit probe.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::ray_traversal::Occluder;
 
 /// What one bake's exact skips did, gathered across worker threads. Tests
 /// leak one ([`SkipStats::leak`]) and hand it to the walk through
@@ -15,6 +17,30 @@ pub(crate) struct SkipStats {
     /// Covered texels of clear tiles that verify mode traced.
     verified_texels: AtomicUsize,
     charts: Mutex<Vec<ChartTally>>,
+    /// The stage's lightmap progress, read at each reach note.
+    progress: OnceLock<Arc<AtomicUsize>>,
+    reach_notes: Mutex<Vec<ReachNote>>,
+}
+
+/// Where in a reach-culled pair's work a note was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReachPhase {
+    /// Building a chart's reach mask, inside the first walk that asks.
+    MaskBuild,
+    /// Starting the reach-culled walk of a pair.
+    CulledWalk,
+    /// Starting verify mode's re-walk of that pair.
+    Rewalk,
+}
+
+/// One reach note: the phase, the face, the governor permits the noting
+/// thread held, and the stage progress then, when watched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReachNote {
+    pub(crate) phase: ReachPhase,
+    pub(crate) face: usize,
+    pub(crate) permits: usize,
+    pub(crate) progress: Option<usize>,
 }
 
 /// One walked `(light, chart)`'s tiles, row-major.
@@ -28,6 +54,23 @@ pub(crate) struct ChartTally {
     /// Tiles per row.
     pub(crate) tiles_wide: i32,
     pub(crate) tiles: Vec<TileTally>,
+    /// Whether this walk was the reach-culled one: verify mode's re-walk of
+    /// a culled pair pushes its own tally after it, with this `false`.
+    pub(crate) culled: bool,
+    /// Every interior texel the walk visited, in walk order.
+    pub(crate) texels: Vec<TexelTally>,
+}
+
+/// One texel of a walked chart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TexelTally {
+    pub(crate) texel: (i32, i32),
+    /// Both remembered occluders (shadow, clip) as the walk reached the texel.
+    pub(crate) occluders: [Option<Occluder>; 2],
+    /// The reach cull stored 0 here without tracing.
+    pub(crate) skipped: bool,
+    /// The record's raw visibility; `None` when the texel recorded nothing.
+    pub(crate) visibility: Option<f32>,
 }
 
 /// One tile of a walked chart.
@@ -90,6 +133,32 @@ impl SkipStats {
 
     pub(crate) fn push_chart(&self, chart: ChartTally) {
         self.charts.lock().unwrap().push(chart);
+    }
+
+    /// Read the stage progress behind `completed` at every reach note.
+    pub(crate) fn watch_progress(&self, completed: Arc<AtomicUsize>) {
+        assert!(
+            self.progress.set(completed).is_ok(),
+            "one progress per tally"
+        );
+    }
+
+    pub(crate) fn note_reach(&self, phase: ReachPhase, face: usize) {
+        let note = ReachNote {
+            phase,
+            face,
+            permits: crate::governor::permits_held_on_this_thread(),
+            progress: self
+                .progress
+                .get()
+                .map(|completed| completed.load(Ordering::SeqCst)),
+        };
+        self.reach_notes.lock().unwrap().push(note);
+    }
+
+    /// Every reach note, in the order they were taken.
+    pub(crate) fn reach_notes(&self) -> Vec<ReachNote> {
+        self.reach_notes.lock().unwrap().clone()
     }
 
     pub(crate) fn dropped_pairs(&self) -> usize {

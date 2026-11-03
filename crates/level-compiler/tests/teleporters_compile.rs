@@ -2,12 +2,16 @@
 //! all through the real `prl-build` binary with its stderr captured.
 //! See: context/lib/build_pipeline.md §Compiler pipeline
 
+mod prl_build_support;
+
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::teleporters::{TeleportMode, TeleportersSection};
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 
@@ -102,7 +106,7 @@ fn run(
     let input = temp.0.join("maps").join(format!("{name}.map"));
     let output_path = temp.0.join(format!("{name}.prl"));
     std::fs::write(&input, format!("{map_text}\n")).expect("write fixture map");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .env("RUST_LOG", log)
         .arg(&input)

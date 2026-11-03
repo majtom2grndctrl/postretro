@@ -732,8 +732,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 let prediction_tick = app.run_client_predicted_tick(has_player_pawn, |app| {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
                     app.predict_client_weapon_command(&mut command, input_tick, tick_dt);
+                    let movement = app.client_predict_movement_tick(&command, tick_dt);
                     app.predict_client_assist(&command, input_tick);
-                    app.client_predict_movement_tick(&command, tick_dt)
+                    movement
                 });
                 if let Some(prediction_tick) = prediction_tick {
                     // Predicted movement sounds from the local pawn, swim

@@ -123,6 +123,30 @@ impl ClientReplication {
         out.sort_unstable_by_key(|(entity, _)| *entity);
     }
 
+    /// A remote pawn's position as the interpolation buffer presents it at
+    /// `render_server_tick`, the tick the last frame's remote sampling used;
+    /// with none yet, the newest buffered position, which is what remotes
+    /// present before time sync. The registry transform is no substitute: on
+    /// a snapshot-apply frame it holds the raw newest pose until sampling runs
+    /// after the tick loop. `None` for an unmapped entity or an empty buffer.
+    pub fn remote_assist_position(
+        &self,
+        entity_id: EntityId,
+        render_server_tick: Option<f64>,
+    ) -> Option<glam::Vec3> {
+        let network_id = self.network_id_for_entity(entity_id)?;
+        match render_server_tick {
+            Some(tick) => self
+                .interp
+                .presented_pose(network_id, tick)
+                .map(|pose| pose.transform.position),
+            None => self
+                .interp
+                .newest_transform(network_id)
+                .map(|transform| transform.position),
+        }
+    }
+
     /// The local pawn's pair table as helper, from its newest accepted
     /// record, each entry resolved to its client-local entity. An entry whose
     /// pawn is not yet mapped is left out. Empty before any table arrives.

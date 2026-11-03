@@ -192,3 +192,53 @@ fn remote_assist_pawns_list_every_retained_mapped_pawn_in_entity_order() {
     expected.sort_by_key(|(entity, _)| *entity);
     assert_eq!(out, expected, "the stale entry is cleared");
 }
+
+/// A remote pawn's assist position is the interpolation buffer's pose at the
+/// render tick remote sampling used, the pose sampling writes, even on a
+/// snapshot-apply frame whose registry transform holds the raw newest pose;
+/// before time sync names a render tick it is the newest buffered pose.
+#[test]
+fn remote_assist_position_reads_the_interpolated_pose_not_the_raw_applied_one() {
+    let at = |baseline_id: u32, x: f32| {
+        let mut record = pawn(7, baseline_id, false, 1, true);
+        if let EntityRecord::FullBaseline { components, .. } = &mut record {
+            components[0] = ComponentPayload::Transform(WireTransform {
+                position: [x, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+            });
+        }
+        record
+    };
+    let mut registry = EntityRegistry::new();
+    let mut client = ClientReplication::new();
+    client.apply_snapshot(&mut registry, &snapshot(0, vec![at(1, 0.0)]));
+    client.apply_snapshot(&mut registry, &snapshot(10, vec![at(2, 10.0)]));
+    let entity = client.entity_for_network_id(NetworkId(7)).unwrap();
+    let raw = registry
+        .get_component::<postretro_entities::Transform>(entity)
+        .unwrap()
+        .position;
+    assert_eq!(raw.x, 10.0, "the apply wrote the raw newest pose");
+
+    let interpolated = client.remote_assist_position(entity, Some(3.0)).unwrap();
+    assert!((interpolated.x - 2.0).abs() < 1e-4, "{interpolated:?}");
+    client.sample_into_registry(&mut registry, 3.0, 0.0);
+    let presented = registry
+        .get_component::<postretro_entities::Transform>(entity)
+        .unwrap()
+        .position;
+    assert!(
+        (presented - interpolated).length() < 1e-4,
+        "the pose sampling presents"
+    );
+    assert_eq!(
+        client.remote_assist_position(entity, None).unwrap().x,
+        10.0,
+        "the newest buffered pose before time sync"
+    );
+    assert_eq!(
+        client.remote_assist_position(EntityId::from_raw(999), Some(3.0)),
+        None
+    );
+}

@@ -4649,13 +4649,14 @@ impl App {
                     // as an authoritative host without learning other seats.
                     sync_client_per_owner_projection(&mut slot_table, local_seat);
                 }
-                // A newly armed pawn starts with no hold; then this frame's
-                // host samples correct the helper's prediction, in order.
-                if apply_outcome.armed_local_pawn.is_some() {
-                    self.client_assist.reset();
-                }
-                self.client_assist
-                    .consume_samples(&apply_outcome.assist_progress_samples, replication);
+                self.client_assist.consume_receive(
+                    apply_outcome
+                        .armed_local_pawn
+                        .as_ref()
+                        .map(|armed| armed.entity_id),
+                    &apply_outcome.assist_progress_samples,
+                    replication,
+                );
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
                         .as_deref()

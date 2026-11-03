@@ -30,9 +30,10 @@ struct Anchor {
 pub(super) struct ReceivedProgressStream {
     /// The newest sample and its server tick.
     anchor: Option<Anchor>,
-    /// Progress per server tick; 0 while samples show raw.
+    /// Progress per server tick; 0 while the stream does not extrapolate.
     slope: f64,
-    /// Received required ticks of 0 or 1: each sample shows raw.
+    /// Received required ticks of 0 or 1: no line to extrapolate (see
+    /// `accept_without_slope`).
     raw: bool,
     displayed: Option<f64>,
     /// The sample timeline at the last advance.
@@ -41,7 +42,8 @@ pub(super) struct ReceivedProgressStream {
 
 impl ReceivedProgressStream {
     /// Take one committed sample with the received required ticks the same
-    /// snapshot carried. The first matching row applies.
+    /// snapshot carried. The first matching row of the received-stream table
+    /// applies.
     pub(super) fn accept(&mut self, tick: u32, sample: f32, required_ticks: u32) {
         if !sample.is_finite() {
             return;
@@ -52,25 +54,42 @@ impl ReceivedProgressStream {
             tick: f64::from(tick),
             value,
         });
-        // Row 1: nothing to divide by; show the sample raw.
         if required_ticks <= 1 {
-            self.raw = true;
-            self.slope = 0.0;
-            self.displayed = Some(value);
+            self.accept_without_slope(previous, value);
             return;
         }
         self.raw = false;
         self.slope = increment(required_ticks) as f64 / PROGRESS_UNIT as f64;
         match (previous, self.displayed) {
-            // Row 2: the stream's first sample, or an onset after a 0.
+            // The stream's first sample, or an onset after a 0: show it at once.
             (None, _) | (_, None) => self.displayed = Some(value),
             (Some(previous), _) if previous <= 0.0 && value > 0.0 => self.displayed = Some(value),
-            // Row 3: a step down shows at once.
+            // A sample below its predecessor shows at once.
             (Some(previous), _) if value < previous => self.displayed = Some(value),
-            // Rows 4 and 5: anchor only; the advance rises toward the line or
-            // holds until it overtakes the display.
+            // At or above its predecessor: anchor only; the advance rises
+            // toward the line, or holds until it overtakes the display.
             _ => {}
         }
+    }
+
+    /// Received required ticks of 0 or 1 give no usable slope: 0 means the
+    /// helper is not advancing, and 1 fills the bar in a single server tick,
+    /// so twice the slope bounds no rise worth extrapolating. The display
+    /// never extrapolates, and it still never steps down without a lower
+    /// sample: an onset or a sample below its predecessor shows at once; any
+    /// other sample holds the display, or lifts it at once to a higher
+    /// sample, since a rise with no rate to pace it would otherwise leave the
+    /// bar below a host value it has received.
+    fn accept_without_slope(&mut self, previous: Option<f64>, value: f64) {
+        self.raw = true;
+        self.slope = 0.0;
+        let shown = match (previous, self.displayed) {
+            (None, _) | (_, None) => value,
+            (Some(previous), _) if previous <= 0.0 && value > 0.0 => value,
+            (Some(previous), _) if value < previous => value,
+            (_, Some(displayed)) => displayed.max(value),
+        };
+        self.displayed = Some(shown);
     }
 
     /// The line at timeline time `timeline`: flat at 0 for an anchor of 0,
@@ -84,7 +103,8 @@ impl ReceivedProgressStream {
         Some((anchor.value + self.slope * (tick - anchor.tick)).min(1.0))
     }
 
-    /// Row 6, once per client frame on the shared sample timeline: rise
+    /// The timeline advance, once per client frame on the shared sample
+    /// timeline: rise
     /// toward a line above the display by at most twice the slope times the
     /// advance; hold under a line below it. With no timeline the display holds.
     pub(super) fn advance(&mut self, timeline: Option<f64>) {

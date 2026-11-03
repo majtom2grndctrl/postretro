@@ -175,8 +175,9 @@ fn received_stream_o40_switches_slope_when_received_required_ticks_change() {
     );
 }
 
-/// Received-stream row 1: received required ticks of 0 or 1 show each sample
-/// raw, and nothing extrapolates or divides by zero.
+/// Received-stream row 1: under received required ticks of 0 or 1 nothing
+/// extrapolates; the first sample and a sample below its predecessor show at
+/// once.
 #[test]
 fn received_stream_row1_zero_or_one_required_ticks_shows_samples_raw() {
     for n in [0, 1] {
@@ -187,6 +188,52 @@ fn received_stream_row1_zero_or_one_required_ticks_shows_samples_raw() {
         assert_eq!(stream.displayed, Some(f64::from(0.4_f32)));
         stream.accept(4, 0.2, n);
         assert_eq!(stream.displayed, Some(f64::from(0.2_f32)));
+    }
+}
+
+/// Received-stream row 1 after extrapolation: received required ticks fall
+/// to 0 (a stalled pair) or 1 mid-assist while the display stands above the
+/// newest sample. A sample at or above its predecessor never steps the
+/// display down; a higher sample lifts it at once, since no slope paces the
+/// rise; only a sample below its predecessor lowers it.
+// Regression: row 1 showed every sample raw, stepping the bar down below the
+// extrapolated value without a lower sample.
+#[test]
+fn received_stream_row1_switch_from_extrapolating_to_raw_never_steps_down() {
+    for n in [0, 1] {
+        let mut stream = ReceivedProgressStream::default();
+        let samples = hold(SLOW, 0, 0, 20);
+        run(&mut stream, 0.0, 22.0, &samples);
+        let extrapolated = stream.displayed.unwrap();
+        let newest = f64::from(progress(SLOW, 20));
+        assert!(extrapolated > newest, "the line ran ahead of the samples");
+
+        // The same value again under the stalled count: hold, never extrapolate.
+        stream.accept(22, progress(SLOW, 20), n);
+        assert_eq!(stream.displayed, Some(extrapolated));
+        for frame in 0..20 {
+            stream.advance(Some(22.0 + f64::from(frame) * FRAME));
+            assert_eq!(stream.displayed, Some(extrapolated));
+        }
+        // A sample above the predecessor but below the display still holds.
+        let between = ((newest + extrapolated) / 2.0) as f32;
+        stream.accept(24, between, n);
+        assert_eq!(stream.displayed, Some(extrapolated));
+        // A sample above the display shows at once.
+        stream.accept(26, 0.9, n);
+        assert_eq!(stream.displayed, Some(f64::from(0.9_f32)));
+        // Only a sample below its predecessor lowers it.
+        stream.accept(28, 0.5, n);
+        assert_eq!(stream.displayed, Some(f64::from(0.5_f32)));
+        // Back on a real slope, the stream rises from there under the
+        // ordinary rows.
+        stream.accept(30, 0.5, SLOW);
+        stream.advance(Some(30.0));
+        stream.advance(Some(31.0));
+        let risen = stream.displayed.unwrap();
+        assert!(
+            risen >= f64::from(0.5_f32) && risen <= f64::from(0.5_f32) + 2.0 * slope(SLOW) + 1e-9
+        );
     }
 }
 

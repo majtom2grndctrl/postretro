@@ -2,7 +2,7 @@
 // registry and replication, sample consumption, and the per-role projection.
 // See: context/lib/networking.md §What gates, and what replicates instead
 
-use postretro_entities::{EntityRegistry, Transform};
+use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{Capability, PlayerMovementComponent};
 
 use super::{ClientAssist, UiProjection};
@@ -29,11 +29,13 @@ fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
     })
 }
 
-/// Every remote pawn with retained facts, at its interpolated pose, with its
-/// pair-table entry when one has arrived.
+/// Every remote pawn with retained facts, at its interpolated pose as of
+/// `render_server_tick`, with its pair-table entry when one has arrived. Every
+/// candidate reads the same source, whether or not a snapshot applied this
+/// frame.
 fn gather_candidates(
     replication: &ClientReplication,
-    registry: &EntityRegistry,
+    render_server_tick: Option<f64>,
     helper: &AssistHelper,
     pawns: &mut Vec<(postretro_entities::EntityId, netcode::RemoteAssistFacts)>,
     out: &mut Vec<AssistCandidate>,
@@ -48,7 +50,7 @@ fn gather_candidates(
         if *id == helper.id {
             return None;
         }
-        let position = registry.get_component::<Transform>(*id).ok()?.position;
+        let position = replication.remote_assist_position(*id, render_server_tick)?;
         Some(AssistCandidate {
             id: *id,
             position,
@@ -76,24 +78,26 @@ pub(crate) struct Scratch {
 }
 
 impl ClientAssist {
-    /// Consume the receive step's samples, after it, in order. Reads the
-    /// current pair table only when a sample arrived.
-    pub(crate) fn consume_samples(
+    /// After the receive step: a newly armed local pawn starts with no hold,
+    /// then this frame's host samples correct the prediction in order. Every
+    /// applied local-pawn record reports its pawn as armed, so only a change of
+    /// pawn resets. Reads the current pair table only when a sample arrived.
+    pub(crate) fn consume_receive(
         &mut self,
+        armed_pawn: Option<EntityId>,
         samples: &[AssistProgressSample],
         replication: &ClientReplication,
     ) {
-        if samples.is_empty() {
-            return;
-        }
-        self.apply_samples(samples, &replication.assist_pair_table());
+        self.absorb_receive(armed_pawn, samples, || replication.assist_pair_table());
     }
 }
 
 impl crate::App {
     /// The client step for one forward-predicted tick, inside the `predict`
-    /// closure beside `predict_client_weapon_command`, with that tick's
-    /// command and input tick. Own pawn only; never during reconcile replay.
+    /// closure after `client_predict_movement_tick`, with that tick's command
+    /// and input tick, so the helper stands where this tick's movement put it,
+    /// as the host's pass runs after movement. Own pawn only; never during
+    /// reconcile replay.
     pub(crate) fn predict_client_assist(
         &mut self,
         command: &crate::sim::SimCommand,
@@ -116,7 +120,7 @@ impl crate::App {
         if command.assist_held {
             gather_candidates(
                 replication,
-                &registry,
+                self.remote_player_presentation.render_server_tick,
                 &helper,
                 &mut scratch.pawns,
                 &mut scratch.candidates,

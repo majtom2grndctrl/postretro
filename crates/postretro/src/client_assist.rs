@@ -41,6 +41,17 @@ struct Record {
     increment: u64,
 }
 
+/// A host value the bar showed while the step held no target of its own (a
+/// rebase onto a no-target tick, or a follow exit whose kept target the step
+/// may not choose again): `progress` as of client tick `tick`. The step's next
+/// acquisition or switch reset continues from it instead of from 0, so the bar
+/// never drops below a host value it already showed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Carry {
+    tick: u32,
+    progress: u64,
+}
+
 /// The owning client's assist step state for its own pawn as helper.
 #[derive(Debug, Default)]
 pub(crate) struct ClientAssist {
@@ -71,6 +82,11 @@ pub(crate) struct ClientAssist {
     records: VecDeque<Record>,
     /// The newest host sample, for an abstention's resume.
     newest_sample: Option<AssistProgressSample>,
+    /// A host value to continue from across the next acquisition or switch.
+    carry: Option<Carry>,
+    /// The local pawn the last applied record armed. Every applied local-pawn
+    /// record reports its pawn, so only a different pawn clears the hold.
+    armed_pawn: Option<EntityId>,
     /// Per-tick candidate buffers; kept across resets.
     scratch: glue::Scratch,
 }
@@ -96,8 +112,12 @@ fn sample_units(progress: f32) -> u64 {
 }
 
 /// Whether an assistable pawn with no pair-table entry lies within the cap and
-/// no farther than the target the step would otherwise choose.
+/// no farther than the target the step would otherwise choose. A helper whose
+/// state forbids `use` chooses no target at all, so it never abstains.
 fn abstains(helper: &AssistHelper, candidates: &[AssistCandidate]) -> bool {
+    if !helper.permits_use {
+        return false;
+    }
     let chosen = assist::assist_candidate(helper, candidates)
         .map(|target| helper.position.distance(target.position));
     candidates.iter().any(|candidate| {
@@ -126,6 +146,27 @@ impl ClientAssist {
         };
     }
 
+    /// After the receive step: reset when the armed local pawn changes, then
+    /// consume this frame's host samples in order. `pair_table` is read only
+    /// when a sample arrived.
+    pub(crate) fn absorb_receive(
+        &mut self,
+        armed_pawn: Option<EntityId>,
+        samples: &[AssistProgressSample],
+        pair_table: impl FnOnce() -> Vec<AssistPairEntry>,
+    ) {
+        if let Some(pawn) = armed_pawn
+            && self.armed_pawn != Some(pawn)
+        {
+            self.reset();
+            self.armed_pawn = Some(pawn);
+        }
+        if samples.is_empty() {
+            return;
+        }
+        self.apply_samples(samples, &pair_table());
+    }
+
     /// One forward-predicted tick, never a reconcile replay: run the client
     /// step for the local pawn as helper over `candidates` (the remote pawns,
     /// with `pair` from the host's pair table, `None` where no entry has
@@ -149,6 +190,7 @@ impl ClientAssist {
             return;
         }
         let resuming = std::mem::take(&mut self.abstaining) && held;
+        let previous_target = self.target;
         let outcome = assist::step(&AssistStepInput {
             runner: AssistRunner::Client,
             helper,
@@ -185,8 +227,11 @@ impl ClientAssist {
             0
         };
         if resuming && outcome.row == AssistRow::Advance {
+            self.carry = None;
             self.resume_from_newest_sample(tick, increment);
         }
+        let acquired = outcome.step_reset && outcome.target != previous_target;
+        self.continue_carry(outcome.row, acquired, tick, increment);
         self.advanced = outcome.row == AssistRow::Advance && self.progress < PROGRESS_UNIT;
         if self.advanced {
             self.last_increment = increment;
@@ -220,6 +265,28 @@ impl ClientAssist {
             .saturating_add(increment.saturating_mul(advancing))
             .min(PROGRESS_UNIT);
         self.latched = self.progress >= PROGRESS_UNIT;
+    }
+
+    /// Hold a carried host value through ticks with no target, and continue
+    /// from it on the tick the step acquires or switches to a target, adding
+    /// that target's increment for each tick since the carry. Any other row
+    /// ends the carry: a release, a latch, or an advance on the kept target.
+    fn continue_carry(&mut self, row: AssistRow, acquired: bool, tick: u32, increment: u64) {
+        let Some(carry) = self.carry else {
+            return;
+        };
+        match row {
+            AssistRow::NoTarget => self.progress = carry.progress,
+            AssistRow::Advance if acquired => {
+                self.carry = None;
+                self.progress = carry
+                    .progress
+                    .saturating_add(increment.saturating_mul(ticks_between(carry.tick, tick)))
+                    .min(PROGRESS_UNIT);
+                self.latched = self.progress >= PROGRESS_UNIT;
+            }
+            _ => self.carry = None,
+        }
     }
 
     /// The increment of the current target's pair in the current table: the
@@ -264,6 +331,12 @@ impl ClientAssist {
             .min(PROGRESS_UNIT);
         self.following = false;
         self.latched = false;
+        // The host accumulates on a target the step may not choose again: its
+        // next switch continues from this value rather than from 0.
+        self.carry = Some(Carry {
+            tick: self.last_tick.unwrap_or(sample.acked_tick),
+            progress: self.progress,
+        });
     }
 
     /// The correction table, rows 2–5, against the record at the sample's
@@ -286,6 +359,7 @@ impl ClientAssist {
             self.latched = true;
             self.following = true;
             self.records.clear();
+            self.carry = None;
             return;
         }
         self.records.drain(..index);
@@ -308,6 +382,13 @@ impl ClientAssist {
         }
         self.progress = progress;
         self.latched = progress >= PROGRESS_UNIT;
+        // Records since the step's last reset share its target state. With no
+        // target the host is accumulating on one the step has not acquired;
+        // the acquisition continues from the sample instead of from 0.
+        self.carry = self.target.is_none().then_some(Carry {
+            tick: sample.acked_tick,
+            progress: units,
+        });
     }
 }
 

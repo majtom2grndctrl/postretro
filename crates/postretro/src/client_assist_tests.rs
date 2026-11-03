@@ -714,3 +714,203 @@ fn client_assist_listen_host_and_single_player_display_rows() {
     assert_eq!(project(idle, 0.5, 0.25), 0.25);
     assert_eq!(project(Row6Record::default(), 0.9, 0.0), 0.0);
 }
+
+/// Every applied local-pawn record (each delta and held-baseline resend)
+/// reports its pawn as armed. Consecutive records for the same pawn keep the
+/// hold: its prediction, records and latch; only a different pawn resets.
+// Regression: every snapshot's re-arm reset the prediction about 30 times a
+// second.
+#[test]
+fn client_assist_rearming_the_same_pawn_keeps_the_hold_and_a_new_pawn_resets() {
+    let pawn = id(HELPER);
+    let mut rig = Rig::on_target(SIX);
+    rig.assist.absorb_receive(Some(pawn), &[], Vec::new);
+    let last = rig.hold(SIX);
+    assert!(rig.assist.latched, "a completed prediction latches");
+    let records = rig.assist.records.clone();
+    assert!(!records.is_empty());
+    let table = rig.table();
+    for ack in [last - 3, last - 2] {
+        rig.assist.absorb_receive(
+            Some(pawn),
+            &[AssistProgressSample {
+                acked_tick: ack,
+                progress: host(SIX, u64::from(ack - (last - 5)) + 1),
+            }],
+            || table.clone(),
+        );
+        rig.assist
+            .absorb_receive(Some(pawn), &[], || unreachable!());
+    }
+    assert_eq!(rig.assist.progress, U);
+    assert!(rig.assist.latched);
+    assert_eq!(rig.shown(0.0, 0.0), 1.0);
+    assert_eq!(
+        rig.assist.records.back(),
+        records.back(),
+        "the newest record survives"
+    );
+
+    let other = EntityId::from_raw(HELPER + 100);
+    rig.assist.absorb_receive(Some(other), &[], Vec::new);
+    assert_eq!(rig.assist.progress, 0);
+    assert!(!rig.assist.latched);
+    assert!(rig.assist.records.is_empty());
+}
+
+/// Track every bar value a frame shows, asserting it never drops below the
+/// highest host sample it already showed.
+struct Shown {
+    host_floor: f32,
+    values: Vec<f32>,
+}
+
+impl Shown {
+    fn new() -> Self {
+        Self {
+            host_floor: 0.0,
+            values: Vec::new(),
+        }
+    }
+
+    fn frame(&mut self, rig: &Rig) {
+        let shown = rig.shown(0.0, 0.0);
+        assert!(
+            shown + 1e-6 >= self.host_floor,
+            "the bar dropped below a host value it showed: {shown} < {} ({:?})",
+            self.host_floor,
+            self.values
+        );
+        self.values.push(shown);
+    }
+
+    fn showed_host(&mut self, rig: &Rig, sample: f32) {
+        let shown = rig.shown(0.0, 0.0);
+        if shown + 1e-6 >= sample {
+            self.host_floor = self.host_floor.max(sample);
+        }
+        self.frame(rig);
+    }
+}
+
+/// Correction row 5 then the step's acquisition (O32, O43): samples above 0
+/// acknowledging ticks on which the step held no target rebase onto the host
+/// value; the ticks still without a target hold it, and the acquisition
+/// continues from it rather than resetting to 0. The bar never drops below a
+/// host value it showed.
+// Regression: the acquisition reset discarded the rebase and dropped the bar.
+#[test]
+fn client_assist_rebase_on_no_target_ticks_survives_the_acquisition() {
+    let mut candidate = downed(A, 1.0, pair(180));
+    candidate.assistable = false;
+    let mut rig = Rig::new(vec![candidate]);
+    let mut shown = Shown::new();
+    // Each no-target tick is a step reset, so only the newest one keeps a
+    // record for a sample to find.
+    let mut ack = rig.hold(4);
+    shown.frame(&rig);
+    for k in 2..5 {
+        let sample = host(180, k);
+        rig.sample(ack, sample);
+        shown.showed_host(&rig, sample);
+        ack = rig.tick(true);
+        shown.frame(&rig);
+    }
+    assert_eq!(shown.host_floor, host(180, 4));
+    // The retained bool arrives: the step acquires A and continues from the
+    // newest host value plus A's increment per tick since it.
+    rig.candidates[0].assistable = true;
+    let acquired = rig.tick(true);
+    shown.frame(&rig);
+    assert_eq!(
+        rig.assist.progress,
+        sample_units(host(180, 4)) + increment(180) * u64::from(acquired - (ack - 1))
+    );
+    for _ in 0..4 {
+        rig.tick(true);
+        shown.frame(&rig);
+    }
+    assert!(
+        shown.values.windows(2).all(|pair| pair[1] >= pair[0]),
+        "{:?}",
+        shown.values
+    );
+    // A host 0 acknowledging a carried no-target tick still drops the bar.
+    let mut dropped = Rig::new(vec![{
+        let mut unknown = downed(A, 1.0, pair(180));
+        unknown.assistable = false;
+        unknown
+    }]);
+    let newest = dropped.hold(4);
+    dropped.sample(newest, host(180, 3));
+    let carried = dropped.tick(true);
+    dropped.sample(carried, 0.0);
+    assert_eq!(dropped.state(), ClientDisplay::Following);
+}
+
+/// Follow row 2 then a target switch (O47, O43): the host sample above 0
+/// ends follow onto a value the step continues from when its interpolated
+/// view then chooses a different target, so the switch reset never discards
+/// it and the bar never drops below the host value.
+// Regression: the switch reset dropped the follow exit's rebase to 0.
+#[test]
+fn client_assist_follow_exit_onto_a_different_target_keeps_the_host_value() {
+    let mut rig = Rig::new(vec![downed(A, 1.0, pair(180)), downed(B, 1.4, pair(60))]);
+    let last = rig.hold(5);
+    rig.sample(last, 0.0);
+    assert_eq!(rig.state(), ClientDisplay::Following);
+    // The host moves to B, which the client's view will choose next.
+    rig.candidates[1].position = Vec3::new(0.5, 0.0, 0.0);
+    let resumed = rig.hold(3) - 2;
+    assert_eq!(rig.assist.target, Some(id(A)), "following keeps A");
+    let mut shown = Shown::new();
+    let sample = host(60, 2);
+    rig.sample(resumed + 1, sample);
+    assert_ne!(rig.state(), ClientDisplay::Following);
+    shown.showed_host(&rig, sample);
+    let before = rig.assist.progress;
+    let switched = rig.tick(true);
+    shown.frame(&rig);
+    assert_eq!(rig.assist.target, Some(id(B)));
+    assert_eq!(rig.assist.progress, before + increment(60));
+    assert!(switched > resumed);
+    for _ in 0..4 {
+        rig.tick(true);
+        shown.frame(&rig);
+    }
+    assert!(
+        shown.values.windows(2).all(|pair| pair[1] >= pair[0]),
+        "{:?}",
+        shown.values
+    );
+}
+
+/// A helper whose state forbids `use` chooses no target, so an unknown
+/// assistable pawn beside it causes no abstention.
+#[test]
+fn client_assist_helper_without_use_never_abstains() {
+    let mut rig = Rig::new(vec![downed(UNKNOWN, 0.5, None)]);
+    let mut helper = Rig::helper();
+    helper.permits_use = false;
+    rig.assist
+        .predict_tick(rig.tick, true, helper, &rig.candidates.clone());
+    assert_ne!(rig.state(), ClientDisplay::Abstaining);
+    assert_eq!(rig.shown(0.5, 0.4), 0.0, "the prediction, not host samples");
+    rig.tick(true);
+    assert_eq!(rig.state(), ClientDisplay::Abstaining, "with `use` it does");
+}
+
+/// The client step runs after this tick's movement prediction inside the
+/// `predict` closure, so the helper stands where the host's pass, which runs
+/// after movement, sees it.
+#[test]
+fn client_assist_step_runs_after_movement_prediction() {
+    let frame_loop = include_str!("frame_loop/mod.rs");
+    let movement = frame_loop
+        .find("app.client_predict_movement_tick(&command, tick_dt)")
+        .expect("the predict closure runs movement prediction");
+    let assist = frame_loop
+        .find("app.predict_client_assist(&command, input_tick)")
+        .expect("the predict closure runs the assist step");
+    assert!(movement < assist, "assist must follow movement prediction");
+}

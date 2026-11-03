@@ -98,14 +98,14 @@ Row ids are R-prefixed so they do not collide with `index.md`'s ACs.
   - **Result:** **pass** (full workspace suite green, 14,278 tests, after a one-test fix). Verified by grep: no spec ID cites this work in non-test `crates/**` comments, `content/`, or `sdk/` (the only `E18` hits are pre-existing, unrelated timed-reaction and trap fixtures; other `R<n>` hits are hardware button names and a lightmap metric), and `docs/` has no `cargo run -p xtask`.
 
 ### Manual
-- [ ] **M1**: add this line to `manual-proof.md`. In a two-seat run at 150 ms RTT, on both the host and the client seat:
+- [x] **M1**: add this line to `manual-proof.md`. In a two-seat run at 150 ms RTT, on both the host and the client seat:
   - a downed teammate shows a marker at any range and through walls;
   - "Hold [E] to revive" appears within 1.5 m and goes away past it;
   - after gamepad input, the glyph switches to the west button;
   - the marker goes away when the teammate is revived or bleeds out;
   - a downed player never sees a marker on themselves;
   - with both players down, each sees the other's marker with no prompt.
-  - **Result:** **outstanding: owner playtest** with `POSTRETRO_NET_LAG=75`. Notes: check eye-level placement while crouched, now that main's capsule-sole mesh seating has merged in. A marker may appear before the body visibly falls, which is expected at the interpolation delay.
+  - **Result:** **pass** (owner playtest on a local machine, 2026-11-03, tip `e9b861e9`; owner report: "looked great"). Platform and Network-tab profile were not recorded. Notes: check eye-level placement while crouched, now that main's capsule-sole mesh seating has merged in. A marker may appear before the body visibly falls, which is expected at the interpolation delay.
 
 ## Path
 

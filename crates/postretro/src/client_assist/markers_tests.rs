@@ -1,7 +1,7 @@
 // The revive-marker producer on a connected client, over real retained remote
 // assist facts, entity mappings, interpolation buffers and pair table. Row ids
 // name the acceptance rows of
-// context/plans/in-progress/E18--player-revive-assist/addendum-revive-marker.md.
+// context/plans/done/E18--player-revive-assist/addendum-revive-marker.md.
 
 use glam::{Mat4, Vec3};
 use postretro_entities::{EntityId, EntityRegistry, PresentationFact, PresentationTemplateHandle};

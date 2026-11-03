@@ -2,7 +2,7 @@
 // on each event that changes what a glyph draws: a rebinding, a device-family
 // switch, art that finishes loading after install, and a template-only reload.
 // Row ids name the acceptance rows of
-// context/plans/in-progress/E18--player-revive-assist/addendum-revive-marker.md.
+// context/plans/done/E18--player-revive-assist/addendum-revive-marker.md.
 
 use gilrs::Button;
 use postretro_ui::descriptor::Widget;

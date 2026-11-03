@@ -1,6 +1,6 @@
 // The client assist step, its correction and follow tables, and the display
 // rows, driven directly. Row ids name Task 2b's Orderings rows of
-// context/plans/in-progress/E18--player-revive-assist (and the bar halves of
+// context/plans/done/E18--player-revive-assist (and the bar halves of
 // Task 2a's rows).
 use std::collections::HashMap;
 

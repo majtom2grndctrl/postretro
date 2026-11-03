@@ -2,7 +2,7 @@
 //! dev mod's two-seat production tick loop: registry life states, each pawn's
 //! `assistable` bool and the pair values the real assist pass evaluated. Row ids
 //! name the acceptance rows of
-//! context/plans/in-progress/E18--player-revive-assist/addendum-revive-marker.md.
+//! context/plans/done/E18--player-revive-assist/addendum-revive-marker.md.
 //!
 //! See: context/lib/ui.md §1 · context/lib/scripting.md §12 (Assist)
 use super::fluids_swim_surface_tests::dev_manifest;

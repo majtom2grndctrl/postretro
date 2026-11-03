@@ -60,14 +60,11 @@ fn sim_command(snapshot: &ActionSnapshot) -> postretro_sim::sim::SimCommand {
     crate::build_sim_command(
         snapshot,
         &camera,
-        false,
-        false,
-        false,
-        false,
-        false,
-        matches!(snapshot.button(Action::Use), ButtonState::Pressed),
-        false,
-        snapshot.button(Action::Assist).is_active(),
+        crate::sim_intents::SimIntents {
+            use_: matches!(snapshot.button(Action::Use), ButtonState::Pressed),
+            assist: snapshot.button(Action::Assist).is_active(),
+            ..Default::default()
+        },
     )
 }
 

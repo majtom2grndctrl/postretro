@@ -144,14 +144,7 @@ fn neutral_input(camera: &crate::camera::Camera) -> MovementInput {
     crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         camera,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     )
     .movement
 }
@@ -1242,14 +1235,7 @@ fn teleport_same_tick_yaw_reaches_presentation_aims_and_a_remote_start_aim() {
     let mut command = crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     );
     let local_command = command.clone();
     let start = ActivationToken {

@@ -650,14 +650,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let mut command = build_sim_command(
                 snapshot,
                 &app.camera,
-                crouch_intent,
-                sprint_intent,
-                dash_pressed,
-                shoot_pressed,
-                false,
-                use_pressed,
-                drop_pressed,
-                assist_held,
+                crate::sim_intents::SimIntents {
+                    crouch: crouch_intent,
+                    sprint: sprint_intent,
+                    dash: dash_pressed,
+                    shoot: shoot_pressed,
+                    use_: use_pressed,
+                    drop: drop_pressed,
+                    assist: assist_held,
+                    ..Default::default()
+                },
             );
             command.select_slot = select_slot;
             let input_tick = netcode::client_peek_next_command_tick(

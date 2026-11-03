@@ -44,6 +44,7 @@ mod input;
 mod weapon_observers;
 // Level-load stages on the engine load pool: prep from the staged parse.
 mod level_load;
+mod sim_intents;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
@@ -1480,21 +1481,22 @@ fn local_wieldable_occupancy(
     (occupied, active)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
-    crouch_intent: bool,
-    sprint_intent: bool,
-    dash_pressed: bool,
-    shoot_pressed: bool,
-    select_pressed: bool,
-    use_pressed: bool,
-    drop_pressed: bool,
-    assist_held: bool,
+    intents: sim_intents::SimIntents,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
-    let sprint = sprint_intent;
+    let sim_intents::SimIntents {
+        crouch: crouch_intent,
+        sprint,
+        dash: dash_pressed,
+        shoot: shoot_pressed,
+        select: select_pressed,
+        use_: use_pressed,
+        drop: drop_pressed,
+        assist: assist_held,
+    } = intents;
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
     let select_slot = select_pressed
@@ -9363,14 +9365,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    crouch_intent,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        crouch: crouch_intent,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9405,14 +9403,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    dash_pressed,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        dash: dash_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9442,14 +9436,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    false,
-                    shoot_pressed,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        shoot: shoot_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9480,7 +9470,9 @@ mod tests {
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
                 build_sim_command(
-                    &snapshot, &camera, false, false, false, false, false, false, false, false,
+                    &snapshot,
+                    &camera,
+                    crate::sim_intents::SimIntents::default(),
                 )
             })
             .collect();
@@ -9509,14 +9501,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    drop_pressed,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        drop: drop_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();

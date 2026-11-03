@@ -132,14 +132,10 @@ fn assist_unload_level_clears_progress_and_keeps_the_bound_table() {
     let command = crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(glam::Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        true,
+        crate::sim_intents::SimIntents {
+            assist: true,
+            ..Default::default()
+        },
     );
     {
         let session = app.session.as_mut().expect("test app session installed");

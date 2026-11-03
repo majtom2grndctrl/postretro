@@ -55,8 +55,8 @@ mod multi_layer_text_golden_test;
 mod ring_composition_test;
 
 /// Headless GPU proof for `AnchoredTree.background`: a striped image drawn
-/// full-backbuffer with cover fit at a 4:3 target, letterbox margins included,
-/// beneath a widget. Self-skips with no GPU adapter.
+/// full-backbuffer with cover fit at a 4:3 target, corners and outer bands
+/// included, beneath a widget. Self-skips with no GPU adapter.
 #[cfg(test)]
 mod tree_background_gpu_test;
 

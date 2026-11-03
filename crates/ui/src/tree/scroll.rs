@@ -84,13 +84,12 @@ pub(super) struct ScrollViews {
     focus_in_view: bool,
 }
 
-/// Device placement of a laid-out tree: the root's reference origin, the
-/// reference→device scale, and the letterboxed canvas origin.
+/// Device placement of a laid-out tree: the root's logical origin on the
+/// backbuffer-sized logical canvas, and the logical→device scale.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Placement {
     pub(super) root_origin: [f32; 2],
     pub(super) scale: f32,
-    pub(super) canvas_origin: [f32; 2],
 }
 
 impl ScrollViews {
@@ -345,7 +344,6 @@ impl ScrollViews {
             reference,
             taffy.layout(node).expect("node has layout"),
             placement.scale,
-            placement.canvas_origin,
         )
     }
 

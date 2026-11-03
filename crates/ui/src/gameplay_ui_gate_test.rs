@@ -9,7 +9,7 @@
 // (`UiTree::build_draw_data`) + early-out predicate (`UiDrawData::is_empty`) the
 // renderer uses, with a headless `FontSystem` for text measurement. It feeds a
 // FIXTURE tree (not a real screen) per the plan, and covers the full new vocab —
-// flex distribution, grid placement, measured text, anchor-against-letterbox, and
+// flex distribution, grid placement, measured text, anchoring on non-16:9, and
 // integer pixel snapping — by asserting a representative composite tree produces a
 // non-empty, well-snapped draw list. No GPU adapter, no wgpu call.
 //
@@ -346,23 +346,23 @@ fn empty_gameplay_tree_early_outs_the_ui_pass() {
 }
 
 #[test]
-fn gameplay_tree_centers_against_letterbox_on_non_16_9() {
-    // Anchor-against-letterbox on a non-16:9 viewport: a center-anchored fixture
-    // shifts by the letterbox margin rather than stretching. At 1280x1440 the
-    // canvas letterboxes vertically (scale 1.0, +360px y origin), so the same
-    // fixture's draw moves down by 360 vs the 1280x720 result.
+fn gameplay_tree_stays_centered_on_non_16_9() {
+    // A center-anchored fixture on a non-16:9 viewport moves to the backbuffer's
+    // center rather than stretching. At 1280x1440 the scale stays 1.0 and the
+    // logical canvas is the 1280x1440 backbuffer, so the same fixture's draw
+    // moves down by 360 vs the 1280x720 result.
     let fixture = composite_fixture();
     let ref_draw = gameplay_draw(Some(&fixture), [1280, 720]).expect("non-empty");
-    let letterboxed = gameplay_draw(Some(&fixture), [1280, 1440]).expect("non-empty");
+    let tall = gameplay_draw(Some(&fixture), [1280, 1440]).expect("non-empty");
 
-    // The first text run's y shifts down by the vertical letterbox margin (360),
-    // proving the whole tree anchors against the letterboxed canvas (scale stays
-    // 1.0, so x is unchanged — uniform scale, not an x/y stretch).
-    let dy = letterboxed.texts[0].position[1] - ref_draw.texts[0].position[1];
+    // The first text run's y shifts down by half the extra height (360),
+    // proving the whole tree centers on the backbuffer (scale stays 1.0, so x
+    // is unchanged — uniform scale, not an x/y stretch).
+    let dy = tall.texts[0].position[1] - ref_draw.texts[0].position[1];
     assert!(
         (dy - 360.0).abs() <= 1.0,
-        "letterboxed tree shifts down by the 360px margin, got {dy}",
+        "centered tree shifts down by 360px, got {dy}",
     );
-    let dx = letterboxed.texts[0].position[0] - ref_draw.texts[0].position[0];
+    let dx = tall.texts[0].position[0] - ref_draw.texts[0].position[0];
     assert!(dx.abs() <= 1.0, "uniform scale: x unchanged, got dx {dx}");
 }

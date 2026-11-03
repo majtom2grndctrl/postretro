@@ -22,7 +22,6 @@ use super::style::{TweenState, apply, lerp_rgba};
 /// device-pixel projection, the slot snapshot the draw reads, the dt-accumulated
 /// UI clock, and the inert theme the (pre-resolved) styleRanges evaluator takes.
 pub struct DrawWalkCtx<'a> {
-    pub canvas_origin: [f32; 2],
     pub scale: f32,
     pub slot_values: &'a HashMap<String, SlotValue>,
     /// Presentation-cell values for `{ local }` bind resolution.

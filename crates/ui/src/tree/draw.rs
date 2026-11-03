@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use taffy::prelude::Layout;
 
 use super::super::descriptor::{BarMax, BindSource, Border, PanelBind, SliderBind, TextBind};
-use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::super::layout::Anchor;
 use super::super::{UiDrawList, UiInstance, UiRingInstance, UiText};
 use postretro_entities::SlotValue;
 
@@ -493,17 +493,14 @@ impl UiDrawData {
     }
 }
 
-/// Project a node's reference-space rect (origin + taffy size) to a device-pixel
-/// `[x, y, w, h]`, snapping each edge to a whole device pixel. Mirrors
-/// `layout::project_element`'s edge-snap so abutting nodes stay gap-free.
-pub fn project_rect(
-    ref_origin: [f32; 2],
-    layout: &Layout,
-    scale: f32,
-    canvas_origin: [f32; 2],
-) -> [f32; 4] {
-    let dev_left = canvas_origin[0] + ref_origin[0] * scale;
-    let dev_top = canvas_origin[1] + ref_origin[1] * scale;
+/// Project a node's logical rect (origin + taffy size) to a device-pixel
+/// `[x, y, w, h]`, snapping each edge to a whole device pixel. The logical
+/// canvas starts at the backbuffer's top-left (`layout::logical_canvas_size`),
+/// so `device = logical * scale`. Mirrors `layout::project_element`'s edge-snap
+/// so abutting nodes stay gap-free.
+pub fn project_rect(ref_origin: [f32; 2], layout: &Layout, scale: f32) -> [f32; 4] {
+    let dev_left = ref_origin[0] * scale;
+    let dev_top = ref_origin[1] * scale;
     let dev_right = dev_left + layout.size.width * scale;
     let dev_bottom = dev_top + layout.size.height * scale;
 
@@ -519,11 +516,10 @@ pub fn project_quad(
     ref_origin: [f32; 2],
     layout: &Layout,
     scale: f32,
-    canvas_origin: [f32; 2],
     fill: [f32; 4],
     border: Option<&Border>,
 ) -> UiInstance {
-    let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+    let rect = project_rect(ref_origin, layout, scale);
     let margin = match border {
         // 9-slice insets are `[left, top, right, bottom]` logical px; scale + snap.
         Some(b) => [
@@ -552,18 +548,6 @@ pub fn anchor_fractions(anchor: Anchor) -> (f32, f32) {
         Anchor::Bottom => (0.5, 1.0),
         Anchor::BottomRight => (1.0, 1.0),
     }
-}
-
-/// Top-left of the scaled 1280x720 canvas in device pixels, centered so the
-/// letterbox margin splits evenly. Same rule as `layout::canvas_origin` (private
-/// there) — reused so tree-laid rects share the splash's letterbox.
-pub fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
-    let scaled_w = REFERENCE_WIDTH * scale;
-    let scaled_h = REFERENCE_HEIGHT * scale;
-    [
-        (device_size[0] as f32 - scaled_w) * 0.5,
-        (device_size[1] as f32 - scaled_h) * 0.5,
-    ]
 }
 
 /// Resolve a bound text node's drawn string from the frame's slot snapshot.

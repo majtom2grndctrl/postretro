@@ -312,10 +312,10 @@ fn grid_places_children_across_equal_columns() {
 }
 
 #[test]
-fn anchored_tree_centers_against_non_16_9_letterbox() {
-    // At 1280x1440 the canvas letterboxes vertically: scale = min(1.0, 2.0) =
-    // 1.0, canvas origin y = (1440 - 720)/2 = 360. A center-anchored sized
-    // panel lands centered in the 1280x720 canvas, then shifted down by 360.
+fn anchored_tree_centers_on_the_backbuffer_on_non_16_9() {
+    // At 1280x1440: scale = min(1.0, 2.0) = 1.0 and the logical canvas is the
+    // whole 1280x1440 backbuffer. A center-anchored sized root lands centered
+    // in it — 360 px lower than at 1280x720.
     let tree = AnchoredTree {
         anchor: Anchor::Center,
         offset: [0.0, 0.0],
@@ -346,12 +346,12 @@ fn anchored_tree_centers_against_non_16_9_letterbox() {
     let mut fs = font_system();
     let data = ui.build_draw_data([1280, 1440], &mut fs, &no_images(), &no_slots());
     // Read back the root's measured size and recompute the centered top-left
-    // in the 1280x720 canvas, then apply the +360 vertical letterbox offset.
+    // in the 1280x1440 canvas.
     // Scale is 1.0 here, so device px == reference px. `project_rect` snaps
     // the device top-left to a whole pixel, so round to match.
     let root_size = ui.taffy.layout(ui.root).unwrap().size;
     let expected_x = ((REFERENCE_WIDTH - root_size.width) / 2.0).round();
-    let expected_y = ((REFERENCE_HEIGHT - root_size.height) / 2.0 + 360.0).round();
+    let expected_y = ((1440.0 - root_size.height) / 2.0).round();
     let t = &data.texts[0];
     assert!(
         approx(t.position[0], expected_x),
@@ -361,7 +361,7 @@ fn anchored_tree_centers_against_non_16_9_letterbox() {
     );
     assert!(
         approx(t.position[1], expected_y),
-        "centered y plus vertical letterbox offset: {} != {}",
+        "centered y on the taller canvas: {} != {}",
         t.position[1],
         expected_y,
     );

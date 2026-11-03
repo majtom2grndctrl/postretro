@@ -40,7 +40,7 @@ impl UiTree {
         cell_values: &CellValues,
         time_seconds: f64,
     ) -> UiDrawData {
-        // Place the root in reference space: anchor it on the canvas, then back
+        // Place the root on the logical canvas: anchor it, then back
         // the root's top-left out by the anchor fraction of the root's size (the
         // anchor is both the canvas reference point and the root's pivot). This
         // mirrors `layout::project_element`'s pivot math, but applied ONCE to the
@@ -48,8 +48,8 @@ impl UiTree {
         let placement = self.placement(device_size);
         let mut data = UiDrawData::default();
         // The background is paint op 0, beneath every root widget. It covers
-        // the device backbuffer, not the letterboxed canvas, and an unknown
-        // image size simply skips it.
+        // the device backbuffer with cover fit, and an unknown image size
+        // simply skips it.
         if let Some(background) = &self.background
             && let Some(instance) = background.instance(device_size)
         {
@@ -60,7 +60,6 @@ impl UiTree {
             self.root,
             placement.root_origin,
             placement.scale,
-            placement.canvas_origin,
             slot_values,
             cell_values,
             time_seconds,
@@ -75,8 +74,8 @@ impl UiTree {
 /// Read a pre-computed taffy subtree into device-pixel draw data, reusing
 /// `data`'s storage: the presentation one-shot layout's entry to the lowering
 /// the retained tree also uses ([`append_draw_data_from_layout`]). Presentation
-/// passes `[0.0, 0.0]` for both origins so its list is relative to its
-/// world-projected anchor rather than the retained UI letterbox canvas, and
+/// passes a `[0.0, 0.0]` root origin so its list is relative to its
+/// world-projected anchor rather than an anchored placement on the canvas, and
 /// calls this every frame so its bounded quads/text/image batches stay at a warm
 /// allocation high-water mark.
 #[allow(clippy::too_many_arguments)]
@@ -85,7 +84,6 @@ pub(super) fn collect_draw_data_from_layout_into(
     root: NodeId,
     root_origin: [f32; 2],
     scale: f32,
-    canvas_origin: [f32; 2],
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
     time_seconds: f64,
@@ -99,7 +97,6 @@ pub(super) fn collect_draw_data_from_layout_into(
         root,
         root_origin,
         scale,
-        canvas_origin,
         slot_values,
         cell_values,
         time_seconds,
@@ -117,7 +114,6 @@ fn append_draw_data_from_layout(
     root: NodeId,
     root_origin: [f32; 2],
     scale: f32,
-    canvas_origin: [f32; 2],
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
     time_seconds: f64,
@@ -130,7 +126,6 @@ fn append_draw_data_from_layout(
     static INERT_THEME: OnceLock<UiTheme> = OnceLock::new();
     let inert_theme = INERT_THEME.get_or_init(UiTheme::engine_default);
     let walk = DrawWalkCtx {
-        canvas_origin,
         scale,
         slot_values,
         cell_values,
@@ -158,7 +153,6 @@ fn collect_node(
         return;
     }
     let DrawWalkCtx {
-        canvas_origin,
         scale,
         slot_values,
         cell_values,
@@ -223,7 +217,6 @@ fn collect_node(
                 ref_origin,
                 layout,
                 scale,
-                canvas_origin,
                 fill,
                 border.as_ref(),
             ));
@@ -233,7 +226,7 @@ fn collect_node(
             // renderer can bind the matching texture for that group. UV/full-
             // texture defaults apply. Quads for the same key concatenate into
             // one batch; the renderer resolves the key→bind-group at encode.
-            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect = project_rect(ref_origin, layout, scale);
             data.push_image(asset, UiInstance::image(rect));
         }
         Some(NodeContext::Bar {
@@ -266,7 +259,7 @@ fn collect_node(
                     })
                 });
             // Background quad fills the whole laid-out rect.
-            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect = project_rect(ref_origin, layout, scale);
             let mut background_color = *background;
             if let Some((alpha, _, _)) = exit {
                 background_color[3] *= alpha;
@@ -374,7 +367,7 @@ fn collect_node(
             // Collector-side snap guarantees that a nearly-full resolved sweep
             // reaches the shader's seamless full-circle path exactly.
             const FULL_CIRCLE_EPSILON_DEGREES: f32 = 1.0e-3;
-            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect = project_rect(ref_origin, layout, scale);
             let radius = radius * scale;
             let thickness = thickness * scale;
             // A track is a full annulus behind the shape, sharing the resolved
@@ -501,7 +494,7 @@ fn collect_node(
             // linear RGBA -> sRGB [u8; 4] at draw-list build time. The run is
             // laid out in flow (its container's `align` centers it on the
             // measured run width), so no per-node centering shift is applied.
-            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect = project_rect(ref_origin, layout, scale);
             data.push_text(UiText::new(
                 resolved,
                 [rect[0], rect[1]],
@@ -525,7 +518,7 @@ fn collect_node(
     let scroll_offset = scroll_offset(scroll, node);
     let enclosing_clip = data.clip();
     if scroll_offset.is_some() {
-        let viewport = project_rect(ref_origin, layout, scale, canvas_origin);
+        let viewport = project_rect(ref_origin, layout, scale);
         data.set_clip(Some(match enclosing_clip {
             Some(clip) => intersect_rects(clip, viewport),
             None => viewport,

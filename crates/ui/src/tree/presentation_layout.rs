@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use cosmic_text::FontSystem;
 use postretro_entities::{PresentationFact, PresentationFacts, SlotValue};
-use taffy::prelude::{AvailableSpace, Display, NodeId, Size, TaffyTree};
+use taffy::prelude::{Display, NodeId, TaffyTree};
 
 use super::bindings::{
     BindingDiff, TweenClock, drive_bar_binding, drive_bar_max, drive_panel_binding,
@@ -18,11 +18,11 @@ use super::node_context::{NodeContext, VisibilityState};
 use super::predicate::PRESENTATION_FACT_SCOPE;
 use super::predicate::resolve_predicate;
 use super::scroll::{ScrollState, ScrollViews};
+use super::ui_tree::canvas_available_space;
 use super::ui_tree_collect::collect_draw_data_from_layout_into;
 use super::widget_meta::{harvest_image_nodes, harvest_visibility, layout_leaf};
 use super::{CellValues, ImageSizes};
 use crate::descriptor::Widget;
-use crate::layout::{REFERENCE_HEIGHT, REFERENCE_WIDTH};
 use crate::theme::UiTheme;
 
 /// Per-instance layout state for one passive presentation template.
@@ -173,10 +173,7 @@ impl PresentationTemplateLayout {
             self.taffy
                 .compute_layout_with_measure(
                     self.root,
-                    Size {
-                        width: AvailableSpace::Definite(REFERENCE_WIDTH),
-                        height: AvailableSpace::Definite(REFERENCE_HEIGHT),
-                    },
+                    canvas_available_space(device_size),
                     |inputs, _node_id, node_context, style| {
                         layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
@@ -195,7 +192,6 @@ impl PresentationTemplateLayout {
             self.root,
             [0.0, 0.0],
             crate::layout::device_scale(device_size),
-            [0.0, 0.0],
             &slot_values,
             cell_values,
             time_seconds,
@@ -595,6 +591,36 @@ mod tests {
         );
         assert!((changed.quads.instances[1].rect[2] - 80.0).abs() < EPSILON);
         assert!((changed.quads.instances[3].rect[2] - 40.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn presentation_layout_depends_on_scale_not_window_aspect() {
+        // Template output is relative to its world-projected device anchor, so
+        // a wider window at the same scale lays it out identically; the
+        // viewport change still re-lays it out against the wider canvas.
+        let root = Widget::HStack(container(vec![bound_text("left"), bound_bar("health")]));
+        let mut layout = PresentationTemplateLayout::from_widget(&root, &UiTheme::engine_default());
+        let instance_facts = facts(&[
+            ("left", PresentationFact::Text("42".to_string())),
+            ("health", PresentationFact::Number(0.5)),
+        ]);
+        let mut cells = CellValues::with_capacity(instance_facts.len());
+        PresentationTemplateLayout::update_fact_cell_values(&instance_facts, &mut cells);
+        let mut font_system = crate::text::build_font_system();
+        let mut at = |device| {
+            layout.build_draw_data(device, &mut font_system, &ImageSizes::new(), 0, &cells, 0.0)
+        };
+        let sixteen_nine = at([2560, 1440]);
+        let ultrawide = at([3440, 1440]);
+        assert_eq!(ultrawide.quads.instances, sixteen_nine.quads.instances);
+        let text = |d: &UiDrawData| {
+            d.texts
+                .iter()
+                .map(|t| (t.content.clone(), t.position, t.font_size))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text(&ultrawide), text(&sixteen_nine));
+        assert_eq!(layout.recompute_count(), 2, "an aspect change re-lays out");
     }
 
     #[test]

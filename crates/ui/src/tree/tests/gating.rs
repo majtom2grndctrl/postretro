@@ -176,7 +176,7 @@ fn unchanged_frame_reuses_cached_layout_without_recompute() {
 
 #[test]
 fn viewport_change_forces_layout_recompute() {
-    // A different device size re-resolves the letterbox/scale, so the gate
+    // A different device size re-resolves the scale and logical canvas, so the gate
     // must recompute even though the tree is byte-for-byte identical.
     let mut ui = UiTree::from_descriptor(&gating_tree(), &theme());
     let mut fs = font_system();

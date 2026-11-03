@@ -62,6 +62,7 @@ fn budget_gate_compiles_over_256_layers_and_pre_cut_area_above_the_retired_cap()
         &config(false),
         prepared,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(out.lightmap.layer_count, 257);
@@ -94,6 +95,7 @@ fn budget_gate_exact_boundary_compiles_but_one_below_reads_no_lighting_memo() {
             &primitives,
             &config(false),
             prepared,
+            None,
             None,
         )
     };

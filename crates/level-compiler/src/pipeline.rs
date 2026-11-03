@@ -1677,6 +1677,10 @@ fn run_after_parsing(
     let shadowmask_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShadowmaskAtlas, shadowmask_progress.clone());
     let shadowmask_control = BakeControl::new(Arc::clone(&governor), &shadowmask_progress);
+    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+        &map_data.kinematic_movers,
+        &map_data.kinematic_waypoints,
+    );
     let fused_lighting = lightmap_stage::bake_fused_prepared(
         args,
         stage_cache.as_ref(),
@@ -1697,6 +1701,7 @@ fn run_after_parsing(
             exterior: &full_exterior_leaves,
             holes: coverage.unproven.len(),
         }),
+        Some(&mover_poses),
     )?;
     if args.verbose {
         log::info!("[Compiler] fused lightmap/shadowmask stage returned");
@@ -1707,8 +1712,20 @@ fn run_after_parsing(
         shadowmask_elapsed,
         texel_step_elapsed,
         cut_parents,
+        mover_light,
         ..
     } = fused_lighting;
+    crate::mover_light_gate::log_static_rows(
+        &mover_poses,
+        &mover_light.unwrap_or_default(),
+        |source| {
+            map_data
+                .light_source_labels
+                .get(source)
+                .cloned()
+                .unwrap_or_else(|| format!("light {source}"))
+        },
+    );
     let lightmap_bake::LightmapBakeOutput {
         section: lightmap_section,
         charts: face_charts,

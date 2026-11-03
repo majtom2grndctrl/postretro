@@ -212,6 +212,7 @@ fn compile_adjacent_stages(
         &config,
         prepared,
         None,
+        None,
     )
 }
 

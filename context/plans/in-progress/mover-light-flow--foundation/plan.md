@@ -29,6 +29,12 @@ read at: af1aab9ef
 - **Cost budget.** Hallway cold Lightmap Bake is about 557 s after the reach cull (was about 965 s), so ≤3% is about 17 s.
 - **Research doc.** The `research.md` list of "existing reach-like data" predates `LightmapReachIndex` (per-light open-leaf flood, compile-only, `lightmap_reach.rs`). It is a candidate base for research step 3's redefined reach and is not used here.
 
+## Build notes
+
+- **P1 strip (task 1).** At the open terminus, arena light entity 9 has 464 open-only texels. They lie in a back-room floor strip just east of the pocket-mouth plane, up to about 0.030 m from it. One texel pitch is 0.025 m. Their centre segments cross static wall, and the bake lit them only through off-centre samples. This is the brief's named static-edge bias. Task 8 measures "within one texel column" by texel column from the mouth, not by metres, before asserting it. If even that fails, row 1's P1 clause goes to the owner.
+- **Cut sub-charts.** Texels where cut sub-charts overlap are counted once per sub-chart. That is what a per-chart mask would store, so the estimates keep it.
+- **Section-memo hit.** On a `lightmap_section` hit the static gate doesn't run yet (`FusedLightingOutput.mover_light` is `None`). Task 7 closes this.
+
 ## Delegated answers
 
 - **Module home.** `src/mover_light_gate.rs` plus `mover_light_gate/` (pose, segment, rows, probes, animated, side_count, report, cache). A thin adapter, `pipeline/lightmap_stage/mover_gate.rs`, keeps the large stage files small.
@@ -74,7 +80,7 @@ Rows are numbered in brief order: Automated, then Manual.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Thinnest slice: termini, posing, inclusive segment-vs-brush test, inside test, static gate on the producing worker (compose path, uncached), `debug`/`info` rows; `setpiece_wall` closed rows green | integrating executor (may delegate the module) | — | |
+| 1 | Thinnest slice: termini, posing, inclusive segment-vs-brush test, inside test, static gate on the producing worker (compose path, uncached), `debug`/`info` rows; `setpiece_wall` closed rows green | worker | — | done: `mover_light_gate_setpiece` (1, 11.4 s, not ignored), `mover_light_gate::tests` (7); closed rows = the five non-shaft lights, gated-centre AABBs on the far side of the wall; packed PRL byte-identical; gate ≈0.64 s CPU, wall time within noise |
 | 2 | Shared/differing sets, touched (row, block), both estimates, proptest | worker | 1 | |
 | 3 | Probe gate: reuse the SH stage's `ProbeGridLayout`, per light in parallel under permits | worker | 1 | |
 | 4 | Animated gate on the id-25 section | worker | 3 (both edit `pipeline.rs`) | |

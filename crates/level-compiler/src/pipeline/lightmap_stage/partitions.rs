@@ -22,6 +22,7 @@ use crate::texel_footprint::EmbeddedEmitters;
 #[cfg(test)]
 use super::PartitionHooks;
 use super::PartitionWindow;
+use super::mover_gate::MoverGateDetector;
 use super::reach::StageReach;
 use super::texel_steps::StepDetector;
 use super::window::PartitionSource;
@@ -139,6 +140,8 @@ pub(super) struct LayerPartitions<'a> {
     /// The texel-step detector, on the pass that composes the lightmap; the
     /// shadowmask-only pass after a memo hit replays the memo's report.
     steps: Option<&'a StepDetector<'a>>,
+    /// The mover light gate, on the pass that composes the lightmap.
+    gate: Option<&'a MoverGateDetector<'a>>,
     /// Each bake layer's charts in placement order, built once.
     pub(super) layer_charts: Vec<Vec<usize>>,
     /// Padded world bounds of each chart's texels; `None` for a chart with no
@@ -183,6 +186,7 @@ impl<'a> LayerPartitions<'a> {
         penumbra_floor: bool,
         embedded_emitters: &'a EmbeddedEmitters,
         steps: Option<&'a StepDetector<'a>>,
+        gate: Option<&'a MoverGateDetector<'a>>,
         reach: Option<&'a StageReach<'a>>,
         window: &PartitionWindow,
     ) -> Self {
@@ -206,6 +210,7 @@ impl<'a> LayerPartitions<'a> {
             penumbra_floor,
             embedded_emitters,
             steps,
+            gate,
             layer_charts,
             chart_bounds,
             exact_skips,
@@ -226,28 +231,34 @@ impl<'a> LayerPartitions<'a> {
         )
     }
 
-    /// Run the step detector over a baked or loaded partition: the same
-    /// check either way, so a cache hit reports what the bake did. Segment
-    /// traces make it ray work, so it holds a permit.
-    fn detect_steps(&self, item: usize, partition: &lightmap_layer::LightmapLayer) {
-        let Some(steps) = self.steps else {
-            return;
-        };
-        if partition.texels.is_empty() {
+    /// Run the step detector and the mover light gate over a baked or loaded
+    /// partition: the same checks either way, so a cache hit reports what the
+    /// bake did. Segment tests make them ray work, so they hold a permit.
+    fn inspect(&self, item: usize, partition: &lightmap_layer::LightmapLayer) {
+        let (layer, light) = self.items.get(item);
+        let gate = self.gate.filter(|gate| gate.wants(light));
+        if (self.steps.is_none() && gate.is_none()) || partition.texels.is_empty() {
             return;
         }
-        let (layer, light) = self.items.get(item);
         let map_light = self.layer_lights[light].light;
-        let _permit = self.control.governor().enter();
-        steps.detect(
-            item,
-            light,
-            partition,
+        let reached = || {
             self.layer_charts[layer as usize]
                 .iter()
                 .copied()
-                .filter(|&chart| light_may_reach(map_light, self.chart_bounds[chart])),
-        );
+                .filter(move |&chart| light_may_reach(map_light, self.chart_bounds[chart]))
+        };
+        let _permit = self.control.governor().enter();
+        if let Some(steps) = self.steps {
+            steps.detect(item, light, partition, reached());
+        }
+        if let Some(gate) = gate {
+            gate.detect(
+                item,
+                light,
+                partition,
+                reached().map(|chart| (chart, self.chart_bounds[chart])),
+            );
+        }
     }
 }
 
@@ -293,7 +304,7 @@ impl PartitionSource for LayerPartitions<'_> {
             }
             self.control
                 .advance(self.layer_charts[target_layer as usize].len());
-            self.detect_steps(item, partition);
+            self.inspect(item, partition);
         }
         partition
     }
@@ -377,7 +388,7 @@ impl PartitionSource for LayerPartitions<'_> {
             }
             cache.put(&self.key(item), &partition.to_bytes());
         }
-        self.detect_steps(item, &partition);
+        self.inspect(item, &partition);
         partition
     }
 }

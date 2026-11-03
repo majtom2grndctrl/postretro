@@ -247,6 +247,7 @@ fn run_fused_labeled(
         config,
         prepared,
         None,
+        None,
     )
     .expect("fused fixture bake must succeed")
 }
@@ -821,6 +822,7 @@ fn multi_block_fused_outputs(workers: usize, uncompressed: bool) -> (Vec<u8>, Ve
                 &config,
                 prepared,
                 None,
+                None,
             )
             .expect("multi-block fused bake must succeed");
             (
@@ -1194,6 +1196,7 @@ fn too_many_static_spec_lights_fail_before_any_lightmap_work() {
         &primitives,
         &config,
         prepared,
+        None,
         None,
     ) {
         Ok(_) => panic!("an owner index past u16 must fail the stage"),

@@ -16,12 +16,14 @@ use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
+use crate::mover_light_gate::{GateTally, MoverPoses};
 use crate::shadowmask_bake;
 use crate::texel_footprint::EmbeddedEmitters;
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 
 mod cache;
 mod metadata;
+mod mover_gate;
 mod partitions;
 mod peak;
 mod reach;
@@ -35,6 +37,7 @@ use crate::lightmap_layer::chart_texel_bounds;
 use crate::texel_step_detector::StepSite;
 use crate::texel_step_detector::{CutSites, TexelStepReport};
 pub(super) use metadata::MetadataCounts;
+use mover_gate::MoverGateDetector;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
@@ -62,6 +65,9 @@ pub(crate) struct FusedLightingOutput {
     pub texel_step_elapsed: Duration,
     /// The atlas's cut faces, for the weight-map bake's texel-step detector.
     pub cut_parents: Vec<CutParent>,
+    /// The mover light gate's static rows; `None` when it did not run: no
+    /// analysed mover, no partition to walk, or a `lightmap_section` memo hit.
+    pub mover_light: Option<GateTally>,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -190,8 +196,9 @@ pub(crate) fn bake_fused_prepared(
     config: &LightmapConfig,
     prepared: PreparedAtlas,
     reach: Option<ReachInputs<'_>>,
+    mover_poses: Option<&MoverPoses>,
 ) -> anyhow::Result<FusedLightingOutput> {
-    bake_fused_windowed(
+    bake_fused_with_movers(
         args,
         stage_cache,
         lightmap_control,
@@ -207,10 +214,13 @@ pub(crate) fn bake_fused_prepared(
         config,
         prepared,
         reach,
+        mover_poses,
         &PartitionWindow::default(),
     )
 }
 
+/// The fused bake under `window`, without the mover light gate.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_windowed(
     args: &Args,
@@ -228,6 +238,47 @@ pub(crate) fn bake_fused_windowed(
     config: &LightmapConfig,
     prepared: PreparedAtlas,
     reach: Option<ReachInputs<'_>>,
+    window: &PartitionWindow,
+) -> anyhow::Result<FusedLightingOutput> {
+    bake_fused_with_movers(
+        args,
+        stage_cache,
+        lightmap_control,
+        shadowmask_control,
+        geometry,
+        static_lights,
+        alpha_lights,
+        shadow_selection,
+        light_source_labels,
+        probe_embedded_emitters,
+        bvh,
+        primitives,
+        config,
+        prepared,
+        reach,
+        None,
+        window,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_fused_with_movers(
+    args: &Args,
+    stage_cache: Option<&StageCache>,
+    lightmap_control: &BakeControl,
+    shadowmask_control: &BakeControl,
+    geometry: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    alpha_lights: &AlphaLightsNs<'_>,
+    shadow_selection: Option<&EntityShadowLightsSection>,
+    light_source_labels: &[String],
+    probe_embedded_emitters: &EmbeddedEmitters,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    config: &LightmapConfig,
+    prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
+    mover_poses: Option<&MoverPoses>,
     window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
     peak::gate_working_set(
@@ -269,6 +320,7 @@ pub(crate) fn bake_fused_windowed(
             texel_steps: TexelStepReport::default(),
             texel_step_elapsed: Duration::ZERO,
             cut_parents: prepared.cut_parents,
+            mover_light: None,
         });
     }
     let density = config.lightmap_density;
@@ -473,7 +525,13 @@ pub(crate) fn bake_fused_windowed(
     }
 
     let mut texel_step_elapsed = Duration::ZERO;
+    let mut mover_light = None;
     let (section, texel_steps) = if let Some(cached) = cached_section {
+        if mover_poses.is_some_and(|poses| !poses.analysed.is_empty()) {
+            log::debug!(
+                "[MoverLight] static gate not run: the lightmap_section memo hit reads no partition"
+            );
+        }
         cached
     } else {
         // Every bake layer is folded, dilated, encoded, and sliced into its
@@ -513,6 +571,7 @@ pub(crate) fn bake_fused_windowed(
                 geometry,
                 &prepared.cut_parents,
             );
+            let gate = MoverGateDetector::new(mover_poses, &shared, &layer_lights);
             if let Some(reach) = stage_reach.as_mut() {
                 reach.build_index(
                     &prepared.charts,
@@ -535,6 +594,7 @@ pub(crate) fn bake_fused_windowed(
                 config.penumbra_floor,
                 &embedded_emitters,
                 Some(&detector),
+                gate.as_ref(),
                 stage_reach.as_ref(),
                 window,
             );
@@ -594,6 +654,14 @@ pub(crate) fn bake_fused_windowed(
             }
             drop(source);
             (texel_steps, texel_step_elapsed) = detector.finish();
+            if let Some(gate) = gate {
+                let (tally, elapsed) = gate.finish();
+                log::debug!(
+                    "[MoverLight] static gate: {:.1} ms summed over workers",
+                    elapsed.as_secs_f64() * 1000.0
+                );
+                mover_light = Some(tally);
+            }
         }
         (builder.finish(), texel_steps)
     };
@@ -639,6 +707,7 @@ pub(crate) fn bake_fused_windowed(
             items,
             config.penumbra_floor,
             &embedded_emitters,
+            None,
             None,
             stage_reach.as_ref(),
             window,
@@ -703,6 +772,7 @@ pub(crate) fn bake_fused_windowed(
         texel_steps,
         texel_step_elapsed,
         cut_parents: prepared.cut_parents,
+        mover_light,
     })
 }
 

@@ -1,7 +1,7 @@
 # mover-light-flow--foundation — plan of record
 
 mode: compact
-status: active
+status: done
 read at: af1aab9ef
 
 ## Corrections

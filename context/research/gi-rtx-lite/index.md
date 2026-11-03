@@ -141,7 +141,7 @@ Killed: link-based probe culling (distance-to-surface and navmesh say the same, 
 
 Doors are plain `kinematic_mover`s. Bake already auto-detects seals: a portal is sealed when the union of the mover's convex brushes at waypoint 0 fully covers it. The owner chose auto-detect over an opt-in KVP for camera occlusion (`E17--doors-as-occluders`), with a per-mover override named as an additive extension.
 
-Light-gate rule (owner, 2026-10-31; `plans/ready/mover-light-flow--foundation/`): the unit is (mover, terminus), not door. Every mover without a spin axis is posed at its first and last waypoint. A pair gates a light when it measurably blocks texels or probes the bake lit, not when it seals a portal, so the open pose, risen rooms, shutters and grates need no override. Doors are the pairs whose waypoint-0 pose seals portals. Intermediate waypoints and mid-segment stops are not states; masks exist only at termini. Override KVP (`_light_door` or similar) waits for a consumer.
+Light-gate rule (owner, 2026-10-31; `plans/done/mover-light-flow--foundation/`): the unit is (mover, terminus), not door. Every mover without a spin axis is posed at its first and last waypoint. A pair gates a light when it measurably blocks texels or probes the bake lit, not when it seals a portal, so the open pose, risen rooms, shutters and grates need no override. Doors are the pairs whose waypoint-0 pose seals portals. Intermediate waypoints and mid-segment stops are not states; masks exist only at termini. Override KVP (`_light_door` or similar) waits for a consumer.
 
 | Per door | Baked |
 |---|---|

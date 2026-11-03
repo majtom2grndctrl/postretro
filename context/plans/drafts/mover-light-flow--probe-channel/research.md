@@ -70,7 +70,7 @@ The union counts a shared probe once: total − shared ÷ 2. Both columns count 
 
 | id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Arrival | A mover reaches its last waypoint on tick N | Frame N's state reads t = 1, with the same frame's blocked portals |
+| P1 | Arrival | A mover reaches its last waypoint on tick N | Frame N's state reads t = 1 (portals block only at waypoint 0; see P11) |
 | P2 | Reversal mid-travel | A command reverses the mover at t = 0.4 | t continues from 0.4 in the new direction; no frame reads a terminus value |
 | P3 | Two movers, one tick | Both advance on tick N | Each reports its own t in frame N; a probe both gate composes their product |
 | P4 | Level load | A `start_on_spawn` mover before its first tick | t = 0 from its seeded phase; the first composed frame is gated |

@@ -228,11 +228,12 @@ impl AssistPairTable {
 
     /// Snapshot every bound side input for each pawn, once per pass, so the
     /// pass's evaluations read one consistent registry state. Linear in pawns;
-    /// a literal-only table seeds nothing.
+    /// a literal-only table seeds nothing. With no slot table every per-owner
+    /// side value seeds as missing, so a read of one faults.
     pub fn seed_sides(
         &self,
         registry: &EntityRegistry,
-        slot_table: &SlotTable,
+        slot_table: Option<&SlotTable>,
         pawns: &[EntityId],
     ) {
         if let Some(scope) = &self.scope {

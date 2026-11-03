@@ -38,7 +38,7 @@ fn downed(raw: u32, x: f32, pair: Option<PairValues>) -> AssistCandidate {
         position: Vec3::new(x, 0.0, 0.0),
         life: PawnLife {
             life_state: 1,
-            elapsed: None,
+            entry: None,
         },
         assistable: true,
         pair,
@@ -74,7 +74,7 @@ impl Rig {
             permits_use: true,
             life: PawnLife {
                 life_state: 0,
-                elapsed: None,
+                entry: None,
             },
         }
     }

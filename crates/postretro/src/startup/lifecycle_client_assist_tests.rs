@@ -29,7 +29,7 @@ fn client_assist_o35_unload_level_clears_the_client_step() {
         permits_use: true,
         life: PawnLife {
             life_state: 0,
-            elapsed: None,
+            entry: None,
         },
     };
     let target = AssistCandidate {
@@ -37,7 +37,7 @@ fn client_assist_o35_unload_level_clears_the_client_step() {
         position: Vec3::X,
         life: PawnLife {
             life_state: 1,
-            elapsed: None,
+            entry: None,
         },
         assistable: true,
         pair: Some(PairValues {

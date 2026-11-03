@@ -39,7 +39,7 @@ impl Accumulator {
         let mut registry = EntityRegistry::new();
         let life = PawnLife {
             life_state: 1,
-            elapsed: None,
+            entry: None,
         };
         let helper = AssistHelper {
             id: registry.spawn(Transform::default()),

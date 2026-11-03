@@ -15,6 +15,7 @@ use glam::Vec3;
 use postretro_entities::{EntityId, ScriptCtx};
 
 use super::assist_pairs::{AssistPairTable, PairValues};
+use super::assist_scratch::{PairGrid, PassScratch};
 
 /// One whole hold in fixed-point progress units.
 pub const PROGRESS_UNIT: u64 = 1 << 32;
@@ -54,22 +55,23 @@ pub enum AssistRunner {
     Client,
 }
 
-/// A pawn's life state as one pass sees it. `elapsed` is
-/// `life_state_elapsed_ticks`, or `None` where the runner retains no elapsed
-/// (the client's remote pawns): the reset check then compares ids alone.
+/// A pawn's life state as one pass sees it. `entry` is the pawn's
+/// `life_state_entry` count, or `None` where the runner does not track it
+/// (the client runner): the reset check then compares ids alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PawnLife {
     pub life_state: u8,
-    pub elapsed: Option<u32>,
+    pub entry: Option<u32>,
 }
 
 impl PawnLife {
     /// Whether this pawn changed or re-entered its life state since
     /// `previous`, the value stored at the last pass: a different id, or, in a
-    /// declared state, an elapsed not greater than the stored one (a respawn
-    /// into the same state, a leave and re-entry between passes). A pawn with
-    /// no stored value is new to the accumulator and counts as changed. An
-    /// undeclared pawn's elapsed stays zero, so only its id is compared.
+    /// declared state, a different entry count (a respawn into the same
+    /// state, a leave and re-entry between passes, however short the stay). A
+    /// pawn with no stored value is new to the accumulator and counts as
+    /// changed. An undeclared pawn compares its id alone, so a respawn that
+    /// leaves it undeclared keeps its progress.
     pub fn changed_since(self, previous: Option<PawnLife>) -> bool {
         let Some(previous) = previous else {
             return true;
@@ -80,8 +82,8 @@ impl PawnLife {
         if self.life_state == postretro_foundation::UNDECLARED_LIFE_STATE {
             return false;
         }
-        match (self.elapsed, previous.elapsed) {
-            (Some(elapsed), Some(stored)) => elapsed <= stored,
+        match (self.entry, previous.entry) {
+            (Some(entry), Some(stored)) => entry != stored,
             _ => false,
         }
     }
@@ -276,14 +278,14 @@ pub fn reported(progress: u64) -> f32 {
 }
 
 /// One host completion, recorded into `TickEvents::assist_completions` with
-/// the target's life state and elapsed at record, which the player-event pass
-/// re-checks before it applies.
+/// the target's life state and entry count at record, which the player-event
+/// pass re-checks before it applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssistCompletion {
     pub helper: EntityId,
     pub target: EntityId,
     pub life_state: u8,
-    pub life_state_elapsed_ticks: u32,
+    pub life_state_entry: u32,
 }
 
 /// A helper's row-6 record from its last pass: whether that pass ran row 6
@@ -314,8 +316,11 @@ pub struct AssistState {
     pub(super) helpers: Vec<(EntityId, HelperRecord)>,
     /// Each pawn's life state at the last pass, in `players()` order.
     pub(super) lives: Vec<(EntityId, PawnLife)>,
-    /// The last pass's evaluated pair values, as (helper, target, values).
-    pub(super) pair_values: Vec<(EntityId, EntityId, PairValues)>,
+    /// The last pass's evaluated pair values, indexed by each pawn's place in
+    /// `lives`.
+    pub(super) pair_values: PairGrid,
+    /// The host pass's working buffers, reused from pass to pass.
+    pub(super) scratch: PassScratch,
 }
 
 impl AssistState {
@@ -336,10 +341,8 @@ impl AssistState {
     /// or `None` for a pair that pass did not evaluate. Host-side consumers
     /// read pair values here and never evaluate pair IR themselves.
     pub fn pair_values(&self, helper: EntityId, target: EntityId) -> Option<PairValues> {
-        self.pair_values
-            .iter()
-            .find(|(h, t, _)| *h == helper && *t == target)
-            .map(|(_, _, values)| *values)
+        let place = |pawn: EntityId| self.lives.iter().position(|(id, _)| *id == pawn);
+        self.pair_values.get(place(helper)?, place(target)?)
     }
 
     /// A helper's cross-tick state from the last pass, or `None` for a pawn
@@ -370,7 +373,7 @@ impl AssistState {
     pub fn clear_for_level_unload(&mut self) {
         self.helpers.clear();
         self.lives.clear();
-        self.pair_values.clear();
+        self.pair_values.reset(0);
     }
 }
 

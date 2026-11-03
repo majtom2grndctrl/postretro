@@ -21,8 +21,8 @@ impl PlayerEventTable {
     /// Apply `completions` in `players()` order of the target. Each is
     /// re-checked just before its own application, after every earlier one's
     /// fire lists have run, and dropped unless the target still holds the
-    /// recorded life state at the recorded elapsed and that state declares
-    /// `assistable`. An applied completion fires every `assistReceived`
+    /// recorded life state, has not entered a state since the record, and
+    /// that state declares `assistable`. An applied completion fires every `assistReceived`
     /// subscription on the target, then every `assistGiven` subscription on
     /// the helper, each in composed order. The helper is not re-checked: a
     /// helper downed after the record still earns its `assistGiven`.
@@ -98,17 +98,17 @@ impl PlayerEventTable {
     }
 }
 
-/// The re-check: the target still holds the recorded life-state id at the
-/// recorded elapsed, and that state declares `assistable`. A move to another
-/// state, or a leave and re-entry (elapsed back to zero), drops the
-/// completion. One recorded at elapsed zero cannot tell a re-entry apart and
-/// applies.
+/// The re-check: the target still holds the recorded life-state id under the
+/// recorded entry count, and that state declares `assistable`. A move to
+/// another state, or a leave and re-entry of the recorded one (the entry count
+/// moves on), drops the completion, even when the target entered its state in
+/// the tick that recorded it.
 fn still_assistable(registry: &EntityRegistry, completion: &AssistCompletion) -> bool {
     registry
         .get_component::<PlayerMovementComponent>(completion.target)
         .is_ok_and(|movement| {
             movement.life_state == completion.life_state
-                && movement.life_state_elapsed_ticks == completion.life_state_elapsed_ticks
+                && movement.life_state_entry == completion.life_state_entry
                 && movement.assistable
         })
 }

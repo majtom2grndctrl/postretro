@@ -118,7 +118,7 @@ pub(super) fn record(world: &World, helper: EntityId, target: EntityId) -> Assis
         helper,
         target,
         life_state: target_movement.life_state,
-        life_state_elapsed_ticks: target_movement.life_state_elapsed_ticks,
+        life_state_entry: target_movement.life_state_entry,
     }
 }
 
@@ -383,11 +383,12 @@ fn assist_source_o33_recheck_drops_a_completion_whose_target_changed() {
 }
 
 /// O34: a leave and re-entry of the recorded state between record and apply
-/// shows as elapsed back to zero and drops the completion. One recorded at
-/// elapsed zero cannot tell a re-entry apart and applies.
+/// moves the target's entry count on and drops the completion, whatever its
+/// elapsed at record: one recorded at elapsed zero, on a target that entered
+/// its state that tick, drops too. Without the re-entry it applies.
 #[test]
-fn assist_source_o34_leave_and_reentry_drops_but_a_zero_elapsed_record_applies() {
-    for recorded_elapsed in [3, 0] {
+fn assist_source_o34_leave_and_reentry_drops_even_at_zero_elapsed() {
+    for (recorded_elapsed, reenters) in [(3, true), (0, true), (0, false)] {
         let (mut world, helper, target) = helper_and_downed_target();
         world.install(
             vec![play_sound("received", "a")],
@@ -397,18 +398,25 @@ fn assist_source_o34_leave_and_reentry_drops_but_a_zero_elapsed_record_applies()
             movement.life_state_elapsed_ticks = recorded_elapsed;
         });
         let completion = record(&world, helper, target);
-        enter(&world, target, "alive");
-        enter(&world, target, "down");
+        if reenters {
+            enter(&world, target, "alive");
+            enter(&world, target, "down");
+        }
+        let now = movement(&world, target);
+        assert_eq!(now.life_state, state_id(&world, "down"));
         assert_eq!(
-            movement(&world, target).life_state,
-            state_id(&world, "down")
+            now.life_state_elapsed_ticks,
+            if reenters { 0 } else { recorded_elapsed }
         );
         run_pass(&mut world, &[completion]);
         let fires = take_fires(&mut world);
-        if recorded_elapsed == 0 {
-            assert_eq!(fires, fired(&[("received", target)]));
+        if reenters {
+            assert!(
+                fires.is_empty(),
+                "elapsed {recorded_elapsed}: the re-entry drops the completion"
+            );
         } else {
-            assert!(fires.is_empty(), "the re-entry drops the completion");
+            assert_eq!(fires, fired(&[("received", target)]));
         }
     }
 }

@@ -305,7 +305,7 @@ Three distinct metadata validity gates apply:
 
 - **Movement-authority metadata** (`local_player`, `last_processed_client_tick`): valid only on records carrying `PlayerMovementState`. No other record type may carry these fields.
 - **Active-weapon metadata** (`active_weapon_archetype`): valid only on records carrying `PlayerMovementState`. `None` means no weapon is equipped.
-- **Assist facts** (`has_assist_facts` and the pair table and received required ticks it gates): valid only on a `local_player` record, empty or zero when the pawn is unflagged, and never on a despawn. Each pair radius lies in [0, 16] and each required tick count is at most 3600. The pair table's sort order is the encoder's promise; receipt does not validate it.
+- **Assist facts** (`has_assist_facts` and the pair table and received required ticks it gates): valid only on a `local_player` record, empty or zero when the pawn is unflagged, and never on a despawn. Each pair radius lies in [0, 16] and each required tick count is at most 3600. The pair table is strictly ascending by network id, so no pawn has two entries; an unsorted or duplicate table fails validation.
 - **Descriptor `entity_class`**: valid on any non-despawn entity record (`FullBaseline` or `Delta`) that carries at least one finite `Transform` payload — it no longer requires `PlayerMovementState`. On despawn records, `entity_class` (and all metadata) remains invalid.
 
 Despawn records carry tombstone metadata only, never component payloads.
@@ -1199,8 +1199,8 @@ tuning epoch to 17, one bump each for every field below. Input gains the held `a
 level, player movement state gains the `assistable` bool, the local-pawn record gains the assist
 pair table and received required ticks, and life-state profiles in the tuning payload gain
 `assistable`, which an old-epoch reader rejects as an unknown field. Validation refuses a
-pair radius that is non-finite or outside [0, 16] and a required tick count above the
-60 s cap's. Peers at 38 are refused at handshake. PRLC is unchanged.
+pair radius that is non-finite or outside [0, 16], a required tick count above the
+60 s cap's, and a pair table not strictly ascending by network id. Peers at 38 are refused at handshake. PRLC is unchanged.
 
 ## Current contract
 

@@ -30,13 +30,17 @@ pub struct PawnAssistFacts {
 
 impl AssistState {
     /// The facts for each of `helpers`, in order, evaluated against the
-    /// registry state as it stands, whatever each helper's own state.
+    /// registry state as it stands, whatever each helper's own life state.
+    /// A helper outside the `players()` group (a pawn whose seat is in a
+    /// disconnect hold) is `None` and evaluates nothing: it receives no
+    /// snapshot, and its seatless per-owner reads would read missing and
+    /// spend a fault warning a later genuine fault should give.
     pub fn snapshot_facts(
         &self,
         registry: &EntityRegistry,
         slot_table: &SlotTable,
         helpers: &[EntityId],
-    ) -> Vec<PawnAssistFacts> {
+    ) -> Vec<Option<PawnAssistFacts>> {
         let mut group = Vec::new();
         extend_with_player_pawns(registry, None, &mut group);
         let assistable = |pawn: EntityId| {
@@ -49,32 +53,33 @@ impl AssistState {
             .copied()
             .filter(|pawn| assistable(*pawn))
             .collect();
-        if !candidates.is_empty() && !helpers.is_empty() {
-            let mut seeded = group.clone();
-            seeded.extend(helpers.iter().filter(|helper| !group.contains(helper)));
-            self.pair_table().seed_sides(registry, slot_table, &seeded);
+        if !candidates.is_empty() && helpers.iter().any(|helper| group.contains(helper)) {
+            self.pair_table()
+                .seed_sides(registry, Some(slot_table), &group);
         }
         helpers
             .iter()
-            .map(|&helper| PawnAssistFacts {
-                pairs: candidates
-                    .iter()
-                    .filter(|target| **target != helper)
-                    .map(|&target| {
-                        // Every candidate has an entry; one whose profile
-                        // cannot be read is unassistable.
-                        let values = AssistTarget::of(registry, target)
-                            .map_or(PairValues::UNASSISTABLE, |side| {
-                                evaluate(self.pair_table(), helper, side)
-                            });
-                        (target, values)
-                    })
-                    .collect(),
-                received_required_ticks: if assistable(helper) {
-                    self.received_required_ticks(helper)
-                } else {
-                    0
-                },
+            .map(|&helper| {
+                group.contains(&helper).then(|| PawnAssistFacts {
+                    pairs: candidates
+                        .iter()
+                        .filter(|target| **target != helper)
+                        .map(|&target| {
+                            // Every candidate has an entry; one whose profile
+                            // cannot be read is unassistable.
+                            let values = AssistTarget::of(registry, target)
+                                .map_or(PairValues::UNASSISTABLE, |side| {
+                                    evaluate(self.pair_table(), helper, side)
+                                });
+                            (target, values)
+                        })
+                        .collect(),
+                    received_required_ticks: if assistable(helper) {
+                        self.received_required_ticks(helper)
+                    } else {
+                        0
+                    },
+                })
             })
             .collect()
     }

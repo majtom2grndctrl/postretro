@@ -226,3 +226,25 @@ fn assist_facts_skip_while_the_full_baseline_is_in_flight_then_carry_current_val
         Some(facts(9))
     );
 }
+
+/// A value re-sent unchanged queues once; that entry is confirmed by an ack
+/// of any snapshot at or after its first send, and a changed value queues
+/// beside it.
+#[test]
+fn assist_delivery_queues_a_still_value_once() {
+    let mut delivery = super::AssistDelivery::default();
+    for sequence in 1..=5 {
+        delivery.record_sent(sequence, &facts(6));
+    }
+    assert_eq!(delivery.sent.len(), 1);
+    delivery.record_sent(6, &facts(7));
+    delivery.record_sent(7, &facts(6));
+    assert_eq!(delivery.sent.len(), 3);
+    delivery.confirm(4);
+    assert_eq!(delivery.confirmed, Some(facts(6)));
+    delivery.confirm(6);
+    assert_eq!(delivery.confirmed, Some(facts(7)));
+    delivery.confirm(7);
+    assert_eq!(delivery.confirmed, Some(facts(6)));
+    assert!(delivery.sent.is_empty());
+}

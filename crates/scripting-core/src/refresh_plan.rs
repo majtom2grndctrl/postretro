@@ -553,6 +553,7 @@ fn plan_movement_replace(
     refreshed.vault_barred = live.vault_barred;
     refreshed.life_state = live.life_state;
     refreshed.life_state_elapsed_ticks = live.life_state_elapsed_ticks;
+    refreshed.life_state_entry = live.life_state_entry;
     refreshed.life_state_table_revision = live.life_state_table_revision;
     postretro_foundation::carry_life_state_stamps(live, &mut refreshed);
     // Assist progress is accumulator output, not tuning: the HUD reads it

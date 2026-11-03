@@ -10,7 +10,7 @@ use crate::netcode::{self, AssistProgressSample, ClientReplication};
 use crate::sim::assist::{AssistCandidate, AssistHelper, PawnLife};
 use crate::sim::assist_pairs::PairValues;
 
-/// The local pawn as helper. Its elapsed is never passed: the client runner
+/// The local pawn as helper. Its entry count is never passed: the client runner
 /// compares ids alone.
 fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
     let pawn = registry.local_player_movement_pawn()?;
@@ -24,7 +24,7 @@ fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
         permits_use: crate::sim::player_life::permits(registry, pawn, Capability::Use),
         life: PawnLife {
             life_state: movement.life_state,
-            elapsed: None,
+            entry: None,
         },
     })
 }
@@ -56,7 +56,7 @@ fn gather_candidates(
             position,
             life: PawnLife {
                 life_state: facts.life_state,
-                elapsed: None,
+                entry: None,
             },
             assistable: facts.assistable,
             pair: table

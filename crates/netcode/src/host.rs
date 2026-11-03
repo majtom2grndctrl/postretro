@@ -186,7 +186,12 @@ pub fn host_replicate(
     // Each owner's assist facts, from the registry state the movement records
     // above read; authority metadata, so no baseline is minted.
     replication.ingest_assist_facts(crate::host_assist_facts::host_assist_facts(
-        registry, slot_table, assist, owners, allocator,
+        registry,
+        slot_table,
+        assist,
+        owners,
+        allocator,
+        &participating,
     ));
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.

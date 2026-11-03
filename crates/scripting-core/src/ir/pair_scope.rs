@@ -3,7 +3,8 @@
 // See: context/lib/scripting.md §11 (interaction-pair scope) · §12 (Assist)
 
 // A pair expression reads either side through its role token
-// (`byPlayer(assist.helper)`, `assist.target.inLifeState(name)`), and global
+// (`ref.byPlayer(assist.helper)`, `assist.target.inLifeState(name)`; Luau
+// spells the calls with `:`), and global
 // store values with no owner. Every side value is snapshotted once per pass by
 // `seed_sides`, so seeding is linear in pawns; a pair evaluation then selects
 // two seeded sides. A side read with no value is a fault the caller detects
@@ -119,11 +120,28 @@ fn handle_name(token: &str) -> &str {
     token.strip_prefix('@').unwrap_or(token)
 }
 
+/// How to read a per-player value through a side, in both runtimes'
+/// spellings, so the message is the same whichever runtime authored it.
 fn owner_hint(roles: &PairRoles) -> String {
-    format!(
-        "use `byPlayer({})` or `byPlayer({})`",
+    let (actor, subject) = (
         handle_name(roles.actor_token),
-        handle_name(roles.subject_token)
+        handle_name(roles.subject_token),
+    );
+    format!(
+        "use `ref.byPlayer({actor})` or `ref.byPlayer({subject})` \
+         (Luau: `ref:byPlayer({actor})` or `ref:byPlayer({subject})`)"
+    )
+}
+
+/// How to read a side's life state, in both runtimes' spellings.
+fn life_state_hint(roles: &PairRoles) -> String {
+    let (actor, subject) = (
+        handle_name(roles.actor_token),
+        handle_name(roles.subject_token),
+    );
+    format!(
+        "use `{actor}.inLifeState(name)` or `{subject}.inLifeState(name)` \
+         (Luau: `{actor}:inLifeState(name)` or `{subject}:inLifeState(name)`)"
     )
 }
 
@@ -204,9 +222,8 @@ fn classify_unowned(
 ) -> Result<PairRead, String> {
     if name.starts_with(LIFE_STATE_INPUT_PREFIX) {
         return Err(format!(
-            "reads `inLifeState` with no owner; use `{}.inLifeState(name)` or `{}.inLifeState(name)`",
-            handle_name(roles.actor_token),
-            handle_name(roles.subject_token)
+            "reads `inLifeState` with no owner; {}",
+            life_state_hint(roles)
         ));
     }
     // A local-only `player.*` slot is a global store record, not a
@@ -318,12 +335,13 @@ impl InteractionPairScope {
     }
 
     /// Snapshot every bound side input for each pawn, once per pass. A pawn's
-    /// per-owner values read at its seat; a seatless pawn reads them missing.
-    /// Clears the previous pass's sides and the selection.
+    /// per-owner values read at its seat; a seatless pawn, or any pawn when
+    /// there is no slot table, reads them missing. Clears the previous pass's
+    /// sides and the selection.
     pub fn seed_sides(
         &self,
         registry: &EntityRegistry,
-        slot_table: &SlotTable,
+        slot_table: Option<&SlotTable>,
         pawns: &[EntityId],
     ) {
         let inputs = self.inputs.borrow();
@@ -347,7 +365,7 @@ impl InteractionPairScope {
                         .map(|movement| IrValue::Bool(movement.life_state == *state)),
                     SideInput::Owned { name, ir_type } => {
                         let seat = seat?;
-                        let record = slot_table.get(name)?;
+                        let record = slot_table?.get(name)?;
                         project(*ir_type, record.per_seat_value(seat))
                     }
                 }

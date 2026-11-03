@@ -26,8 +26,8 @@ pub struct WireAssistPair {
     pub required_ticks: u32,
 }
 
-/// A helper's pair table, sorted by `network_id`, one entry per other
-/// assistable pawn. Empty means no assistable candidate.
+/// A helper's pair table, strictly ascending by `network_id` (no pawn twice),
+/// one entry per other assistable pawn. Empty means no assistable candidate.
 pub type WireAssistPairs = Vec<WireAssistPair>;
 
 /// The assist facts one local-pawn record carries for its recipient.
@@ -40,15 +40,21 @@ pub struct WireAssistFacts {
 }
 
 impl WireAssistFacts {
-    /// Whether every value lies inside the wire bounds.
+    /// Whether these facts are well formed: every value inside the wire
+    /// bounds, and the pair table strictly ascending by `network_id`, so no
+    /// pawn has two entries.
     #[must_use]
-    pub fn in_bounds(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         self.received_required_ticks <= WIRE_ASSIST_MAX_REQUIRED_TICKS
             && self.pairs.iter().all(|pair| {
                 pair.radius.is_finite()
                     && (0.0..=WIRE_ASSIST_MAX_RADIUS).contains(&pair.radius)
                     && pair.required_ticks <= WIRE_ASSIST_MAX_REQUIRED_TICKS
             })
+            && self
+                .pairs
+                .windows(2)
+                .all(|pair| pair[0].network_id < pair[1].network_id)
     }
 
     /// Write these facts onto `record` behind its flag.
@@ -66,7 +72,8 @@ impl RawEntityRecord {
     }
 
     /// Validate the assist facts of a live record. They ride only the
-    /// recipient's local-pawn record, behind their flag, inside the bounds.
+    /// recipient's local-pawn record, behind their flag, inside the bounds,
+    /// with the pair table sorted and free of duplicates.
     pub(super) fn validate_assist_facts(&self) -> Result<Option<WireAssistFacts>, ValidationError> {
         if !self.has_assist_facts {
             if self.carries_assist_fields() {
@@ -81,7 +88,7 @@ impl RawEntityRecord {
             pairs: self.assist_pairs.clone(),
             received_required_ticks: self.received_required_ticks,
         };
-        if !facts.in_bounds() {
+        if !facts.is_valid() {
             return Err(ValidationError::InvalidAssistFacts);
         }
         Ok(Some(facts))

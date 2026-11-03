@@ -194,3 +194,33 @@ fn assist_facts_on_a_despawn_fail_validation() {
     raw.has_assist_facts = true;
     assert_eq!(raw.validate(), Err(ValidationError::MetadataOnDespawn));
 }
+
+/// The pair table is strictly ascending by `network_id`: an unsorted table or
+/// one naming a pawn twice fails validation, whatever its values.
+#[test]
+fn assist_facts_unsorted_or_duplicate_pairs_fail_validation() {
+    let unsorted = {
+        let mut facts = facts();
+        facts.pairs.reverse();
+        facts
+    };
+    let duplicate = {
+        let mut facts = facts();
+        facts.pairs[1].network_id = facts.pairs[0].network_id;
+        facts
+    };
+    for bad in [unsorted, duplicate] {
+        assert!(!bad.is_valid(), "{bad:?}");
+        for kind in [RECORD_KIND_FULL_BASELINE, RECORD_KIND_DELTA] {
+            let mut raw = record(kind, true);
+            bad.stamp(&mut raw);
+            let decoded: RawEntityRecord = decode(&encode(&raw)).expect("record decodes");
+            assert_eq!(
+                decoded.validate(),
+                Err(ValidationError::InvalidAssistFacts),
+                "{bad:?}"
+            );
+        }
+    }
+    assert!(facts().is_valid());
+}

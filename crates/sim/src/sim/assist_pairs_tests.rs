@@ -151,7 +151,7 @@ impl World {
         let registry = self.ctx.registry.borrow();
         table.seed_sides(
             &registry,
-            &self.ctx.slot_table.borrow(),
+            Some(&self.ctx.slot_table.borrow()),
             &[self.helper, self.target],
         );
         let target = AssistTarget::of(&registry, self.target).expect("target is a pawn");
@@ -329,7 +329,11 @@ fn assist_pairs_missing_side_value_faults_before_evaluation() {
     assert_eq!(fault_warnings(&capture, "holdMs"), 1);
     // A pawn the pass did not seed reads as missing too.
     let registry = world.ctx.registry.borrow();
-    table.seed_sides(&registry, &world.ctx.slot_table.borrow(), &[world.helper]);
+    table.seed_sides(
+        &registry,
+        Some(&world.ctx.slot_table.borrow()),
+        &[world.helper],
+    );
     let target = AssistTarget::of(&registry, world.target).unwrap();
     assert_eq!(
         evaluate(&table, world.helper, target),

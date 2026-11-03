@@ -4,6 +4,7 @@
 pub mod assist;
 pub mod assist_pairs;
 mod assist_pass;
+mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
 // Callers hand the CPU timing gate to the tick as a value.

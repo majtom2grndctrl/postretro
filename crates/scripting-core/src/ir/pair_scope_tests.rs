@@ -172,7 +172,11 @@ fn pair_scope_each_read_row_binds_and_resolves_for_both_roles() {
         "a global read is not a side input"
     );
 
-    scope.seed_sides(&ctx.registry.borrow(), &ctx.slot_table.borrow(), &[a, b]);
+    scope.seed_sides(
+        &ctx.registry.borrow(),
+        Some(&ctx.slot_table.borrow()),
+        &[a, b],
+    );
     for (actor, subject) in [(a, b), (b, a)] {
         assert!(scope.select(actor, subject));
         for ((name, role, program, inputs), _) in bound.iter().zip(0..) {
@@ -202,7 +206,11 @@ fn pair_scope_single_player_pawn_reads_its_per_owner_value_at_its_seat() {
     scope.begin_expression();
     let program = bind(&baked(input("stats.heal", Some(HELPER))), &scope).unwrap();
     let inputs = scope.finish_expression();
-    scope.seed_sides(&ctx.registry.borrow(), &ctx.slot_table.borrow(), &[local]);
+    scope.seed_sides(
+        &ctx.registry.borrow(),
+        Some(&ctx.slot_table.borrow()),
+        &[local],
+    );
     assert!(scope.select(local, local));
     assert!(scope.observes(&inputs));
     assert_eq!(
@@ -231,7 +239,7 @@ fn pair_scope_missing_side_value_is_unobserved_bool_included() {
     }
     scope.seed_sides(
         &ctx.registry.borrow(),
-        &ctx.slot_table.borrow(),
+        Some(&ctx.slot_table.borrow()),
         &[seated, bare],
     );
     assert!(scope.select(seated, bare));
@@ -278,15 +286,18 @@ fn refused_rows() -> Vec<(IrNode, &'static str)> {
         ),
         (
             input("player.health", None),
-            "use `byPlayer(assist.helper)` or `byPlayer(assist.target)`",
+            "use `ref.byPlayer(assist.helper)` or `ref.byPlayer(assist.target)` \
+             (Luau: `ref:byPlayer(assist.helper)` or `ref:byPlayer(assist.target)`)",
         ),
         (
             input("stats.heal", None),
-            "use `byPlayer(assist.helper)` or `byPlayer(assist.target)`",
+            "use `ref.byPlayer(assist.helper)` or `ref.byPlayer(assist.target)` \
+             (Luau: `ref:byPlayer(assist.helper)` or `ref:byPlayer(assist.target)`)",
         ),
         (
             input("player.inLifeState:down", None),
-            "use `assist.helper.inLifeState(name)` or `assist.target.inLifeState(name)`",
+            "use `assist.helper.inLifeState(name)` or `assist.target.inLifeState(name)` \
+             (Luau: `assist.helper:inLifeState(name)` or `assist.target:inLifeState(name)`)",
         ),
         (
             input("player.inLifeState:gone", Some(TARGET)),

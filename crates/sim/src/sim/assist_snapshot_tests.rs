@@ -7,6 +7,13 @@ use crate::sim::assist_snapshot::PawnAssistFacts;
 
 impl World {
     fn facts(&self, helpers: &[usize]) -> Vec<PawnAssistFacts> {
+        self.facts_or_none(helpers)
+            .into_iter()
+            .map(|facts| facts.expect("a seated helper has facts"))
+            .collect()
+    }
+
+    fn facts_or_none(&self, helpers: &[usize]) -> Vec<Option<PawnAssistFacts>> {
         let helpers: Vec<EntityId> = helpers.iter().map(|index| self.pawns[*index]).collect();
         self.state.snapshot_facts(
             &self.ctx.registry.borrow(),
@@ -253,4 +260,57 @@ fn assist_snapshot_o40_received_ticks_follow_the_highest_progress_helper() {
     // The completion's fire list revives T in the pass: 0 at that snapshot.
     world.enter(2, "alive");
     assert_eq!(world.received(2), 0);
+}
+
+/// A helper whose seat is in a disconnect hold is outside the `players()`
+/// group: it gets no facts and evaluates nothing, so its seatless per-owner
+/// read spends no fault warning, and a later genuine fault on a seated helper
+/// still warns.
+#[test]
+fn assist_snapshot_held_seat_helper_evaluates_nothing_and_spends_no_warning() {
+    // radius = world.radius / the helper's `stats.heal`.
+    let world = World::new(
+        Some(Assistable {
+            radius: NumberOrIr::Ir(IrNode::Div {
+                a: Box::new(input("world.radius", None)),
+                b: Box::new(input("stats.heal", Some("@assist.helper"))),
+            }),
+            hold_ms: NumberOrIr::Literal(100.0),
+        }),
+        3,
+    );
+    world.enter(2, "down");
+    world.set_owned("stats.heal", 0, 2.0);
+    world
+        .ctx
+        .registry
+        .borrow_mut()
+        .clear_pawn_seat(world.pawns[1]);
+    let faults = |capture: &LogCapture| {
+        capture
+            .records()
+            .iter()
+            .filter(|record| record.message.contains("assistable.radius` faulted"))
+            .count()
+    };
+
+    let capture = LogCapture::start();
+    let facts = world.facts_or_none(&[1, 0]);
+    assert_eq!(facts[0], None, "the held seat's helper gets no facts");
+    assert_eq!(
+        facts[1].as_ref().map(|facts| facts.pairs.clone()),
+        Some(vec![(
+            world.pawns[2],
+            PairValues {
+                radius: 1.0,
+                required_ticks: SIX
+            }
+        )])
+    );
+    assert_eq!(faults(&capture), 0, "the held helper spent no warning");
+
+    // A genuine fault: the seated helper's divisor goes to 0.
+    world.set_owned("stats.heal", 0, 0.0);
+    assert_eq!(world.pairs(0)[0].1.radius, 0.0);
+    assert_eq!(faults(&capture), 1);
 }

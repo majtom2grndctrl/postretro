@@ -74,6 +74,7 @@ fn assist_facts_are_keyed_by_owner_sorted_and_skip_unstamped_pawns() {
         &AssistState::default(),
         &owners,
         &allocator,
+        &[10, 11],
     );
     let expected = |pawns: &[EntityId]| {
         let mut pairs: Vec<WireAssistPair> = pawns.iter().map(|p| unassistable(id(*p))).collect();
@@ -113,6 +114,47 @@ fn assist_facts_o59_no_candidate_is_an_empty_table() {
         &AssistState::default(),
         &owners,
         &allocator,
+        &[7],
     );
     assert_eq!(facts, HashMap::from([(7, WireAssistFacts::default())]));
+}
+
+/// Only a participating owner whose pawn is in the `players()` group gets
+/// facts: a pawn whose seat is in a disconnect hold (binding cleared, owner
+/// still recorded) and an owner not participating are skipped, so nothing is
+/// evaluated for them.
+#[test]
+fn assist_facts_skip_held_seats_and_non_participating_owners() {
+    let mut registry = EntityRegistry::new();
+    let seated = spawn_pawn(&mut registry, 1, true);
+    let held = spawn_pawn(&mut registry, 2, true);
+    let loading = spawn_pawn(&mut registry, 3, true);
+    registry.clear_pawn_seat(held);
+    let mut allocator = NetworkIdAllocator::new();
+    for pawn in [seated, held, loading] {
+        allocator.stamp(pawn);
+    }
+    let mut owners = MovementOwners::new();
+    owners.set(seated, 10);
+    owners.set(held, 11);
+    owners.set(loading, 12);
+    let facts = host_assist_facts(
+        &registry,
+        &SlotTable::default(),
+        &AssistState::default(),
+        &owners,
+        &allocator,
+        &[10, 11],
+    );
+    let id = |pawn| allocator.network_id_for_entity(pawn).unwrap().0;
+    assert_eq!(
+        facts,
+        HashMap::from([(
+            10,
+            WireAssistFacts {
+                pairs: vec![unassistable(id(loading))],
+                received_required_ticks: 0,
+            }
+        )])
+    );
 }

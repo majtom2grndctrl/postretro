@@ -38,7 +38,15 @@ impl AssistDelivery {
         }
     }
 
+    /// Remember `facts` as sent in snapshot `sequence`. A value equal to the
+    /// newest queued one adds nothing: that entry is confirmed by any ack at or
+    /// after its own sequence, which covers this later one, and the confirmed
+    /// value is the same either way. So a still value costs no clone per
+    /// snapshot.
     fn record_sent(&mut self, sequence: u32, facts: &WireAssistFacts) {
+        if self.sent.back().is_some_and(|(_, newest)| newest == facts) {
+            return;
+        }
         if self.sent.len() == MAX_UNACKED_SENDS {
             self.sent.pop_front();
         }

@@ -18,11 +18,16 @@ fn id(index: u32) -> EntityId {
     last.unwrap()
 }
 
-fn life(life_state: u8, elapsed: u32) -> PawnLife {
+fn life(life_state: u8, entry: u32) -> PawnLife {
     PawnLife {
         life_state,
-        elapsed: Some(elapsed),
+        entry: Some(entry),
     }
+}
+
+/// A re-entry of the pawn's current state: its entry count moves on.
+fn reenter(life: &mut PawnLife) {
+    life.entry = life.entry.map(|entry| entry + 1);
 }
 
 fn pair(required_ticks: u32) -> PairValues {
@@ -62,18 +67,13 @@ impl Rig {
         }
     }
 
-    /// One pass: elapsed advances one tick for both pawns, as the host's does
-    /// between passes, then the step runs and its result is kept.
+    /// One pass in which both pawns stay in their states: their entry
+    /// counts hold, so the step's result is kept.
     fn tick(&mut self, held: bool, real_command: bool) -> AssistStep {
-        for pawn_life in [&mut self.helper.life, &mut self.target.life] {
-            if !self.lives.is_empty() {
-                pawn_life.elapsed = pawn_life.elapsed.map(|elapsed| elapsed + 1);
-            }
-        }
         self.run(held, real_command)
     }
 
-    /// One pass with no elapsed advance (the caller set the lives).
+    /// One pass over the lives as the caller set them.
     fn run(&mut self, held: bool, real_command: bool) -> AssistStep {
         let candidates = [self.target];
         let result = step(&AssistStepInput {
@@ -269,11 +269,11 @@ fn assist_step_resets_before_the_table_on_target_switch_and_life_state_change() 
         assert!(switched.step_reset);
         assert_eq!(switched.progress, increment(10));
 
-        // Target re-enters its state (elapsed reset, O9/O25 shape).
+        // Target re-enters its state (entry count moves on, O9/O25 shape).
         let mut rig = Rig::new(runner, 10);
         rig.tick(true, true);
         rig.tick(true, true);
-        rig.target.life.elapsed = Some(0);
+        reenter(&mut rig.target.life);
         let reentered = rig.run(true, true);
         assert!(reentered.step_reset);
         assert_eq!(reentered.progress, increment(10));
@@ -290,45 +290,42 @@ fn assist_step_resets_before_the_table_on_target_switch_and_life_state_change() 
         // Gap-held after a reset keeps the reset 0.
         let mut rig = Rig::new(runner, 10);
         rig.tick(true, true);
-        rig.target.life.elapsed = Some(0);
+        reenter(&mut rig.target.life);
         let gap = rig.run(true, false);
         assert_eq!((gap.row, gap.progress), (AssistRow::GapHeld, 0));
         assert!(gap.step_reset);
     }
 }
 
-/// O25: a helper whose descriptor declares no states (undeclared id, elapsed
-/// held at zero) keeps its progress across a respawn; one in a declared state
-/// restarts from 0.
+/// O25: a helper whose descriptor declares no states (undeclared id) keeps
+/// its progress across a respawn, which moves its entry count on; one in a
+/// declared state restarts from 0.
 #[test]
 fn assist_step_o25_undeclared_helper_keeps_progress_across_respawn_declared_one_restarts() {
     let mut rig = Rig::new(AssistRunner::Host, 10);
     rig.helper.life = life(postretro_foundation::UNDECLARED_LIFE_STATE, 0);
     rig.tick(true, true);
-    rig.helper.life.elapsed = Some(0);
-    rig.target.life.elapsed = rig.target.life.elapsed.map(|e| e + 1);
+    reenter(&mut rig.helper.life);
     let kept = rig.run(true, true);
     assert!(!kept.step_reset);
     assert_eq!(kept.progress, 2 * increment(10));
 
     let mut rig = Rig::new(AssistRunner::Host, 10);
     rig.tick(true, true);
-    rig.helper.life.elapsed = Some(0);
-    rig.target.life.elapsed = rig.target.life.elapsed.map(|e| e + 1);
+    reenter(&mut rig.helper.life);
     let restarted = rig.run(true, true);
     assert!(restarted.step_reset);
     assert_eq!(restarted.progress, increment(10));
 }
 
-/// An absent elapsed compares ids alone: a stalled elapsed is no reset, a
-/// changed id still is (the client runner retains no remote elapsed).
+/// An absent entry count compares ids alone: no re-entry is visible, a
+/// changed id still is (the client runner tracks no entry counts).
 #[test]
-fn assist_step_absent_elapsed_compares_life_state_ids_alone() {
+fn assist_step_absent_entry_compares_life_state_ids_alone() {
     for runner in RUNNERS {
         let mut rig = Rig::new(runner, 10);
-        rig.target.life.elapsed = None;
+        rig.target.life.entry = None;
         rig.tick(true, true);
-        // The helper's elapsed advances; the target's stays absent.
         let kept = rig.tick(true, true);
         assert!(!kept.step_reset);
         assert_eq!(kept.progress, 2 * increment(10));
@@ -338,13 +335,14 @@ fn assist_step_absent_elapsed_compares_life_state_ids_alone() {
     }
     let stored = PawnLife {
         life_state: DOWN,
-        elapsed: Some(50),
+        entry: Some(5),
     };
-    assert!(!life(DOWN, 10).changed_since(Some(PawnLife {
-        elapsed: None,
+    assert!(!life(DOWN, 6).changed_since(Some(PawnLife {
+        entry: None,
         ..stored
     })));
-    assert!(life(DOWN, 10).changed_since(Some(stored)));
+    assert!(life(DOWN, 6).changed_since(Some(stored)));
+    assert!(!life(DOWN, 5).changed_since(Some(stored)));
     assert!(
         life(DOWN, 10).changed_since(None),
         "a new pawn counts as changed"

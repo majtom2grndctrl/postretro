@@ -185,6 +185,17 @@ impl World {
         );
     }
 
+    /// Re-enter `state` on pawn `index` even when it already holds it, as a
+    /// respawn into that state does.
+    fn reenter(&self, index: usize, state: &str) {
+        let data = self.ctx.data_registry.borrow();
+        let block = data.entities[0].life_states.as_ref().unwrap();
+        let (id, profile) = block.state(state).unwrap();
+        self.edit(index, |movement| {
+            postretro_foundation::enter_life_state(movement, id, profile, block.table_revision);
+        });
+    }
+
     fn place(&self, index: usize, x: f32) {
         let mut registry = self.ctx.registry.borrow_mut();
         let mut transform = *registry
@@ -236,6 +247,13 @@ impl World {
     /// One host tick: every live pawn in a declared state advances its elapsed
     /// (the movement stage's clock), then the pass runs.
     fn tick(&mut self, commands: &[Option<Cmd>]) -> Vec<AssistCompletion> {
+        self.advance_clocks();
+        self.pass(commands)
+    }
+
+    /// The movement stage's clock: every live pawn in a declared state
+    /// advances its elapsed by one tick.
+    fn advance_clocks(&self) {
         {
             let registry = self.ctx.registry.borrow();
             let live: Vec<EntityId> = self
@@ -257,6 +275,20 @@ impl World {
                 registry.set_component(pawn, movement).unwrap();
             }
         }
+    }
+
+    /// The accumulator pass alone, with the session's slot table.
+    fn pass(&mut self, commands: &[Option<Cmd>]) -> Vec<AssistCompletion> {
+        let slot_table = self.ctx.slot_table.clone();
+        self.pass_with(commands, Some(&slot_table.borrow()))
+    }
+
+    /// The accumulator pass alone, with `slot_table` (or none).
+    fn pass_with(
+        &mut self,
+        commands: &[Option<Cmd>],
+        slot_table: Option<&postretro_scripting_core::slot_table::SlotTable>,
+    ) -> Vec<AssistCompletion> {
         let mut local = sim_command(false, false);
         let mut remote = Vec::new();
         for (index, command) in commands.iter().enumerate() {
@@ -273,7 +305,7 @@ impl World {
         }
         self.state.run_host_pass(
             &mut self.ctx.registry.borrow_mut(),
-            Some(&self.ctx.slot_table.borrow()),
+            slot_table,
             &local,
             &remote,
         )
@@ -407,7 +439,7 @@ fn helper_and_downed_target() -> World {
 }
 
 /// AC5 permitted: in range on an assistable state completes on the n-th held
-/// tick, recording helper, target, and the target's state and elapsed.
+/// tick, recording helper, target, and the target's state and entry count.
 #[test]
 fn assist_pass_ac5_in_range_completes_on_the_nth_tick_with_the_target_life_at_record() {
     let mut world = helper_and_downed_target();
@@ -430,7 +462,7 @@ fn assist_pass_ac5_in_range_completes_on_the_nth_tick_with_the_target_life_at_re
             helper: world.pawns[0],
             target: world.pawns[1],
             life_state: DOWN,
-            life_state_elapsed_ticks: target.life_state_elapsed_ticks,
+            life_state_entry: target.life_state_entry,
         }]
     );
     assert_eq!(world.movement(0).assist_progress, 0.0);
@@ -823,7 +855,7 @@ fn assist_pass_o9_leave_and_reenter_between_passes_restarts_progress() {
     assert_eq!(world.ticks_to_complete(&[HOLD, IDLE], 20), Some(SIX - 1));
 }
 
-/// O25: a helper in a declared state that respawns (elapsed back to zero)
+/// O25: a helper in a declared state that respawns into that same state
 /// within radius restarts from 0; one whose descriptor declares no states
 /// keeps its progress across the same respawn.
 #[test]
@@ -832,22 +864,132 @@ fn assist_pass_o25_declared_helper_respawn_restarts_undeclared_keeps() {
     for _ in 0..3 {
         world.tick(&[HOLD, IDLE]);
     }
-    world.edit(0, |movement| movement.life_state_elapsed_ticks = 0);
+    world.reenter(0, "alive");
     world.place(0, 0.2);
     world.tick(&[HOLD, IDLE]);
     assert_eq!(world.progress(0), increment(SIX));
 
     let mut world = helper_and_downed_target();
     world.edit(0, |movement| {
-        movement.life_state = UNDECLARED_LIFE_STATE;
-        movement.life_state_elapsed_ticks = 0;
+        postretro_foundation::clear_life_state(movement, 0);
     });
     for _ in 0..3 {
         world.tick(&[HOLD, IDLE]);
     }
+    world.edit(0, |movement| {
+        postretro_foundation::clear_life_state(movement, 0);
+    });
     world.place(0, 0.2);
     world.tick(&[HOLD, IDLE]);
     assert_eq!(world.progress(0), 4 * increment(SIX));
+}
+
+/// O25: a respawn into the same state mid-hold, with no tick in between to
+/// advance either clock, restarts progress, for the target as for the helper:
+/// the entry count moves on even though the state and elapsed match a
+/// continuation's.
+#[test]
+fn assist_pass_o25_respawn_into_the_same_state_mid_hold_restarts_progress() {
+    let mut world = helper_and_downed_target();
+    for _ in 0..3 {
+        world.tick(&[HOLD, IDLE]);
+    }
+    world.pass(&[HOLD, IDLE]);
+    assert_eq!(world.progress(0), 4 * increment(SIX));
+    world.reenter(1, "down");
+    world.pass(&[HOLD, IDLE]);
+    assert_eq!(world.progress(0), increment(SIX));
+    assert_eq!(world.ticks_to_complete(&[HOLD, IDLE], 20), Some(SIX - 1));
+}
+
+/// O9 from a stored elapsed of zero: the target enters `down` mid-tick, after
+/// the movement stage, so the pass stores it at elapsed 0. In the flush it
+/// leaves and re-enters `down` (elapsed 0 again), and the next tick's
+/// movement raises elapsed to 1 as a continuation would. Progress still
+/// restarts, and the hold completes only after a further full required count.
+/// A genuine continuation from the same start does not reset.
+#[test]
+fn assist_pass_o9_reentry_from_a_stored_elapsed_of_zero_restarts_progress() {
+    for reenters in [false, true] {
+        let mut world = World::new(Some(literal(1.5, 100.0)), 2);
+        world.advance_clocks();
+        world.enter(1, "down");
+        world.pass(&[HOLD, IDLE]);
+        assert_eq!(world.movement(1).life_state_elapsed_ticks, 0);
+        assert_eq!(world.progress(0), increment(SIX));
+        if reenters {
+            world.enter(1, "alive");
+            world.enter(1, "down");
+        }
+        assert!(world.tick(&[HOLD, IDLE]).is_empty());
+        assert_eq!(world.movement(1).life_state_elapsed_ticks, 1);
+        if reenters {
+            assert_eq!(world.progress(0), increment(SIX), "the re-entry restarts");
+            assert_eq!(world.ticks_to_complete(&[HOLD, IDLE], 20), Some(SIX - 1));
+        } else {
+            assert_eq!(world.progress(0), 2 * increment(SIX), "a continuation");
+            assert_eq!(world.ticks_to_complete(&[HOLD, IDLE], 20), Some(SIX - 2));
+        }
+    }
+}
+
+/// With no slot table the pass seeds every per-owner side value as missing:
+/// an expression reading one faults (the pair reads out of range) instead of
+/// reusing the previous pass's value, while engine-slot side reads still
+/// evaluate.
+#[test]
+fn assist_pass_without_a_slot_table_reads_per_owner_sides_missing() {
+    // radius = 2 × the helper's `stats.heal`.
+    let mut world = World::new(
+        Some(Assistable {
+            radius: NumberOrIr::Ir(IrNode::Mul {
+                a: Box::new(input("stats.heal", Some("@assist.helper"))),
+                b: Box::new(IrNode::Const {
+                    value: IrValue::Number(2.0),
+                }),
+            }),
+            hold_ms: NumberOrIr::Literal(100.0),
+        }),
+        2,
+    );
+    world.enter(1, "down");
+    world.set_owned("stats.heal", 0, 1.0);
+    world.tick(&[HOLD, IDLE]);
+    assert_eq!(world.progress(0), increment(SIX));
+    world.advance_clocks();
+    world.pass_with(&[HOLD, IDLE], None);
+    assert_eq!(
+        world.state.pair_values(world.pawns[0], world.pawns[1]),
+        Some(PairValues {
+            radius: 0.0,
+            required_ticks: SIX
+        }),
+        "the per-owner read faulted to out of range"
+    );
+    assert_eq!(world.progress(0), 0);
+
+    // radius = 1.5 + 0 × the target's `player.lifeStateMs`: an engine slot.
+    let mut world = World::new(
+        Some(Assistable {
+            radius: NumberOrIr::Ir(IrNode::Add {
+                a: Box::new(IrNode::Const {
+                    value: IrValue::Number(1.5),
+                }),
+                b: Box::new(IrNode::Mul {
+                    a: Box::new(input("player.lifeStateMs", Some("@assist.target"))),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(0.0),
+                    }),
+                }),
+            }),
+            hold_ms: NumberOrIr::Literal(100.0),
+        }),
+        2,
+    );
+    world.enter(1, "down");
+    world.advance_clocks();
+    world.pass_with(&[HOLD, IDLE], None);
+    assert_eq!(world.progress(0), increment(SIX));
 }
 
 /// O21 / O51: a level unload clears progress, latches, row-6 records, pair

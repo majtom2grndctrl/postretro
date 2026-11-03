@@ -211,6 +211,7 @@ pub fn enter_life_state(
     pawn.life_state = id;
     pawn.life_state_table_revision = revision;
     pawn.life_state_elapsed_ticks = 0;
+    pawn.life_state_entry = pawn.life_state_entry.wrapping_add(1);
     restamp_life_state(pawn, Some(profile));
 }
 
@@ -218,6 +219,7 @@ pub fn clear_life_state(pawn: &mut PlayerMovementComponent, revision: u8) {
     pawn.life_state = UNDECLARED_LIFE_STATE;
     pawn.life_state_table_revision = revision;
     pawn.life_state_elapsed_ticks = 0;
+    pawn.life_state_entry = pawn.life_state_entry.wrapping_add(1);
     restamp_life_state(pawn, None);
 }
 

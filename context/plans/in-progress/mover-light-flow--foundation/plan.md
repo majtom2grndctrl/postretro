@@ -1,27 +1,12 @@
 # mover-light-flow--foundation — plan of record
 
 mode: compact
-status: blocked
+status: active
 read at: af1aab9ef
-
-## Block
-
-Acceptance row 14 can't be met as written. Its last clause reads: "The animated-only level reports its gated texels and probes (pin P2)."
-
-A level whose only baked lights are animated bakes no id-25 weights at all, so it has no animated texels to gate:
-- Atlas preparation plans no placements when `StaticBakedLights` is empty (`lightmap_bake/atlas_layout.rs:156,236`).
-- `build_placed_animated_light_chunks` then returns an empty section and logs "no static lightmap placements; baking no animated-light weight maps" (`animated_light_chunks.rs:36-45`).
-
-`StaticBakedLights` still includes SDF-shadow lights, which are filtered out only when the lightmap stage builds its layer lights (`pipeline/lightmap_stage.rs:282-286`). So a level with animated lights plus SDF-shadow static lights does bake weights, and the walk runs with no layer lights.
-
-Proposed restatements. The owner picks one:
-- **(a) Keep the level, restate the outcome:** "The animated-only level reports its gated probes and zero gated texels, since without a static lightmap light it bakes no id-25 weights."
-- **(b) Keep the outcome, restate the level:** "Levels with movers and: no baked lights; only SDF-shadow baked lights; only animated baked lights; animated and SDF-shadow static lights only. Each prints the summary with every mover analysed. The animated-only level reports its gated probes and zero gated texels; the animated-and-SDF-shadow level reports its gated texels and probes (pin P2)."
-
-Recommendation: (b). It keeps the case P2 exists for: the walk running with no layer lights while animated gating still reports texels.
 
 ## Corrections
 
+- **Row 14 restated (owner, 2026-11-02).** An animated-only level bakes no id-25 weights: with `StaticBakedLights` empty, atlas prep plans no placements (`lightmap_bake/atlas_layout.rs:156,236`), and `build_placed_animated_light_chunks` returns empty (`animated_light_chunks.rs:36-45`). The owner chose restatement (a): that level reports gated probes and zero gated texels. No SDF-dependent fixture was added, because SDF shadows are soft-deprecated. Rows 10, 14 and 18 still list SDF-shadow lights as not analysed.
 - **Partition order.** The brief says partitions are consumed "in global light order". In fact items run layer-major: all lights for layer 0, then layer 1 (`pipeline/lightmap_stage.rs:501-505`). The gate keys tallies by `(mover_id, terminus, source_index)`. The report sorts in one light order, so arrival order never reaches the output.
 - **Serial consumer.** The window's serial callback (`lightmap_stage.rs:553-585`) costs about 273 s on the full hallway (roadmap, lightmap stage scheduling). A third consumer there would add straight to wall time.
   - The static gate copies the `StepDetector` shape (`pipeline/lightmap_stage/texel_steps.rs`) instead. It runs per partition on the producing worker under its permit, in both layer-cache `load` hits (`partitions.rs:296`) and `finish` (`:380`). Results gather under a `Mutex` and sort by item.
@@ -75,7 +60,7 @@ Rows are numbered in brief order: Automated, then Manual.
 | 11 spin-axis movers not analysed; zero axis analysed | compile file | achievable as stated |
 | 12 three-waypoint mover uses first and last | compile file | achievable as stated |
 | 13 inside flag at one terminus only (P6) | compile file | achievable as stated |
-| 14 no-baked / SDF-only / animated-only levels (P2) | compile file | **needs restatement** (see Block) |
+| 14 no-baked / SDF-only / animated-only levels; animated-only reports probes, zero texels (P2) | compile file | achievable as restated |
 | 15 `info` line names mover and ≤4 lights, "and N more"; unnamed by bounds centre | setpiece file + generated unnamed mover | achievable as stated |
 | 16 pinned order; identical across cold builds, workers, windows (P4) | subprocess `-j 1` vs `-j 4` + in-process windows 1/3/8 in `pipeline/lightmap_stage/tests.rs` | achievable as stated |
 | 17 no analysis line at warn or above | every subprocess test filters by `[MoverLight]` | achievable as stated |

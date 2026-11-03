@@ -702,14 +702,16 @@ mod tests {
     fn world_anchor_socket_is_optional_and_omitted_when_absent() {
         let socketless = template(
             serde_json::json!({ "kind": "glyph", "command": "assist" }),
-            serde_json::json!({ "offsetY": 0.6 }),
+            // 0.5 is exact in f32, so the round trip doesn't depend on
+            // serde_json's float formatting features.
+            serde_json::json!({ "offsetY": 0.5 }),
         );
         socketless.validate().unwrap();
         let anchor = socketless.world_anchor.as_ref().unwrap();
         assert_eq!(anchor.socket, None);
         assert_eq!(
             serde_json::to_value(anchor).unwrap(),
-            serde_json::json!({ "offsetY": 0.6 })
+            serde_json::json!({ "offsetY": 0.5 })
         );
     }
 

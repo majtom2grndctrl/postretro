@@ -3289,8 +3289,9 @@ export type WidgetCaptureMode = "capture" | "passthrough"
 --- `anchor` and `offset`. Decorative: no focus or accessibility node. A missing
 --- image draws nothing.
 export type TreeBackground = { image: string }
---- Placement envelope props for `Tree`. `anchor` + `offset` position the root in
---- 1280x720 logical UI space; `captureMode`, `initialFocus`, and
+--- Placement envelope props for `Tree`. `anchor` + `offset` position the root
+--- against the window's corners and edges, in logical UI px (1280x720 at 16:9,
+--- scaled uniformly); `captureMode`, `initialFocus`, and
 --- `textEntryTarget` control modal/input behavior. `restoreOnReturn` (on by
 --- default) returns focus to the control it left when a tree pushed above
 --- closes; `false` lands on `initialFocus`. `background` draws one UI image

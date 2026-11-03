@@ -39,7 +39,8 @@ impl CaptureMode {
 
 /// Top-level placement envelope wrapping the root widget. `anchor`/`offset`
 /// live ONLY here, not on widget variants: a widget tree is placed once, as a
-/// whole, against the logical-reference canvas (see `layout::Anchor`). `offset`
+/// whole, against the backbuffer-sized logical canvas, so a corner anchor sits
+/// on the window's corner (see `postretro_ui::layout::logical_canvas_size`). `offset`
 /// is logical-reference px, `[x, y]` (+x right, +y down), matching
 /// `UiElement::offset`.
 ///

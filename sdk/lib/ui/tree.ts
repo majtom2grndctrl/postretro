@@ -15,8 +15,8 @@ import type { Ref, WidgetDescriptor, WidgetRole } from "./widgets";
 /**
  * The nine placement anchors a tree may be pinned to. Mirrors `descriptor.rs`
  * `layout::Anchor` (camelCase wire literals). The anchor is both the reference
- * point on the logical-reference canvas and the tree's own pivot; `offset`
- * nudges it from there.
+ * point on the window-sized logical canvas (a corner anchor sits on the
+ * window's corner) and the tree's own pivot; `offset` nudges it from there.
  */
 export type WidgetAnchor =
   | "topLeft"
@@ -39,7 +39,7 @@ export type WidgetCaptureMode = "capture" | "passthrough";
 
 /**
  * Placement-envelope props for `Tree`. `anchor` and `offset` place the whole
- * tree once against the logical-reference canvas. `captureMode` defaults to
+ * tree once against the window-sized logical canvas. `captureMode` defaults to
  * `"passthrough"` (omitted from the wire form). `initialFocus` names the node
  * focus starts on when this tree tops the modal stack; `textEntryTarget` is the
  * writable String slot this tree's text entry edits. Both optional and omitted

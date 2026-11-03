@@ -283,9 +283,7 @@ impl App {
                         &mut session.host_overlay_fact_tracker,
                     );
                 }
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.set_presentation_templates(presentation_templates);
-                }
+                self.install_presentation_templates(presentation_templates);
                 if let Some(endpoint) = self
                     .session
                     .as_mut()

@@ -13,6 +13,9 @@ use crate::input::{
 };
 use crate::*;
 
+#[path = "template_glyphs.rs"]
+mod template_glyphs;
+
 /// The glyph art the renderer holds: what it was loaded for, and the image
 /// keys it produced.
 #[derive(Debug, Default)]
@@ -25,6 +28,11 @@ pub(crate) struct GlyphArtState {
     /// rather than every frame. Interior: the per-frame resolve reads the
     /// session shared.
     warned_unknown_commands: RefCell<HashSet<String>>,
+    /// Counts completed art loads, so glyphs resolved before the art arrived
+    /// resolve again once it has.
+    art_generation: u64,
+    /// The presentation templates whose glyphs resolve against this art.
+    templates: template_glyphs::TemplateGlyphs,
 }
 
 impl GlyphArtState {
@@ -40,6 +48,7 @@ impl GlyphArtState {
     /// renderer holding it is gone, or other images just took its keys.
     pub(crate) fn invalidate(&mut self) {
         self.loaded = None;
+        self.templates.resend();
     }
 
     /// The keys the art registered, once it is loaded for the current
@@ -136,6 +145,7 @@ impl App {
         {
             session.mod_ui_images.warn_unknown_backgrounds(glyph_keys);
         }
+        self.refresh_template_glyphs();
     }
 
     fn reload_glyph_art_if_stale(&mut self) {
@@ -179,6 +189,7 @@ impl App {
         session.loading_screen.disown_images(&keys);
         session.glyph_art.loaded = Some((glyphs, reload_generation));
         session.glyph_art.keys = keys;
+        session.glyph_art.art_generation += 1;
         session
             .mod_ui_images
             .warn_glyph_collisions(&session.glyph_art.keys);

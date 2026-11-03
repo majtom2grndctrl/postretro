@@ -55,4 +55,34 @@ The owner dropped the brief's original one-texel-column bound on 2026-11-02. It 
 
 ## Report totals
 
-To be filled at build (Manual AC).
+The always-printed "Mover lighting:" block from cold (`--no-cache`) branch builds at 163570e72, 2026-11-02/03. Mask estimates are bytes of the id 22/25/42 lightmap family.
+
+| Map | Movers analysed / not | Rows | Gated texels (shared / differing) | Gated probes (shared / differing) | Side count (carried dynamic / other) | Every-gated mask est. | Differing-only mask est. | Lightmap family |
+|---|---|---|---|---|---|---|---|---|
+| mover-setpiece | 2 / 0 | 14 | 3,373,746 (1,221,040 / 2,152,706) | 6,443 (1,000 / 5,443) | 1 / 0 | 3,374,282 B (10.58%) | 2,153,066 B (6.75%) | 31,879,968 B |
+| stress-warren-showcase | 8 / 0 | 44 | 3,230,293 (9,718 / 3,220,575) | 4,176 (0 / 4,176) | 0 / 47 | 3,231,333 B (0.20%) | 3,221,239 B (0.20%) | 1,646,848,816 B |
+| kinematic-platform | 5 / 1 | 25 | 478,392 (0 / 478,392) | 123 (0 / 123) | 3 / 3 | 478,704 B (0.21%) | 478,704 B (0.21%) | 233,443,492 B |
+| campaign-test | 3 / 0 | 5 | 293,162 (50,226 / 242,936) | 621 (64 / 557) | 0 / 22 | 293,234 B (0.12%) | 242,992 B (0.10%) | 250,405,204 B |
+| stress-warren-hallway-inspection | 11 / 0 | 78 | 18,032,411 (3,129,412 / 14,902,999) | 56,672 (11,040 / 45,632) | 1 / 0 | 18,034,491 B (0.68%) | 14,904,911 B (0.57%) | 2,636,264,704 B |
+
+No map has a baked light left unanalysed. The hallway block is identical across its three branch builds (two timing runs and the gate-breakdown run).
+
+**Step-5 read (per-state masks).** Only `mover-setpiece` is a material fraction of its lightmap family (6.75% differing-only, 10.58% every-gated); the large maps sit at or under 0.7%, so per-state masks are affordable if the estimate is sound. It is biased in both directions: one centre segment per texel runs low on soft-emitter penumbrae and can count edge texels lit only by off-centre samples (see "Centre-segment estimate at shadow edges"), so the differing-only figures are sizing guides, not bounds.
+
+### Row 21: compile-time cost on `stress-warren-hallway-inspection`
+
+Cold `--no-cache --no-tui`, default `--jobs`, `/usr/bin/time -l` under `caffeinate -dimsu`, release binaries, one run at a time, no `-v`. Machine: Intel Core i9-9980HK, 8 cores / 16 logical. Parent is `af1aab9ef` (the merge-base; source equals main), branch is 163570e72. Both used the same `scripts-build` beside the binary. Before each timed run, `pgrep` showed no cargo, rustc or prl-build process, and the one-minute load average was 1.9 to 2.0 (a settle gate of < 2.0 the driver enforced; the pilot, p1, started at 7.6 because it followed the failed first attempt's 34 s burst, so it is shown separately and left out of the means). Unit: seconds, peak RSS in GB (decimal, bytes from `time -l`).
+
+| Run | Binary | Lightmap Bake | Total | Peak RSS |
+|---|---|---|---|---|
+| p1 (pilot) | parent | 565.17 | 796.28 | 8.83 |
+| 1 | parent | 561.02 | 786.49 | 8.36 |
+| 2 | branch | 572.27 | 802.94 | 8.08 |
+| 3 | parent | 564.15 | 790.20 | 8.69 |
+| 4 | branch | 571.97 | 803.27 | 7.85 |
+
+- **Lightmap Bake.** Parent mean 562.59 s (spread 3.13 s, 0.56%; with the pilot, 563.45 s over three runs, spread 4.15 s). Branch mean 572.12 s (spread 0.30 s). Delta +9.53 s, +1.69%.
+- **Outside Lightmap Bake.** The extra branch run with `RUST_LOG=info,prl_build::pipeline::lightmap_stage=debug,prl_build::pipeline::mover_light_stage=debug` (not a timing row; Lightmap Bake 575.64 s) printed: probe tier 491.0 ms over 2,212,901 probes, animated tier 5.9 ms, static tier 3,851.2 ms summed over workers (CPU time inside the walk, about 0.24 s of wall across 16 workers).
+- **Whole cost.** 9.53 + 0.49 + 0.006 = 10.03 s, or 1.78% of parent Lightmap Bake against the 3% budget (16.88 s). Pairing the extremes (slowest branch against fastest parent) gives 11.75 s, 2.09%.
+- **Reading.** Passes. The parent's run-to-run spread (0.56%) is well under the 3% budget, so the margin is real at n = 2 per binary. The static tier's wall share is far smaller than the observed delta, so most of the +9.5 s is not the gate's own passes; the debug lines do not say where it lands (partition retention, extra memo work in the walk, or drift).
+- **Peak RSS.** No growth: parent mean 8.52 GB (8.36, 8.69; pilot 8.83), branch mean 7.96 GB (8.08, 7.85; gate run 8.22), a 0.56 GB drop, larger than the parent pair's 0.33 GB spread but with n = 2 and no mechanism for a saving. Read as "no growth observed", not as a saving.

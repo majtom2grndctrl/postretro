@@ -92,36 +92,37 @@ read at: af1aab9ef
 
   Parse rejects broken and one-waypoint non-spinning paths, so every not-analysed mover with a side count is a spinner.
 - **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
+- **Row 21 unexplained delta.** The hallway Lightmap Bake grew 9.5 s (1.69%) while the static tier is about 0.24 s of wall. Within budget, but most of the growth is not the gate's own passes (partition retention, memo work in the walk, or drift). Profiling candidate if the budget tightens.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
 ## AC-to-proof
 
 Rows are numbered in brief order: Automated, then Manual.
 
-| AC | Proof | Status |
-|---|---|---|
-| 1 `setpiece_wall` closed and open rows (P1) | `tests/mover_light_gate_setpiece.rs`, subprocess cold bake, `-v` + `RUST_LOG=debug` | achievable as stated |
-| 2 `setpiece_room` lowered and raised, shaft shared | same file | achievable as stated |
-| 3 hollow mover posed as brushes | `mover_light_gate/tests.rs` pose unit test + generated map in `tests/mover_light_gate_compile.rs` | achievable as stated |
-| 4 each mover posed alone | compile file, two-mover generated map | achievable as stated |
-| 5 side count: room lamp carried, wall none, no dynamic in rows | setpiece file | achievable as stated |
-| 6 shared + differing = union; estimates ordered; P5 | proptest in `mover_light_gate/rows.rs` + P5 generated map | achievable as stated |
-| 7 single-block estimate; percentage divisor; n/a | unit tests (arithmetic, n/a) + subprocess divisor check against the PRL section table | achievable as stated |
-| 8 non-meeting light has no row; probe-only row | compile file | achievable as stated |
-| 9 probe exclusions (range, cone, static, invalid) | unit tests on a hand-built probe line (`mover_light_gate::tests`) | achievable as stated |
-| 10 directional, animated ordering, SDF not analysed | compile file (animated, SDF) + unit tests on `TexelGate` and `gate_probes` (directional: no sun lights anything in a sealed generated map) | achievable as stated |
-| 11 spin-axis movers not analysed; zero axis analysed | compile file | achievable as stated |
-| 12 three-waypoint mover uses first and last | compile file | achievable as stated |
-| 13 inside flag at one terminus only (P6) | compile file | achievable as stated |
-| 14 no-baked / SDF-only / animated-only levels; animated-only reports probes, zero texels (P2) | compile file | achievable as restated |
-| 15 `info` line names mover and ≤4 lights, "and N more"; unnamed by bounds centre | setpiece file + generated unnamed mover | achievable as stated |
-| 16 pinned order; identical across cold builds, workers, windows (P4) | subprocess `-j 1` vs `-j 4` + in-process windows 1/3/8 in `pipeline/lightmap_stage/tests/mover_gate_tests.rs` | achievable as stated |
-| 17 no analysis line at warn or above | every subprocess test filters by `[MoverLight]` | achievable as stated |
-| 18 warm rows (P3, P7, P8 and the listed edits) | `tests/mover_light_gate_cache.rs`, subprocess, shared `--cache-dir`, verify `0` on warm builds | achievable as stated |
-| 19 packed PRL byte-identical to parent for `campaign-test`, `mover-setpiece` | `tests/mover_light_gate_prl_parity.rs`, `#[ignore]`, fails on missing baseline, asserts 2 compared | achievable as stated |
-| 20 no-mover level prints only the summary line | compile file | achievable as stated |
-| 21 hallway cost ≤3% of Lightmap Bake; peak RAM growth reported | manual, idle cold runs vs parent, same `-j` | manual |
-| 22 report totals in `research.md` for five maps + step-5 read | manual measurement | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| 1 `setpiece_wall` closed and open rows (P1) | `tests/mover_light_gate_setpiece.rs`, subprocess cold bake, `-v` + `RUST_LOG=debug` | achievable as stated | pass (163570e72 gate) |
+| 2 `setpiece_room` lowered and raised, shaft shared | same file | achievable as stated | pass (163570e72 gate) |
+| 3 hollow mover posed as brushes | `mover_light_gate/tests.rs` pose unit test + generated map in `tests/mover_light_gate_compile.rs` | achievable as stated | pass (163570e72 gate) |
+| 4 each mover posed alone | compile file, two-mover generated map | achievable as stated | pass (163570e72 gate) |
+| 5 side count: room lamp carried, wall none, no dynamic in rows | setpiece file | achievable as stated | pass (163570e72 gate) |
+| 6 shared + differing = union; estimates ordered; P5 | proptest in `mover_light_gate/rows.rs` + P5 generated map | achievable as stated | pass (163570e72 gate) |
+| 7 single-block estimate; percentage divisor; n/a | unit tests (arithmetic, n/a) + subprocess divisor check against the PRL section table | achievable as stated | pass (163570e72 gate) |
+| 8 non-meeting light has no row; probe-only row | compile file | achievable as stated | pass (163570e72 gate) |
+| 9 probe exclusions (range, cone, static, invalid) | unit tests on a hand-built probe line (`mover_light_gate::tests`) | achievable as stated | pass (163570e72 gate) |
+| 10 directional, animated ordering, SDF not analysed | compile file (animated, SDF) + unit tests on `TexelGate` and `gate_probes` (directional: no sun lights anything in a sealed generated map) | achievable as stated | pass (163570e72 gate) |
+| 11 spin-axis movers not analysed; zero axis analysed | compile file | achievable as stated | pass (163570e72 gate) |
+| 12 three-waypoint mover uses first and last | compile file | achievable as stated | pass (163570e72 gate) |
+| 13 inside flag at one terminus only (P6) | compile file | achievable as stated | pass (163570e72 gate) |
+| 14 no-baked / SDF-only / animated-only levels; animated-only reports probes, zero texels (P2) | compile file | achievable as restated | pass (163570e72 gate) |
+| 15 `info` line names mover and ≤4 lights, "and N more"; unnamed by bounds centre | setpiece file + generated unnamed mover | achievable as stated | pass (163570e72 gate) |
+| 16 pinned order; identical across cold builds, workers, windows (P4) | subprocess `-j 1` vs `-j 4` + in-process windows 1/3/8 in `pipeline/lightmap_stage/tests/mover_gate_tests.rs` | achievable as stated | pass (163570e72 gate) |
+| 17 no analysis line at warn or above | every subprocess test filters by `[MoverLight]` | achievable as stated | pass (163570e72 gate) |
+| 18 warm rows (P3, P7, P8 and the listed edits) | `tests/mover_light_gate_cache.rs`, subprocess, shared `--cache-dir`, verify `0` on warm builds | achievable as stated | pass (163570e72 gate) |
+| 19 packed PRL byte-identical to parent for `campaign-test`, `mover-setpiece` | `tests/mover_light_gate_prl_parity.rs`, `#[ignore]`, fails on missing baseline, asserts 2 compared | achievable as stated | pass: 2 maps compared, baselines at af1aab9ef |
+| 20 no-mover level prints only the summary line | compile file | achievable as stated | pass (163570e72 gate) |
+| 21 hallway cost ≤3% of Lightmap Bake; peak RAM growth reported | manual, idle cold runs vs parent, same `-j` | manual | pass: +10.03 s whole cost, 1.78% of parent Lightmap Bake (budget 16.88 s); peak RSS no growth (research.md §Row 21) |
+| 22 report totals in `research.md` for five maps + step-5 read | manual measurement | manual | pass: five maps and step-5 read in research.md §Report totals |
 
 ## Tasks
 
@@ -137,6 +138,6 @@ Rows are numbered in brief order: Automated, then Manual.
 | 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | done: `mover_light_gate_compile` 13 pass (rows 3, 4, 7, 8, 10–15, 17, 20), `mover_light_gate_setpiece` 3 pass (rows 1, 2, 5, 15) |
 | 9 | Determinism (16) and warm rows (18) | worker | 7 | done: `mover_light_gate_cache` 11 pass (3.9 s): P3, P8, every row-18 edit, `-j 1` vs `-j 4`, two cold builds; windows 1/3/8 in `mover_gate_tests` |
 | 10 | PRL parity test (19) | worker | — | done: `mover_light_gate_prl_parity` passed, 2 maps compared (baselines at af1aab9ef, built in this checkout) |
-| 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | docs done (26c002e46 and review rounds); manual rows 21–22 outstanding (need an idle machine) |
+| 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | done: docs (26c002e46 and review rounds); rows 21–22 measured overnight 2026-11-02/03, research.md §Report totals and §Row 21 |
 
 Tasks 2, 3, 5 and 10 can run concurrently once task 1 lands. Tasks 6 and 7 share no files.

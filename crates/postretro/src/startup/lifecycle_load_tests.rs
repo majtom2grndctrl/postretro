@@ -3158,6 +3158,9 @@ const NOT_LOAD_PROGRESS: &[&str] = &[
     "StageProgress",
     // The level compiler's TUI worker: a detached bake's stage counts.
     "DetachProgress",
+    // The assist accumulator's per-helper revive/assist progress: gameplay
+    // state in the sim crate, unrelated to level loading.
+    "HelperProgress",
 ];
 
 /// Files whose `fn fraction(` is not a progress counter.

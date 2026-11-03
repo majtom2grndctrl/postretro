@@ -6,6 +6,8 @@
 > **Read this when:** designing probe selection, a runtime radiosity update, any probe that changes with lighting at runtime, door-driven lighting, or a bake-only artefact.
 > **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. Google's legacy PDF path (`patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`) still serves grants below ~US 8.8M and pre-2015 applications: **full claim text** was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1. **Every other filing is charted from search-snippet paraphrase** (column *Source*).
 > **Update 2026-10-30:** `patents.google.com` and `patentscope.wipo.int` are now allowed. Full claims were read for Take-Two '688 / '404 and Tencent WO2026113651A1 (machine translation). Google Patents then rate-limited (HTTP 503) the US12293451B2 page and Patentscope refuses automated queries (HTTP 403), so '451 claim text is still unread; see §Prior art verified 2026-10-30. Statuses and expiry projections are unverified. To chart the rest, allow `patents.google.com`, `patents.justia.com`, `ppubs.uspto.gov`, `worldwide.espacenet.com` and `patentscope.wipo.int`. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
+>
+> **Update 2026-11-03:** '451's granted claims were read from the B2 PDF; see §US12293451B2 claim text, which corrects this file's earlier family and expiry notes. Mover-channel prior art: §Prior art for the mover state channel.
 
 ---
 
@@ -26,7 +28,7 @@
 | US20210012562A1 "Probe-based dynamic GI" | NVIDIA | 2019-07-11 | Reported abandoned 2023-08-23 (not re-confirmed); published 2021-01-14, citable art | Summary | 1, 2 |
 | WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending (published 2026-06-04; PCT/CN2025/126544); US national phase ≈2027-05, EP ≈2027-06 | Machine translation, all 23 claims, Google Patents 2026-10-30 | 2, 4 |
 | US10137372B2 "Light probe culling based upon visibility" | Square Enix (Eidos Montréal) | filed 2016-12-14 | Granted 2018-11-27; ≈2036-12 + PTA | Abstract verbatim; claims snippet | 2, 4, 7 |
-| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 | Granted 2025-05-06; ≈2042 + PTA | Snippet, claims 1–3; USPTO-record snippet 2026-10-30 (claim 1 says "radiance transfer parameter"); same title as CN114419240B, family link unconfirmed | 3, 4, 5, 7 |
+| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 (CN112927341A/B; WO2022206380A1; US20230076326A1) | Granted 2025-05-06; ≈2043-01-19 with 309 days PTA (Google, assumed); fees not checked | Granted B2 PDF (scanned), all 20 claims read 2026-11-03; see §US12293451B2 claim text | 3, 4, 5, 7 |
 | US8558837B2 "Modular radiance transfer" | Disney | 2010-01-18 | PTA 835 days → ≈2032-06-30 if fees paid | Full PDF | 3 |
 | US10290148B2 / US10796479B2 | Suntracker (Ashdown) | CIP chain to 2012-04-13 | ≈2032-04, counsel to confirm CIP term | Snippet, claim 1 and dependents | 3, 5 |
 | US10672177 (from US20170116773A1) | Geomerics → ARM | 2015-10-23 | Granted; ≈2036 | Title and abstract | 3, 6 |
@@ -206,6 +208,66 @@ Shipped water reflection (compile-time capture, colour + distance tiles, distanc
 | Suntracker US20170345208A1 / US10290148B2 | Not re-found this pass; earlier snippet chart stands | — |
 
 **For door and mover light flow.** The door channel and mover rest-pose channel blend direct-light visibility masks by mover state; no light source changes and no transfer × coefficient step exists, so '451's indirect elements stay absent for direct-only channels. Door bounce deltas (optional) keep the '451 question, now with Quake styles + ericw-tools `_bouncestyled` as the closest art for a scalar × baked per-light bounce layer. Compose on a mover dock event is an occluder event, not light source change information; still frame any compose gate as residency or visibility (piece 5 design-around).
+
+## US12293451B2 claim text (read 2026-11-03)
+
+Read from the granted B2 PDF's page images (scanned, no text layer; Google Patents HTML returned 503, Justia, Espacenet and image-ppubs refused). Transcribed by an agent, so re-check against a certified copy before a decision rests on wording. Engineering triage for counsel, not an opinion.
+
+**Family.** CN202110359533.9 → CN112927341A/B → PCT/CN2022/081063 (WO2022206380A1) → US20230076326A1 → US12293451B2 (continuation). CN114419240B is *not* in this family: it is CN202210337007.7 (priority 2022-04-01, WO2023185262A1), an uncharted Tencent filing.
+
+**Claim 1** (9 device, 17 media recite the same steps), verbatim: "(a) determining light source change information when a light source changes in a virtual scene; (b) determining a current light source projection coefficient corresponding to the changed light source according to the light source change information; (c) determining an indirect illumination value of a target pixel point in the virtual scene according to a radiance transfer parameter corresponding to the target pixel point in the virtual scene and the current light source projection coefficient; (d) determining a direct illumination value corresponding to the target pixel point under the changed light source; and (e) performing illumination rendering on the target pixel point according to the direct illumination value and the indirect illumination value."
+
+| Claims | Adds |
+|---|---|
+| 2 / 10 / 18 | Coefficient from an "illumination transform matrix" and the pre-change coefficient |
+| 3 / 11 / 19 | Static-object pixel: transfer from "a lightmap matching the target pixel point" |
+| 4 / 12 | That texel via the texture mapping relationship |
+| 5 / 13 | Dynamic-object pixel: transfer from "a light probe matching the target pixel point" |
+| 6 / 14 | Update per-direction probe brightness from coefficient × transfer, interpolate, evaluate with the pixel normal |
+| 7 / 15 | Bake projects the light onto basis functions, each a virtual light; transfer ray-traced into lightmaps and probes |
+| 8 / 16 / 20 | Distant light; the change is its direction |
+
+**Description.** "Light source change information" "may include at least one of light source position change information, light source intensity change information, or light source direction change information" (col 5), found by comparing against the pre-change light. The projection coefficient is the light projected onto a basis (SH, spherical Gaussians, piecewise; col 5). The radiance transfer parameter includes self-occlusion and interreflection, stored per lightmap texel per basis function or per probe face (cols 7, 20, 24), and "when a light source changes, the radiance transfer parameter does not change" (col 17). Doors, occluders and object movement never appear as a trigger; dynamic objects appear only as probe-lit receivers (col 14). The face cites Wang 2007 (spectral-mesh PRT) and Peterson and Wang US applications, not Sloan 2002, Quake lightstyles, Enlighten or Suntracker.
+
+**What "light intensity" covers.** The light source's own output, not baked lighting: baked lightmaps and probes are the transfer side of (c). The claim targets a light that changes at runtime *and* whose indirect comes from precomputed transfer.
+
+| Engine tier | (a) light changes | (c) indirect from baked transfer × coefficient | Reading |
+|---|---|---|---|
+| Static baked lights, never animated | No | Summed into id 34, no coefficient | Absent |
+| Animated-baked lights, indirect (id 27 deltas × curve) | Leans present (intensity change, col 5) | Arguable: per-light unit per-probe delta; claims 5–6 read transfer from probes | **Top counsel question** (Piece 5) |
+| Animated-baked lights, direct only (id 45, id 25 weights) | Leans present | No indirect | Absent while id 25 carries no bounce |
+| Dynamic runtime lights | Yes | No baked transfer; no bounce | Absent |
+| Mover direct-SH channel (`drafts/mover-light-flow--direct-sh-channel/`) | No: an occluder moves; the light never changes | Direct only | Absent |
+| Mover bounce (unplanned) | No while gated lights are static | Arguable, though transfer varying with occluder pose inverts col 17's premise | Becomes '451-shaped if a gated light also carries a curve |
+
+**Corrections to this file.**
+
+- Line 29 previously paired '451 with CN114419240B and gave "≈2042 + PTA"; corrected above.
+- §Prior art verified's "'Basis functions' appears in the description, not confirmed in cl. 1": confirmed; basis wording first appears in claims 7 and 15.
+- Piece 5, '451 (b)/(c) row: "transfer per probe, not per pixel" does not distinguish: claims 5–6 read the target pixel's transfer from a probe.
+- Piece 5, '451 (a) row: for curve-driven lights it leans present, not "unclear", given col 5's intensity change.
+- Claim 3 rows (Pieces 3, 6): claim 3's transfer is per basis function (claim 7), not per light. The summed bounce layer stays absent because no coefficient multiplies it.
+- §For door and mover light flow, "a dock event is an occluder event, not light source change information": confirmed by col 5.
+
+**Design-arounds for mover work.** Keep the mover channels direct only. Drive recomputation by mover state, never light state. If mover bounce is ever built, store it absolute at the light's fixed intensity, and never on a light that also carries a curve.
+
+**Counsel questions.** (1) Does "projection coefficient" require basis projection (col 5 definition; claim 7 differentiation), and is a per-light scalar or RGB intensity one? (2) Is a baked per-light unit response a "radiance transfer parameter" when the description defines it per basis function? (3) Does evaluating curves every frame meet "when a light source changes"? (4) Validity of claims 1, 5, 6 against uncited art: Quake lightstyles, Sloan 2002, Enlighten 2010, Suntracker. (5) Could a moving occluder count as a light source change? (6) Chart CN114419240B / WO2023185262A1 and any US counterpart; check '451 maintenance fees.
+
+## Prior art for the mover state channel (2026-11-03)
+
+Design: per baked light a mover blocks, its direct visibility stored per probe (brief 1) and per texel (brief 2) at each end of travel, blended at runtime by the mover's path position. Verbatim means quoted from source code, docs or changelog.
+
+| Element | Closest art | Date | Evidence | Closeness |
+|---|---|---|---|---|
+| Mover shadow baked at a chosen pose | UE1 Mover `WorldRaytraceKey` ("whatever you set this to is where the mover will block light"), `BrushRaytraceKey`; ericw-tools bmodel `_shadow` (TyrUtils v0.7) | 1998; 2013-04-10 | Verbatim (Unreal Wiki mirror, `DarklightGames/unrealwiki` `mover-ut.html`; `Mover.uc` not read); verbatim (`docs/light.rst`, changelog) | Same, one pose |
+| Per-state baked layer switched at runtime | ericw-tools `_switchableshadow` (0.15.10): bmodel shadow on its own lightstyle, toggled by `lightstyle()`; `_switchableshadow_target` (2.0.0-alpha9) | 2017-07-30; 2025-02-06 | Verbatim (`light.rst`, changelog, `light/ltface.cc`) | Similar: per caster not per light, present vs absent not two poses, lightmaps only (lightgrid does not carry it) |
+| Continuous blend of baked probe states | Unity APV `ProbeReferenceVolume.BlendLightingScenario(name, factor)`; "HDRP changes only the indirect lighting data" | SRP 14.0.2 (changelog dates inconsistent; about 2021–22) | Verbatim (Unity Graphics repo docs and CHANGELOG) | Similar: whole scene, indirect, script-keyed |
+| Door gates which lights reach an area | Doom 3 `connectedAreas` ("avoid drawing interactions when the light is behind a closed door"), `idMover::SetPortalState` | 2004 | Verbatim (GPL source) | Same, runtime lights, binary |
+| Door event switches a baked light layer | Quake 1 `doors.qc` `door_go_up` → `SUB_UseTargets()`; `misc.qc` `light_use` → `lightstyle(self.style, "m"/"a")` | 1996 | Verbatim (v1.01 QC) | Similar, binary or time-ramped |
+
+Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirmed); a ModDB Doom 3 tutorial blending open and closed lightmaps by script; a gamedev.net post on open/closed probe sets near doors (≈2019).
+
+**Not found:** a blend keyed to mover position; per-(occluder pose, light) probe data; the combination. These are where the design is new, not exposure: no live claim charted so far (Take-Two '688/'404, '451) reads on it. Blocked this pass: wiki.beyondunreal.com, docs.unity3d.com, dev.epicgames.com, moddb.com, gamedev.net, quakewiki.org.
 
 ## Summary
 

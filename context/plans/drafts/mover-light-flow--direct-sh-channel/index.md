@@ -10,11 +10,12 @@ Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Mov
 
 - **Direct light only, driven by mover state.** The channel changes only the direct-SH compose. Indirect (ids 34, 27) is untouched, which keeps '451 claim 1's indirect element (c) absent. A recompute fires only on a mover-state change, never on a light-source change. Any compose gate is framed as residency or visibility (`ip-check.md` §Piece 5 design-arounds, §For door and mover light flow). The channel stores per-light visibility and never swaps in an ambient or AO layer (§Piece 7). The claim chart is an engineering reading for counsel.
 - **Representation: one scalar per state.** Per (mover, terminus, light, valid probe) the section stores q_k: the fraction of the light's baked soft visibility there that survives with the mover posed at terminus k, from the bake's own samples and seed. Warrant: `bake_probe_direct_rgb` stores one light at one probe as a single lobe × radiance × one scalar visibility, so the terminus state is exactly S_k = q_k × T (T being that light's per-probe tile), and a tile per state would only repeat T. Rival and byte estimates: `research.md`.
-- **Runtime blend.** Compose builds each gated light's term as lerp(S₀, S₁, t), a lerp of two stored terminus states and never base + t × a stored transfer delta, and puts it in place of the light's mover-absent term. T comes from the light's id-41 or id-45 entry at that cell when one exists, else the section carries it. With q ≡ 1 there is no residue: the atlas equals today's.
+- **Runtime blend.** Compose builds each gated light's term as lerp(S₀, S₁, t′), a lerp of two stored terminus states of a light that does not change, and puts it in place of the light's mover-absent term. Algebraically this equals base + (lerp(q₀, q₁, t′) − 1) × T. The IP footing is not the formula's shape but that the term is direct light and the scalar is occluder state, not a light-source change (claim chart of US12293451B2 claim 1, 2026-11-03, for counsel). T comes from the light's id-41 or id-45 entry at that cell when one exists, else the section carries it. With q ≡ 1 there is no residue: the atlas equals today's.
 - **Several movers on one light.** Each mover is still baked alone (`plans/done/mover-light-flow--foundation/`). Where several movers gate one light at one probe, compose multiplies their lerped visibilities. The result is never brighter than any single mover leaves it, and never negative.
 - **Promotion.** The gated term lives inside the baked arm: a mover or mesh receives (1 − w) × lerp(S₀, S₁, t) + w × the runtime term, animated lights scaled by their curve. The runtime arm is unchanged, because promoted and dynamic slots already render movers as casters (`RigidOccluderDepthPass::record_kinematic_movers`, gated by `entity_occluder_eligible`). No receiver sums a light twice (`rendering_pipeline.md` §4).
 - **Lights and movers in scope.** Gated lights are id 35's static lightmap lights, directional included, and id 45's animated-baked lights; SDF-shadow lights are absent from id 35, so nothing gates them. The unit is (mover, terminus), termini only, over the movers the foundation analyses (no spinners).
 - **Blend scalar t.** t is the mover's arc-length fraction along its path: 0 at the first waypoint, 1 at the last. Intermediate waypoints are crossed linearly. Each peer derives t from the final post-tick phase the blocked-portal rebuild reads; phase already replicates (`WireKinematicMoverState`), so there is no wire change.
+- **Author ramp (owner, 2026-11-03).** Two `kinematic_mover` keys reshape t into the blend input t′ = clamp((t − s) / (e − s), 0, 1): `light_ramp_start` (s, default 0) and `light_ramp_end` (e, default 1). Defaults give t′ = t. Example: a rising room whose doorway crests the floor at 60% of its rise sets s = 0.6. The keys are content, so every peer reads the same values; the game applies the remap before handing state to the renderer, so brief 2 inherits it. Parse rejects anything outside 0 ≤ s < e ≤ 1 with a compile error naming the mover. The ramp is keyed to position, never to a timer (owner chose position over a timed fade, 2026-11-03). A script method to change the ramp at runtime is deferred until a map needs one. Key names are a proposal; the owner confirms them at review.
 - **Layers.** Physics derives t, since the path coordinate is private there (`path_coordinate`, `position_for_phase`). Game logic hands the renderer one (mover id, t) per present mover each frame, apart from the cull-split draw instances and naming no SH concept, because brief 2 reuses it unchanged; a mover with no supplied state is ungated. The renderer maps ids to section entries and owns every GPU write.
 - **PRL section.** A new optional section takes the next free id. Wire format and boundary names are below.
   - Absent, the frame renders today's output. Malformed, or naming a mover or light that does not resolve, it is a load error.
@@ -30,6 +31,7 @@ Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Mov
   - Spinners, and intermediate waypoints as states.
   - A script-side binding to mover progress.
   - Fog: it samples no direct SH.
+  - Scatter billboards (ids 47/48) sample no direct SH, so a scatter billboard behind the closed wall stays lit (owner, 2026-11-03). A roadmap follow-up beside brief 2 owns it.
 
 ## Acceptance
 
@@ -44,6 +46,7 @@ Bake and format:
 
 Blend scalar:
 - [ ] t reads 0 docked at the first waypoint and 1 at the last. It reads the arc-length fraction mid-travel, and that fraction at the middle waypoint of a three-waypoint path. A wait or a blocked stop holds t.
+- [ ] With default ramp keys, t′ = t at every sample above. With s = 0.6, e = 0.9: t′ is 0 at t = 0.6 and below, 1 at t = 0.9 and above, and 0.5 at t = 0.75, both rising and after a reversal. Parse accepts s = 0, e = 1 and s = 0.6, e = 0.9; it rejects s = e, s > e, s < 0 and e > 1, each with an error naming the mover.
 - [ ] A reversal mid-travel, in either direction, continues from the current t with no jump.
 - [ ] Two movers advancing on one tick each report their own t for that frame.
 - [ ] A mover that reaches its last waypoint on tick N reads t = 1 in frame N's state, the same frame its blocked-portal state changes.
@@ -72,7 +75,7 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
   - Bake q for `setpiece_room` raised only, and force t = 1 through a dev override.
   - A/B station 2 and the room's own faces. This falsifies the riskiest assumption: that 1 m probes inside an 8 m room hold the gate.
   - The mover-aware sampler leaks across the mover's walls, because probe depth moments are mover-absent and movers sample with backface rejection off. The rule for probes inside a posed brush decides how dark the mover's own faces go (open question).
-- **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` before the no-pop row. The channel scales exactly the arm that reads low. Measure whether the static (id-41) arm shares the gap.
+- **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` before the no-pop row. The channel scales exactly the arm that reads low. Measure whether the static (id-41) arm shares the gap. This brief owns the fix wherever the cause lies (the id-41 or id-45 bake, or the sampler), and the no-pop row stays absolute (owner, 2026-11-03). If the fix grows past this brief's scope, stop and report rather than relaxing the row.
 - **Bake.**
   - `sh_bake/probe.rs` `bake_probe_direct_rgb` → `lightmap_bake::soft_visibility_early_out`. Evaluate one sample set under both traces, static alone and static plus posed brushes, and decide escalation jointly. Otherwise an early-out can price static blocking into one side only.
   - The prefilter is the foundation's (`mover_light_gate::light_candidates`, `MoverPoses`, `Terminus`). The memo shape is `pipeline/mover_light_stage.rs` `probe_gate`.
@@ -89,8 +92,9 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 
 ## Open questions
 
-- If the promotion pop's root cause lies outside this channel (the id-45 or id-41 bake, or the sampler), does this brief own the fix and keep the no-pop row as written, or does that row become relative to an ungated light? — owner — **blocks build**
-- Billboards with valid scatter (ids 47/48) sample no direct SH, so a scatter billboard behind the closed wall stays lit. Is that in this brief, or a non-goal? — owner — **blocks build**
+- ~~Promotion pop ownership~~ — resolved (owner, 2026-11-03): this brief owns the fix; the row stays absolute. See Path.
+- ~~Scatter billboards~~ — resolved (owner, 2026-11-03): non-goal; roadmap follow-up.
+- `light_ramp_start` / `light_ramp_end` names. — owner, at review; non-blocking.
 - What q does a valid probe inside a posed brush take: dark, tested without the brush containing it, or full? — **delegated**: the first slice decides it against the own-face row and reports it in the plan of record.
 - Section name and exact field widths. — **delegated**, within the Wire format below.
 
@@ -115,5 +119,6 @@ New section, next free `SectionId` (57 at read time). Mirrors id 41's (`DirectSh
 | Name | Rust | PRL | WGSL | Net wire | FGD |
 |---|---|---|---|---|---|
 | Mover light state | (mover id, t) per present mover, physics → game → renderer | n/a | per-mover t uniform/storage, renderer-owned | none (derived from `WireKinematicMoverState`) | n/a |
+| Light ramp | parsed s, e on the mover component; t′ applied game-side | n/a (keys stay on the entity) | n/a | none (content) | `kinematic_mover` `light_ramp_start(float)` "0", `light_ramp_end(float)` "1" |
 | Mover id | id 43 `mover_id`, `KinematicMoverInstance.mover_id` | entry `u32` | n/a | `WireKinematicMoverState.mover_id` | n/a |
 | Light reference | AlphaLights index → id-40 selection index at load; id-45 roster index | entry namespace + `u32` | selection weight / animated scale index | n/a | n/a |

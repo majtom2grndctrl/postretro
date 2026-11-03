@@ -95,6 +95,7 @@ pub fn spawn_net_slot_pawn_with_carried_loadout(
     };
 
     restore_carried_health(carried_loadout, registry, id);
+    crate::sim::player_life::restore_carried_life_state(carried_loadout, registry, id, descriptor);
 
     // Forward the per-placement KVP bag (sans `entity_class`, a routing hint) so
     // `getEntityProperty` works uniformly for net-slot pawns, matching the
@@ -721,6 +722,7 @@ mod tests {
         };
 
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1266,6 +1268,7 @@ mod tests {
     #[test]
     fn remote_enemy_presentation_meshless_descriptor_leaves_transform_only() {
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             touchable: None,
             mesh: None,
@@ -1339,6 +1342,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1357,6 +1361,7 @@ mod tests {
 
     fn player_with_default_weapon(classname: &str, default_weapon: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1377,6 +1382,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

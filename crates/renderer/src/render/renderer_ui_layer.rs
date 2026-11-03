@@ -1,6 +1,7 @@
 // Game UI recording into the native-res UI layer the resolve composites.
 // See: context/lib/ui.md §5 · context/lib/rendering_pipeline.md §7.8
 
+use super::cpu_stages::RenderStage;
 use super::*;
 
 impl Renderer {
@@ -18,6 +19,7 @@ impl Renderer {
             device,
             queue,
             full,
+            cpu_frame,
             ..
         } = self;
         let full = full
@@ -32,14 +34,13 @@ impl Renderer {
         let stack_len = full.ui_snapshot.trees.len();
 
         // Lay out EVERY layer first into owned draw data, THEN compose all layers
-        // into a SINGLE `encode` call. The glyphon text half (`UiTextRenderer`) is
-        // shared across layers and holds ONE vertex buffer it overwrites at offset
-        // 0 on each `prepare`; `queue.write_buffer` resolves on the queue timeline
-        // (last write wins) regardless of recording order, so issuing a separate
-        // `encode` per layer makes EVERY layer's text draw read the LAST layer's
-        // shaped glyphs, so a lower layer's text renders the top layer's glyphs. This mirrors the multi-batch quad-buffer clobber
-        // already documented in `UiPass::encode`: one `prepare`/`render` per frame,
-        // with all layers' glyphs concatenated in painter order, sidesteps it.
+        // into a SINGLE `encode` call. Each text span owns a retained glyphon
+        // vertex buffer, and `queue.write_buffer` resolves on the queue timeline
+        // (last write wins) regardless of recording order, so a second encode
+        // before submit could prepare a span another encode draws from retained
+        // vertices. The debug guard in `UiTextRenderer::begin_encode` rejects it.
+        // Layer index is stack position (presentation first), which keys each
+        // span's slot and depth band.
         let mut layer_draws: Vec<ui::tree::UiDrawData> = Vec::with_capacity(stack_len + 1);
         // Presentation is a passive world-facing layer, not a retained modal.
         // Lower it first so HUD and modal trees remain visually above it, while
@@ -146,7 +147,7 @@ impl Renderer {
         // Always encode, even an empty composition: the pass opens and clears
         // the layer transparent, so a frame with no UI shows none of the last
         // frame's.
-        full.ui.encode(
+        let text_stats = full.ui.encode(
             font_system,
             device,
             queue,
@@ -155,6 +156,12 @@ impl Renderer {
             ui_viewport,
             wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
             &composition,
+        );
+        // Present at zero on a frame that prepared nothing (`rendering_pipeline.md`
+        // §12: absent is not zero); a no-op with timing off.
+        cpu_frame.add_count(
+            RenderStage::UiTextSpansPrepared,
+            u64::from(text_stats.spans_prepared),
         );
         // The composition's frame-scoped borrows end here. Reclaim the passive
         // layer's translated aggregate so its Vec/String storage stays warm for

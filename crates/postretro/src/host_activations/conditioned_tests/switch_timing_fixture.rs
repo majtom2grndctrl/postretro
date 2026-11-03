@@ -76,42 +76,7 @@ impl Fixture {
                 hold_tuning: false,
             },
         );
-        let address = fixture.server.local_addr()[0];
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let mut client = NetClient::new(
-            socket,
-            address,
-            OBSERVER,
-            Duration::from_secs(1),
-            Some([0x5a; 32]),
-            None,
-        )
-        .unwrap();
-        client.set_mod_identity("test.mod".into(), "1.0.0".into());
-        client.set_mod_digest(Some([0x5a; 32]));
-        client.set_level_parity(Some(("test-level".into(), [0x5a; 32])));
-        postretro_net::harness::reveal_both(&mut fixture.server, &mut client, "test-level");
-        fixture.server.add_relay_connection(OBSERVER, None);
-        client.set_connected();
-        fixture.switch_receive = Some(SwitchReceive {
-            latch: Default::default(),
-            hold_declarations: false,
-            last_tuning: Default::default(),
-            resolutions: Vec::new(),
-            raw_outcomes: Vec::new(),
-            owner_slots: Vec::new(),
-            observer: Observer {
-                client,
-                up: PacketConditioner::new(link),
-                down: PacketConditioner::new(link),
-                registry: EntityRegistry::new(),
-                slots: dev_mod_descriptors().0.slot_table,
-                replication: Default::default(),
-                state: Default::default(),
-                prediction: Default::default(),
-                selections: Vec::new(),
-            },
-        });
+        fixture.attach_conditioned_observer(link, dev_mod_descriptors().0.slot_table);
         fixture.up = PacketConditioner::new(link);
         let mut down = link;
         down.seed ^= 0x5a5a;
@@ -140,6 +105,49 @@ impl Fixture {
         );
         fixture.idle(0, 90);
         fixture
+    }
+
+    pub(in crate::host_activations::conditioned_tests) fn attach_conditioned_observer(
+        &mut self,
+        link: LinkConfig,
+        slots: Rc<RefCell<postretro_entities::SlotTable>>,
+    ) {
+        let address = self.server.local_addr()[0];
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut client = NetClient::new(
+            socket,
+            address,
+            OBSERVER,
+            Duration::from_secs(1),
+            Some([0x5a; 32]),
+            None,
+        )
+        .unwrap();
+        client.set_mod_identity("test.mod".into(), "1.0.0".into());
+        client.set_mod_digest(Some([0x5a; 32]));
+        client.set_level_parity(Some(("test-level".into(), [0x5a; 32])));
+        postretro_net::harness::reveal_both(&mut self.server, &mut client, "test-level");
+        self.server.add_relay_connection(OBSERVER, None);
+        client.set_connected();
+        self.switch_receive = Some(SwitchReceive {
+            latch: Default::default(),
+            hold_declarations: false,
+            last_tuning: Default::default(),
+            resolutions: Vec::new(),
+            raw_outcomes: Vec::new(),
+            owner_slots: Vec::new(),
+            observer: Observer {
+                client,
+                up: PacketConditioner::new(link),
+                down: PacketConditioner::new(link),
+                registry: EntityRegistry::new(),
+                slots,
+                replication: Default::default(),
+                state: Default::default(),
+                prediction: Default::default(),
+                selections: Vec::new(),
+            },
+        });
     }
 
     pub(in crate::host_activations::conditioned_tests) fn register_switch_pending(
@@ -258,6 +266,20 @@ impl Fixture {
         let Some(switch) = self.switch_receive.as_mut() else {
             return;
         };
+        // Resend the table the client already holds. Without a respawn context
+        // that is the one admission built from the fixture's own descriptors;
+        // an empty revision-0 resend would replace it, and the client would
+        // treat a declared pawn as undeclared.
+        let (life_state_names, life_state_revision) = match self.respawn_ctx.as_ref() {
+            Some(ctx) => {
+                let data = ctx.data_registry.borrow();
+                (
+                    data.life_state_names.clone(),
+                    data.life_state_table_revision,
+                )
+            }
+            None => admission_life_state_table(&self.descriptors),
+        };
         let payload = netcode::tuning_payload_for_pawn(
             &self.host.borrow(),
             self.host_actors.pawn,
@@ -267,6 +289,8 @@ impl Fixture {
                 level_gravity: 0.0,
                 fluids: Default::default(),
             },
+            &life_state_names,
+            life_state_revision,
         );
         netcode::host_send_tuning_if_changed(
             &mut self.server,
@@ -310,7 +334,7 @@ impl Fixture {
             self.tick,
             u64::from(self.tick) * 16_667,
         );
-        netcode::client_receive_and_apply(
+        let outcome = netcode::client_receive_and_apply(
             &mut observer.registry,
             &mut observer.slots.borrow_mut(),
             &Default::default(),
@@ -334,6 +358,13 @@ impl Fixture {
             &mut receive_alternate::NoBindings,
             f64::from(self.tick) * f64::from(DT),
             Some(0.0),
+            &Default::default(),
+        );
+        self.life_observed.extend(
+            outcome
+                .observed_teleports
+                .into_iter()
+                .map(|cue| (self.tick, cue)),
         );
         if let Some(selected) = observer
             .replication
@@ -466,4 +497,24 @@ impl Fixture {
             reserve.available(&weapon.ammo.as_ref().unwrap().ammo_type),
         )
     }
+}
+
+/// The life-state table `Fixture::with_snapshot_receive` sends at admission:
+/// every declared state name, sorted and deduplicated, under the first block's
+/// revision.
+fn admission_life_state_table(
+    descriptors: &[postretro_entities::EntityTypeDescriptor],
+) -> (Vec<String>, u8) {
+    let names = descriptors
+        .iter()
+        .filter_map(|descriptor| descriptor.life_states.as_ref())
+        .flat_map(|block| block.states.keys().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let revision = descriptors
+        .iter()
+        .find_map(|descriptor| descriptor.life_states.as_ref())
+        .map_or(0, |block| block.table_revision);
+    (names, revision)
 }

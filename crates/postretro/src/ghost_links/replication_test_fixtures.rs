@@ -215,13 +215,7 @@ fn neutral_input() -> MovementInput {
     crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     )
     .movement
 }
@@ -772,6 +766,8 @@ impl Loopback {
                 &data.entities,
                 data.default_weapon_placement.as_ref(),
                 &netcode::host_environment_tuning(&self.host),
+                &[],
+                0,
             )
         };
         netcode::host_send_tuning_if_changed(
@@ -1054,6 +1050,7 @@ impl Loopback {
             self.snapshot_due,
             &mut self.last_snapshot,
             &self.host.presentation_overrides.borrow(),
+            &Default::default(),
         );
         self.snapshot_due = false;
     }
@@ -1134,6 +1131,7 @@ impl Loopback {
             &mut NoBindings,
             f64::from(self.tick) * f64::from(TICK_SECONDS),
             self.client_rtt_micros,
+            &Default::default(),
         );
         // The binary's per-frame drain: every received state into link history,
         // look ramps rebased by the client's host-clock offset.

@@ -41,7 +41,7 @@ fn clear_replaced_presentation_overlay_state(
     client_facts: &mut crate::netcode::ClientOverlayFactState,
     host_facts: &mut crate::netcode::HostOverlayFactTracker,
 ) {
-    pool.clear_overlays();
+    pool.clear_all_overlays();
     client_facts.clear_projections();
     host_facts.clear_for_authoring();
 }
@@ -283,9 +283,7 @@ impl App {
                         &mut session.host_overlay_fact_tracker,
                     );
                 }
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.set_presentation_templates(presentation_templates);
-                }
+                self.install_presentation_templates(presentation_templates);
                 if let Some(endpoint) = self
                     .session
                     .as_mut()
@@ -300,6 +298,7 @@ impl App {
             }
             if committed && self.has_installed_level() {
                 self.rebuild_reactions_after_staged_commit();
+                self.refresh_respawn_placements();
             }
             if committed {
                 // A reload that declares, drops or reorders fluids re-resolves
@@ -822,6 +821,7 @@ mod tests {
         let entity = postretro_entities::EntityId::from_raw(4);
         let mut pool = crate::presentation_pool::PresentationPool::new(1);
         pool.refresh_overlay(
+            crate::presentation_pool::OverlayKind::DamagedEnemies,
             entity,
             postretro_entities::PresentationTemplateHandle::from("old-overlay"),
             1.0,

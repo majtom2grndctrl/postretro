@@ -10,11 +10,17 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use mlua::chunk::Compiler as LuaCompiler;
 use mlua::{Function as LuaFunction, Lua, Table as LuaTable, Value as LuaValue};
-use postretro_foundation::data_descriptors::validate::consequential::validate_consequential_args;
+use postretro_foundation::data_descriptors::validate::consequential::{
+    INVALID_RESPAWN_HEALTH, validate_consequential_args,
+};
+use postretro_foundation::owner_tokens::{
+    by_player_owner_tokens_js_array, by_player_owner_tokens_luau_set,
+};
 use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
 use postretro_level_format::light_membership::{
     LightAnimationSnapshot, LightComponentSnapshot, LightMembershipManifest, LightMembershipRecord,
@@ -418,7 +424,7 @@ fn install_js_determinism(ctx: &JsCtx<'_>) -> Result<()> {
 fn install_js_game_state(ctx: &JsCtx<'_>) -> Result<()> {
     let bridge = json_to_js(ctx, &game_state_refs_json())?;
     let install: JsFunction = ctx
-        .eval(JS_INSTALL_BY_PLAYER)
+        .eval(JS_INSTALL_BY_PLAYER.as_str())
         .context("failed to build QuickJS byPlayer installer")?;
     let root: JsObject = bridge
         .as_object()
@@ -522,7 +528,7 @@ fn install_lua_determinism(lua: &Lua) -> mlua::Result<()> {
 
 fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
     let bridge = json_to_lua(lua, &game_state_refs_json())?;
-    let install: LuaFunction = lua.load(LUAU_INSTALL_BY_PLAYER).eval()?;
+    let install: LuaFunction = lua.load(LUAU_INSTALL_BY_PLAYER.as_str()).eval()?;
     if let LuaValue::Table(root) = &bridge {
         for slot in per_player_slots() {
             let mut leaf = root.clone();
@@ -581,8 +587,11 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineTriggerEvent",
     "npcs",
     "players",
+    "inLifeState",
     "becomes",
     "ceases",
+    "assistReceived",
+    "assistGiven",
     "wait",
     "fire",
     "scopeReactions",
@@ -601,6 +610,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "set",
     "update",
     "when",
+    "assist",
 ];
 /// `ui/widgets.luau` constructors exported through `require("postretro/ui")`.
 /// Mirrors scripting-core's `UI_WIDGETS_FIELDS`.
@@ -715,6 +725,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "definePresentationTemplate",
             "fact",
             "damagedEnemies",
+            "assistableTeammates",
             "defineOverlay",
         ],
     )?;
@@ -725,6 +736,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
         &[
             "bindState",
             "stateEquals",
+            "stateCompare",
             "createLocalState",
             "ui",
             "Switch",
@@ -933,6 +945,10 @@ pub const MIRRORED_GAME_STATE_LEAVES: &[(&str, &str, bool)] = &[
     ("player.weaponChargeProgress", "number", false),
     ("player.weaponCooldownMs", "number", true),
     ("player.swimming", "boolean", true),
+    ("player.lifeStateMs", "number", true),
+    ("player.assistProgress", "number", true),
+    ("player.assistReceivedProgress", "number", true),
+    ("player.lifeState", "string", false),
     ("player.immersion", "number", true),
     ("player.weapon.current", "string", false),
     ("player.weapon.pending", "string", false),
@@ -987,19 +1003,24 @@ fn per_player_slots() -> impl Iterator<Item = &'static str> {
 }
 
 /// Mirrors scripting-core's `QUICKJS_INSTALL_BY_PLAYER`: `byPlayer` lowers
-/// `on.player` and `impact.source` to their owner tokens by wire spelling.
-/// Public only for the drift guard.
+/// every owner handle to its token by wire spelling, from the shared
+/// `BY_PLAYER_OWNER_TOKENS`. Public only for the drift guard.
 #[doc(hidden)]
-pub const JS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
+pub static JS_INSTALL_BY_PLAYER: LazyLock<String> = LazyLock::new(|| {
+    JS_INSTALL_BY_PLAYER_TEMPLATE.replace("__OWNERS__", &by_player_owner_tokens_js_array())
+});
+
+const JS_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"(leaf) => {
   const slot = leaf.slot;
   const kind = leaf.kind;
+  const owners = __OWNERS__;
   Object.defineProperty(leaf, "byPlayer", {
     value: function byPlayer(owner) {
       const wire = owner !== null && typeof owner === "object" ? owner.__wire : undefined;
       return Object.freeze({
         slot,
         kind,
-        owner: wire === "@player" || wire === "@impact.source" ? wire : "@invalid",
+        owner: typeof wire === "string" && owners.includes(wire) ? wire : "@invalid",
       });
     },
     enumerable: false,
@@ -1009,9 +1030,14 @@ pub const JS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
 /// Mirrors scripting-core's `LUAU_INSTALL_BY_PLAYER`. Public only for the
 /// drift guard.
 #[doc(hidden)]
-pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
+pub static LUAU_INSTALL_BY_PLAYER: LazyLock<String> = LazyLock::new(|| {
+    LUAU_INSTALL_BY_PLAYER_TEMPLATE.replace("__OWNERS__", &by_player_owner_tokens_luau_set())
+});
+
+const LUAU_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"return function(leaf)
   local slot = leaf.slot
   local kind = leaf.kind
+  local owners = __OWNERS__
   local function byPlayer(_self, owner)
     local wire = nil
     if type(owner) == "table" then
@@ -1020,7 +1046,7 @@ pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
       end)
       wire = if ok then value else nil
     end
-    if wire ~= "@player" and wire ~= "@impact.source" then
+    if type(wire) ~= "string" or not owners[wire] then
       wire = "@invalid"
     end
     return table.freeze({ slot = slot, kind = kind, owner = wire })
@@ -1464,9 +1490,38 @@ fn js_to_json_inner(value: JsValue<'_>, depth: usize) -> rquickjs::Result<JsonVa
                 values.insert(key, js_to_json_inner(value, depth + 1)?);
             }
         }
+        if is_respawn_step(&values) {
+            let args: JsValue = object.get("args")?;
+            let health = match args.as_object() {
+                Some(args) => args.get::<_, JsValue>("health")?.as_number(),
+                None => None,
+            };
+            lower_non_finite_respawn_health(&mut values, health);
+        }
         return Ok(JsonValue::Object(values));
     }
     Ok(JsonValue::Null)
+}
+
+fn is_respawn_step(values: &JsonMap<String, JsonValue>) -> bool {
+    values.get("primitive").and_then(JsonValue::as_str) == Some("respawn")
+}
+
+/// Mirror the runtime reaction-args converter: a respawn step's non-finite
+/// `health` becomes `INVALID_RESPAWN_HEALTH`, not the `null` generic
+/// conversion produces. Validation rejects `null`, so without this the pass
+/// would skip a sequence the runtime accepts and its lights would lose
+/// membership. Only the raw VM value tells NaN from an authored `null`.
+fn lower_non_finite_respawn_health(values: &mut JsonMap<String, JsonValue>, health: Option<f64>) {
+    if !health.is_some_and(|health| !health.is_finite()) {
+        return;
+    }
+    if let Some(JsonValue::Object(args)) = values.get_mut("args") {
+        args.insert(
+            "health".to_string(),
+            JsonValue::from(INVALID_RESPAWN_HEALTH),
+        );
+    }
 }
 
 fn json_to_lua(lua: &Lua, value: &JsonValue) -> mlua::Result<LuaValue> {
@@ -1548,6 +1603,16 @@ fn lua_to_json_inner(value: LuaValue, depth: usize) -> mlua::Result<JsonValue> {
                         continue;
                     }
                     values.insert(key, lua_to_json_inner(value, depth + 1)?);
+                }
+                if is_respawn_step(&values) {
+                    let health = match table.raw_get::<LuaValue>("args")? {
+                        LuaValue::Table(args) => match args.raw_get::<LuaValue>("health")? {
+                            LuaValue::Number(health) => Some(health),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    lower_non_finite_respawn_health(&mut values, health);
                 }
                 Ok(JsonValue::Object(values))
             }
@@ -2367,6 +2432,64 @@ mod tests {
             rejected_js.is_empty() && rejected_luau.is_empty(),
             "a grant payload runtime rejects keeps the pass skipping its reaction"
         );
+    }
+
+    // Regression: the pass mapped non-finite respawn health to `null`, which
+    // validation rejects, so a sequence the runtime accepts reserved nothing.
+    #[test]
+    fn non_finite_respawn_health_keeps_the_light_reserved_in_both_hosts() {
+        let quickjs = |health: &str| {
+            format!(
+                r#"
+                function setupLevel() {{
+                  const light = getMapEntities("light", {{ tag: "wave" }})[0];
+                  return {{ reactions: [
+                    defineReaction("levelLoad", {{ sequence: [
+                      ...light.pulse({{ min: 0.2, max: 1.0, periodMs: 1000 }}),
+                      players().respawn({{ health: {health} }}),
+                    ] }}),
+                  ] }};
+                }}
+            "#
+            )
+        };
+        let luau = |health: &str| {
+            format!(
+                r#"
+                function setupLevel(_)
+                  local light = getMapEntities("light", {{ tag = "wave" }})[1]
+                  local steps = light:pulse({{ min = 0.2, max = 1.0, periodMs = 1000 }})
+                  table.insert(steps, players():respawn({{ health = {health} }}))
+                  return {{ reactions = {{ defineReaction("levelLoad", {{ sequence = steps }}) }} }}
+                end
+            "#
+            )
+        };
+        let evaluate = |source: String, path: &str| {
+            emit_light_membership_manifest(&source, Path::new(path), Path::new("."), &table())
+                .expect("fixture evaluates")
+                .lights
+        };
+
+        let finite = evaluate(quickjs("50"), "fixture.ts");
+        assert_eq!(finite.len(), 1, "a finite respawn health keeps the light");
+        for health in ["Infinity", "-Infinity", "NaN"] {
+            assert_eq!(
+                evaluate(quickjs(health), "fixture.ts"),
+                finite,
+                "JS {health}"
+            );
+        }
+        for health in ["math.huge", "-math.huge", "0/0"] {
+            assert_eq!(
+                evaluate(luau(health), "fixture.luau"),
+                finite,
+                "Luau {health}"
+            );
+        }
+        // An authored non-number still drops the reaction, as at runtime.
+        assert!(evaluate(quickjs(r#""full""#), "fixture.ts").is_empty());
+        assert!(evaluate(luau(r#""full""#), "fixture.luau").is_empty());
     }
 
     // A lights-only table predates `mapMembers`: its member kinds are unknown,

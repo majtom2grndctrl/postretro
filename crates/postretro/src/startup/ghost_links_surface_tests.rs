@@ -378,7 +378,7 @@ impl Level {
                 .assign_joiner_placement(
                     &ctx.registry.borrow(),
                     seat,
-                    &crate::scripting::builtins::player_spawn::joinable_spawns(
+                    &crate::scripting::builtins::player_spawn::joinable_sites(
                         &products.spawn_points,
                         &manifest.entities,
                     ),
@@ -598,6 +598,7 @@ impl Level {
             use_edges.insert(PlayerId::Remote(PARTNER_CLIENT), true);
         }
         let command = SimCommand {
+            assist_held: false,
             input_tick: self.input_tick,
             movement: MovementInput {
                 wish_dir: glam::Vec2::ZERO,
@@ -677,6 +678,7 @@ impl Level {
             },
             DT,
             &mut session.touch_system,
+            &mut session.assist_state,
             &data_registry.entities,
             data_registry.entity_types_generation(),
             &data_registry.factions,

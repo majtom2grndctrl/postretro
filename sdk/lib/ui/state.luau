@@ -12,10 +12,16 @@ export type SystemReactionStep = {
   args: { [string]: any }?,
 }
 
+--- The ordered relation a numeric predicate tests (mirrors `CompareOp`).
+export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost"
+
+--- A numeric comparison against a Number source: `{ op, value }`.
+export type PredicateCompare = { op: PredicateCompareOp, value: number }
+
 --- A reactive predicate (M13 G2): `{ slot }` or `{ local }` source + optional
---- `equals` comparand. Produced by `stateEquals(ref, v)` /
---- `LocalStateHandle:is(v)`.
-export type Predicate = { slot: string?, ["local"]: string?, equals: any? }
+--- `equals` comparand or numeric `compare` (never both). Produced by
+--- `stateEquals(ref, v)` / `stateCompare(ref, op, v)` / `LocalStateHandle:is(v)`.
+export type Predicate = { slot: string?, ["local"]: string?, equals: any?, compare: PredicateCompare? }
 
 local UiStateSdk = {}
 
@@ -53,6 +59,27 @@ end
 --- Build an equality predicate against a readable scalar state reference.
 function UiStateSdk.stateEquals(ref: any, value: any): Predicate
   return { slot = stateSlot(ref, "stateEquals"), equals = value }
+end
+
+local COMPARE_OPS = { greaterThan = true, lessThan = true, atLeast = true, atMost = true }
+
+--- Build a numeric comparison predicate against a readable Number state
+--- reference: true while the slot's value stands in `op` relation to `value`
+--- (`stateCompare(player.assistProgress, "greaterThan", 0)`). Rejects a
+--- non-number ref, an unknown op, and a non-finite `value`.
+function UiStateSdk.stateCompare(ref: any, op: PredicateCompareOp, value: number): Predicate
+  local slot = stateSlot(ref, "stateCompare")
+  if ref.kind ~= "number" then
+    error(`stateCompare: \`{slot}\` is not a number state reference`)
+  end
+  if type(op) ~= "string" or not COMPARE_OPS[op] then
+    error("stateCompare: `op` must be one of greaterThan, lessThan, atLeast, atMost")
+  end
+  -- NaN fails `value == value`; ±inf fails the magnitude bound.
+  if type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+    error("stateCompare: `value` must be a finite number")
+  end
+  return { slot = slot, compare = { op = op, value = value } }
 end
 
 -- --- ui.createLocalState() -------------------------------------------------

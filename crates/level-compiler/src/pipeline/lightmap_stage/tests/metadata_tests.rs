@@ -97,6 +97,8 @@ fn metadata_gate_refuses_high_pair_count_before_hashing_or_cache_access() {
             &primitives,
             &config(false),
             trial,
+            None,
+            None,
         )
         .err()
         .expect("metadata must refuse before allocation")

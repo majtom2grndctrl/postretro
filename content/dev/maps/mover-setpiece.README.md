@@ -9,7 +9,8 @@ two-room map. Intended uses:
    between the player start and a marked enemy spot). Verifiable once
    `E17--movers-block-shots-and-sight` and `E17--enemy-mover-interaction` land.
 3. Prove mover rest-state lighting (baked lights reach across both movers at
-   both ends of their travel). Verifiable once mover state lighting lands.
+   both ends of their travel). Verifiable once mover light flow's probe and
+   world-surface channels land (roadmap, Lighting and GI).
 
 Build a local artifact on demand:
 

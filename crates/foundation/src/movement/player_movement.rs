@@ -24,6 +24,10 @@ use crate::data_descriptors::{
 use crate::ir::{BakedIr, BindError, BoundProgram, CURRENT_IR_VERSION, IrNode, bind};
 use crate::movement::MovementScope;
 
+/// Capsule half-heights within this many metres are the same size. Resizes
+/// write the standing reference exactly; the band only absorbs float noise.
+const CAPSULE_SIZE_EPSILON: f32 = 1.0e-4;
+
 /// Live player ground reference. `Mover` stores the compile-time PRL mover id,
 /// not a network id, so the foundation component stays net-agnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -193,7 +197,8 @@ pub enum MovementState {
     /// swimmer is in, set on entry and followed while it swims, so the exit edge
     /// still names the fluid left after the pawn is already dry. Presentation
     /// reads it; movement never does (drag comes from each tick's resolve). The
-    /// capsule is always standing size, and the re-entry latch outlives the
+    /// capsule is standing size unless forced posture holds it crouched or a
+    /// blocked growth has not yet restored it. The re-entry latch outlives the
     /// state, so it lives on the component.
     Swim { fluid: u16 },
     /// Mantling onto a ledge along a timed path whose move over the top
@@ -378,17 +383,70 @@ pub struct PlayerMovementComponent {
     /// replicated and restored by the reconcile merge like `jump_spent`.
     #[serde(default)]
     pub swim_reentry_latched: bool,
-    /// While set, no vault starts. Caller input, not tick state: set before
-    /// each tick from game state movement never reads (today, that the pawn is
-    /// dead) by the sim's `drop_vault_if_dead`, on host movement and client
-    /// prediction alike. Reconcile replay has no registry, so it keeps the
-    /// value the latest prediction left, and component rebuilds (tuning, hot
-    /// reload) carry it. Neither replicated nor serialized.
+    /// While set, no vault starts. Declared pawns derive it from movement
+    /// abilities at every profile adoption/restamp, including before replay;
+    /// a refused profile also breaks an active vault at that write. Undeclared
+    /// pawns receive the sim's HP-derived bar before forward ticks, and replay
+    /// retains that value. Component rebuilds carry it. Neither replicated nor
+    /// serialized.
     #[serde(skip)]
     pub vault_barred: bool,
     /// Relocation identity and arrival latches survive prediction and replay.
     #[serde(default)]
     pub teleport: crate::movement::TeleportState,
+    #[serde(default = "super::life_state::undeclared_life_state")]
+    pub life_state: u8,
+    #[serde(default)]
+    pub life_state_elapsed_ticks: u32,
+    /// Counts this pawn's entries into a life state, respawn included,
+    /// wrapping. Unlike elapsed, which a leave and re-entry within one tick
+    /// can return to the value it held, any entry changes it, so the host's
+    /// assist reset and completion re-check compare it to detect a re-entry.
+    /// Host-local: component rebuilds carry it; never replicated or
+    /// serialized.
+    #[serde(skip)]
+    pub life_state_entry: u32,
+    #[serde(default)]
+    pub life_state_table_revision: u8,
+    // Derived from the matching profile at state adoption, never from local
+    // descriptors during client replay. Consumers use player_capability.
+    #[serde(skip)]
+    pub life_movement_abilities: bool,
+    #[serde(skip)]
+    pub life_look: bool,
+    #[serde(skip)]
+    pub life_fire: bool,
+    #[serde(skip)]
+    pub life_switch_weapon: bool,
+    #[serde(skip)]
+    pub life_reload: bool,
+    #[serde(skip)]
+    pub life_use: bool,
+    #[serde(skip)]
+    pub life_touch: bool,
+    #[serde(skip)]
+    pub life_occupancy: bool,
+    #[serde(skip)]
+    pub life_damageable: bool,
+    #[serde(skip, default = "super::life_state::unit_speed_scale")]
+    pub life_speed_scale: f32,
+    #[serde(skip)]
+    pub life_posture: super::LifeStatePosture,
+    /// The current profile declares `assistable`. Like the other stamps it is
+    /// derived from the installed profile; only remote retention reads the
+    /// replicated copy.
+    #[serde(skip)]
+    pub assistable: bool,
+    /// This pawn's assist progress as helper, 0..1, written by the host and
+    /// single-player accumulator every tick. Read through
+    /// `player.assistProgress`; never on the wire.
+    #[serde(skip)]
+    pub assist_progress: f32,
+    /// The highest progress among this pawn's helpers, 0..1, written by the
+    /// accumulator every tick. `player.assistReceivedProgress` reads 0 while
+    /// `assistable` is false. Never on the wire.
+    #[serde(skip)]
+    pub assist_received_progress: f32,
 }
 
 impl PlayerMovementComponent {
@@ -480,6 +538,24 @@ impl PlayerMovementComponent {
             swim_reentry_latched: false,
             vault_barred: false,
             teleport: Default::default(),
+            life_state: super::UNDECLARED_LIFE_STATE,
+            life_state_elapsed_ticks: 0,
+            life_state_entry: 0,
+            life_state_table_revision: 0,
+            life_movement_abilities: false,
+            life_look: false,
+            life_fire: false,
+            life_switch_weapon: false,
+            life_reload: false,
+            life_use: false,
+            life_touch: false,
+            life_occupancy: false,
+            life_damageable: false,
+            life_speed_scale: 1.0,
+            life_posture: super::LifeStatePosture::Stand,
+            assistable: false,
+            assist_progress: 0.0,
+            assist_received_progress: 0.0,
         }
     }
 
@@ -540,13 +616,36 @@ impl PlayerMovementComponent {
         self.coyote_timer_ms = 0.0;
     }
 
+    /// Whether the live capsule is the standing one. Any other size, shorter or
+    /// taller (an authored crouch capsule may be the larger one), still owes a
+    /// resize back to standing.
+    pub fn capsule_is_standing(&self) -> bool {
+        (self.capsule.half_height - self.standing_half_height).abs() <= CAPSULE_SIZE_EPSILON
+    }
+
+    /// The state a pawn leaving `Swim` lands in: `Crouching` while its capsule
+    /// is not standing size, so released crouch retries the resize through the
+    /// ordinary clearance check even after forced posture opens; `Normal`
+    /// otherwise. `Normal` never resizes, so a non-standing capsule left there
+    /// would keep its size and eye for good.
+    pub fn capsule_posture_state(&self) -> MovementState {
+        if self.capsule_is_standing() {
+            MovementState::Normal
+        } else {
+            MovementState::Crouching {
+                eye_current: self.capsule.eye_height,
+            }
+        }
+    }
+
     /// Settle swim state on a component rebuilt from a descriptor (hot reload, a
     /// client's tuning rebuild) after the live tick state was carried onto it.
     /// Without a `swim` block the pawn cannot swim, so a carried `Swim` leaves
-    /// as a swim exit does: `Normal`, the drift layer's vertical part folded
-    /// into locomotion, the re-entry latch cleared. `velocity` is total here
-    /// (protected layers included), so the fold zeroes only the layer's `y`;
-    /// total vertical velocity is unchanged. With a `swim` block nothing changes.
+    /// as a swim exit does: into [`Self::capsule_posture_state`], the drift
+    /// layer's vertical part folded into locomotion, the re-entry latch
+    /// cleared. `velocity` is total here (protected layers included), so the
+    /// fold zeroes only the layer's `y`; total vertical velocity is unchanged.
+    /// With a `swim` block nothing changes.
     ///
     /// The state changes with no exit edge: no `swim_ended` (or any other state
     /// edge) is emitted on this path. It only follows a dev-time descriptor swap,
@@ -556,7 +655,7 @@ impl PlayerMovementComponent {
             return;
         }
         if matches!(self.movement_state, MovementState::Swim { .. }) {
-            self.movement_state = MovementState::Normal;
+            self.movement_state = self.capsule_posture_state();
         }
         self.push_velocity.y = 0.0;
         self.swim_reentry_latched = false;

@@ -92,6 +92,12 @@ pub(super) fn materialize_remote_entities(
                 })
             });
             replication.cache_remote_player_locomotion(remote.network_id, player_locomotion);
+            replication.cache_remote_player_capsule_radius(
+                remote.network_id,
+                descriptor
+                    .and_then(|descriptor| descriptor.movement.as_ref())
+                    .map(|movement| movement.capsule.radius),
+            );
             remote_materialize::materialize_armed_remote_player(
                 remote,
                 descriptors,

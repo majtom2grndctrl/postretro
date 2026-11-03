@@ -31,6 +31,7 @@ fn link(index: u16, source_entity: u32, armed: bool, members: u8) -> Vec<Compone
 
 fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id,
         baseline_id,
         last_processed_client_tick: None,
@@ -45,6 +46,7 @@ fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>
 
 fn delta(network_id: u32, baseline_ref: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::Delta {
+        assist_facts: None,
         network_id,
         baseline_ref,
         new_baseline_id: baseline_ref + 1,
@@ -307,6 +309,10 @@ fn pawn_record(x: f32, generation: u8) -> Vec<ComponentPayload> {
             scale: [1.0; 3],
         }),
         ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+            life_state: 255,
+            life_state_elapsed_ticks: 0,
+            life_state_table_revision: 0,
+            assistable: false,
             teleport: WireTeleportState::new(generation, 0.0, 0, &[]).unwrap(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],

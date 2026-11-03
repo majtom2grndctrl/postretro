@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use glam::Vec3;
 use postretro_test_log_capture::LogCapture;
@@ -19,7 +19,7 @@ use crate::coloured_bounce_test_fixtures::{
     Appearance, mover_entity, room_map, without_fluid, write_texture, write_textures,
 };
 use crate::pipeline::StageId;
-use crate::reporter::{PlainReporter, Reporter, StageProgress};
+use crate::reporter::{BuildSummary, PlainReporter, Reporter, StageProgress};
 
 /// Half the room's interior edge and its height, in metres (128 map units).
 const ROOM_HALF_M: f32 = 128.0 * 0.0254;
@@ -59,8 +59,8 @@ impl Reporter for StageEntryRecorder {
     fn skip_stage(&self, id: StageId) {
         self.0.skip_stage(id);
     }
-    fn finalize(&self, timings: &[(&'static str, Duration)], total: Duration) {
-        self.0.finalize(timings, total);
+    fn finalize(&self, summary: BuildSummary) {
+        self.0.finalize(summary);
     }
     fn finalize_failure(&self) {
         self.0.finalize_failure();

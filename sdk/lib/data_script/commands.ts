@@ -35,6 +35,15 @@ export type NpcGroupFilter = { tag?: string };
 export type NpcStateUpdateArgs = { aggro?: boolean };
 
 /**
+ * Options for relocating a player to its seat placement on the next tick.
+ * `health` lies in (0, max] and defaults to the pawn's maximum; a value
+ * outside that range, or a non-finite one, warns and restores the maximum.
+ * `lifeState` names the state to enter at elapsed zero and defaults to the
+ * descriptor's `initial`.
+ */
+export type RespawnOptions = { health?: number; lifeState?: string };
+
+/**
  * Brain-driven characters that are not players, whatever their faction
  * sentiment. Opaque: no members, no length. Commands run on the host and in
  * single player only.
@@ -56,6 +65,10 @@ export interface PlayerGroup {
   damage(amount: number): GroupCommand;
   /** Add health to each player. */
   grantHealth(amount: number): GroupCommand;
+  /** Enter an authored life state. */
+  setLifeState(name: string): GroupCommand;
+  /** Respawn on the next authoritative tick, preserving inventory. */
+  respawn(options?: RespawnOptions): GroupCommand;
   /** Add `amount` to each player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
@@ -97,6 +110,10 @@ export interface ActivatorsTarget {
   damage(amount: number): SubjectTokenCommand;
   /** Add health to this fire's activators. */
   grantHealth(amount: number): SubjectTokenCommand;
+  /** Enter an authored life state. */
+  setLifeState(name: string): SubjectTokenCommand;
+  /** Respawn on the next authoritative tick, preserving inventory. */
+  respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this fire's activators' named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
@@ -114,6 +131,10 @@ export interface PlayerTarget {
   damage(amount: number): SubjectTokenCommand;
   /** Add health to this event's player. */
   grantHealth(amount: number): SubjectTokenCommand;
+  /** Enter an authored life state. */
+  setLifeState(name: string): SubjectTokenCommand;
+  /** Respawn on the next authoritative tick, preserving inventory. */
+  respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this event's player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
@@ -137,12 +158,19 @@ export interface TriggerTarget {
 
 type CommandBuilder<R> = (primitive: string, args: Record<string, unknown>) => R;
 
-// The four player-facing verbs, shared by `players()`, `on.activators` and
+// The player-facing verbs, shared by `players()`, `on.activators` and
 // `on.player`; only the addressing each stamps differs.
 function playerVerbs<R>(make: CommandBuilder<R>) {
   return {
     damage: (amount: number): R => make("applyDamage", { amount }),
     grantHealth: (amount: number): R => make("grantHealth", { amount }),
+    setLifeState: (state: string): R => make("setLifeState", { state }),
+    respawn: (options: RespawnOptions = {}): R => {
+      const args: Record<string, unknown> = {};
+      if (options.health !== undefined) args.health = options.health;
+      if (options.lifeState !== undefined) args.state = options.lifeState;
+      return make("respawn", args);
+    },
     grantAmmo: (type: string, amount: number): R => make("grantAmmo", { type, amount }),
     addSlot: (slot: StateRef<number>, delta: number): R =>
       make("addSlot", { slot: slot.slot, delta }),

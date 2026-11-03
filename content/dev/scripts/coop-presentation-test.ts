@@ -1,5 +1,5 @@
 // Co-op presentation fixture: source-aware disposable cues and durable state.
-import { defineReaction, getMapEntities } from "postretro";
+import { defineReaction, getMapEntities, players } from "postretro";
 import type { NamedReactionDescriptor, TriggerEventParams } from "postretro";
 import { flashScreen, playSound, screenShake } from "postretro/ui";
 import { setupPlayerEvents as playerEventSetup } from "./player-events";
@@ -16,7 +16,12 @@ export function setupLevel() {
   const lights = getMapEntities("light", { tag: "coop_prl_light" });
   const fogs = getMapEntities("fog", { tag: "coop_fog" });
   const doors = getMapEntities("mover", { tag: "coop_door" });
+  const down = defineReaction("coop.life.down", (on: TriggerEventParams) => on.activators.damage(100000));
+  const recover = defineReaction("coop.life.recover", {
+    sequence: [players().grantHealth(100000), players().setLifeState("alive")],
+  });
   const reactions: NamedReactionDescriptor[] = [
+    down, recover,
     ...events.reactions, alarm, flash, shake, click,
     defineReaction("coop.atmosphere.lights", { sequence: lights.flatMap((light) => light.fade({ from: 1, to: 0.2, periodMs: 5000 })) }),
     defineReaction("coop.atmosphere.fogDensity", { primitive: "setFogDensity", tag: "coop_fog", args: { density: 0.6 } }),
@@ -49,6 +54,8 @@ export function setupLevel() {
     playerEvents: events.playerEvents,
     crossings: events.crossings,
     triggerEvents: [
+      ...getMapEntities("trigger", { tag: "coop_life_down" }).map((pad) => pad.on("enter", [down])),
+      ...getMapEntities("trigger", { tag: "coop_life_recover" }).map((pad) => pad.on("enter", [recover])),
       ...getMapEntities("trigger", { tag: "coop_plate" }).map((plate) => plate.on("enter", [alarm, flash, shake, click])),
       ...getMapEntities("trigger", { tag: "coop_weapon_mark" }).map((trigger) => trigger.on("enter", [mark])),
       ...getMapEntities("trigger", { tag: "coop_atmosphere" }).map((trigger) => trigger.on("enter", atmosphere)),

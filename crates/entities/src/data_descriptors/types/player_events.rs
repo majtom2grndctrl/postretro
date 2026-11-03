@@ -29,22 +29,50 @@ impl PlayerEventEdge {
     }
 }
 
-/// `players().on(edge(condition), fire, { levels? })`, returned under a
-/// `playerEvents` manifest key. Wire: `{ edge, condition, fire, levels? }`.
-/// `levels` scopes a `ModManifest` entry; a level script's entry carrying it
-/// is skipped at parse with a warning, and its siblings install.
+/// What a player event fires on: an edge of a per-player condition, or a
+/// discrete assist source. Discrete sources carry no condition and keep no
+/// edge memory.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayerEventTrigger {
+    /// `becomes(cond)` / `ceases(cond)`.
+    Edge {
+        edge: PlayerEventEdge,
+        /// A Bool fluent expression. Plain per-player reads bind to the
+        /// player being evaluated.
+        condition: IrNode,
+    },
+    /// `assistReceived()`: an assist completed on this player, the target.
+    AssistReceived,
+    /// `assistGiven()`: this player completed an assist, the helper.
+    AssistGiven,
+}
+
+impl PlayerEventTrigger {
+    /// The wire `edge` word.
+    pub const fn as_wire(&self) -> &'static str {
+        match self {
+            Self::Edge { edge, .. } => edge.as_wire(),
+            Self::AssistReceived => "assistReceived",
+            Self::AssistGiven => "assistGiven",
+        }
+    }
+}
+
+/// `players().on(trigger, fire, { levels? })`, returned under a
+/// `playerEvents` manifest key. Wire: `{ edge, condition, fire, levels? }`
+/// for `becomes` / `ceases`; `{ edge, fire, levels? }` for `assistReceived` /
+/// `assistGiven`, which take no condition. `levels` scopes a `ModManifest`
+/// entry; a level script's entry carrying it is skipped at parse with a
+/// warning, and its siblings install.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerEventDescriptor {
-    pub edge: PlayerEventEdge,
-    /// A Bool fluent expression. Plain per-player reads bind to the player
-    /// being evaluated.
-    pub condition: IrNode,
+    pub trigger: PlayerEventTrigger,
     pub fire: Vec<String>,
     pub levels: Vec<String>,
     /// The entry's position in its authored `playerEvents` array, counted
     /// from 0 in both runtimes. Diagnostics only — not part of the entry's
     /// content: a skipped sibling leaves later survivors at their authored
-    /// positions, and edge memory and dedupe key on `condition` and `edge`.
+    /// positions, and edge memory and dedupe key on `trigger`.
     pub authored_index: usize,
 }
 

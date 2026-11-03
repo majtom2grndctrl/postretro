@@ -168,6 +168,7 @@ pub enum NetEndpoint {
         /// on Control/Snapshot ordering. Dropped at demotion and at level unload,
         /// since it carries the host's level environment.
         tuning: Option<Box<TuningPayload>>,
+        life_state_tables: crate::life_state_tables::LifeStateTables,
         tuning_generation: u64,
         applied_movement_tuning_generation: u64,
         next_switch_declaration_id: u32,
@@ -250,6 +251,9 @@ pub struct ClientApplyFrameOutcome {
     /// Final authoritative mover correction per mover received this frame.
     /// App consumes these after snapshot apply to refresh the live carry table.
     pub mover_corrections: Vec<client::MoverCorrection>,
+    /// One (acknowledged input tick, committed `player.assistProgress`) pair
+    /// per accepted snapshot that yields a sample, in receive order.
+    pub assist_progress_samples: Vec<client::AssistProgressSample>,
     /// Every own-pawn reconcile this frame, in apply order, for the relay
     /// harness: production reads only the offset it seeds.
     #[cfg(test)]
@@ -575,6 +579,7 @@ impl NetEndpoint {
                     prediction: ClientPrediction::new(),
                     state_slots: Box::new(state_slots::ClientStateApply::new()),
                     tuning: None,
+                    life_state_tables: Default::default(),
                     tuning_generation: 0,
                     applied_movement_tuning_generation: 0,
                     next_switch_declaration_id: 0,
@@ -754,6 +759,7 @@ impl NetEndpoint {
             prediction,
             state_slots,
             tuning,
+            life_state_tables,
             applied_movement_tuning_generation,
             pending_switch_declarations,
             ..
@@ -769,7 +775,9 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         state_slots.reset_schema();
+        state_slots.clear_life_state_elapsed_witness();
         *tuning = None;
+        life_state_tables.clear();
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
         time_sync.clear_retired_input_facts();
@@ -851,6 +859,7 @@ impl NetEndpoint {
             interpolation_delay,
             prediction,
             tuning,
+            life_state_tables,
             applied_movement_tuning_generation,
             pending_switch_declarations,
             ..
@@ -863,10 +872,12 @@ impl NetEndpoint {
         prediction.reset_for_level_unload();
         interpolation_delay.reset_for_level_unload();
         *tuning = None;
+        life_state_tables.clear();
         *applied_movement_tuning_generation = 0;
         pending_switch_declarations.clear();
         time_sync.clear_retired_input_facts();
         state_slots.reset_timed_slot_targets();
+        state_slots.clear_life_state_elapsed_witness();
     }
 
     /// The host's level state (level gravity and fluid table) from this
@@ -903,6 +914,7 @@ impl NetEndpoint {
         let Self::Client {
             replication,
             tuning,
+            life_state_tables,
             tuning_generation,
             applied_movement_tuning_generation,
             ..
@@ -911,7 +923,19 @@ impl NetEndpoint {
             return;
         };
         let generation_before = *tuning_generation;
-        let result = replace_client_tuning(tuning, tuning_generation, bytes);
+        let pinned_revision = replication.armed_local_pawn().and_then(|armed| {
+            registry
+                .get_component::<postretro_foundation::PlayerMovementComponent>(armed.entity_id)
+                .ok()
+                .map(|pawn| pawn.life_state_table_revision)
+        });
+        let result = replace_client_tuning(
+            tuning,
+            tuning_generation,
+            bytes,
+            life_state_tables,
+            pinned_revision,
+        );
         // An environment-only change keeps the generation: nothing pawn-side to
         // rematerialize, and prediction reads the new level gravity next tick.
         let pawn_tuning_changed = *tuning_generation != generation_before;
@@ -924,6 +948,7 @@ impl NetEndpoint {
                     applied_movement_tuning_generation,
                     descriptors,
                     registry,
+                    life_state_tables,
                 );
             } else if tuning
                 .as_deref()
@@ -1295,7 +1320,7 @@ mod tests {
                     &fingerprint,
                     &[record],
                 );
-                state_slots.accept_timed_slot_sample(tick, &table, &outcome);
+                state_slots.accept_timed_slot_sample(tick, &table, &outcome, 0);
                 state_slots.advance_timed_slot_targets(
                     Some(f64::from(tick)),
                     if tick == 100 { 0.0 } else { 2.0 / 60.0 },

@@ -24,6 +24,11 @@ pub(crate) fn try_enter_slide(
     collision: &CombinedCollisionWorld<'_>,
     position: &mut Vec3,
 ) -> Option<Transition> {
+    if !crate::movement::life_capabilities::abilities(component)
+        || crate::movement::life_capabilities::forced_crouch(component)
+    {
+        return None;
+    }
     let slide = component.slide.as_ref()?;
     let crouch = component.crouch.as_ref()?;
     let horizontal = Vec2::new(component.velocity.x, component.velocity.z);
@@ -45,9 +50,9 @@ pub(crate) fn try_enter_slide(
 
     let direction = horizontal.normalize_or_zero();
     let boost = Vec3::new(
-        horizontal.x + direction.x * slide.entry_boost,
+        horizontal.x + direction.x * slide.entry_boost * component.life_speed_scale,
         0.0,
-        horizontal.y + direction.y * slide.entry_boost,
+        horizontal.y + direction.y * slide.entry_boost * component.life_speed_scale,
     );
 
     // The entry owns the entire horizontal velocity as boost. That makes the
@@ -286,7 +291,9 @@ pub(crate) fn sliding_intent(
     }
     if *elapsed_ms >= slide.min_duration_ms {
         let total_speed = Vec2::new(component.velocity.x, component.velocity.z).length();
-        if !input.crouch_intent || total_speed <= component.ground_params.speed.crouch {
+        if !input.crouch_intent
+            || total_speed <= component.ground_params.speed.crouch * component.life_speed_scale
+        {
             return Some(natural_exit(
                 component,
                 input,

@@ -180,6 +180,27 @@ pub(super) fn bind_command_at(
         })
     };
     match primitive {
+        "setLifeState" => {
+            let state = args.get("state")?.as_str()?;
+            let data = script_ctx?.data_registry.borrow();
+            let Some(id) = data.life_state_names.iter().position(|name| name == state) else {
+                log::error!("[LifeState] unknown state `{state}`; not binding");
+                return None;
+            };
+            Some(BoundTriggerCommand::SetLifeState {
+                target: target(primitive)?,
+                state_id: id as u8,
+            })
+        }
+
+        "respawn" => Some(BoundTriggerCommand::Respawn {
+            target: target(primitive)?,
+            health: crate::respawn_commands::respawn_health(args),
+            state: args
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        }),
         "moverStart" => Some(BoundTriggerCommand::Mover {
             target: target(primitive)?,
             command: MoverCommand::Start,

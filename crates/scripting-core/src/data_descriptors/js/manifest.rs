@@ -829,33 +829,6 @@ pub fn drain_presentation_templates_js<'js>(
     Ok(out)
 }
 
-/// Drain the one fact-driven presentation overlay. The plural manifest key is
-/// the established section name, but its value is one descriptor, not an
-/// array. Invalid input is contained so an optional combat visual cannot reject
-/// the full manifest.
-pub fn drain_presentation_overlays_js<'js>(
-    ctx: &Ctx<'js>,
-    obj: &Object<'js>,
-    scope: &str,
-) -> Result<Vec<PresentationOverlay>, DescriptorError> {
-    if !obj.contains_key("presentationOverlays").map_err(js_err)? {
-        return Ok(Vec::new());
-    }
-    let value: JsValue = obj.get("presentationOverlays").map_err(js_err)?;
-    if value.is_null() || value.is_undefined() {
-        return Ok(Vec::new());
-    }
-    match presentation_overlay_from_js(ctx, value) {
-        Ok(overlay) => Ok(vec![overlay]),
-        Err(error) => {
-            log::warn!(
-                "[Scripting] {scope}: `presentationOverlays` must be one overlay descriptor (not an array); the field was ignored: {error}"
-            );
-            Ok(Vec::new())
-        }
-    }
-}
-
 pub fn presentation_overlay_from_js<'js>(
     ctx: &Ctx<'js>,
     value: JsValue<'js>,

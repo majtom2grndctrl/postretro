@@ -14,6 +14,22 @@ export const playerEntity = defineEntity({
   // inside an armed ghost link (maps/ghost-links.map).
   ghost: true,
   components: {
+    lifeStates: {
+      initial: "alive",
+      states: {
+        alive: {},
+        down: {
+          movement: { speedScale: 0.3, abilities: false, posture: "crouch" },
+          switchWeapon: false,
+          use: false,
+          touch: false,
+          occupancy: false,
+          // A teammate can revive a downed player: the engine defaults (1.5 m,
+          // 3000 ms) with no pair expression.
+          assistable: {},
+        },
+      },
+    },
     // The body-spanning hitbox makes the player a normal targetable presence.
     // A movement pawn's transform is its capsule's centre, not its feet, so the
     // box centres there and spans the whole standing capsule (0.2 m radius,

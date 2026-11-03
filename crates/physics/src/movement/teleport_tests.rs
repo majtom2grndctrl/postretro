@@ -1226,3 +1226,61 @@ mod seamless_mapping_parity {
         }
     }
 }
+
+#[test]
+fn life_state_touch_controls_teleport_presence_independently_of_vault_bar() {
+    use postretro_foundation::{LifeStateProfile, enter_life_state};
+    let mut world = CollisionWorld::new();
+    let destination = Vec3::new(20.0, 4.0, 10.0);
+    install(
+        &mut world,
+        vec![record(TeleportMode::Classic, destination, 0.0)],
+    );
+    let mut pawn = pawn();
+    let mut profile = LifeStateProfile {
+        touch: false,
+        ..Default::default()
+    };
+    profile.movement.abilities = false;
+    enter_life_state(&mut pawn, 0, &profile, 1);
+    assert!(pawn.vault_barred);
+    let (position, events) = relocate(&world, &mut pawn, Vec3::ZERO, 0.0);
+    near(position, Vec3::ZERO);
+    assert!(events.teleport.is_none());
+    profile.touch = true;
+    enter_life_state(&mut pawn, 1, &profile, 1);
+    let (position, events) = relocate(&world, &mut pawn, Vec3::ZERO, 0.0);
+    near(position, destination);
+    assert!(
+        events.teleport.is_some(),
+        "enabling touch inside the region needs no re-entry"
+    );
+}
+
+#[test]
+fn life_state_refused_teleport_still_prunes_arrival_latches() {
+    use postretro_foundation::{LifeStateProfile, enter_life_state};
+    let mut world = CollisionWorld::new();
+    install(
+        &mut world,
+        vec![record(
+            TeleportMode::Classic,
+            Vec3::new(20.0, 4.0, 10.0),
+            0.0,
+        )],
+    );
+    let mut pawn = pawn();
+    pawn.teleport.arrival_latches.push(0);
+    enter_life_state(
+        &mut pawn,
+        0,
+        &LifeStateProfile {
+            touch: false,
+            ..Default::default()
+        },
+        1,
+    );
+    let (_, events) = relocate(&world, &mut pawn, Vec3::splat(100.0), 0.0);
+    assert!(events.teleport.is_none());
+    assert!(pawn.teleport.arrival_latches.is_empty());
+}

@@ -329,6 +329,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -450,6 +451,7 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
         },
     );
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -1362,6 +1364,7 @@ fn remote_enemy_spawn_baseline_applies_initial_mesh_animation_state() {
         server_script_time: 0.0,
         level_tick: 0,
         records: vec![EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: net_id.0,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -1929,6 +1932,7 @@ fn remote_enemy_rebaseline_does_not_resurface_materialize_or_reset_animation() {
         server_script_time: 0.0,
         level_tick: 0,
         records: vec![EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: net_id.0,
             // A fresh baseline_id so the server can track the re-baseline round-trip.
             baseline_id: 999,

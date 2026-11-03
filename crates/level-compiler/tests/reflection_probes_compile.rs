@@ -2,10 +2,11 @@
 //! index every other animated section and the runtime descriptor buffer use.
 //! See: context/lib/resource_management.md §5.2 · rendering_pipeline.md §7.3a (Live lighting)
 
+mod prl_build_support;
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::alpha_lights::AlphaLightsSection;
@@ -21,6 +22,8 @@ use postretro_level_format::sh_volume::{
 };
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use postretro_render_cpu::sh_compose::{AnimatedLightScaleDescriptor, animated_light_scale};
+
+use prl_build_support::prl_build;
 
 /// The fixture: a long sealed hall, a pool under one animated light. Its
 /// header comment lists the entities.
@@ -67,7 +70,7 @@ fn compile(temp: &TempBuildDir) -> PathBuf {
     let input = temp.0.join("maps").join("reflection_probe_lights.map");
     let output_path = temp.0.join("reflection_probe_lights.prl");
     std::fs::write(&input, FIXTURE).expect("write fixture map");
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "warn")
         .arg(&input)
         .arg("-o")

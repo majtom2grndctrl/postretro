@@ -201,6 +201,33 @@ impl TriggerSystem {
         bridge: &TriggerVolumeBridge,
         tick_inputs: TriggerTickInputs<'_>,
         dispatch_inputs: TriggerDispatchInputs<'_>,
+        dispatch: impl FnMut(&TriggerEvent, usize, &[PlayerId], &mut EntityRegistry),
+    ) -> TriggerFireReport {
+        let capabilities = crate::sim::player_life::TriggerStageCapabilities::capture(
+            registry,
+            tick_inputs.players,
+        );
+        let alive_players = capabilities.effective_occupants(dispatch_inputs.alive_players);
+        self.run_authoritative_tick_with_capabilities(
+            registry,
+            bridge,
+            tick_inputs,
+            TriggerDispatchInputs {
+                alive_players: &alive_players,
+                bound_edges: dispatch_inputs.bound_edges,
+            },
+            &capabilities,
+            dispatch,
+        )
+    }
+
+    pub fn run_authoritative_tick_with_capabilities(
+        &mut self,
+        registry: &mut EntityRegistry,
+        bridge: &TriggerVolumeBridge,
+        tick_inputs: TriggerTickInputs<'_>,
+        dispatch_inputs: TriggerDispatchInputs<'_>,
+        capabilities: &crate::sim::player_life::TriggerStageCapabilities,
         mut dispatch: impl FnMut(&TriggerEvent, usize, &[PlayerId], &mut EntityRegistry),
     ) -> TriggerFireReport {
         let player_capsules = canonical_player_capsules(
@@ -284,10 +311,12 @@ impl TriggerSystem {
                         .insert(player_id);
                 let activated = match trigger.activation {
                     TriggerActivation::Touch => {
-                        entered || (touch_reactivation_pending && overlapping)
+                        capabilities.permits_touch(player_id)
+                            && (entered || (touch_reactivation_pending && overlapping))
                     }
                     TriggerActivation::Use => {
-                        overlapping
+                        capabilities.permits_use(player_id)
+                            && overlapping
                             && tick_inputs
                                 .use_pressed
                                 .get(&player_id)

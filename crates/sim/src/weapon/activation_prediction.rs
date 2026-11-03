@@ -66,7 +66,27 @@ pub fn advance_predicted_weapon_tick(
     dt_ms: f32,
     allow_start: bool,
 ) -> WeaponActivationAdvance {
-    let fresh_reload = reload && !weapon.reload_press_consumed;
+    advance_predicted_weapon_tick_with_reload_gate(
+        weapon,
+        command,
+        reload,
+        dt_ms,
+        allow_start,
+        true,
+    )
+}
+
+/// Consume raw reload input while refusing both entry and activation cancellation.
+/// Reopening the life capability therefore requires a fresh press.
+pub fn advance_predicted_weapon_tick_with_reload_gate(
+    weapon: &mut WeaponComponent,
+    command: ActivationCommand,
+    reload: bool,
+    dt_ms: f32,
+    allow_start: bool,
+    reload_allowed: bool,
+) -> WeaponActivationAdvance {
+    let fresh_reload = reload && !weapon.reload_press_consumed && reload_allowed;
     weapon.reload_press_consumed = reload;
     let cancelled = fresh_reload.then(|| weapon.cancel_activation()).flatten();
     let mut result = advance_weapon_activation_with_shell_preemption(

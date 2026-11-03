@@ -28,6 +28,7 @@
 - **Bake stage ordering / what a compiler stage may depend on / where atlas preparation runs / compile working-set budget / lightmap bake scale** → `build_pipeline.md` §Compiler pipeline
 - **Bake ray tracing / BVH ray queries / watertight hit test and its tolerance τ / occluder cache / tracer epoch** → `build_pipeline.md` §Ray traversal
 - **Lightmap exact skips / reach cull / coverage proof and hole warnings / destructible or openable static geometry versus bake culls** → `build_pipeline.md` §Compiler pipeline step 12 (Exact skips)
+- **Mover lighting analysis / mover light gate / what baked light a mover blocks / mover-lighting Build Summary block / mover probe channel, mover state lighting, light ramp keys (id 57)** → `build_pipeline.md` §Compiler pipeline step 12 (Mover light gate, Mover probe channel) · memos: §Build Cache · runtime: `rendering_pipeline.md` §4 (Mover state lighting)
 - **Build cache / warm vs cold builds / why a stage re-baked / cache disk footprint / stage epochs and keys** → `build_pipeline.md` §Build Cache
 - **Audio / spatial sound / positional sound events / descriptor sound fields / reverb zones** → `audio.md` · emitter token: `scripting.md` §12
 - **Entity model / game objects / sprites** → `entity_model.md`
@@ -65,7 +66,7 @@
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
 - **System reactions / system steps in a sequence** → `scripting.md` §10.4
-- **Per-player events / `players().on` / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
+- **Per-player events / `players().on` / discrete `assistReceived` / `assistGiven` sources / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
 - **Netcode / multiplayer / co-op / replication / transport / wire format** → `networking.md` · simulated lag, dev lag proxy, `POSTRETRO_NET_LAG`, Network tab: §Testing the conditioned link
 - **What reaches clients in co-op / networked-by-default classification / display copies / host-only light, fog, emitter changes as replicated state / join baseline budget / trigger presentation `audience`** → `networking.md` §Current contract · §Presentation events vs. replicated state · `scripting.md` §12 (Entity addressing)
@@ -86,6 +87,8 @@
 - **Radial entity query / one-to-many overlap / all entities within radius / non-ray query family** → `entity_model.md` §7 (Radial entity overlap)
 - **Navigation / navmesh / pathfinding representation** → `build_pipeline.md` §Navigation bake
 - **Multi-threaded AI pathfinding readiness / scheduling blocker** → `ai_pathfinding_mt_readiness.md`
+- **Player life states / capability profiles / zero-HP policy / `setLifeState` / `respawn` / impact `source.inLifeState` / `source.setLifeState` / rejoin and reload remap** → `scripting.md` §12; elapsed/HUD clock: §5 · movement/posture: `movement.md` §2, §6 · host profile tables/replay: `networking.md` §What gates, and what replicates instead
+- **Revive / teammate assist / `assistable` / `assist` command, its engine default and relevance / assist accumulator and completion order / assist progress slots and HUD bars / helper-bar prediction / interaction-pair scope (`assist.helper`, `assist.target`) / per-pair authored values** → `scripting.md` §12 (Assist), §11, §5 · `input.md` §2 · `entity_model.md` §5 · co-op: `networking.md` §What gates, and what replicates instead, §Host input command queue, §Version gates · `ui.md` §3
 - **Player movement / movement states / FPS feel / slide camera dip and FOV / sustained view pose (`viewFeel.pose`) / ledge focus** → `movement.md` (§1 for view feel)
 - **Vault / mantle / ledge probe and its cast bound / vault path / leaving water by a ledge / vault camera pose (`pose.vault`, ledge focus)** → `movement.md` §4 (Vault), §1 · wire and correction band: `networking.md` §Snapshot apply ordering
 - **Fire blocked by movement state / vault fire gate / vault entry cancelling a burst or charge / `charge.interruptedBy` / held presses and releases over a vault** → `movement.md` §4 (Vault, Firing) · host-remote ordering: `networking.md` §Combat authority · charge vocabulary: `entity_model.md` §Components (Weapon vocabulary)

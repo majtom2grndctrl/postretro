@@ -86,7 +86,7 @@ pub(crate) fn test_app() -> App {
             ui_focus_rects: None,
             ui_input_mode: input::InputMode::default(),
             modal_stack: postretro_ui::modal_stack::ModalStack::new(),
-            font_system: postretro_ui::text::build_font_system(),
+            font_system: postretro_ui::text::build_embedded_font_system(),
             scripting: crate::session::ScriptingCore {
                 command_diagnostics: Default::default(),
                 auto_close_timers: Default::default(),
@@ -135,6 +135,7 @@ pub(crate) fn test_app() -> App {
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::default(),
             touch_system: crate::sim::touch::TouchSystem::default(),
+            assist_state: crate::sim::assist::AssistState::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
             impact_particle_requests: Vec::new(),
@@ -168,6 +169,7 @@ pub(crate) fn test_app() -> App {
         nav_stick_tracker: input::StickNavTrackers::new(),
         frame_timing: FrameTiming::new(initial_state),
         view_feel_state: view_feel::ViewFeelState::default(),
+        life_state_eye: Default::default(),
         view_feel_followed_pawn: None,
         view_feel_descriptor: None,
         diagnostic_inputs: input::DiagnosticInputs::new(input::default_diagnostic_chords()),
@@ -197,6 +199,8 @@ pub(crate) fn test_app() -> App {
         fluid_surface_render: postretro_render_cpu::fluid_surface::FluidSurfaceRenderCollector::new(
         ),
         fluid_eye: Default::default(),
+        life_state_display: Default::default(),
+        client_assist: Default::default(),
         planar_render: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
@@ -282,6 +286,7 @@ pub(super) fn slot_snapshot(app: &App) -> BTreeMap<String, SlotRecord> {
 
 pub(super) fn descriptor(name: &str) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

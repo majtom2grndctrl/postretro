@@ -2202,6 +2202,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
     let mut mover_states = MoverTickStateTable::default();
     let mut touch_system = TouchSystem::default();
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: postretro_sim::weapon::FireButtonState {
             pressed: false,
@@ -2251,6 +2252,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
         },
         DT,
         &mut touch_system,
+        &mut Default::default(),
         &[],
         0,
         &factions,
@@ -2429,6 +2431,7 @@ impl FactionSentimentHarness {
             &mut self.mover_states,
             &[],
             &SimCommand {
+                assist_held: false,
                 input_tick: 0,
                 secondary_button: postretro_sim::weapon::FireButtonState {
                     pressed: false,
@@ -2462,6 +2465,7 @@ impl FactionSentimentHarness {
             },
             tick_dt,
             &mut self.touch_system,
+            &mut Default::default(),
             &[],
             0,
             &self.factions,
@@ -2843,6 +2847,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         &mut mover_states,
         &[],
         &SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: postretro_sim::weapon::FireButtonState {
                 pressed: false,
@@ -2876,6 +2881,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
         },
         0.016,
         &mut touch_system,
+        &mut Default::default(),
         &[],
         0,
         &FactionRegistry::default(),
@@ -10379,6 +10385,7 @@ fn projectile_weapon_descriptor(
     cooldown_ms: f32,
 ) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

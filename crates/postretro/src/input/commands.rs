@@ -1,7 +1,7 @@
 // Bindable commands: stable IDs, contexts, accepted inputs and activators.
 // See: context/lib/input.md §2 (Commands, activators, and layering)
 
-use super::types::{Action, ActivatorKind};
+use super::types::{Action, Activator, ActivatorKind};
 
 /// A bindable command. The set is engine-closed: gameplay commands come from
 /// the `Action` set, UI commands from the nav intents. Every per-command
@@ -22,6 +22,7 @@ pub enum Command {
     Dash,
     Crouch,
     Use,
+    Assist,
     Drop,
     Shoot,
     AltFire,
@@ -77,7 +78,7 @@ pub enum CommandKind {
 }
 
 impl Command {
-    pub const ALL: [Command; 45] = [
+    pub const ALL: [Command; 46] = [
         Command::MoveForward,
         Command::MoveBack,
         Command::MoveLeft,
@@ -91,6 +92,7 @@ impl Command {
         Command::Dash,
         Command::Crouch,
         Command::Use,
+        Command::Assist,
         Command::Drop,
         Command::Shoot,
         Command::AltFire,
@@ -143,6 +145,7 @@ impl Command {
             Command::Dash => "dash",
             Command::Crouch => "crouch",
             Command::Use => "use",
+            Command::Assist => "assist",
             Command::Drop => "drop",
             Command::Shoot => "shoot",
             Command::AltFire => "alt_fire",
@@ -198,6 +201,7 @@ impl Command {
             | Command::Dash
             | Command::Crouch
             | Command::Use
+            | Command::Assist
             | Command::Drop
             | Command::Shoot
             | Command::AltFire
@@ -250,6 +254,7 @@ impl Command {
             | Command::Dash
             | Command::Crouch
             | Command::Use
+            | Command::Assist
             | Command::Drop
             | Command::Shoot
             | Command::AltFire
@@ -285,8 +290,8 @@ impl Command {
 
     /// Whether a binding of this command may use `activator`. Charge requires
     /// `press` on shoot and alt-fire; analog and wheel-notch commands have no
-    /// duration to time. Sprint, crouch, and movement take `press` or `hold`:
-    /// movement reads a level, and a `tap` or `release` only pulses one.
+    /// duration to time. Sprint, crouch, assist, and movement take `press` or
+    /// `hold`: each reads a level, and a `tap` or `release` only pulses one.
     pub const fn accepts(self, activator: ActivatorKind) -> bool {
         match (self.kind(), self) {
             (CommandKind::Analog | CommandKind::WheelNotch, _)
@@ -297,6 +302,7 @@ impl Command {
                 _,
                 Command::Sprint
                 | Command::Crouch
+                | Command::Assist
                 | Command::MoveForward
                 | Command::MoveBack
                 | Command::MoveLeft
@@ -305,6 +311,62 @@ impl Command {
                 | Command::MoveDown,
             ) => matches!(activator, ActivatorKind::Press | ActivatorKind::Hold),
             _ => true,
+        }
+    }
+
+    /// The activator every engine default of this command carries: `hold` at
+    /// the default threshold for `assist`, so it shares Use's keys beside
+    /// Use's `press` (`input.md` §Shared keys), and `press` for every other
+    /// command. Both engine-default sites read it (`default_bindings_for`,
+    /// `engine_slots`).
+    pub const fn default_activator(self) -> Activator {
+        match self {
+            Command::Assist => Activator::new(ActivatorKind::Hold),
+            Command::MoveForward
+            | Command::MoveBack
+            | Command::MoveLeft
+            | Command::MoveRight
+            | Command::MoveUp
+            | Command::MoveDown
+            | Command::LookX
+            | Command::LookY
+            | Command::Sprint
+            | Command::Jump
+            | Command::Dash
+            | Command::Crouch
+            | Command::Use
+            | Command::Drop
+            | Command::Shoot
+            | Command::AltFire
+            | Command::Reload
+            | Command::SelectWieldable1
+            | Command::SelectWieldable2
+            | Command::SelectWieldable3
+            | Command::SelectWieldable4
+            | Command::SelectWieldable5
+            | Command::SelectWieldable6
+            | Command::SelectWieldable7
+            | Command::SelectWieldable8
+            | Command::SelectWieldable9
+            | Command::SelectWieldable10
+            | Command::CycleWieldableNext
+            | Command::CycleWieldablePrevious
+            | Command::ToggleLastWieldable
+            | Command::NavUp
+            | Command::NavDown
+            | Command::NavLeft
+            | Command::NavRight
+            | Command::NavNext
+            | Command::NavPrev
+            | Command::NavTabNext
+            | Command::NavTabPrev
+            | Command::NavConfirm
+            | Command::NavCancel
+            | Command::NavMenu
+            | Command::NavOptions
+            | Command::TextBackspace
+            | Command::TextSpace
+            | Command::TextCommit => Activator::PRESS,
         }
     }
 
@@ -328,6 +390,7 @@ impl Command {
             Command::Dash => (Action::Dash, 1.0),
             Command::Crouch => (Action::Crouch, 1.0),
             Command::Use => (Action::Use, 1.0),
+            Command::Assist => (Action::Assist, 1.0),
             Command::Drop => (Action::Drop, 1.0),
             Command::Shoot => (Action::Shoot, 1.0),
             Command::AltFire => (Action::AltFire, 1.0),
@@ -412,6 +475,7 @@ mod tests {
                 Command::Shoot | Command::AltFire => &[Press],
                 Command::Sprint
                 | Command::Crouch
+                | Command::Assist
                 | Command::MoveForward
                 | Command::MoveBack
                 | Command::MoveLeft

@@ -65,7 +65,7 @@ pub fn run_host_movement_tick(
             registry.get_component::<Transform>(*id),
         ) {
             let mut component = component.clone();
-            drop_vault_if_dead(registry, *id, &mut component);
+            drop_vault_if_barred(registry, *id, &mut component);
             snapshots.push((*id, component, transform.position, input.clone()));
         }
     }
@@ -113,25 +113,30 @@ pub fn run_host_movement_tick(
     events_out
 }
 
-/// Settle vault state on `pawn`'s liveness before its movement tick. Movement
-/// itself never reads health; host movement and client prediction both call
-/// this, so the two take the same path.
+/// Settle the vault bar before a pawn's movement tick and break off a barred
+/// vault. Host movement and client prediction call this at that same point. A
+/// declared life-state profile owns the bar (refused abilities, stamped at
+/// adoption), even at zero HP; only an undeclared pawn derives it here, from
+/// `is_quiescent`.
 ///
-/// A pawn dead or committed to removal leaves `Vault` through
-/// `PlayerMovementComponent::break_off_vault`: its path velocity is dropped, so
-/// it falls off the ledge path under gravity instead of finishing the climb or
-/// being thrown on by the rise. It is also barred from starting a vault this
-/// tick (`vault_barred`), or a dead pawn pressing into a ledge would re-enter
-/// `Vault` on the same tick, every tick. No state edge is emitted: death owns
-/// the moment, not `vault_ended`.
-pub fn drop_vault_if_dead(
+/// When barred, `break_off_vault` drops path velocity so the pawn falls under
+/// gravity instead of finishing the climb. The bar also prevents vault entry
+/// during this tick. Breaking off emits no `vault_ended` edge: death, a
+/// life-state transition, or removal owns that moment.
+pub fn drop_vault_if_barred(
     registry: &EntityRegistry,
     pawn: EntityId,
     movement: &mut PlayerMovementComponent,
 ) {
-    let dead = crate::scripting_systems::health::is_quiescent(registry, pawn);
-    movement.vault_barred = dead;
-    if dead {
+    if postretro_foundation::player_capability(
+        movement,
+        postretro_foundation::Capability::MovementAbilities,
+    )
+    .is_none()
+    {
+        movement.vault_barred = crate::scripting_systems::health::is_quiescent(registry, pawn);
+    }
+    if movement.vault_barred {
         movement.break_off_vault();
     }
 }
@@ -292,7 +297,7 @@ mod tests {
             .get_component::<PlayerMovementComponent>(pawn)
             .unwrap()
             .clone();
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert!(
             matches!(live.movement_state, MovementState::Vault { .. }),
             "a live pawn keeps vaulting"
@@ -334,14 +339,14 @@ mod tests {
         live.velocity = Vec3::new(1.0, 9.0, 0.0) + knockback;
         live.swim_reentry_latched = true;
 
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert_eq!(live.movement_state, MovementState::Normal);
         assert_eq!(live.velocity, knockback, "only the knockback stays");
         assert!(!live.swim_reentry_latched);
         assert!(live.vault_barred, "a dead pawn may not start a vault");
 
         set_health(&mut registry, pawn, 50.0);
-        drop_vault_if_dead(&registry, pawn, &mut live);
+        drop_vault_if_barred(&registry, pawn, &mut live);
         assert!(!live.vault_barred, "a live pawn may vault again");
     }
 

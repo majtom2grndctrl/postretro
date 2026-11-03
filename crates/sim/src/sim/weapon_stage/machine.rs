@@ -174,7 +174,14 @@ fn tick_weapon_machine_phases(
     if activation_command.is_some()
         && let Some(pawn) = pawn
     {
-        let fresh_press = reload && !component.reload_press_consumed && !reload_refused;
+        let fresh_press = reload
+            && !component.reload_press_consumed
+            && !reload_refused
+            && crate::sim::player_life::permits(
+                registry,
+                pawn,
+                postretro_foundation::Capability::Reload,
+            );
         fresh_reload = fresh_press;
         component.reload_press_consumed = reload;
         if fresh_press {

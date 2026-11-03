@@ -22,7 +22,7 @@ use bvh::bvh::Bvh;
 
 use crate::bvh_build::{BvhPrimitive, build_bvh};
 use crate::geometry::{GeometryResult, extract_geometry};
-use crate::map_data::{Face, MapLight};
+use crate::map_data::{Face, MapKinematicMover, MapKinematicWaypoint, MapLight};
 use crate::map_format::MapFormat;
 use crate::parse;
 use crate::partition::BspTree;
@@ -77,6 +77,8 @@ pub struct FixturePipeline {
     pub full_exterior_leaves: HashSet<usize>,
     pub faces: Vec<Face>,
     pub lights: Vec<MapLight>,
+    pub kinematic_movers: Vec<MapKinematicMover>,
+    pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
 }
 
 /// Absolute path to a fixture `.map` under `content/dev/maps/`.
@@ -130,5 +132,7 @@ pub fn load_map(path: &Path) -> FixturePipeline {
         full_exterior_leaves: full_exterior,
         faces: result.faces,
         lights: map_data.lights,
+        kinematic_movers: map_data.kinematic_movers,
+        kinematic_waypoints: map_data.kinematic_waypoints,
     }
 }

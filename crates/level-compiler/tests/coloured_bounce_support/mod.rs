@@ -5,6 +5,8 @@
 
 #[path = "../../src/coloured_bounce_test_fixtures.rs"]
 pub mod fixtures;
+#[path = "../prl_build_support/mod.rs"]
+mod prl_build_support;
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -13,6 +15,8 @@ use std::process::{Command, Output};
 
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::REACH_VERIFY_ENV;
 
 /// Flags every coloured-bounce bake shares: tiny lightmaps, a dense probe
 /// grid, and uncompressed irradiance so SH values compare before encoding.
@@ -81,6 +85,10 @@ pub fn grey_compiler(test: &str) -> Option<PathBuf> {
 pub struct Fixture {
     pub dir: tempfile::TempDir,
     pub map: PathBuf,
+    /// The lightmap reach cull's verify mode: on, unless the suite asserts
+    /// lightmap layer or `lightmap_section` cache hits, which verify mode
+    /// never reads.
+    pub reach_verify: bool,
 }
 
 impl Fixture {
@@ -93,7 +101,11 @@ impl Fixture {
         }
         let map = dir.path().join("maps/coloured-bounce.map");
         std::fs::write(&map, map_text).unwrap();
-        Self { dir, map }
+        Self {
+            dir,
+            map,
+            reach_verify: true,
+        }
     }
 
     /// The shared red-wall room with both lights and every fixture PNG.
@@ -129,6 +141,7 @@ impl Fixture {
         let prl = self.root().join(format!("{label}.prl"));
         let output = Command::new(compiler)
             .env("RUST_LOG", rust_log)
+            .env(REACH_VERIFY_ENV, if self.reach_verify { "1" } else { "0" })
             .arg(&self.map)
             .arg("-o")
             .arg(&prl)

@@ -18,6 +18,7 @@ import type { CommandId } from "postretro";
 import type { LocalizedText } from "./text";
 import type { ColorToken, FontToken, SpacingToken } from "./theme";
 import { __unwrapThemeToken } from "./theme";
+import { buildPredicateCompare } from "./predicate_compare";
 
 // --- Shared wire-shape aliases ----------------------------------------------
 
@@ -102,16 +103,25 @@ export type FactBindRef<T> = {
 export type PredicateValue = number | boolean | string;
 
 /**
+ * The ordered relation a numeric predicate tests. Mirrors `predicate_compare.rs`
+ * `CompareOp` (camelCase wire names).
+ */
+export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+
+/** A numeric comparison against a Number source: `{ op, value }`. */
+export type PredicateCompare = { op: PredicateCompareOp; value: number };
+
+/**
  * A reactive predicate over a store slot, retained local cell, or stamped
- * presentation fact, with an optional `equals` comparand.
+ * presentation fact, with an optional `equals` comparand or a numeric
+ * `compare` (never both).
  */
 export type Predicate = (
   | (ComputedRef<PredicateValue> & { local?: never })
   | LocalBindRef
   | FactBindRef<PredicateValue>
-) & {
-  equals?: PredicateValue;
-};
+) &
+  ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
 
 /** A11y role override (M13 G2). Mirrors `descriptor.rs` `Role` (camelCase). */
 export type WidgetRole =
@@ -606,6 +616,13 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
       throw new Error(`${factory}: \`${field}.equals\` number must be finite`);
     }
     out.equals = e;
+  }
+  // `null` is absent, matching the JS bridge's optional-field read.
+  if (p.compare !== undefined && p.compare !== null) {
+    if (p.equals !== undefined) {
+      throw new Error(`${factory}: \`${field}\` cannot carry both \`equals\` and \`compare\``);
+    }
+    out.compare = buildPredicateCompare(p.compare, field, factory);
   }
   return out;
 }

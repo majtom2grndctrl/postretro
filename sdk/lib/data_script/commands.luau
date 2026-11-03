@@ -85,7 +85,7 @@ local function opaqueTarget(call: string, verbs: { [string]: any }, wire: string
   })))
 end
 
--- The four player-facing verbs, shared by `players()`, `on.activators` and
+-- The player-facing verbs, shared by `players()`, `on.activators` and
 -- `on.player`; only the addressing each stamps differs.
 local function playerVerbs(make)
   return {
@@ -94,6 +94,17 @@ local function playerVerbs(make)
     end,
     grantHealth = function(_self, amount: number)
       return make("grantHealth", { amount = amount })
+    end,
+    setLifeState = function(_self, state: string)
+      return make("setLifeState", { state = state })
+    end,
+    respawn = function(_self, options)
+      local args = {}
+      if options ~= nil then
+        args.health = options.health
+        args.state = options.lifeState
+      end
+      return make("respawn", args)
     end,
     grantAmmo = function(_self, ammoType: string, amount: number)
       return make("grantAmmo", { type = ammoType, amount = amount })

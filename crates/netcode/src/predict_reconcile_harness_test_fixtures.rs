@@ -295,6 +295,7 @@ pub(crate) const ENTITY_CLASS: &str = "player";
 /// `"player"` descriptor wraps the harness `player_descriptor()` movement block.
 pub(crate) fn entity_descriptors() -> Vec<EntityTypeDescriptor> {
     vec![EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,
@@ -328,6 +329,7 @@ pub(crate) fn net_slot_provenance() -> DescriptorProvenance {
 /// stamps the wire `client_tick` from `ClientPrediction::next_client_tick`.
 pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -359,6 +361,7 @@ pub(crate) fn forward_command(dash_pressed: bool) -> SimCommand {
 
 pub(crate) fn idle_command() -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -411,6 +414,7 @@ pub(crate) fn input_at(client_tick: u32, wish_forward: f32) -> InputCommand {
         activation: postretro_net::wire::WireActivationInput::default(),
         client_tick,
         movement: WireMovementInput {
+            assist_held: false,
             wish_dir: [0.0, wish_forward],
             jump_pressed: false,
             dash_pressed: false,

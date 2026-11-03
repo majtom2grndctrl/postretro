@@ -750,6 +750,9 @@ pub struct DataRegistry {
     /// via [`Self::upsert_entity_type`]. Read by the data-archetype spawn
     /// sweep. Not populated from `setupLevel()`.
     pub entities: Vec<EntityTypeDescriptor>,
+    /// Sorted engine-global name table, retained across level unload.
+    pub life_state_names: Vec<String>,
+    pub life_state_table_revision: u8,
     /// Generation identity for the committed entity-descriptor snapshot.
     /// Consumers of derived descriptor data use this to refresh once per
     /// registry change without fingerprinting descriptors in a hot path.
@@ -1022,10 +1025,11 @@ impl DataRegistry {
     /// Replace the engine-global descriptor snapshot as one complete commit.
     /// Used by dev hot reload after a staged manifest has validated and its
     /// live refresh plan has applied. Startup may continue to use upsert.
-    /// Duplicate `canonical_name`s are deduped last-write-wins to match
-    /// startup, so this is infallible.
+    /// Duplicate `canonical_name`s are deduped last-write-wins to match startup.
+    /// Callers must validate the final snapshot's life-state name union first.
     pub fn replace_entity_types(&mut self, descriptors: Vec<EntityTypeDescriptor>) {
         self.entities = Self::dedup_entity_type_snapshot(descriptors);
+        self.rebuild_life_state_table();
         self.entity_types_generation = self.entity_types_generation.wrapping_add(1);
     }
 
@@ -1198,6 +1202,7 @@ mod tests {
 
     fn grunt_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1367,9 +1372,11 @@ mod tests {
 
     fn player_event_at(authored_index: usize, levels: &[&str]) -> PlayerEventDescriptor {
         PlayerEventDescriptor {
-            edge: crate::data_descriptors::PlayerEventEdge::Becomes,
-            condition: postretro_foundation::ir::IrNode::Const {
-                value: postretro_foundation::ir::IrValue::Bool(true),
+            trigger: crate::data_descriptors::PlayerEventTrigger::Edge {
+                edge: crate::data_descriptors::PlayerEventEdge::Becomes,
+                condition: postretro_foundation::ir::IrNode::Const {
+                    value: postretro_foundation::ir::IrValue::Bool(true),
+                },
             },
             fire: Vec::new(),
             levels: levels.iter().map(|level| level.to_string()).collect(),

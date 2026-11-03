@@ -3,9 +3,10 @@
 //! set to `_reflection_capture always` reflects itself.
 //! See: context/lib/resource_management.md §5.2 (Exclusion)
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,6 +15,8 @@ use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_format::octahedral::irradiance_tile_texel_coord;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 /// Quake map units to engine meters.
 const UNIT: f32 = 0.0254;
@@ -140,7 +143,7 @@ fn compile(map_text: &str, jobs: u32) -> (ReflectionProbesSection, String) {
     let input = temp.0.join("maps").join("probe_exclusion.map");
     let output_path = temp.0.join("probe_exclusion.prl");
     std::fs::write(&input, map_text).expect("write fixture map");
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "info")
         .arg(&input)
         .arg("-o")

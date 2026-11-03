@@ -37,6 +37,7 @@ pub(crate) fn sim_command_to_input(cmd: &SimCommand, client_tick: u32) -> InputC
             drop_pressed: cmd.drop_pressed,
             aim_pitch: cmd.movement.facing_pitch,
             firing_slot: cmd.firing_slot,
+            assist_held: cmd.assist_held,
         },
         fire_button: WireFireButtonState {
             pressed: cmd.fire_button.pressed,
@@ -83,6 +84,7 @@ pub(crate) fn input_command_to_sim(input: &InputCommand) -> SimCommand {
         select_slot: None,
         use_pressed: input.movement.use_pressed,
         drop_pressed: input.movement.drop_pressed,
+        assist_held: input.movement.assist_held,
     }
 }
 
@@ -171,6 +173,7 @@ mod tests {
 
     pub(super) fn sample_sim_command() -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,

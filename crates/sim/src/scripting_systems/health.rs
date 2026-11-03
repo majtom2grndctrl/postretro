@@ -49,13 +49,21 @@ pub fn is_terminally_committed_to_removal(registry: &EntityRegistry, entity: Ent
         })
 }
 
-/// A damage target must carry positive finite health and have no terminal
-/// lifecycle commitment or inventory ownership. Explicit script mutations use
+/// A damage target must carry Health and have no terminal lifecycle commitment
+/// or inventory ownership. Declared player life profiles supply damageability;
+/// all other targets retain the positive-finite-health gate. Explicit script mutations use
 /// their existing health chokepoint independently of this spatial target gate.
 pub fn is_damage_target_eligible(registry: &EntityRegistry, entity: EntityId) -> bool {
     registry
         .get_component::<HealthComponent>(entity)
-        .is_ok_and(|health| !is_depleted(health))
+        .is_ok_and(|health| {
+            crate::sim::player_life::pawn_capability(
+                registry,
+                entity,
+                postretro_foundation::Capability::Damageable,
+            )
+            .unwrap_or(!is_depleted(health))
+        })
         && !registry.is_inventory_owned(entity)
         && !is_terminally_committed_to_removal(registry, entity)
 }
@@ -146,10 +154,13 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     // component per entity_model.md ("a player by virtue of carrying
     // PlayerMovement").
     for id in dead {
-        // Pawns and corpses persist at zero HP. Stop their future shots now,
-        // before the one-shot death-report latch, rather than waiting for a
-        // later authored despawn. Holstered instances share this lifecycle.
-        cancel_owned_weapon_activations(registry, id);
+        // Cancel activations only when the shared fire gate refuses this pawn.
+        // Undeclared zero-HP pawns fail its HP fallback; declared pawns follow
+        // their fire capability, so fire-enabled pawns can keep firing or
+        // charging at zero HP across repeated sweeps.
+        if !crate::weapon::pawn_gate::pawn_can_fire(registry, id) {
+            cancel_owned_weapon_activations(registry, id);
+        }
         let is_player = registry
             .has_component_kind(id, ComponentKind::PlayerMovement)
             .unwrap_or(false);
@@ -223,7 +234,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
     report
 }
 
-fn cancel_owned_weapon_activations(registry: &mut EntityRegistry, pawn: EntityId) {
+pub(crate) fn cancel_owned_weapon_activations(registry: &mut EntityRegistry, pawn: EntityId) {
     let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
         return;
     };

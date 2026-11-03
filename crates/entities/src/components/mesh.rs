@@ -63,7 +63,10 @@ impl MeshAttachment {
 /// interpolation. It is zero for authored world-origin props. Descriptor AI
 /// meshes use it to render feet-at-origin art from capsule-center gameplay
 /// transforms, including remote enemies that intentionally carry no local
-/// `AgentComponent`.
+/// `AgentComponent`. Player pawns hang from their *live* capsule's sole
+/// ([`player_capsule_feet_origin_offset`]), reseated as crouch or posture
+/// resizes the capsule (`entity_model.md` §7b). Hit zones and foot probes read
+/// the same offset, so it is not purely presentational.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeshComponent {
     pub model: String,
@@ -166,8 +169,19 @@ fn is_false(value: &bool) -> bool {
 }
 
 pub fn capsule_center_to_feet_origin_offset(radius: f32, height: f32) -> Vec3 {
-    let half_height = (height / 2.0 - radius).max(0.0);
-    Vec3::new(0.0, -(half_height + radius), 0.0)
+    player_capsule_feet_origin_offset(radius, height / 2.0 - radius)
+}
+
+/// Render-origin offset that drops a feet-authored mesh from a player capsule's
+/// centre to its sole, for a capsule of `radius` and cylinder `half_height`.
+///
+/// A player's transform is its capsule centre. Crouch, slide and a low
+/// life-state posture shrink `half_height` with the feet planted, which lowers
+/// the centre, so the offset must follow the *live* capsule: one frozen at the
+/// standing size buries the model (and the point it is culled at) under the
+/// floor (`entity_model.md` §7b).
+pub fn player_capsule_feet_origin_offset(radius: f32, half_height: f32) -> Vec3 {
+    Vec3::new(0.0, -(half_height.max(0.0) + radius), 0.0)
 }
 
 #[cfg(test)]

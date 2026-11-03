@@ -919,3 +919,8 @@ fn two_second_outage_falls_back_to_gap_policy_and_recovers_to_ordinary_correctio
         late.join("\n")
     );
 }
+
+mod assist_samples;
+mod life_states;
+// A zero-tick frame's cancel rides a predicted tick; host assist stays in step.
+mod zero_tick_cancel;

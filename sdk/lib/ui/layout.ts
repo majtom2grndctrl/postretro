@@ -24,6 +24,7 @@ import {
   validateBorder,
 } from "./widgets";
 import { __unwrapThemeToken } from "./theme";
+import { buildPredicateCompare } from "./predicate_compare";
 
 // --- Focus policy (container-only) ------------------------------------------
 
@@ -259,6 +260,13 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
       throw new Error(`${factory}: \`${field}.equals\` number must be finite`);
     }
     out.equals = e;
+  }
+  // `null` is absent, matching the JS bridge's optional-field read.
+  if (p.compare !== undefined && p.compare !== null) {
+    if (p.equals !== undefined) {
+      throw new Error(`${factory}: \`${field}\` cannot carry both \`equals\` and \`compare\``);
+    }
+    out.compare = buildPredicateCompare(p.compare, field, factory);
   }
   return out;
 }

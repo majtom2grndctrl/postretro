@@ -499,7 +499,16 @@ pub(crate) fn attach_descriptor_components(
     }
 
     if let Some(movement_desc) = descriptor.movement.as_ref() {
-        let component = PlayerMovementComponent::from_descriptor(movement_desc);
+        let mut component = PlayerMovementComponent::from_descriptor(movement_desc);
+        if let Some(states) = descriptor.life_states.as_ref() {
+            let (id, profile) = states.initial_state();
+            postretro_foundation::enter_life_state(
+                &mut component,
+                id,
+                profile,
+                states.table_revision,
+            );
+        }
         let _ = registry.set_component(id, component);
         // Dry until host movement's first tick writes the resolved immersion.
         let _ = registry.set_component(id, ImmersionComponent::default());
@@ -973,6 +982,12 @@ pub fn spawn_from_player_starts_with_carried_loadout(
         if is_local_pawn {
             let _ = registry.mark_local_player_pawn(id);
             restore_carried_health(carried_loadout, registry, id);
+            crate::sim::player_life::restore_carried_life_state(
+                carried_loadout,
+                registry,
+                id,
+                descriptor,
+            );
         }
 
         // Forward the per-placement KVP bag (sans `entity_class`, which is a
@@ -1036,6 +1051,7 @@ mod tests {
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1260,6 +1276,7 @@ mod tests {
 
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1702,6 +1719,7 @@ mod tests {
         // without a redundant prefix.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1750,6 +1768,7 @@ mod tests {
         // consumption. Only `initial_velocity` writes to the field.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1795,6 +1814,7 @@ mod tests {
         // `initial_rate` overrides the descriptor's `rate` default at spawn.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1837,6 +1857,7 @@ mod tests {
     fn emitter_initial_burst_kvp_overrides_u32_field() {
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1881,6 +1902,7 @@ mod tests {
         // but leave the descriptor's value untouched. No crash.
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1944,6 +1966,7 @@ mod tests {
 
         // Register a data-archetype descriptor for the same classname.
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2015,6 +2038,7 @@ mod tests {
         // captured here).
         let mut reg = EntityRegistry::new();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2135,6 +2159,7 @@ mod tests {
     /// for spawn-point tests that only care about transform / tags / KVPs.
     fn stub_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2153,6 +2178,7 @@ mod tests {
 
     fn weapon_descriptor(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2218,6 +2244,7 @@ mod tests {
 
     fn player_with_loadout(classname: &str, loadout: &[&str]) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2353,6 +2380,7 @@ mod tests {
 
     fn player_with_movement(classname: &str) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

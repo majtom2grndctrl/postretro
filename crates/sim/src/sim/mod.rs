@@ -1,12 +1,26 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub mod assist;
+pub mod assist_pairs;
+mod assist_pass;
+mod assist_scratch;
+pub mod assist_snapshot;
 pub mod cpu_stages;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
 pub mod frame_timing;
 mod mesh_bindings;
+pub mod player_life;
+mod respawn;
+mod tick_start;
+pub use tick_start::{
+    PendingTickStart, RespawnTurn, StartedTick, begin_tick, finish_tick_start,
+    simulate_tick_with_presentation_aim,
+};
+#[cfg(test)]
+mod player_life_tests;
 mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
@@ -17,7 +31,7 @@ pub mod touch;
 pub use crate::scripting::builtins::{acquire_wieldable_at_for_test, release_wieldable_for_test};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use glam::{EulerRot, Mat4, Vec3};
@@ -58,9 +72,11 @@ use postretro_combat_model::{OpenAuthorizedShot, ShotId};
 use postretro_entities::PoseInputs;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
+#[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, SwitchResult, switch_animation_state,
+    MeshAnimation, MeshComponent, SwitchResult, player_capsule_feet_origin_offset,
+    switch_animation_state,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 #[cfg(test)]
@@ -113,6 +129,10 @@ pub struct SimCommand {
     /// the full command alongside `use_pressed`; `MovementInput` mirrors it for
     /// the client-prediction input boundary.
     pub drop_pressed: bool,
+    /// The resolved `assist` level, true on every command built while the
+    /// assist binding is down. Read by both runners from here, never from
+    /// `MovementInput`; a gap-held command carries it as a level.
+    pub assist_held: bool,
 }
 
 pub struct PostMovementCommand {
@@ -189,7 +209,11 @@ pub fn simulate_client_wieldable_tick(
     tick_dt: f32,
 ) -> (bool, Option<EntityId>) {
     let requested_new_slot = pawn.is_some_and(|pawn| {
-        registry
+        player_life::permits(
+            &registry.borrow(),
+            pawn,
+            postretro_foundation::Capability::SwitchWeapon,
+        ) && registry
             .borrow()
             .get_component::<postretro_entities::components::inventory::Inventory>(pawn)
             .is_ok_and(|inventory| {
@@ -231,6 +255,7 @@ pub fn simulate_client_wieldable_tick(
     (accepted, result.repointed_pawn)
 }
 
+#[cfg(test)]
 fn player_is_alive_for_trigger_occupancy(
     registry: &EntityRegistry,
     player: &AuthoritativePlayer,
@@ -410,6 +435,10 @@ pub struct TickEvents {
     /// `TriggerEvent.fire` filtered by `edge == Exit`; a non-`cfg(test)` field
     /// because the scheduler consumes it in release, unlike `trigger_fires`.
     pub trigger_exit_fires: Vec<(EntityId, PlayerId)>,
+    /// This tick's assist completions, in `players()` order of the helper, at
+    /// most one per target. Each carries the target's life state and elapsed
+    /// at record for the player-event pass's re-check.
+    pub assist_completions: Vec<assist::AssistCompletion>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
     /// keeping the detailed sequence out of non-test builds avoids a hot-path
     /// diagnostic allocation.
@@ -481,6 +510,7 @@ where
     AiResult: Into<AiTickResult>,
 {
     let mut touch_system = TouchSystem::default();
+    let mut assist_state = assist::AssistState::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
     let faction_sentiment = RefCell::new(FactionSentimentState::default());
@@ -502,6 +532,7 @@ where
         post_movement,
         tick_dt,
         &mut touch_system,
+        &mut assist_state,
         &[],
         0,
         &factions,
@@ -520,7 +551,8 @@ where
 /// Headless callers retain the wrapper above and intentionally use the neutral
 /// camera; production local-player presentation passes the live camera aim here.
 #[allow(clippy::too_many_arguments)]
-pub fn simulate_tick_with_presentation_aim<AiResult>(
+pub fn simulate_started_tick_with_presentation_aim<AiResult>(
+    _started: StartedTick,
     registry: Rc<RefCell<EntityRegistry>>,
     collision_world: &CollisionWorld,
     hit_zone_store: &HitZoneStore,
@@ -538,6 +570,7 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
     touch_system: &mut TouchSystem,
+    assist_state: &mut assist::AssistState,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
     factions: &FactionRegistry,
@@ -568,13 +601,6 @@ where
     // Every body's overlap check this tick reads the level's static world, so
     // its timer spans host movement and agent steering alike.
     collision_world.overlap_timer().begin(timing.is_enabled());
-    registry.borrow_mut().snapshot_transforms();
-    if let Some(ctx) = trigger_context
-        .as_ref()
-        .and_then(|context| context.script_ctx.as_ref())
-    {
-        crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);
-    }
 
     // This is the fixed-tick queue boundary. Producers run later in this tick
     // (ready remote-hit ingest, AI, and local weapon fire), so every newly
@@ -588,6 +614,11 @@ where
     let auto_close_timers = trigger_context
         .as_ref()
         .and_then(|context| context.auto_close_timers.clone());
+    // The assist pass seeds pair sides from the store after the trigger stage
+    // has consumed the context.
+    let assist_slot_table = trigger_context
+        .as_ref()
+        .map(|context| context.slot_table.clone());
     let stage = cpu.scope(SimStage::Movers);
     // Commands applied since the last blocking pass (the frame-end script
     // drain, player-event fire lists) reach the driver only along a course
@@ -657,6 +688,11 @@ where
         &command.movement,
         tick_dt,
     );
+    crate::life_state_commands::advance_unstepped_life_state_time(
+        &mut registry.borrow_mut(),
+        &remote_movement,
+        movement.stepped_pawn,
+    );
     let mut remote_pawn_commands = std::borrow::Cow::Borrowed(remote_pawn_commands);
     let mut teleports: Vec<_> = remote_movement
         .into_iter()
@@ -701,6 +737,10 @@ where
             }
         }
     }
+    // Movement may have resized a capsule (crouch, stand, slide, life posture)
+    // with the feet planted; reseat the mesh before this tick's projectile and
+    // weapon hit zones read the offset against the moved centre.
+    sync_player_mesh_origin_offsets(&mut registry.borrow_mut());
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
     let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
@@ -727,130 +767,129 @@ where
     let mut trigger_fires = Vec::new();
     #[cfg(test)]
     let mut trigger_command_fires = Vec::new();
+    let stage_capabilities =
+        player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
     if let Some(trigger_context) = trigger_context {
-        let canonical_player_pawns = {
-            let registry = registry.borrow();
-            crate::trigger_system::canonical_player_pawns(&registry, &players)
-        };
-        let alive_players: HashSet<PlayerId> = {
-            let registry = registry.borrow();
-            players
-                .iter()
-                .filter(|player| player_is_alive_for_trigger_occupancy(&registry, player))
-                .map(|player| player.id)
-                .collect()
-        };
+        let canonical_player_pawns = &stage_capabilities.pawns;
+        let alive_players = &stage_capabilities.occupants;
         let mut registry = registry.borrow_mut();
         let bound_edges = trigger_context.bindings.bound_edges();
         if let Some(script_ctx) = trigger_context.script_ctx.as_ref() {
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
-                alive_players: &alive_players,
+                alive_players,
                 bound_edges,
             };
-            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
-                &mut registry,
-                trigger_context.bridge,
-                crate::trigger_system::TriggerTickInputs {
-                    players: &players,
-                    use_pressed: trigger_context.use_edges,
-                    tick_dt,
-                },
-                dispatch_inputs,
-                |event, occupancy, occupants, registry| {
-                    let fire_context =
-                        trigger_fire_context(event, occupancy, &canonical_player_pawns);
-                    let execution = trigger_context.bindings.execute_with_script_ctx(
-                        event.fire.trigger,
-                        event.edge,
-                        registry,
-                        script_ctx,
-                        &fire_context,
-                    );
-                    #[cfg(test)]
-                    {
-                        trigger_fires.push(event.clone());
-                        trigger_command_fires.push(TriggerCommandFire {
-                            event: event.clone(),
-                            commands: execution.commands.clone(),
-                        });
-                    }
-                    if let Some(handle) = execution.residual() {
-                        // Carry the firing origin beside the handle so the
-                        // frame-end drain keys each enrolled instance to its
-                        // activator; one handle fired by two players yields two
-                        // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((
-                            handle,
+            let _report = trigger_context
+                .system
+                .run_authoritative_tick_with_capabilities(
+                    &mut registry,
+                    trigger_context.bridge,
+                    crate::trigger_system::TriggerTickInputs {
+                        players: &players,
+                        use_pressed: trigger_context.use_edges,
+                        tick_dt,
+                    },
+                    dispatch_inputs,
+                    &stage_capabilities,
+                    |event, occupancy, occupants, registry| {
+                        let fire_context =
+                            trigger_fire_context(event, occupancy, canonical_player_pawns);
+                        let execution = trigger_context.bindings.execute_with_script_ctx(
                             event.fire.trigger,
-                            event.fire.player,
-                            occupants.to_vec(),
-                        ));
-                    }
-                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
-                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
-                    }
-                },
-            );
+                            event.edge,
+                            registry,
+                            script_ctx,
+                            &fire_context,
+                        );
+                        #[cfg(test)]
+                        {
+                            trigger_fires.push(event.clone());
+                            trigger_command_fires.push(TriggerCommandFire {
+                                event: event.clone(),
+                                commands: execution.commands.clone(),
+                            });
+                        }
+                        if let Some(handle) = execution.residual() {
+                            // Carry the firing origin beside the handle so the
+                            // frame-end drain keys each enrolled instance to its
+                            // activator; one handle fired by two players yields two
+                            // origins, not one collapsed instance (O59).
+                            trigger_residuals.push((
+                                handle,
+                                event.fire.trigger,
+                                event.fire.player,
+                                occupants.to_vec(),
+                            ));
+                        }
+                        if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                            trigger_exit_fires.push((event.fire.trigger, event.fire.player));
+                        }
+                    },
+                );
         } else {
             let mut slot_table = trigger_context.slot_table.borrow_mut();
             let dispatch_inputs = crate::trigger_system::TriggerDispatchInputs {
-                alive_players: &alive_players,
+                alive_players,
                 bound_edges,
             };
-            let _report = trigger_context.system.run_authoritative_tick_with_dispatch(
-                &mut registry,
-                trigger_context.bridge,
-                crate::trigger_system::TriggerTickInputs {
-                    players: &players,
-                    use_pressed: trigger_context.use_edges,
-                    tick_dt,
-                },
-                dispatch_inputs,
-                |event, _occupancy, occupants, registry| {
-                    let fire_context = TriggerFireContext::default();
-                    let execution = trigger_context.bindings.execute(
-                        event.fire.trigger,
-                        event.edge,
-                        registry,
-                        &mut slot_table,
-                        &fire_context,
-                    );
-                    #[cfg(test)]
-                    {
-                        trigger_fires.push(event.clone());
-                        trigger_command_fires.push(TriggerCommandFire {
-                            event: event.clone(),
-                            commands: execution.commands.clone(),
-                        });
-                    }
-                    if let Some(handle) = execution.residual() {
-                        // Carry the firing origin beside the handle so the
-                        // frame-end drain keys each enrolled instance to its
-                        // activator; one handle fired by two players yields two
-                        // origins, not one collapsed instance (O59).
-                        trigger_residuals.push((
-                            handle,
+            let _report = trigger_context
+                .system
+                .run_authoritative_tick_with_capabilities(
+                    &mut registry,
+                    trigger_context.bridge,
+                    crate::trigger_system::TriggerTickInputs {
+                        players: &players,
+                        use_pressed: trigger_context.use_edges,
+                        tick_dt,
+                    },
+                    dispatch_inputs,
+                    &stage_capabilities,
+                    |event, _occupancy, occupants, registry| {
+                        let fire_context = TriggerFireContext::default();
+                        let execution = trigger_context.bindings.execute(
                             event.fire.trigger,
-                            event.fire.player,
-                            occupants.to_vec(),
-                        ));
-                    }
-                    if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
-                        trigger_exit_fires.push((event.fire.trigger, event.fire.player));
-                    }
-                },
-            );
+                            event.edge,
+                            registry,
+                            &mut slot_table,
+                            &fire_context,
+                        );
+                        #[cfg(test)]
+                        {
+                            trigger_fires.push(event.clone());
+                            trigger_command_fires.push(TriggerCommandFire {
+                                event: event.clone(),
+                                commands: execution.commands.clone(),
+                            });
+                        }
+                        if let Some(handle) = execution.residual() {
+                            // Carry the firing origin beside the handle so the
+                            // frame-end drain keys each enrolled instance to its
+                            // activator; one handle fired by two players yields two
+                            // origins, not one collapsed instance (O59).
+                            trigger_residuals.push((
+                                handle,
+                                event.fire.trigger,
+                                event.fire.player,
+                                occupants.to_vec(),
+                            ));
+                        }
+                        if event.edge == crate::trigger_system::TriggerEventEdge::Exit {
+                            trigger_exit_fires.push((event.fire.trigger, event.fire.player));
+                        }
+                    },
+                );
         }
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();
-        touch_system.run_authoritative_tick(
+        touch_system.run_authoritative_tick_with_capabilities(
             &mut registry,
             collision_world,
             descriptors,
             &players,
             use_pressed,
             drop_pressed,
+            &stage_capabilities,
         )
     };
     drop(stage);
@@ -1042,6 +1081,17 @@ where
     }
     drop(stage);
     let death = run_death_sweep(&registry);
+    // The assist accumulator reads the tick after the Weapons stage and the
+    // death sweep, so an in-tick self-revive or kill is seen.
+    let assist_completions = assist_state.run_host_pass(
+        &mut registry.borrow_mut(),
+        assist_slot_table
+            .as_ref()
+            .map(|table| table.borrow())
+            .as_deref(),
+        command,
+        &remote_pawn_commands,
+    );
 
     let mut repointed_pawns = touch_events.repointed_pawns;
     if let Some(pawn) = repointed_pawn {
@@ -1085,6 +1135,7 @@ where
         dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
         trigger_exit_fires,
+        assist_completions,
         #[cfg(test)]
         trigger_fires,
         #[cfg(test)]
@@ -1359,7 +1410,8 @@ fn clip_duration(
 /// Produce renderer-facing pose inputs from the registry's currently displayed
 /// transforms. The fixed tick calls this after steering; connected clients call
 /// it after remote interpolation because they intentionally skip `simulate_tick`.
-/// This mutates presentation-only mesh inputs and never enters replication.
+/// It also reseats each movement pawn's mesh origin offset on its live capsule
+/// (which hit zones read too). None of it enters replication.
 pub struct PresentationPoseInputs<'a> {
     pub camera_aim: (f32, f32),
     pub remote_player_aims: &'a HashMap<EntityId, (f32, f32)>,
@@ -1390,6 +1442,7 @@ pub fn update_presentation_pose_inputs(
         remote_network_ids,
         local_pawn_owns_direction,
     } = presentation;
+    sync_player_mesh_origin_offsets(registry);
     update_pose_inputs(
         registry,
         camera_aim,
@@ -1407,6 +1460,56 @@ pub fn update_presentation_pose_inputs(
         hit_zone_store,
         anim_time,
     );
+}
+
+/// Keep every player pawn's mesh render origin on its live capsule's sole.
+///
+/// The descriptor seeds the offset from the standing capsule, but crouch, slide
+/// and a low life-state posture shrink the capsule with the feet planted and so
+/// lower the centre the transform tracks. Left at the standing size, the model
+/// sinks by the half-height difference and its cull point lands below the floor,
+/// outside every visible cell, so the pawn vanishes. The fixed tick runs it right
+/// after Movement, so that tick's hit zones read the resized body, and again in
+/// the presentation pose pass ahead of the pose and foot probes, which also
+/// covers a connected client's predicted pawn. Remote
+/// avatars on a connected client carry no movement component; their offset is
+/// written from the replicated half-height when their pose is presented.
+fn sync_player_mesh_origin_offsets(registry: &mut EntityRegistry) {
+    let pawns: Vec<(EntityId, f32, f32)> = registry
+        .iter_with_kind(ComponentKind::PlayerMovement)
+        .filter_map(|(id, value)| match value {
+            ComponentValue::PlayerMovement(movement) => {
+                Some((id, movement.capsule.radius, movement.capsule.half_height))
+            }
+            _ => None,
+        })
+        .collect();
+    for (id, radius, half_height) in pawns {
+        set_player_mesh_capsule_origin(registry, id, radius, half_height);
+    }
+}
+
+/// Seat a player pawn's mesh render origin on the sole of a capsule of `radius`
+/// and cylinder `half_height` (see [`sync_player_mesh_origin_offsets`]). The
+/// offset is presentation and hit-zone placement only and never crosses the
+/// wire, so it is written in place without a replication-visible component
+/// replace. Non-finite dimensions and meshless pawns are left untouched.
+pub fn set_player_mesh_capsule_origin(
+    registry: &mut EntityRegistry,
+    id: EntityId,
+    radius: f32,
+    half_height: f32,
+) {
+    if !radius.is_finite() || !half_height.is_finite() {
+        return;
+    }
+    let offset = player_capsule_feet_origin_offset(radius, half_height);
+    if let Ok(ComponentValue::Mesh(mesh)) =
+        registry.get_component_value_mut(id, ComponentKind::Mesh)
+        && mesh.origin_offset != offset
+    {
+        mesh.origin_offset = offset;
+    }
 }
 
 /// Write same-tick presentation inputs after AI and steering have settled the
@@ -1916,7 +2019,7 @@ pub use reload::{
 };
 pub use weapon_stage::apply_authorized_weapon_impact_damage;
 
-pub use host_movement::drop_vault_if_dead;
+pub use host_movement::drop_vault_if_barred;
 #[cfg(any(test, feature = "test-support"))]
 pub use host_movement::run_host_movement_tick;
 pub use movement_overlap::report_static_overlap;
@@ -1943,6 +2046,7 @@ mod trap_tick_tests;
 /// authoritative pawn — `local_movement_pawn` is the single-player resolver
 /// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
+    stepped_pawn: Option<EntityId>,
     teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
     emissions: Vec<crate::emission::MovementEmission>,
     state_edges: Vec<crate::movement::MovementStateEdge>,
@@ -1961,6 +2065,7 @@ fn run_movement_tick(
     };
     let Some(id) = local else {
         return LocalMovementTickEvents {
+            stepped_pawn: None,
             teleport: None,
             emissions: Vec::new(),
             state_edges: Vec::new(),
@@ -1976,6 +2081,7 @@ fn run_movement_tick(
         &pawn_inputs,
         tick_dt,
     );
+    let stepped_pawn = events.iter().any(|(pawn, _)| *pawn == id).then_some(id);
     let emitter = crate::emission::entity_emitter(&registry, id);
     let mut emissions = Vec::new();
     let mut state_edges = Vec::new();
@@ -1988,6 +2094,7 @@ fn run_movement_tick(
         }
     }
     LocalMovementTickEvents {
+        stepped_pawn,
         teleport,
         emissions,
         state_edges,
@@ -2314,6 +2421,7 @@ mod tests {
 
     pub(super) fn sim_command(fire: bool, reload: bool) -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,
@@ -3154,6 +3262,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),
@@ -3277,6 +3386,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),
@@ -3400,6 +3510,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),

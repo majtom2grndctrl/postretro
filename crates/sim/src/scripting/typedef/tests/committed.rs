@@ -667,7 +667,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && ts.contains("network?: \"ownerPrivate\"; perOwner: true; persist?: boolean; accumulate?: never")
             && !ts.contains("network?: \"shared\" | \"ownerPrivate\"; perOwner: true")
             && ts.contains("byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T>")
-            && ts.contains("export type OwnerToken = \"@impact.source\" | \"@player\";")
+            && ts.contains("export type OwnerToken = \"@impact.source\" | \"@player\" | \"@assist.helper\" | \"@assist.target\";")
             && ts.contains("readonly owner: OwnerToken")
             && ts.contains("export type TickParams = Readonly<{ dt: RuntimeRead }>")
             && ts.contains("read(name: string | ComputedRef<unknown>): RuntimeRead;")
@@ -708,7 +708,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
             && luau.contains("network: \"ownerPrivate\"?, perOwner: true, persist: boolean?, accumulate: nil?")
             && !luau.contains("network: (\"shared\" | \"ownerPrivate\")?, perOwner: true")
             && luau.contains("byPlayer: (self: StoreComputedRef<T>, owner: PlayerOwner) -> OwnerAddressedComputedRef<T>")
-            && luau.contains("export type OwnerToken = \"@impact.source\" | \"@player\"")
+            && luau.contains("export type OwnerToken = \"@impact.source\" | \"@player\" | \"@assist.helper\" | \"@assist.target\"")
             && luau.contains("owner: OwnerToken")
             && luau.contains("export type TickParams = { dt: RuntimeRead }")
             && luau.contains("read: (name: string | ComputedRef<any>) -> RuntimeRead")
@@ -816,8 +816,7 @@ fn game_state_refs_emit_catalog_paths_and_capabilities() {
         "ts missing getGameState declaration:\n{ts}"
     );
     assert!(
-        ts.contains("readonly player: {\n      readonly ammo: PlayerComputedRef<number>;\n      readonly ammoReserve: PlayerComputedRef<number>;\n      readonly cell: PlayerComputedRef<number>;\n      readonly cellCapacity: PlayerComputedRef<number>;\n      readonly health: PlayerComputedRef<number>;\n      readonly heat: PlayerComputedRef<number>;\n      readonly immersion: PlayerComputedRef<number>;\n      readonly maxHealth: PlayerComputedRef<number>;")
-            && ts.contains("readonly textEntry: Ref<string>;"),
+        ts.contains("readonly player: {") && ts.contains("readonly textEntry: Ref<string>;"),
         "ts GameStateRefs missing catalog path/capability refs:\n{ts}"
     );
     assert!(

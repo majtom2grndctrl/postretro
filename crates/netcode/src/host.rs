@@ -107,7 +107,9 @@ pub fn host_drive_demo_mover(
 /// `snapshot_due` records that at least one completed tick reached the cadence
 /// during this redraw. A snapshot is still encoded at most once for `tick`, even
 /// if a caller reaches this path more than once before another fixed tick
-/// completes.
+/// completes. `assist` is the session's assist state, which the snapshot's
+/// per-owner pair tables and received counts are built from; a caller with no
+/// session passes a default, which yields empty tables and a count of 0.
 #[allow(clippy::too_many_arguments)]
 pub fn host_replicate(
     registry: &EntityRegistry,
@@ -130,6 +132,7 @@ pub fn host_replicate(
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
     presentation_overrides: &postretro_entities::presentation_overrides::PresentationOverrides,
+    assist: &postretro_sim::sim::assist::AssistState,
 ) -> Vec<EntityId> {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
@@ -180,6 +183,16 @@ pub fn host_replicate(
     // The level-scoped Ghost bus fields ride every snapshot whole, so a late
     // joiner's first snapshot is its baseline and no ack path is needed.
     let ghost_audio = ghost_audio_to_wire(ghost_audio);
+    // Each owner's assist facts, from the registry state the movement records
+    // above read; authority metadata, so no baseline is minted.
+    replication.ingest_assist_facts(crate::host_assist_facts::host_assist_facts(
+        registry,
+        slot_table,
+        assist,
+        owners,
+        allocator,
+        &participating,
+    ));
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();
@@ -415,6 +428,7 @@ pub fn host_handle_lifecycle(
     last_sent_tuning: &mut HashMap<u64, TuningPayload>,
     mut seat_table: Option<&mut SeatTable>,
     lifecycle: &[postretro_net::slots::SlotEvent],
+    life_state_names: &[String],
 ) -> Vec<NetworkId> {
     use postretro_net::slots::SlotEvent;
     let mut forgotten_presentation = Vec::new();
@@ -441,6 +455,7 @@ pub fn host_handle_lifecycle(
                     seat_table.as_deref_mut(),
                     *client_id,
                     durable_pawn,
+                    life_state_names,
                 ) {
                     forgotten_presentation.push(net_id);
                 }
@@ -482,10 +497,11 @@ pub fn host_handle_transport_disconnect(
     seat_table: Option<&mut SeatTable>,
     client_id: u64,
     durable_pawn: Option<EntityId>,
+    life_state_names: &[String],
 ) -> Option<NetworkId> {
     let previous_pawn = slot_pawns.pawn_for(client_id).or(durable_pawn);
     if let (Some(seats), Some(pawn)) = (seat_table, previous_pawn) {
-        seats.harvest_pawn(registry, pawn);
+        seats.harvest_pawn(registry, pawn, life_state_names);
     }
     if let Some(pawn) = previous_pawn {
         pending_hit_declarations.remove_pawn_shots(allocator, pawn);
@@ -633,6 +649,7 @@ mod tests {
                 &mut last_sent_tuning,
                 None,
                 std::slice::from_ref(event),
+                &[],
             );
             if let SlotEvent::Participating { client_id } = event {
                 replication.register_client(*client_id);
@@ -658,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_demotion_harvests_bound_pawn_health_before_despawn() {
+    fn life_state_lifecycle_demotion_harvests_bound_pawn_health_and_name_before_despawn() {
         use postretro_entities::components::health::HealthComponent;
         use postretro_foundation::Seat;
         use postretro_scripting_core::data_descriptors::HealthDescriptor;
@@ -700,6 +717,14 @@ mod tests {
         });
         health.current = 31.0;
         registry.set_component(pawn, health).unwrap();
+        let mut movement = crate::predict_reconcile_harness_test_fixtures::component();
+        postretro_foundation::enter_life_state(
+            &mut movement,
+            1,
+            &postretro_foundation::LifeStateProfile::default(),
+            0,
+        );
+        registry.set_component(pawn, movement).unwrap();
         seats.bind_pawn(&mut registry, seat, pawn);
 
         host_handle_lifecycle(
@@ -721,9 +746,14 @@ mod tests {
                 client_id: CLIENT_ID,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
+            &["alive".into(), "down".into()],
         );
 
         assert!(!registry.exists(pawn), "demotion despawns the remote pawn");
+        assert_eq!(
+            seats.carried_state(seat).unwrap().life_state.as_deref(),
+            Some("down")
+        );
         let carried_health = seats
             .carried_state(seat)
             .and_then(|state| state.health_current)
@@ -806,6 +836,7 @@ mod tests {
                 client_id: ORIGINAL_CLIENT,
                 cause: postretro_net::wire::HoldingCause::HostLevelAbsent,
             }],
+            &[],
         );
         assert_eq!(
             seats.hold_disconnected_client(&mut registry, ORIGINAL_CLIENT),

@@ -735,6 +735,7 @@ fn late_baseline_receive_keeps_newer_slots_factions_and_presentation_clock() {
             &mut resolver,
             100.0,
             Some(0.0),
+            &Default::default(),
         );
         assert!(
             matches!(slots.get("player.health").unwrap().value, Some(SlotValue::Number(value)) if (value - 75.0).abs() < 1.0e-6)

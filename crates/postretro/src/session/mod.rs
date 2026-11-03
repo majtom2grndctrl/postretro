@@ -191,6 +191,10 @@ pub(crate) struct Session {
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
     /// Per-level rising-overlap and prompt state for host-authoritative item touch.
     pub(crate) touch_system: crate::sim::touch::TouchSystem,
+    /// Host assist state: the bound `assistable` pair table, rebound with
+    /// player events. Session-owned, beside `touch_system`; a surface
+    /// teardown leaves it, so a suspended world stays live.
+    pub(crate) assist_state: crate::sim::assist::AssistState,
 
     /// Walks every `BillboardEmitterComponent` after game logic and before
     /// particle sim. See: context/lib/scripting.md.
@@ -789,6 +793,7 @@ impl Session {
             )
             .with_spawn_context(trigger_spawn_context),
             touch_system: crate::sim::touch::TouchSystem::default(),
+            assist_state: crate::sim::assist::AssistState::default(),
             emitter_bridge: scripting_systems::emitter_bridge::EmitterBridge::new(),
             particle_pool: postretro_sim::particle_pool::ParticlePool::new(),
             impact_particle_requests: Vec::new(),
@@ -924,7 +929,15 @@ fn build_scripting_core(
         script_ctx.clone(),
         command_diagnostics.clone(),
     );
+    postretro_sim::life_state_commands::register_sequenced_life_state_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::teleporter_commands::register_sequenced_teleporter_primitives(
+        &mut sequence_registry,
+        script_ctx.clone(),
+    );
+    postretro_sim::respawn_commands::register_sequenced_respawn_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
     );
@@ -954,7 +967,15 @@ fn build_scripting_core(
     );
     register_spawner_reaction_primitives(&mut reaction_registry, spawn_context.clone());
     register_trigger_reaction_primitives(&mut reaction_registry, command_diagnostics.clone());
+    postretro_sim::life_state_commands::register_life_state_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
     postretro_sim::teleporter_commands::register_teleporter_reaction_primitives(
+        &mut reaction_registry,
+        script_ctx.clone(),
+    );
+    postretro_sim::respawn_commands::register_respawn_reaction_primitives(
         &mut reaction_registry,
         script_ctx.clone(),
     );
@@ -1083,6 +1104,7 @@ impl ScriptingCore {
             for desc in descriptors {
                 data_registry.upsert_entity_type(desc);
             }
+            data_registry.rebuild_life_state_table();
             data_registry.replace_factions(
                 std::mem::take(&mut manifest.factions),
                 &mut faction_sentiment,

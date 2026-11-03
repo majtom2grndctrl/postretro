@@ -224,6 +224,7 @@ fn fog_volume() -> FogVolumeComponent {
 
 fn idle_command() -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -829,6 +830,7 @@ impl ReplicatedStateFrame for TimedAlarmHarness {
                 &mut crate::netcode::client::NoPresentationBindings,
                 0.0,
                 None,
+                &Default::default(),
             );
         }
         let accepted = self.client_replication.latest_sequence() != previous_sequence;

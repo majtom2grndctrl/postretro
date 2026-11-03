@@ -60,8 +60,7 @@ use crate::kinematic_mover::{
 use crate::movement::MovementEvents;
 use crate::netcode::{
     ClientPredictionTickContext, NetworkIdAllocator, apply_installed_movement_tuning_to_armed_pawn,
-    client_environment_view, client_fluid_table, replace_client_tuning, stamped_client_input,
-    tuning_payload_for_pawn,
+    client_environment_view, client_fluid_table, replace_client_tuning, tuning_payload_for_pawn,
 };
 use crate::scripting::builtins::net_descriptor::materialize_net_local_movement_component;
 use crate::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
@@ -145,6 +144,7 @@ pub(crate) struct LoopbackHarness {
     /// The client's installed host tuning and its generation, replaced through the
     /// production `replace_client_tuning` install path.
     pub(crate) client_tuning: Option<Box<TuningPayload>>,
+    pub(crate) life_state_tables: crate::life_state_tables::LifeStateTables,
     pub(crate) client_tuning_generation: u64,
     /// Tuning payloads the client installed, in arrival order.
     pub(crate) client_tuning_installs: u32,
@@ -303,6 +303,7 @@ impl LoopbackHarness {
             client_replication: ClientReplication::new(),
             prediction: ClientPrediction::new(),
             client_tuning: None,
+            life_state_tables: Default::default(),
             sent_refresh_requests: Vec::new(),
             client_tuning_generation: 0,
             client_tuning_installs: 0,
@@ -414,19 +415,6 @@ impl LoopbackHarness {
         // mid-run to simulate an input gap, then resume sending.)
         self.drain_target_tick = None;
         self.ticks_since_cursor_caught = 0;
-    }
-
-    /// A zero-tick-frame send: one stamped command outside the predicted tick
-    /// cadence, built by the same production helper as
-    /// `client_send_input_command_in_registry`. Nothing is predicted for it.
-    pub(crate) fn client_send_zero_tick(&mut self, command: &SimCommand) -> u32 {
-        let input = stamped_client_input(&mut self.prediction, command, &self.client_registry);
-        let client_tick = input.client_tick;
-        self.client_send_message(&ClientMessage::Input(input));
-        self.last_sent_client_tick = Some(client_tick);
-        self.drain_target_tick = None;
-        self.ticks_since_cursor_caught = 0;
-        client_tick
     }
 
     /// Queue one client message on the client's framed Input channel, as any
@@ -773,6 +761,7 @@ impl LoopbackHarness {
                     &combined_collision,
                     environment,
                     DT,
+                    &self.life_state_tables,
                 );
                 self.latest_reconcile_windows
                     .push((reconcile.acked_tick, self.last_sent_client_tick));
@@ -838,6 +827,8 @@ impl LoopbackHarness {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
             },
+            &[],
+            0,
         );
         send_tuning_if_changed(
             &mut self.server,
@@ -889,6 +880,13 @@ impl LoopbackHarness {
                 &mut self.client_tuning,
                 &mut self.client_tuning_generation,
                 &bytes,
+                &mut self.life_state_tables,
+                self.client_pawn.and_then(|pawn| {
+                    self.client_registry
+                        .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                        .ok()
+                        .map(|pawn| pawn.life_state_table_revision)
+                }),
             )
             .expect("host tuning payload installs");
             self.client_tuning_installs += 1;
@@ -916,6 +914,7 @@ impl LoopbackHarness {
             &mut applied_generation,
             &self.descriptors,
             &mut self.client_registry,
+            &self.life_state_tables,
         );
     }
 

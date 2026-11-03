@@ -10,10 +10,12 @@ import type {
   NumberTween,
   NumericArrayStateValue,
   Predicate,
+  PredicateCompareOp,
   PredicateValue,
   ComputedRef,
   ScalarStateValue,
 } from "./widgets";
+import { COMPARE_OPS } from "./predicate_compare";
 
 export type StateBindOptionsFor<T> =
   T extends number ? { format?: string; decimalPlaces?: number; tween?: NumberTween; slot?: never; local?: never; kind?: never } :
@@ -69,6 +71,30 @@ export function stateEquals<T extends PredicateValue>(
   value: T,
 ): Predicate {
   return { slot: stateSlot(ref, "stateEquals"), equals: value };
+}
+
+/**
+ * Build a numeric comparison predicate against a readable Number state
+ * reference: true while the slot's value stands in `op` relation to `value`
+ * (`stateCompare(player.assistProgress, "greaterThan", 0)`). Rejects a
+ * non-number ref, an unknown op, and a non-finite `value`.
+ */
+export function stateCompare(
+  ref: ComputedRef<number>,
+  op: PredicateCompareOp,
+  value: number,
+): Predicate {
+  const slot = stateSlot(ref, "stateCompare");
+  if (ref.kind !== "number") {
+    throw new Error(`stateCompare: \`${slot}\` is not a number state reference`);
+  }
+  if (!COMPARE_OPS.includes(op)) {
+    throw new Error("stateCompare: `op` must be one of greaterThan, lessThan, atLeast, atMost");
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error("stateCompare: `value` must be a finite number");
+  }
+  return { slot, compare: { op, value } } as Predicate;
 }
 
 // --- ui.createLocalState() --------------------------------------------------

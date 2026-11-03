@@ -529,6 +529,7 @@ mod tests {
         cooldown_ms: f32,
     ) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

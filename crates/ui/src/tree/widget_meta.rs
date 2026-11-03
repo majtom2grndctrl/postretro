@@ -232,13 +232,7 @@ pub fn widget_a11y_state(
             BindSource::Local { .. } => scope,
             BindSource::Slot { .. } | BindSource::Fact { .. } => None,
         };
-        super::predicate::resolve_predicate(
-            &p.source,
-            p.equals.as_ref(),
-            predicate_scope,
-            slot_values,
-            cell_values,
-        )
+        super::predicate::evaluate_predicate(p, predicate_scope, slot_values, cell_values)
     };
     match widget {
         Widget::Button(w) => (

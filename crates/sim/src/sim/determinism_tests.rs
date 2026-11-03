@@ -137,6 +137,7 @@ struct RecordedCommand {
 impl RecordedCommand {
     fn to_sim_command(self) -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,
@@ -1730,6 +1731,7 @@ fn run_driven_agent_sim_tick(
     mover_states: &mut MoverTickStateTable,
 ) {
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -2862,6 +2864,91 @@ fn probe_leg_entity_in(
         .expect("leg entity receives pose inputs")
 }
 
+// Regression: a crouched player's mesh kept the standing render offset. Crouch
+// shrinks the capsule with the feet planted, lowering the centre the transform
+// tracks, so the model and its cull point sank below the floor and the pawn
+// vanished for observers. The presentation pass seats the mesh on the live sole.
+#[test]
+fn presentation_pass_seats_a_player_mesh_on_its_live_capsule_sole() {
+    let descriptor = player_descriptor();
+    let (radius, standing) = (descriptor.capsule.radius, descriptor.capsule.half_height);
+    let crouched = 0.4;
+    let mut registry = EntityRegistry::new();
+    // Feet on the floor at y = 0 while crouched.
+    let pawn = registry.spawn(postretro_entities::Transform {
+        position: Vec3::new(0.0, crouched + radius, 0.0),
+        ..Default::default()
+    });
+    let mut movement = PlayerMovementComponent::from_descriptor(&descriptor);
+    movement.capsule.half_height = crouched;
+    registry.set_component(pawn, movement).unwrap();
+    registry
+        .set_component(
+            pawn,
+            MeshComponent::stateless("avatar".into()).with_origin_offset(
+                postretro_entities::components::mesh::player_capsule_feet_origin_offset(
+                    radius, standing,
+                ),
+            ),
+        )
+        .unwrap();
+
+    let present = |registry: &mut EntityRegistry| {
+        super::update_presentation_pose_inputs(
+            registry,
+            &floor_world(),
+            &[],
+            &MoverTickStateTable::default(),
+            &HitZoneStore::new(),
+            0.0,
+            super::PresentationPoseInputs {
+                camera_aim: (0.0, 0.0),
+                remote_player_aims: &HashMap::new(),
+                remote_aim_pitches: &HashMap::new(),
+                remote_heading_yaws: &HashMap::new(),
+                remote_network_ids: &HashMap::new(),
+                local_pawn_owns_direction: false,
+            },
+        );
+        let position = registry
+            .get_component::<postretro_entities::Transform>(pawn)
+            .unwrap()
+            .position;
+        let offset = registry
+            .get_component::<MeshComponent>(pawn)
+            .unwrap()
+            .origin_offset;
+        (position + offset).y
+    };
+    let feet = present(&mut registry);
+    assert!(
+        feet.abs() < 1e-5,
+        "crouched model origin sits on the floor, got {feet}"
+    );
+
+    // Standing up (feet planted) raises the centre; the offset follows back.
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.capsule.half_height = standing;
+    registry.set_component(pawn, movement).unwrap();
+    registry
+        .set_component(
+            pawn,
+            postretro_entities::Transform {
+                position: Vec3::new(0.0, standing + radius, 0.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let feet = present(&mut registry);
+    assert!(
+        feet.abs() < 1e-5,
+        "standing model origin sits on the floor, got {feet}"
+    );
+}
+
 fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, HitZoneStore) {
     let mut registry = EntityRegistry::new();
     let mut states = std::collections::HashMap::new();
@@ -3945,6 +4032,7 @@ fn simulate_tick_uses_sim_command_fire_button_with_callback_aim() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -4028,6 +4116,7 @@ fn simulate_tick_normalizes_callback_aim_direction_before_weapon_fire() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -4117,6 +4206,7 @@ fn simulate_tick_noops_weapon_fire_for_invalid_callback_aim_direction() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -4211,6 +4301,7 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
     let mover_colliders = Vec::new();
     let mut mover_states = MoverTickStateTable::default();
     let command = SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,

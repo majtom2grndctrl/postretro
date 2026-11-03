@@ -289,8 +289,8 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .field(
             "presentationOverlays?",
-            "PresentationOverlay",
-            "One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.",
+            "PresentationOverlays",
+            "Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. The declaration is host-local: in single player it is local, and in co-op the host selects damaged enemies for every machine while assistable-teammate markers are derived on each machine.",
         )
         .field(
             "theme?",
@@ -345,7 +345,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "playerEvents?",
             "Vec<PlayerEventDescriptor>",
-            "Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.",
+            "Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction, or a repeated assist source and reaction, binds once.",
         )
         .field(
             "triggerPools?",
@@ -408,6 +408,10 @@ const COMMAND_IDS: &[(&str, &str)] = &[
         "Crouch. Accepts `press` or `hold`. Relevant only when a movement descriptor declares crouch.",
     ),
     ("use", "Use or interact."),
+    (
+        "assist",
+        "Assist a teammate (revive). Accepts `press` or `hold`; the engine default is `hold` on Use's inputs. Relevant only when a life state declares `assistable`.",
+    ),
     ("drop", "Drop the wielded item."),
     ("shoot", "Primary fire. Accepts only `press`."),
     (

@@ -157,11 +157,13 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
         };
+        let mut first_player_placement = None;
         let products = install_world_cpu_with_models(
             handles,
             &mut self.level_timings,
             model_sweep,
             |first_player| {
+                first_player_placement = first_player.map(|spawned| spawned.placement);
                 if let Some(seats) = session.seat_table.as_mut() {
                     bind_installed_first_player(
                         seats,
@@ -170,6 +172,17 @@ impl App {
                     );
                 }
             },
+        );
+        // Publish after the first-player bind, so seat zero's respawn placement
+        // is the spawn its pawn actually took and respawn agrees with the join
+        // placement. The captured index also keeps the actual spawn when no
+        // seat records it.
+        crate::respawn_placements::publish(
+            script_ctx,
+            &products.spawn_points,
+            &script_ctx.data_registry.borrow().entities,
+            session.seat_table.as_ref(),
+            first_player_placement,
         );
         crate::runtime_teleporters::bind_loaded_teleporters(
             &mut self.collision_world.teleporters,

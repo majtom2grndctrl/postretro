@@ -12,6 +12,7 @@ use postretro_entities::{
     AmmoReserve, ComponentKind, DeferredEffectComponent, DescriptorProvenance, EntityId,
     EntityRegistry, EntityTypeDescriptor, TouchMode, Transform,
 };
+use postretro_foundation::Capability;
 
 use crate::collision::{COS_WALKABLE, CollisionWorld, SKIN_DISTANCE, cast_ray, sphere_fits_world};
 use crate::scripting::builtins::data_archetype::{descriptor_mesh_component, find_descriptor};
@@ -105,6 +106,7 @@ impl TouchSystem {
     /// Runs after trigger dispatch and before AI on every host/single-player
     /// fixed tick. Drop placement shares this pass so release, occupancy
     /// seeding, and touch evaluation use one authoritative ordering.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_authoritative_tick(
         &mut self,
@@ -114,6 +116,29 @@ impl TouchSystem {
         players: &[AuthoritativePlayer],
         use_pressed: &HashMap<PlayerId, bool>,
         drop_pressed: &HashMap<PlayerId, bool>,
+    ) -> TouchTickEvents {
+        let capabilities = super::player_life::TriggerStageCapabilities::capture(registry, players);
+        self.run_authoritative_tick_with_capabilities(
+            registry,
+            collision_world,
+            descriptors,
+            players,
+            use_pressed,
+            drop_pressed,
+            &capabilities,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_authoritative_tick_with_capabilities(
+        &mut self,
+        registry: &mut EntityRegistry,
+        collision_world: &CollisionWorld,
+        descriptors: &[EntityTypeDescriptor],
+        players: &[AuthoritativePlayer],
+        use_pressed: &HashMap<PlayerId, bool>,
+        drop_pressed: &HashMap<PlayerId, bool>,
+        capabilities: &super::player_life::TriggerStageCapabilities,
     ) -> TouchTickEvents {
         self.prompts.clear();
 
@@ -206,7 +231,11 @@ impl TouchSystem {
                     continue;
                 };
                 let facts = touch_facts(registry, pawn, item, player, use_pressed);
-                let effects = (self.policy)(&facts);
+                let effects = if capabilities.permits_touch(player) {
+                    (self.policy)(&facts)
+                } else {
+                    Vec::new()
+                };
                 let edge_contests = match mode {
                     TouchMode::Auto => overlap.entered,
                     TouchMode::Press => claims.get(&player) == Some(&item),
@@ -269,6 +298,11 @@ impl TouchSystem {
 
         for (&player, &(pawn, center, capsule_radius, capsule_half_height)) in player_capsules {
             if !drop_pressed.get(&player).copied().unwrap_or(false) {
+                continue;
+            }
+            // Dropping repoints the active slot, so it takes the switch gate.
+            // An undeclared pawn keeps its existing drop behavior.
+            if !super::player_life::permits(registry, pawn, Capability::SwitchWeapon) {
                 continue;
             }
             let Ok(inventory) = registry.get_component::<Inventory>(pawn) else {
@@ -857,6 +891,7 @@ mod tests {
 
     fn drop_descriptor(canonical_name: &str, mode: TouchMode, radius: f32) -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -2305,7 +2340,7 @@ mod tests {
         );
         let mut seats = SeatTable::local_only();
         seats.bind_pawn(&mut registry, Seat(0), pawn);
-        seats.harvest_pawn(&registry, pawn);
+        seats.harvest_pawn(&registry, pawn, &[]);
         let carried = seats
             .carried_state(Seat(0))
             .expect("the level-transition ledger harvests the acquired inventory")
@@ -2624,6 +2659,60 @@ mod tests {
             Some(item)
         );
         capture.assert_logged_once(Level::Warn, "descriptor has no touchable block");
+    }
+
+    // Regression: drop repointed the active slot while the pawn's declared
+    // profile refused weapon switching.
+    #[test]
+    fn drop_takes_the_switch_weapon_gate_and_undeclared_pawns_still_drop() {
+        for switch_weapon in [Some(false), Some(true), None] {
+            let mut registry = EntityRegistry::new();
+            let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+            if let Some(switch_weapon) = switch_weapon {
+                let mut movement = registry
+                    .get_component::<PlayerMovementComponent>(pawn)
+                    .unwrap()
+                    .clone();
+                let profile = postretro_foundation::LifeStateProfile {
+                    switch_weapon,
+                    ..Default::default()
+                };
+                postretro_foundation::enter_life_state(&mut movement, 0, &profile, 0);
+                registry.set_component(pawn, movement).unwrap();
+            }
+            let item = spawn_item(
+                &mut registry,
+                "ion",
+                Vec3::new(10.0, 2.0, 0.0),
+                TouchMode::Auto,
+                7,
+            );
+            held_item(&mut registry, pawn, item);
+            let descriptors = [drop_descriptor("ion", TouchMode::Auto, 1.0)];
+            let players = players(&[(PlayerId::Local(pawn), pawn)]);
+
+            let events = tick_with_edges(
+                &mut TouchSystem::default(),
+                &mut registry,
+                &floor_world(),
+                &descriptors,
+                &players,
+                &[],
+                &[(PlayerId::Local(pawn), true)],
+            );
+
+            let held = registry
+                .get_component::<Inventory>(pawn)
+                .unwrap()
+                .wieldables[0];
+            if switch_weapon == Some(false) {
+                assert_eq!(held, Some(item), "a refused drop keeps the weapon held");
+                assert!(events.repointed_pawns.is_empty());
+            } else {
+                assert_eq!(held, None, "switchWeapon {switch_weapon:?} drops");
+                assert_eq!(events.repointed_pawns, vec![pawn]);
+            }
+        }
     }
 
     #[test]

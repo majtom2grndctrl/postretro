@@ -1,6 +1,7 @@
 // Data-context descriptors: JS reaction/crossing converters.
 // See: context/lib/scripting.md
 
+use super::super::reaction_args::reaction_args_from_js;
 use super::super::*;
 
 pub fn named_reaction_from_js<'js>(
@@ -142,8 +143,8 @@ pub fn primitive_descriptor_from_js<'js>(
         target.is_some(),
     )
     .map_err(|reason| DescriptorError::InvalidShape { reason })?;
-    if kind.is_some() {
-        validate_group_kind_primitive(reaction, "primitive", &primitive)
+    if let Some(kind) = kind {
+        validate_group_kind_primitive(reaction, "primitive", &primitive, kind)
             .map_err(|reason| DescriptorError::InvalidShape { reason })?;
     }
     if primitive == "spawnFromSpawner"
@@ -171,7 +172,7 @@ pub fn primitive_descriptor_from_js<'js>(
         if raw.is_null() || raw.is_undefined() {
             nullish_primitive_args(&primitive)
         } else {
-            conv::js_to_json(ctx, raw).map_err(js_err)?
+            reaction_args_from_js(ctx, &primitive, raw)?
         }
     } else {
         nullish_primitive_args(&primitive)
@@ -269,13 +270,13 @@ pub fn sequence_steps_from_js<'js>(
             validate_subject_token_primitive(reaction, &site, token, &primitive)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
-        if matches!(id, SequenceTarget::Group(_)) {
-            validate_group_kind_primitive(reaction, &site, &primitive)
+        if let SequenceTarget::Group(group) = &id {
+            validate_group_kind_primitive(reaction, &site, &primitive, group.kind)
                 .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         }
         let args = if obj.contains_key("args").map_err(js_err)? {
             let raw: JsValue = obj.get("args").map_err(js_err)?;
-            conv::js_to_json(ctx, raw).map_err(js_err)?
+            reaction_args_from_js(ctx, &primitive, raw)?
         } else {
             serde_json::Value::Null
         };

@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 pub(crate) mod app_dirs;
+#[cfg(test)]
+mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
@@ -18,17 +20,24 @@ mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
 pub(crate) mod level_loads;
+mod life_state_validation;
 pub(crate) mod lifecycle;
 pub(crate) mod loading_screen;
 #[cfg(test)]
 mod movement_vault_surface_tests;
 #[cfg(test)]
+mod player_death_surface_tests;
+#[cfg(test)]
 mod player_events_surface_tests;
+#[cfg(test)]
+mod player_revive_surface_tests;
 #[cfg(test)]
 mod player_spawn_surface_tests;
 pub(crate) mod presented_pose;
 pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
+#[cfg(test)]
+mod revive_marker_surface_tests;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;

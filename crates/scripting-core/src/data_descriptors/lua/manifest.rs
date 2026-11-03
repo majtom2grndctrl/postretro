@@ -683,27 +683,6 @@ pub fn drain_presentation_templates_lua(
     Ok(out)
 }
 
-/// Luau twin of [`drain_presentation_overlays_js`]. The field accepts one
-/// descriptor and contains malformed input instead of rejecting the manifest.
-pub fn drain_presentation_overlays_lua(
-    table: &Table,
-    scope: &str,
-) -> Result<Vec<PresentationOverlay>, DescriptorError> {
-    let value: LuaValue = table.get("presentationOverlays").map_err(lua_err)?;
-    if matches!(value, LuaValue::Nil) {
-        return Ok(Vec::new());
-    }
-    match presentation_overlay_from_lua(value) {
-        Ok(overlay) => Ok(vec![overlay]),
-        Err(error) => {
-            log::warn!(
-                "[Scripting] {scope}: `presentationOverlays` must be one overlay descriptor (not an array); the field was ignored: {error}"
-            );
-            Ok(Vec::new())
-        }
-    }
-}
-
 pub fn presentation_overlay_from_lua(
     value: LuaValue,
 ) -> Result<PresentationOverlay, DescriptorError> {

@@ -211,6 +211,8 @@ fn compile_adjacent_stages(
         &primitives,
         &config,
         prepared,
+        None,
+        None,
     )
 }
 

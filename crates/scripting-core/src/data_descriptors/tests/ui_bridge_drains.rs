@@ -241,38 +241,6 @@ fn damaged_enemy_overlay_wire_matches_luau_factory_and_malformed_entries_degrade
         },
     );
     assert_eq!(overlays.len(), 1);
-
-    let capture = LogCapture::start();
-    let overlays = eval_js(
-        r#"({ presentationOverlays: [{ over: { kind: "damagedEnemies", lingerMs: 1, hideAtFull: false }, template: "enemyStatus", maxVisible: 2 }] })"#,
-        |ctx, value| {
-            let object = Object::from_value(value).unwrap();
-            drain_presentation_overlays_js(ctx, &object, "test manifest").unwrap()
-        },
-    );
-    assert!(overlays.is_empty());
-    capture.assert_logged_once(
-        Level::Warn,
-        "`presentationOverlays` must be one overlay descriptor (not an array)",
-    );
-    drop(capture);
-
-    let capture = LogCapture::start();
-    let overlays = eval_lua(
-        r#"return { presentationOverlays = {
-            { over = { kind = "damagedEnemies", lingerMs = 1, hideAtFull = false },
-              template = "enemyStatus", maxVisible = 2 }
-        } }"#,
-        |value| {
-            let table = lua_table(value, "test manifest").unwrap();
-            drain_presentation_overlays_lua(&table, "test manifest").unwrap()
-        },
-    );
-    assert!(overlays.is_empty());
-    capture.assert_logged_once(
-        Level::Warn,
-        "`presentationOverlays` must be one overlay descriptor (not an array)",
-    );
 }
 
 // Regression: presentation shield values accept signed numeric expressions in both VM bridges.

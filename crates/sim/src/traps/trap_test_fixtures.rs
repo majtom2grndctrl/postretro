@@ -91,6 +91,7 @@ pub(crate) fn bolt(recovery_ms: f32) -> WeaponDescriptor {
 
 pub(crate) fn entity(name: &str, weapon: WeaponDescriptor) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         faction: None,
         ghost: false,
         tolerance: None,

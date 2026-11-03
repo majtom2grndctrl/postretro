@@ -178,9 +178,7 @@ fn weapon_charge_values(
 ) -> Option<(ActivationToken, f32)> {
     if inventory.switch_target.is_some()
         || crate::scripting_systems::health::is_terminally_committed_to_removal(registry, pawn)
-        || registry
-            .get_component::<postretro_entities::components::health::HealthComponent>(pawn)
-            .is_ok_and(|health| health.current <= 0.0 || !health.current.is_finite())
+        || !crate::weapon::pawn_gate::pawn_can_fire(registry, pawn)
     {
         return None;
     }
@@ -308,12 +306,14 @@ impl PlayerHudStatePublisher {
     pub fn tick_for_role_and_report_sampled_weapon(
         &mut self,
         is_connected_client: bool,
-        _legacy_active_wieldable: Option<EntityId>,
+        client_life_state_name: Option<&str>,
     ) -> Option<EntityId> {
-        // A connected client suppresses host-authoritative HUD writes, but still
-        // samples its locally-owned active component so the HUD feedback consumer
-        // can acknowledge and drain its stream.
+        // A connected client suppresses host-authoritative HUD writes (health,
+        // ammo, reload) but still publishes `player.lifeState` locally from its
+        // own pawn, and samples its locally-owned active component so the HUD
+        // feedback consumer can acknowledge and drain its stream.
         if is_connected_client {
+            self.publish_life_state(true, client_life_state_name);
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
             let values = weapon_hud_values(&self.ctx.registry.borrow());
@@ -348,6 +348,7 @@ impl PlayerHudStatePublisher {
     }
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
+        self.publish_life_state(false, None);
         self.publish_local_per_owner_mod_slots();
         let values = weapon_hud_values(&self.ctx.registry.borrow());
         self.publish_local_weapon_state(&values);
@@ -367,6 +368,7 @@ impl PlayerHudStatePublisher {
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
         self.publish_swim_values();
+        self.publish_assist_progress();
 
         match (sampled_weapon, ammo) {
             (_, Some((magazine, reserve))) => {
@@ -444,10 +446,58 @@ impl PlayerHudStatePublisher {
         }
     }
 
-    /// Publish the local pawn's `player.swimming` and `player.immersion`
-    /// through the shared per-pawn lookup. A slot whose source the pawn lacks
-    /// (no pawn, no movement or immersion component) keeps its last value.
+    /// Publish the local pawn's life-state name; the host also publishes its
+    /// gameplay-tick elapsed milliseconds. Undeclared or unknown states
+    /// publish `""`. Connected clients pass the name resolved from the matching
+    /// host table; their elapsed value comes from the presentation clock.
+    ///
+    /// With no own pawn (level change, demotion, a digest hold) the name reads
+    /// `""` on every role and the host's elapsed reads 0, so a downed HUD never
+    /// carries into the next level. A client's elapsed slot stays replicated;
+    /// the UI projection zeroes the displayed value.
+    fn publish_life_state(&mut self, is_connected_client: bool, client_name: Option<&str>) {
+        let (name, elapsed) = 'read: {
+            let registry = self.ctx.registry.borrow();
+            let pawn = if is_connected_client {
+                registry.local_player_pawn()
+            } else {
+                registry.local_player_movement_pawn()
+            };
+            let Some((pawn, movement)) = pawn.and_then(|pawn| {
+                registry
+                    .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+                    .ok()
+                    .map(|movement| (pawn, movement))
+            }) else {
+                break 'read (String::new(), Some(SlotValue::Number(0.0)));
+            };
+            let name = if is_connected_client {
+                client_name.unwrap_or("").to_owned()
+            } else if movement.life_state == postretro_foundation::UNDECLARED_LIFE_STATE {
+                String::new()
+            } else {
+                self.ctx
+                    .data_registry
+                    .borrow()
+                    .life_state_names
+                    .get(usize::from(movement.life_state))
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            (
+                name,
+                player_slot_value(&registry, PlayerSlot::LifeStateMs, pawn),
+            )
+        };
+        self.write_hud_slot("player.lifeState", SlotValue::String(name));
+        if !is_connected_client && let Some(elapsed) = elapsed {
+            self.write_hud_slot("player.lifeStateMs", elapsed);
+        }
+    }
+
     fn publish_swim_values(&mut self) {
+        // Both slots use the shared per-pawn lookup. Missing pawn, movement or
+        // immersion data leaves the prior HUD value unchanged.
         let (swimming, immersion) = {
             let registry = self.ctx.registry.borrow();
             let Some(pawn) = registry.local_player_movement_pawn() else {
@@ -1702,7 +1752,7 @@ mod tests {
         // Regression: a failed reload-slot write advanced the HUD cursor and
         // discarded an endpoint that never reached the complete HUD surface.
         assert_eq!(
-            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            publisher.tick_for_role_and_report_sampled_weapon(false, None),
             None
         );
         assert_eq!(
@@ -1727,7 +1777,7 @@ mod tests {
             .schema
             .slot_type = SlotType::Boolean;
         assert_eq!(
-            publisher.tick_for_role_and_report_sampled_weapon(false, Some(weapon_id)),
+            publisher.tick_for_role_and_report_sampled_weapon(false, None),
             Some(weapon_id),
             "successful retry reports the weapon for acknowledgement"
         );
@@ -2290,3 +2340,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ui_proxy_life_state_tests.rs"]
+mod life_state_tests;
+
+#[path = "ui_proxy_assist.rs"]
+mod assist;

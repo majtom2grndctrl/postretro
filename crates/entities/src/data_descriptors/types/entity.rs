@@ -328,6 +328,7 @@ pub struct EntityTypeDescriptor {
     pub light: Option<LightDescriptor>,
     pub emitter: Option<BillboardEmitterComponent>,
     pub movement: Option<PlayerMovementDescriptor>,
+    pub life_states: Option<crate::data_descriptors::LifeStatesDescriptor>,
     pub weapon: Option<WeaponDescriptor>,
     pub touchable: Option<TouchableDescriptor>,
     pub mesh: Option<MeshDescriptor>,

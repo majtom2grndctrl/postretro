@@ -21,12 +21,12 @@ const LABEL: &str = "room";
 /// Every stage that caches an entry for the red-wall room. Each existed, and
 /// cached its entries, before coloured bounce, which added none; the SH
 /// base's patch layers and gathered volume have since replaced its grouped
-/// entries.
-const PRE_CHANGE_CACHED_STAGES: [&str; 15] = [
+/// entries. The cell residency set is absent: the room is one cell with no
+/// portals, so that stage omits id 51 before it reads or writes the cache.
+const PRE_CHANGE_CACHED_STAGES: [&str; 14] = [
     "animated_billboard_direct_scatter",
     "animated_lm_weight_maps",
     "billboard_direct_scatter",
-    "cell_residency_set",
     "cell_visibility",
     "chunk_light_list",
     "direct_sh_volume",
@@ -328,7 +328,9 @@ fn sidecar_reuse_and_rebake_preserve_bytes_with_and_without_stage_cache() {
 #[test]
 #[ignore = "focused cold/warm stage-cache contents gate"]
 fn cold_and_warm_builds_cache_entries_only_for_pre_change_stages() {
-    let fixture = Fixture::red_wall();
+    let mut fixture = Fixture::red_wall();
+    // Tallies every stage's cache lines, the lightmap ones included.
+    fixture.reach_verify = false;
     // `-v` logs the lightmap layer partitions' own cache lines.
     let cold = run(&fixture, true, 1, &["-v"]).into_bake();
     let cold_tally = cache_tally(&cold.log);
@@ -387,7 +389,9 @@ fn pre_colour_stage_cache_misses_both_sh_stages_while_unchanged_stages_hit() {
     else {
         return;
     };
-    let fixture = Fixture::red_wall();
+    let mut fixture = Fixture::red_wall();
+    // Every stage colour left alone, the lightmap ones included, must hit.
+    fixture.reach_verify = false;
     let old = run_with(&fixture, &grey, true, 1, &[]).into_bake();
     let old_entries = cache_entries(&cache_dir(&fixture));
     let (_, old_groups) = tally(&old.log, "sh_group");

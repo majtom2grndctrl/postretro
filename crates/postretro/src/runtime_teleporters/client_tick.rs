@@ -67,6 +67,10 @@ impl crate::App {
                 },
                 teleport: identity,
             });
+        if let Some(session) = self.session.as_ref() {
+            self.life_state_eye
+                .record_tick(&session.scripting.script_ctx.registry.borrow());
+        }
         if predicted_teleport.is_some() {
             super::hold_local_arrival(
                 &self.camera,

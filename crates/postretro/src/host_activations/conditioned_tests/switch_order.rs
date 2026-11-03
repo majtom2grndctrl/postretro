@@ -226,6 +226,7 @@ fn same_slot_resync_preserves_active_charge_and_burst() {
 /// A drop-capable weapon descriptor: touchable, so the touch stage can place it.
 fn touchable(canonical_name: &str) -> postretro_entities::EntityTypeDescriptor {
     postretro_entities::EntityTypeDescriptor {
+        life_states: None,
         ghost: false,
         faction: None,
         tolerance: None,

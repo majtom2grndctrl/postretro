@@ -51,6 +51,11 @@ pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::Tem
         .arg("-o")
         .arg(&map)
         .arg("--no-tui")
+        // The lightmap reach cull's verify mode, on in every test bake. Keep
+        // this literal in sync with `REACH_VERIFY_ENV` in level-compiler's
+        // `tests/prl_build_support/mod.rs` and with `reach_verify.rs`; a
+        // different crate cannot share the constant.
+        .env("POSTRETRO_LIGHTMAP_REACH_VERIFY", "1")
         .current_dir(workspace)
         .output()
         .expect("launch prl-build");

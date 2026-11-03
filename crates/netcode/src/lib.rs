@@ -53,6 +53,7 @@ pub use ghost_link_wire::{ghost_color_filter_from_wire, ghost_link_state_to_wire
 pub mod frame_order;
 mod host;
 mod host_address;
+mod host_assist_facts;
 mod host_input;
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
@@ -86,6 +87,8 @@ pub mod weapon_cues;
 // production (`HostStateReplication`) and client apply (`ClientStateApply`) glue. The
 // schema is the only place the engine maps `StateSlotId <-> dotted name`; the net
 // trackers stay registry-blind.
+pub mod life_state_elapsed;
+pub mod life_state_tables;
 mod state_slots;
 mod tuning_payload;
 pub mod wire_convert;
@@ -180,7 +183,10 @@ mod ingest_hit_harness_test;
 #[cfg(test)]
 mod snapshot_regression_harness_test;
 
-pub use client::{ClientPresentationInputs, ClientReplication, GhostLinkUpdate, MoverCorrection};
+pub use client::{
+    AssistPairEntry, AssistProgressSample, ClientPresentationInputs, ClientReplication,
+    GhostLinkUpdate, MoverCorrection, RemoteAssistFacts,
+};
 #[cfg(test)]
 pub(crate) use client_switch::resolve_switch_outcome;
 pub use client_switch::{
@@ -522,6 +528,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
     applied_generation: &mut u64,
     descriptors: &[EntityTypeDescriptor],
     registry: &mut EntityRegistry,
+    life_state_tables: &life_state_tables::LifeStateTables,
 ) {
     remote_materialize::materialize_armed_local_pawn(
         armed,
@@ -530,6 +537,7 @@ fn apply_installed_movement_tuning_to_armed_pawn(
         tuning.and_then(|payload| payload.movement.as_ref()),
         tuning,
         *applied_generation != tuning_generation,
+        life_state_tables,
     );
     *applied_generation = tuning_generation;
 }
@@ -543,6 +551,8 @@ fn replace_client_tuning(
     tuning: &mut Option<Box<TuningPayload>>,
     tuning_generation: &mut u64,
     bytes: &[u8],
+    life_state_tables: &mut life_state_tables::LifeStateTables,
+    pinned_revision: Option<u8>,
 ) -> Result<(), tuning_payload::TuningPayloadError> {
     // Invalidate first. A bad replacement must never leave the last accepted
     // descriptor-derived prediction state live. This reaches only the queued
@@ -565,6 +575,7 @@ fn replace_client_tuning(
     {
         *tuning_generation = tuning_generation.wrapping_add(1);
     }
+    life_state_tables.install(&payload, pinned_revision);
     *tuning = Some(Box::new(payload));
     Ok(())
 }
@@ -911,6 +922,7 @@ pub fn client_receive_and_apply(
     presentation_bindings: &mut dyn postretro_entities::presentation_binding::PresentationBindingResolver,
     local_script_time: f64,
     rtt_micros: Option<f64>,
+    life_state_tables: &life_state_tables::LifeStateTables,
 ) -> ClientApplyFrameOutcome {
     let mut frame_outcome = ClientApplyFrameOutcome::default();
     let mut presentation_payloads = Vec::new();
@@ -973,7 +985,23 @@ pub fn client_receive_and_apply(
                 &snapshot.state_schema_fingerprint,
                 &snapshot.state_records,
             );
-            state_slots.accept_timed_slot_sample(snapshot.server_tick, slot_table, &state_outcome);
+            state_slots.accept_timed_slot_sample(
+                snapshot.server_tick,
+                slot_table,
+                &state_outcome,
+                replication.received_required_ticks(),
+            );
+            frame_outcome
+                .assist_progress_samples
+                .extend(AssistProgressSample::from_applied_batch(
+                    outcome
+                        .local_reconcile
+                        .as_ref()
+                        .and_then(|local| local.acked_tick),
+                    state_slots,
+                    slot_table,
+                    &state_outcome,
+                ));
             let faction_sentiment_baseline = state_slots.apply_faction_sentiment(
                 factions,
                 faction_sentiment,
@@ -1008,6 +1036,7 @@ pub fn client_receive_and_apply(
                     host_movement_tuning,
                     host_tuning,
                     rebuild_movement_tuning,
+                    life_state_tables,
                 );
             frame_outcome.armed_local_pawn = Some(ClientArmedLocalPawn {
                 entity_id: armed.entity_id,
@@ -1058,8 +1087,9 @@ pub fn client_receive_and_apply(
         // authoritative record this snapshot delivered — merge the movement subset,
         // restore the transform, prune through the host ack, replay the unacked tail,
         // snap the reconciled gameplay state, and compose the correction onto the
-        // decaying presentation offset (or snap on a teleport, or when the composed
-        // offset reaches the teleport floor). The registry-touching orchestration
+        // decaying presentation offset. Genuine teleports and non-finite offsets
+        // cut; the magnitude floor cuts outside a protected finite life-state
+        // glide. The registry-touching orchestration
         // lives in `reconcile`; long-lived prediction/smoothing state lives in
         // `prediction`.
         // Replay runs under the host's installed level gravity; with no payload
@@ -1087,6 +1117,7 @@ pub fn client_receive_and_apply(
                 collision,
                 environment,
                 tick_dt,
+                life_state_tables,
             );
             #[cfg(test)]
             if let (Some(class), Some(predicted), Ok(reconciled)) = (
@@ -1275,12 +1306,14 @@ pub(crate) fn client_predict_tick_with_sender<C: MovementCollisionSource>(
         registry.get_component::<PlayerMovementComponent>(armed.entity_id),
     ) {
         (Ok(transform), Ok(movement)) => {
-            // Death is host-authoritative; a client that predicts past its own
-            // death takes one correction, inside the vault tolerance. The same
-            // verdict bars vault entry this tick, as on the host; reconcile
-            // replay has no registry and keeps the verdict this call leaves.
+            // The vault bar comes from the pawn's declared profile stamp, or for
+            // an undeclared pawn from its HP, as on the host. Death and profile
+            // changes are host-authoritative; a client that predicts past one
+            // takes one correction, inside the vault tolerance. The bar also
+            // refuses vault entry this tick; reconcile replay has no registry
+            // and keeps the bar this call leaves.
             let mut movement = movement.clone();
-            crate::sim::drop_vault_if_dead(registry, armed.entity_id, &mut movement);
+            crate::sim::drop_vault_if_barred(registry, armed.entity_id, &mut movement);
             (*transform, movement)
         }
         _ => {
@@ -1371,33 +1404,12 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-/// Zero-tick sends must sample the same pawn teleport frame as their facing.
-/// The prediction identity is armed throughout the first-record gate; until that
-/// record merges the pawn's movement component is absent or descriptor-default,
-/// so the stamp is zero.
-pub fn client_send_input_command_in_registry(
-    endpoint: Option<&mut NetEndpoint>,
-    command: &SimCommand,
-    registry: &EntityRegistry,
-) -> Option<u32> {
-    let Some(NetEndpoint::Client {
-        client, prediction, ..
-    }) = endpoint
-    else {
-        return None;
-    };
-    let input = stamped_client_input(prediction, command, registry);
-    let client_tick = input.client_tick;
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
-    prediction.diag_record_fire_send();
-    Some(client_tick)
-}
-
 /// Allocate the next command tick and stamp it with the teleport frame its facing
 /// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
 /// registry state the camera follows. Before the client's first record for its pawn
 /// (and after a level unload disarms prediction) nothing has turned the facing, so
-/// the stamp is zero. Every outbound movement command goes through here.
+/// the stamp is zero. Only [`client_predict_tick`] calls this: one client tick is
+/// one predicted step, and nothing else (a cancel included) allocates a tick.
 pub(crate) fn stamped_client_input(
     prediction: &mut ClientPrediction,
     command: &SimCommand,
@@ -1653,6 +1665,8 @@ pub fn tuning_payload_for_pawn(
     descriptors: &[EntityTypeDescriptor],
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     environment: &EnvironmentTuning,
+    life_state_names: &[String],
+    life_state_table_revision: u8,
 ) -> TuningPayload {
     let class = registry
         .get_component::<DescriptorProvenance>(pawn)
@@ -1720,8 +1734,21 @@ pub fn tuning_payload_for_pawn(
     let spawn_active_slot = registry
         .get_component::<Inventory>(pawn)
         .map_or(0, |inventory| inventory.spawn_active_slot);
-    TuningPayload::new(movement, wieldables, environment.clone())
-        .with_spawn_active_slot(spawn_active_slot)
+    let mut payload = TuningPayload::new(movement, wieldables, environment.clone())
+        .with_spawn_active_slot(spawn_active_slot);
+    payload.life_state_names = life_state_names.to_vec();
+    payload.life_state_table_revision = life_state_table_revision;
+    payload.life_state_profiles = descriptor
+        .and_then(|descriptor| descriptor.life_states.as_ref())
+        .map(|states| {
+            states
+                .state_ids
+                .values()
+                .filter_map(|id| states.profile(*id).cloned().map(|profile| (*id, profile)))
+                .collect()
+        })
+        .unwrap_or_default();
+    payload
 }
 
 /// The host's current level state for the tuning payload, read live at every
@@ -1764,6 +1791,8 @@ pub fn host_resend_changed_tuning(
     descriptors: &[EntityTypeDescriptor],
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     environment: &EnvironmentTuning,
+    life_state_names: &[String],
+    life_state_table_revision: u8,
 ) {
     for client_id in server.participating_clients() {
         let Some(pawn) = slot_pawns.pawn_for(client_id) else {
@@ -1775,6 +1804,8 @@ pub fn host_resend_changed_tuning(
             descriptors,
             default_weapon_placement,
             environment,
+            life_state_names,
+            life_state_table_revision,
         );
         host_send_tuning_if_changed(server, last_sent_tuning, client_id, payload);
     }
@@ -2404,15 +2435,17 @@ fn apply_valid_hit_record(
     {
         return false;
     }
-    let Ok(target_health) = registry.get_component::<HealthComponent>(target) else {
+    let Ok(_) = registry.get_component::<HealthComponent>(target) else {
         return false;
     };
     // Every resolution rejects a target already committed to removal above.
     // Deferred direct-impact projectiles additionally share the local
-    // projectile liveness contract: once a target is down, their sole impact
-    // is spent without a second application. Hitscan/pellet declarations retain
+    // projectile spatial eligibility contract, including declared player life
+    // capabilities. An ineligible impact is spent without damage. Hitscan/pellet declarations retain
     // the common impact dispatch semantics used by authored zero-HP policies.
-    if shot.is_projectile && (!target_health.current.is_finite() || target_health.current <= 0.0) {
+    if shot.is_projectile
+        && !crate::scripting_systems::health::is_damage_target_eligible(registry, target)
+    {
         return false;
     }
     let point = Vec3::from_array(record.point);
@@ -2663,6 +2696,7 @@ pub fn remote_entity_positions(endpoint: &NetEndpoint, registry: &EntityRegistry
 
 #[cfg(test)]
 mod tests {
+    mod life_state_projectile_tests;
     use super::*;
     use glam::Vec3;
     use postretro_entities::components::health::Hitbox;
@@ -2821,7 +2855,8 @@ mod tests {
             wieldables,
             test_environment(),
         ));
-        replace_client_tuning(tuning, generation, &encoded).expect("valid tuning installs");
+        replace_client_tuning(tuning, generation, &encoded, &mut Default::default(), None)
+            .expect("valid tuning installs");
         encoded
     }
 
@@ -2879,6 +2914,8 @@ mod tests {
             &[changed_player],
             None,
             &test_environment(),
+            &[],
+            0,
         );
 
         assert!(payload.movement.is_some());
@@ -2938,7 +2975,7 @@ mod tests {
         inventory.spawn_active_slot = 2;
         registry.set_component(pawn, inventory.clone()).unwrap();
         let payload = |registry: &EntityRegistry| {
-            tuning_payload_for_pawn(registry, pawn, &[], None, &test_environment())
+            tuning_payload_for_pawn(registry, pawn, &[], None, &test_environment(), &[], 0)
         };
 
         let mut last_sent = HashMap::new();
@@ -2998,10 +3035,24 @@ mod tests {
             },
             rotation: default_a.rotation.clone(),
         };
-        let before =
-            tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_a), &test_environment());
-        let after =
-            tuning_payload_for_pawn(&registry, pawn, &[], Some(&default_b), &test_environment());
+        let before = tuning_payload_for_pawn(
+            &registry,
+            pawn,
+            &[],
+            Some(&default_a),
+            &test_environment(),
+            &[],
+            0,
+        );
+        let after = tuning_payload_for_pawn(
+            &registry,
+            pawn,
+            &[],
+            Some(&default_b),
+            &test_environment(),
+            &[],
+            0,
+        );
         assert_eq!(before.wieldables[0].as_ref().unwrap().placement, default_a);
         assert_eq!(after.wieldables[0].as_ref().unwrap().placement, default_b);
         assert_ne!(
@@ -3022,6 +3073,7 @@ mod tests {
             },
         };
         let descriptor = EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -3072,6 +3124,8 @@ mod tests {
             &[descriptor],
             Some(&default_b),
             &test_environment(),
+            &[],
+            0,
         );
         assert_eq!(
             overridden.wieldables[0].as_ref().unwrap().placement,
@@ -3112,7 +3166,8 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory.clone()).unwrap();
 
-        let before = tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment());
+        let before =
+            tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment(), &[], 0);
         let mut last_sent = HashMap::from([(41_u64, before.clone())]);
         let refreshed = WeaponDescriptor {
             sounds: None,
@@ -3152,7 +3207,8 @@ mod tests {
         live.refresh_from_descriptor(&refreshed);
         registry.set_component(weapon_id, live).unwrap();
 
-        let after = tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment());
+        let after =
+            tuning_payload_for_pawn(&registry, pawn, &[], None, &test_environment(), &[], 0);
 
         assert_ne!(last_sent.get(&41), Some(&after));
         last_sent.insert(41, after.clone());
@@ -3203,7 +3259,13 @@ mod tests {
         inventory.switch_origin = Some(0);
         registry.set_component(pawn, inventory.clone()).unwrap();
 
-        let result = replace_client_tuning(&mut tuning, &mut generation, b"not json");
+        let result = replace_client_tuning(
+            &mut tuning,
+            &mut generation,
+            b"not json",
+            &mut Default::default(),
+            None,
+        );
 
         assert!(matches!(
             result,
@@ -3236,7 +3298,13 @@ mod tests {
             1,
         );
 
-        let result = replace_client_tuning(&mut tuning, &mut generation, unknown_epoch.as_bytes());
+        let result = replace_client_tuning(
+            &mut tuning,
+            &mut generation,
+            unknown_epoch.as_bytes(),
+            &mut Default::default(),
+            None,
+        );
 
         assert!(matches!(
             result,
@@ -3269,8 +3337,14 @@ mod tests {
         );
         let rebytes = tuning_payload::encode_tuning_payload(&regravitated);
         assert_ne!(rebytes, encoded);
-        replace_client_tuning(&mut tuning, &mut generation, &rebytes)
-            .expect("gravity-only payload installs");
+        replace_client_tuning(
+            &mut tuning,
+            &mut generation,
+            &rebytes,
+            &mut Default::default(),
+            None,
+        )
+        .expect("gravity-only payload installs");
         assert_eq!(generation, accepted_generation);
         assert_eq!(
             tuning.as_deref().unwrap().environment.level_gravity,
@@ -3301,6 +3375,8 @@ mod tests {
             &mut tuning,
             &mut generation,
             &tuning_payload::encode_tuning_payload(&refluided),
+            &mut Default::default(),
+            None,
         )
         .expect("fluid-table-only payload installs");
         assert_eq!(generation, accepted_generation);
@@ -3324,6 +3400,8 @@ mod tests {
             &mut tuning,
             &mut generation,
             &tuning_payload::encode_tuning_payload(&retuned),
+            &mut Default::default(),
+            None,
         )
         .expect("retuned payload installs");
         assert_ne!(
@@ -3384,6 +3462,8 @@ mod tests {
                     level_gravity,
                     fluids: test_fluids(),
                 },
+                &[],
+                0,
             )
         };
 
@@ -3464,6 +3544,7 @@ mod tests {
             &mut applied_generation,
             &descriptors,
             &mut registry,
+            &Default::default(),
         );
 
         let installed = registry
@@ -3490,6 +3571,7 @@ mod tests {
             &mut applied_generation,
             &descriptors,
             &mut registry,
+            &Default::default(),
         );
         assert_eq!(
             registry
@@ -3721,6 +3803,7 @@ mod tests {
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3758,6 +3841,7 @@ mod tests {
             0,
             snapshot_due,
             &mut last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
         assert!(sampled.is_empty());
@@ -3814,6 +3898,7 @@ mod tests {
             snapshot_due,
             &mut last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
         assert_eq!(sampled, vec![weapon_id]);
         crate::sim::clear_owner_reload_feedback_for_weapons(&mut registry, &sampled);
@@ -3861,6 +3946,7 @@ mod tests {
             )
             .unwrap();
         let descriptors = vec![EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -5156,6 +5242,7 @@ mod tests {
             teleport_yaw_stamp: 0.0,
             client_tick: token.start_tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.0, 0.0],
                 jump_pressed: false,
                 dash_pressed: false,
@@ -5393,6 +5480,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick,
                 movement: wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -6848,6 +6936,7 @@ mod tests {
     #[test]
     fn descriptor_class_snapshots_require_descriptor_table() {
         let classed = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -6859,6 +6948,7 @@ mod tests {
             components: vec![ComponentPayload::Transform(sample_wire_transform())],
         });
         let classless = snapshot_with_record(EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 8,
             baseline_id: 1,
             last_processed_client_tick: None,
@@ -7048,6 +7138,7 @@ mod tests {
     #[test]
     fn client_sample_interpolation_reports_the_render_tick_remotes_were_sampled_at() {
         let record = |baseline_id, x: f32| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7134,6 +7225,7 @@ mod tests {
                 sequence: 0,
                 server_tick: 100,
                 records: vec![EntityRecord::FullBaseline {
+                    assist_facts: None,
                     network_id: 7,
                     baseline_id: 1,
                     last_processed_client_tick: None,
@@ -7220,6 +7312,10 @@ mod tests {
     fn pre_sync_interpolation_exposes_only_newest_held_remote_player_pitch() {
         let movement_payload = |aim_pitch| {
             ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                life_state: 255,
+                life_state_elapsed_ticks: 0,
+                life_state_table_revision: 0,
+                assistable: false,
                 teleport: Default::default(),
                 knockback_velocity: [0.0; 3],
                 push_velocity: [0.0; 3],
@@ -7240,6 +7336,7 @@ mod tests {
             })
         };
         let record = |baseline_id, transform_x, aim_pitch| EntityRecord::FullBaseline {
+            assist_facts: None,
             network_id: 7,
             baseline_id,
             last_processed_client_tick: None,
@@ -7332,6 +7429,7 @@ mod tests {
     /// `PlayerMovement` pawn and marks it the local player (the host's own pawn).
     fn host_player_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -7822,6 +7920,7 @@ mod tests {
                     server_tick: 10,
                     records: vec![
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 7,
                             baseline_id: 1,
                             last_processed_client_tick: None,
@@ -7837,6 +7936,10 @@ mod tests {
                                     scale: [1.0, 1.0, 1.0],
                                 }),
                                 ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+                                    life_state: 255,
+                                    life_state_elapsed_ticks: 0,
+                                    life_state_table_revision: 0,
+                                    assistable: false,
                                     teleport: Default::default(),
                                     knockback_velocity: [0.0; 3],
                                     push_velocity: [0.0; 3],
@@ -7858,6 +7961,7 @@ mod tests {
                             ],
                         },
                         postretro_net::wire::EntityRecord::FullBaseline {
+                            assist_facts: None,
                             network_id: 8,
                             baseline_id: 1,
                             last_processed_client_tick: None,

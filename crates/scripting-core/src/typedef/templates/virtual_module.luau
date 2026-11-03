@@ -56,8 +56,13 @@ export type PostretroUiModule = {
   },
   --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
-  --- Bind an overlay source to a socket-anchored presentation template.
-  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
+  --- Build the assistable-teammate marker source. It takes no options: the
+  --- engine picks the teammates on each machine and stamps the `inRange` Bool fact.
+  assistableTeammates: (options: {}?) -> AssistableTeammatesSource,
+  --- Bind an overlay source to a world-anchored presentation template.
+  --- `maxVisible` is an integer from 1 to 64. Register one result as
+  --- `presentationOverlays`, or several as an array with at most one per source kind.
+  defineOverlay: (props: { over: PresentationOverlaySource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),
@@ -68,6 +73,8 @@ export type PostretroUiModule = {
     & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions),
   --- Build a scalar equality predicate for visibility, selection, or checked state.
   stateEquals: <T>(ref: ComputedRef<T>, value: T) -> Predicate,
+  --- Build a numeric comparison predicate on a Number state ref (e.g. assist progress above 0).
+  stateCompare: (ref: ComputedRef<number>, op: PredicateCompareOp, value: number) -> Predicate,
   --- Declare presentation-local cells. Values may be number, boolean, string, or RGBA tuple.
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
@@ -161,6 +168,10 @@ export type PostretroModule = {
   becomes: typeof(becomes),
   --- Player-event edge word: fire when a Bool condition turns false for a player.
   ceases: typeof(ceases),
+  --- Discrete player-event source: an assist completed on the player (the target).
+  assistReceived: typeof(assistReceived),
+  --- Discrete player-event source: the player completed an assist (the helper).
+  assistGiven: typeof(assistGiven),
   wait: typeof(wait),
   fire: typeof(fire),
   --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.
@@ -189,6 +200,8 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   --- Read a state ref into an expression value.
   read: typeof(read),
+  --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.
+  inLifeState: typeof(inLifeState),
   --- Lift raw `runtime.*` expressions into public NumberRef/BoolRef values.
   fromRuntime: typeof(fromRuntime),
   --- Build an absolute writable-number store-slot write.
@@ -197,6 +210,8 @@ export type PostretroModule = {
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),
+  --- The helper and target of an assist pair, for `assistable` expressions.
+  assist: Assist,
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

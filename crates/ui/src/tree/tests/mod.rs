@@ -13,6 +13,7 @@ mod gating;
 mod image;
 mod layout;
 mod local_state;
+mod predicate_compare;
 mod ring;
 mod scroll;
 mod slider;
@@ -22,3 +23,5 @@ mod tween_panel;
 mod tween_text;
 mod value_text;
 mod visibility;
+
+mod life_state;

@@ -3,6 +3,11 @@
 // before the SDK prelude, then captured by SDK-side `getGameState()`.
 // See: context/lib/scripting.md §5
 
+use std::sync::LazyLock;
+
+use postretro_foundation::owner_tokens::{
+    by_player_owner_tokens_js_array, by_player_owner_tokens_luau_set,
+};
 use rquickjs::{Ctx, Function as JsFunction, Object as JsObject, Value as JsValue};
 
 use super::engine_state_catalog::{
@@ -18,21 +23,28 @@ pub const GET_GAME_STATE_GLOBAL: &str = "getGameState";
 // non-enumerable `byPlayer(owner)`, so the tree still serializes as `{slot,
 // kind}` and interior nodes stay method-free. The tree is built before the SDK
 // prelude, so `byPlayer` cannot see the SDK's owner tokens; it recognizes
-// `on.player` and `impact.source` by the wire spelling each carries as
-// `__wire`, and lowers anything else to `@invalid` for the engine to reject.
+// every owner handle (`on.player`, `impact.source`, `assist.helper`,
+// `assist.target`) by the wire spelling each carries as `__wire`, generated
+// from `BY_PLAYER_OWNER_TOKENS`, and lowers anything else to `@invalid` for the
+// engine to reject.
 // script-compiler's `light_membership.rs` mirrors both installers; the drift
 // guard in `postretro-sim` compares them, so they are public for it alone.
 #[doc(hidden)]
-pub const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
+pub static QUICKJS_INSTALL_BY_PLAYER: LazyLock<String> = LazyLock::new(|| {
+    QUICKJS_INSTALL_BY_PLAYER_TEMPLATE.replace("__OWNERS__", &by_player_owner_tokens_js_array())
+});
+
+const QUICKJS_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"(leaf) => {
   const slot = leaf.slot;
   const kind = leaf.kind;
+  const owners = __OWNERS__;
   Object.defineProperty(leaf, "byPlayer", {
     value: function byPlayer(owner) {
       const wire = owner !== null && typeof owner === "object" ? owner.__wire : undefined;
       return Object.freeze({
         slot,
         kind,
-        owner: wire === "@player" || wire === "@impact.source" ? wire : "@invalid",
+        owner: typeof wire === "string" && owners.includes(wire) ? wire : "@invalid",
       });
     },
     enumerable: false,
@@ -41,9 +53,14 @@ pub const QUICKJS_INSTALL_BY_PLAYER: &str = r#"(leaf) => {
 
 // `pcall`: an opaque SDK target raises on any field it does not serve.
 #[doc(hidden)]
-pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
+pub static LUAU_INSTALL_BY_PLAYER: LazyLock<String> = LazyLock::new(|| {
+    LUAU_INSTALL_BY_PLAYER_TEMPLATE.replace("__OWNERS__", &by_player_owner_tokens_luau_set())
+});
+
+const LUAU_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"return function(leaf)
   local slot = leaf.slot
   local kind = leaf.kind
+  local owners = __OWNERS__
   local function byPlayer(_self, owner)
     local wire = nil
     if type(owner) == "table" then
@@ -52,7 +69,7 @@ pub const LUAU_INSTALL_BY_PLAYER: &str = r#"return function(leaf)
       end)
       wire = if ok then value else nil
     end
-    if wire ~= "@player" and wire ~= "@impact.source" then
+    if type(wire) ~= "string" or not owners[wire] then
       wire = "@invalid"
     end
     return table.freeze({ slot = slot, kind = kind, owner = wire })
@@ -110,7 +127,7 @@ fn install_quickjs_bridge_from_catalog(
     reject_quickjs_collision(ctx, GET_GAME_STATE_GLOBAL)?;
 
     let install_by_player: JsFunction = ctx
-        .eval(QUICKJS_INSTALL_BY_PLAYER)
+        .eval(QUICKJS_INSTALL_BY_PLAYER.as_str())
         .map_err(|e| host_error("failed to build QuickJS byPlayer installer", e))?;
     let root = build_quickjs_object(
         ctx,
@@ -201,7 +218,7 @@ fn install_luau_bridge_from_catalog(
     reject_luau_collision(lua, GET_GAME_STATE_GLOBAL)?;
 
     let install_by_player: mlua::Function = lua
-        .load(LUAU_INSTALL_BY_PLAYER)
+        .load(LUAU_INSTALL_BY_PLAYER.as_str())
         .set_name("postretro/game_state_refs/byPlayer")
         .eval()
         .map_err(|e| host_error("failed to build Luau byPlayer installer", e))?;

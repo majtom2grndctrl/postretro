@@ -18,7 +18,7 @@ use super::{ClientOverlayHitbox, client_overlay_anchor, client_overlay_hitbox};
 use crate::impact_policy::{
     ClientOverlayConfig, DamagedEnemyOverlayDamage, DamagedEnemyOverlayFact, ImpactPolicyRuntime,
 };
-use crate::presentation_pool::PresentationPool;
+use crate::presentation_pool::{OverlayKind, PresentationPool};
 use crate::scripting_systems::hit_zones::HitZoneStore;
 use crate::{ClientReplication, NetworkIdAllocator, ReplicableSet};
 
@@ -243,7 +243,7 @@ pub fn update_host_overlay_roster(
 ) {
     let Some(config) = runtime.client_overlay_config() else {
         tracker.clear_for_authoring();
-        pool.clear_overlays();
+        pool.clear_overlays(OverlayKind::DamagedEnemies);
         if let Some(message) = tracker.publication(now) {
             server.broadcast_presentation(message);
         }
@@ -255,9 +255,12 @@ pub fn update_host_overlay_roster(
         tracker.live.iter().map(|entry| entry.entity),
     );
     tracker.lower(&facts);
-    pool.retain_overlays(|entity| tracker.live.iter().any(|entry| entry.entity == entity));
+    pool.retain_overlays(OverlayKind::DamagedEnemies, |entity| {
+        tracker.live.iter().any(|entry| entry.entity == entity)
+    });
     for entry in &tracker.live {
         if !pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
             entry.entity,
             config.template.clone(),
             config.max_visible,
@@ -368,7 +371,7 @@ pub fn update_client_overlay_anchors(
 ) {
     if config.is_none() {
         state.clear_projections();
-        pool.clear_overlays();
+        pool.clear_overlays(OverlayKind::DamagedEnemies);
     }
     let Some(roster) = state.roster.as_mut() else {
         return;
@@ -402,15 +405,21 @@ pub fn update_client_overlay_anchors(
             state.projected.remove(&entry.enemy_id);
         }
     }
-    pool.retain_overlays(|entity| state.projected.values().any(|current| *current == entity));
+    pool.retain_overlays(OverlayKind::DamagedEnemies, |entity| {
+        state.projected.values().any(|current| *current == entity)
+    });
     for entry in &roster.entries {
         let Some(&entity) = state.projected.get(&entry.enemy_id) else {
             continue;
         };
         // The compatible local manifest may author a different K. Membership
         // and its cap belong to the host; local configuration only styles it.
-        if !pool.upsert_authoritative_overlay(entity, config.template.clone(), roster.entries.len())
-        {
+        if !pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            entity,
+            config.template.clone(),
+            roster.entries.len(),
+        ) {
             continue;
         }
         let anchor = client_overlay_anchor(
@@ -452,7 +461,7 @@ fn stamp(
             config.hide_at_full && health == 1.0,
         );
     } else {
-        pool.update_overlay_anchor(entity, None, true);
+        pool.update_overlay_anchor(OverlayKind::DamagedEnemies, entity, None, true);
     }
 }
 

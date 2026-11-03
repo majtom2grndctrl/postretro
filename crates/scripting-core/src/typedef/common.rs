@@ -148,6 +148,13 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "ZoneMultipliers" => "{ readonly [tag: string]: number }".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
+        "LifeStatesDescriptor" => "LifeStatesDescriptor".to_string(),
+        "LifeStateProfile" => "LifeStateProfile".to_string(),
+        "LifeStateAssistable" => "LifeStateAssistable".to_string(),
+        "LifeStateMovementProfile" => "LifeStateMovementProfile".to_string(),
+        "LifeStatePosture" => "LifeStatePosture".to_string(),
+        "LifeStateProfiles" => "{ readonly [state: string]: LifeStateProfile }".to_string(),
+        "LifeStateRejoinMap" => "{ readonly [state: string]: string }".to_string(),
         "WeaponDescriptor" => "WeaponDescriptor".to_string(),
         "ActivationTrigger" => "ActivationTrigger".to_string(),
         "ActivationCharge" => "ActivationCharge".to_string(),
@@ -182,6 +189,8 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         // expression-capable union the typed command buffer (scripting.md §11)
         // makes available on movement descriptor fields.
         "NumberOrIr" => "number | RuntimeValue".to_string(),
+        // A pair-expression field: a literal, a fluent ref or a raw node.
+        "NumberValue" => "NumberValue".to_string(),
         "BoolOrIr" => "boolean | RuntimeValue".to_string(),
         // A range field: one number L, meaning [L, L], or a `[min, max]` pair
         // (`defineFluid`'s `waveLength`).
@@ -337,6 +346,13 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "ZoneMultipliers" => "{ [string]: number }".to_string(),
         "EntityTypeDescriptor" => "EntityTypeDescriptor".to_string(),
         "EntityTypeComponents" => "EntityTypeComponents".to_string(),
+        "LifeStatesDescriptor" => "LifeStatesDescriptor".to_string(),
+        "LifeStateProfile" => "LifeStateProfile".to_string(),
+        "LifeStateAssistable" => "LifeStateAssistable".to_string(),
+        "LifeStateMovementProfile" => "LifeStateMovementProfile".to_string(),
+        "LifeStatePosture" => "LifeStatePosture".to_string(),
+        "LifeStateProfiles" => "{ [string]: LifeStateProfile }".to_string(),
+        "LifeStateRejoinMap" => "{ [string]: string }".to_string(),
         "WeaponDescriptor" => "WeaponDescriptor".to_string(),
         "ActivationTrigger" => "ActivationTrigger".to_string(),
         "ActivationCharge" => "ActivationCharge".to_string(),
@@ -369,6 +385,8 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "DashParams" => "DashParams".to_string(),
         // See the TS mapping: a dash value field is a literal-or-expression union.
         "NumberOrIr" => "number | RuntimeValue".to_string(),
+        // A pair-expression field: a literal, a fluent ref or a raw node.
+        "NumberValue" => "NumberValue".to_string(),
         "BoolOrIr" => "boolean | RuntimeValue".to_string(),
         // Luau has no fixed-length table type; the pair is a `{ min, max }`
         // array.

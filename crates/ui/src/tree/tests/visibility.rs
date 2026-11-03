@@ -346,6 +346,7 @@ fn visible_when_local_cell_hides_and_shows_node() {
                         local: "show".to_string(),
                     },
                     equals: None,
+                    compare: None,
                 }),
                 role: None,
             })],

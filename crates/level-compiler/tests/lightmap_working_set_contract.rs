@@ -1,12 +1,16 @@
 //! Shared CLI working-set budget, from projection through warm memo admission.
 //! See: context/plans/done/lighting-scale--lightmap-layer-budget-gate.
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::{REACH_VERIFY_ENV, prl_build};
 
 const SH_ADMITTED: &str = "SH delta working-set gate: estimated peak ";
 const SH_REFUSED: &str = "SH delta working-set gate refused before dense baking: estimated peak ";
@@ -38,7 +42,7 @@ fn diagnostic(output: &Output) -> String {
 }
 
 fn command(input: &Path, output: &Path, scratch: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_prl-build"));
+    let mut command = prl_build();
     command
         .current_dir(workspace())
         .env("RUST_LOG", "info")
@@ -71,8 +75,25 @@ fn build(
     cache: Option<&Path>,
     budget: Option<u64>,
 ) -> (Output, PathBuf) {
+    build_with_verify(input, scratch, label, cache, budget, true)
+}
+
+/// Like `build`, with reach verify mode on or off. A bake whose test
+/// asserts `lightmap_section` misses or hits passes `false`: verify mode
+/// never reads the memo, so it would log a bypass instead.
+fn build_with_verify(
+    input: &Path,
+    scratch: &Path,
+    label: &str,
+    cache: Option<&Path>,
+    budget: Option<u64>,
+    verify: bool,
+) -> (Output, PathBuf) {
     let output_path = scratch.join(format!("{label}.prl"));
     let mut command = command(input, &output_path, scratch);
+    if !verify {
+        command.env(REACH_VERIFY_ENV, "0");
+    }
     if let Some(cache) = cache {
         command.arg("--cache-dir").arg(cache);
     } else {
@@ -274,7 +295,8 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
     let scratch = tempfile::tempdir().unwrap();
     let cache = scratch.path().join("cache");
     let input = fixture();
-    let (seed, _) = build(&input, scratch.path(), "seed", Some(&cache), None);
+    // The seed asserts `lightmap_section` and `shadowmask_atlas` misses.
+    let (seed, _) = build_with_verify(&input, scratch.path(), "seed", Some(&cache), None, false);
     let log = assert_success(&seed);
     let delta = admitted_bytes(&log, SH_ADMITTED);
     let base = admitted_bytes(&log, SH_BASE_ADMITTED);
@@ -310,12 +332,14 @@ fn shared_working_set_cli_reaches_lightmap_gate_cold_and_warm_at_exact_boundary(
     assert!(layers > 0);
 
     for (label, stage_cache) in [("cold", None), ("warm", Some(cache.as_path()))] {
-        let (at_budget, path) = build(
+        // The warm at-budget bake asserts memo hits.
+        let (at_budget, path) = build_with_verify(
             &input,
             scratch.path(),
             &format!("{label}-at"),
             stage_cache,
             Some(lightmap),
+            stage_cache.is_none(),
         );
         let at_log = assert_success(&at_budget);
         assert!(path.is_file());
@@ -394,7 +418,7 @@ fn retired_working_set_flag_is_rejected() {
         vec!["input.map", retired.as_str(), "1GiB"],
         vec![retired.as_str()],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+        let output = prl_build()
             .current_dir(scratch.path())
             .env("NO_COLOR", "1")
             .args(args)

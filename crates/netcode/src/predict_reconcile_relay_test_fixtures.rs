@@ -78,6 +78,9 @@ pub(crate) struct ClientCorrection {
     pub(crate) movement_state: Option<MovementStateKind>,
 }
 
+/// Test-only player-event boundary: movement has completed, serialization has not.
+pub(crate) type HostPostMovement = Box<dyn FnMut(&mut EntityRegistry, EntityId, u32)>;
+
 /// A host and a predicting client joined over a renet relay pair. One frame
 /// ([`Self::frame`]) runs the host's frame then the client's at the same
 /// virtual time, each polling its endpoint first; what a frame sends leaves at
@@ -114,6 +117,7 @@ pub(crate) struct RelayHarness {
     /// One record per host fixed tick: how the client's command resolved and
     /// the pawn's state after the tick.
     pub(crate) host_trace: Vec<HostTickTrace>,
+    pub(crate) post_movement: Option<HostPostMovement>,
 
     // --- Client ---
     /// The production client endpoint, its transport the relay `NetClient`
@@ -134,6 +138,9 @@ pub(crate) struct RelayHarness {
     client_bystander: EntityId,
     /// Every own-pawn reconcile, in order.
     pub(crate) corrections: Vec<ClientCorrection>,
+    /// Every (acknowledged tick, assist-progress sample) the receive loop
+    /// reported, in order.
+    pub(crate) assist_samples: Vec<crate::AssistProgressSample>,
     /// The `client_tick` of the client's latest predicted command.
     pub(crate) last_client_tick: Option<u32>,
 
@@ -197,6 +204,7 @@ impl RelayHarness {
             prediction: ClientPrediction::new(),
             state_slots: Box::new(ClientStateApply::new()),
             tuning: None,
+            life_state_tables: Default::default(),
             tuning_generation: 0,
             applied_movement_tuning_generation: 0,
             next_switch_declaration_id: 0,
@@ -231,6 +239,7 @@ impl RelayHarness {
             host_tick: 0,
             last_emitted_snapshot_tick: None,
             host_trace: Vec::new(),
+            post_movement: None,
             endpoint,
             client_registry,
             client_mover_states: MoverTickStateTable::default(),
@@ -242,6 +251,7 @@ impl RelayHarness {
             host_bystander,
             client_bystander,
             corrections: Vec::new(),
+            assist_samples: Vec::new(),
             last_client_tick: None,
             to_server: PacketConditioner::new(to_server),
             to_client: PacketConditioner::new(to_client),
@@ -571,6 +581,9 @@ impl RelayHarness {
 
         let mut snapshot_due = false;
         self.host_fixed_tick();
+        if let Some(post_movement) = self.post_movement.as_mut() {
+            post_movement(&mut self.host_registry, self.host_pawn, self.host_tick);
+        }
         complete_host_fixed_tick(&mut self.host_tick, &mut snapshot_due);
 
         // Serialize: changed tuning queues ahead of the snapshot it shapes, for
@@ -598,6 +611,7 @@ impl RelayHarness {
             0,
             snapshot_due,
             &mut self.last_emitted_snapshot_tick,
+            &Default::default(),
             &Default::default(),
         );
     }
@@ -641,6 +655,15 @@ impl RelayHarness {
     }
 
     fn host_send_tuning_if_changed(&mut self) {
+        // Use the same lowered mod table that the production host supplies.
+        let life_states = self
+            .descriptors
+            .iter()
+            .find_map(|descriptor| descriptor.life_states.as_ref());
+        let life_names: Vec<String> = life_states
+            .map(|states| states.state_ids.keys().cloned().collect())
+            .unwrap_or_default();
+        let life_revision = life_states.map_or(0, |states| states.table_revision);
         let payload = tuning_payload_for_pawn(
             &self.host_registry,
             self.host_pawn,
@@ -650,6 +673,8 @@ impl RelayHarness {
                 level_gravity: self.host_level_gravity,
                 fluids: self.host_fluid_table.clone(),
             },
+            &life_names,
+            life_revision,
         );
         host_send_tuning_if_changed(
             &mut self.server,
@@ -765,6 +790,7 @@ impl RelayHarness {
             prediction,
             state_slots,
             tuning,
+            life_state_tables,
             tuning_generation,
             applied_movement_tuning_generation,
             ..
@@ -808,6 +834,7 @@ impl RelayHarness {
             &mut NoPresentationBindings,
             0.0,
             time_sync.rtt_micros(),
+            life_state_tables,
         );
         if let Some(armed) = &outcome.armed_local_pawn {
             self.client_pawn = Some(armed.entity_id);
@@ -819,6 +846,8 @@ impl RelayHarness {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
+        self.assist_samples
+            .extend_from_slice(&outcome.assist_progress_samples);
         let movement_state = self.client_movement_state();
         let frame = self.frame;
         self.corrections.extend(

@@ -12,6 +12,7 @@ import {
 } from "postretro";
 import { onStateCrossing } from "postretro/ui";
 import { playerEntity } from "./scripts/player";
+import { setupPlayerDeath } from "./scripts/player-death";
 import { coopPresentationEntities, coopDummyLifecycle, coopWeaponLifecycle } from "./scripts/coop-presentation-entities";
 import { referencePistolEntity } from "./scripts/reference-pistol";
 import { referenceRifleEntity } from "./scripts/reference-rifle";
@@ -59,10 +60,13 @@ import {
 } from "./scripts/positional-sound";
 import {
   ammoReadout,
+  beingRevivedMeterTree,
+  bleedOutMeterTree,
   hud,
   hudTheme,
   openSeatsReadout,
   reloadMeterTree,
+  revivingMeterTree,
   spreadReticle,
   xpReadout,
 } from "./scripts/hud";
@@ -99,9 +103,11 @@ import {
   damagedEnemyOverlay,
   damageNumber,
 } from "./scripts/combat-presentation";
+import { reviveMarker, reviveMarkerOverlay } from "./scripts/revive-marker";
 import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
 
 const player = getGameState().player;
+const playerDeath = setupPlayerDeath();
 
 export default defineMod({
   name: "dev",
@@ -151,6 +157,9 @@ export default defineMod({
     openSeatsReadout,
     spreadReticle,
     reloadMeterTree,
+    bleedOutMeterTree,
+    revivingMeterTree,
+    beingRevivedMeterTree,
     pauseMenu,
     exitConfirm,
     quitConfirm,
@@ -167,20 +176,26 @@ export default defineMod({
   loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
-  presentationTemplates: [damageNumber, damagedEnemyBar],
-  presentationOverlays: damagedEnemyOverlay,
+  presentationTemplates: [damageNumber, damagedEnemyBar, reviveMarker],
+  presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
   theme: hudTheme,
   reactions: [
+    ...playerDeath.reactions,
     ...frontendReactions,
     ...factionSentimentReactions,
     ...positionalSoundReactions,
     markSwimming,
     splashSound,
   ],
-  // Swimming: a host decision per player as they start swimming, and
-  // own-state feedback that stays local on each machine (scripts/swim-events.ts).
-  playerEvents: [players().on(becomes(read(player.swimming)), [markSwimming])],
-  crossings: [onStateCrossing(read(player.swimming), [splashSound])],
+  // Host decisions per player, with own-state feedback local to each machine.
+  playerEvents: [
+    ...playerDeath.playerEvents,
+    players().on(becomes(read(player.swimming)), [markSwimming]),
+  ],
+  crossings: [
+    ...playerDeath.crossings,
+    onStateCrossing(read(player.swimming), [splashSound]),
+  ],
   // The combat demo's unique target tags make these mod-global policies work
   // for both catalog and direct CLI map loads. `enemyDeath` must precede its
   // `combatZombieLifecycle` override: registration order is iteration order, and
@@ -194,6 +209,7 @@ export default defineMod({
     ammoOnKill,
     combatZombieLifecycle,
     factionSentimentBackstab,
+    ...playerDeath.events,
   ],
   triggerEvents: factionSentimentTriggerEvents,
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],

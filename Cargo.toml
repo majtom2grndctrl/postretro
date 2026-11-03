@@ -182,6 +182,13 @@ notify-debouncer-full = "0.7"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+# Test-only: `postretro-test-log-capture`'s `tracing` dispatcher (`tracing-core`)
+# and its regression test (`tracing`, dev). No new packages — both already arrive
+# through swc and winit. Without a dispatcher, `tracing/log` (forced on in Linux
+# `dev-tools` builds by `calloop` 0.14, via egui-winit's clipboard) logs each span's
+# creation at the span's level, and swc opens its passes with ERROR spans.
+tracing-core = "0.1"
+tracing = { version = "0.1", default-features = false }
 
 # Testing
 proptest = "1"

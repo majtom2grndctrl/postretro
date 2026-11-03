@@ -8,6 +8,7 @@ use log::Level;
 use postretro_test_log_capture::LogCapture;
 
 mod lightmap_runtime_floor;
+mod reach_hole_warning_tests;
 
 #[test]
 fn direct_delta_plan_bake_csr_divergence_is_caught() {

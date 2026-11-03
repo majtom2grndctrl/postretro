@@ -16,6 +16,10 @@ fn transform(x: f32) -> ComponentPayload {
 
 fn movement(generation: u8, last_teleporter: u16, ground: WireGroundRef) -> ComponentPayload {
     ComponentPayload::PlayerMovementState(WirePlayerMovementState {
+        life_state: 255,
+        life_state_elapsed_ticks: 0,
+        life_state_table_revision: 0,
+        assistable: false,
         teleport: WireTeleportState::new(generation, 0.0, last_teleporter, &[]).unwrap(),
         knockback_velocity: [0.0; 3],
         push_velocity: [0.0; 3],
@@ -46,6 +50,7 @@ fn teleporter(source_entity: u32) -> ComponentPayload {
 
 fn baseline(network_id: u32, baseline_id: u32, components: Vec<ComponentPayload>) -> EntityRecord {
     EntityRecord::FullBaseline {
+        assist_facts: None,
         network_id,
         baseline_id,
         last_processed_client_tick: None,

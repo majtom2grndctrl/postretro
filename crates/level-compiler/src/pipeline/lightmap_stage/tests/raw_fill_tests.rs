@@ -73,6 +73,7 @@ fn bake_residency(cache: &StageCache, cut: bool) -> RawBake {
                 &prims,
                 &config(false),
                 prepared,
+                None,
                 &window,
             )
             .unwrap();

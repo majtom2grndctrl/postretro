@@ -274,6 +274,7 @@ impl Peer {
             &mut resolver,
             self.clock,
             self.rtt,
+            &Default::default(),
         );
         if materialized.materialized_remote_entity_presentation {
             crate::resolve_mesh_entity_bindings(
@@ -747,6 +748,7 @@ impl Harness {
             true,
             &mut self.last,
             &ctx.presentation_overrides.borrow(),
+            &session.assist_state,
         );
     }
     fn step(&mut self) {

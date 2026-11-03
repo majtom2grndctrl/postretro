@@ -801,6 +801,7 @@ mod tests {
 
     fn projectile_visual_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,

@@ -104,6 +104,7 @@ impl Receiver {
             &mut NoPresentationBindings,
             0.0,
             None,
+            &Default::default(),
         )
     }
 
@@ -220,6 +221,9 @@ fn descriptor_record() -> RawEntityRecord {
         has_last_processed_client_tick: false,
         last_processed_client_tick: 0,
         local_player: false,
+        has_assist_facts: false,
+        assist_pairs: Vec::new(),
+        received_required_ticks: 0,
         has_entity_class: true,
         entity_class: "player".into(),
         has_active_weapon_archetype: false,
@@ -475,3 +479,110 @@ fn timed_slot_receive_empty_fingerprint_mismatch_preserves_agreement_and_cap() {
 
 #[path = "timed_slot_receive_crossing_test.rs"]
 mod crossing_tests;
+
+// A decrease followed by a larger accepted sample in the same receive pass used
+// to disappear when the HUD inspected only the frame-final owner slot.
+#[test]
+fn life_state_elapsed_witness_retains_accepted_decrease_across_same_frame_samples() {
+    let mut receiver = Receiver::new();
+    let baseline = receiver.state_snapshot(
+        1,
+        100,
+        &[("player.lifeStateMs", WireSlotValue::Number(1000.0))],
+    );
+    receiver.deliver(wire::encode(&baseline), &[]);
+    let first = receiver.slots.life_state_elapsed_witness();
+    assert_eq!(first.reset_serial, 0);
+    close(first.elapsed_ms.unwrap(), 1000.0);
+    let decrease = receiver.state_snapshot(
+        2,
+        102,
+        &[("player.lifeStateMs", WireSlotValue::Number(20.0))],
+    );
+    let later = receiver.state_snapshot(
+        3,
+        104,
+        &[("player.lifeStateMs", WireSlotValue::Number(1060.0))],
+    );
+    receiver.enqueue(wire::encode(&decrease));
+    receiver.deliver(wire::encode(&later), &[]);
+    let observed = receiver.slots.life_state_elapsed_witness();
+    assert_eq!(observed.reset_serial, 1);
+    close(observed.elapsed_ms.unwrap(), 1060.0);
+    assert!(
+        receiver
+            .registry
+            .iter_with_kind(postretro_entities::ComponentKind::PlayerMovement)
+            .next()
+            .is_none(),
+        "authoritative elapsed evidence requires no predicted movement component"
+    );
+
+    // Local schema refresh preserves the owner lifetime. Actual retirement
+    // clears both the authoritative reference and accumulated reset serial.
+    receiver.slots.reset_schema();
+    assert_eq!(receiver.slots.life_state_elapsed_witness(), observed);
+    receiver.slots.clear_life_state_elapsed_witness();
+    assert_eq!(
+        receiver.slots.life_state_elapsed_witness(),
+        Default::default()
+    );
+}
+
+#[test]
+fn life_state_elapsed_witness_ignores_reordered_rejected_omitted_and_repair_held_records() {
+    let mut receiver = Receiver::new();
+    let baseline = receiver.state_snapshot(
+        3,
+        104,
+        &[("player.lifeStateMs", WireSlotValue::Number(1000.0))],
+    );
+    receiver.deliver(wire::encode(&baseline), &[]);
+    let accepted = receiver.slots.life_state_elapsed_witness();
+    let stale = receiver.state_snapshot(
+        2,
+        102,
+        &[("player.lifeStateMs", WireSlotValue::Number(0.0))],
+    );
+    receiver.deliver(wire::encode(&stale), &[]);
+    assert_eq!(receiver.slots.life_state_elapsed_witness(), accepted);
+
+    let mut malformed = receiver.state_snapshot(
+        4,
+        106,
+        &[("player.lifeStateMs", WireSlotValue::Number(0.0))],
+    );
+    malformed.state_schema_fingerprint[0] ^= 1;
+    receiver.deliver(wire::encode(&malformed), &[]);
+    assert_eq!(receiver.slots.life_state_elapsed_witness(), accepted);
+    let omitted = receiver.state_snapshot(5, 108, &[]);
+    receiver.deliver(wire::encode(&omitted), &[]);
+    assert_eq!(receiver.slots.life_state_elapsed_witness(), accepted);
+
+    for (sequence, baseline_id) in [(6, 4), (7, 1)] {
+        let mut held = receiver.state_snapshot(
+            sequence,
+            110,
+            &[("player.lifeStateMs", WireSlotValue::Number(0.0))],
+        );
+        let record = &mut held.state_records[0];
+        record.kind = STATE_RECORD_KIND_DELTA;
+        record.has_baseline_ref = true;
+        record.baseline_ref = 4;
+        record.baseline_id = baseline_id;
+        receiver.deliver(wire::encode(&held), &[]);
+        assert_eq!(receiver.slots.life_state_elapsed_witness(), accepted);
+    }
+    let unset = receiver.state_snapshot(8, 112, &[("player.lifeStateMs", WireSlotValue::Unset)]);
+    receiver.deliver(wire::encode(&unset), &[]);
+    assert_eq!(receiver.slots.life_state_elapsed_witness(), accepted);
+    let reset = receiver.state_snapshot(
+        9,
+        114,
+        &[("player.lifeStateMs", WireSlotValue::Number(10.0))],
+    );
+    receiver.deliver(wire::encode(&reset), &[]);
+    let reset = receiver.slots.life_state_elapsed_witness();
+    assert_eq!(reset.reset_serial, accepted.reset_serial + 1);
+    close(reset.elapsed_ms.unwrap(), 10.0);
+}

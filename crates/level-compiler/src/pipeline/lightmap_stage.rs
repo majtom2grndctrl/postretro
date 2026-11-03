@@ -16,14 +16,18 @@ use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
 use crate::lightmap_layer::{self, SharedAtlas};
 use crate::map_data::ShadowType;
+use crate::mover_light_gate::{GateTally, MoverPoses};
 use crate::shadowmask_bake;
 use crate::texel_footprint::EmbeddedEmitters;
 use crate::texel_step_detector::TEXEL_STEP_THRESHOLD;
 
 mod cache;
 mod metadata;
+mod mover_gate;
 mod partitions;
 mod peak;
+mod reach;
+mod reach_verify;
 mod texel_steps;
 mod window;
 
@@ -33,10 +37,17 @@ use crate::lightmap_layer::chart_texel_bounds;
 use crate::texel_step_detector::StepSite;
 use crate::texel_step_detector::{CutSites, TexelStepReport};
 pub(super) use metadata::MetadataCounts;
+use mover_gate::MoverGateDetector;
 use partitions::{LayerItems, LayerPartitions, layer_hashes, layer_key_prefixes};
 pub(super) use peak::log_predicted_peak;
 #[cfg(test)]
 pub(super) use peak::predicted_peak;
+pub(crate) use reach::ReachInputs;
+use reach::StageReach;
+#[cfg(test)]
+pub(crate) use reach::{LAST_REACH_COUNTS, ReachCounts};
+#[cfg(test)]
+pub(crate) use reach_verify::with_reach_verify;
 use texel_steps::StepDetector;
 use window::LIGHTMAP_PARTITION_WINDOW;
 #[cfg(test)]
@@ -54,6 +65,9 @@ pub(crate) struct FusedLightingOutput {
     pub texel_step_elapsed: Duration,
     /// The atlas's cut faces, for the weight-map bake's texel-step detector.
     pub cut_parents: Vec<CutParent>,
+    /// The mover light gate's static rows, gated this build or served by its
+    /// memo; `None` when no mover is analysed or the stage bakes no texel.
+    pub mover_light: Option<GateTally>,
 }
 
 /// How the fused walk windows its (layer, light) partitions. Production uses
@@ -181,8 +195,10 @@ pub(crate) fn bake_fused_prepared(
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
+    mover_poses: Option<&MoverPoses>,
 ) -> anyhow::Result<FusedLightingOutput> {
-    bake_fused_windowed(
+    bake_fused_with_movers(
         args,
         stage_cache,
         lightmap_control,
@@ -197,10 +213,14 @@ pub(crate) fn bake_fused_prepared(
         primitives,
         config,
         prepared,
+        reach,
+        mover_poses,
         &PartitionWindow::default(),
     )
 }
 
+/// The fused bake under `window`, without the mover light gate.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_fused_windowed(
     args: &Args,
@@ -217,11 +237,54 @@ pub(crate) fn bake_fused_windowed(
     primitives: &[BvhPrimitive],
     config: &LightmapConfig,
     prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
+    window: &PartitionWindow,
+) -> anyhow::Result<FusedLightingOutput> {
+    bake_fused_with_movers(
+        args,
+        stage_cache,
+        lightmap_control,
+        shadowmask_control,
+        geometry,
+        static_lights,
+        alpha_lights,
+        shadow_selection,
+        light_source_labels,
+        probe_embedded_emitters,
+        bvh,
+        primitives,
+        config,
+        prepared,
+        reach,
+        None,
+        window,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn bake_fused_with_movers(
+    args: &Args,
+    stage_cache: Option<&StageCache>,
+    lightmap_control: &BakeControl,
+    shadowmask_control: &BakeControl,
+    geometry: &mut GeometryResult,
+    static_lights: &StaticBakedLights<'_>,
+    alpha_lights: &AlphaLightsNs<'_>,
+    shadow_selection: Option<&EntityShadowLightsSection>,
+    light_source_labels: &[String],
+    probe_embedded_emitters: &EmbeddedEmitters,
+    bvh: &Bvh<f32, 3>,
+    primitives: &[BvhPrimitive],
+    config: &LightmapConfig,
+    prepared: PreparedAtlas,
+    reach: Option<ReachInputs<'_>>,
+    mover_poses: Option<&MoverPoses>,
     window: &PartitionWindow,
 ) -> anyhow::Result<FusedLightingOutput> {
     peak::gate_working_set(
         &prepared,
-        MetadataCounts::new(static_lights, alpha_lights, primitives.len()),
+        MetadataCounts::new(static_lights, alpha_lights, primitives.len())
+            .with_movers(mover_poses.map_or(0, |poses| poses.analysed.len())),
         config.uncompressed_irradiance,
         window.size,
         args.working_set_max_bytes,
@@ -258,6 +321,7 @@ pub(crate) fn bake_fused_windowed(
             texel_steps: TexelStepReport::default(),
             texel_step_elapsed: Duration::ZERO,
             cut_parents: prepared.cut_parents,
+            mover_light: None,
         });
     }
     let density = config.lightmap_density;
@@ -298,6 +362,11 @@ pub(crate) fn bake_fused_windowed(
         static_lights,
         light_source_labels,
     );
+    let mut stage_reach =
+        reach.map(|inputs| StageReach::new(inputs, &layer_lights, &embedded_emitters));
+    // Reach verify mode re-walks every culled pair, warm or cold, so it reads
+    // neither the section memo nor a layer; writes stay.
+    let bypass_reads = stage_reach.as_ref().is_some_and(|reach| reach.verify);
     // Partition keys feed only the cache, so an uncached bake hashes nothing.
     let layer_prefixes = if stage_cache.is_some() && !prepared.placements.is_empty() {
         layer_key_prefixes(
@@ -400,6 +469,7 @@ pub(crate) fn bake_fused_windowed(
         )
     });
     let cached_section = stage_cache
+        .filter(|_| !bypass_reads)
         .zip(section_key.as_ref())
         .and_then(|(cache, key)| cache.get(key))
         .and_then(|bytes| {
@@ -434,10 +504,14 @@ pub(crate) fn bake_fused_windowed(
         });
     let compose_lightmap = cached_section.is_none();
     if let Some(cache) = stage_cache {
-        log::info!(
-            "[cache] lightmap_section {}",
-            if compose_lightmap { "miss" } else { "hit" }
-        );
+        let outcome = if bypass_reads {
+            "bypassed (reach verify)"
+        } else if compose_lightmap {
+            "miss"
+        } else {
+            "hit"
+        };
+        log::info!("[cache] lightmap_section {outcome}");
         if !compose_lightmap {
             // The memo stands in for every partition it summarizes; the next
             // prune must keep them as the recompose fallback for a light edit.
@@ -449,6 +523,13 @@ pub(crate) fn bake_fused_windowed(
                 ));
             }
         }
+    }
+
+    // The gate's memo resolves before either pass, so a pass walks only the
+    // partitions of lights it did not serve.
+    let mut gate = MoverGateDetector::new(mover_poses, &shared, &layer_lights);
+    if let (Some(gate), Some(cache)) = (gate.as_mut(), stage_cache) {
+        gate.consult_memo(cache, !bypass_reads, &layer_prefixes, prepared.layer_count);
     }
 
     let mut texel_step_elapsed = Duration::ZERO;
@@ -492,6 +573,14 @@ pub(crate) fn bake_fused_windowed(
                 geometry,
                 &prepared.cut_parents,
             );
+            if let Some(reach) = stage_reach.as_mut() {
+                reach.build_index(
+                    &prepared.charts,
+                    config.penumbra_floor,
+                    window,
+                    lightmap_control,
+                );
+            }
             let source = LayerPartitions::new(
                 args,
                 stage_cache,
@@ -506,6 +595,8 @@ pub(crate) fn bake_fused_windowed(
                 config.penumbra_floor,
                 &embedded_emitters,
                 Some(&detector),
+                gate.as_ref(),
+                stage_reach.as_ref(),
                 window,
             );
             let mut open: Option<(u32, lightmap_layer::IncrementalLayerAccumulator)> = None;
@@ -576,18 +667,30 @@ pub(crate) fn bake_fused_windowed(
             .map(String::as_str)
     });
 
-    // If the lightmap memo hit but the shadowmask memo missed, consume only the
-    // owner-eligible partitions. They are read/baked once here and never by a later
-    // pipeline stage.
+    // After a lightmap memo hit, read the partitions the shadowmask memo or the
+    // gate's memo still needs: the owner-eligible lights on a shadowmask miss,
+    // and the lights the gate did not serve. Each partition is read (or, with
+    // its layer entry gone, baked) once here, feeds both, and is never read by
+    // a later pipeline stage. The shadowmask ignores a source that cannot own.
     if !compose_lightmap {
         let selected: Vec<usize> = layer_lights
             .iter()
             .enumerate()
             .filter_map(|(light, entry)| {
-                shadowmask.needs_source(entry.source_index).then_some(light)
+                (shadowmask.needs_source(entry.source_index)
+                    || gate.as_ref().is_some_and(|gate| gate.wants(light)))
+                .then_some(light)
             })
             .collect();
         let items = LayerItems::selected(prepared.layer_count, &selected);
+        if let Some(reach) = stage_reach.as_mut().filter(|_| !selected.is_empty()) {
+            reach.build_index(
+                &prepared.charts,
+                config.penumbra_floor,
+                window,
+                lightmap_control,
+            );
+        }
         let source = LayerPartitions::new(
             args,
             stage_cache,
@@ -602,6 +705,8 @@ pub(crate) fn bake_fused_windowed(
             config.penumbra_floor,
             &embedded_emitters,
             None,
+            gate.as_ref(),
+            stage_reach.as_ref(),
             window,
         );
         let completed_work = prepared.placements.len().saturating_mul(selected.len());
@@ -623,13 +728,26 @@ pub(crate) fn bake_fused_windowed(
             #[cfg(test)]
             window.probe.clone(),
         );
-        // This pass consumes only owner-eligible partitions, so the rest
-        // of the published `total` is completed here to leave progress at 100%.
+        // Each selected light advanced one unit per chart, so the rest of
+        // the published `total` is completed here to leave progress at 100%.
         if completed_work < total {
             lightmap_control.advance(total - completed_work);
         }
     }
 
+    // The stage line, then a verify mismatch fails the bake before the
+    // section and gate memos are written.
+    if let Some(reach) = &stage_reach {
+        reach.finish(light_source_labels, !compose_lightmap)?;
+    }
+    let mover_light = gate.map(|gate| {
+        let (tally, elapsed) = gate.finish(stage_cache, prepared.layer_count);
+        log::debug!(
+            "[Compiler] mover light gate: static tier {:.1} ms summed over workers",
+            elapsed.as_secs_f64() * 1000.0
+        );
+        tally
+    });
     if compose_lightmap && let (Some(cache), Some(key)) = (stage_cache, section_key.as_ref()) {
         #[cfg(test)]
         RAW_FILL_AT_LIGHTMAP_CACHE_WRITE
@@ -659,6 +777,7 @@ pub(crate) fn bake_fused_windowed(
         texel_steps,
         texel_step_elapsed,
         cut_parents: prepared.cut_parents,
+        mover_light,
     })
 }
 

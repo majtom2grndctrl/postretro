@@ -1,4 +1,6 @@
 pub mod immersion;
+pub mod life_state;
+pub use life_state::*;
 pub mod player_movement;
 pub mod scope;
 

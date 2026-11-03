@@ -3,7 +3,9 @@
 use super::super::*;
 use super::common::*;
 use crate::ir::IrNode;
-use postretro_entities::data_descriptors::{PlayerEventDescriptor, PlayerEventEdge};
+use postretro_entities::data_descriptors::{
+    PlayerEventDescriptor, PlayerEventEdge, PlayerEventTrigger,
+};
 use postretro_test_log_capture::LogCapture;
 
 fn health_below(threshold: f32) -> IrNode {
@@ -55,15 +57,19 @@ fn level_player_events_parse_identically_and_reject_a_levels_entry_naming_the_sc
         js.player_events,
         vec![
             PlayerEventDescriptor {
-                edge: PlayerEventEdge::Becomes,
-                condition: health_below(25.0),
+                trigger: PlayerEventTrigger::Edge {
+                    edge: PlayerEventEdge::Becomes,
+                    condition: health_below(25.0),
+                },
                 fire: vec!["bleed".into()],
                 levels: Vec::new(),
                 authored_index: 0,
             },
             PlayerEventDescriptor {
-                edge: PlayerEventEdge::Ceases,
-                condition: health_below(10.0),
+                trigger: PlayerEventTrigger::Edge {
+                    edge: PlayerEventEdge::Ceases,
+                    condition: health_below(10.0),
+                },
                 fire: Vec::new(),
                 levels: Vec::new(),
                 authored_index: 3,
@@ -193,4 +199,74 @@ fn a_non_finite_entry_is_skipped_by_index_and_its_siblings_keep_their_authored_p
         messages[0], messages[1],
         "the runtimes' diagnostics diverged"
     );
+}
+
+// The discrete assist sources carry no condition; one authored on them is a
+// filter the engine would never apply, so the entry is skipped.
+#[test]
+fn discrete_assist_sources_parse_without_a_condition_and_reject_one_in_both_runtimes() {
+    let capture = LogCapture::start();
+    let js = eval_js(
+        r#"({ playerEvents: [
+            { edge: "assistReceived", fire: ["revive"] },
+            { edge: "assistGiven", fire: ["thanks"], levels: ["arena"] },
+            { edge: "assistReceived", condition: { op: "const", value: true }, fire: ["bad"] },
+            { edge: "assistGiven", condition: null, fire: [] }
+        ] })"#,
+        |ctx, value| {
+            let obj = rquickjs::Object::from_value(value).unwrap();
+            drain_player_events_js(ctx, &obj, PlayerEventSite::Mod, "mod manifest").unwrap()
+        },
+    );
+    let lua = eval_lua(
+        r#"return { playerEvents = {
+            { edge = "assistReceived", fire = { "revive" } },
+            { edge = "assistGiven", fire = { "thanks" }, levels = { "arena" } },
+            { edge = "assistReceived", condition = { op = "const", value = true }, fire = { "bad" } },
+            { edge = "assistGiven", fire = {} }
+        } }"#,
+        |value| {
+            let LuaValue::Table(table) = value else {
+                panic!("manifest is a table");
+            };
+            drain_player_events_lua(&table, PlayerEventSite::Mod, "mod manifest").unwrap()
+        },
+    );
+    assert_eq!(js, lua);
+    assert_eq!(
+        js,
+        vec![
+            PlayerEventDescriptor {
+                trigger: PlayerEventTrigger::AssistReceived,
+                fire: vec!["revive".into()],
+                levels: Vec::new(),
+                authored_index: 0,
+            },
+            PlayerEventDescriptor {
+                trigger: PlayerEventTrigger::AssistGiven,
+                fire: vec!["thanks".into()],
+                levels: vec!["arena".into()],
+                authored_index: 1,
+            },
+            PlayerEventDescriptor {
+                trigger: PlayerEventTrigger::AssistGiven,
+                fire: Vec::new(),
+                levels: Vec::new(),
+                authored_index: 3,
+            },
+        ]
+    );
+    let rejected: Vec<String> = capture
+        .records()
+        .into_iter()
+        .filter(|record| record.message.contains("playerEvents[2] is malformed"))
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(rejected.len(), 2, "one skip per runtime: {rejected:?}");
+    assert!(
+        rejected[0].contains("`assistReceived` takes no condition"),
+        "{}",
+        rejected[0]
+    );
+    assert_eq!(rejected[0], rejected[1]);
 }

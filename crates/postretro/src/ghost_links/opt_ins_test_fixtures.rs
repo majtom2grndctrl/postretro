@@ -10,6 +10,7 @@ use postretro_foundation::{
 /// A component-less descriptor named `name` whose top-level `ghost` is `ghost`.
 pub(crate) fn descriptor(name: &str, ghost: bool) -> EntityTypeDescriptor {
     EntityTypeDescriptor {
+        life_states: None,
         faction: None,
         tolerance: None,
         canonical_name: Some(name.to_string()),

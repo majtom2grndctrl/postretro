@@ -87,6 +87,12 @@ pub fn engine_default_inputs(command: Command, class: DeviceClass) -> &'static [
             const { &[key(KeyCode::KeyE)] },
             const { &[pad(GilrsButton::West)] },
         ),
+        // Use's inputs: the `hold` default activator shares them with Use's
+        // `press` (`input.md` §Shared keys). Bound only while relevant.
+        Command::Assist => (
+            const { &[key(KeyCode::KeyE)] },
+            const { &[pad(GilrsButton::West)] },
+        ),
         Command::Drop => (
             const { &[key(KeyCode::KeyG)] },
             const { &[pad(GilrsButton::Select)] },
@@ -214,14 +220,17 @@ pub fn gameplay_binding(
     Some(Binding::with_scale(input, action, sign * polarity).with_activator(activator))
 }
 
-/// Engine default gameplay bindings on one device class, every one `press`.
+/// Engine default gameplay bindings on one device class, each at its
+/// command's [`Command::default_activator`]. Relevance-blind: the boot seed.
 pub fn default_bindings_for(class: DeviceClass) -> Vec<Binding> {
     Command::ALL
         .into_iter()
         .flat_map(|command| {
             engine_default_inputs(command, class)
                 .iter()
-                .filter_map(move |input| gameplay_binding(command, *input, Activator::PRESS))
+                .filter_map(move |input| {
+                    gameplay_binding(command, *input, command.default_activator())
+                })
         })
         .collect()
 }

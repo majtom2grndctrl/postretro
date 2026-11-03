@@ -64,6 +64,9 @@ pub enum RenderStage {
     Overlay,
     Viewmodel,
     Ui,
+    /// UI text spans whose glyphon prepare ran this frame. Present at zero on a
+    /// UI frame that prepared nothing.
+    UiTextSpansPrepared,
     /// Scene-color resolve into the swapchain and the timing-query resolve.
     Resolve,
     /// Queue submit and readback bookkeeping.
@@ -103,6 +106,7 @@ impl StageSet for RenderStage {
         Self::Overlay,
         Self::Viewmodel,
         Self::Ui,
+        Self::UiTextSpansPrepared,
         Self::Resolve,
         Self::Submit,
         Self::DebugUi,
@@ -143,6 +147,7 @@ impl StageSet for RenderStage {
             Self::Overlay => "rec_overlay",
             Self::Viewmodel => "rec_viewmodel",
             Self::Ui => "rec_ui",
+            Self::UiTextSpansPrepared => "ui_text_spans_prepared",
             Self::Resolve => "rec_resolve",
             Self::Submit => "render_submit",
             Self::DebugUi => "render_debug_ui",
@@ -161,13 +166,14 @@ impl StageSet for RenderStage {
             | Self::DirectShCompose => Some(Self::PreScene),
             Self::CullDiagnostics => Some(Self::Cull),
             Self::ShadowReach => Some(Self::ShadowDepth),
+            Self::UiTextSpansPrepared => Some(Self::Ui),
             _ => Some(Self::Record),
         }
     }
 
     fn kind(self) -> StageKind {
         match self {
-            Self::MeshPoseSamples => StageKind::Count,
+            Self::MeshPoseSamples | Self::UiTextSpansPrepared => StageKind::Count,
             _ => StageKind::Time,
         }
     }
@@ -185,6 +191,15 @@ mod tests {
         );
         assert_eq!(RenderStage::MeshUpload.parent(), Some(RenderStage::Record));
         assert_eq!(RenderStage::Record.parent(), None);
+    }
+
+    #[test]
+    fn ui_text_spans_prepared_counts_under_the_ui_stage() {
+        let stage = RenderStage::UiTextSpansPrepared;
+        assert_eq!(stage.parent(), Some(RenderStage::Ui));
+        assert_eq!(stage.kind(), StageKind::Count);
+        assert_eq!(stage.label(), "ui_text_spans_prepared");
+        assert_eq!(RenderStage::Ui.label(), "rec_ui");
     }
 
     #[test]

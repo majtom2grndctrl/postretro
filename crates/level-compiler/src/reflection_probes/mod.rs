@@ -46,7 +46,7 @@ mod exclusion_stage_tests;
 #[cfg(test)]
 mod exclusion_tests;
 #[cfg(test)]
-mod placement_test_fixtures;
+pub(crate) mod placement_test_fixtures;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]

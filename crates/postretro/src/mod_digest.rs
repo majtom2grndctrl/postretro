@@ -413,6 +413,7 @@ pub(crate) mod tests {
 
     fn entity_descriptor() -> EntityTypeDescriptor {
         EntityTypeDescriptor {
+            life_states: None,
             ghost: false,
             faction: None,
             tolerance: None,
@@ -1125,6 +1126,24 @@ pub(crate) mod tests {
                 expected,
                 manifest_digest(&changed),
                 "compatible cosmetic configuration"
+            );
+            changed.presentation_overlays.push(
+                serde_json::from_value(serde_json::json!({
+                    "over": { "kind": "assistableTeammates" },
+                    "template": template_id, "maxVisible": cap,
+                }))
+                .unwrap(),
+            );
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "adding the assistable-teammate marker remains compatible"
+            );
+            changed.presentation_overlays.remove(0);
+            assert_eq!(
+                expected,
+                manifest_digest(&changed),
+                "the marker alone remains compatible"
             );
             changed.presentation_overlays.clear();
             assert_eq!(

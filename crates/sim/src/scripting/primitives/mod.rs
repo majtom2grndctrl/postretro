@@ -6,6 +6,7 @@
 // entry point that the engine and tests converge on.
 
 pub(crate) mod entity;
+mod life_states;
 pub mod light;
 pub(crate) mod manifest;
 pub mod store;
@@ -249,12 +250,14 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Full fog-volume component snapshot at query time.",
         )
         .finish();
+    life_states::register_types(registry);
     registry
         .register_type("EntityTypeComponents")
         .doc("Component presets carried by `EntityTypeDescriptor.components`. Each key is optional and independent; present values are validated when the mod manifest loads.")
         .field("light?", "Option<LightDescriptor>", "Dynamic-light preset materialized on each spawned instance.")
         .field("emitter?", "Option<BillboardEmitterComponent>", "Billboard-particle emitter preset materialized on each spawned instance.")
         .field("movement?", "Option<PlayerMovementDescriptor>", "Player movement, collision capsule, and first-person view-feel preset.")
+        .field("lifeStates?", "Option<LifeStatesDescriptor>", "Author-named player life states with engine capability profiles and optional rejoin policy. Requires player movement.")
         .field("inventory?", "Option<InventoryDescriptor>", "Pawn-owned ordered wieldable loadout. Input cursor and dwell state are never stored here.")
         .field("weapon?", "Option<WeaponDescriptor>", "Weapon tuning preset. Weapon archetypes are instantiated as wieldable entities when named by `components.inventory.loadout`.")
         .field("touchable?", "Option<TouchableDescriptor>", "Host-authoritative touch interaction tuning. Its presence makes a descriptor directly map-placeable and permits its weapon component to attach to that world instance.")

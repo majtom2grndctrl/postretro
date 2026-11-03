@@ -27,7 +27,9 @@ pub use cell_hull::{CellHull, HullPiece};
 pub use cell_tree::{CellTree, InteriorPockets};
 pub use door_recognition::{DoorSplitter, recognize_doors};
 pub use face_extract::{CoplanarConflict, FaceExtractionResult, extract_faces};
-pub use manifold::{OpenEdge, WatertightReport, check_watertight};
+pub use manifold::{
+    MAX_SAMPLES as OPEN_EDGE_SAMPLE_CAP, OpenEdge, WatertightReport, check_watertight,
+};
 pub use types::*;
 
 use crate::map_data::{BrushVolume, Face};

@@ -42,6 +42,9 @@ use super::{
 
 const FRAME: Duration = Duration::from_micros(16_667);
 
+#[path = "client_switch_life_state_tests.rs"]
+mod life_state_tests;
+
 /// More host ticks than a retained switch may wait before it applies whatever
 /// is still pending (`SWITCH_WAIT_TICKS`), so a declaration that reached the
 /// lane is answered within it.
@@ -170,6 +173,7 @@ impl SwitchRelay {
             prediction: ClientPrediction::new(),
             state_slots: Box::new(ClientStateApply::new()),
             tuning: None,
+            life_state_tables: Default::default(),
             tuning_generation: 0,
             applied_movement_tuning_generation: 0,
             next_switch_declaration_id: 0,
@@ -309,6 +313,7 @@ impl SwitchRelay {
                         &mut self.last_sent_tuning,
                         None,
                         std::slice::from_ref(event),
+                        &[],
                     );
                 }
             }

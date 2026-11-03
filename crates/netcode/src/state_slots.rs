@@ -1220,6 +1220,7 @@ pub struct ClientStateApply {
     /// across the reset names no slot until its next baseline.
     weapon_projection: ReplicatedWeaponProjection,
     timed_slot_targets: timed_slot_targets::TimedSlotTargets,
+    life_state_elapsed_witness: crate::life_state_elapsed::OwnerLifeStateElapsedWitness,
     /// Ordered accepted raw batches awaiting the frame's crossing stage. Outer
     /// None excludes a refresh-held slot; Some(None) observes a genuine absence.
     timed_slot_observations: Vec<[Option<Option<f32>>; 4]>,
@@ -1234,6 +1235,7 @@ impl ClientStateApply {
             held_faction_sentiment_baseline: None,
             weapon_projection: ReplicatedWeaponProjection::default(),
             timed_slot_targets: timed_slot_targets::TimedSlotTargets::default(),
+            life_state_elapsed_witness: Default::default(),
             timed_slot_observations: Vec::new(),
         }
     }
@@ -1257,6 +1259,19 @@ impl ClientStateApply {
             && self.weapon_projection == ReplicatedWeaponProjection::default()
             && self.timed_slot_targets.is_reset()
             && self.timed_slot_observations.is_empty()
+    }
+
+    /// Accepted authoritative elapsed, independent of the replayed component.
+    pub fn life_state_elapsed_witness(
+        &self,
+    ) -> crate::life_state_elapsed::OwnerLifeStateElapsedWitness {
+        self.life_state_elapsed_witness
+    }
+
+    /// Level retirement and participation demotion discard the previous owner's
+    /// samples. Schema refresh alone must preserve this reset evidence.
+    pub(crate) fn clear_life_state_elapsed_witness(&mut self) {
+        self.life_state_elapsed_witness = Default::default();
     }
 
     /// The owner-private weapon values as last committed, each with the host
@@ -1525,6 +1540,12 @@ impl ClientStateApply {
                 .fresh_slots
                 .extend(writes.iter().map(|write| write.name.clone()));
             for write in &writes {
+                if write.name == "player.lifeStateMs"
+                    && let Some(SlotValue::Number(elapsed_ms)) = write.value.as_ref()
+                {
+                    self.life_state_elapsed_witness
+                        .observe_committed(*elapsed_ms);
+                }
                 if let Some(slot) = write.wieldable_slot {
                     record_weapon_sample(
                         &mut outcome.fresh_weapon_projection,
@@ -1852,11 +1873,14 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
                 "player.cell",
                 "player.cellCapacity",
                 "player.health",
                 "player.heat",
                 "player.immersion",
+                "player.lifeStateMs",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",
@@ -1884,11 +1908,14 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
                 "player.cell",
                 "player.cellCapacity",
                 "player.health",
                 "player.heat",
                 "player.immersion",
+                "player.lifeStateMs",
                 "player.maxHealth",
                 "player.overheatAt",
                 "player.overheated",

@@ -3,6 +3,9 @@
 
 #![deny(unsafe_code)]
 
+/// Canonical fixed simulation step, shared by tick scheduling and elapsed facts.
+pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_micros(16_667);
+
 pub mod brain;
 pub mod candidate;
 pub mod data_descriptors;
@@ -10,6 +13,7 @@ pub mod foundation_pods;
 pub mod impact_particles;
 pub mod ir;
 pub mod movement;
+pub mod owner_tokens;
 pub mod pose;
 pub mod presentation;
 pub mod seat;
@@ -40,9 +44,14 @@ pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_impulse};
 pub use ir::*;
 pub use movement::{
-    DashPrograms, GroundRef, ImmersionComponent, MovementScope, MovementState, MovementStateKind,
-    NO_TELEPORTER, PlayerMovementComponent, SeamlessMapping, TeleportLatches, TeleportState,
-    wrap_teleport_yaw,
+    ASSIST_DEFAULT_HOLD_MS, ASSIST_DEFAULT_RADIUS_M, ASSIST_HOLD_MS_LITERAL_RULE,
+    ASSIST_MAX_HOLD_MS, ASSIST_MAX_RADIUS_M, ASSIST_RADIUS_LITERAL_RULE, Assistable, Capability,
+    DashPrograms, GroundRef, ImmersionComponent, LifeStateMovementProfile, LifeStatePosture,
+    LifeStateProfile, MovementScope, MovementState, MovementStateKind, NO_TELEPORTER,
+    PlayerMovementComponent, SeamlessMapping, TeleportLatches, TeleportState,
+    UNDECLARED_LIFE_STATE, assist_hold_ms_literal_valid, assist_radius_literal_valid,
+    carry_life_state_stamps, clear_life_state, enter_life_state, player_capability,
+    restamp_life_state, wrap_teleport_yaw,
 };
 pub use pose::{PoseInputs, WALKABLE_SURFACE_MIN_UP_DOT};
 pub use presentation::{

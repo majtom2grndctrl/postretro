@@ -18,7 +18,10 @@ use super::skip_stats::SkipStats;
 /// Production takes every skip; tests turn them off, through the partition
 /// window, the chart walk's argument or the test-only face walk's
 /// (`bake_light_layer_controlled`), to check the skipped bake against the
-/// full one. No flag, env var or cache key holds this.
+/// full one. No flag, env var or cache key holds this. The one env var nearby,
+/// `POSTRETRO_LIGHTMAP_REACH_VERIFY`, does not switch a skip: it only makes
+/// the reach cull re-walk the pairs it culled to check them, and the cull
+/// stays on whether it is set or not.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ExactSkips {
     /// Planning drops a `(light, chart)` pair [`chart_may_cover`] rules out.
@@ -26,6 +29,10 @@ pub(crate) struct ExactSkips {
     /// The chart walk stores visibility 1 at a tile of texels the tile shaft
     /// cull ([`super::shaft_cull`]) proves clear, and traces none of them.
     pub shaft_cull: bool,
+    /// The chart walk stores visibility 0 without tracing at the texels of a
+    /// `(light, chart)` pair open space cannot carry the light to
+    /// ([`crate::lightmap_reach`]), when the stage has a reach index.
+    pub reach_cull: bool,
     /// Every covered texel of a clear tile is also traced normally, with
     /// copies of both occluder caches, and must give exactly 1.0 and leave
     /// both copies as the skipped walk holds them. On by default in tests, so
@@ -37,29 +44,47 @@ pub(crate) struct ExactSkips {
     /// allow.
     #[cfg(test)]
     pub force_clear: bool,
+    /// Every pair whose chart frame the reach cull can bound counts as
+    /// culled, whatever the flood reached: the negative control that reach
+    /// verify mode fails a skip the geometry does not allow.
+    #[cfg(test)]
+    pub force_reach_cull: bool,
     /// Where the walk and planning tally what they skipped.
     #[cfg(test)]
     pub stats: Option<&'static SkipStats>,
+    /// The reach index builds each chart's slab from this list's chart at
+    /// the same atlas index instead of the walk's: the negative control that
+    /// a slab off the walk's texel positions misses trace starts.
+    #[cfg(test)]
+    pub slab_charts: Option<&'static [Chart]>,
 }
 
 impl ExactSkips {
     pub(crate) const ON: Self = Self {
         chart_cull: true,
         shaft_cull: true,
+        reach_cull: true,
         #[cfg(test)]
         verify: true,
         #[cfg(test)]
         force_clear: false,
         #[cfg(test)]
+        force_reach_cull: false,
+        #[cfg(test)]
         stats: None,
+        #[cfg(test)]
+        slab_charts: None,
     };
     #[cfg(test)]
     pub(crate) const OFF: Self = Self {
         chart_cull: false,
         shaft_cull: false,
+        reach_cull: false,
         verify: false,
         force_clear: false,
+        force_reach_cull: false,
         stats: None,
+        slab_charts: None,
     };
 
     /// These skips, tallied into `stats`.
@@ -75,7 +100,7 @@ impl ExactSkips {
 /// `chart_texel_world_position`'s local coordinate on `axis` of grid texel
 /// `texel` (window-relative), in `f64`: the exact value of its `f32`
 /// expression's inputs.
-pub(super) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f64 {
+pub(crate) fn exact_texel_local(grid: &ChartGrid, axis: usize, texel: i32) -> f64 {
     let frac = (f64::from(grid.origin[axis] + texel) + 0.5) / f64::from(grid.interior[axis]);
     f64::from(grid.uv_min[axis]) + frac * f64::from(grid.uv_extent[axis])
 }

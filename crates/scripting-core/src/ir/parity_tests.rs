@@ -106,7 +106,7 @@ impl Drop for TypeScriptFixture {
 /// Bare SDK imports are intentionally stripped by that compiler; the QuickJS
 /// SDK prelude installs their matching runtime bindings before the emitted JS
 /// runs.
-fn quickjs_fixture_value(source: &str) -> serde_json::Value {
+pub(super) fn quickjs_fixture_value(source: &str) -> serde_json::Value {
     let fixture = TypeScriptFixture::new(source);
     let bundled = postretro_script_compiler::bundle_entry(fixture.entry())
         .expect("TypeScript parity fixture bundles through scripts-build");
@@ -125,7 +125,7 @@ fn quickjs_fixture_value(source: &str) -> serde_json::Value {
 /// Run one authored Luau fixture and bridge its descriptor-shaped return value
 /// through serde. The fixture uses the public `require("postretro/ui")`
 /// module, matching the Luau authoring surface rather than internal globals.
-fn luau_fixture_value(source: &str) -> serde_json::Value {
+pub(super) fn luau_fixture_value(source: &str) -> serde_json::Value {
     // A mod-rooted state installs the virtual `postretro/ui` module. The
     // long-lived definition-only state deliberately leaves `require` absent.
     let lua = build_lua_state(&[], None, Some(Path::new(env!("CARGO_MANIFEST_DIR"))))
@@ -2015,3 +2015,15 @@ mod addressing_sdk;
 
 #[path = "member_builder_sdk_tests.rs"]
 mod member_builder_sdk;
+
+#[path = "impact_source_sdk_tests.rs"]
+mod impact_source_sdk;
+
+#[path = "assist_sdk_tests.rs"]
+mod assist_sdk;
+
+#[path = "assist_source_sdk_tests.rs"]
+mod assist_source_sdk;
+
+#[path = "presentation_overlay_sdk_tests.rs"]
+mod presentation_overlay_sdk;

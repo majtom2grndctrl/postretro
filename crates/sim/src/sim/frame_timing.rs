@@ -5,10 +5,12 @@ use glam::Vec3;
 use std::time::{Duration, Instant};
 
 /// Fixed tick duration: 60 Hz (16.667ms per tick).
-pub const TICK_DURATION: Duration = Duration::from_micros(16_667);
+pub use postretro_foundation::TICK_DURATION;
 
 /// Maximum accumulator value to prevent spiral-of-death catch-up after stalls.
-const MAX_ACCUMULATOR: Duration = Duration::from_millis(250);
+/// Also the most gameplay time one frame can advance, which bounds presentation
+/// clocks that follow it.
+pub const MAX_ACCUMULATOR: Duration = Duration::from_millis(250);
 
 /// Snapshot of game state that the renderer interpolates between frames.
 /// Plain struct — no traits, generics, or macros.

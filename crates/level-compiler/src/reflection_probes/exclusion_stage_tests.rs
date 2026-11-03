@@ -593,13 +593,17 @@ fn pipeline_build(root: &Path, map: &Path, map_text: &str) -> StageCache {
     let reporter: Arc<dyn crate::reporter::Reporter> = Arc::new(
         crate::reporter::PlainReporter::new(started, crate::logger::LogSink::default()),
     );
-    crate::pipeline::run(
-        &args,
-        Some(cache.clone()),
-        started,
-        reporter,
-        Arc::new(crate::governor::Governor::new(1, false)),
-    )
+    // These tests count cache reads and writes, which need production's
+    // walk: reach verify mode bypasses the lightmap caches' reads.
+    crate::pipeline::lightmap_stage::with_reach_verify(false, || {
+        crate::pipeline::run(
+            &args,
+            Some(cache.clone()),
+            started,
+            reporter,
+            Arc::new(crate::governor::Governor::new(1, false)),
+        )
+    })
     .expect("fixture compiles");
     cache
 }

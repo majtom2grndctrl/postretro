@@ -380,7 +380,11 @@ fn client_landing_drops(
 fn is_trigger_consequential_primitive(primitive: &str) -> bool {
     matches!(
         primitive,
-        "moverStart"
+        "setLifeState"
+            | "respawn"
+            | "grantHealth"
+            | "grantAmmo"
+            | "moverStart"
             | "moverStop"
             | "moverReverse"
             | "moverGoToPathNode"

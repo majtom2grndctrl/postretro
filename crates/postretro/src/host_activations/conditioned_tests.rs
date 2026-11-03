@@ -69,6 +69,7 @@ fn mandated_link() -> LinkConfig {
 
 fn neutral() -> sim::SimCommand {
     sim::SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: Vec2::ZERO,
@@ -299,6 +300,11 @@ fn actors(registry: &mut EntityRegistry, descriptor: &WeaponDescriptor, host: bo
 }
 
 struct Fixture {
+    /// Only respawn scenarios move the tick prelude ahead of command admission.
+    respawn_ctx: Option<postretro_entities::ScriptCtx>,
+    life_owner_adoptions: Vec<(u32, netcode::LocalTeleportAdoption)>,
+    life_observed: Vec<(u32, netcode::ObservedTeleport)>,
+    life_forward_teleports: Vec<postretro_physics::movement::TeleportEvent>,
     before_switch_resolution: Option<fn(&mut Fixture)>,
     /// Weapon-ordering adversaries may withhold commands independently of movement prediction.
     weapon_only_input: bool,
@@ -437,6 +443,10 @@ impl Fixture {
         let mut down_link = link;
         down_link.seed ^= 0x5a5a;
         let mut fixture = Self {
+            respawn_ctx: None,
+            life_owner_adoptions: Vec::new(),
+            life_observed: Vec::new(),
+            life_forward_teleports: Vec::new(),
             before_switch_resolution: None,
             weapon_only_input: false,
             lifecycle_drive: false,
@@ -696,6 +706,7 @@ impl Fixture {
             teleport_yaw_stamp: 0.0,
             client_tick: tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: command.movement.wish_dir.to_array(),
                 jump_pressed: false,
                 dash_pressed: false,
@@ -753,6 +764,9 @@ impl Fixture {
                 },
             );
             assert_eq!(result.client_tick, tick);
+            if let Some(event) = result.movement_events.teleport {
+                self.life_forward_teleports.push(event);
+            }
         } else {
             self.client
                 .send_input(wire::encode(&wire::ClientMessage::Input(input)));
@@ -996,11 +1010,15 @@ impl Fixture {
         if let Some(before) = self.before_switch_resolution {
             before(self);
         }
+        let pending_start = self
+            .respawn_ctx
+            .as_ref()
+            .map(|ctx| sim::begin_tick(&self.host, Some(ctx)));
         let retained_before = self
             .queues
             .queue_state_for_test(self.shooter_client_id)
             .map_or(0, |queue| queue.retained_switches);
-        let resolved = netcode::host_resolve_remote_commands_with_switches(
+        let mut resolved = netcode::host_resolve_remote_commands_with_switches(
             &mut self.host.borrow_mut(),
             &mut self.server,
             &self.owners,
@@ -1009,6 +1027,24 @@ impl Fixture {
             false,
             DT,
         );
+        let started = pending_start.map(|pending| {
+            let (started, turns) =
+                sim::finish_tick_start(pending, &mut self.host.borrow_mut(), &self.world, |pawn| {
+                    resolved
+                        .iter()
+                        .find(|command| command.pawn == pawn)
+                        .map(|command| command.command.movement.facing_yaw)
+                });
+            for turn in turns {
+                for command in resolved
+                    .iter_mut()
+                    .filter(|command| command.pawn == turn.pawn)
+                {
+                    command.command.movement.facing_yaw += turn.yaw_delta;
+                }
+            }
+            started
+        });
         let retained_after = self
             .queues
             .queue_state_for_test(self.shooter_client_id)
@@ -1086,7 +1122,12 @@ impl Fixture {
             .collect();
         let factions = postretro_entities::FactionRegistry::default();
         let sentiment = RefCell::new(postretro_entities::FactionSentimentState::default());
-        let events = sim::simulate_tick_with_presentation_aim(
+        let started = started.unwrap_or_else(|| {
+            let pending = sim::begin_tick(&self.host, None);
+            sim::finish_tick_start(pending, &mut self.host.borrow_mut(), &self.world, |_| None).0
+        });
+        let events = sim::simulate_started_tick_with_presentation_aim(
+            started,
             self.host.clone(),
             &self.world,
             &self.zones,
@@ -1107,6 +1148,7 @@ impl Fixture {
             },
             DT,
             &mut self.touch,
+            &mut Default::default(),
             &self.descriptors,
             0,
             &factions,
@@ -3644,6 +3686,7 @@ fn conditioned_cancel_mid_burst_keeps_every_round_fired_before_it_after_a_stall(
 
 // Late tuning payloads on join: composition waits, then lands on the host slot.
 mod late_join;
+mod life_states;
 mod receive_alternate;
 // Reload, use and drop edges and switches delivered once, in client-tick order,
 // across a lost datagram and a two-second outage.
@@ -3651,6 +3694,8 @@ mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 mod switch_timing;
+// A suspension cancel latched on a zero-tick frame rides the next ticked command.
+mod zero_tick_cancel;
 
 // --- Vault fire gate on the host's remote path ---------------------------------
 

@@ -2,10 +2,12 @@
 //! and, for a fluid with an up-facing surface, the reflection probes it derives.
 //! See: context/lib/build_pipeline.md §Compiler pipeline
 
+mod prl_build_support;
+
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::cells::CellsSection;
@@ -19,6 +21,8 @@ use postretro_level_format::reflection_probes::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 /// A texture the two-room world never uses.
@@ -121,7 +125,7 @@ fn compile(temp: &TempBuildDir, name: &str, map_text: &str) -> PathBuf {
     let input = temp.0.join("maps").join(format!("{name}.map"));
     let output_path = temp.0.join(format!("{name}.prl"));
     std::fs::write(&input, format!("{map_text}\n")).expect("write fixture map");
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "warn")
         .arg(&input)
         .arg("-o")
@@ -729,7 +733,7 @@ fn stress_env_volumes_builds_with_no_more_probes_than_the_cap() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/maps/stress-env-volumes.map");
     let output_path = temp.0.join("stress-env-volumes.prl");
     let started = std::time::Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let output = prl_build()
         .env("RUST_LOG", "warn")
         .arg(&input)
         .arg("-o")

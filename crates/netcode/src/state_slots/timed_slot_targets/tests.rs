@@ -42,7 +42,7 @@ fn apply(
         &records,
     );
     assert!(outcome.state_batch_applied);
-    client.accept_timed_slot_sample(tick, table, &outcome);
+    client.accept_timed_slot_sample(tick, table, &outcome, 0);
 }
 
 fn number(slot: usize, value: f32) -> WireSlotValue {
@@ -125,7 +125,7 @@ fn held_empty_and_held_id_batches_sample_but_rejections_and_refreshes_do_not() {
     );
     assert!(out.state_batch_applied);
     assert!(out.fresh_slots.is_empty());
-    client.accept_timed_slot_sample(2, &table, &out);
+    client.accept_timed_slot_sample(2, &table, &out, 0);
     assert_eq!(client.timed_slot_targets.ramps[2].newest_tick(), Some(2.0));
     apply(&mut client, &mut table, 3, &[]);
     assert_eq!(client.timed_slot_targets.ramps[2].newest_tick(), Some(3.0));
@@ -137,7 +137,7 @@ fn held_empty_and_held_id_batches_sample_but_rejections_and_refreshes_do_not() {
         &resend,
     );
     assert!(!rejected.state_batch_applied);
-    client.accept_timed_slot_sample(4, &table, &rejected);
+    client.accept_timed_slot_sample(4, &table, &rejected, 0);
     assert_eq!(client.timed_slot_targets.ramps[2].newest_tick(), Some(3.0));
     resend[0].baseline_id = 1;
     let excluded = client.apply_snapshot_state(
@@ -149,7 +149,7 @@ fn held_empty_and_held_id_batches_sample_but_rejections_and_refreshes_do_not() {
     );
     assert!(excluded.state_batch_applied);
     assert_eq!(excluded.refresh_requests.len(), 1);
-    client.accept_timed_slot_sample(5, &table, &excluded);
+    client.accept_timed_slot_sample(5, &table, &excluded, 0);
     assert_eq!(client.timed_slot_targets.ramps[2].newest_tick(), Some(3.0));
 }
 

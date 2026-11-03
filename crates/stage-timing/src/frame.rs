@@ -16,7 +16,8 @@ use crate::{MAX_STAGES_PER_SET, StageKind, StageSet, TimingGate};
 pub struct StageFrame<S: StageSet> {
     gate: TimingGate,
     values: [Cell<u64>; MAX_STAGES_PER_SET],
-    ran: Cell<u32>,
+    /// One bit per stage index; as wide as `MAX_STAGES_PER_SET`.
+    ran: Cell<u64>,
     _set: PhantomData<S>,
 }
 
@@ -27,10 +28,14 @@ impl<S: StageSet> StageFrame<S> {
                 S::ALL.len() <= MAX_STAGES_PER_SET,
                 "stage set exceeds MAX_STAGES_PER_SET"
             );
+            assert!(
+                MAX_STAGES_PER_SET <= u64::BITS as usize,
+                "the ran bit set must cover every stage index"
+            );
         }
         Self {
             gate,
-            values: Default::default(),
+            values: std::array::from_fn(|_| Cell::new(0)),
             ran: Cell::new(0),
             _set: PhantomData,
         }
@@ -76,7 +81,7 @@ impl<S: StageSet> StageFrame<S> {
     /// The stage's value this frame, or `None` if it did not run.
     pub fn value(&self, stage: S) -> Option<u64> {
         let index = stage.index();
-        (self.ran.get() & (1 << index) != 0).then(|| self.values[index].get())
+        (self.ran.get() & (1u64 << index) != 0).then(|| self.values[index].get())
     }
 
     /// Folds another frame of the same set into this one: stages that ran in
@@ -106,7 +111,7 @@ impl<S: StageSet> StageFrame<S> {
         let index = stage.index();
         let value = &self.values[index];
         value.set(value.get().saturating_add(amount));
-        self.ran.set(self.ran.get() | (1 << index));
+        self.ran.set(self.ran.get() | (1u64 << index));
     }
 }
 

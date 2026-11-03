@@ -10,9 +10,10 @@
 //!
 //! See: context/lib/build_pipeline.md
 
+mod prl_build_support;
+
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::process::Command;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_light_chunks::AnimatedLightChunksSection;
@@ -22,6 +23,8 @@ use postretro_level_format::animated_light_weight_maps::{
 use postretro_level_format::lightmap::LightmapSection;
 use postretro_level_format::sh_volume::{ANIMATED_SLOT_NONE, OctahedralShVolumeSection};
 use postretro_level_format::{read_container, read_section_data};
+
+use prl_build_support::prl_build;
 
 /// Walk from the crate root to the workspace root (for locating `content/dev/`).
 fn workspace_root() -> PathBuf {
@@ -47,7 +50,7 @@ fn single_animated_fixture_uses_weights_only_with_a_static_block_frame() {
     let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("test_animated_weight_maps_single.prl");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -148,7 +151,7 @@ fn animated_layer_spill_fixture_bakes_receivers_on_second_static_layer() {
     let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("animated-layer-spill.prl");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -231,7 +234,7 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
     let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("script_light_membership_fixture.prl");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -320,7 +323,7 @@ fn soft_shadow_test_map_compiles_to_a_baked_lightmap() {
     let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("soft_shadow_test.prl");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -378,7 +381,7 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
     let out_dir = temp.path().to_path_buf();
     let output = out_dir.join("test_animated_weight_maps_mixed.prl");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -523,7 +526,7 @@ fn cap_fixture_every_texel_respects_max_lights_per_chunk() {
     let output = out_dir.join("test_animated_weight_maps_cap.prl");
     let input = fixture_with_static_control(&input, &out_dir);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let status = prl_build()
         .arg(&input)
         .arg("-o")
         .arg(&output)
@@ -584,7 +587,7 @@ fn fixture_with_static_control(input: &std::path::Path, directory: &std::path::P
 /// Run `prl-build` on `input` with `extra` flags, returning its combined log.
 fn prl_build_logged(input: &std::path::Path, output: &std::path::Path, extra: &[&str]) -> String {
     let ws = workspace_root();
-    let result = Command::new(env!("CARGO_BIN_EXE_prl-build"))
+    let result = prl_build()
         .arg(input)
         .arg("-o")
         .arg(output)

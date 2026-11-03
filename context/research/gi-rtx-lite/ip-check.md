@@ -237,8 +237,8 @@ Read from the granted B2 PDF's page images (scanned, no text layer; Google Paten
 | Animated-baked lights, indirect (id 27 deltas × curve) | Leans present (intensity change, col 5) | Arguable: per-light unit per-probe delta; claims 5–6 read transfer from probes | **Top counsel question** (Piece 5) |
 | Animated-baked lights, direct only (id 45, id 25 weights) | Leans present | No indirect | Absent while id 25 carries no bounce |
 | Dynamic runtime lights | Yes | No baked transfer; no bounce | Absent |
-| Mover direct-SH channel (`drafts/mover-light-flow--direct-sh-channel/`) | No: an occluder moves; the light never changes | Direct only | Absent |
-| Mover bounce (unplanned) | No while gated lights are static | Arguable, though transfer varying with occluder pose inverts col 17's premise | Becomes '451-shaped if a gated light also carries a curve |
+| Mover probe channel, direct half (`drafts/mover-light-flow--probe-channel/`) | No: an occluder moves; the light never changes | Direct only | Absent |
+| Mover probe channel, indirect half (static lights' summed bounce per mover state) | No while gated lights are static | Arguable, though transfer varying with occluder pose inverts col 17's premise | Becomes '451-shaped if a gated light also carries a curve |
 
 **Corrections to this file.**
 
@@ -249,7 +249,7 @@ Read from the granted B2 PDF's page images (scanned, no text layer; Google Paten
 - Claim 3 rows (Pieces 3, 6): claim 3's transfer is per basis function (claim 7), not per light. The summed bounce layer stays absent because no coefficient multiplies it.
 - §For door and mover light flow, "a dock event is an occluder event, not light source change information": confirmed by col 5.
 
-**Design-arounds for mover work.** Keep the mover channels direct only. Drive recomputation by mover state, never light state. If mover bounce is ever built, store it absolute at the light's fixed intensity, and never on a light that also carries a curve.
+**Design-arounds for mover work.** Drive recomputation by mover state, never light state. Mover bounce (the probe channel's indirect half, owner 2026-11-03) is stored absolute at each light's fixed intensity, sums static lights only, and never covers a light that also carries a curve.
 
 **Counsel questions.** (1) Does "projection coefficient" require basis projection (col 5 definition; claim 7 differentiation), and is a per-light scalar or RGB intensity one? (2) Is a baked per-light unit response a "radiance transfer parameter" when the description defines it per basis function? (3) Does evaluating curves every frame meet "when a light source changes"? (4) Validity of claims 1, 5, 6 against uncited art: Quake lightstyles, Sloan 2002, Enlighten 2010, Suntracker. (5) Could a moving occluder count as a light source change? (6) Chart CN114419240B / WO2023185262A1 and any US counterpart; check '451 maintenance fees.
 
@@ -280,7 +280,7 @@ Owner direction: record why bakes are believed safe, and where that belief stops
 | Output | Runtime use | Position |
 |---|---|---|
 | Static lightmaps, shadowmask, id 34 summed bounce, id 35 direct SH | Read as-is; no light changes | Safe on this reading: (a)–(c) absent |
-| Mover state channels (direct SH, world surfaces) | Blended by mover position; direct only; lights unchanged | Safe on this reading: (a), (b), (c) absent |
+| Mover state channels (probe channel direct and static-bounce halves, world surfaces) | Blended by mover position; lights unchanged; bounce from static lights only | Safe on this reading: (a), (b) absent; (c) also absent for direct terms, arguable but unmet for the bounce half without (a) and (b) (boundary item 11b, medium) |
 | id 25 animated weights, id 45 animated direct deltas | × curve at runtime; direct only | Safe on this reading while id 25 carries no bounce: (c) absent |
 | id 27 animated indirect deltas | Baked per-light unit bounce × curve at runtime | **Not covered by this position.** The bake is fine; its runtime rescale is '451's shape. Counsel question 1 |
 | Surface radiance cache (bake intermediate, never shipped) | None; dropped before packing | Safe: no runtime element |

@@ -1,17 +1,23 @@
-# mover-light-flow--direct-sh-channel
+# mover-light-flow--probe-channel
 
-Brief · resumable · Lighting and GI · reads: `context/lib/rendering_pipeline.md` §4 (Baked direct for dynamic receivers, Promoted static lights, Promoted animated lights, Sampled-row compose) · `context/lib/build_pipeline.md` §Compiler pipeline step 12, §PRL section IDs, §Build Cache · `context/lib/networking.md` §Presentation events vs. replicated state · `context/research/gi-rtx-lite/index.md` §Build order steps 5–6 · `context/research/gi-rtx-lite/ip-check.md` §Piece 5, §Piece 7, §For door and mover light flow · read at fd8cf76
+Brief · resumable · Lighting and GI · reads: `context/lib/rendering_pipeline.md` §4 (Baked direct for dynamic receivers, Promoted static lights, Promoted animated lights, Sampled-row compose) · `context/lib/build_pipeline.md` §Compiler pipeline step 12, §PRL section IDs, §Build Cache · `context/lib/networking.md` §Presentation events vs. replicated state · `context/research/gi-rtx-lite/index.md` §Build order steps 5–6 · `context/research/gi-rtx-lite/ip-check.md` §Piece 5, §Piece 7, §For door and mover light flow, §Bake position against '451 · read at fd8cf76 (indirect half added 2026-11-03 at 33ac590)
 
 ## Problem
 
-Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Movers and entities light themselves from the composed direct-SH atlas (ids 35, 41, 45). Every one of those bakes runs with every mover absent (id 43), and the compose has no input from mover state. So the risen room's interior is lit by the arena's baked lights as if its walls weren't there. An entity behind the closed sliding wall stays lit too. When this is done, each gated baked or animated-baked light reaches mover and entity receivers only where it would with the mover in place. It ramps with the mover's position along its path, and back on reversal. Promotion still hands that light off without a pop.
+Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Every probe bake runs with every mover absent (id 43): the direct-SH bakes movers and entities light themselves from (ids 35, 41, 45), and the SH base (id 34) every surface takes its static bounce from. The compose has no input from mover state. So the risen room's interior is lit by the arena's baked lights as if its walls weren't there. An entity behind the closed sliding wall stays lit too. And a dark room sealed by a closed door glows with the bright room's bounce near the doorway, as if the door were open: the monster-closet case the product makes first-class (`context/lib/index.md` §1). When this is done, each gated baked or animated-baked light's direct term reaches mover and entity receivers only where it would with the mover in place, and static bounce at probes near a mover matches a bake with the mover in place. Both ramp with the mover's position along its path, and back on reversal. Promotion still hands a gated light off without a pop.
 
 ## Decisions
 
-- **Direct light only, driven by mover state.** The channel changes only the direct-SH compose. Indirect (ids 34, 27) is untouched, which keeps '451 claim 1's indirect element (c) absent. A recompute fires only on a mover-state change, never on a light-source change. Any compose gate is framed as residency or visibility (`ip-check.md` §Piece 5 design-arounds, §For door and mover light flow). The channel stores per-light visibility and never swaps in an ambient or AO layer (§Piece 7). The claim chart is an engineering reading for counsel.
-- **Representation: one scalar per state.** Per (mover, terminus, light, valid probe) the section stores q_k: the fraction of the light's baked soft visibility there that survives with the mover posed at terminus k, from the bake's own samples and seed. Warrant: `bake_probe_direct_rgb` stores one light at one probe as a single lobe × radiance × one scalar visibility, so the terminus state is exactly S_k = q_k × T (T being that light's per-probe tile), and a tile per state would only repeat T. Rival and byte estimates: `research.md`.
-- **Runtime blend.** Compose builds each gated light's term as lerp(S₀, S₁, t′), a lerp of two stored terminus states of a light that does not change, and puts it in place of the light's mover-absent term. Algebraically this equals base + (lerp(q₀, q₁, t′) − 1) × T. The IP footing is not the formula's shape but that the term is direct light and the scalar is occluder state, not a light-source change (claim chart of US12293451B2 claim 1, 2026-11-03, for counsel). T comes from the light's id-41 or id-45 entry at that cell when one exists, else the section carries it. With q ≡ 1 there is no residue: the atlas equals today's.
+- **Two halves, one mover-state input.** A direct half (per light, below) and an indirect half (per mover, below) share the blend scalar, the ramp keys, the section and the compose trigger. Owner added the indirect half 2026-11-03 (option A of the session), after confirming the sealed dark room leaks bounce.
+- **Driven by mover state, never by light state.** Neither half changes when a light changes; a recompute fires only on a mover-state change. Any compose gate is framed as residency or visibility (`ip-check.md` §Piece 5 design-arounds, §For door and mover light flow). The channel stores per-light visibility and per-mover absolute bounce states, and never swaps in an ambient or AO layer (§Piece 7). On the 2026-11-03 claim chart and boundary report, '451 claim 1 needs a light-source change, (a), and a coefficient of the changed light, (b); both halves lack both, because their scalar is occluder state and their lights never change (`ip-check.md` §Bake position against '451, rows "mover state channels" and 11b). The indirect half sums only static lights, none of which carries a curve, so the "never on a light that also carries a curve" rule holds by construction. Engineering reading for counsel.
+- **Direct half — representation: one scalar per state.** Per (mover, terminus, light, valid probe) the section stores q_k: the fraction of the light's baked soft visibility there that survives with the mover posed at terminus k, from the bake's own samples and seed. Warrant: `bake_probe_direct_rgb` stores one light at one probe as a single lobe × radiance × one scalar visibility, so the terminus state is exactly S_k = q_k × T (T being that light's per-probe tile), and a tile per state would only repeat T. Rival and byte estimates: `research.md`.
+- **Direct half — runtime blend.** Compose builds each gated light's term as lerp(S₀, S₁, t′), a lerp of two stored terminus states of a light that does not change, and puts it in place of the light's mover-absent term. Algebraically this equals base + (lerp(q₀, q₁, t′) − 1) × T. The IP footing is not the formula's shape but that the scalar is occluder state, not a light-source change (above). T comes from the light's id-41 or id-45 entry at that cell when one exists, else the section carries it. With q ≡ 1 there is no residue: the atlas equals today's.
 - **Several movers on one light.** Each mover is still baked alone (`plans/done/mover-light-flow--foundation/`). Where several movers gate one light at one probe, compose multiplies their lerped visibilities. The result is never brighter than any single mover leaves it, and never negative.
+- **Indirect half — what is stored.** Per (mover, terminus k, affected valid probe), the absolute static bounce S^b_k: id 34's own content (every static light's bounce one plus `_bounce_fill` × later bounces, from the surface radiance cache) re-baked with that mover's brushes posed at terminus k, every other mover absent. Absolute, not a difference, at each light's fixed baked intensity. Animated lights' bounce (id 27) is not in it.
+  - **Bake.** Posed brushes join the occluders for patch direct, for the later bounces and for the probe gather (`surface_radiance/stage.rs` `bake_sh_base` and its layers). Whether the posed brushes also become patches with their material albedo is **delegated**; the reference-bake row below judges it.
+  - **Affected probes.** A probe stores entries when its re-baked value at either terminus differs from id 34's by more than id 34's own encode tolerance. The domain is derived, never sampled: probes whose gather can see a patch whose radiance changes at either pose, or whose rays cross the posed brushes. Its exact construction is **delegated**.
+  - **Lifetime.** The patch cache now lives past the id-34 gather through the mover bounce bake, still freed before atlas preparation, so no pre-cut face identity crosses the cut. This diverges from `bake_sh_base`'s free-at-gather-end. The resident cache plus per-pose shading is charged to the SH memory gate before any ray; overage is the named error, never coarsening (`development_guide.md` §1.4).
+- **Indirect half — runtime blend.** For one mover at a probe, the composed base is lerp(S^b_0, S^b_1, t′) in place of id 34. Where several movers affect one probe, compose adds each mover's lerped state minus id 34 to id 34; each mover is baked alone, as the foundation's movers are. Evaluated irradiance never goes negative in any direction. Id-27 deltas add on top as today.
 - **Promotion.** The gated term lives inside the baked arm: a mover or mesh receives (1 − w) × lerp(S₀, S₁, t) + w × the runtime term, animated lights scaled by their curve. The runtime arm is unchanged, because promoted and dynamic slots already render movers as casters (`RigidOccluderDepthPass::record_kinematic_movers`, gated by `entity_occluder_eligible`). No receiver sums a light twice (`rendering_pipeline.md` §4).
 - **Lights and movers in scope.** Gated lights are id 35's static lightmap lights, directional included, and id 45's animated-baked lights; SDF-shadow lights are absent from id 35, so nothing gates them. The unit is (mover, terminus), termini only, over the movers the foundation analyses (no spinners).
 - **Blend scalar t.** t is the mover's arc-length fraction along its path: 0 at the first waypoint, 1 at the last. Intermediate waypoints are crossed linearly. Each peer derives t from the final post-tick phase the blocked-portal rebuild reads; phase already replicates (`WireKinematicMoverState`), so there is no wire change.
@@ -20,12 +26,13 @@ Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Mov
 - **PRL section.** A new optional section takes the next free id. Wire format and boundary names are below.
   - Absent, the frame renders today's output. Malformed, or naming a mover or light that does not resolve, it is a load error.
   - It is whole-resident, outside id 50, as ids 47/48 are. Streaming it later is additive.
-  - Its cells count as grid-matched delta entries for base storage levels (`sh_density::storage_level_ceilings`). So ids 34/35 pack finer under gated probes. A map with no movers, or whose movers gate no baked light, packs byte-identical.
-- **Cache.** The channel uses a per-light memo shaped like `mover_light_probes`. A mover-only edit re-bakes only the lights that reach its old or new pose. The mover-absent bakes behind ids 34, 35, 41 and 45 never re-trace on a mover edit; only the storage levels under changed cells repack.
+  - Its cells, direct and indirect, count as grid-matched delta entries for base storage levels (`sh_density::storage_level_ceilings`). So ids 34/35 pack finer under gated and affected probes. A map with no movers, or whose movers gate no baked light, packs byte-identical.
+- **Cache.** The direct half uses a per-light memo shaped like `mover_light_probes`. A mover-only edit re-bakes only the lights that reach its old or new pose. The indirect half uses a per-mover memo keyed on its posed brushes at both termini, every static light's layer digest, the geometry hash, the probe grid, `_bounce_fill` and `TRACER_EPOCH`. A mover-only edit re-bakes only that mover's bounce states; a static-light edit re-bakes every mover's, since each state sums all static lights. The mover-absent bakes behind ids 34, 35, 41 and 45 never re-trace on a mover edit; only the storage levels under changed cells repack.
 - **Per-frame cost.** Compose recomposes channel rows only when a mover's t changes, and then only the rows its entries cover. The budget is ≤ 0.2 ms per travelling mover on the 5300M (research step 5's gate). The game's t pass allocates nothing per frame.
 - **Non-goals.**
   - World-surface masks (lightmap texels, shadowmask, id-25 weights) belong to brief 2. It consumes this brief's mover-state input.
-  - Indirect light by mover state is counsel-gated ('451).
+  - Animated lights' bounce (id 27) behind a mover: an alarm light behind a closed door still leaks bounce. A per-light bounce state for a curve-driven light is the risky '451 shape (boundary report item 5), so it waits on counsel's answer on id 27.
+  - Per-light bounce states for static lights: rejected. About 200× the indirect half's bytes for no visible gain, because static lights never change.
   - Light → cell reach, portal-gated runtime lights and fog reach.
   - Slab shadows.
   - Spinners, and intermediate waypoints as states.
@@ -39,8 +46,10 @@ Owner-observed defect on `mover-setpiece`, brief 1 of 2 in mover light flow. Mov
 Bake and format:
 - [ ] Each stored q_k equals the bake's soft visibility for that probe and light, with the posed brushes added to its occluders, divided by its baked visibility, under the same seed (unit test against the direct-SH probe bake). A light whose samples never meet the posed mover stores no entry for that mover.
 - [ ] `mover-setpiece`: `setpiece_wall` closed stores q < 1 at back-room probes for both arena point lights and the spot, and at arena probes for both back-room lights. It stores no entry for the shaft light (992, 320, 288). `setpiece_room` raised stores q < 1 at its interior probes for the shaft light.
+- [ ] Dark-closet fixture (new, below): with the door closed, S^b_0 at closet probes valid in both bakes equals id 34 of a reference build where the door is a static brush at its closed pose, within id 34's encode tolerance. With the door open, S^b_1 equals today's id 34 within the same tolerance. The bright room's probes beyond the doorway's reach store no entry.
+- [ ] `mover-setpiece`: `setpiece_room` raised stores indirect entries at its interior probes, each no brighter than today's id 34 there. A mover whose poses change no probe beyond tolerance stores no indirect entry.
 - [ ] Section bytes are identical across `-j 1` and `-j 4` and across two cold builds.
-- [ ] Moving one mover's last waypoint: on a warm build, the bakes behind ids 34, 35, 41 and 45 trace nothing, only lights reaching the old or new pose re-bake channel entries, and the PRL equals the cold PRL of the edited map.
+- [ ] Moving one mover's last waypoint: on a warm build, the bakes behind ids 34, 35, 41 and 45 trace nothing, only lights reaching the old or new pose re-bake direct entries, only that mover's bounce states re-bake, and the PRL equals the cold PRL of the edited map. Editing one static light's colour re-bakes every mover's bounce states and no direct entry of another light; the PRL equals cold.
 - [ ] A map with no movers, and a map whose movers gate no baked light, emit no section and pack byte-identical to the parent commit's PRL. This is an opt-in ignored test that fails on a missing baseline, after the foundation's parity test.
 - [ ] A malformed section, one naming a mover absent from id 43, a light outside its namespace, or an affinity grid unlike id 35's, each fail the load with a message naming the section.
 
@@ -54,7 +63,8 @@ Blend scalar:
 
 Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] At a probe gated only at terminus 0, the gated light's composed term is S₀ at t = 0, ungated at t = 1, and their exact linear mix at t = 0.5. A second light that the mover does not gate at that probe is unchanged at every t.
-- [ ] Stripping the section from a PRL composes the same atlas as supplying no mover state. Both equal the atlas from supplying each mover's state with every stored q read as 1. The composed indirect atlas is identical in all three.
+- [ ] Stripping the section from a PRL composes the same atlases as supplying no mover state, and both equal today's: direct and indirect.
+- [ ] Indirect: at a probe one mover affects, the composed base is S^b_0 at t′ = 0, S^b_1 at t′ = 1, and their exact mix at t′ = 0.5; id-27 deltas add unchanged at every t′. Two movers affecting one probe compose id 34 plus both differences, and no direction's irradiance goes negative. A probe no mover affects is id 34 at every t′.
 - [ ] Two movers gating one light at one probe compose their product. Neither alone is brighter than the pair, and no texel goes negative.
 - [ ] A gated animated-baked light composes its curve × its gated term at every t. An SDF-shadow static light has no entry and composes as today.
 - [ ] A promoted gated static light contributes (1 − w) × its gated term at every t, and nothing at w = 1. A promoted gated animated light also carries its curve.
@@ -62,12 +72,14 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] Streaming `off` and `sync-proof` compose identical channel output.
 
 ### Manual
-- [ ] `mover-setpiece` station 2, raised room against today's build (owner A/B). The interior receives gated light only through the doorway, ramps while rising, and returns while lowering.
+- [ ] Dark-closet fixture, door closed, against today's build (owner A/B): the closet floor and walls near the doorway show no bright-room glow; the door's closet face reads dark; opening the door ramps the glow in with its travel and closing ramps it out.
+- [ ] `mover-setpiece` station 2, raised room against today's build (owner A/B). The interior receives gated direct light and bounce only through the doorway, ramps while rising, and returns while lowering.
 - [ ] A skinned-mesh entity on the enemy spot darkens while the wall is closed and relights as it opens (owner A/B against today).
 - [ ] A mover's own faces, lit by a light it does not block from them, are no darker than today: the wall's south face under the arena lights, and the room's west face under (640, 320, 192).
 - [ ] On a gated light, promotion w = 0 and w = 1 agree within `LIT_ENDPOINT_DRIFT` on the receiver's lit texels, at the mover's closed terminus and at mid-travel.
 - [ ] 5300M, `mover-setpiece`, GPU timing: direct compose with both movers travelling, minus both docked, is ≤ 0.2 ms per mover.
-- [ ] `research.md` records section bytes against id 35 and ids 41 + 45 for the foundation's five maps (measure and report).
+- [ ] `research.md` records section bytes, direct and indirect halves apart, against id 35, ids 41 + 45 and id 34, for the foundation's five maps (measure and report).
+- [ ] Full-hallway cold build against the parent, idle machine, same `-j`: SH Bake growth and peak RSS growth from the indirect half, reported. The owner sets the gate at review (open question).
 
 ## Path
 
@@ -75,16 +87,20 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
   - Bake q for `setpiece_room` raised only, and force t = 1 through a dev override.
   - A/B station 2 and the room's own faces. This falsifies the riskiest assumption: that 1 m probes inside an 8 m room hold the gate.
   - The mover-aware sampler leaks across the mover's walls, because probe depth moments are mover-absent and movers sample with backface rejection off. The rule for probes inside a posed brush decides how dark the mover's own faces go (open question).
+- **Dark-closet fixture.** A small hand map, `content/dev/maps/mover-closet.map` (name delegated): a bright room with static lights, a closet with none, joined by a doorway a two-waypoint `kinematic_mover` door seals at waypoint 0. The reference build is generated in-test with the door swapped for a static brush at its closed pose, as `tests/buried_lights_compile.rs` generates maps. A README in the `mover-setpiece` style names the station.
+- **Indirect half after the direct first slice.** Once the direct slice holds, bake S^b for the closet door and the raised room only, force t through the dev override, and run the reference-bake row before format work. This is where the posed-brushes-as-patches question is decided.
 - **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` before the no-pop row. The channel scales exactly the arm that reads low. Measure whether the static (id-41) arm shares the gap. This brief owns the fix wherever the cause lies (the id-41 or id-45 bake, or the sampler), and the no-pop row stays absolute (owner, 2026-11-03). If the fix grows past this brief's scope, stop and report rather than relaxing the row.
 - **Bake.**
   - `sh_bake/probe.rs` `bake_probe_direct_rgb` → `lightmap_bake::soft_visibility_early_out`. Evaluate one sample set under both traces, static alone and static plus posed brushes, and decide escalation jointly. Otherwise an early-out can price static blocking into one side only.
   - The prefilter is the foundation's (`mover_light_gate::light_candidates`, `MoverPoses`, `Terminus`). The memo shape is `pipeline/mover_light_stage.rs` `probe_gate`.
   - The bake must finish before `storage_level_ceilings`, whose `DeltaSectionsRef` gains the section.
-- **Format and load.** Mirror `level-format/src/direct_sh_delta_volumes.rs`. Validation goes beside `validate_direct_sh_delta` in `level-loader/src/prl_lighting.rs`. The id goes in `section_registry.rs`.
+- **Indirect bake.** Extend `surface_radiance/stage.rs` beside `bake_sh_base`; its sibling modules keep the stage file small. The gather and layer machinery is `surface_radiance/gather.rs`, `layer.rs`, `bounce.rs`.
+- **Format and load.** Mirror `level-format/src/direct_sh_delta_volumes.rs` for direct entries and the id-27 (`DeltaShVolumes`) tile format for bounce states. Validation goes beside `validate_direct_sh_delta` in `level-loader/src/prl_lighting.rs`. The id goes in `section_registry.rs`.
 - **Game.** Derive t in `crates/physics/src/kinematic_mover.rs` beside `mover_is_docked_closed`. Collect it where `runtime_movers.rs` builds `KinematicMoverInstance`, and call it at the `rebuild_blocked_portals` sites (`frame_loop/mod.rs`, `app/world_less_frame.rs`). The setter sits beside `Renderer::set_kinematic_mover_draws`. `main.rs` is past 12,000 lines; add nothing to it.
 - **Compose.**
   - `direct_sh_compose.wgsl`: its L0 loop skips entries at w = 0, and channel entries must not be skipped.
   - `animated_direct_sh_compose.wgsl` `animated_light_scale`.
+  - `sh_compose.wgsl`: the base read from `sh_base_atlas` takes the mover-bounce override at affected probes before id-27 deltas add.
   - The streamed planner takes a mover-state trigger: `compose_plan.rs` `ComposePlannerFrame` and `PassMembership`, `compose_staleness.rs` `PassTriggers`.
   - Both the streamed `sh_streaming/direct_compose.rs` and the legacy `direct_sh_compose.rs` need it.
   - Large files (`direct_sh_bake.rs`, `sh_density.rs`, `compose_plan.rs`, `frame_loop/mod.rs`) get sibling modules.
@@ -97,6 +113,8 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - `light_ramp_start` / `light_ramp_end` names. — owner, at review; non-blocking.
 - What q does a valid probe inside a posed brush take: dark, tested without the brush containing it, or full? — **delegated**: the first slice decides it against the own-face row and reports it in the plan of record.
 - Section name and exact field widths. — **delegated**, within the Wire format below.
+- The indirect half's bake-time and peak-RSS gate on the full hallway. — owner, at review; the build measures and reports first.
+- Whether posed mover brushes contribute patches with their albedo in the bounce bake. — **delegated**: decided against the reference-bake row.
 
 ## Wire format
 
@@ -111,7 +129,9 @@ New section, next free `SectionId` (57 at read time). Mirrors id 41's (`DirectSh
 | Entry order | By cell, then mover id, then namespace, then light index; no duplicates |
 | Visibility payload | Per entry, per valid probe in x-fastest order: `u8` q₀ then `u8` q₁, where q = byte / 255 |
 | Own tiles | For flagged entries only, in entry order: one compact RGB f16 tile per valid probe, id 41's stride and tile dimension |
-| Empty | The section is omitted when it has no entries, never written empty |
+| Empty | The section is omitted when both halves have no entries, never written empty; either half may be empty alone |
+| Bounce index | A second CSR over the same affinity cells: per cell, entries of `u32` mover id, `u32` reserved 0, ordered by mover id, no duplicates; each entry carries its own `u64` affected-probe mask |
+| Bounce payload | Per bounce entry, per affected probe in x-fastest order: the S^b_0 tile then the S^b_1 tile, id 27's compact RGB f16 octahedral tile stride and dimension |
 | Sentinels | None. An unresolved id, an index out of range, a reserved bit set, or trailing bytes is a load error |
 
 ## Boundary inventory

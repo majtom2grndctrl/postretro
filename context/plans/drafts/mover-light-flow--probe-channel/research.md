@@ -1,4 +1,4 @@
-# mover-light-flow--direct-sh-channel — research notes
+# mover-light-flow--probe-channel — research notes
 
 Read at fd8cf76, 2026-11-03. Every handoff fact below was re-read in source this session; none was contradicted.
 
@@ -78,3 +78,9 @@ The union counts a shared probe once: total − shared ÷ 2. Both columns count 
 | P6 | Residency during travel | A row installs or enters the view gate mid-travel | It composes with the current t before any consumer samples it (`rendering_pipeline.md` §4 Sampled-row invariant) |
 | P7 | Section stripped | Same PRL, section removed | Composes as no mover state supplied; equal to q ≡ 1 |
 | P8 | Mask change | The baked-direct mask bit toggles mid-travel | The existing full repair recomposes channel rows at current t |
+
+## Indirect half (added 2026-11-03)
+
+Owner chose option A after confirming the leak: every surface's indirect comes from the SH probe grid (`rendering_pipeline.md` §4), and neither the SH bake nor the surface radiance cache reads sealed portals or posed movers (no `sealed_portal`, `blocked_portal` or door handling under `level-compiler/src/sh_bake*` or `surface_radiance/`). A dark room behind a closed door therefore reads bright-room bounce near the doorway. The id-34 bake runs in `surface_radiance/stage.rs` `bake_sh_base`, which drops the patch cache at gather end; the runtime base read is `sh_compose.wgsl` (`sh_base_atlas`, then id-27 deltas).
+
+Options weighed: per-mover summed static bounce states (chosen); per-light bounce states (about 200× the bytes, and the risky '451 shape for curve-driven lights); defer to the first-slice A/B (leaves the closet case wrong). IP reading: `ip-check.md` §Bake position against '451 and the 2026-11-03 boundary report, item 11b (bounce blended by occluder state, static lights: out, leaning).

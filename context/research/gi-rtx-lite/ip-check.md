@@ -1,13 +1,10 @@
 # RTX-lite GI — IP and Cost Check
 
-**Date investigated:** 2026-10-22, repo at `473185e88`; claim-level re-chart 2026-10-23
-**Status:** Engineering triage for counsel, not legal advice. Companion to [index.md](index.md). "Appears present", "appears absent" and "reads on" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate.
+**Date investigated:** 2026-10-22, repo at `473185e88`; claim-level re-chart 2026-10-23; Take-Two and Tencent WO claims 2026-10-30; Tencent US12293451B2 claims 2026-11-03
+**Status:** Engineering triage for counsel, not legal advice. Companion to [index.md](index.md). "Appears present", "appears absent", "reads on", "in", "out" and "arguable" are engineering readings of claim text, not opinions on infringement, validity or freedom to operate.
 
 > **Read this when:** designing probe selection, a runtime radiosity update, any probe that changes with lighting at runtime, door-driven lighting, or a bake-only artefact.
-> **Key limit (read first):** every patent database (Google Patents, Justia, USPTO, Espacenet, Patentscope) was blocked by the session's network policy. Google's legacy PDF path (`patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`) still serves grants below ~US 8.8M and pre-2015 applications: **full claim text** was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1. **Every other filing is charted from search-snippet paraphrase** (column *Source*).
-> **Update 2026-10-30:** `patents.google.com` and `patentscope.wipo.int` are now allowed. Full claims were read for Take-Two '688 / '404 and Tencent WO2026113651A1 (machine translation). Google Patents then rate-limited (HTTP 503) the US12293451B2 page and Patentscope refuses automated queries (HTTP 403), so '451 claim text is still unread; see §Prior art verified 2026-10-30. Statuses and expiry projections are unverified. To chart the rest, allow `patents.google.com`, `patents.justia.com`, `ppubs.uspto.gov`, `worldwide.espacenet.com` and `patentscope.wipo.int`. Re-chart against certified claims before any design decision rests on it. Tencent WO2026113651A1 is charted from [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md), itself read from a machine translation.
->
-> **Update 2026-11-03:** '451's granted claims were read from the B2 PDF; see §US12293451B2 claim text, which corrects this file's earlier family and expiry notes. Mover-channel prior art: §Prior art for the mover state channel.
+> **Sources (read first):** full claim text was read for Disney US8558837, Microsoft US8451270, Bunnell US7408550 and Crytek US20140327673A1 (Google's legacy PDF path, `patentimages.storage.googleapis.com/pdfs/USnnnnnnn.pdf`); Take-Two '688 / '404 and Tencent WO2026113651A1 (Google Patents; WO from machine translation); and Tencent US12293451B2 (granted B2 PDF and USPTO ppubs full text). **Every other filing is charted from search-snippet paraphrase** (column *Source*); re-chart those against full claims before a design decision rests on them. Statuses and expiry projections are unverified except '451's. Not read: '451's US file wrapper; ppubs anonymous access ends 2026-11-07. Google Patents rate-limits (HTTP 503); Patentscope refuses automated queries (HTTP 403); Justia and Espacenet refused. Tencent WO2026113651A1 is also charted in [the reflection-probe IP check](../../plans/done/reflection-probes/ip-check.md).
 
 ---
 
@@ -19,16 +16,16 @@
 4. **Probe-to-patch links.** Probe diffuse SH = Σ weight × patch radiance; reflection tiles not re-shaded.
 5. **Shipped animated paths.** Animated SH deltas (id 27): runtime compose = base + Σ curve(t) × per-light baked unit delta. Animated lightmap compose: per-light weight maps × curve, in compute.
 6. **Bake-only artefacts.** Surface radiance cache and gather; summed static bounce layer; door influence graph; light → cell reach; distance-to-edge owner masks. Nothing derived from a light change at runtime.
-7. **Door channel.** Per (door, baked light) closed and open visibility masks, blended by door state on door events.
+7. **Door and mover channels.** Per (door, baked light) closed and open visibility masks, blended by door state on door events. The probe channel (`plans/ready/mover-light-flow--probe-channel/`) adds per-probe direct visibility and static lights' bounce per mover state.
 
 ## Filings found
 
-| Document | Owner | Priority | Status (unverified) | Source | Pieces |
+| Document | Owner | Priority | Status | Source | Pieces |
 |---|---|---|---|---|---|
 | US20210012562A1 "Probe-based dynamic GI" | NVIDIA | 2019-07-11 | Reported abandoned 2023-08-23 (not re-confirmed); published 2021-01-14, citable art | Summary | 1, 2 |
 | WO2026113651A1 / CN122115679A | Tencent | 2024-11-28 | Pending (published 2026-06-04; PCT/CN2025/126544); US national phase ≈2027-05, EP ≈2027-06 | Machine translation, all 23 claims, Google Patents 2026-10-30 | 2, 4 |
 | US10137372B2 "Light probe culling based upon visibility" | Square Enix (Eidos Montréal) | filed 2016-12-14 | Granted 2018-11-27; ≈2036-12 + PTA | Abstract verbatim; claims snippet | 2, 4, 7 |
-| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 (CN112927341A/B; WO2022206380A1; US20230076326A1) | Granted 2025-05-06; ≈2043-01-19 with 309 days PTA (Google, assumed); fees not checked | Granted B2 PDF (scanned), all 20 claims read 2026-11-03; see §US12293451B2 claim text | 3, 4, 5, 7 |
+| US12293451B2 "Illumination rendering method…" | Tencent | CN 2021-04-02 (CN112927341A/B → WO2022206380A1 → US20230076326A1) | Granted 2025-05-06; ≈2043-01-19 (PTA 309 days, USPTO record); no maintenance fee due until 2028-05-06; no EP/DE members | Granted B2 PDF and USPTO ppubs full text, all 20 claims, 2026-11-03 | 3, 4, 5, 7 |
 | US8558837B2 "Modular radiance transfer" | Disney | 2010-01-18 | PTA 835 days → ≈2032-06-30 if fees paid | Full PDF | 3 |
 | US10290148B2 / US10796479B2 | Suntracker (Ashdown) | CIP chain to 2012-04-13 | ≈2032-04, counsel to confirm CIP term | Snippet, claim 1 and dependents | 3, 5 |
 | US10672177 (from US20170116773A1) | Geomerics → ARM | 2015-10-23 | Granted; ≈2036 | Title and abstract | 3, 6 |
@@ -44,7 +41,7 @@
 
 Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-derived probes; Epic (Lumen surface or radiance cache); EA, Activision or Unity probe placement; portal-gated light transport. Door-driven baked lighting: only Take-Two's description ("a new baked ambient… placed over the area of the door as it opens"). Filings published in the last 18 months are invisible to search.
 
-**Prior art relied on:** Goral et al. 1984; Cohen & Greenberg 1985; Ward 1988, 1992; Heckbert 1990; George, Sillion & Greenberg 1990; Dorsey, Sillion & Greenberg 1991; Hanrahan et al. 1991; Quake lightstyles 1996 (per-style lightmaps × runtime curve); Drettakis & Sillion 1997; qrad 1997; Sloan et al. 2002 and Microsoft's PRT patents US7262770 / US7061489; Source/vrad 2004 (per-leaf ambient samples); Doom 3 2004 (area portals gate light); Bunnell, GPU Gems 2 2005; Green (Valve) 2007 distance-field magnification; q3map2 surface lights; Martin & Einarsson SIGGRAPH 2010 (Enlighten in Frostbite 2, probes from the solution); Crytek US20140327673A1 (2014); McGuire et al. 2017; Suntracker US20170345208A1 (2017); Wang et al. I3D 2019; Majercik et al. 2019, 2021; Unity Adaptive Probe Volumes "Virtual Offset".
+**Prior art relied on:** Goral et al. 1984; Cohen & Greenberg 1985; Ward 1988, 1992; Heckbert 1990; George, Sillion & Greenberg 1990; Dorsey, Sillion & Greenberg 1991; Hanrahan et al. 1991; Quake lightstyles 1996 (per-style lightmaps × runtime curve); Drettakis & Sillion 1997; qrad 1997; UE1 movers 1998; Sloan et al. 2002 and Microsoft's PRT patents US7262770 / US7061489; q3map2 `-bouncegrid` with the Jedi Academy grid runtime 2003; Source/vrad 2004 (per-leaf ambient samples); Doom 3 2004 (area portals gate light); Bunnell, GPU Gems 2 2005; Green (Valve) 2007 distance-field magnification; q3map2 surface lights; D3DX9 PRT volume samples; Martin & Einarsson SIGGRAPH 2010 (Enlighten in Frostbite 2, probes from the solution); Far Cry 3 DRTV 2012; Crytek US20140327673A1 (2014); McGuire et al. 2017; ericw-tools `_bouncestyled` 2017; Suntracker US20170345208A1 (2017); Wang et al. I3D 2019; Majercik et al. 2019, 2021; Unity Adaptive Probe Volumes "Virtual Offset" and lighting-scenario blending. Detail in §Prior art.
 
 ## Piece 1: probe classification and relocation
 
@@ -94,8 +91,8 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 | Filing | Element | Proposal | Reading |
 |---|---|---|---|
-| Tencent US12293451B2 cl. 1 | (a) on a light change, determine "light source change information"; (b) a "current light source projection coefficient" for the changed light; (c) indirect at a "target pixel point" from its "radiance transfer parameter" × the coefficient; (d) direct under the changed light; (e) render from both. "Basis functions" appears in the description, not confirmed in cl. 1 | E = Σ scalar intensity × baked unit per-light patch irradiance; Jacobi over links | **Near a live claim** on (b) and (c); a scalar is arguably not a projection coefficient. Counsel |
-| '451 cl. 2, 3 | Cl. 2: coefficient = "illumination transform matrix" × initial coefficient. Cl. 3: transfer for static-object pixels from a matching lightmap | Baked-tier lights never move; per-light bounce not stored per texel | Cl. 2 absent; cl. 3 absent while bounce stays summed |
+| Tencent US12293451B2 cl. 1 | (a) on a light change, determine "light source change information"; (b) a "current light source projection coefficient" for the changed light; (c) indirect at a "target pixel point" from its "radiance transfer parameter" × the coefficient; (d) direct under the changed light; (e) render from both. Basis wording first appears in cl. 7 and 15 | E = Σ scalar intensity × baked unit per-light patch irradiance; Jacobi over links | **Near a live claim** on (b) and (c). A scalar is a weak distinction: the description supports reading it as the coefficient. Counsel |
+| '451 cl. 2, 3 | Cl. 2: coefficient = "illumination transform matrix" × initial coefficient. Cl. 3: transfer for static-object pixels from a matching lightmap | Baked-tier lights never move; per-light bounce not stored per texel | Cl. 2 absent. Cl. 3's transfer is per basis function (cl. 7), not per light; absent while no coefficient multiplies stored bounce |
 | Disney US8558837B2 (full text) | Cl. 1, 9: a "palette of shapes", each with sampled direct lighting states, a "lighting prior" and an SVD-"factorized transport operator"; "extension operators" between adjacent shapes, "interfaces" between non-adjacent ones. Cl. 20: scene chunks mapped to palette shapes. Dependents: each shape "a cube with zero or more faces removed" | Explicit top-K links; no shape palette | Appears absent; keep links uncompressed |
 | Suntracker '148/'479 | Per-channel "canonical radiosity solutions" in GPU texture memory, read per vertex in a vertex shader × channel intensity; dependents: channel texel-array index, global dimmer or sky multiplier, inverse gamma | CPU solve | Appears absent; keep any per-light layer sum out of a vertex shader |
 | ARM US10672177 | Final-gather rays distributed by directional irradiance | Cosine-distributed link rays | Appears absent if rays never follow a prior solution |
@@ -106,7 +103,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 **Verdict: needs counsel** (Tencent '451; Crytek '673 if granted). The '451 risk is not redesign-only: see piece 5.
 
-**Free design-arounds.** Never project lights onto SH or any basis; no low-rank link compression; cosine link rays; no per-texel flux-sorted lists.
+**Free design-arounds.** Never project lights onto SH or any basis; no low-rank link compression; cosine link rays; no per-texel flux-sorted lists. Unit per-light emission × runtime intensity is the risky shape under §Tencent US12293451B2 design rules.
 
 **Costs (est.).**
 - Patches: hallway ≈1.0–2.0M at 0.25 m² (inferred from pool layers, not measured); campaign 0.1–0.4M.
@@ -115,7 +112,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 - VRAM: radiosity map 6–12 MB.
 - Runtime GPU: 1–2 taps per world fragment, replacing the 8-probe stencil.
 - Runtime CPU per door event: ≈0.7M link-ops per sweep, ≈1 ms on 4 threads for 4 sweeps.
-- **Animated worst case** (50 lights changing every frame): ≈3.6 ms per frame on 4 threads, over budget. Fix: B = B_door + Σ c_l(t)·B_l with per-light baked bounce; re-solve only on door events.
+- **Animated worst case** (50 lights changing every frame): ≈3.6 ms per frame on 4 threads, over budget. Cost fix: B = B_door + Σ c_l(t)·B_l with per-light baked bounce; re-solve only on door events. That fix is the risky '451 shape (cl. 3–4).
 
 **Levers.** Patch size (integer multiple of lightmap texels), K, rays per patch, sweeps, update cadence, CPU ms budget, per-region patch scale.
 
@@ -141,16 +138,17 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 | Filing | Element | Shipped | Reading |
 |---|---|---|---|
-| '451 (a) | Light source change information | Compose re-evaluates curves every frame; the light bridge dirty-tracks light components and uploads descriptors | Unclear |
-| '451 (b), (c) | Projection coefficient × per-pixel transfer | Scalar curve × baked per-light, per-probe unit delta; no basis projection; transfer per probe, not per pixel | Unclear; the crux. The description's probes-for-dynamic-objects variant weakens the per-pixel distinction |
+| '451 (a) | Light source change information | Compose re-evaluates curves every frame; the light bridge dirty-tracks light components and uploads descriptors | Leans present for curve-driven lights: col 5 lists intensity change |
+| '451 (b), (c) | Projection coefficient × target pixel's transfer | Scalar curve × baked per-light, per-probe unit delta; no basis projection | Arguable; the crux. Per-probe transfer does not distinguish: cl. 5–6 read the pixel's transfer from a probe |
+| '451 cl. 5–6 | Probe-lit dynamic pixel; per-direction probe brightness updated from coefficient × transfer, interpolated, evaluated with the normal | id 27/34 octahedral per-direction tiles, trilinear | Close match |
 | '451 (d), (e) | Direct under the same light; render both | `lm_anim` carries direct under the same curve | Present |
 | '451 cl. 2 | Transform matrix | Baked-tier lights never move | Absent |
 | Suntracker cl. 1 | Per-channel solutions × intensity, summed per vertex in a vertex shader | Per-light layers × curve, summed in compute, sampled per fragment | Shares the per-channel idea; vertex-shader element absent. Suntracker's 2017 publication is also art against '451 |
 | Square Enix '372 | Binary zone visibility | 8-probe blend with continuous Chebyshev weights; no probe ever excluded | Likely distinguishable |
 
-**Verdict: top counsel question.** Prior art against the scalar reading: Quake lightstyles (1996), Sloan PRT (2002) and Microsoft's PRT patents, Suntracker (2017), NVIDIA's application.
+**Verdict: top counsel question.** id 27 is the risky '451 shape; id 25 and id 45 carry direct only and stay out while id 25 carries no bounce. Headline art: q3map2 `-bouncegrid` with the Jedi Academy grid runtime (2003). Also Quake lightstyles (1996), ericw-tools `_bouncestyled` (2017), Sloan PRT (2002) and Microsoft's PRT patents, D3DX neighbourhood transfer, Far Cry 3 DRTV (2012), Enlighten (2010), Suntracker (2017), NVIDIA's application. None is cited on '451's face.
 
-**Free design-arounds.** Keep baked lights static. Keep per-light terms scalar or RGB × a baked result. Sum layers in compute or fragment shaders, never per vertex. Frame compose scoping as a residency or visibility gate, not a light-changed trigger.
+**Free design-arounds.** Keep baked lights static. Follow §Tencent US12293451B2 design rules; a scalar or RGB per-light term is not a design-around. Sum layers in compute or fragment shaders, never per vertex.
 
 ## Piece 6: bake-only artefacts
 
@@ -159,7 +157,7 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 | ARM '177 | Final-gather rays distributed by directional irradiance | Uniform or cosine gather from the radiance cache | Appears absent while rays never follow a prior result |
 | MS '270 cl. 7 | Per-texel flux-sorted patch lists in a texture + indirection | Cache dropped before packing | Absent |
 | Crytek '673 | Samples storing ray hits on other samples → GI | Bake-only gather | Distinguishable on "real-time" if the claims require it |
-| '451 cl. 3 | Per-light transfer in lightmap texels | One summed static bounce layer | Absent while summed; per-light bounce per texel moves toward it |
+| '451 cl. 3 | Transfer per lightmap texel, per basis function (cl. 7) | One summed static bounce layer | Absent: no coefficient multiplies it. Per-light unit bounce per texel × a runtime scalar would be the risky shape (cl. 3–4) |
 | Square Enix '372 | Binary zone visibility at read time | Door influence graph and light → cell reach scope work only | Absent while no reader drops probes on a binary test |
 | Valve 2007 (prior art) | Distance-field magnification | Distance-to-edge owner masks | Art; the combination with owner lights is untriaged |
 
@@ -167,53 +165,23 @@ Not found: Geomerics/ARM filings on the Enlighten runtime solve or radiosity-der
 
 **Free design-arounds.** Drop intermediates before packing. Keep shipped bounce summed. Keep gather rays unguided.
 
-## Piece 7: door channel
+## Piece 7: door and mover channels
 
 | Filing | Element | Proposal | Reading |
 |---|---|---|---|
 | Take-Two '688 / '404 | Claims: '688 cl. 1–7, a per-location dynamic terrain type selecting a surface shader plus a trail map of character marks, stored while off-camera and applied near it (snow, mud). '404 cl. 1–4, a top-down rendered reflected-light texture map plus a same-resolution height map, sampled for ground bounce per pixel (box blur; bent normal to the ground plane). Doors appear only in the shared description: "a new baked ambient is placed over the area of the door as it opens" | Direct-light visibility masks per (door or mover rest pose, light), blended by mover state | **Granted claims absent.** No claim element touches doors, movers or state-swapped baked layers |
-| '451 | Per-light transfer updated on change | Door bounce deltas (optional) | Same question as piece 5 |
+| '451 | Light change → coefficient × transfer | Direct visibility blended by mover state; static lights' bounce stored absolute per mover state | Direct half absent: no light changes, no indirect. Bounce half out-leaning (medium) |
 | Square Enix '372 | Doors as zone occluders | Door factor on direct-SH entries; probes never dropped | Absent while no probe is excluded |
 
-**Verdict: appears clear on the granted claims** (read 2026-10-30). The family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description.
+**Verdict: appears clear on the granted claims.** The Take-Two family is application 16/373,514 ('688) and its continuation 18/056,862 ('404, issued 2025-04-01); Google Patents lists no further member. Residual risk: a later continuation could claim the description's door-ambient sentence, and filings from the last 18 months are invisible to search. Keep the design-around anyway, since it costs nothing: visibility masks per light, not a swapped ambient or AO layer. Contact AO swapped on mover state stays closest to the description. For '451, mover bounce follows the mover rules in §Tencent US12293451B2: absolute states, never base + delta, never a light that carries a curve.
 
-## Prior art verified 2026-10-30
+## Tencent US12293451B2
 
-Checked from primary sources where reachable; otherwise from search-result text, marked *(snippet)*. Engineering triage, not an opinion on validity.
+Read 2026-11-03 from the granted B2 PDF (scanned page images) and USPTO ppubs full text; claim 1 confirmed verbatim against the USPTO text. Not read: the US file wrapper (application 17/985,107; examiner Werner G. Garner, art unit 3715; office action 2024-11-12, response 2025-01-14, allowance 2025-01-28). ppubs anonymous access ends 2026-11-07.
 
-**Against Tencent WO2026113651A1** (priority 2024-11-28). Claim map from the full machine translation:
+**Family.** CN202110359533.9 → CN112927341A/B → PCT/CN2022/081063 (WO2022206380A1) → US20230076326A1 → US12293451B2 (continuation). No EP or DE members (EP non-entry 2024-10-16). CN114419240B is a different Tencent family, not charted: CN202210337007.7, priority 2022-04-01, WO2023185262A1.
 
-| Claims | Element | Art | Level |
-|---|---|---|---|
-| 1–3 | Parallax-correct a probe from the reflecting point and view; sample from the probe toward the reflected ray's hit on a second object | Szirmay-Kalos, Aszódi, Lazányi, Premecz, "Approximate Ray-Tracing on the GPU with Distance Impostors", CGF 24(3) 2005: colour + distance cube map, hit point "based on the distance values stored in environment map texels" *(snippet)*. Umenhoffer, Patow, Szirmay-Kalos, GPU Gems 3 ch. 17 (2007): ray march + secant search against stored distance. Bjorke, GPU Gems ch. 19 (2004): proxy-sphere correction. Lagarde & Zanuttini, SIGGRAPH 2012 talk 36: parallax-corrected cubemaps. Unity 5.1 Box Projection (2015). UE4 parallax-corrected captures (Epic staff, 2014) *(snippet)* | Verified (Szirmay-Kalos, Bjorke, Lagarde bibliographic, Unity); the search detail partly verified via the 2007 follow-up |
-| 4–8 | Probe generated at the camera; moved past a distance threshold, on entering a grid cell, or after a dwell time | Camera-following realtime probes in community practice (Unity forum, ≈2015, date unconfirmed; dynamic cubemaps in racing games) | Generic idea partly verified; the specific triggers not found |
-| 10–13 | Re-capture when objects in range move or light changes; re-shade from stored texture info | None found | — |
-| 14 | Cube faces updated in sequence with a per-face interval | Unity 5.0 `ReflectionProbeTimeSlicingMode.IndividualFaces` (2015) | Verified |
-| 15 | Occlusion test: probe's stored depth along the direction vs probe-to-hit distance | Distance impostors (2005) and GPU Gems 3 ch. 17 compare stored distance with the candidate's distance | Verified via the 2007 follow-up |
-| 16–17 | Move the probe to an unobstructed position | None found | — |
-| 18 | Fall back to a stored lighting database at the hit | None found | — |
-
-Shipped water reflection (compile-time capture, colour + distance tiles, distance search, no camera-following probe, no runtime re-capture, no time slicing, nothing added where the capture shadow fires) sits on the claim 1–3 / 15 elements, which the 2005 distance-impostor art and its 2007 follow-up anticipate closely. Elements without art found (4–8 triggers, 10–13, 16–18) are ones the engine does not use. Keep it that way: probes stay compile-time and hard-bound; never re-capture on change, follow the camera, or relocate a probe at runtime.
-
-**Against Tencent US12293451B2** (priority 2021-04-02). Claim 1 per the USPTO-record snippet, unconfirmed wording: on a light source change, determine change information; derive the current light projection coefficient; compute a target pixel's indirect value from its precomputed *radiance transfer parameter* and that coefficient; combine with direct light under the changed source. Claim 2: the coefficient from an illumination transform matrix and the pre-change coefficient.
-
-| Element | Art | Level |
-|---|---|---|
-| Runtime scalar × baked per-light layer | Quake `gl_rsurf.c` (1996; GPL 1999): `blocklights[i] += lightmap[i] * scale;` with `scale = d_lightstylevalue[...]`, up to 4 styled lightmaps per surface | Verified, verbatim |
-| Styled (per-light) baked layers carrying bounce | ericw-tools changelog 2017-06-10, "styled lights no longer bounce by default, set "_bouncestyled" "1" to enable"; docs: "allows styled lights to bounce (e.g. flickering or switchable lights)" | Verified, verbatim |
-| Projection coefficient × precomputed transfer | Sloan, Kautz, Snyder, PRT, SIGGRAPH 2002 | Verified |
-| Runtime indirect from precomputed data, direct rendered separately, updated on light change | Martin & Einarsson, SIGGRAPH 2010 Advances course (Enlighten in Frostbite 2); Unity 5 `DynamicGI.updateThreshold` | Verified (existence, architecture) |
-| Per-light baked direct pages merged by name | Valve VRAD named lights (direct only; named lights do not bounce) | Partly verified |
-| Dynamic probes without transfer | NVIDIA US20210012562A1, published 2021-01-14 | Verified; weak match |
-| Suntracker US20170345208A1 / US10290148B2 | Not re-found this pass; earlier snippet chart stands | — |
-
-**For door and mover light flow.** The door channel and mover rest-pose channel blend direct-light visibility masks by mover state; no light source changes and no transfer × coefficient step exists, so '451's indirect elements stay absent for direct-only channels. Door bounce deltas (optional) keep the '451 question, now with Quake styles + ericw-tools `_bouncestyled` as the closest art for a scalar × baked per-light bounce layer. Compose on a mover dock event is an occluder event, not light source change information; still frame any compose gate as residency or visibility (piece 5 design-around).
-
-## US12293451B2 claim text (read 2026-11-03)
-
-Read from the granted B2 PDF's page images (scanned, no text layer; Google Patents HTML returned 503, Justia, Espacenet and image-ppubs refused). Transcribed by an agent, so re-check against a certified copy before a decision rests on wording. Engineering triage for counsel, not an opinion.
-
-**Family.** CN202110359533.9 → CN112927341A/B → PCT/CN2022/081063 (WO2022206380A1) → US20230076326A1 → US12293451B2 (continuation). CN114419240B is *not* in this family: it is CN202210337007.7 (priority 2022-04-01, WO2023185262A1), an uncharted Tencent filing.
+**Prosecution.** Claim 1 is identical in A1 and B2: no narrowing amendment. Every face citation is applicant-cited: US 2013/0335434 (Microsoft), US 2017/0263043 (Imagination), five CN references, Wang 2007 (spectral-mesh PRT), Zhu, Humphreys EGSR 2007. The examiner added no art. Never before the examiner: Sloan 2002, Quake, ericw-tools, Enlighten, Suntracker. CNIPA granted a narrower claim 1 after citing Wang 2007; it adds the transform matrix and the position/intensity/direction list.
 
 **Claim 1** (9 device, 17 media recite the same steps), verbatim: "(a) determining light source change information when a light source changes in a virtual scene; (b) determining a current light source projection coefficient corresponding to the changed light source according to the light source change information; (c) determining an indirect illumination value of a target pixel point in the virtual scene according to a radiance transfer parameter corresponding to the target pixel point in the virtual scene and the current light source projection coefficient; (d) determining a direct illumination value corresponding to the target pixel point under the changed light source; and (e) performing illumination rendering on the target pixel point according to the direct illumination value and the indirect illumination value."
 
@@ -227,69 +195,89 @@ Read from the granted B2 PDF's page images (scanned, no text layer; Google Paten
 | 7 / 15 | Bake projects the light onto basis functions, each a virtual light; transfer ray-traced into lightmaps and probes |
 | 8 / 16 / 20 | Distant light; the change is its direction |
 
-**Description.** "Light source change information" "may include at least one of light source position change information, light source intensity change information, or light source direction change information" (col 5), found by comparing against the pre-change light. The projection coefficient is the light projected onto a basis (SH, spherical Gaussians, piecewise; col 5). The radiance transfer parameter includes self-occlusion and interreflection, stored per lightmap texel per basis function or per probe face (cols 7, 20, 24), and "when a light source changes, the radiance transfer parameter does not change" (col 17). Doors, occluders and object movement never appear as a trigger; dynamic objects appear only as probe-lit receivers (col 14). The face cites Wang 2007 (spectral-mesh PRT) and Peterson and Wang US applications, not Sloan 2002, Quake lightstyles, Enlighten or Suntracker.
+**Description** (col = B2 column, para = paragraph). "Light source change information" "may include at least one of light source position change information, light source intensity change information, or light source direction change information" (col 5), found by comparing against the pre-change light. The projection coefficient is the light projected onto a basis (SH, spherical Gaussians, piecewise; col 5). Paras 32 and 35 and FIG. 4 (half brightness; linear per-light superposition) also support reading a per-light intensity scalar as the coefficient. The radiance transfer parameter includes self-occlusion and interreflection, stored per lightmap texel per basis function or per probe face (cols 7, 20, 24), and "when a light source changes, the radiance transfer parameter does not change" (col 17). Doors, occluders and object movement never appear as a trigger; dynamic objects appear only as probe-lit receivers (col 14).
 
 **What "light intensity" covers.** The light source's own output, not baked lighting: baked lightmaps and probes are the transfer side of (c). The claim targets a light that changes at runtime *and* whose indirect comes from precomputed transfer.
 
-| Engine tier | (a) light changes | (c) indirect from baked transfer × coefficient | Reading |
-|---|---|---|---|
-| Static baked lights, never animated | No | Summed into id 34, no coefficient | Absent |
-| Animated-baked lights, indirect (id 27 deltas × curve) | Leans present (intensity change, col 5) | Arguable: per-light unit per-probe delta; claims 5–6 read transfer from probes | **Top counsel question** (Piece 5) |
-| Animated-baked lights, direct only (id 45, id 25 weights) | Leans present | No indirect | Absent while id 25 carries no bounce |
-| Dynamic runtime lights | Yes | No baked transfer; no bounce | Absent |
-| Mover probe channel, direct half (`drafts/mover-light-flow--probe-channel/`) | No: an occluder moves; the light never changes | Direct only | Absent |
-| Mover probe channel, indirect half (static lights' summed bounce per mover state) | No while gated lights are static | Arguable, though transfer varying with occluder pose inverts col 17's premise | Becomes '451-shaped if a gated light also carries a curve |
+**Bakes.** Claim 1 (and 9, 17) is a runtime method; every element hangs off a light change. A bake runs before any light changes, so it performs none of (a)–(c). The bake appears only in dependent claim 7, which cannot be met without claim 1's runtime steps. A bake infringes only through what the runtime does with its output.
 
-**Corrections to this file.**
-
-- Line 29 previously paired '451 with CN114419240B and gave "≈2042 + PTA"; corrected above.
-- §Prior art verified's "'Basis functions' appears in the description, not confirmed in cl. 1": confirmed; basis wording first appears in claims 7 and 15.
-- Piece 5, '451 (b)/(c) row: "transfer per probe, not per pixel" does not distinguish: claims 5–6 read the target pixel's transfer from a probe.
-- Piece 5, '451 (a) row: for curve-driven lights it leans present, not "unclear", given col 5's intensity change.
-- Claim 3 rows (Pieces 3, 6): claim 3's transfer is per basis function (claim 7), not per light. The summed bounce layer stays absent because no coefficient multiplies it.
-- §For door and mover light flow, "a dock event is an occluder event, not light source change information": confirmed by col 5.
-
-**Design-arounds for mover work.** Drive recomputation by mover state, never light state. Mover bounce (the probe channel's indirect half, owner 2026-11-03) is stored absolute at each light's fixed intensity, sums static lights only, and never covers a light that also carries a curve.
-
-**Counsel questions.** (1) Does "projection coefficient" require basis projection (col 5 definition; claim 7 differentiation), and is a per-light scalar or RGB intensity one? (2) Is a baked per-light unit response a "radiance transfer parameter" when the description defines it per basis function? (3) Does evaluating curves every frame meet "when a light source changes"? (4) Validity of claims 1, 5, 6 against uncited art: Quake lightstyles, Sloan 2002, Enlighten 2010, Suntracker. (5) Could a moving occluder count as a light source change? (6) Chart CN114419240B / WO2023185262A1 and any US counterpart; check '451 maintenance fees.
-
-## Prior art for the mover state channel (2026-11-03)
-
-Design: per baked light a mover blocks, its direct visibility stored per probe (brief 1) and per texel (brief 2) at each end of travel, blended at runtime by the mover's path position. Verbatim means quoted from source code, docs or changelog.
-
-| Element | Closest art | Date | Evidence | Closeness |
+| Engine path | Runtime use | (a) light changes | (c) indirect from baked transfer × coefficient | Reading |
 |---|---|---|---|---|
-| Mover shadow baked at a chosen pose | UE1 Mover `WorldRaytraceKey` ("whatever you set this to is where the mover will block light"), `BrushRaytraceKey`; ericw-tools bmodel `_shadow` (TyrUtils v0.7) | 1998; 2013-04-10 | Verbatim (Unreal Wiki mirror, `DarklightGames/unrealwiki` `mover-ut.html`; `Mover.uc` not read); verbatim (`docs/light.rst`, changelog) | Same, one pose |
-| Per-state baked layer switched at runtime | ericw-tools `_switchableshadow` (0.15.10): bmodel shadow on its own lightstyle, toggled by `lightstyle()`; `_switchableshadow_target` (2.0.0-alpha9) | 2017-07-30; 2025-02-06 | Verbatim (`light.rst`, changelog, `light/ltface.cc`) | Similar: per caster not per light, present vs absent not two poses, lightmaps only (lightgrid does not carry it) |
-| Continuous blend of baked probe states | Unity APV `ProbeReferenceVolume.BlendLightingScenario(name, factor)`; "HDRP changes only the indirect lighting data" | SRP 14.0.2 (changelog dates inconsistent; about 2021–22) | Verbatim (Unity Graphics repo docs and CHANGELOG) | Similar: whole scene, indirect, script-keyed |
-| Door gates which lights reach an area | Doom 3 `connectedAreas` ("avoid drawing interactions when the light is behind a closed door"), `idMover::SetPortalState` | 2004 | Verbatim (GPL source) | Same, runtime lights, binary |
-| Door event switches a baked light layer | Quake 1 `doors.qc` `door_go_up` → `SUB_UseTargets()`; `misc.qc` `light_use` → `lightstyle(self.style, "m"/"a")` | 1996 | Verbatim (v1.01 QC) | Similar, binary or time-ramped |
+| Static lightmaps, shadowmask, id 34 summed bounce, id 35 direct SH | Read as-is | No | No coefficient | Absent |
+| Surface radiance cache (bake intermediate) | None; dropped before packing | — | — | Absent |
+| id 25 animated weights, id 45 animated direct deltas | × curve; direct only | Leans present (col 5) | No indirect | Absent while id 25 carries no bounce |
+| id 27 animated indirect deltas | Baked per-light unit bounce × curve, per probe | Leans present (col 5) | Arguable: cl. 5–6 read transfer from probes | **Top counsel question.** The bake is fine; its runtime rescale is '451's shape |
+| Dynamic runtime lights | No baked transfer, no bounce | Yes | No | Absent |
+| Mover probe channel, direct half | Blended by mover position | No: an occluder moves, the light never changes | Direct only | Absent |
+| Mover probe channel, bounce half (static lights, absolute per mover state) | Blended by mover position | No while gated lights are static | Arguable, though transfer varying with occluder pose inverts col 17's premise | Out-leaning (medium); '451-shaped if a gated light also carries a curve |
 
-Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirmed); a ModDB Doom 3 tutorial blending open and closed lightmaps by script; a gamedev.net post on open/closed probe sets near doors (≈2019).
+**Where the position stops.** Any feature that rescales baked *bounce* by a runtime light change: today's id 27, the parked `surface-radiance-cache-animated`, and mover bounce on a light that also carries a curve. Runtime bounce with no precomputed transfer lacks (c)'s "radiance transfer parameter", so it falls outside '451, though other filings may read on it. The engine does not pursue ray-traced bounce (no RTX dependency).
 
-**Not found:** a blend keyed to mover position; per-(occluder pose, light) probe data; the combination. These are where the design is new, not exposure: no live claim charted so far (Take-Two '688/'404, '451) reads on it. Blocked this pass: wiki.beyondunreal.com, docs.unity3d.com, dev.epicgames.com, moddb.com, gamedev.net, quakewiki.org.
+### Design rules
 
-## Bake position against '451 (2026-11-03)
-
-Owner direction: record why bakes are believed safe, and where that belief stops. Engineering reading for counsel, not an opinion.
-
-**Fair reason to believe a bake alone does not practise '451.** Claim 1 (and device claim 9, media claim 17) is a runtime method whose every element hangs off a light change: (a) light source change information "when a light source changes", (b) the changed light's coefficient, (c) indirect from transfer × that coefficient. A bake computes data before any light changes, so it performs none of (a)–(c). The bake appears only in dependent claim 7, which inherits claim 1's runtime steps; a dependent claim cannot be met unless its independent claim is. So a bake infringes only through what the runtime does with its output.
-
-**What follows, by output.**
-
-| Output | Runtime use | Position |
+| Rule | Avoids | Confidence |
 |---|---|---|
-| Static lightmaps, shadowmask, id 34 summed bounce, id 35 direct SH | Read as-is; no light changes | Safe on this reading: (a)–(c) absent |
-| Mover state channels (probe channel direct and static-bounce halves, world surfaces) | Blended by mover position; lights unchanged; bounce from static lights only | Safe on this reading: (a), (b) absent; (c) also absent for direct terms, arguable but unmet for the bounce half without (a) and (b) (boundary item 11b, medium) |
-| id 25 animated weights, id 45 animated direct deltas | × curve at runtime; direct only | Safe on this reading while id 25 carries no bounce: (c) absent |
-| id 27 animated indirect deltas | Baked per-light unit bounce × curve at runtime | **Not covered by this position.** The bake is fine; its runtime rescale is '451's shape. Counsel question 1 |
-| Surface radiance cache (bake intermediate, never shipped) | None; dropped before packing | Safe: no runtime element |
+| No baked quantity that stays fixed while a light changes is multiplied or weighted at runtime by a value tied to that light's state | (b), (c) | High |
+| Indirect stays frozen at its baked value while direct animates | (c) | Medium-high |
+| Select between absolute baked states; never base + 1 × delta | (b), (c) | Medium |
+| Recompute only on occluder or mover state; lights unchanged | (a) | Medium-high |
+| Runtime indirect with no precomputed transfer (DDGI-style, SSGI, voxel) | (c) | High, for '451 only |
 
-**Where the position stops.** Any feature that rescales baked *bounce* by a runtime light change: today's id 27, the parked `surface-radiance-cache-animated`, and mover bounce on a light that also carries a curve. Runtime bounce that uses no precomputed transfer (for example ray-traced bounce) lacks (c)'s "radiance transfer parameter" and so is outside '451, though other filings may read on it; the engine does not pursue it (no RTX dependency).
+- **Risky:** per-light unit response × runtime scalar or RGB, per probe (cl. 5–6) or per texel (cl. 3–4); today's id 27. A crossfade weight that represents a light's intensity.
+- **In:** runtime basis projection of a light against baked transfer, including SH sun rotation (cl. 2, 7, 8). Do not build.
+- **Not levers:** per-frame vs event-triggered evaluation; RGB vs scalar; probe vs pixel.
+- **Mover work (owner decision):** drive recomputation by mover state, never light state. Mover bounce is stored absolute at each light's fixed intensity, sums static lights only, and never covers a light that also carries a curve.
 
-## Prior art for per-light bounce in probes × runtime scalar (2026-11-03)
+| Technique | Reading |
+|---|---|
+| Quake lightstyles, direct only | Out |
+| ericw-tools `_bouncestyled` (styled bounce × style value) | Arguable |
+| Binary swap of absolute baked states | Out-leaning |
+| Lerp of absolute states, t from a light curve | Arguable (doctrine of equivalents) |
+| Enlighten-style runtime solve | Arguable |
+| True PRT | In |
+| Mover-state direct blend | Out |
+| Mover-state bounce, static lights | Out-leaning (medium) |
 
-The id-27 shape: per animated light, a baked per-probe unit-brightness bounce response; at runtime base + Σ curve × response, trilinear, lighting dynamic objects. Against '451 claims 1, 5–6 (all predate the 2021-04-02 priority). Engineering triage, not a validity opinion. Verbatim means quoted from source code.
+## Prior art
+
+Checked from primary sources where reachable; otherwise from search-result text, marked *(snippet)*. Verbatim means quoted from source code, docs or changelog.
+
+### Against Tencent WO2026113651A1
+
+Priority 2024-11-28. Claim map from the full machine translation, checked 2026-10-30:
+
+| Claims | Element | Art | Level |
+|---|---|---|---|
+| 1–3 | Parallax-correct a probe from the reflecting point and view; sample from the probe toward the reflected ray's hit on a second object | Szirmay-Kalos, Aszódi, Lazányi, Premecz, "Approximate Ray-Tracing on the GPU with Distance Impostors", CGF 24(3) 2005: colour + distance cube map, hit point "based on the distance values stored in environment map texels" *(snippet)*. Umenhoffer, Patow, Szirmay-Kalos, GPU Gems 3 ch. 17 (2007): ray march + secant search against stored distance. Bjorke, GPU Gems ch. 19 (2004): proxy-sphere correction. Lagarde & Zanuttini, SIGGRAPH 2012 talk 36: parallax-corrected cubemaps. Unity 5.1 Box Projection (2015). UE4 parallax-corrected captures (Epic staff, 2014) *(snippet)* | Verified (Szirmay-Kalos, Bjorke, Lagarde bibliographic, Unity); the search detail partly verified via the 2007 follow-up |
+| 4–8 | Probe generated at the camera; moved past a distance threshold, on entering a grid cell, or after a dwell time | Camera-following realtime probes in community practice (Unity forum, ≈2015, date unconfirmed; dynamic cubemaps in racing games) | Generic idea partly verified; the specific triggers not found |
+| 10–13 | Re-capture when objects in range move or light changes; re-shade from stored texture info | None found | — |
+| 14 | Cube faces updated in sequence with a per-face interval | Unity 5.0 `ReflectionProbeTimeSlicingMode.IndividualFaces` (2015) | Verified |
+| 15 | Occlusion test: probe's stored depth along the direction vs probe-to-hit distance | Distance impostors (2005) and GPU Gems 3 ch. 17 compare stored distance with the candidate's distance | Verified via the 2007 follow-up |
+| 16–17 | Move the probe to an unobstructed position | None found | — |
+| 18 | Fall back to a stored lighting database at the hit | None found | — |
+
+Shipped water reflection (compile-time capture, colour + distance tiles, distance search, no camera-following probe, no runtime re-capture, no time slicing, nothing added where the capture shadow fires) sits on the claim 1–3 / 15 elements, which the 2005 distance-impostor art and its 2007 follow-up anticipate closely. Elements without art found (4–8 triggers, 10–13, 16–18) are ones the engine does not use. Keep it that way: probes stay compile-time and hard-bound; never re-capture on change, follow the camera, or relocate a probe at runtime.
+
+### Against Tencent US12293451B2
+
+Priority 2021-04-02; claims in §Tencent US12293451B2. All art below predates it, and none was before the examiner. It bears on validity of claims 1, 5–6 if "projection coefficient" covers a scalar, the same broad reading that puts id 27 at risk.
+
+**Headline art for the id-27 shape:** the q3map2 `-bouncegrid` bake with the Jedi Academy grid runtime (2003). No shipped map was proven compiled with `-bouncegrid`; the combination is a toolchain configuration.
+
+**Claim elements** (checked 2026-10-30):
+
+| Element | Art | Level |
+|---|---|---|
+| Runtime scalar × baked per-light layer | Quake `gl_rsurf.c` (1996; GPL 1999): `blocklights[i] += lightmap[i] * scale;` with `scale = d_lightstylevalue[...]`, up to 4 styled lightmaps per surface | Verified, verbatim |
+| Styled (per-light) baked layers carrying bounce | ericw-tools changelog 2017-06-10, "styled lights no longer bounce by default, set "_bouncestyled" "1" to enable"; docs: "allows styled lights to bounce (e.g. flickering or switchable lights)" | Verified, verbatim |
+| Projection coefficient × precomputed transfer | Sloan, Kautz, Snyder, PRT, SIGGRAPH 2002 | Verified |
+| Runtime indirect from precomputed data, direct rendered separately, updated on light change | Martin & Einarsson, SIGGRAPH 2010 Advances course (Enlighten in Frostbite 2); Unity 5 `DynamicGI.updateThreshold` | Verified (existence, architecture) |
+| Per-light baked direct pages merged by name | Valve VRAD named lights (direct only; named lights do not bounce) | Partly verified |
+| Dynamic probes without transfer | NVIDIA US20210012562A1, published 2021-01-14 | Verified; weak match |
+| Suntracker US20170345208A1 / US10290148B2 | Not re-found; earlier snippet chart stands | — |
+
+**Per-light bounce in probes × runtime scalar** (checked 2026-11-03). The id-27 shape: per animated light, a baked per-probe unit-brightness bounce response; at runtime base + Σ curve × response, trilinear, lighting dynamic objects. Against claims 1, 5–6.
 
 | Art | Date | Evidence | What it covers | Closeness |
 |---|---|---|---|---|
@@ -304,9 +292,23 @@ The id-27 shape: per animated light, a baked per-probe unit-brightness bounce re
 
 **Negative findings.** Source VRAD ambient cubes take style 0 only (`leaf_ambient_lighting.cpp`: "We only care about light style 0 here."); Quake 3 IBSP and DarkPlaces grids carry no styles; ericw-tools' lightgrid (2023) postdates the priority date.
 
-**Best single reference for the id-27 combination:** the q3map2 `-bouncegrid` bake with the Jedi Academy grid runtime (2003). No shipped map was proven compiled with `-bouncegrid`; the combination is a toolchain configuration. None of this art was before the '451 examiner. For counsel: it bears on validity (claims 1, 5–6) if "projection coefficient" is read to cover a scalar, which is the same broad reading that puts id 27 at risk.
+**Unread (hosts blocked):** Far Cry 3 slides (gdcvault.com), Sloan 2002 body (dl.acm.org, jankautz.com), Kristensen PDF (lup.lub.lu.se), Unity 5 manual (docs.unity3d.com), the D3DX first SDK version (learn.microsoft.com).
 
-**Unread, hosts blocked this pass:** Far Cry 3 slides (gdcvault.com), Sloan 2002 body (dl.acm.org, jankautz.com), Kristensen PDF (lup.lub.lu.se), Unity 5 manual (docs.unity3d.com), the D3DX first SDK version (learn.microsoft.com).
+### Mover state channel
+
+Checked 2026-11-03. Design: per baked light a mover blocks, its direct visibility stored per probe (brief 1) and per texel (brief 2) at each end of travel, blended at runtime by the mover's path position.
+
+| Element | Closest art | Date | Evidence | Closeness |
+|---|---|---|---|---|
+| Mover shadow baked at a chosen pose | UE1 Mover `WorldRaytraceKey` ("whatever you set this to is where the mover will block light"), `BrushRaytraceKey`; ericw-tools bmodel `_shadow` (TyrUtils v0.7) | 1998; 2013-04-10 | Verbatim (Unreal Wiki mirror, `DarklightGames/unrealwiki` `mover-ut.html`; `Mover.uc` not read); verbatim (`docs/light.rst`, changelog) | Same, one pose |
+| Per-state baked layer switched at runtime | ericw-tools `_switchableshadow` (0.15.10): bmodel shadow on its own lightstyle, toggled by `lightstyle()`; `_switchableshadow_target` (2.0.0-alpha9) | 2017-07-30; 2025-02-06 | Verbatim (`light.rst`, changelog, `light/ltface.cc`) | Similar: per caster not per light, present vs absent not two poses, lightmaps only (lightgrid does not carry it) |
+| Continuous blend of baked probe states | Unity APV `ProbeReferenceVolume.BlendLightingScenario(name, factor)`; "HDRP changes only the indirect lighting data" | SRP 14.0.2 (changelog dates inconsistent; about 2021–22) | Verbatim (Unity Graphics repo docs and CHANGELOG) | Similar: whole scene, indirect, script-keyed |
+| Door gates which lights reach an area | Doom 3 `connectedAreas` ("avoid drawing interactions when the light is behind a closed door"), `idMover::SetPortalState` | 2004 | Verbatim (GPL source) | Same, runtime lights, binary |
+| Door event switches a baked light layer | Quake 1 `doors.qc` `door_go_up` → `SUB_UseTargets()`; `misc.qc` `light_use` → `lightstyle(self.style, "m"/"a")` | 1996 | Verbatim (v1.01 QC) | Similar, binary or time-ramped |
+
+Snippet only, sites blocked: UE4 Precomputed Lighting Scenarios (4.13 unconfirmed); a ModDB Doom 3 tutorial blending open and closed lightmaps by script; a gamedev.net post on open/closed probe sets near doors (≈2019).
+
+**Not found:** a blend keyed to mover position; per-(occluder pose, light) probe data; the combination. These are where the design is new, not exposure: no live claim charted so far (Take-Two '688/'404, '451) reads on it. Blocked hosts: wiki.beyondunreal.com, docs.unity3d.com, dev.epicgames.com, moddb.com, gamedev.net, quakewiki.org.
 
 ## Summary
 
@@ -314,22 +316,28 @@ The id-27 shape: per animated light, a baked per-probe unit-brightness bounce re
 |---|---|---|---|---|---|
 | 1 | Appears clear | — | +15–40 s | SH −20–40% | ≈0 |
 | 2 | Needs counsel | Square Enix '372; Tencent WO cl. 1, 18 | +94–279 s; −SH bake only with a new bounce source | −SH grid (49–125 MiB mandatory on the hallway); +4–38 MiB resident; 131–397 MiB disk | Entities ≈0; fog +0–30%; glossy 0.5–1.2 ms/MP (1660) |
-| 3 | Needs counsel | Tencent '451 | +105–430 s | +6–12 MB VRAM; 144–512 MB links | Door ≈1 ms (4 threads); animated needs hybrid |
+| 3 | Needs counsel | Tencent '451 (unit per-light terms × intensity) | +105–430 s | +6–12 MB VRAM; 144–512 MB links | Door ≈1 ms (4 threads); animated needs hybrid |
 | 4 | Needs counsel | Tencent WO cl. 10; '451; Crytek '673 | ≈0 | +9.5–17.5 MB | ≈0.2 ms per door event |
-| 5 | Top counsel question | '451 cl. 1 | Shipped | Shipped | Shipped |
-| 6 | Appears clear | ARM '177 gather; '451 cl. 3 if per-light | Faster SH bake (*est.*) | Bake RAM ~24–100 MB | None new |
-| 7 | Appears clear (granted claims) | Take-Two continuations | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
+| 5 | Top counsel question | '451 cl. 1, 5–6 on id 27; direct-only id 25 / id 45 absent | Shipped | Shipped | Shipped |
+| 6 | Appears clear | ARM '177 gather; '451 cl. 3–4 if bounce is rescaled at runtime | Faster SH bake (*est.*) | Bake RAM ~24–100 MB | None new |
+| 7 | Appears clear (granted claims) | Take-Two continuations; '451: direct half absent, bounce half for static lights out-leaning | Masks per (door, light) | ≤ ~10% of lightmap mandatory set (gate) | Door events only |
 
-**Top IP risks.** (1) Tencent US12293451B2 claim 1 against the shipped animated SH deltas and any light-change-triggered update; keep per-light terms scalar. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
+**Top IP risks.** (1) Tencent US12293451B2 claims 1, 5–6 against id 27 (per-light unit bounce × curve, per probe) and any feature that rescales baked bounce by a light's state. A scalar or RGB term is no design-around; follow §Tencent US12293451B2 design rules. (2) Square Enix US10137372B2 against any reader that excludes probes; keep continuous weights. (3) Tencent WO2026113651A1: claim 1 widens to every glossy surface; claim 10 on runtime data beside a reflection probe; claims 11–13 keep re-shading rejected. (4) A future Take-Two continuation claiming door-driven baked layers; the granted '688 and '404 claims do not reach them. (5) Crytek US20140327673A1 against runtime links, if granted.
 
 **Questions for counsel, ranked.**
-0. ~~Obtain '451's verbatim claims~~ — read 2026-11-03 (§US12293451B2 claim text). Next: its US file history (rejections, cited art, amendments; how claim 1 was allowed over Sloan 2002 PRT), any PTAB or court proceeding, any CNIPA invalidation of CN112927341B, and maintenance-fee status.
-1. Can '451 claim 1 read on a per-light scalar curve × a baked per-light, per-probe delta? Is the light bridge's dirty upload "light source change information"? Weigh Quake lightstyles, Suntracker 2017, Sloan PRT 2002, NVIDIA's application.
-2. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
-3. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
-4. Take-Two: confirm no pending continuation of 18/056,862 claims the door-ambient description. The granted claims were read 2026-10-30 and do not touch doors.
-5. Tencent WO claim 1 against water and glossy world reflections; claim 10 against runtime probe gathers.
-6. Is Suntracker's "per vertex in a vertex shader" limiting against compute compose?
-7. ARM '177 against any future guided gather in the bake.
+1. Pull '451's file wrapper (17/985,107) before ppubs needs sign-in on 2026-11-07: action grounds, response arguments, reasons for allowance. Also any PTAB or court proceeding, and any CNIPA invalidation of CN112927341B.
+2. Construction of "light source projection coefficient" (paras 32 vs 35; claim 7 differentiation). Is a per-light scalar or RGB curve one?
+3. Is a per-light unit bounce response a "radiance transfer parameter" when the description defines transfer per basis function?
+4. Validity of '451 claims 1, 5–6 against art the examiner never saw: q3map2 `-bouncegrid` + Jedi Academy 2003, Quake lightstyles, `_bouncestyled` 2017, Sloan 2002, D3DX neighbourhood transfer, Far Cry 3 DRTV 2012, Enlighten 2010.
+5. What weight does the narrower CN claim 1 carry for the US claim's scope?
+6. Does '451 (a) cover continuous curves?
+7. Equivalents for a lerp of absolute states with t from a light curve; inducement exposure from SDK modders authoring animated lights.
+8. Does a continuous Chebyshev weight escape '372's "determining visibility of said determined zone"?
+9. Status: Crytek '673 (granted?), Microsoft '270, Bunnell '550, Disney '837 and Suntracker fees; NVIDIA abandonment.
+10. Take-Two: confirm no pending continuation of 18/056,862 claims the door-ambient description. The granted claims do not touch doors.
+11. Tencent WO claim 1 against water and glossy world reflections; claim 10 against runtime probe gathers.
+12. Is Suntracker's "per vertex in a vertex shader" limiting against compute compose?
+13. ARM '177 against any future guided gather in the bake.
+14. Chart Tencent CN114419240B / WO2023185262A1 (priority 2022-04-01, a separate family with the same title as '451) and any US counterpart.
 
 **Top cost unknowns.** (1) Radiance-cache SH bake: grey single-bounce parity with id 34 and hallway-mini bake time. (2) Patch count, link bytes, link bake time and K-truncation energy loss on the hallway and campaign. (3) Glossy world-surface cost on the 5300M, plus the 16-texture fix. (4) CPU Jacobi under animated load, validating the hybrid and its error when doors cut a light's region.

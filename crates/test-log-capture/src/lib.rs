@@ -1,4 +1,5 @@
-//! Per-thread `log` capture for tests that treat diagnostics as contracts.
+//! Per-thread `log` capture for tests that treat diagnostics as contracts. Also
+//! installs the process's `tracing` dispatcher (events in, spans out).
 //! See: `context/lib/testing_guide.md` §3.
 
 use std::cell::RefCell;

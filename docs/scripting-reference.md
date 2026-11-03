@@ -4938,9 +4938,20 @@ slot's target value, the same value `stateEquals` and a bound bar read, so a
 revive bar's label can show only while its progress is above 0:
 
 ```typescript
+const reviveTheme = defineTheme({
+  color: { ok: [0.12, 0.72, 0.40, 1], panel: { default: [0.02, 0.03, 0.04, 0.92] } },
+  font: { primary: "JetBrains Mono" },
+});
+const { color } = getDesignTokens(reviveTheme);
+
 VStack({ visibleWhen: stateCompare(player.assistProgress, "greaterThan", 0) }, [
-  Text({ content: "REVIVING" }),
-  Bar({ bind: bindState(player.assistProgress), max: 1, fill: "ok", background: "panel.default" }),
+  Text({ content: "REVIVING", color: color.ok }),
+  Bar({
+    bind: bindState(player.assistProgress),
+    max: 1,
+    fill: color.ok,
+    background: color.panel.default,
+  }),
 ]);
 ```
 

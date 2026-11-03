@@ -1047,7 +1047,7 @@ fn worst_case_rows(app: &App) -> Vec<ControlsRow> {
 fn lay_out(tree: &AnchoredTree) -> ([f32; 4], postretro_ui::tree::FocusRectList) {
     use postretro_ui::tree::{CellValues, ImageSizes, UiTree};
     let mut ui = UiTree::from_descriptor(tree, &postretro_ui::theme::UiTheme::engine_default());
-    let mut fonts = postretro_ui::text::build_font_system();
+    let mut fonts = postretro_ui::text::build_embedded_font_system();
     let drawn = ui.build_draw_data(
         CANVAS,
         &mut fonts,

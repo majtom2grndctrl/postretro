@@ -131,7 +131,7 @@ fn number(snapshot: &UiReadSnapshot, slot: &str) -> f32 {
 fn draw(ui: &mut UiTree, snapshot: &UiReadSnapshot) -> UiDrawData {
     ui.build_draw_data_retained_with_image_generation(
         DEVICE,
-        &mut postretro_ui::text::build_font_system(),
+        &mut postretro_ui::text::build_embedded_font_system(),
         &ImageSizes::new(),
         0,
         &snapshot.slot_values,

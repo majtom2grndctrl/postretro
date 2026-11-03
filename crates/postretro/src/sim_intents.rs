@@ -1,4 +1,5 @@
 //! Per-command host intents fed to `build_sim_command`.
+//! See: `context/lib/input.md` §3
 
 /// Host-side intents for one sim command, beyond what the action snapshot
 /// carries. `Default` is everything off.

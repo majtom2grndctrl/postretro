@@ -22,10 +22,11 @@ impl PlayerEventTable {
     /// re-checked just before its own application, after every earlier one's
     /// fire lists have run, and dropped unless the target still holds the
     /// recorded life state, has not entered a state since the record, and
-    /// that state declares `assistable`. An applied completion fires every `assistReceived`
-    /// subscription on the target, then every `assistGiven` subscription on
-    /// the helper, each in composed order. The helper is not re-checked: a
-    /// helper downed after the record still earns its `assistGiven`.
+    /// that state declares `assistable`. An applied completion fires every
+    /// `assistReceived` subscription on the target, then every `assistGiven`
+    /// subscription on the helper, each in composed order. The helper is not
+    /// re-checked: a helper downed after the record still earns its
+    /// `assistGiven`.
     pub(super) fn apply_assist_completions(
         &mut self,
         script_ctx: &ScriptCtx,

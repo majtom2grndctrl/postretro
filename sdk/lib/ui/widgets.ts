@@ -617,7 +617,8 @@ function buildPredicate(value: unknown, field: string, factory: string): Predica
     }
     out.equals = e;
   }
-  if (p.compare !== undefined) {
+  // `null` is absent, matching the JS bridge's optional-field read.
+  if (p.compare !== undefined && p.compare !== null) {
     if (p.equals !== undefined) {
       throw new Error(`${factory}: \`${field}\` cannot carry both \`equals\` and \`compare\``);
     }

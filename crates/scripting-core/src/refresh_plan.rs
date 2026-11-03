@@ -1547,6 +1547,9 @@ mod tests {
         let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
         live.assist_progress = 0.4;
         live.assist_received_progress = 0.7;
+        // The accumulator keys on the entry count; a rebuilt 0 would read as a
+        // fresh entry and restart progress.
+        live.life_state_entry = 5;
         registry.set_component(id, live).unwrap();
         registry
             .set_component(
@@ -1567,6 +1570,7 @@ mod tests {
         };
         assert_eq!(component.assist_progress, 0.4);
         assert_eq!(component.assist_received_progress, 0.7);
+        assert_eq!(component.life_state_entry, 5);
     }
 
     #[test]

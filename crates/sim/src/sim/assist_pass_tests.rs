@@ -837,8 +837,9 @@ fn assist_pass_o8_in_tick_self_revive_records_nothing_and_resets_every_helper() 
 }
 
 /// O9: the target leaves and re-enters its assistable state between passes;
-/// at the next pass its elapsed has not advanced past the stored value, so
-/// progress restarts and no completion comes before a further full count.
+/// at the next pass the life-state entry count has moved past the stored
+/// one, so progress restarts and no completion comes before a further full
+/// count.
 #[test]
 fn assist_pass_o9_leave_and_reenter_between_passes_restarts_progress() {
     let mut world = helper_and_downed_target();

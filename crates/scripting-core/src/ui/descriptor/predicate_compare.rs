@@ -47,7 +47,9 @@ impl CompareOp {
 
 /// A numeric comparison carried by a [`super::Predicate`]: true while the bound
 /// Number value stands in `op` relation to `value`. Mutually exclusive with
-/// `equals`; the bridges reject both together and a non-finite `value` at load.
+/// `equals`; the bridges reject both together and a `value` that is non-finite
+/// or outside the f32 range at load. Comparison runs at the slot's f32
+/// precision (see [`PredicateCompare::holds`]).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PredicateCompare {
@@ -56,15 +58,17 @@ pub struct PredicateCompare {
 }
 
 impl PredicateCompare {
-    /// Whether `bound` satisfies the comparison. The f32 slot value widens to
-    /// f64 exactly. A NaN bound satisfies no op, so it reads as false.
+    /// Whether `bound` satisfies the comparison, at the slot's f32 precision.
+    /// The threshold narrows to f32 (an out-of-range value saturates to +-inf;
+    /// load validation rejects those), so a slot written as `0.1` is not
+    /// `> 0.1`. A NaN bound satisfies no op, so it reads as false.
     pub fn holds(&self, bound: f32) -> bool {
-        let bound = f64::from(bound);
+        let threshold = self.value as f32;
         match self.op {
-            CompareOp::GreaterThan => bound > self.value,
-            CompareOp::LessThan => bound < self.value,
-            CompareOp::AtLeast => bound >= self.value,
-            CompareOp::AtMost => bound <= self.value,
+            CompareOp::GreaterThan => bound > threshold,
+            CompareOp::LessThan => bound < threshold,
+            CompareOp::AtLeast => bound >= threshold,
+            CompareOp::AtMost => bound <= threshold,
         }
     }
 }
@@ -76,9 +80,12 @@ pub fn unknown_compare_op_reason(field: &str) -> String {
 
 /// Load-time checks shared by both bridges, keyed by the predicate's full path
 /// (e.g. ``UI tree `root`.children[1].visibleWhen``): `compare` excludes
-/// `equals`, its threshold is finite, and a slot the engine catalog declares
-/// must be a Number slot. Mod store slots are not in the catalog; the SDK
-/// `stateCompare` constructor rejects a non-number ref for those.
+/// `equals`, its threshold is finite and within the f32 range, and a slot the
+/// engine catalog declares must be a Number slot. Mod store slots are not in the
+/// catalog, so this cannot type-check them: only the SDK `stateCompare`
+/// constructor rejects a non-number mod ref. A hand-built `{ slot, compare }`,
+/// `{ local }` or `{ fact }` source passes here and evaluates false at runtime,
+/// the same as an `equals` type mismatch.
 pub fn validate_predicate_compare(
     slot: Option<&str>,
     has_equals: bool,
@@ -92,6 +99,11 @@ pub fn validate_predicate_compare(
     }
     if !compare.value.is_finite() {
         return Err(format!("{path}.compare.value must be a finite number"));
+    }
+    if !(compare.value as f32).is_finite() {
+        return Err(format!(
+            "{path}.compare.value is outside the 32-bit float range"
+        ));
     }
     if let Some(slot) = slot
         && let Some(kind) = engine_slot_non_number_kind(slot)
@@ -152,6 +164,37 @@ mod tests {
     }
 
     #[test]
+    fn fractional_thresholds_compare_at_f32_precision() {
+        for threshold in [0.1_f64, 0.5, 1.0] {
+            let bound = threshold as f32;
+            assert!(
+                !compare(CompareOp::GreaterThan, threshold).holds(bound),
+                "{threshold} is not > {threshold}"
+            );
+            assert!(
+                !compare(CompareOp::LessThan, threshold).holds(bound),
+                "{threshold} is not < {threshold}"
+            );
+            assert!(
+                compare(CompareOp::AtLeast, threshold).holds(bound),
+                "{threshold} is >= {threshold}"
+            );
+            assert!(
+                compare(CompareOp::AtMost, threshold).holds(bound),
+                "{threshold} is <= {threshold}"
+            );
+        }
+        // One ulp either side of 0.1 still orders correctly.
+        let tenth = 0.1_f32;
+        let above = f32::from_bits(tenth.to_bits() + 1);
+        let below = f32::from_bits(tenth.to_bits() - 1);
+        assert!(compare(CompareOp::GreaterThan, 0.1).holds(above));
+        assert!(compare(CompareOp::LessThan, 0.1).holds(below));
+        assert!(!compare(CompareOp::AtLeast, 0.1).holds(below));
+        assert!(!compare(CompareOp::AtMost, 0.1).holds(above));
+    }
+
+    #[test]
     fn nan_bound_satisfies_no_op() {
         for op in CompareOp::ALL {
             assert!(
@@ -193,6 +236,15 @@ mod tests {
                 Err("p.compare.value must be a finite number".to_string())
             );
         }
+        assert_eq!(
+            validate_predicate_compare(
+                Some("player.assistProgress"),
+                false,
+                &compare(CompareOp::AtMost, 1e300),
+                "p"
+            ),
+            Err("p.compare.value is outside the 32-bit float range".to_string())
+        );
         assert_eq!(
             validate_predicate_compare(Some("player.lifeState"), false, &ok, "p"),
             Err(

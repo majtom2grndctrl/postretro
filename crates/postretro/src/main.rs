@@ -41,10 +41,10 @@ pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod client_weapon;
 mod input;
+mod sim_intents;
 mod weapon_observers;
 // Level-load stages on the engine load pool: prep from the staged parse.
 mod level_load;
-mod sim_intents;
 // App-side lightmap cell-block residency: demand from the baked set, block
 // reads through the shared issuer, and bounded renderer drain batches.
 mod lightmap_streaming;
@@ -10085,7 +10085,7 @@ mod tests {
 
             let theme = postretro_ui::theme::UiTheme::engine_default();
             let mut retained = postretro_ui::tree::UiTree::from_descriptor(&dialog, &theme);
-            let mut font_system = postretro_ui::text::build_font_system();
+            let mut font_system = postretro_ui::text::build_embedded_font_system();
             let slots = std::collections::HashMap::new();
             let cells = CellValues::new();
             retained.build_draw_data_retained(
@@ -10226,7 +10226,7 @@ mod tests {
 
         let theme = postretro_ui::theme::UiTheme::engine_default();
         let mut retained = postretro_ui::tree::UiTree::from_descriptor(&mod_pause, &theme);
-        let mut font_system = postretro_ui::text::build_font_system();
+        let mut font_system = postretro_ui::text::build_embedded_font_system();
         let empty_slots = std::collections::HashMap::new();
         let empty_cells = CellValues::new();
         let draw = retained.build_draw_data_retained(
@@ -11638,7 +11638,7 @@ mod tests {
             .expect("registered tree resolves by name");
         let theme = postretro_ui::theme::UiTheme::engine_default();
         let mut ui = postretro_ui::tree::UiTree::from_descriptor(resolved, &theme);
-        let mut fs = postretro_ui::text::build_font_system();
+        let mut fs = postretro_ui::text::build_embedded_font_system();
         let data = ui.build_draw_data_retained(
             [1280, 720],
             &mut fs,

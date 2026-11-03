@@ -91,8 +91,10 @@ impl PresentationTemplate {
 
 /// Retained UI trees have no producer-stamped fact bundle. Rejecting fact
 /// sources at the descriptor boundary prevents an ordinary tree from quietly
-/// resolving every such read as absent.
-pub(crate) fn validate_retained_widget_sources(widget: &Widget) -> Result<(), String> {
+/// resolving every such read as absent. Also runs the shared `compare` checks
+/// (not alongside `equals`, finite f32 threshold, Number engine slot); engine
+/// JSON trees call it too, since they bypass the script bridges.
+pub fn validate_retained_widget_sources(widget: &Widget) -> Result<(), String> {
     validate_widget_sources(widget, "UI tree `root`", false)
 }
 

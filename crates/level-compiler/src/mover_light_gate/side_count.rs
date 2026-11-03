@@ -45,9 +45,6 @@ pub(crate) fn side_counts(
                 carried: Vec::new(),
                 others: Vec::new(),
             };
-            if !swept.is_valid() {
-                return count;
-            }
             for &source_index in &dynamic {
                 let light = &lights[source_index];
                 let reaches = match light.light_type {

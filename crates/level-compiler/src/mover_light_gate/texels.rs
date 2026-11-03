@@ -25,9 +25,12 @@ pub(crate) struct CandidateMover {
     /// face. Touching, every lit texel counts: each segment ends on the
     /// light, so it touches that brush.
     pub(crate) inside: [Option<bool>; 2],
-    /// Per terminus: whether the light lies in a posed brush's interior,
-    /// past the contact band. The row's inside flag; a light on a face is
-    /// not flagged, though its texels count as above.
+    /// Per terminus: whether the light lies in some posed brush's strict
+    /// interior, past the contact band. The row's inside flag; a light on a
+    /// face is not flagged, though its texels count as above. That includes
+    /// a light on the shared face of two brushes of one mover: buried, but
+    /// in neither brush's interior. "Touches two or more brushes" would
+    /// instead flag a light at an L-shaped mover's outer corner.
     pub(crate) light_inside: [bool; 2],
 }
 

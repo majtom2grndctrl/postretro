@@ -113,7 +113,8 @@ pub(crate) struct AnalysedMover {
     /// Indexed by [`Terminus::index`].
     pub(crate) poses: [Pose; 2],
     /// Union of the posed brush bounds at every waypoint on the path, not
-    /// only the termini; invalid for a mover with no brush.
+    /// only the termini; invalid for a mover with no brush, which gets no
+    /// side count ([`MoverPoses::swept`]).
     pub(crate) swept: Aabb,
 }
 
@@ -131,7 +132,8 @@ pub(crate) struct NotAnalysedMover {
     pub(crate) reason: &'static str,
     /// What the side count reads: the bounds its brushes sweep over every
     /// waypoint at any rotation about the spin pivot; invalid for a broken
-    /// path or a mover with no brush, which gets no side count.
+    /// path or a mover with no brush, which gets no side count
+    /// ([`MoverPoses::swept`]).
     pub(crate) swept: Aabb,
 }
 
@@ -161,15 +163,20 @@ impl MoverPoses {
             .iter()
             .map(|waypoint| (waypoint.name.as_str(), waypoint))
             .collect();
-        let mut name_uses: HashMap<&str, usize> = HashMap::new();
-        for mover in movers {
-            *name_uses.entry(mover.name.trim()).or_default() += 1;
+        let base_labels: Vec<String> = movers.iter().map(base_label).collect();
+        let mut label_uses: HashMap<&str, usize> = HashMap::new();
+        for label in &base_labels {
+            *label_uses.entry(label.as_str()).or_default() += 1;
         }
         let mut poses = Self::default();
-        for mover in movers {
-            let name = mover.name.trim();
-            let unique = name_uses.get(name).is_some_and(|&uses| uses == 1);
-            let label = mover_label(mover, unique);
+        for (mover, base) in movers.iter().zip(&base_labels) {
+            // Two movers sharing a name, or unnamed ones sharing a centre,
+            // are told apart by id.
+            let label = if label_uses[base.as_str()] > 1 {
+                format!("{base} (id {})", mover.mover_id)
+            } else {
+                base.clone()
+            };
             // A spin axis admits scripted spin even at zero authored speed.
             let spins = mover.spin_axis != [0.0; 3];
             let path = path_waypoints(&mover.path, &by_name);
@@ -228,19 +235,21 @@ impl MoverPoses {
     }
 
     /// The movers the side count covers, with their swept bounds, ascending
-    /// by `mover_id`: every analysed mover, and each not-analysed one whose
-    /// path and brushes give it bounds.
+    /// by `mover_id`: each mover, analysed or not, whose path and brushes
+    /// give it bounds. One without bounds covers nothing, so it gates no
+    /// texel and gets no side count.
     pub(crate) fn swept(&self) -> Vec<(u32, &Aabb)> {
-        let mut swept: Vec<(u32, &Aabb)> = self
+        let analysed = self
             .analysed
             .iter()
-            .map(|mover| (mover.mover_id, &mover.swept))
-            .chain(
-                self.not_analysed
-                    .iter()
-                    .filter(|mover| mover.swept.is_valid())
-                    .map(|mover| (mover.mover_id, &mover.swept)),
-            )
+            .map(|mover| (mover.mover_id, &mover.swept));
+        let not_analysed = self
+            .not_analysed
+            .iter()
+            .map(|mover| (mover.mover_id, &mover.swept));
+        let mut swept: Vec<(u32, &Aabb)> = analysed
+            .chain(not_analysed)
+            .filter(|(_, swept)| swept.is_valid())
             .collect();
         swept.sort_by_key(|(mover_id, _)| *mover_id);
         swept
@@ -322,16 +331,13 @@ fn swept_bounds(brushes: &[BrushVolume], path: &[&MapKinematicWaypoint], spins: 
     swept
 }
 
-/// The mover's name, with its id when another mover shares it, or for an
-/// unnamed mover the centre of its authored brushes' bounds.
-fn mover_label(mover: &MapKinematicMover, unique_name: bool) -> String {
+/// The mover's name, or for an unnamed mover the centre of its authored
+/// brushes' bounds. [`MoverPoses::resolve`] appends the id when another
+/// mover's label is the same.
+fn base_label(mover: &MapKinematicMover) -> String {
     let name = mover.name.trim();
     if !name.is_empty() {
-        return if unique_name {
-            format!("kinematic_mover '{}'", mover.name)
-        } else {
-            format!("kinematic_mover '{}' (id {})", mover.name, mover.mover_id)
-        };
+        return format!("kinematic_mover '{name}'");
     }
     let mut bounds = Aabb::empty();
     for brush in mover.brush_volumes.iter().filter(|b| b.aabb.is_valid()) {

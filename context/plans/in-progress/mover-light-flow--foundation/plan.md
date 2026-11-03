@@ -35,7 +35,7 @@ read at: af1aab9ef
 
 ## Build notes
 
-- **P1 strip (task 1).** At the open terminus, arena light entity 9 has 464 open-only texels. They lie in a back-room floor strip just east of the pocket-mouth plane, up to about 0.030 m from it. One texel pitch is 0.025 m. Their centre segments cross static wall, and the bake lit them only through off-centre samples. This is the brief's named static-edge bias. Task 8 measures "within one texel column" by texel column from the mouth, not by metres, before asserting it. If even that fails, row 1's P1 clause goes to the owner.
+- **P1 strip (task 1).** At the open terminus, arena light entity 9 has 464 open-only texels in a back-room floor strip just east of the pocket-mouth plane, about 1.2 texel pitches from it. Their centre segments cross static wall, and the bake lit them only through off-centre samples. This is the brief's named static-edge bias. Superseded as an Acceptance bound by the owner's row 1 restatement (see Corrections).
 - **Cut sub-charts.** Texels where cut sub-charts overlap are counted once per sub-chart. That is what a per-chart mask would store, so the estimates keep it.
 - **Section-memo hit.** On a `lightmap_section` hit the static gate doesn't run yet (`FusedLightingOutput.mover_light` is `None`). Task 7 closes this.
 
@@ -83,6 +83,14 @@ read at: af1aab9ef
 
   `GATE_EPOCH` is now 2. Skipped: printing unnamed movers in map units, which would put Quake axes into a shared stage (§Source-format neutrality); an adapter-written mover label is the follow-up. Gate: every focused test green, clippy clean.
 - **P1 measured.** Open-only texels by light: (640, 320, 192) 1.20 texel pitches from the mouth; spot (368, 560, 288) 19.48; (240, 1376, 256) 44.48 (pitch 0.025 m). The clause was restated by the owner (see Corrections).
+- **Review round 2.** 3 reviewers on the fix diff; no red findings. Fixed:
+  - 🟡 the P1 shared assertion was vacuous;
+  - the per-brush inside flag documented;
+  - side-count bounds filtered alike;
+  - ` (id N)` on colliding unnamed labels;
+  - the spinner test now exercises the rotation padding.
+
+  Parse rejects broken and one-waypoint non-spinning paths, so every not-analysed mover with a side count is a spinner.
 - **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
@@ -129,6 +137,6 @@ Rows are numbered in brief order: Automated, then Manual.
 | 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | done: `mover_light_gate_compile` 13 pass (rows 3, 4, 7, 8, 10–15, 17, 20), `mover_light_gate_setpiece` 3 pass (rows 1, 2, 5, 15) |
 | 9 | Determinism (16) and warm rows (18) | worker | 7 | done: `mover_light_gate_cache` 11 pass (3.9 s): P3, P8, every row-18 edit, `-j 1` vs `-j 4`, two cold builds; windows 1/3/8 in `mover_gate_tests` |
 | 10 | PRL parity test (19) | worker | — | done: `mover_light_gate_prl_parity` passed, 2 maps compared (baselines at af1aab9ef, built in this checkout) |
-| 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | |
+| 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | docs done (26c002e46 and review rounds); manual rows 21–22 outstanding (need an idle machine) |
 
 Tasks 2, 3, 5 and 10 can run concurrently once task 1 lands. Tasks 6 and 7 share no files.

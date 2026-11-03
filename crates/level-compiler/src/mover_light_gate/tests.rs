@@ -353,6 +353,38 @@ fn movers_sharing_a_name_are_labelled_with_their_ids() {
 }
 
 #[test]
+fn unnamed_movers_sharing_a_centre_are_labelled_with_their_ids() {
+    let brush = |min: DVec3| vec![box_brush(min, min + DVec3::ONE)];
+    let movers = vec![
+        mover(0, "", "a", brush(DVec3::ZERO)),
+        mover(1, "", "c", brush(DVec3::ZERO)),
+        mover(2, "", "e", brush(DVec3::splat(2.0))),
+    ];
+    let waypoints = vec![
+        waypoint("a", "b", DVec3::ZERO),
+        waypoint("b", "", DVec3::X),
+        waypoint("c", "d", DVec3::ZERO),
+        waypoint("d", "", DVec3::Y),
+        waypoint("e", "f", DVec3::ZERO),
+        waypoint("f", "", DVec3::X),
+    ];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let labels: Vec<&str> = poses
+        .analysed
+        .iter()
+        .map(|mover| mover.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "kinematic_mover at (0.500, 0.500, 0.500) m (id 0)",
+            "kinematic_mover at (0.500, 0.500, 0.500) m (id 1)",
+            "kinematic_mover at (2.500, 2.500, 2.500) m",
+        ]
+    );
+}
+
+#[test]
 fn a_mover_with_a_spin_axis_is_not_analysed_and_a_zero_axis_is() {
     let (mut movers, mut waypoints) = sliding_door();
     // A spin axis with zero speed: scripts may still spin it.
@@ -518,6 +550,35 @@ fn a_spinners_swept_bounds_hold_its_brushes_at_any_rotation_and_reach_its_side_c
             mover_id: 0,
             carried: vec![0],
             others: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn a_mover_without_brushes_gets_no_side_count_analysed_or_not() {
+    let (mut movers, mut waypoints) = sliding_door();
+    // An analysed mover and a spinner, neither with a brush.
+    movers.push(mover(1, "empty", "e_a", Vec::new()));
+    waypoints.push(waypoint("e_a", "e_b", DVec3::ZERO));
+    waypoints.push(waypoint("e_b", "", DVec3::X));
+    let mut spinner = mover(2, "empty_fan", "f_a", Vec::new());
+    spinner.spin_axis = [0.0, 1.0, 0.0];
+    waypoints.push(waypoint("f_a", "f_b", DVec3::ZERO));
+    waypoints.push(waypoint("f_b", "", DVec3::X));
+    movers.push(spinner);
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    assert_eq!(poses.analysed.len(), 2);
+    assert_eq!(poses.not_analysed.len(), 1);
+
+    // A dynamic sun reaches every mover with bounds, and only those.
+    let mut sun = dynamic_light(DVec3::ZERO, 1.0);
+    sun.light_type = LightType::Directional;
+    assert_eq!(
+        side_counts(&poses, &[sun], &[]),
+        vec![SideCount {
+            mover_id: 0,
+            carried: Vec::new(),
+            others: vec![0],
         }]
     );
 }

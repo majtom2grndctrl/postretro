@@ -923,19 +923,23 @@ fn a_three_waypoint_mover_is_posed_at_its_first_and_last_waypoints_only() {
 #[test]
 fn a_spinner_counts_the_lamp_it_carries_and_gates_no_row() {
     // A one-waypoint spinner under the baked light, carrying a dynamic lamp
-    // just below its blade.
-    let lamp = [-176, -176, 80];
+    // below its blade. The blade, 64 × 64 × 8 u about its hub, sweeps a
+    // sphere of radius about 45 u, so its rotation-padded bounds reach down
+    // to z ≈ 58.6. The lamp's 24 u falloff sphere reaches them (about 10.6 u
+    // away) and misses the unrotated blade (z 100 to 108) by 28 u: only the
+    // spin padding puts the lamp in the side count.
+    let lamp = [-176, -176, 48];
     let logs = compile(&room_map(&[
         light([0, 0, 224]),
         mover_with(
             "\"name\" \"fan\"\n\"spin_axis\" \"0 0 1\"\n\"spin_speed\" \"90\"\n",
             "fan_hub",
-            &[box_brush([-200, -200, 96], [-152, -152, 112])],
+            &[box_brush([-208, -208, 100], [-144, -144, 108])],
         ),
         waypoint("fan_hub", "", [-176, -176, 104]),
         format!(
             "{{\n\"classname\" \"light_dynamic\"\n\"carrier\" \"fan\"\n\"origin\" \"{} {} {}\"\n\
-             \"light\" \"300\"\n\"_falloff_range\" \"64\"\n}}",
+             \"light\" \"300\"\n\"_falloff_range\" \"24\"\n}}",
             lamp[0], lamp[1], lamp[2]
         ),
     ]));

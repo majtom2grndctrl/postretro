@@ -50,6 +50,10 @@ const POCKET_LIGHTS: [&str; 3] = ["640 320 192", "368 560 288", "240 1376 256"];
 /// gates for it crosses static wall beside the mouth, never the closed
 /// wall, so the bake lit those texels only through off-centre samples.
 const MOUTH_PLANE_LIGHT: &str = "640 320 192";
+/// The pocket lights whose segments from the pocket also cross the closed
+/// wall: the spot, and the west back-room light behind the wall. Open, each
+/// gates some texels at both termini and some only open.
+const SHARED_POCKET_LIGHTS: [&str; 2] = ["368 560 288", "240 1376 256"];
 /// The arena's point lights; the spot is aimed at the wall, away from the
 /// shaft.
 const ARENA_POINT_LIGHTS: [&str; 2] = ["256 256 256", "640 320 192"];
@@ -391,6 +395,14 @@ fn setpiece_wall_open_gates_the_pocket_it_fills_and_shares_what_the_closed_wall_
             .find(|closed| closed.origin == row.origin)
             .unwrap_or_else(|| panic!("a closed row for {}\n{logs}", row.origin));
         assert_eq!(row.shared_texels, at_closed.shared_texels, "{row:?}");
+        if SHARED_POCKET_LIGHTS.contains(&row.origin.as_str()) {
+            // Pin P1: the open wall gates pocket texels whose segments also
+            // cross the closed pose, and those are shared, not differing.
+            assert!(
+                row.shared_texels > 0 && row.shared_texels < row.gated_texels,
+                "{row:?}"
+            );
+        }
         assert_eq!(row.shared_probes, at_closed.shared_probes, "{row:?}");
         assert_eq!(
             row.differing_texels > 0,
@@ -401,7 +413,7 @@ fn setpiece_wall_open_gates_the_pocket_it_fills_and_shares_what_the_closed_wall_
 }
 
 #[test]
-fn setpiece_wall_open_only_texels_of_the_mouth_plane_light_lie_within_one_column_of_the_mouth() {
+fn setpiece_wall_mouth_plane_light_open_only_texels_lie_within_one_column() {
     // The static-edge bias of the one-segment estimate, bounded for the one
     // light whose open-only texels come only from it: none is gated closed,
     // so all are open-only, and each lies within 1.5 pitches of the mouth

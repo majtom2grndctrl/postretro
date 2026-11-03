@@ -94,12 +94,14 @@ pub(crate) struct PrototypeConfig {
 }
 
 impl PrototypeConfig {
-    fn delay_for(&self, tick: u32, salt: u32) -> u32 {
+    /// `jitter_phase` offsets the walk through `jitter_ticks`, so inputs and
+    /// snapshots crossing the simulated link see different delays on one tick.
+    fn delay_for(&self, tick: u32, jitter_phase: u32) -> u32 {
         let base = self.one_way_latency_ticks as i32;
         let jitter = if self.jitter_ticks.is_empty() {
             0
         } else {
-            let index = ((tick + salt) as usize) % self.jitter_ticks.len();
+            let index = ((tick + jitter_phase) as usize) % self.jitter_ticks.len();
             self.jitter_ticks[index]
         };
         (base + jitter).max(0) as u32

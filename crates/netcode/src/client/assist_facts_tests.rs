@@ -150,6 +150,11 @@ fn assist_pair_table_resolves_entries_and_leaves_unmapped_ones_out() {
     let (_registry, client, remote) = armed();
     assert_eq!(client.assist_pair_table(), vec![entry(remote, 6)]);
     assert_eq!(client.received_required_ticks(), 4);
+
+    // The fill-into form clears the caller's buffer first.
+    let mut out = vec![entry(remote, 99), entry(remote, 98)];
+    client.assist_pair_table_into(&mut out);
+    assert_eq!(out, vec![entry(remote, 6)]);
 }
 
 #[test]

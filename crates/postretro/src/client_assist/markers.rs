@@ -18,19 +18,22 @@ use crate::sim::assist::{AssistCandidate, AssistHelper, AssistState, PawnLife, a
 
 const KIND: OverlayKind = OverlayKind::AssistableTeammates;
 
-/// Per-frame buffers, reused so a steady frame allocates nothing.
+/// Per-frame buffers, reused so the candidate lists and pair table keep their
+/// allocations across frames. Each marked pawn still clones its template handle.
 #[derive(Debug, Default)]
 pub(crate) struct MarkerScratch {
     pawns: Vec<(EntityId, netcode::RemoteAssistFacts)>,
+    table: Vec<netcode::AssistPairEntry>,
     group: Vec<EntityId>,
     candidates: Vec<AssistCandidate>,
     marked: Vec<EntityId>,
 }
 
-/// Mark the first `max_visible` assistable candidates, in candidate order,
-/// and drop every other marker. `inRange` is true only on the candidate the
-/// shared target choice picks for the local helper, so the prompt names the
-/// one teammate a hold would revive.
+/// Mark up to `max_visible` assistable candidates and drop every other
+/// marker. The candidate the shared target choice picks for the local helper
+/// always holds a slot; the rest fill in candidate order. `inRange` is true
+/// only on that chosen candidate, so the prompt names the one teammate a hold
+/// would revive even when the cap would otherwise cut it.
 fn select(
     pool: &mut PresentationPool,
     config: &AssistableTeammatesOverlayConfig,
@@ -39,18 +42,22 @@ fn select(
     marked: &mut Vec<EntityId>,
 ) {
     let local = helper.map(|helper| helper.id);
-    marked.clear();
-    marked.extend(
-        candidates
-            .iter()
-            .filter(|candidate| candidate.assistable && Some(candidate.id) != local)
-            .map(|candidate| candidate.id)
-            .take(config.max_visible),
-    );
-    pool.retain_overlays(KIND, |entity| marked.contains(&entity));
     let chosen = helper
         .and_then(|helper| assist_candidate(helper, candidates))
         .map(|candidate| candidate.id);
+    marked.clear();
+    if config.max_visible > 0 {
+        marked.extend(chosen);
+    }
+    for candidate in candidates {
+        if marked.len() >= config.max_visible {
+            break;
+        }
+        if candidate.assistable && Some(candidate.id) != local && Some(candidate.id) != chosen {
+            marked.push(candidate.id);
+        }
+    }
+    pool.retain_overlays(KIND, |entity| marked.contains(&entity));
     for &entity in marked.iter() {
         if pool.upsert_authoritative_overlay(
             KIND,
@@ -80,10 +87,11 @@ fn marker_anchor(
     anim_time: f64,
     position: impl FnOnce() -> Option<Vec3>,
 ) -> Option<Vec3> {
-    let socket = &config.world_anchor.socket;
-    let base = (!socket.is_empty())
-        .then(|| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
-        .flatten()
+    let base = config
+        .world_anchor
+        .socket
+        .as_deref()
+        .and_then(|socket| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
         .or_else(position)?;
     let anchor = base + Vec3::Y * config.world_anchor.offset_y;
     anchor.is_finite().then_some(anchor)
@@ -126,7 +134,7 @@ pub(crate) fn select_host_markers(
         pool.clear_overlays(KIND);
         return;
     };
-    let helper = local_helper(registry);
+    let helper = local_helper(registry, registry.local_player_movement_pawn());
     let local = helper.as_ref().map(|helper| helper.id);
     scratch.group.clear();
     extend_with_player_pawns(registry, None, &mut scratch.group);
@@ -208,12 +216,15 @@ pub(crate) fn update_client_markers(
         pool.clear_overlays(KIND);
         return;
     };
-    let helper = local_helper(registry);
+    // The marked pawn only: before the local record arms it there is no
+    // helper, so every marker is plain.
+    let helper = local_helper(registry, registry.local_player_pawn());
     gather_candidates(
         replication,
         render_server_tick,
         helper.as_ref().map(|helper| helper.id),
         &mut scratch.pawns,
+        &mut scratch.table,
         &mut scratch.candidates,
     );
     select(

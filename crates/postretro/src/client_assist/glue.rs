@@ -10,10 +10,15 @@ use crate::netcode::{self, AssistProgressSample, ClientReplication};
 use crate::sim::assist::{AssistCandidate, AssistHelper, PawnLife};
 use crate::sim::assist_pairs::PairValues;
 
-/// The local pawn as helper. Its entry count is never passed: the client runner
-/// compares ids alone.
-pub(super) fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
-    let pawn = registry.local_player_movement_pawn()?;
+/// `pawn` as the local helper. Its entry count is never passed: the client
+/// runner compares ids alone. A connected client passes the marked pawn
+/// ([`EntityRegistry::local_player_pawn`]), which is `None` until the local
+/// record arms it: the movement-pawn fallback could name a remote pawn there.
+pub(super) fn local_helper(
+    registry: &EntityRegistry,
+    pawn: Option<EntityId>,
+) -> Option<AssistHelper> {
+    let pawn = pawn?;
     let movement = registry
         .get_component::<PlayerMovementComponent>(pawn)
         .ok()?;
@@ -33,11 +38,13 @@ pub(super) fn local_helper(registry: &EntityRegistry) -> Option<AssistHelper> {
 /// `render_server_tick`, with its pair-table entry when one has arrived. Every
 /// candidate reads the same source, whether or not a snapshot applied this
 /// frame. `local` (the local pawn, when there is one) is never a candidate.
+/// `table` is a reused buffer for the pair table.
 pub(super) fn gather_candidates(
     replication: &ClientReplication,
     render_server_tick: Option<f64>,
     local: Option<EntityId>,
     pawns: &mut Vec<(EntityId, netcode::RemoteAssistFacts)>,
+    table: &mut Vec<netcode::AssistPairEntry>,
     out: &mut Vec<AssistCandidate>,
 ) {
     out.clear();
@@ -45,7 +52,7 @@ pub(super) fn gather_candidates(
     if pawns.is_empty() {
         return;
     }
-    let table = replication.assist_pair_table();
+    replication.assist_pair_table_into(table);
     out.extend(pawns.iter().filter_map(|(id, facts)| {
         if Some(*id) == local {
             return None;
@@ -70,10 +77,11 @@ pub(super) fn gather_candidates(
     }));
 }
 
-/// Reused per-tick buffers, so a held tick allocates only the pair table.
+/// Reused per-tick buffers, so a steady held tick allocates nothing.
 #[derive(Debug, Default)]
 pub(crate) struct Scratch {
     pawns: Vec<(postretro_entities::EntityId, netcode::RemoteAssistFacts)>,
+    table: Vec<netcode::AssistPairEntry>,
     candidates: Vec<AssistCandidate>,
 }
 
@@ -112,7 +120,7 @@ impl crate::App {
             return;
         };
         let registry = session.scripting.script_ctx.registry.borrow();
-        let Some(helper) = local_helper(&registry) else {
+        let Some(helper) = local_helper(&registry, registry.local_player_pawn()) else {
             self.client_assist.reset();
             return;
         };
@@ -123,6 +131,7 @@ impl crate::App {
                 self.remote_player_presentation.render_server_tick,
                 Some(helper.id),
                 &mut scratch.pawns,
+                &mut scratch.table,
                 &mut scratch.candidates,
             );
         } else {

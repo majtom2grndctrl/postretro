@@ -23,11 +23,11 @@ use postretro_sim::scripting_systems::hit_zones::HitZoneStore;
 const KIND: OverlayKind = OverlayKind::AssistableTeammates;
 const LIFT: f32 = 0.6;
 
-fn config(socket: &str) -> AssistableTeammatesOverlayConfig {
+fn config(socket: Option<&str>) -> AssistableTeammatesOverlayConfig {
     AssistableTeammatesOverlayConfig {
         template: PresentationTemplateHandle::from("reviveMarker"),
         world_anchor: PresentationWorldAnchor {
-            socket: socket.to_string(),
+            socket: socket.map(str::to_string),
             offset_y: LIFT,
         },
         max_visible: 8,
@@ -118,7 +118,7 @@ fn other_down_beside_the_host() -> Consumer {
 #[test]
 fn revive_marker_r7_host_marks_the_downed_teammate_and_prompts_in_reach() {
     let mut h = other_down_beside_the_host();
-    let config = config("");
+    let config = config(None);
     let mut markers = Markers::default();
     assert!(
         h.assist.pair_values(h.host, h.other).is_some(),
@@ -145,7 +145,7 @@ fn revive_marker_r7_a_downed_host_sees_only_a_plain_marker() {
     let host = h.host;
     down(&mut h, host);
     let mut markers = Markers::default();
-    markers.select(&h, &config(""));
+    markers.select(&h, &config(None));
     assert_eq!(markers.marked(), vec![h.other]);
     assert_eq!(markers.in_range(h.other), Some(false));
     assert!(!markers.pool.has_overlay(KIND, h.host));
@@ -155,7 +155,7 @@ fn revive_marker_r7_a_downed_host_sees_only_a_plain_marker() {
 #[test]
 fn revive_marker_r7_host_drops_the_marker_when_the_teammate_stands() {
     let h = other_down_beside_the_host();
-    let config = config("");
+    let config = config(None);
     let mut markers = Markers::default();
     markers.select(&h, &config);
     assert_eq!(markers.marked(), vec![h.other]);
@@ -187,7 +187,7 @@ fn revive_marker_r7_single_player_produces_no_markers() {
         &registry,
         &postretro_sim::sim::assist::AssistState::default(),
         &mut pool,
-        Some(&config("")),
+        Some(&config(None)),
         &mut scratch,
     );
     assert_eq!(pool.overlay_count(KIND), 0);
@@ -199,7 +199,7 @@ fn revive_marker_r7_single_player_produces_no_markers() {
 #[test]
 fn revive_marker_r9_host_anchor_falls_back_to_the_position_plus_offset() {
     let h = other_down_beside_the_host();
-    for socket in ["", "head"] {
+    for socket in [None, Some("head")] {
         let config = config(socket);
         let mut markers = Markers::default();
         markers.select(&h, &config);
@@ -208,7 +208,7 @@ fn revive_marker_r9_host_anchor_falls_back_to_the_position_plus_offset() {
         let anchor = markers.pool.overlay_anchor(KIND, h.other).unwrap();
         assert!(
             (anchor - (position + Vec3::Y * LIFT)).length() < 1e-5,
-            "socket `{socket}`: {anchor:?} vs {position:?}"
+            "socket {socket:?}: {anchor:?} vs {position:?}"
         );
     }
 }
@@ -218,7 +218,7 @@ fn revive_marker_r9_host_anchor_falls_back_to_the_position_plus_offset() {
 #[test]
 fn revive_marker_r14_range_reads_the_authoritative_pose_and_the_anchor_the_presented_one() {
     let mut h = other_down_beside_the_host();
-    let config = config("");
+    let config = config(None);
     let mut markers = Markers::default();
     let authoritative = h.pose(h.other).position;
 
@@ -250,7 +250,7 @@ fn revive_marker_r14_range_reads_the_authoritative_pose_and_the_anchor_the_prese
 #[test]
 fn revive_marker_r13_host_markers_survive_the_no_config_damaged_enemy_pass() {
     let h = other_down_beside_the_host();
-    let config = config("");
+    let config = config(None);
     let mut markers = Markers::default();
     let mut runtime = crate::impact_policy::ImpactPolicyRuntime::new(h.ctx.clone());
     assert!(runtime.client_overlay_config().is_none());

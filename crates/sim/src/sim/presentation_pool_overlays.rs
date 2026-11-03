@@ -104,7 +104,9 @@ impl KeyedOverlays {
 impl PresentationPool {
     /// Create or refresh one target-keyed overlay of `kind`. Its cap counts
     /// only that kind's entries and is separate from the spawn ring's
-    /// `capacity`; no archetype or kind can evict another.
+    /// `capacity`; no archetype or kind can evict another. Lingering entries
+    /// belong to damaged-enemy bars only: markers are always authoritative
+    /// (see [`Self::upsert_authoritative_overlay`]).
     pub fn refresh_overlay(
         &mut self,
         kind: OverlayKind,
@@ -114,6 +116,10 @@ impl PresentationPool {
         max_visible: usize,
         eviction_order: u64,
     ) {
+        debug_assert!(
+            kind == OverlayKind::DamagedEnemies,
+            "only damaged-enemy overlays linger; {kind:?} must be authoritative"
+        );
         if max_visible == 0 {
             return;
         }

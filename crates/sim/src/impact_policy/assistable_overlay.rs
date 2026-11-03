@@ -78,7 +78,7 @@ mod tests {
             .expect("marker config");
         assert_eq!(marker.template.0.as_str(), "reviveMarker");
         assert_eq!(marker.max_visible, 8);
-        assert!(marker.world_anchor.socket.is_empty());
+        assert_eq!(marker.world_anchor.socket, None);
         assert_eq!(marker.world_anchor.offset_y, 0.6);
     }
 

@@ -396,9 +396,10 @@ pub struct PresentationTemplateSpawnScatter {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentationWorldAnchor {
-    /// Empty when the template names no socket.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub socket: String,
+    /// `None` when the template names no socket. An explicit empty name is
+    /// rejected, as the SDK validators reject it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
     pub offset_y: f32,
 }
 
@@ -406,6 +407,9 @@ impl PresentationWorldAnchor {
     fn validate(&self) -> Result<(), String> {
         if !self.offset_y.is_finite() {
             return Err("presentation template `worldAnchor.offsetY` must be finite".to_string());
+        }
+        if self.socket.as_deref() == Some("") {
+            return Err("presentation template `worldAnchor.socket` must be nonempty".to_string());
         }
         Ok(())
     }
@@ -418,7 +422,6 @@ pub const MAX_PRESENTATION_OVERLAY_VISIBLE: usize = 64;
 /// `ModManifest.presentationOverlays`. The manifest field accepts one of these
 /// or an array of them, at most one per [`PresentationOverlayKind`]. It is
 /// host-local authoring data, never a transport payload.
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentationOverlay {
@@ -703,10 +706,31 @@ mod tests {
         );
         socketless.validate().unwrap();
         let anchor = socketless.world_anchor.as_ref().unwrap();
-        assert!(anchor.socket.is_empty());
+        assert_eq!(anchor.socket, None);
         assert_eq!(
             serde_json::to_value(anchor).unwrap(),
             serde_json::json!({ "offsetY": 0.6 })
+        );
+    }
+
+    #[test]
+    fn world_anchor_rejects_an_explicit_empty_socket() {
+        let named = template(
+            serde_json::json!({ "kind": "glyph", "command": "assist" }),
+            serde_json::json!({ "socket": "head", "offsetY": 0.6 }),
+        );
+        named.validate().unwrap();
+        assert_eq!(
+            named.world_anchor.as_ref().unwrap().socket.as_deref(),
+            Some("head")
+        );
+        let empty = template(
+            serde_json::json!({ "kind": "glyph", "command": "assist" }),
+            serde_json::json!({ "socket": "", "offsetY": 0.6 }),
+        );
+        assert_eq!(
+            empty.validate().unwrap_err(),
+            "presentation template `worldAnchor.socket` must be nonempty"
         );
     }
 }

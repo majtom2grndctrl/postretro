@@ -171,20 +171,25 @@ impl ClientReplication {
     /// record, each entry resolved to its client-local entity. An entry whose
     /// pawn is not yet mapped is left out. Empty before any table arrives.
     pub fn assist_pair_table(&self) -> Vec<AssistPairEntry> {
+        let mut out = Vec::new();
+        self.assist_pair_table_into(&mut out);
+        out
+    }
+
+    /// [`Self::assist_pair_table`] into a caller-owned buffer, cleared first,
+    /// so a per-frame reader reuses its allocation.
+    pub fn assist_pair_table_into(&self, out: &mut Vec<AssistPairEntry>) {
+        out.clear();
         let Some((_, facts)) = &self.remote_assist.local else {
-            return Vec::new();
+            return;
         };
-        facts
-            .pairs
-            .iter()
-            .filter_map(|pair| {
-                Some(AssistPairEntry {
-                    target: self.entity_for_network_id(NetworkId(pair.network_id))?,
-                    radius: pair.radius,
-                    required_ticks: pair.required_ticks,
-                })
+        out.extend(facts.pairs.iter().filter_map(|pair| {
+            Some(AssistPairEntry {
+                target: self.entity_for_network_id(NetworkId(pair.network_id))?,
+                radius: pair.radius,
+                required_ticks: pair.required_ticks,
             })
-            .collect()
+        }));
     }
 
     /// The required ticks of the highest-progress helper on the local pawn,

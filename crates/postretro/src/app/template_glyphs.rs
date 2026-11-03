@@ -98,6 +98,15 @@ impl App {
     /// renderer.
     pub(crate) fn install_presentation_templates(&mut self, templates: Vec<PresentationTemplate>) {
         let Some(session) = self.session.as_mut() else {
+            // Not reached: both callers commit a manifest into a live session.
+            // With no session there are no bindings to resolve a glyph
+            // against, so the raw set is only correct when it holds none.
+            debug_assert!(
+                !templates
+                    .iter()
+                    .any(|template| contains_glyph(&template.root)),
+                "presentation templates holding glyphs installed with no session"
+            );
             if let Some(renderer) = self.renderer.as_mut() {
                 renderer.set_presentation_templates(templates);
             }

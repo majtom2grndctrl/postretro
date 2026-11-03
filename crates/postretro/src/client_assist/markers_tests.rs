@@ -24,7 +24,7 @@ fn config(max_visible: usize) -> AssistableTeammatesOverlayConfig {
     AssistableTeammatesOverlayConfig {
         template: PresentationTemplateHandle::from("reviveMarker"),
         world_anchor: PresentationWorldAnchor {
-            socket: String::new(),
+            socket: None,
             offset_y: 0.6,
         },
         max_visible,
@@ -278,8 +278,9 @@ fn revive_marker_r5_marks_every_assistable_remote_at_any_distance() {
     assert_eq!(client.marked(), vec![client.entity(8)]);
 }
 
-/// R5: `maxVisible` keeps the first markers in the client's `players()`
-/// order (entity order), and a freed slot goes to the next in that order.
+/// R5: with no teammate in reach, `maxVisible` keeps the first markers in the
+/// client's `players()` order (entity order), and a freed slot goes to the
+/// next in that order.
 #[test]
 fn revive_marker_r5_max_visible_caps_in_players_order() {
     let remotes = [downed(7, 9.0), downed(8, 1.0), downed(9, 5.0)];
@@ -307,6 +308,32 @@ fn revive_marker_r5_max_visible_caps_in_players_order() {
     client.apply(&after, &[]);
     client.frame(Some(&config(2)), None);
     assert_eq!(client.marked(), order[1..].to_vec());
+}
+
+/// R5/R6: the cap never cuts the teammate a hold would revive. With one slot,
+/// the in-range pawn takes it even when an out-of-range pawn comes first in
+/// `players()` order; with two, the remaining slot fills in that order.
+#[test]
+fn revive_marker_r5_cap_keeps_the_chosen_teammate() {
+    let pairs = [(7, 1.5), (8, 1.5), (9, 1.5)];
+    let mut client = Client::new(&[downed(7, 9.0), downed(8, 9.0), downed(9, 9.0)], &pairs);
+    let mut ids = [7, 8, 9];
+    ids.sort_by_key(|&id| client.entity(id));
+    let [first, second, last] = ids;
+    // Only the last pawn in entity order is in reach.
+    let remotes = [downed(first, 9.0), downed(second, 8.0), downed(last, 1.0)];
+    client.apply(&remotes, &pairs);
+
+    client.frame(Some(&config(1)), None);
+    assert_eq!(client.marked(), vec![client.entity(last)]);
+    assert_eq!(client.prompted(&remotes), [last]);
+
+    client.frame(Some(&config(2)), None);
+    let mut expected = vec![client.entity(first), client.entity(last)];
+    expected.sort();
+    assert_eq!(client.marked(), expected);
+    assert_eq!(client.in_range(first), Some(false));
+    assert_eq!(client.prompted(&remotes), [last]);
 }
 
 /// R6: `inRange` marks only the teammate the shared target choice picks, and

@@ -195,7 +195,8 @@ fn revive_marker_r15_template_only_reload_sends_resolved_glyphs() {
     assert_eq!(image_asset(&row.children[1]), Some("ui/glyphs/xbox/south"));
 }
 
-/// A template set with no glyph re-sends only on install.
+/// A template set with no glyph re-sends only on install or for a new
+/// renderer; art re-registration alone leaves it.
 #[test]
 fn templates_without_glyphs_never_resend_on_input_changes() {
     let mut app = app_with_glyphs();
@@ -213,4 +214,15 @@ fn templates_without_glyphs_never_resend_on_input_changes() {
     set_family(&mut app, Some(0x054C));
     rebind_confirm_to_west(&mut app);
     assert!(stale_resolved_templates(session(&mut app)).is_none());
+
+    session(&mut app).glyph_art.invalidate();
+    assert!(
+        stale_resolved_templates(session(&mut app)).is_none(),
+        "re-registered art does not re-send a glyph-free set"
+    );
+    session(&mut app).glyph_art.forget_renderer();
+    assert!(
+        stale_resolved_templates(session(&mut app)).is_some(),
+        "a new renderer receives every set"
+    );
 }

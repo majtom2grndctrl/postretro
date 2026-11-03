@@ -434,6 +434,10 @@ fn adaptive_interpolation_delay_ticks(
 /// presentation pitch sampled with the transform from the same snapshot. `stance`
 /// is the replicated movement state's posture and footing, present exactly when
 /// `intrinsic_velocity` is: both come from the same movement payload.
+/// `capsule_half_height` is the same payload's live collision-capsule
+/// half-height, which a crouch or a low life-state posture shrinks with the
+/// feet planted: the transform is the capsule centre, so the feet-authored
+/// mesh needs it to stay on the floor (`entity_model.md` §7b).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TransformSample {
     pub(crate) teleport: Option<TeleportSample>,
@@ -441,6 +445,7 @@ pub(crate) struct TransformSample {
     pub(crate) transform: Transform,
     pub(crate) intrinsic_velocity: Option<Vec3>,
     pub(crate) stance: Option<LocomotionStance>,
+    pub(crate) capsule_half_height: Option<f32>,
     pub(crate) aim_pitch: f32,
 }
 
@@ -448,6 +453,18 @@ pub(crate) struct TransformSample {
 pub(crate) struct TeleportSample {
     pub(crate) generation: u8,
     pub(crate) last_teleporter: u16,
+}
+
+/// The movement payload of a snapshot delta that carried no Transform, recorded
+/// against the latest known transform by
+/// [`RemoteInterpolationBuffer::record_intrinsic_velocity`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MovementOnlySample {
+    pub(crate) intrinsic_velocity: Vec3,
+    pub(crate) stance: LocomotionStance,
+    pub(crate) capsule_half_height: f32,
+    pub(crate) aim_pitch: f32,
+    pub(crate) teleport: Option<TeleportSample>,
 }
 
 /// Accepted authoritative sample where a remote pawn's generation changed.
@@ -469,6 +486,7 @@ fn crosses_teleport(a: &TransformSample, b: &TransformSample) -> bool {
 fn cut_pose(
     sample: &TransformSample,
     stance: LocomotionStance,
+    capsule_half_height: Option<f32>,
     holds_newest: bool,
     state_tick: f64,
 ) -> PresentedPose {
@@ -481,6 +499,7 @@ fn cut_pose(
         horizontal_velocity: Vec3::ZERO,
         intrinsic_velocity: sample.intrinsic_velocity,
         stance,
+        capsule_half_height,
         aim_pitch: sample.aim_pitch,
     }
 }
@@ -523,6 +542,9 @@ pub(crate) struct PresentedPose {
     /// so a takeoff or apex lands on the tick the host saw it. Standing and
     /// grounded when no movement state is known.
     pub(crate) stance: LocomotionStance,
+    /// Replicated live capsule half-height at or before the presented tick,
+    /// stepped like `stance`. `None` when no movement state is known.
+    pub(crate) capsule_half_height: Option<f32>,
     /// Interpolated remote camera pitch for avatar pose presentation.
     pub(crate) aim_pitch: f32,
 }
@@ -615,6 +637,7 @@ impl EntityBuffer {
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(oldest.server_tick),
                 stance: self.stance_at_or_before(oldest.server_tick),
+                capsule_half_height: self.capsule_half_height_at_or_before(oldest.server_tick),
                 aim_pitch: oldest.aim_pitch,
             });
         }
@@ -648,6 +671,7 @@ impl EntityBuffer {
                     return Some(cut_pose(
                         at,
                         self.stance_at_or_before(at.server_tick),
+                        self.capsule_half_height_at_or_before(at.server_tick),
                         false,
                         state_tick,
                     ));
@@ -669,6 +693,7 @@ impl EntityBuffer {
                     horizontal_velocity: xz_velocity_between(a, b),
                     intrinsic_velocity: self.interpolated_intrinsic_velocity(a, b, alpha),
                     stance: self.stance_at_or_before(at.server_tick),
+                    capsule_half_height: self.capsule_half_height_at_or_before(at.server_tick),
                     aim_pitch: a.aim_pitch + (b.aim_pitch - a.aim_pitch) * alpha,
                 });
             }
@@ -686,6 +711,7 @@ impl EntityBuffer {
             horizontal_velocity: Vec3::ZERO,
             intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
             stance: self.stance_at_or_before(newest.server_tick),
+            capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
             aim_pitch: newest.aim_pitch,
         })
     }
@@ -705,6 +731,7 @@ impl EntityBuffer {
             return cut_pose(
                 newest,
                 self.stance_at_or_before(newest.server_tick),
+                self.capsule_half_height_at_or_before(newest.server_tick),
                 true,
                 target_tick,
             );
@@ -738,6 +765,7 @@ impl EntityBuffer {
                     horizontal_velocity: Vec3::new(velocity.x, 0.0, velocity.z),
                     intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
                     stance: self.stance_at_or_before(newest.server_tick),
+                    capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
                     aim_pitch: newest.aim_pitch,
                 }
             }
@@ -752,6 +780,7 @@ impl EntityBuffer {
                 horizontal_velocity: Vec3::ZERO,
                 intrinsic_velocity: self.intrinsic_velocity_at_or_before(newest.server_tick),
                 stance: self.stance_at_or_before(newest.server_tick),
+                capsule_half_height: self.capsule_half_height_at_or_before(newest.server_tick),
                 aim_pitch: newest.aim_pitch,
             },
         }
@@ -788,6 +817,12 @@ impl EntityBuffer {
     fn stance_at_or_before(&self, server_tick: u32) -> LocomotionStance {
         self.movement_field_at_or_before(server_tick, |sample| sample.stance)
             .unwrap_or_default()
+    }
+
+    /// Most recent replicated live capsule half-height at or before
+    /// `server_tick`, inherited the same way as [`Self::stance_at_or_before`].
+    fn capsule_half_height_at_or_before(&self, server_tick: u32) -> Option<f32> {
+        self.movement_field_at_or_before(server_tick, |sample| sample.capsule_half_height)
     }
 
     /// The newest movement-payload field at or before `server_tick`, never
@@ -930,11 +965,15 @@ impl RemoteInterpolationBuffer {
         &mut self,
         network_id: NetworkId,
         server_tick: u32,
-        intrinsic_velocity: Vec3,
-        stance: LocomotionStance,
-        aim_pitch: f32,
-        teleport: Option<TeleportSample>,
+        movement: MovementOnlySample,
     ) {
+        let MovementOnlySample {
+            intrinsic_velocity,
+            stance,
+            capsule_half_height,
+            aim_pitch,
+            teleport,
+        } = movement;
         let Some(buffer) = self.buffers.get_mut(&network_id) else {
             return;
         };
@@ -947,6 +986,7 @@ impl RemoteInterpolationBuffer {
             transform,
             intrinsic_velocity: Some(intrinsic_velocity),
             stance: Some(stance),
+            capsule_half_height: Some(capsule_half_height),
             aim_pitch,
         };
         self.record(network_id, sample);
@@ -991,6 +1031,14 @@ impl RemoteInterpolationBuffer {
                 Some(buffer.stance_at_or_before(newest.server_tick))
             })
             .unwrap_or_default()
+    }
+
+    /// Newest replicated live capsule half-height, for a pre-time-sync held
+    /// presentation (see [`Self::newest_stance`]).
+    pub(crate) fn newest_capsule_half_height(&self, network_id: NetworkId) -> Option<f32> {
+        let buffer = self.buffers.get(&network_id)?;
+        let newest = buffer.samples.back()?;
+        buffer.capsule_half_height_at_or_before(newest.server_tick)
     }
 
     /// Newest finite pitch for a pre-time-sync held presentation. No render tick
@@ -1124,6 +1172,7 @@ mod tests {
             },
             intrinsic_velocity: None,
             stance: None,
+            capsule_half_height: None,
             aim_pitch: 0.0,
         }
     }
@@ -2307,6 +2356,7 @@ mod tests {
             },
             intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
             stance: None,
+            capsule_half_height: None,
             aim_pitch: 0.0,
         };
         let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
@@ -2322,6 +2372,7 @@ mod tests {
                 },
                 intrinsic_velocity: Some(Vec3::new(3.0, 10.0, 4.0)),
                 stance: None,
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2371,6 +2422,7 @@ mod tests {
             },
             intrinsic_velocity: Some(Vec3::new(2.0, 0.0, 0.0)),
             stance: None,
+            capsule_half_height: None,
             aim_pitch: 0.0,
         };
         let segment_secs = 3.0 * DEFAULT_MICROS_PER_TICK as f32 / 1_000_000.0;
@@ -2446,6 +2498,7 @@ mod tests {
                 },
                 intrinsic_velocity: Some(Vec3::ZERO),
                 stance: None,
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2461,6 +2514,7 @@ mod tests {
                 },
                 intrinsic_velocity: Some(Vec3::ZERO),
                 stance: None,
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2496,6 +2550,7 @@ mod tests {
                 },
                 intrinsic_velocity: Some(intrinsic_velocity),
                 stance: None,
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2511,6 +2566,7 @@ mod tests {
                 },
                 intrinsic_velocity: Some(intrinsic_velocity),
                 stance: None,
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             },
         );
@@ -2545,6 +2601,7 @@ mod tests {
             TransformSample {
                 intrinsic_velocity: Some(Vec3::ZERO),
                 stance: Some(stance(LocomotionFooting::Grounded)),
+                capsule_half_height: None,
                 ..sample(100, 0.0)
             },
         );
@@ -2553,6 +2610,7 @@ mod tests {
             TransformSample {
                 intrinsic_velocity: Some(Vec3::Y * 6.0),
                 stance: Some(stance(takeoff)),
+                capsule_half_height: None,
                 ..sample(110, 0.0)
             },
         );

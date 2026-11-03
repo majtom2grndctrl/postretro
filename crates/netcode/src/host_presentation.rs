@@ -89,6 +89,7 @@ pub fn record_client_pawn_poses(
                 transform: *transform,
                 intrinsic_velocity: movement.map(|movement| movement.velocity),
                 stance: movement.map(crate::sim::LocomotionStance::from_movement),
+                capsule_half_height: movement.map(|movement| movement.capsule.half_height),
                 aim_pitch,
             },
         );
@@ -139,7 +140,20 @@ pub fn restore_client_pawn_authoritative_poses(
         // write reseats `previous_transforms` before any render read, so leaving the
         // previous slot at the last delayed pose is harmless.
         let _ = registry.set_component(pawn, transform);
+        // The present write also seated the mesh on the delayed capsule; put it
+        // back on the live one so hit zones read the authoritative body.
+        if let Some((radius, half_height)) = live_capsule(registry, pawn) {
+            crate::sim::set_player_mesh_capsule_origin(registry, pawn, radius, half_height);
+        }
     }
+}
+
+/// The pawn's live capsule `(radius, half_height)`.
+fn live_capsule(registry: &EntityRegistry, pawn: EntityId) -> Option<(f32, f32)> {
+    registry
+        .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+        .ok()
+        .map(|movement| (movement.capsule.radius, movement.capsule.half_height))
 }
 
 /// Sample each connected-client pawn's buffer at the delayed fractional target and write
@@ -180,6 +194,17 @@ pub fn present_client_pawns(
             continue;
         };
         let _ = registry.set_presentation_transform(pawn, pose.transform);
+        // The drawn transform is the delayed capsule centre, so the feet-authored
+        // mesh drops by the delayed sample's capsule, not the live one: across a
+        // crouch the two differ for the presentation delay.
+        if let Some((radius, half_height)) = live_capsule(registry, pawn) {
+            crate::sim::set_player_mesh_capsule_origin(
+                registry,
+                pawn,
+                radius,
+                pose.capsule_half_height.unwrap_or(half_height),
+            );
+        }
         present_avatar_pose_inputs(registry, pawn, &pose);
     }
 }
@@ -368,6 +393,7 @@ mod tests {
                 horizontal_velocity: velocity,
                 intrinsic_velocity: Some(velocity),
                 stance: crate::sim::LocomotionStance::default(),
+                capsule_half_height: None,
                 aim_pitch: 0.0,
             };
             present_avatar_pose_inputs(registry, pawn, &pose);
@@ -415,6 +441,68 @@ mod tests {
         owners.set(pawn, client_id);
         let network_id = allocator.stamp(pawn);
         (pawn, network_id)
+    }
+
+    // Regression: a crouched client pawn vanished on the host seat. The delayed
+    // body must hang from the delayed sample's capsule, and authoritative reads
+    // after the restore from the live one, or the two differ across a crouch.
+    #[test]
+    fn host_seat_seats_the_delayed_body_on_the_delayed_capsule_and_restores_live() {
+        let mut movement = crate::predict_reconcile_harness_test_fixtures::component();
+        let (radius, standing) = (movement.capsule.radius, movement.capsule.half_height);
+        let crouched = standing * 0.5;
+        let at = |half_height: f32| Transform {
+            position: Vec3::new(0.0, half_height + radius, 0.0),
+            ..pose_at(0.0, 0.0)
+        };
+        let mut registry = EntityRegistry::new();
+        let mut owners = MovementOwners::default();
+        let mut allocator = NetworkIdAllocator::new();
+        let mut buffer = RemoteInterpolationBuffer::default();
+        let (pawn, _) =
+            spawn_owned_pawn(&mut registry, &mut owners, &mut allocator, 7, at(standing));
+        registry
+            .set_component(pawn, MeshComponent::stateless("avatar".to_string()))
+            .unwrap();
+        registry.set_component(pawn, movement.clone()).unwrap();
+        for tick in 0..3 {
+            record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
+        }
+        // Tick 3 crouches with the feet planted.
+        movement.capsule.half_height = crouched;
+        registry.set_component(pawn, movement).unwrap();
+        registry.set_component(pawn, at(crouched)).unwrap();
+        record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, 3);
+        let feet = |registry: &EntityRegistry| {
+            let position = registry.get_component::<Transform>(pawn).unwrap().position;
+            let offset = registry
+                .get_component::<MeshComponent>(pawn)
+                .unwrap()
+                .origin_offset;
+            (position + offset).y
+        };
+
+        // The delayed target still draws a standing sample.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 4, 0.5);
+        assert!(
+            feet(&registry).abs() < POS_EPS,
+            "delayed standing: {}",
+            feet(&registry)
+        );
+        // The newest sample is the crouch.
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 6, 0.0);
+        assert!(
+            feet(&registry).abs() < POS_EPS,
+            "delayed crouch: {}",
+            feet(&registry)
+        );
+        present_client_pawns(&buffer, &owners, &allocator, &mut registry, 4, 0.5);
+        restore_client_pawn_authoritative_poses(&buffer, &owners, &allocator, &mut registry);
+        assert!(
+            feet(&registry).abs() < POS_EPS,
+            "live crouch: {}",
+            feet(&registry)
+        );
     }
 
     #[test]
@@ -1022,12 +1110,17 @@ mod tests {
             ),
         );
 
+        // Pawn transforms are capsule centres and the mesh hangs from the live
+        // capsule's sole, so lift each centre by that distance to put the model
+        // origin 1.0 above the source floor and 0.8 above the arrival's.
+        let movement = crate::predict_reconcile_harness_test_fixtures::component();
+        let sole = movement.capsule.half_height + movement.capsule.radius;
         let source = Transform {
-            position: Vec3::new(0.0, 1.0, 0.0),
+            position: Vec3::new(0.0, 1.0 + sole, 0.0),
             ..pose_at(0.0, 0.0)
         };
         let arrival = Transform {
-            position: Vec3::new(100.0, 5.8, 0.0),
+            position: Vec3::new(100.0, 5.8 + sole, 0.0),
             ..pose_at(0.0, 0.0)
         };
         let mut registry = EntityRegistry::new();
@@ -1038,12 +1131,7 @@ mod tests {
         registry
             .set_component(pawn, MeshComponent::stateless("legwalker".to_string()))
             .unwrap();
-        registry
-            .set_component(
-                pawn,
-                crate::predict_reconcile_harness_test_fixtures::component(),
-            )
-            .unwrap();
+        registry.set_component(pawn, movement).unwrap();
         for tick in 0..3 {
             record_client_pawn_poses(&mut buffer, &owners, &allocator, &registry, tick);
         }

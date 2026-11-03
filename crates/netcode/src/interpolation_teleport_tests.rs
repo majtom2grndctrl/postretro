@@ -11,6 +11,7 @@ fn sample(tick: u32, position: Vec3, generation: u8, last_teleporter: u16) -> Tr
         },
         intrinsic_velocity: Some(Vec3::X * 2.0),
         stance: None,
+        capsule_half_height: None,
         aim_pitch: generation as f32 * 0.01,
         teleport: Some(TeleportSample {
             generation,

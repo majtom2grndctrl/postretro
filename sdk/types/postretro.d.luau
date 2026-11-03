@@ -201,6 +201,14 @@ export type LifeStateMovementProfile = {
   posture: LifeStatePosture?,
 }
 
+--- A teammate may assist a pawn in this state. Each field is a literal or a Number expression over `assist.helper` and `assist.target`, evaluated on the host for each pair.
+export type LifeStateAssistable = {
+  --- Reach between pawn origins in metres. A literal must be in (0, 16]; an expression result clamps to 16, and at or below 0 this helper cannot assist this target. Defaults to 1.5.
+  radius: NumberValue?,
+  --- Hold time in milliseconds, rounded up to whole ticks. A literal must be in [0, 60000]; an expression result clamps to 60000, and a negative result holds progress without advancing it. Defaults to 3000.
+  holdMs: NumberValue?,
+}
+
 --- Closed engine capabilities for one author-named player life state. Every boolean defaults to true. Declaring life states hands zero-HP behavior to authored transitions; HP never changes the life state automatically.
 export type LifeStateProfile = {
   --- Movement scaling, abilities and posture. Omission permits full movement.
@@ -221,6 +229,8 @@ export type LifeStateProfile = {
   occupancy: boolean?,
   --- Permit spatial damage targeting at any HP. Defaults to true. False excludes the pawn from projectile impacts, splash, AI attack checks and hitscan knockback. It does not gate hitscan or pellet damage, explicit script damage or mover crush, which keep their existing behavior.
   damageable: boolean?,
+  --- A teammate holding `assist` in range revives or otherwise assists this pawn. Omitted: not assistable. `{}` takes every default.
+  assistable: LifeStateAssistable?,
 }
 
 --- Author-named player life states; requires components.movement. Names use the engine ASCII identifier syntax. At most 255 distinct names may appear across the mod. Unknown profile keys reject content.
@@ -1359,7 +1369,7 @@ export type AudioProfile = {
   ghost: AudioGhostProfile?,
 }
 
---- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
+--- Stable ID of an engine command that an `input` block can label, show or hide, and bind. The set is engine-closed. Valid values: `move_forward`, `move_back`, `move_left`, `move_right`, `move_up`, `move_down`, `look_x`, `look_y`, `sprint`, `jump`, `dash`, `crouch`, `use`, `assist`, `drop`, `shoot`, `alt_fire`, `reload`, `select_wieldable_1`, `select_wieldable_2`, `select_wieldable_3`, `select_wieldable_4`, `select_wieldable_5`, `select_wieldable_6`, `select_wieldable_7`, `select_wieldable_8`, `select_wieldable_9`, `select_wieldable_10`, `cycle_wieldable_next`, `cycle_wieldable_previous`, `toggle_last_wieldable`, `nav_up`, `nav_down`, `nav_left`, `nav_right`, `nav_next`, `nav_prev`, `nav_tab_next`, `nav_tab_prev`, `nav_confirm`, `nav_cancel`, `nav_menu`, `nav_options`, `text_backspace`, `text_space`, `text_commit`.
 export type CommandId =
   --- Move forward. Digital; a half-axis stick input carries its magnitude. Accepts `press` or `hold`.
   "move_forward"
@@ -1387,6 +1397,8 @@ export type CommandId =
   | "crouch"
   --- Use or interact.
   | "use"
+  --- Assist a teammate (revive). Accepts `press` or `hold`; the engine default is `hold` on Use's inputs. Relevant only when a life state declares `assistable`.
+  | "assist"
   --- Drop the wielded item.
   | "drop"
   --- Primary fire. Accepts only `press`.
@@ -1624,8 +1636,8 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
-  --- One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.
-  presentationOverlays: PresentationOverlay?,
+  --- Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. The declaration is host-local: in single player it is local, and in co-op the host selects damaged enemies for every machine while assistable-teammate markers are derived on each machine.
+  presentationOverlays: PresentationOverlays?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
@@ -1646,7 +1658,7 @@ export type ModManifest = {
   crossings: {CrossingDescriptor}?,
   --- Mod-global trigger events, each a standing rule keyed by tag: build each with `defineTriggerEvent({ tag, event, fire, levels? })`. Optional; `levels` selects the map tags it binds in. A volume-keyed entry (a trigger member's `on`) belongs in `setupLevel` and is rejected here.
   triggerEvents: {TriggerEventDescriptor}?,
-  --- Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)` or `ceases(cond)`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction binds once.
+  --- Mod-global player events, each a player event built with `players().on` (Luau: `players():on`) from `becomes(cond)`, `ceases(cond)`, `assistReceived()` or `assistGiven()`, a `fire` list and `{ levels? }`. Optional; evaluated on the host once per player per tick, and `levels` selects the map tags it installs in. Mod-global entries compose before a level's own; a repeated condition, edge and reaction, or a repeated assist source and reaction, binds once.
   playerEvents: {PlayerEventDescriptor}?,
   --- Trigger-volume arming pools. Optional; compose by level tags.
   triggerPools: {TriggerPoolDescriptor}?,
@@ -1800,6 +1812,8 @@ export type GameStateRefs = {
   player: {
     ammo: PlayerComputedRef<number>,
     ammoReserve: PlayerComputedRef<number>,
+    assistProgress: PlayerComputedRef<number>,
+    assistReceivedProgress: PlayerComputedRef<number>,
     cell: PlayerComputedRef<number>,
     cellCapacity: PlayerComputedRef<number>,
     health: PlayerComputedRef<number>,
@@ -2583,6 +2597,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
   | { primitive: "slot.set", target: "@impact.source", args: { slot: string, value: any } }
@@ -2612,13 +2627,19 @@ export type TargetHandle = {
 export type SourceHandle = {
   __impactSourceBrand: true,
   --- Add health to the impact damager. A fire with no damager skips this
-  --- effect; app-drain impacts run no policy in v1. Amount expressions read
-  --- impact-target facts/state only: v1 has no source-scoped fact vocabulary.
+  --- effect; app-drain impacts run no policy in v1.
   grantHealth: (self: SourceHandle, amount: NumberValue) -> Effect,
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
-  --- skips this effect; app-drain impacts run no policy in v1. Amount
-  --- expressions remain impact-target scoped; v1 has no source facts.
+  --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Whether the damager is a player pawn in life state `name` at this fire.
+  --- False for a damager that is not a player. An unknown name skips the policy.
+  inLifeState: (self: SourceHandle, name: string) -> BoolRef,
+  --- Put the damager player pawn into life state `name` in-tick, as
+  --- `setLifeState`: a change restarts its elapsed time, the current state is a
+  --- no-op. A fire with no damager skips it; a damager lacking the state warns
+  --- and skips.
+  setLifeState: (self: SourceHandle, name: string) -> Effect,
   --- Adjust this faction's sentiment toward another impact recipient. Negative
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
@@ -2641,7 +2662,7 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 --- `motion.rise` and `spawnScatter.radius` are device pixels, not world metres.
 export type PresentationTemplateProps = {
@@ -2650,7 +2671,7 @@ export type PresentationTemplateProps = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
@@ -2669,11 +2690,24 @@ export type DamagedEnemiesSource = {
   hideAtFull: boolean,
   shield: { value: RuntimeValue, max: RuntimeValue }?,
 }
+--- Marker source over every remote teammate who can be assisted. Each instance
+--- carries one Bool fact, `inRange`: true only on the teammate a held `assist`
+--- would revive right now. The anchor falls back to the pawn's origin plus
+--- `worldAnchor.offsetY` when no socket is posed. At most `maxVisible` markers
+--- show: the teammate a hold would revive always keeps its marker, and others
+--- fill the rest in player order.
+export type AssistableTeammatesSource = {
+  kind: "assistableTeammates",
+}
+export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource
 export type PresentationOverlay = {
-  over: DamagedEnemiesSource,
+  over: PresentationOverlaySource,
   template: string,
   maxVisible: number,
 }
+--- `ModManifest.presentationOverlays`: one overlay, or an array with at most
+--- one per source kind.
+export type PresentationOverlays = PresentationOverlay | {PresentationOverlay}
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
@@ -2836,20 +2870,22 @@ export type PlayerGroup = {
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   --- Fire `fire` once per player whenever `edge`'s condition crosses for that
-  --- player. Evaluated on the host (and in single player) once per
-  --- authoritative tick, after the tick settles; a connected client registers
-  --- nothing. Effective only when returned under a manifest's `playerEvents`;
-  --- `options.levels` scopes a `ModManifest` entry.
+  --- player, or, for `assistReceived()` / `assistGiven()`, once per completed
+  --- assist on its target or helper. Evaluated on the host (and in single
+  --- player) once per authoritative tick, after the tick settles; a connected
+  --- client registers nothing. Effective only when returned under a
+  --- manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry.
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
---- A condition paired with its edge word. Build it with `becomes(cond)` or
---- `ceases(cond)`.
+--- What a player event fires on. Build it with `becomes(cond)`,
+--- `ceases(cond)`, `assistReceived()` or `assistGiven()`.
 export type PlayerEventEdge = { __playerEventEdge: true }
 --- `levels` scopes a `ModManifest` entry to matching map tags; a level
 --- script's entry must omit it.
 export type PlayerEventOptions = { levels: {string}? }
---- One `playerEvents` entry, as `players():on` builds it.
-export type PlayerEventDescriptor = { edge: "becomes" | "ceases", condition: RuntimeValue, fire: {string}, levels: {string}? }
+--- One `playerEvents` entry, as `players():on` builds it. A discrete source
+--- (`assistReceived` / `assistGiven`) carries no condition.
+export type PlayerEventDescriptor = { edge: "becomes" | "ceases" | "assistReceived" | "assistGiven", condition: RuntimeValue?, fire: {string}, levels: {string}? }
 --- Test the evaluated player in player events, or the local player in crossings.
 declare function inLifeState(name: string): BoolRef
 --- Fire when `cond` turns true for a player. Inside `cond`, a plain read of a
@@ -2861,6 +2897,14 @@ declare function becomes(cond: BoolRef): PlayerEventEdge
 --- Inside `cond`, a plain read of a per-player slot means the player being
 --- evaluated.
 declare function ceases(cond: BoolRef): PlayerEventEdge
+--- Fire when an assist completes on a player: `on.player` is the target. The
+--- completion applies in that tick's player-event pass before any condition
+--- is evaluated, so that tick's conditions see the fire's writes; it changes
+--- no life state or health itself. No condition.
+declare function assistReceived(): PlayerEventEdge
+--- Fire when a player completes an assist: `on.player` is the helper. Fires
+--- right after the target's `assistReceived()` subscriptions. No condition.
+declare function assistGiven(): PlayerEventEdge
 --- Address NPCs, optionally narrowed to those carrying `tag`. Resolved when
 --- each command takes effect, sequence steps included.
 declare function npcs(filter: NpcGroupFilter?): NpcGroup
@@ -2895,7 +2939,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one
+--- descriptor or an array of them, at most one per source kind.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -2943,15 +2988,16 @@ export type ScalarStateValue = number | boolean | string
 export type NumericArrayStateValue = {number}
 export type StateRefKind = "number" | "boolean" | "string" | "enum" | "array"
 --- The wire owner a `byPlayer` read or write addresses.
-export type OwnerToken = "@impact.source" | "@player"
+export type OwnerToken = "@impact.source" | "@player" | "@assist.helper" | "@assist.target"
 export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, owner: OwnerToken, __stateRefValueBrand: T? }
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
---- Who `byPlayer` addresses: the impact damager (`impact.source`) or a player
---- event's player (`on.player`).
-export type PlayerOwner = SourceHandle | PlayerTarget
+--- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
+--- event's player (`on.player`), or a side of an assist pair expression
+--- (`assist.helper`, `assist.target`).
+export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide
 --- A per-player engine slot. A plain read means the local player (HUD binds,
 --- crossings, impact policies), or the evaluated player inside a player-event
 --- condition; `byPlayer(on.player)` in a player-event reaction, or
@@ -3013,7 +3059,7 @@ export type ModManifestInput = {
   ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
-  presentationOverlays: PresentationOverlay?,
+  presentationOverlays: PresentationOverlays?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   uiImages: { [string]: string }?,
@@ -3049,6 +3095,20 @@ declare function set(ref: Ref<number> | OwnerAddressedRef<number>, value: Number
 declare function update(ref: Ref<number> | OwnerAddressedRef<number>, build: (cur: NumberRef) -> NumberValue): Effect
 --- Build a deferred impact-effect group guarded by a Bool expression.
 declare function when(cond: BoolRef, effects: {Effect}): GatedEffect
+--- One side of an assist pair expression, evaluated on the host for each
+--- helper and target.
+export type AssistSide = {
+  __assistSideBrand: true,
+  --- Whether this side's pawn is in life state `name`. An unknown name rejects
+  --- the mod at load.
+  inLifeState: (self: AssistSide, name: string) -> BoolRef,
+}
+--- The two sides an `assistable` `radius` or `holdMs` expression reads:
+--- `store.slot:byPlayer(assist.helper)`, `assist.target:inLifeState(name)`.
+export type Assist = { helper: AssistSide, target: AssistSide }
+--- The helper and target of an assist pair, for `assistable.radius` and
+--- `assistable.holdMs` expressions.
+declare assist: Assist
 
 -- ---------------------------------------------------------------------------
 -- UI theme helpers. `defineTheme` accepts nested singular token groups and
@@ -3148,10 +3208,16 @@ export type FactBindRef = { fact: string }
 --- A scalar comparand for UI visibility/selection predicates: number, boolean,
 --- or string. Arrays are intentionally excluded from equality predicates.
 export type PredicateValue = number | boolean | string
---- A reactive condition used by `visibleWhen`, `selected`, and `checked`.
+--- The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`,
+--- `"atLeast"` (>=), `"atMost"` (<=).
+export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost"
+--- A numeric comparison against a Number source. Built by `stateCompare`.
+export type PredicateCompare = { op: PredicateCompareOp, value: number }
+--- A reactive condition used by `visibleWhen`, `selected`, and `checked`:
+--- an `equals` comparand or a numeric `compare`, never both.
 --- Stamped facts are accepted only inside `definePresentationTemplate`; ordinary
 --- UI trees reject them during manifest validation.
-export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue? }
+export type Predicate = (ComputedRef<PredicateValue> | LocalBindRef | FactBindRef) & { equals: PredicateValue?, compare: PredicateCompare? }
 --- Accessibility role override. Valid values: `"tab"`, `"tablist"`,
 --- `"checkbox"`, `"radio"`, `"listitem"`, `"button"`, `"slider"`,
 --- `"progressbar"`, `"image"`, `"group"`, `"none"`. Omit to use the widget's
@@ -3596,8 +3662,13 @@ export type PostretroUiModule = {
   },
   --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
-  --- Bind an overlay source to a socket-anchored presentation template.
-  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
+  --- Build the assistable-teammate marker source. It takes no options: the
+  --- engine picks the teammates on each machine and stamps the `inRange` Bool fact.
+  assistableTeammates: (options: {}?) -> AssistableTeammatesSource,
+  --- Bind an overlay source to a world-anchored presentation template.
+  --- `maxVisible` is an integer from 1 to 64. Register one result as
+  --- `presentationOverlays`, or several as an array with at most one per source kind.
+  defineOverlay: (props: { over: PresentationOverlaySource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),
@@ -3608,6 +3679,8 @@ export type PostretroUiModule = {
     & ((ComputedRef<boolean>, ScalarStateBindOptions?) -> ComputedRef<boolean> & ScalarStateBindOptions),
   --- Build a scalar equality predicate for visibility, selection, or checked state.
   stateEquals: <T>(ref: ComputedRef<T>, value: T) -> Predicate,
+  --- Build a numeric comparison predicate on a Number state ref (e.g. assist progress above 0).
+  stateCompare: (ref: ComputedRef<number>, op: PredicateCompareOp, value: number) -> Predicate,
   --- Declare presentation-local cells. Values may be number, boolean, string, or RGBA tuple.
   createLocalState: (init: { [string]: any }) -> { scope: any, cells: any },
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
@@ -3701,6 +3774,10 @@ export type PostretroModule = {
   becomes: typeof(becomes),
   --- Player-event edge word: fire when a Bool condition turns false for a player.
   ceases: typeof(ceases),
+  --- Discrete player-event source: an assist completed on the player (the target).
+  assistReceived: typeof(assistReceived),
+  --- Discrete player-event source: the player completed an assist (the helper).
+  assistGiven: typeof(assistGiven),
   wait: typeof(wait),
   fire: typeof(fire),
   --- Declare a mod-global, tag-keyed trigger event for `ModManifest.triggerEvents`.
@@ -3739,6 +3816,8 @@ export type PostretroModule = {
   update: typeof(update),
   --- Gate impact effects with a Bool expression.
   when: typeof(when),
+  --- The helper and target of an assist pair, for `assistable` expressions.
+  assist: Assist,
   --- Pre-wrapped behavior-graph guard inputs for the fixed `@brain.*` namespace.
   brain: BrainInputs,
   --- Pre-wrapped candidate-filter inputs for the fixed `@candidate.*` namespace.

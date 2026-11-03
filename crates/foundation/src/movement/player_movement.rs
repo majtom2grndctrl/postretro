@@ -398,6 +398,14 @@ pub struct PlayerMovementComponent {
     pub life_state: u8,
     #[serde(default)]
     pub life_state_elapsed_ticks: u32,
+    /// Counts this pawn's entries into a life state, respawn included,
+    /// wrapping. Unlike elapsed, which a leave and re-entry within one tick
+    /// can return to the value it held, any entry changes it, so the host's
+    /// assist reset and completion re-check compare it to detect a re-entry.
+    /// Host-local: component rebuilds carry it; never replicated or
+    /// serialized.
+    #[serde(skip)]
+    pub life_state_entry: u32,
     #[serde(default)]
     pub life_state_table_revision: u8,
     // Derived from the matching profile at state adoption, never from local
@@ -424,6 +432,21 @@ pub struct PlayerMovementComponent {
     pub life_speed_scale: f32,
     #[serde(skip)]
     pub life_posture: super::LifeStatePosture,
+    /// The current profile declares `assistable`. Like the other stamps it is
+    /// derived from the installed profile; only remote retention reads the
+    /// replicated copy.
+    #[serde(skip)]
+    pub assistable: bool,
+    /// This pawn's assist progress as helper, 0..1, written by the host and
+    /// single-player accumulator every tick. Read through
+    /// `player.assistProgress`; never on the wire.
+    #[serde(skip)]
+    pub assist_progress: f32,
+    /// The highest progress among this pawn's helpers, 0..1, written by the
+    /// accumulator every tick. `player.assistReceivedProgress` reads 0 while
+    /// `assistable` is false. Never on the wire.
+    #[serde(skip)]
+    pub assist_received_progress: f32,
 }
 
 impl PlayerMovementComponent {
@@ -517,6 +540,7 @@ impl PlayerMovementComponent {
             teleport: Default::default(),
             life_state: super::UNDECLARED_LIFE_STATE,
             life_state_elapsed_ticks: 0,
+            life_state_entry: 0,
             life_state_table_revision: 0,
             life_movement_abilities: false,
             life_look: false,
@@ -529,6 +553,9 @@ impl PlayerMovementComponent {
             life_damageable: false,
             life_speed_scale: 1.0,
             life_posture: super::LifeStatePosture::Stand,
+            assistable: false,
+            assist_progress: 0.0,
+            assist_received_progress: 0.0,
         }
     }
 

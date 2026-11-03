@@ -4238,6 +4238,7 @@ mod tests {
             },
             0.016,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &postretro_entities::FactionRegistry::default(),

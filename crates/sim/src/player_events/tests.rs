@@ -10,7 +10,8 @@ use postretro_entities::data_descriptors::HealthDescriptor;
 use postretro_entities::{EntityId, ScriptCtx, Transform};
 use postretro_foundation::{IrNode, IrValue, Seat};
 use postretro_scripting_core::data_descriptors::{
-    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor, ReactionDescriptor,
+    NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventTrigger, PrimitiveDescriptor,
+    ReactionDescriptor,
 };
 use serde_json::json;
 
@@ -164,7 +165,8 @@ impl World {
     }
 
     pub(crate) fn tick(&mut self) {
-        self.table.run_tick(&self.script_ctx, &mut self.residuals);
+        self.table
+            .run_tick(&self.script_ctx, &[], &mut self.residuals);
     }
 }
 
@@ -194,8 +196,7 @@ pub(crate) fn player_event(
     fire: &[&str],
 ) -> PlayerEventDescriptor {
     PlayerEventDescriptor {
-        edge,
-        condition,
+        trigger: PlayerEventTrigger::Edge { edge, condition },
         fire: fire.iter().map(|name| name.to_string()).collect(),
         levels: Vec::new(),
         authored_index: 0,

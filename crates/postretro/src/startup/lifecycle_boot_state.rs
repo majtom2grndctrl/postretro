@@ -42,7 +42,7 @@ impl App {
         // resumed one.
         if let Some(session) = self.session.as_mut() {
             session.mod_ui_images.forget_uploads();
-            session.glyph_art.invalidate();
+            session.glyph_art.forget_renderer();
         }
     }
 

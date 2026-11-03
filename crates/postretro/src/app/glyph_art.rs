@@ -1,5 +1,6 @@
 // Glyphs: the mod's art loads into the UI image registry, and each frame's
 // snapshot resolves every `glyph` widget into the image or text it draws.
+// Presentation templates' glyphs are resolved by `template_glyphs` on change.
 // See: context/lib/ui.md §4 · context/lib/input.md §2, §6
 
 use std::cell::RefCell;
@@ -13,6 +14,9 @@ use crate::input::{
 };
 use crate::*;
 
+#[path = "template_glyphs.rs"]
+mod template_glyphs;
+
 /// The glyph art the renderer holds: what it was loaded for, and the image
 /// keys it produced.
 #[derive(Debug, Default)]
@@ -25,6 +29,11 @@ pub(crate) struct GlyphArtState {
     /// rather than every frame. Interior: the per-frame resolve reads the
     /// session shared.
     warned_unknown_commands: RefCell<HashSet<String>>,
+    /// Counts completed art loads, so glyphs resolved before the art arrived
+    /// resolve again once it has.
+    art_generation: u64,
+    /// The presentation templates whose glyphs resolve against this art.
+    templates: template_glyphs::TemplateGlyphs,
 }
 
 impl GlyphArtState {
@@ -36,10 +45,19 @@ impl GlyphArtState {
             .is_some_and(|(dirs, generation)| dirs == glyphs && *generation == reload_generation)
     }
 
-    /// Forget the uploaded art so the next sync registers it again: the
-    /// renderer holding it is gone, or other images just took its keys.
+    /// Forget the uploaded art so the next sync registers it again: other
+    /// images just took its keys. The reload bumps the art generation, so only
+    /// template sets holding a glyph re-send.
     pub(crate) fn invalidate(&mut self) {
         self.loaded = None;
+    }
+
+    /// The renderer holding the art and the presentation templates is gone:
+    /// upload the art again and re-send every installed template set, glyph
+    /// or not, to the next one.
+    pub(crate) fn forget_renderer(&mut self) {
+        self.invalidate();
+        self.templates.resend();
     }
 
     /// The keys the art registered, once it is loaded for the current
@@ -136,6 +154,7 @@ impl App {
         {
             session.mod_ui_images.warn_unknown_backgrounds(glyph_keys);
         }
+        self.refresh_template_glyphs();
     }
 
     fn reload_glyph_art_if_stale(&mut self) {
@@ -179,6 +198,7 @@ impl App {
         session.loading_screen.disown_images(&keys);
         session.glyph_art.loaded = Some((glyphs, reload_generation));
         session.glyph_art.keys = keys;
+        session.glyph_art.art_generation += 1;
         session
             .mod_ui_images
             .warn_glyph_collisions(&session.glyph_art.keys);

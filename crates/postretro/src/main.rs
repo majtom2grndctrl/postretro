@@ -7,6 +7,7 @@
 mod agent_diagnostics;
 mod app;
 mod camera;
+mod client_assist;
 #[cfg(test)]
 mod coop_fixture_tests;
 mod fluid_presentation;
@@ -40,6 +41,7 @@ pub(crate) use postretro_sim::frame_timing;
 use postretro_sim::{impact_effects, impact_policy};
 mod client_weapon;
 mod input;
+mod sim_intents;
 mod weapon_observers;
 // Level-load stages on the engine load pool: prep from the staged parse.
 mod level_load;
@@ -285,6 +287,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                 app.client_predicted_shots.clear();
                 app.client_weapon.clear();
                 app.active_slot_resync.reset();
+                app.client_assist.reset();
                 app.observer_weapon_cues.clear();
                 // Received link state is dropped with every other replicated
                 // state; links ramp back to local spawn state.
@@ -1002,6 +1005,10 @@ pub(crate) struct App {
     /// Eased `player.lifeStateMs` HUD projection, applied at the frozen UI
     /// boundary. See: context/lib/scripting.md §5; context/lib/networking.md (life-state HUD time)
     life_state_display: life_state_display::LifeStateDisplay,
+    /// The connected client's predicted assist bar and its correction;
+    /// projected into the UI display map only. See: context/lib/networking.md
+    /// §What gates, and what replicates instead
+    client_assist: client_assist::ClientAssist,
     /// The planar water mirror: candidate planes installed with the level's
     /// fluids, this frame's selection, the mirror's own walk state, and the
     /// cell sets its demand joins.
@@ -1474,20 +1481,22 @@ fn local_wieldable_occupancy(
     (occupied, active)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_sim_command(
     snapshot: &input::ActionSnapshot,
     camera: &Camera,
-    crouch_intent: bool,
-    sprint_intent: bool,
-    dash_pressed: bool,
-    shoot_pressed: bool,
-    select_pressed: bool,
-    use_pressed: bool,
-    drop_pressed: bool,
+    intents: sim_intents::SimIntents,
 ) -> sim::SimCommand {
     let jump_pressed = snapshot.button(Action::Jump).is_active();
-    let sprint = sprint_intent;
+    let sim_intents::SimIntents {
+        crouch: crouch_intent,
+        sprint,
+        dash: dash_pressed,
+        shoot: shoot_pressed,
+        select: select_pressed,
+        use_: use_pressed,
+        drop: drop_pressed,
+        assist: assist_held,
+    } = intents;
     let shoot = snapshot.button(Action::Shoot);
     let reload = snapshot.button(Action::Reload);
     let select_slot = select_pressed
@@ -1539,6 +1548,7 @@ fn build_sim_command(
         select_slot,
         use_pressed,
         drop_pressed,
+        assist_held,
     }
 }
 
@@ -3157,9 +3167,14 @@ impl App {
         ui_focused_id: Option<String>,
         frontend_menu_is_present: bool,
         life_state_projection: Option<life_state_display::UiProjection<'_>>,
+        assist_projection: Option<client_assist::UiProjection>,
     ) -> postretro_ui::UiReadSnapshot {
-        let slot_values =
-            Self::build_ui_display_slot_snapshot(slot_table, net_endpoint, life_state_projection);
+        let slot_values = Self::build_ui_display_slot_snapshot(
+            slot_table,
+            net_endpoint,
+            life_state_projection,
+            assist_projection,
+        );
         let base_layers: Vec<postretro_ui::UiTreeEntry> = if frontend_menu_is_present {
             Vec::new()
         } else {
@@ -3455,6 +3470,7 @@ impl App {
             self.ui_focused_id.clone(),
             frontend_menu_is_present,
             None,
+            None,
         );
         ui_snapshot.wheel = self.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);
@@ -3504,6 +3520,7 @@ impl App {
         slot_table: &postretro_entities::SlotTable,
         net_endpoint: Option<&netcode::NetEndpoint>,
         life_state_projection: Option<life_state_display::UiProjection<'_>>,
+        assist_projection: Option<client_assist::UiProjection>,
     ) -> std::collections::HashMap<String, postretro_entities::SlotValue> {
         let mut values = Self::build_ui_slot_snapshot(slot_table);
         if let Some(netcode::NetEndpoint::Client { state_slots, .. }) = net_endpoint {
@@ -3513,6 +3530,9 @@ impl App {
             projection
                 .display
                 .project(&mut values, projection.sample, projection.frame_dt);
+        }
+        if let Some(projection) = assist_projection {
+            projection.project(&mut values);
         }
         values
     }
@@ -4631,6 +4651,14 @@ impl App {
                     // as an authoritative host without learning other seats.
                     sync_client_per_owner_projection(&mut slot_table, local_seat);
                 }
+                self.client_assist.consume_receive(
+                    apply_outcome
+                        .armed_local_pawn
+                        .as_ref()
+                        .map(|armed| armed.entity_id),
+                    &apply_outcome.assist_progress_samples,
+                    replication,
+                );
                 if apply_outcome.armed_local_pawn.is_some()
                     && tuning
                         .as_deref()
@@ -5003,6 +5031,7 @@ impl App {
                 snapshot_due,
                 last_emitted_snapshot_tick,
                 &script_ctx.presentation_overrides.borrow(),
+                &session.assist_state,
             );
             // Ingesting the current presentation pose establishes which baseline
             // must eventually be acknowledged; it does not imply snapshot delivery.
@@ -8515,6 +8544,7 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: postretro_sim::weapon::FireButtonState {
                 pressed: false,
@@ -9335,13 +9365,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    crouch_intent,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        crouch: crouch_intent,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9376,13 +9403,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    dash_pressed,
-                    false,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        dash: dash_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9412,13 +9436,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    false,
-                    shoot_pressed,
-                    false,
-                    false,
-                    false,
+                    crate::sim_intents::SimIntents {
+                        shoot: shoot_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9449,7 +9470,9 @@ mod tests {
         let commands: Vec<sim::SimCommand> = (0..2)
             .map(|_| {
                 build_sim_command(
-                    &snapshot, &camera, false, false, false, false, false, false, false,
+                    &snapshot,
+                    &camera,
+                    crate::sim_intents::SimIntents::default(),
                 )
             })
             .collect();
@@ -9478,13 +9501,10 @@ mod tests {
                 build_sim_command(
                     &snapshot,
                     &camera,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false,
-                    drop_pressed,
+                    crate::sim_intents::SimIntents {
+                        drop: drop_pressed,
+                        ..Default::default()
+                    },
                 )
             })
             .collect();
@@ -9514,6 +9534,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: tick,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9555,6 +9576,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9643,6 +9665,7 @@ mod tests {
                 teleport_yaw_stamp: 0.0,
                 client_tick: 33,
                 movement: postretro_net::wire::WireMovementInput {
+                    assist_held: false,
                     wish_dir: [0.0, 0.0],
                     jump_pressed: false,
                     dash_pressed: false,
@@ -9716,6 +9739,7 @@ mod tests {
         let mut mover_states = kinematic_mover::MoverTickStateTable::default();
         let remote_inputs = Vec::new();
         let command = sim::SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: postretro_sim::weapon::FireButtonState {
                 pressed: false,
@@ -9982,6 +10006,7 @@ mod tests {
             crouch: true,
             magazine: true,
             secondary: true,
+            assistable: true,
         };
         let table = EffectiveTable::build(&author, &Default::default(), facts, false);
         let shift = PhysicalInput::Key(winit::keyboard::KeyCode::ShiftLeft);
@@ -10060,7 +10085,7 @@ mod tests {
 
             let theme = postretro_ui::theme::UiTheme::engine_default();
             let mut retained = postretro_ui::tree::UiTree::from_descriptor(&dialog, &theme);
-            let mut font_system = postretro_ui::text::build_font_system();
+            let mut font_system = postretro_ui::text::build_embedded_font_system();
             let slots = std::collections::HashMap::new();
             let cells = CellValues::new();
             retained.build_draw_data_retained(
@@ -10201,7 +10226,7 @@ mod tests {
 
         let theme = postretro_ui::theme::UiTheme::engine_default();
         let mut retained = postretro_ui::tree::UiTree::from_descriptor(&mod_pause, &theme);
-        let mut font_system = postretro_ui::text::build_font_system();
+        let mut font_system = postretro_ui::text::build_embedded_font_system();
         let empty_slots = std::collections::HashMap::new();
         let empty_cells = CellValues::new();
         let draw = retained.build_draw_data_retained(
@@ -10580,6 +10605,7 @@ mod tests {
                 local: "tab".into(),
             },
             equals: Some(PredicateValue::String(key.into())),
+            compare: None,
         };
 
         let tab_strip = options_root
@@ -10782,6 +10808,7 @@ mod tests {
         let is = |slot: &str, value: bool| Predicate {
             source: BindSource::Slot { slot: slot.into() },
             equals: Some(PredicateValue::Boolean(value)),
+            compare: None,
         };
         for (id, field, cases) in [
             (
@@ -10968,6 +10995,7 @@ mod tests {
                     slot: "options.windowMode".into(),
                 },
                 equals: Some(PredicateValue::String(value.into())),
+                compare: None,
             };
             let label = display_label
                 .children
@@ -11052,6 +11080,7 @@ mod tests {
                             slot: "window.displayModeCanApply".into(),
                         },
                         equals: Some(PredicateValue::Boolean(!*disabled)),
+                        compare: None,
                     };
                     assert!(
                         control_widgets.iter().any(|widget| match widget {
@@ -11609,7 +11638,7 @@ mod tests {
             .expect("registered tree resolves by name");
         let theme = postretro_ui::theme::UiTheme::engine_default();
         let mut ui = postretro_ui::tree::UiTree::from_descriptor(resolved, &theme);
-        let mut fs = postretro_ui::text::build_font_system();
+        let mut fs = postretro_ui::text::build_embedded_font_system();
         let data = ui.build_draw_data_retained(
             [1280, 720],
             &mut fs,
@@ -12511,9 +12540,18 @@ mod tests {
             snapshot.get("session.hosting"),
             Some(&SlotValue::Boolean(false))
         );
+        // The assist progress slots default to 0 and are value-bearing.
+        assert_eq!(
+            snapshot.get("player.assistProgress"),
+            Some(&SlotValue::Number(0.0))
+        );
+        assert_eq!(
+            snapshot.get("player.assistReceivedProgress"),
+            Some(&SlotValue::Number(0.0))
+        );
         assert_eq!(
             snapshot.len(),
-            65,
+            67,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
@@ -12807,6 +12845,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         cells.write(
             "title".to_string(),
@@ -12824,6 +12863,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
             None,
         );
         assert_eq!(
@@ -12852,6 +12892,7 @@ mod tests {
             input::InputMode::Focus,
             None,
             false,
+            None,
             None,
         );
         assert_eq!(restored.trees[0].name, "title");

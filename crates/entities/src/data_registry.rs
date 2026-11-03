@@ -1372,9 +1372,11 @@ mod tests {
 
     fn player_event_at(authored_index: usize, levels: &[&str]) -> PlayerEventDescriptor {
         PlayerEventDescriptor {
-            edge: crate::data_descriptors::PlayerEventEdge::Becomes,
-            condition: postretro_foundation::ir::IrNode::Const {
-                value: postretro_foundation::ir::IrValue::Bool(true),
+            trigger: crate::data_descriptors::PlayerEventTrigger::Edge {
+                edge: crate::data_descriptors::PlayerEventEdge::Becomes,
+                condition: postretro_foundation::ir::IrNode::Const {
+                    value: postretro_foundation::ir::IrValue::Bool(true),
+                },
             },
             fire: Vec::new(),
             levels: levels.iter().map(|level| level.to_string()).collect(),

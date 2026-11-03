@@ -37,6 +37,8 @@ pub mod ir {
     mod parity_tests;
     #[cfg(test)]
     pub mod test_scope;
+    #[cfg(test)]
+    mod ui_predicate_parity_tests;
 }
 
 #[path = "ir/scopes.rs"]
@@ -47,6 +49,12 @@ mod life_state_inputs;
 
 #[path = "ir/player_scope.rs"]
 pub mod ir_player_scope;
+
+#[path = "ir/pair_scope.rs"]
+pub mod ir_pair_scope;
+
+#[path = "ir/pair_validation.rs"]
+pub mod ir_pair_validation;
 
 pub mod provenance {
     pub use postretro_entities::provenance::*;

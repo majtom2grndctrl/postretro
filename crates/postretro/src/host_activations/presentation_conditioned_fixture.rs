@@ -748,6 +748,7 @@ impl Harness {
             true,
             &mut self.last,
             &ctx.presentation_overrides.borrow(),
+            &session.assist_state,
         );
     }
     fn step(&mut self) {

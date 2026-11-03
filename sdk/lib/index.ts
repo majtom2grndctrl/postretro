@@ -92,11 +92,14 @@ export type {
   PlayerEventDescriptor,
   PlayerEventEdge,
   PlayerEventEdgeWord,
+  PlayerEventDiscreteWord,
   PlayerEventOptions,
   PlayerEventReaction,
   PlayerTarget,
   PlayerOwner,
   OwnerToken,
+  Assist,
+  AssistSide,
   TriggerEventDescriptor,
   TriggerEventReaction,
   TriggerEventRule,
@@ -160,6 +163,9 @@ export {
   inLifeState,
   becomes,
   ceases,
+  assistReceived,
+  assistGiven,
+  assist,
 } from "./data_script";
 
 export type {

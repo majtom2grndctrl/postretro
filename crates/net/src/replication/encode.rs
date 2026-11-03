@@ -8,6 +8,7 @@ use crate::wire::{
     RawEntityRecord, RawSnapshotMessage, SNAPSHOT_VERSION,
 };
 
+use super::assist_facts::{AssistDelivery, own_assist_facts_changed, stamp_assist_facts};
 use super::{EntityState, JOIN_BASELINE_BUDGET_BYTES, ServerReplication, raw_from_payload};
 
 /// Per-client replication state the server tracks: how far this client has acked,
@@ -44,6 +45,8 @@ pub(super) struct ClientReplicationState {
     /// baseline, so the owner can reconcile a still pawn against each newly
     /// resolved command.
     pub(super) sent_cursors: HashMap<u32, u32>,
+    /// Delivery of this client's own assist facts, confirmed by snapshot ack.
+    pub(super) assist: AssistDelivery,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +92,9 @@ impl ServerReplication {
                 has_last_processed_client_tick: false,
                 last_processed_client_tick: 0,
                 local_player: false,
+                has_assist_facts: false,
+                assist_pairs: Vec::new(),
+                received_required_ticks: 0,
                 has_entity_class: false,
                 entity_class: String::new(),
                 has_active_weapon_archetype: false,
@@ -120,6 +126,12 @@ impl ServerReplication {
                     if acked != entity.baseline_id
                         || force_full
                         || own_cursor_advanced(client, network_id, entity, client_id)
+                        || own_assist_facts_changed(
+                            self.assist_facts.get(&client_id),
+                            client,
+                            entity,
+                            client_id,
+                        )
                     {
                         held.push((network_id, entity, acked, force_full));
                     }
@@ -177,6 +189,12 @@ impl ServerReplication {
             admitted += 1;
         }
         client.deferred_baselines = pending_count - admitted;
+        stamp_assist_facts(
+            self.assist_facts.get(&client_id),
+            client,
+            &mut records,
+            sequence,
+        );
         for record in &records {
             if record.local_player && record.has_last_processed_client_tick {
                 client
@@ -254,6 +272,9 @@ fn entity_record(
         has_last_processed_client_tick: authority.has_tick,
         last_processed_client_tick: authority.tick,
         local_player: authority.local_player,
+        has_assist_facts: false,
+        assist_pairs: Vec::new(),
+        received_required_ticks: 0,
         has_entity_class: authority.has_entity_class,
         entity_class: authority.entity_class,
         has_active_weapon_archetype: authority.has_active_weapon_archetype,

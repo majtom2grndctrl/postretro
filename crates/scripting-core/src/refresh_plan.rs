@@ -553,8 +553,14 @@ fn plan_movement_replace(
     refreshed.vault_barred = live.vault_barred;
     refreshed.life_state = live.life_state;
     refreshed.life_state_elapsed_ticks = live.life_state_elapsed_ticks;
+    refreshed.life_state_entry = live.life_state_entry;
     refreshed.life_state_table_revision = live.life_state_table_revision;
     postretro_foundation::carry_life_state_stamps(live, &mut refreshed);
+    // Assist progress is accumulator output, not tuning: the HUD reads it
+    // between ticks, so a rebuilt 0 would flash the bars empty until the next
+    // pass rewrites them.
+    refreshed.assist_progress = live.assist_progress;
+    refreshed.assist_received_progress = live.assist_received_progress;
     // Hot-reload is a descriptor swap, not a mid-game state resume: every ability
     // budget reseeds from the new descriptor rather than carrying the live (now
     // stale-against-the-new-max) count across. `air_jumps_remaining` and
@@ -1527,6 +1533,44 @@ mod tests {
         // authored jump-count change takes effect on save, not only after landing.
         assert_eq!(component.air_jumps_remaining, 3);
         assert_eq!(component.air_ticks, 7);
+    }
+
+    // Regression: a hot reload rebuilt the movement component with zero
+    // assist progress, flickering a listen host's assist bars until the next
+    // accumulator pass.
+    #[test]
+    fn movement_refresh_carries_live_assist_progress() {
+        let old = vec![movement_descriptor("player", 2)];
+        let new = vec![movement_descriptor("player", 3)];
+        let mut registry = EntityRegistry::new();
+        let id = registry.spawn(standing_pawn_transform());
+        let mut live = PlayerMovementComponent::from_descriptor(old[0].movement.as_ref().unwrap());
+        live.assist_progress = 0.4;
+        live.assist_received_progress = 0.7;
+        // The accumulator keys on the entry count; a rebuilt 0 would read as a
+        // fresh entry and restart progress.
+        live.life_state_entry = 5;
+        registry.set_component(id, live).unwrap();
+        registry
+            .set_component(
+                id,
+                provenance("player", &[DescriptorComponentKind::Movement]),
+            )
+            .unwrap();
+
+        let plan = plan_descriptor_refresh(&old, &new, &registry);
+
+        assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+        let DescriptorRefreshAction::Replace {
+            component: ComponentValue::PlayerMovement(component),
+            ..
+        } = &plan.actions[0]
+        else {
+            panic!("expected movement replacement");
+        };
+        assert_eq!(component.assist_progress, 0.4);
+        assert_eq!(component.assist_received_progress, 0.7);
+        assert_eq!(component.life_state_entry, 5);
     }
 
     #[test]

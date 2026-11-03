@@ -7,7 +7,7 @@ use postretro_foundation::{IrValue, eval_value_checked};
 use postretro_scripting_core::data_descriptors::PlayerEventEdge;
 use postretro_scripting_core::group_resolution::extend_with_player_pawns;
 
-use super::{PlayerEventTable, PlayerKey};
+use super::{BoundTrigger, PlayerEventTable, PlayerKey};
 
 /// One edge to apply this tick: event in composed order, then player in the
 /// `players()` group's resolution order.
@@ -33,7 +33,9 @@ enum Observation {
 /// Buffers reused every tick, so steady-state evaluation allocates nothing.
 #[derive(Default)]
 pub(super) struct Scratch {
-    pawns: Vec<EntityId>,
+    /// The `players()` group's pawns. Also the order assist completions apply
+    /// in, before evaluation refills it.
+    pub(super) pawns: Vec<EntityId>,
     players: Vec<(PlayerKey, EntityId)>,
     /// Row-major by event.
     values: Vec<Observation>,
@@ -75,7 +77,13 @@ impl PlayerEventTable {
             };
             scope.seed_player(registry, slot_table, pawn, seat);
             for (event_index, event) in self.events.iter().enumerate() {
-                if !scope.observes(&event.inputs) {
+                let BoundTrigger::Edge {
+                    program, inputs, ..
+                } = &event.trigger
+                else {
+                    continue;
+                };
+                if !scope.observes(inputs) {
                     continue;
                 }
                 // A non-finite or divide-by-zero result is not an observation:
@@ -83,7 +91,7 @@ impl PlayerEventTable {
                 // could fire a `ceases` edge, and dropping the player would
                 // re-fire `becomes` once the value recovers.
                 scratch.values[event_index * player_count + player_index] =
-                    match eval_value_checked(&event.program, scope) {
+                    match eval_value_checked(program, scope) {
                         Ok(value) => Observation::Holds(matches!(value, IrValue::Bool(true))),
                         Err(_) => Observation::Invalid,
                     };
@@ -91,10 +99,14 @@ impl PlayerEventTable {
         }
 
         for (event_index, event) in self.events.iter_mut().enumerate() {
+            // Discrete sources keep no edge memory and fire only from
+            // completions.
+            let BoundTrigger::Edge { edge, memory, .. } = &mut event.trigger else {
+                continue;
+            };
             scratch.memory.clear();
             for (player_index, &(key, pawn)) in scratch.players.iter().enumerate() {
-                let remembered = event
-                    .memory
+                let remembered = memory
                     .iter()
                     .find(|(remembered, _)| *remembered == key)
                     .map(|(_, held)| *held);
@@ -113,7 +125,7 @@ impl PlayerEventTable {
                     Observation::Holds(holds) => holds,
                 };
                 let held = remembered.unwrap_or(false);
-                let fires = match event.edge {
+                let fires = match edge {
                     PlayerEventEdge::Becomes => !held && holds,
                     PlayerEventEdge::Ceases => held && !holds,
                 };
@@ -126,7 +138,7 @@ impl PlayerEventTable {
                 }
                 scratch.memory.push((key, holds));
             }
-            std::mem::swap(&mut event.memory, &mut scratch.memory);
+            std::mem::swap(memory, &mut scratch.memory);
         }
     }
 }

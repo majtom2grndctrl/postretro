@@ -304,6 +304,7 @@ impl Level {
         let mut deaths = std::mem::take(&mut session.pending_death_events);
         let use_edges: HashMap<PlayerId, bool> = HashMap::new();
         let command = SimCommand {
+            assist_held: false,
             input_tick: self.tick,
             movement: MovementInput {
                 wish_dir: glam::Vec2::ZERO,

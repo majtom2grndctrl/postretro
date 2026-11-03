@@ -892,3 +892,24 @@ fn respawn_true_vm_nonfinite_health_warns_once_at_drain_restores_max_and_rearms_
         }
     }
 }
+
+/// A respawn into the state the pawn already holds still counts as an entry:
+/// the rebuilt component carries the live entry count and moves it on, so the
+/// assist accumulator sees a re-entry even though the life-state id matches.
+#[test]
+fn respawn_into_the_same_state_moves_the_life_state_entry_count_on() {
+    let rig = Rig::new();
+    let (pawn, _) = rig.spawn(0, Vec3::new(60.0, 1.2, 0.0), true);
+    crate::life_state_commands::set_life_state(
+        &rig.ctx,
+        &mut rig.ctx.registry.borrow_mut(),
+        &[pawn],
+        "down",
+    );
+    let before = rig.movement(pawn).life_state_entry;
+    rig.enqueue(pawn, None, Some("down"));
+    rig.start(|_| None);
+    let after = rig.movement(pawn);
+    assert_eq!(rig.name(pawn), "down");
+    assert_eq!(after.life_state_entry, before.wrapping_add(1));
+}

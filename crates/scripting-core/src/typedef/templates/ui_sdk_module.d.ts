@@ -88,8 +88,12 @@ declare module "postretro/ui" {
   /** Producer-stamped scalar available only while laying out a passive presentation instance. */
   export type FactBindRef<T> = { readonly fact: string; readonly [presentationFactValueBrand]: T };
   export type PredicateValue = number | boolean | string;
+  /** The ordered relation a numeric predicate tests: `"greaterThan"`, `"lessThan"`, `"atLeast"` (>=), `"atMost"` (<=). */
+  export type PredicateCompareOp = "greaterThan" | "lessThan" | "atLeast" | "atMost";
+  /** A numeric comparison against a Number source. Built by `stateCompare`. */
+  export type PredicateCompare = { op: PredicateCompareOp; value: number };
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
-  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & { equals?: PredicateValue };
+  export type Predicate = ((ComputedRef<PredicateValue> & { local?: never }) | LocalBindRef | FactBindRef<PredicateValue>) & ({ equals?: PredicateValue; compare?: never } | { compare: PredicateCompare; equals?: never });
   export type WidgetRole = "tab" | "tablist" | "checkbox" | "radio" | "listitem" | "button" | "slider" | "progressbar" | "image" | "group" | "none";
   export type AnnouncePriority = "polite" | "assertive";
   /** Fact sources are accepted only inside `definePresentationTemplate`; ordinary UI trees reject them during manifest validation. */
@@ -115,7 +119,8 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only anchor. `socket` names a model socket or hit-zone tag; without one, or when the model lacks it, the overlay source's fallback anchor applies. `offsetY` lifts the anchor in world units. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -125,7 +130,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    worldAnchor?: { socket?: string; offsetY: number };
   }>;
   export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
   export type DamagedEnemiesProps = {
@@ -142,8 +147,12 @@ declare module "postretro/ui" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   }>;
+  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY` when no socket is posed. At most `maxVisible` markers show; the teammate a hold would revive always keeps its marker and others fill the rest in player order. */
+  export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
+  /** Every source an overlay can bind to. */
+  export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;
   export type PresentationOverlay = Readonly<{
-    over: DamagedEnemiesSource;
+    over: PresentationOverlaySource;
     template: string;
     maxVisible: number;
   }>;
@@ -158,8 +167,10 @@ declare module "postretro/ui" {
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
   /** Build a damaged-enemy source selected by the host in co-op or locally in single player. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
-  /** Bind an overlay source to a world-anchored presentation template. */
-  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Build the assistable-teammate marker source. It takes no options: the engine picks the teammates on each machine and stamps the `inRange` Bool fact. */
+  export function assistableTeammates(options?: Record<string, never>): AssistableTeammatesSource;
+  /** Bind an overlay source to a world-anchored presentation template. `maxVisible` is an integer from 1 to 64. Register one result as `presentationOverlays`, or several as an array with at most one per source kind. */
+  export function defineOverlay(props: { over: PresentationOverlaySource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Bind producer-stamped per-instance values inside a presentation template. */
   export const fact: PresentationFactApi;
   /** Add a passive visual effect to an impact policy `do:` array. */
@@ -253,6 +264,8 @@ declare module "postretro/ui" {
   export function bindState<T, Options extends StateBindOptionsFor<T>>(ref: ComputedRef<T>, options: Options): ComputedRef<T> & Omit<Options, "slot" | "local">;
   /** Build a scalar equality predicate for `visibleWhen`, `selected`, or `checked`. */
   export function stateEquals<T extends PredicateValue>(ref: ComputedRef<T>, value: T): Predicate;
+  /** Build a numeric comparison predicate on a Number state ref, e.g. `stateCompare(player.assistProgress, "greaterThan", 0)`. Throws on a non-number ref, an unknown op, or a non-finite `value`. */
+  export function stateCompare(ref: ComputedRef<number>, op: PredicateCompareOp, value: number): Predicate;
   type CellInit = number | boolean | string | [number, number, number, number];
   export type LocalStateHandle<T extends CellInit> = { get(): LocalBindRef; set(value: T): SystemReactionStep; is(value: T): Predicate };
   export type LocalStateBundle<I extends Record<string, CellInit>> = { scope: { scope: string; cells: I }; cells: { [K in keyof I]: LocalStateHandle<I[K]> } };

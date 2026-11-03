@@ -69,6 +69,7 @@ fn mandated_link() -> LinkConfig {
 
 fn neutral() -> sim::SimCommand {
     sim::SimCommand {
+        assist_held: false,
         input_tick: 0,
         movement: crate::movement::MovementInput {
             wish_dir: Vec2::ZERO,
@@ -705,6 +706,7 @@ impl Fixture {
             teleport_yaw_stamp: 0.0,
             client_tick: tick,
             movement: wire::WireMovementInput {
+                assist_held: false,
                 wish_dir: command.movement.wish_dir.to_array(),
                 jump_pressed: false,
                 dash_pressed: false,
@@ -1146,6 +1148,7 @@ impl Fixture {
             },
             DT,
             &mut self.touch,
+            &mut Default::default(),
             &self.descriptors,
             0,
             &factions,
@@ -3691,6 +3694,8 @@ mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 mod switch_timing;
+// A suspension cancel latched on a zero-tick frame rides the next ticked command.
+mod zero_tick_cancel;
 
 // --- Vault fire gate on the host's remote path ---------------------------------
 

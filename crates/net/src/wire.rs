@@ -30,7 +30,12 @@ use std::collections::BTreeMap;
 
 use bitcode::{Decode, Encode};
 
+mod assist;
 mod components;
+pub use assist::{
+    WIRE_ASSIST_MAX_RADIUS, WIRE_ASSIST_MAX_REQUIRED_TICKS, WireAssistFacts, WireAssistPair,
+    WireAssistPairs,
+};
 mod ghost;
 mod ghost_audio;
 mod teleport;
@@ -373,7 +378,10 @@ impl WeaponCuesMessage {
 /// Bumped to 23 for the envelope's host `level_tick`, the fixed-tick level
 /// clock a client's `levelLoad` `wait` tails land on.
 /// Bumped to 24 for player life-state id, elapsed ticks and table revision.
-pub const SNAPSHOT_VERSION: u16 = 24;
+/// Bumped to 25 for teammate assist: player movement state gained the
+/// `assistable` bool, and the local-pawn record its assist pair table and
+/// received required ticks, all under the one bump.
+pub const SNAPSHOT_VERSION: u16 = 25;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -426,6 +434,14 @@ pub struct RawEntityRecord {
     /// pawns and for non-movement / despawn records (a `true` flag on either is
     /// rejected at `validate`).
     pub local_player: bool,
+    /// Whether `assist_pairs` and `received_required_ticks` carry the
+    /// recipient's assist facts. Valid only on a `local_player` record; `false`
+    /// requires an empty list and a zero count.
+    pub has_assist_facts: bool,
+    /// The recipient's pair table as helper, sorted by `network_id`.
+    pub assist_pairs: WireAssistPairs,
+    /// The required ticks the recipient's pawn receives as target.
+    pub received_required_ticks: u32,
     /// Whether `entity_class` carries a real value (mirrors the `Option`-ness of the
     /// typed `EntityRecord::entity_class`). `false` ⇒ no class stamped (the typed
     /// value is `None`); `true` ⇒ the host stamped the descriptor class the pawn was
@@ -519,6 +535,8 @@ pub enum EntityRecord {
         /// True only in the snapshot sent to this pawn's owning client. Always `false`
         /// for non-local pawns and for non-movement records (enforced at `validate`).
         local_player: bool,
+        /// The recipient's assist facts, present only on its local-pawn record.
+        assist_facts: Option<WireAssistFacts>,
         /// The opaque descriptor-class identifier the host materialized this entity
         /// from (e.g. `"player"`), or `None` for a record the host stamped no class
         /// for. `Some` only on a non-despawn record carrying a finite `Transform`
@@ -542,6 +560,8 @@ pub enum EntityRecord {
         last_processed_client_tick: Option<u32>,
         /// See `FullBaseline::local_player`.
         local_player: bool,
+        /// See `FullBaseline::assist_facts`.
+        assist_facts: Option<WireAssistFacts>,
         /// See `FullBaseline::entity_class`.
         entity_class: Option<String>,
         /// See `FullBaseline::active_weapon_archetype`.
@@ -677,6 +697,10 @@ pub enum ValidationError {
     InvalidPresentationBinding,
     PresentationStateWithoutTransform,
     NonFiniteScriptTime,
+    /// Assist fields without their flag, or a pair radius non-finite or outside
+    /// `[0, WIRE_ASSIST_MAX_RADIUS]`, or a required tick count above
+    /// `WIRE_ASSIST_MAX_REQUIRED_TICKS`.
+    InvalidAssistFacts,
 }
 
 impl std::fmt::Display for ValidationError {
@@ -696,6 +720,9 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "unbound presentation state requires a Transform")
             }
             ValidationError::NonFiniteScriptTime => write!(f, "non-finite server script time"),
+            ValidationError::InvalidAssistFacts => {
+                write!(f, "assist facts unflagged or out of their wire bounds")
+            }
             ValidationError::InvalidTeleporterState => {
                 write!(f, "teleporter state names the no-teleporter index")
             }
@@ -796,6 +823,7 @@ impl RawEntityRecord {
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
+                let assist_facts = self.validate_assist_facts()?;
                 self.validate_projectile_presentation(&components, entity_class.as_deref())?;
                 self.validate_presentation_binding(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::FullBaseline {
@@ -803,6 +831,7 @@ impl RawEntityRecord {
                     baseline_id: self.baseline_id_or_ref,
                     last_processed_client_tick,
                     local_player: self.local_player,
+                    assist_facts,
                     entity_class,
                     active_weapon_archetype,
                     components,
@@ -815,6 +844,7 @@ impl RawEntityRecord {
                 let last_processed_client_tick = self.validate_movement_metadata(&components)?;
                 let entity_class = self.validate_entity_class(&components)?;
                 let active_weapon_archetype = self.validate_active_weapon_metadata(&components)?;
+                let assist_facts = self.validate_assist_facts()?;
                 self.validate_projectile_presentation(&components, entity_class.as_deref())?;
                 self.validate_presentation_binding(&components, entity_class.as_deref())?;
                 Ok(EntityRecord::Delta {
@@ -823,6 +853,7 @@ impl RawEntityRecord {
                     new_baseline_id: self.new_baseline_id_or_tombstone_id,
                     last_processed_client_tick,
                     local_player: self.local_player,
+                    assist_facts,
                     entity_class,
                     active_weapon_archetype,
                     components,
@@ -836,6 +867,7 @@ impl RawEntityRecord {
                 if self.has_last_processed_client_tick
                     || self.last_processed_client_tick != 0
                     || self.local_player
+                    || self.carries_assist_fields()
                     || self.has_entity_class
                     || !self.entity_class.is_empty()
                     || self.has_active_weapon_archetype
@@ -1085,6 +1117,10 @@ pub struct WireMovementInput {
     /// is a level like `reload`, not a switch edge: a held value survives input-gap
     /// replay and the host resolves it against the pawn's possessed inventory.
     pub firing_slot: u8,
+    /// The client-resolved `assist` level (`WIRE_VERSION` 39). A level like
+    /// `reload`: a gap-held command carries it. The host never derives Use
+    /// from it, nor it from Use.
+    pub assist_held: bool,
 }
 
 /// Wire mirror of the engine `FireButtonState`.
@@ -1458,6 +1494,7 @@ mod tests {
             life_state: 255,
             life_state_elapsed_ticks: 0,
             life_state_table_revision: 0,
+            assistable: false,
             teleport: Default::default(),
             knockback_velocity: [0.0; 3],
             push_velocity: [0.0; 3],
@@ -1607,6 +1644,9 @@ mod tests {
             has_last_processed_client_tick: false,
             last_processed_client_tick: 0,
             local_player: false,
+            has_assist_facts: false,
+            assist_pairs: Vec::new(),
+            received_required_ticks: 0,
             has_entity_class: false,
             entity_class: String::new(),
             has_active_weapon_archetype: false,
@@ -1650,6 +1690,7 @@ mod tests {
             activation: WireActivationInput::default(),
             client_tick: 4_242,
             movement: WireMovementInput {
+                assist_held: false,
                 wish_dir: [0.5, -0.75],
                 jump_pressed: true,
                 dash_pressed: false,
@@ -2305,6 +2346,7 @@ mod tests {
         assert_eq!(
             typed.records,
             vec![EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 9,
                 baseline_id: 2,
                 last_processed_client_tick: None,
@@ -2346,6 +2388,7 @@ mod tests {
         assert_eq!(
             typed.records,
             vec![EntityRecord::Delta {
+                assist_facts: None,
                 network_id: 9,
                 baseline_ref: 2,
                 new_baseline_id: 3,
@@ -2690,6 +2733,7 @@ mod tests {
     fn record_kind_round_trips_through_raw_form() {
         let variants = [
             EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 1,
                 baseline_id: 2,
                 last_processed_client_tick: None,
@@ -2704,6 +2748,7 @@ mod tests {
                 ],
             },
             EntityRecord::Delta {
+                assist_facts: None,
                 network_id: 1,
                 baseline_ref: 2,
                 new_baseline_id: 3,
@@ -2834,6 +2879,7 @@ mod tests {
         assert_eq!(
             typed.records,
             vec![EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 9,
                 baseline_id: 2,
                 last_processed_client_tick: Some(777),
@@ -2866,6 +2912,7 @@ mod tests {
         assert_eq!(
             typed,
             EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 9,
                 baseline_id: 2,
                 last_processed_client_tick: None,
@@ -3056,6 +3103,7 @@ mod tests {
         assert_eq!(
             typed.records,
             vec![EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 9,
                 baseline_id: 2,
                 last_processed_client_tick: Some(5),
@@ -3083,6 +3131,7 @@ mod tests {
         assert_eq!(
             typed,
             EntityRecord::Delta {
+                assist_facts: None,
                 network_id: 9,
                 baseline_ref: 2,
                 new_baseline_id: 3,
@@ -3119,6 +3168,7 @@ mod tests {
         assert_eq!(
             typed,
             EntityRecord::FullBaseline {
+                assist_facts: None,
                 network_id: 7,
                 baseline_id: 2,
                 last_processed_client_tick: None,

@@ -703,7 +703,7 @@ fn loading_frames_render_the_tree_over_the_splash_or_its_background() {
         .unwrap()
         .modal_stack
         .register_script_trees(manifest.ui_trees.clone(), ScopeTier::Mod);
-    let mut font_system = postretro_ui::text::build_font_system();
+    let mut font_system = postretro_ui::text::build_embedded_font_system();
     let out_dir = std::env::var_os("POSTRETRO_LOADING_CAPTURE_DIR").map(PathBuf::from);
 
     for (label, pool) in [

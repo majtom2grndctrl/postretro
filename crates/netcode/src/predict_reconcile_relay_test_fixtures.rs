@@ -138,6 +138,9 @@ pub(crate) struct RelayHarness {
     client_bystander: EntityId,
     /// Every own-pawn reconcile, in order.
     pub(crate) corrections: Vec<ClientCorrection>,
+    /// Every (acknowledged tick, assist-progress sample) the receive loop
+    /// reported, in order.
+    pub(crate) assist_samples: Vec<crate::AssistProgressSample>,
     /// The `client_tick` of the client's latest predicted command.
     pub(crate) last_client_tick: Option<u32>,
 
@@ -248,6 +251,7 @@ impl RelayHarness {
             host_bystander,
             client_bystander,
             corrections: Vec::new(),
+            assist_samples: Vec::new(),
             last_client_tick: None,
             to_server: PacketConditioner::new(to_server),
             to_client: PacketConditioner::new(to_client),
@@ -608,6 +612,7 @@ impl RelayHarness {
             snapshot_due,
             &mut self.last_emitted_snapshot_tick,
             &Default::default(),
+            &Default::default(),
         );
     }
 
@@ -841,6 +846,8 @@ impl RelayHarness {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
+        self.assist_samples
+            .extend_from_slice(&outcome.assist_progress_samples);
         let movement_state = self.client_movement_state();
         let frame = self.frame;
         self.corrections.extend(

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::super::*;
 use super::common::{JS_PLAYER_MOVEMENT, eval_js, eval_lua};
 
-fn lua_value(value: &Value) -> String {
+pub(super) fn lua_value(value: &Value) -> String {
     match value {
         Value::Object(fields) => format!(
             "{{ {} }}",
@@ -26,7 +26,7 @@ fn lua_value(value: &Value) -> String {
     }
 }
 
-fn parse(
+pub(super) fn parse(
     js_block: &str,
     lua_block: &str,
     movement: bool,

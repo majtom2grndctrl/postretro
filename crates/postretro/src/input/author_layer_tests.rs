@@ -56,6 +56,7 @@ fn all_facts() -> RelevanceFacts {
         crouch: true,
         magazine: true,
         secondary: true,
+        assistable: true,
     }
 }
 

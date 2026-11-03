@@ -16,7 +16,7 @@ use postretro_foundation::ir::{
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
 use postretro_scripting_core::data_descriptors::{
     DamagedEnemiesOverlay, PresentationOverlay, PresentationOverlaySource, PresentationTemplate,
-    PresentationWorldAnchor,
+    PresentationWorldAnchor, first_presentation_overlay_per_kind,
 };
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use postretro_scripting_core::store_bridge::validate_slot_value;
@@ -26,6 +26,15 @@ use std::collections::HashMap;
 
 use crate::impact_effects::{ImpactEffect, apply_effect};
 use postretro_foundation::FACTION_STATE_FIELD;
+
+pub use assistable_overlay::AssistableTeammatesOverlayConfig;
+
+mod assistable_overlay;
+mod source_life_state;
+#[cfg(test)]
+mod source_life_state_ordering_tests;
+#[cfg(test)]
+mod source_life_state_tests;
 
 /// The single consumer of the health chokepoint's impact-dispatch queue.
 ///
@@ -41,6 +50,7 @@ pub struct ImpactPolicyRuntime {
     global_events: Vec<ImpactEventDescriptor>,
     presentation_templates: HashMap<String, PresentationTemplate>,
     presentation_overlays: Vec<BoundPresentationOverlay>,
+    assistable_teammates_overlay: Option<AssistableTeammatesOverlayConfig>,
     /// Local dispatch-driven tracking input, coalesced to authored max-visible
     /// live targets. Hosted evaluation streams edges without using this queue.
     pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
@@ -210,6 +220,9 @@ enum BoundEffect {
         to_recipient: CommandRecipient,
         delta: BoundProgram<EntityScope>,
     },
+    SetLifeState {
+        state: String,
+    },
 }
 
 /// Which opaque impact command-target token a planned effect resolves at apply.
@@ -255,6 +268,7 @@ impl ImpactPolicyRuntime {
             global_events: Vec::new(),
             presentation_templates: HashMap::new(),
             presentation_overlays: Vec::new(),
+            assistable_teammates_overlay: None,
             pending_overlay_damage: Vec::new(),
             overlay_entity_scratch: Vec::new(),
             level_events: Vec::new(),
@@ -339,20 +353,21 @@ impl ImpactPolicyRuntime {
             })
     }
 
-    /// Replace the complete passive overlay declaration snapshot. Currently
-    /// one `damagedEnemies` source owns the EntityId-keyed overlay map; later
-    /// overlay source kinds can add their own disjoint key namespace instead of
-    /// making two declarations fight over one target key.
+    /// The marker overlay's authored configuration, when the manifest declares
+    /// an `assistableTeammates` overlay.
+    pub fn assistable_teammates_overlay_config(&self) -> Option<&AssistableTeammatesOverlayConfig> {
+        self.assistable_teammates_overlay.as_ref()
+    }
+
+    /// Replace the complete passive overlay declaration snapshot. Each overlay
+    /// kind keeps at most one declaration; a repeated kind keeps the first.
     pub fn replace_presentation_overlays(&mut self, overlays: Vec<PresentationOverlay>) {
         self.presentation_overlays.clear();
+        self.assistable_teammates_overlay = None;
         self.pending_overlay_damage.clear();
-        if overlays.len() > 1 {
-            log::warn!(
-                "[Impact] presentation overlay snapshot contained more than one descriptor; all overlays were ignored"
-            );
-            return;
-        }
-        for overlay in overlays {
+        for overlay in
+            first_presentation_overlay_per_kind(overlays, "impact policy presentation overlays")
+        {
             if let Err(error) = overlay.validate() {
                 log::warn!("[Impact] presentation overlay was ignored: {error}");
                 continue;
@@ -371,13 +386,20 @@ impl ImpactPolicyRuntime {
                 );
                 continue;
             };
-            let PresentationOverlaySource::DamagedEnemies(source) = overlay.over;
-            match bind_damaged_enemies_overlay(
-                PresentationTemplateHandle::from(template.id.clone()),
-                world_anchor,
-                overlay.max_visible,
-                source,
-            ) {
+            let template = PresentationTemplateHandle::from(template.id.clone());
+            let source = match overlay.over {
+                PresentationOverlaySource::DamagedEnemies(source) => source,
+                PresentationOverlaySource::AssistableTeammates(_) => {
+                    self.assistable_teammates_overlay = Some(AssistableTeammatesOverlayConfig {
+                        template,
+                        world_anchor,
+                        max_visible: overlay.max_visible,
+                    });
+                    continue;
+                }
+            };
+            match bind_damaged_enemies_overlay(template, world_anchor, overlay.max_visible, source)
+            {
                 Ok(binding) => self.presentation_overlays.push(binding),
                 Err(error) => {
                     log::warn!("[Impact] presentation overlay was skipped during bind: {error}")
@@ -615,7 +637,8 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
                         | BoundEffect::GrantAmmo { .. }
-                        | BoundEffect::AdjustSentiment { .. } => self.consequential.push(planned),
+                        | BoundEffect::AdjustSentiment { .. }
+                        | BoundEffect::SetLifeState { .. } => self.consequential.push(planned),
                     }
                 }
             }
@@ -672,6 +695,23 @@ impl ImpactPolicyRuntime {
                                 Self::resolve_command_recipient(registry, dispatch, recipient)
                             {
                                 Self::apply_owner_slot(&ctx, registry, recipient, &slot, value);
+                            }
+                        }
+                        (
+                            CommandRecipients::One(recipient),
+                            ImpactEffect::SetLifeState { state },
+                        ) => {
+                            // No live source (a pawnless hazard, a removed
+                            // damager) skips silently.
+                            if let Some(recipient) =
+                                Self::resolve_command_recipient(registry, dispatch, recipient)
+                            {
+                                crate::life_state_commands::set_life_state(
+                                    &ctx,
+                                    registry,
+                                    &[recipient],
+                                    &state,
+                                );
                             }
                         }
                         (CommandRecipients::One(recipient), effect) => {
@@ -901,6 +941,7 @@ impl ImpactPolicyRuntime {
         for damage in &frame.damage {
             if !is_remote_source(damage.source) {
                 pool.refresh_overlay(
+                    crate::presentation_pool::OverlayKind::DamagedEnemies,
                     damage.entity,
                     binding.template.clone(),
                     binding.linger_seconds,
@@ -912,7 +953,7 @@ impl ImpactPolicyRuntime {
 
         frame.facts = self.sample_damaged_enemy_overlay_facts(
             registry,
-            pool.tracked_overlay_ids_iter()
+            pool.tracked_overlay_ids_iter(crate::presentation_pool::OverlayKind::DamagedEnemies)
                 .chain(remote_tracked_entities)
                 .chain(frame.damage.iter().map(|damage| damage.entity)),
         );
@@ -920,10 +961,16 @@ impl ImpactPolicyRuntime {
         for fact in &frame.facts {
             let entity = fact.entity;
             if !fact.alive {
-                pool.evict_overlay(entity);
+                pool.evict_overlay(
+                    crate::presentation_pool::OverlayKind::DamagedEnemies,
+                    entity,
+                );
                 continue;
             }
-            if pool.has_overlay(entity) {
+            if pool.has_overlay(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                entity,
+            ) {
                 if let Some(anchor) = overlay_anchor(
                     registry,
                     hit_zones,
@@ -943,7 +990,10 @@ impl ImpactPolicyRuntime {
                                 .is_ok_and(|health| health.current == health.max),
                     );
                 } else {
-                    pool.evict_overlay(entity);
+                    pool.evict_overlay(
+                        crate::presentation_pool::OverlayKind::DamagedEnemies,
+                        entity,
+                    );
                 }
             }
         }
@@ -1057,7 +1107,10 @@ fn overlay_anchor(
     anim_time: f64,
 ) -> Option<glam::Vec3> {
     let offset = glam::Vec3::Y * anchor.offset_y;
-    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    if let Some(socket) = anchor
+        .socket
+        .as_deref()
+        .and_then(|socket| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
     {
         return Some(socket + offset);
     }
@@ -1281,6 +1334,7 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 delta,
             })
         }
+        "setLifeState" => source_life_state::bind_set_life_state(target, args, scope),
         "setState" if target == Some("@impact.target") => {
             let name = required_string(args, "name", "target setState args")?;
             let value = args
@@ -1442,6 +1496,12 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
                 delta: number(eval_value(delta, scope)),
             },
         },
+        BoundEffect::SetLifeState { state } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Source),
+            effect: ImpactEffect::SetLifeState {
+                state: state.clone(),
+            },
+        },
     }
 }
 
@@ -1532,7 +1592,7 @@ mod tests {
         );
     }
 
-    fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
+    pub(super) fn event(id: &str, tag: &str, policy: Vec<Value>) -> ImpactEventDescriptor {
         ImpactEventDescriptor {
             id: id.to_string(),
             is_override: false,
@@ -1548,15 +1608,15 @@ mod tests {
         descriptor
     }
 
-    fn input(name: &str) -> Value {
+    pub(super) fn input(name: &str) -> Value {
         json!({ "op": "input", "name": name })
     }
 
-    fn owned_input(name: &str) -> Value {
+    pub(super) fn owned_input(name: &str) -> Value {
         json!({ "op": "input", "name": name, "owner": IMPACT_SOURCE_TOKEN })
     }
 
-    fn number(value: f32) -> Value {
+    pub(super) fn number(value: f32) -> Value {
         json!({ "op": "const", "value": value })
     }
 
@@ -1583,7 +1643,7 @@ mod tests {
         })
     }
 
-    fn grant_health(amount: Value) -> Value {
+    pub(super) fn grant_health(amount: Value) -> Value {
         json!({
             "primitive": "grantHealth",
             "target": "@impact.source",
@@ -1633,7 +1693,7 @@ mod tests {
     fn overlay_template(id: &str) -> PresentationTemplate {
         let mut template = presentation_template(id);
         template.world_anchor = Some(PresentationWorldAnchor {
-            socket: "status".to_string(),
+            socket: Some("status".to_string()),
             offset_y: 0.25,
         });
         template
@@ -1694,7 +1754,7 @@ mod tests {
         record
     }
 
-    fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
+    pub(super) fn target(ctx: &ScriptCtx, tags: &[&str]) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let target = registry.spawn(Transform::default());
         registry
@@ -1765,7 +1825,7 @@ mod tests {
             .expect("target is live");
     }
 
-    fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
+    pub(super) fn source(ctx: &ScriptCtx, with_health: bool, with_ammo: bool) -> EntityId {
         let mut registry = ctx.registry.borrow_mut();
         let source = registry.spawn(Transform::default());
         if with_health {
@@ -1792,7 +1852,7 @@ mod tests {
         hit_from(ctx, target, None, producer);
     }
 
-    fn hit_from(
+    pub(super) fn hit_from(
         ctx: &ScriptCtx,
         target: EntityId,
         source: Option<EntityId>,
@@ -1811,7 +1871,7 @@ mod tests {
         );
     }
 
-    fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
+    pub(super) fn evaluate_pending(ctx: &ScriptCtx, runtime: &mut ImpactPolicyRuntime) {
         runtime.evaluate_pending_in_registry(&mut ctx.registry.borrow_mut());
     }
 
@@ -2032,15 +2092,24 @@ mod tests {
             );
         }
 
-        assert_eq!(pool.tracked_overlay_ids(), [enemy]);
         assert_eq!(
-            pool.overlay_facts(enemy)
+            pool.tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies),
+            [enemy]
+        );
+        assert_eq!(
+            pool.overlay_facts(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy)
                 .and_then(|facts| facts.get("healthFraction")),
             Some(&PresentationFact::Number(0.99))
         );
-        assert_eq!(pool.overlay_is_suppressed(enemy), Some(false));
         assert_eq!(
-            pool.overlay_anchor(enemy),
+            pool.overlay_is_suppressed(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                enemy
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            pool.overlay_anchor(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy),
             Some(glam::Vec3::new(0.0, 2.0, 0.0))
         );
 
@@ -2066,7 +2135,13 @@ mod tests {
                 |_| false,
             );
         }
-        assert_eq!(pool.overlay_is_suppressed(enemy), Some(true));
+        assert_eq!(
+            pool.overlay_is_suppressed(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                enemy
+            ),
+            Some(true)
+        );
 
         let mut health = ctx
             .registry
@@ -2090,7 +2165,10 @@ mod tests {
                 |_| false,
             );
         }
-        assert!(pool.tracked_overlay_ids().is_empty());
+        assert!(
+            pool.tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2147,7 +2225,7 @@ mod tests {
             );
         }
         let facts = pool
-            .overlay_facts(enemy)
+            .overlay_facts(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy)
             .expect("damage stamps overlay facts");
         assert_eq!(
             facts.get("shieldFraction"),
@@ -2182,7 +2260,9 @@ mod tests {
             );
         }
         assert!(
-            !pool.tracked_overlay_ids().contains(&doomed),
+            !pool
+                .tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies)
+                .contains(&doomed),
             "a same-frame damage refresh must not draw a target killed by that hit"
         );
     }

@@ -346,6 +346,7 @@ fn presentation_budget_fresh_stress_map_cpu_install_and_host_capture_measurement
             true,
             &mut last_tick,
             &ctx.presentation_overrides.borrow(),
+            &Default::default(),
         );
         let packets = server.packets_to_send(CLIENT);
         max_packets = max_packets.max(packets.len());

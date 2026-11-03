@@ -156,7 +156,8 @@ pub fn ingest_client_presentation_messages(
 
 /// Resolve the visual anchor for an already-replicated entity. Connected
 /// clients carry no `HealthComponent`, so the local descriptor supplies the
-/// same authored hitbox fallback without synthesizing combat state.
+/// same authored hitbox fallback without synthesizing combat state. The
+/// socket lookup is skipped when no socket is authored.
 fn client_overlay_anchor(
     registry: &EntityRegistry,
     hit_zones: &HitZoneStore,
@@ -166,7 +167,10 @@ fn client_overlay_anchor(
     anim_time: f64,
 ) -> Option<Vec3> {
     let offset = Vec3::Y * anchor.offset_y;
-    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    if let Some(socket) = anchor
+        .socket
+        .as_deref()
+        .and_then(|socket| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
     {
         return Some(socket + offset);
     }

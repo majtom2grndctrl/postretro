@@ -184,6 +184,7 @@ mod tests {
                     sample: Some(sample(pawn, "down", target, None, 0, 0)),
                     frame_dt: dt,
                 }),
+                None,
             )
         };
         let first = project(104.0);
@@ -222,6 +223,7 @@ mod tests {
                     sample,
                     frame_dt: dt,
                 }),
+                None,
             )
         };
         let downed = project(Some(sample(pawn, "down", 9_000.0, None, 0, 0)));

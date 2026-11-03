@@ -24,6 +24,9 @@ export const playerEntity = defineEntity({
           use: false,
           touch: false,
           occupancy: false,
+          // A teammate can revive a downed player: the engine defaults (1.5 m,
+          // 3000 ms) with no pair expression.
+          assistable: {},
         },
       },
     },

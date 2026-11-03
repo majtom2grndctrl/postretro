@@ -22,6 +22,7 @@ fn command(tick: u32, yaw: f32, stamp: f32) -> InputCommand {
         client_tick: tick,
         teleport_yaw_stamp: stamp,
         movement: WireMovementInput {
+            assist_held: false,
             wish_dir: [0.0, 0.0],
             jump_pressed: false,
             dash_pressed: false,

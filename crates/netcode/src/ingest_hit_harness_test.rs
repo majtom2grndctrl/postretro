@@ -113,6 +113,7 @@ impl HostSimulation {
             },
             TICK_DT,
             &mut self.touch,
+            &mut Default::default(),
             &self.descriptors,
             0,
             &self.factions,
@@ -130,6 +131,7 @@ impl HostSimulation {
 
 fn neutral_command() -> SimCommand {
     SimCommand {
+        assist_held: false,
         input_tick: 0,
         secondary_button: crate::weapon::FireButtonState {
             pressed: false,
@@ -942,8 +944,8 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
     use postretro_entities::ScriptCtx;
     use postretro_foundation::{IrNode, IrValue, Seat};
     use postretro_scripting_core::data_descriptors::{
-        NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PrimitiveDescriptor,
-        ReactionDescriptor,
+        NamedReaction, PlayerEventDescriptor, PlayerEventEdge, PlayerEventTrigger,
+        PrimitiveDescriptor, ReactionDescriptor,
     };
     use postretro_sim::player_events::{PlayerEventResidual, PlayerEventTable};
 
@@ -977,15 +979,17 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
             }),
         }]);
         data.set_level_player_events(vec![PlayerEventDescriptor {
-            edge: PlayerEventEdge::Becomes,
-            condition: IrNode::Lt {
-                a: Box::new(IrNode::Input {
-                    name: "player.health".to_string(),
-                    owner: None,
-                }),
-                b: Box::new(IrNode::Const {
-                    value: IrValue::Number(95.0),
-                }),
+            trigger: PlayerEventTrigger::Edge {
+                edge: PlayerEventEdge::Becomes,
+                condition: IrNode::Lt {
+                    a: Box::new(IrNode::Input {
+                        name: "player.health".to_string(),
+                        owner: None,
+                    }),
+                    b: Box::new(IrNode::Const {
+                        value: IrValue::Number(95.0),
+                    }),
+                },
             },
             fire: vec!["hurt".to_string()],
             levels: Vec::new(),
@@ -1035,7 +1039,7 @@ fn a_player_event_sees_a_remote_hit_flushed_after_the_sim_on_the_same_tick() {
     );
     let _ = crate::sim::run_death_sweep(&registry);
     // Then the tick settles and player events evaluate.
-    player_events.run_tick(&script_ctx, &mut residuals);
+    player_events.run_tick(&script_ctx, &[], &mut residuals);
 
     assert_eq!(
         registry

@@ -215,13 +215,7 @@ fn neutral_input() -> MovementInput {
     crate::build_sim_command(
         &crate::input::ActionSnapshot::neutral(),
         &crate::camera::Camera::new(Vec3::ZERO, 0.0, 0.0),
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
+        crate::sim_intents::SimIntents::default(),
     )
     .movement
 }
@@ -1056,6 +1050,7 @@ impl Loopback {
             self.snapshot_due,
             &mut self.last_snapshot,
             &self.host.presentation_overrides.borrow(),
+            &Default::default(),
         );
         self.snapshot_due = false;
     }

@@ -243,6 +243,7 @@ pub fn pred(slot: &str, equals: Option<PredicateValue>) -> Predicate {
     Predicate {
         source: BindSource::Slot { slot: slot.into() },
         equals,
+        compare: None,
     }
 }
 

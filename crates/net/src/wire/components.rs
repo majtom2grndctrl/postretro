@@ -192,6 +192,9 @@ pub struct WirePlayerMovementState {
     pub life_state: u8,
     pub life_state_elapsed_ticks: u32,
     pub life_state_table_revision: u8,
+    /// The current life state declares `assistable`. A connected client reads
+    /// it only for remote pawns; its own pawn's stamp comes from the profile.
+    pub assistable: bool,
 }
 
 impl WireMovementState {

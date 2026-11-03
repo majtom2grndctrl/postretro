@@ -34,6 +34,9 @@ export const devInput: ModInput = {
     reload: { label: "Reload", category: "COMBAT", order: 42 },
     use: { label: "Use", category: "COMBAT", order: 43 },
     drop: { label: "Drop weapon", category: "COMBAT", order: 44 },
+    // Label and category only: `assist` inherits the engine default (hold on E /
+    // gamepad west), bound while this mod declares an `assistable` state.
+    assist: { label: "Revive teammate", category: "COMBAT", order: 45 },
     cycle_wieldable_next: { label: "Next weapon", category: "WEAPONS", order: 50 },
     cycle_wieldable_previous: { label: "Previous weapon", category: "WEAPONS", order: 51 },
     toggle_last_wieldable: { label: "Last weapon", category: "WEAPONS", order: 52 },

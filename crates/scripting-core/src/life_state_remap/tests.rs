@@ -230,6 +230,7 @@ fn restrictive_profile() -> LifeStateProfile {
         touch: false,
         occupancy: false,
         damageable: false,
+        assistable: None,
     }
 }
 

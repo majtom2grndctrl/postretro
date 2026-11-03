@@ -107,7 +107,9 @@ pub fn host_drive_demo_mover(
 /// `snapshot_due` records that at least one completed tick reached the cadence
 /// during this redraw. A snapshot is still encoded at most once for `tick`, even
 /// if a caller reaches this path more than once before another fixed tick
-/// completes.
+/// completes. `assist` is the session's assist state, which the snapshot's
+/// per-owner pair tables and received counts are built from; a caller with no
+/// session passes a default, which yields empty tables and a count of 0.
 #[allow(clippy::too_many_arguments)]
 pub fn host_replicate(
     registry: &EntityRegistry,
@@ -130,6 +132,7 @@ pub fn host_replicate(
     snapshot_due: bool,
     last_emitted_snapshot_tick: &mut Option<u32>,
     presentation_overrides: &postretro_entities::presentation_overrides::PresentationOverrides,
+    assist: &postretro_sim::sim::assist::AssistState,
 ) -> Vec<EntityId> {
     // Owned post-tick snapshot rule: copy replicable state into owned mirrors keyed
     // by NetworkId while borrowing the registry, then release before the net call.
@@ -180,6 +183,16 @@ pub fn host_replicate(
     // The level-scoped Ghost bus fields ride every snapshot whole, so a late
     // joiner's first snapshot is its baseline and no ack path is needed.
     let ghost_audio = ghost_audio_to_wire(ghost_audio);
+    // Each owner's assist facts, from the registry state the movement records
+    // above read; authority metadata, so no baseline is minted.
+    replication.ingest_assist_facts(crate::host_assist_facts::host_assist_facts(
+        registry,
+        slot_table,
+        assist,
+        owners,
+        allocator,
+        &participating,
+    ));
     // One sequence shared across all clients in this 30 Hz batch — and shared with the
     // state tracker's `produce_for_client` so one ack describes one server frame.
     let sequence = replication.begin_batch();

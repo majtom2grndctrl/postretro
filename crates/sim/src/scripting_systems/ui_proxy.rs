@@ -368,6 +368,7 @@ impl PlayerHudStatePublisher {
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
         self.publish_swim_values();
+        self.publish_assist_progress();
 
         match (sampled_weapon, ammo) {
             (_, Some((magazine, reserve))) => {
@@ -2343,3 +2344,6 @@ mod tests {
 #[cfg(test)]
 #[path = "ui_proxy_life_state_tests.rs"]
 mod life_state_tests;
+
+#[path = "ui_proxy_assist.rs"]
+mod assist;

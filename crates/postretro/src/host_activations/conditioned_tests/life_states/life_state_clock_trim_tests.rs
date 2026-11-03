@@ -56,6 +56,7 @@ fn frozen_display(
             sample,
             frame_dt: dt,
         }),
+        None,
     );
     match values["player.lifeStateMs"] {
         SlotValue::Number(value) => value,

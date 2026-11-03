@@ -12,7 +12,7 @@ use super::*;
 use crate::input::{AuthorLayer, Command, DeviceClass, GlyphDirs, PhysicalInput, PlayerLayer};
 use crate::startup::lifecycle::tests::test_app;
 
-fn glyph_tree() -> AnchoredTree {
+pub(super) fn glyph_tree() -> AnchoredTree {
     serde_json::from_value(serde_json::json!({
         "anchor": "center",
         "offset": [0.0, 0.0],
@@ -28,7 +28,7 @@ fn glyph_tree() -> AnchoredTree {
     .unwrap()
 }
 
-fn app_with_glyphs() -> App {
+pub(super) fn app_with_glyphs() -> App {
     let mut app = test_app();
     let session = app.session.as_mut().unwrap();
     session.bindings.set_author_layer(AuthorLayer {
@@ -74,14 +74,14 @@ fn resolve(app: &App) -> Vec<Widget> {
     row.children.clone()
 }
 
-fn image_asset(widget: &Widget) -> Option<&str> {
+pub(super) fn image_asset(widget: &Widget) -> Option<&str> {
     match widget {
         Widget::Image(image) => Some(image.asset.as_str()),
         _ => None,
     }
 }
 
-fn set_family(app: &mut App, vendor: Option<u16>) {
+pub(super) fn set_family(app: &mut App, vendor: Option<u16>) {
     let tracker = &mut app.session.as_mut().unwrap().device_family;
     tracker.note_pad(vendor);
     tracker.end_frame();

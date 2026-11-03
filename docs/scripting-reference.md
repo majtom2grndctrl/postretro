@@ -90,8 +90,9 @@ host-side value. Omit `network` for host-local bookkeeping or use
 `setState` cannot write per-owner slots; use an owner-addressed impact `set` or
 `update`, or the `addSlot` reaction. Generic `storeRead(name)` and
 `storeWrite(name, value)` also reject per-owner slots because they carry no
-owner address. Per-owner values are session-scoped: `perOwner: true` with
-`persist: true` is rejected.
+owner address. A per-owner slot may also set `persist: true`: each player's
+value saves under their own device-local identity, so progress such as an XP
+total follows that player across hosts. A global slot is saved by the host only.
 
 **Render profile.** The optional `render` block picks the mod's bloom and
 water-reflection looks once, for the whole mod:
@@ -168,9 +169,12 @@ reflections.
 
 ## `defineEntity` and entity descriptors
 
-`defineEntity(descriptor)` is a typed identity helper for entity archetypes.
-Return its result from `ModManifest.entities` to register the archetype for use
-across all levels.
+`defineEntity(descriptor)` declares an entity archetype. It types the
+descriptor and also lowers the references inside it: an `assistable` life-state
+expression and a loadout's weapon names resolve through it, so define player
+descriptors with `defineEntity` rather than passing a bare object. Return its
+result from `ModManifest.entities` to register the archetype for use across all
+levels.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -2721,7 +2725,9 @@ Every fire evaluates gates and effect operands from one pre-effect snapshot, the
 
 `setHealth` clamps its evaluated value to `[0, maxHealth]`. Only a finite positive stored result counts as recovery: it re-arms death detection and clears pending and live kill credit from the recovered down. A value stored as zero leaves the target down and preserves its one-shot latch and credit. Numeric literals must be finite. If IR arithmetic produces a non-finite result, the total evaluator converts it to zero before `setHealth` runs.
 
-`impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`); there is no source-scoped fact vocabulary. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
+`impact.source.grantHealth(amount)` and `impact.source.grantAmmo(type, amount)` add a resource to the damager, not to the entity that was hit. They accept only `@impact.source`; an authored `@impact.target` grant is rejected while the policy binds. This is deliberately asymmetric: target healing remains expressible as `target.setHealth(target.healthAfter.plus(amount))`, but v1 has no target-addressed absolute-ammo write. Amount expressions still read the impact target's snapshot (`@impact.*` and `target.state(...)`), plus the damager's own per-player values: `impact.source.inLifeState(name)` and `slot.byPlayer(impact.source)`. An absent or stale source skips that one effect, and a source without the required health or ammo-reserve component warns and skips it without aborting sibling effects. Ammo pool keys use the same identifier grammar as weapon resource types.
+
+`impact.source.inLifeState(name)` is a Boolean read that holds while the damager's pawn is in state `name`; it reads `false`, without a warning, for a damager that is not a player. `impact.source.setLifeState(name)` puts the damager's pawn into that state in the same tick, exactly as `on.player.setLifeState(name)` does: elapsed time restarts, and naming the current state does nothing. A state name absent from the mod skips that policy when it binds, with a warning naming the policy and the state; the mod's other policies still bind. The effect applies in order with its sibling effects, so one row can revive its damager and then `grantHealth` it. A kill made by a downed player is the natural use; see *Assisting a teammate* below for the full recipe.
 
 Impact policies use `Ref<T>` for writable slots and `ComputedRef<T>` for
 read-only slots. `read(ref)` lifts a numeric or boolean ref into an impact
@@ -3165,6 +3171,185 @@ profile. A removed name falls back to the new `initial` with one warning;
 removing the block restores undeclared behavior. A remote slot demoted by a
 digest change follows the rejoin rule when it returns.
 
+### Assisting a teammate
+
+A life state that declares `assistable` can be helped by a teammate holding the
+`assist` command. The engine decides who is in range and how long the hold has
+lasted; your mod decides what a completed assist does. Nothing about a revive is
+built in: the state it leads to, the health, the bonuses and the cues are all
+reactions you author.
+
+```typescript
+down: {
+  movement: { speedScale: 0.3, abilities: false, posture: "crouch" },
+  switchWeapon: false, use: false, touch: false, occupancy: false,
+  assistable: {},                       // 1.5 m reach, 3000 ms hold
+},
+```
+
+| Key | Meaning |
+|-----|---------|
+| `assistable.radius` | Reach in metres between pawn origins. A literal in `(0, 16]` or a Number expression. Omitted: `1.5`. |
+| `assistable.holdMs` | How long a helper must hold `assist`, in milliseconds. A literal in `[0, 60000]` or a Number expression. Omitted: `3000`. `0` completes on the first held tick. |
+
+`assistable: {}` takes both defaults. Luau spells it `assistable = {}`. A literal
+outside its range, a non-finite one, an unknown key or an invalid expression
+rejects the manifest with the full key path. The hold counts whole fixed ticks
+(rounded up, at least one), so a constant `holdMs` completes on exactly its
+required-count-th held tick on the host and on the helper's predicted bar alike.
+
+**Who assists whom.** A helper holding `assist` works on the nearest other pawn
+whose current state declares `assistable` and is within the pair's radius, ties
+broken in `players()` order. A pawn never assists itself, and a helper's own
+state must permit `use`. There is no line-of-sight or facing test. The helper's
+progress resets when it releases, switches target, moves out of range, when
+either pawn changes or re-enters a life state, on respawn and on completion; a
+completion ends the hold until the helper releases. At most one assist
+completes on a target per tick.
+
+**Expressions over the pair.** `radius` and `holdMs` may be expressions over the
+helper and the target, evaluated on the host every tick for each pair.
+`assist.helper` and `assist.target` name the two sides:
+
+```typescript
+import { assist, defineStore, read } from "postretro";
+
+export const stats = defineStore("stats", {
+  heal: { type: "number", default: 0, perOwner: true, network: "ownerPrivate" },
+});
+
+assistable: {
+  holdMs: read(stats.heal.byPlayer(assist.helper)).times(-20).plus(3000),
+  radius: assist.target.inLifeState("downMedic").select(3, 1.5),
+},
+```
+
+```lua
+assistable = {
+  holdMs = Postretro.read(stats.heal:byPlayer(Postretro.assist.helper)):times(-20):plus(3000),
+  radius = Postretro.assist.target:inLifeState("downMedic"):select(3, 1.5),
+},
+```
+
+An expression may read:
+
+- an engine per-player slot at a side's seat, as `player.health.byPlayer(assist.target)` (`player.health:byPlayer(Postretro.assist.target)` in Luau);
+- a per-owner store value at a side's seat, as `stats.heal.byPlayer(assist.helper)` (`stats.heal:byPlayer(Postretro.assist.helper)` in Luau);
+- `assist.helper.inLifeState(name)` or `assist.target.inLifeState(name)` (`Postretro.assist.helper:inLifeState(name)` or `Postretro.assist.target:inLifeState(name)` in Luau);
+- global store values.
+
+It may not read per-entity `@state.*` values, `player.assistProgress` or
+`player.assistReceivedProgress`, a local-only player slot, or a per-player value
+with no owner address (a plain `stats.heal` on a per-owner slot). Those reject
+the manifest. A store
+write a reaction makes in tick N is seen by tick N+1's evaluation.
+
+| Evaluated value | Result for that pair |
+|-----------------|----------------------|
+| `radius` above 16 | Clamped to 16 m |
+| `radius` at or below 0 | This helper cannot assist this target |
+| `radius` non-finite, or a value it reads is missing | Out of range, with one warning |
+| `holdMs` above 60000 | Clamped to 60 s |
+| `holdMs` equal to 0 | Completes on the first held tick |
+| `holdMs` negative or non-finite, or a value it reads is missing | Progress is kept but does not advance, with one warning |
+
+Each warning appears once per descriptor, state and field, and re-arms on hot
+reload and on every level install. The healer expression above goes negative once `heal` passes 150; wrap it
+in `.clamp(500, 3000)` to keep it in range.
+
+**The `assist` command.** `assist` is an engine command like `use`. Its engine
+default is `hold` on `KeyE` and gamepad `west`, the same inputs Use takes by
+default; the two share the key by activator, so a quick tap fires Use and a hold
+past the threshold (0.2 s by default) fires `assist`. `assist` is relevant, and
+therefore bound, listed in the controls panel and drawn as a glyph, exactly when
+some player descriptor declares an `assistable` state, or, in co-op, when the
+installed host tuning declares one. A mod with none leaves E
+as an ordinary Use press. The hold begins when `assist` resolves, so the revive
+takes the hold threshold plus `holdMs`, not `holdMs` from key-down. A mod that
+wants a label in the controls panel adds an entry with `label` and `category`
+and no bindings, and inherits the default:
+
+```typescript
+input: { commands: { assist: { label: "Revive teammate", category: "COMBAT", order: 45 } } },
+```
+
+**Sources and slots.**
+
+| Name | Meaning |
+|------|---------|
+| `assistReceived()` | A player-event source. Fires for the target when an assist on them completes; `on.player` is the target. |
+| `assistGiven()` | A player-event source. Fires for the helper right after, in the same pass; `on.player` is the helper. |
+| `getGameState().player.assistProgress` | Readonly Number in `0..1`: the local player's progress as a helper. |
+| `getGameState().player.assistReceivedProgress` | Readonly Number in `0..1`: the highest progress among the helpers on the local player; `0` with none, or while their state declares no `assistable`. |
+
+The sources take no condition: `players().on(assistReceived(), [revived])`. They
+fire only on the host or in single player, once per completed assist, and obey
+the player-event rules above (`on.player`, `byPlayer(on.player)`, presentation on
+that player's machine). A completion is re-checked just before it applies: if the
+target left the recorded state first (a self-revive in the same tick, say) it
+is dropped and neither source fires. The two progress slots drive HUD bars. On a
+connected client the helper's own bar starts on its first held tick without
+waiting for the host, then follows host samples; success consequences appear only
+once the host confirms. Conditions, crossings and store reads see host values only.
+
+**Recipe: Borderlands.** A teammate can revive, and a kill made while down is a
+second wind. This is the dev mod's policy (`scripts/player-death.ts` and
+`.luau`, with the bars in `scripts/hud.ts`), on top of the down and bleed-out
+reactions in *Death-policy recipes* below.
+
+```typescript
+import { assistGiven, assistReceived, defineImpactEvent, defineReaction, players, update } from "postretro";
+import type { PlayerEventParams } from "postretro";
+import { progression } from "./combat-lifecycle";
+
+const revived = defineReaction("life.revived", (on: PlayerEventParams) => [
+  on.player.setLifeState("alive"),
+  on.player.grantHealth(30),
+]);
+const assistBonus = defineReaction("life.assistBonus", (on: PlayerEventParams) =>
+  on.player.addSlot(progression.xp, 25),
+);
+
+// Its own impact event, so another event's override cannot evict it.
+export const secondWind = defineImpactEvent("second-wind", { tag: "enemy" }, (impact) => {
+  const { target, source } = impact;
+  const killed = target.healthBefore.gt(0).and(target.healthAfter.le(0));
+  return [{
+    when: killed.and(source.inLifeState("down")),
+    do: [source.setLifeState("alive"), source.grantHealth(40),
+         update(progression.xp.byPlayer(source), (xp) => xp.plus(50))],
+  }];
+});
+
+// In the manifest: reactions: [revived, assistBonus], events: [secondWind],
+// playerEvents: [players().on(assistReceived(), [revived]),
+//                players().on(assistGiven(), [assistBonus])],
+```
+
+Give `down` the empty `assistable: {}` shown above. The HUD bars bind
+`player.assistProgress` (a "Reviving" bar, `max: 1`) and
+`player.assistReceivedProgress` (a "Being revived" bar), built like the
+bleed-out bar. Gate each label and bar on its own progress with
+`stateCompare(player.assistProgress, "greaterThan", 0)` and
+`stateCompare(player.assistReceivedProgress, "greaterThan", 0)`, so each shows
+only while a revive is under way.
+
+**Recipe: L4D-style.** Only a teammate revives: no second wind, no bonus, a
+longer hold from farther away.
+
+```lua
+-- down = { ..., assistable = { radius = 2, holdMs = 5000 } }
+Postretro.players():on(Postretro.assistReceived(), { revived })
+-- revived: on.player:setLifeState("alive"), on.player:grantHealth(30)
+```
+
+**Recipe: healer.** A per-owner `heal` stat shortens the helper's revive, and a
+target in a `downMedic` state can be revived from farther away. This is the
+expression pair in *Expressions over the pair* above. `holdMs` goes through the
+table there: it clamps to 60 s above, and a negative or faulted result keeps the
+helper's progress without advancing it, with one warning. Raise `heal` with an
+ordinary `addSlot` reaction.
+
 ### Death-policy recipes
 
 - **Doom restart:** bind the legacy `playerDied` reaction to `restartLevel()`
@@ -3179,7 +3364,8 @@ digest change follows the rejoin rule when it returns.
 - **Borderlands-lite:** declare the `down` crawl profile above, then register
   the following host decisions. Use local crossings for a downed vignette,
   and bind the bleed-out bar to the reads above. The dev mod's
-  `scripts/player-death.ts` and `.luau` are complete twins of this policy.
+  `scripts/player-death.ts` and `.luau` are complete twins of this policy,
+  extended with revive and second wind in *Assisting a teammate* above.
 
 ```typescript
 import { becomes, defineReaction, getGameState, inLifeState, players, read } from "postretro";
@@ -3820,7 +4006,10 @@ its threshold passes.
 **Relevance.** A command the mod's data never uses — `dash` with no movement
 descriptor carrying dash, `reload` with no magazine weapon — is unbound,
 missing from the controls panel, never part of a conflict, and draws no glyph.
-`show` overrides that.
+`show` overrides that. `assist` is relevant while any player descriptor
+declares an `assistable` life state, and in co-op while the installed host
+tuning declares one; its engine default is `hold` on `KeyE`
+and gamepad `west` (see *Assisting a teammate*).
 
 **Validation.** Each command and device class is checked on its own. A
 command ID written twice follows the language: the last one wins, as in any
@@ -4698,6 +4887,90 @@ splash. To fill the window with a picture instead, give the tree a
 In Luau, the same manifest fields are `loading = { tree = { "loadingSkyline", "loadingAlley" } }`
 and `loadingTree = "loadingEntry"` on a map entry.
 
+### Presentation templates and world overlays
+
+Some UI is not a tree you push: it is a small template the engine stamps at a
+world position and projects to the screen each frame. Floating damage numbers,
+damaged-enemy bars and the revive marker all work this way. They are passive:
+no focus, no input, and no state of their own.
+
+`definePresentationTemplate` declares the template. Its root may use `Text`,
+`Bar`, `Image`, `Glyph`, `VStack` and `HStack`; interactive widgets are
+rejected. Bind a value the engine supplies with `fact.number("name")` or
+`fact.bool("name")`; facts are valid only inside templates. `worldAnchor`
+lifts the template above its target: `socket` is an optional model socket and
+`offsetY` raises the anchor in world units. With no socket, or a model that has
+none, the fallback anchor depends on the source. `damagedEnemies` uses the
+hitbox top, or the model's bound top. `assistableTeammates` uses the pawn's
+origin plus `offsetY`.
+
+An overlay's template must declare `worldAnchor`. Without it, the overlay is
+skipped with a warning.
+
+`defineOverlay` binds a template to a source of targets that the engine
+tracks for you:
+
+| Source | Marks | Facts |
+|---|---|---|
+| `damagedEnemies({ lingerMs, hideAtFull })` | Enemies hurt within `lingerMs` | `healthFraction`, plus shield facts when configured |
+| `assistableTeammates()` | Other players in a state that can be assisted (downed), at any distance. At most `maxVisible` markers show: the teammate a hold would revive always keeps its marker, and others fill the rest in player order | `inRange` (Bool) |
+
+`assistableTeammates()` never marks your own pawn, and it adds nothing to the
+network: each machine works the marker out from what it already knows. A
+marker draws through walls, since the projection does no depth test.
+`inRange` is true only on the one teammate that holding `assist` would revive
+right now. If two are close enough, only the nearer one is true, and it is
+false while you are down yourself.
+
+`ModManifest.presentationOverlays` takes one overlay or an array, with at
+most one overlay per source. A repeated source keeps the first and logs a
+warning.
+
+`Glyph({ command })` inside a template draws the same art or label as a HUD
+glyph, follows rebinding and the device you last used, and draws nothing when
+the command is unbound. Pair it with `visibleWhen: fact.bool(...)` to show a
+prompt only when it applies. A glyph label is drawn at 16 pt regardless of the
+text size next to it.
+
+```typescript
+import {
+  Glyph, HStack, Text, VStack, assistableTeammates, defineOverlay,
+  definePresentationTemplate, fact,
+} from "postretro/ui";
+
+export const reviveMarker = definePresentationTemplate({
+  root: VStack({ gap: 2 }, [
+    Text({ content: "DOWNED", fontSize: 14, color: [1, 0.3, 0.3, 1] }),
+    HStack({ gap: 4, visibleWhen: fact.bool("inRange") }, [
+      Text({ content: "Hold", fontSize: 14, color: [1, 1, 1, 1] }),
+      Glyph({ command: "assist" }),
+      Text({ content: "to revive", fontSize: 14, color: [1, 1, 1, 1] }),
+    ]),
+  ]),
+  lifetimeMs: 1,
+  motion: { rise: 0, easing: "linear" },
+  fade: { startMs: 1 },
+  spawnScatter: { radius: 0 },
+  worldAnchor: { offsetY: 0.6 },
+});
+
+export const reviveMarkerOverlay = defineOverlay({
+  over: assistableTeammates(),
+  template: reviveMarker,
+  maxVisible: 8,
+});
+
+// defineMod({
+//   presentationTemplates: [reviveMarker, damagedEnemyBar],
+//   presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
+// })
+```
+
+In Luau the source is `UI.assistableTeammates()` and the manifest field is
+`presentationOverlays = { damagedEnemyOverlay, reviveMarkerOverlay }`.
+
+"Hold" is plain text you write yourself; the engine does not word the prompt.
+
 ## Reactive UI (selection, visibility, a11y)
 
 The reactive-UI layer makes **selection-driven** widgets — tabs, segmented
@@ -4716,23 +4989,58 @@ two places, so the highlight and the announced state can never disagree.
 ### The predicate `bind` — author-wired highlight
 
 A **`Predicate`** is a bind source (a `{ local }` cell or a `{ slot }` store
-reference) plus an optional `equals` comparand. It resolves to `1.0` (true) or
-`0.0` (false):
+reference) plus an optional `equals` comparand or an optional numeric `compare`
+(never both). It resolves to `1.0` (true) or `0.0` (false):
 
-- **No `equals`** — the source must be a boolean cell/slot; the predicate is its
+- **Neither** — the source must be a boolean cell/slot; the predicate is its
   truthiness.
 - **With `equals`** — the resolved value is compared to the comparand (`1.0` iff
   equal). Comparands are **number / boolean / string** only (strings/enums match by
   name); an array/color comparand is a load-time error.
+- **With `compare`** — `{ op, value }` tests a Number source against a finite
+  threshold. `op` is `"greaterThan"`, `"lessThan"`, `"atLeast"` (≥) or `"atMost"`
+  (≤). A missing value, a non-number value, or NaN resolves false.
 
-Construct one with a local-state handle's `.is(v)`, or with `stateEquals(ref, v)`
-for authoritative state refs:
+Construct one with a local-state handle's `.is(v)`, with `stateEquals(ref, v)`
+for authoritative state refs, or with `stateCompare(ref, op, value)` for a
+Number state ref:
 
 ```typescript
 const sel = ui.createLocalState({ tab: "loadout" });
 sel.cells.tab.is("loadout");        // { local: "tab", equals: "loadout" }
 stateEquals(opts.muted, true); // { slot: "fixtureOpts.muted", equals: true }
+stateCompare(player.assistProgress, "greaterThan", 0);
+// { slot: "player.assistProgress", compare: { op: "greaterThan", value: 0 } }
 ```
+
+`stateCompare` throws when the ref is not a number ref, the op is unknown, or the
+value is not finite. Loading a tree also rejects a `compare` on an engine slot
+that is not a Number (say, `player.lifeState`), a non-finite threshold, or a
+predicate carrying both `equals` and `compare`. The error names the widget path,
+such as ``UI tree `root`.children[0].visibleWhen.compare``. A comparison reads the
+slot's target value, the same value `stateEquals` and a bound bar read, so a
+revive bar's label can show only while its progress is above 0:
+
+```typescript
+const reviveTheme = defineTheme({
+  color: { ok: [0.12, 0.72, 0.40, 1], panel: { default: [0.02, 0.03, 0.04, 0.92] } },
+  font: { primary: "JetBrains Mono" },
+});
+const { color } = getDesignTokens(reviveTheme);
+
+VStack({ visibleWhen: stateCompare(player.assistProgress, "greaterThan", 0) }, [
+  Text({ content: "REVIVING", color: color.ok }),
+  Bar({
+    bind: bindState(player.assistProgress),
+    max: 1,
+    fill: color.ok,
+    background: color.panel.default,
+  }),
+]);
+```
+
+In Luau the constructor is `UI.stateCompare(ref, op, value)` from
+`require("postretro/ui")`, with the same ops and the same errors.
 
 A `Predicate` is a valid **`bind` source for `styleRanges`-capable widgets**
 (`Text` / `Panel` / `Bar` / `Button`). The predicate resolves to a `0/1` number

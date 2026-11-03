@@ -1,6 +1,6 @@
 --!nocheck
--- Player-event builders: the `becomes` / `ceases` edge words and the
--- `players():on` descriptor. Pure data; effective only when returned under a
+-- Player-event builders: the `becomes` / `ceases` edge words, the discrete
+-- `assistReceived` / `assistGiven` sources, and the `players():on` descriptor. Pure data; effective only when returned under a
 -- manifest's `playerEvents`.
 -- Part chunk of `data_script.luau`: evaluated first, published through the
 -- temporary `__postretroDataScriptParts` bridge (`commands.luau` reads
@@ -44,17 +44,39 @@ function PlayerEventsSdk.ceases(cond: BoolRef): PlayerEventEdge
   return edgeWord("ceases", cond)
 end
 
+local function discrete(edge: string): PlayerEventEdge
+  local handle = table.freeze({})
+  edges[handle] = { edge = edge }
+  return handle
+end
+
+--- Fire on the target when an assist completes on them; `on.player` is the
+--- target. Host only; carries no condition.
+function PlayerEventsSdk.assistReceived(): PlayerEventEdge
+  return discrete("assistReceived")
+end
+
+--- Fire on the helper when their assist completes; `on.player` is the
+--- helper. Host only; carries no condition.
+function PlayerEventsSdk.assistGiven(): PlayerEventEdge
+  return discrete("assistGiven")
+end
+
 -- Build the `players():on` descriptor. Reaction handles lower to their
 -- dispatch names; bare names pass through.
 local function playerEvent(edge: PlayerEventEdge, fire: {any}, options: PlayerEventOptions?): PlayerEventDescriptor
   local data = if type(edge) == "table" then edges[edge] else nil
   if data == nil then
-    error("players():on: `edge` must come from becomes(cond) or ceases(cond)", 2)
+    error(
+      "players():on: `edge` must come from becomes(cond), ceases(cond), assistReceived() or assistGiven()",
+      2
+    )
   end
   local names = {}
   for i, reaction in ipairs(fire) do
     names[i] = if type(reaction) == "string" then reaction else reaction.name
   end
+  -- A discrete source's data carries no condition, so none is written.
   local out: PlayerEventDescriptor = { edge = data.edge, condition = data.condition, fire = names }
   if options ~= nil and options.levels ~= nil then
     out.levels = options.levels

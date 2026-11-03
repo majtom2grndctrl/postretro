@@ -444,7 +444,7 @@ fn rejoin_remote_first_tick_without_command_reaches_sixteen_ms_and_keeps_other_p
         None,
     );
     let mut residuals = Vec::new();
-    table.run_tick(&ctx, &mut residuals);
+    table.run_tick(&ctx, &[], &mut residuals);
     assert!(
         residuals.is_empty(),
         "the condition witness executes in the player pass"

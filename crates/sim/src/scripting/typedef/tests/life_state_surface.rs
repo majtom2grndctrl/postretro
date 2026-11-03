@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use postretro_foundation::{LifeStateMovementProfile, LifeStatePosture, LifeStateProfile};
+use postretro_foundation::{
+    Assistable, LifeStateMovementProfile, LifeStatePosture, LifeStateProfile,
+};
 use postretro_scripting_core::primitives_registry::{FieldInfo, RegisteredType, TypeShape};
 
 use super::*;
@@ -27,7 +29,16 @@ fn life_state_typedef_profiles_match_foundation_fields_and_postures() {
     for (name, value) in [
         (
             "LifeStateProfile",
-            serde_json::to_value(LifeStateProfile::default()).unwrap(),
+            // `assistable` serializes only when declared.
+            serde_json::to_value(LifeStateProfile {
+                assistable: Some(Assistable::default()),
+                ..LifeStateProfile::default()
+            })
+            .unwrap(),
+        ),
+        (
+            "LifeStateAssistable",
+            serde_json::to_value(Assistable::default()).unwrap(),
         ),
         (
             "LifeStateMovementProfile",
@@ -54,8 +65,12 @@ fn life_state_typedef_profiles_match_foundation_fields_and_postures() {
             let value = &authored[field.name.trim_end_matches('?')];
             let expected_type = match value {
                 serde_json::Value::Bool(_) => "bool",
+                serde_json::Value::Number(_) if name == "LifeStateAssistable" => "NumberValue",
                 serde_json::Value::Number(_) => "f32",
                 serde_json::Value::String(_) => "LifeStatePosture",
+                serde_json::Value::Object(_) if field.name == "assistable?" => {
+                    "LifeStateAssistable"
+                }
                 serde_json::Value::Object(_) => "LifeStateMovementProfile",
                 other => panic!("new {name} field needs an SDK type: {other:?}"),
             };

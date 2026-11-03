@@ -446,29 +446,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         gameplay_snapshot
     };
 
-    if ticks == 0 && app.is_connected_client() {
-        let session = app.session.as_mut().expect("running session installed");
-        if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
-            let mut command = build_sim_command(
-                &input::ActionSnapshot::neutral(),
-                &app.camera,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-                false,
-            );
-            command.activation.cancel = Some(token);
-            let _ = netcode::client_send_input_command_in_registry(
-                session.net_endpoint.as_mut(),
-                &command,
-                &session.scripting.script_ctx.registry.borrow(),
-            );
-        }
-    }
-
     // The script tranche lives on `Session` (built post-first-pixel).
     // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
     // `Rc` bump) so the many `script_ctx.*` reads below borrow nothing of
@@ -577,6 +554,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             snapshot.button(Action::Sprint),
             &mut app.sprint_toggle_active,
         );
+        let assist_held = snapshot.button(Action::Assist).is_active();
 
         for tick_index in 0..ticks {
             let forward_axis = snapshot.axis_value(Action::MoveForward);
@@ -672,13 +650,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let mut command = build_sim_command(
                 snapshot,
                 &app.camera,
-                crouch_intent,
-                sprint_intent,
-                dash_pressed,
-                shoot_pressed,
-                false,
-                use_pressed,
-                drop_pressed,
+                crate::sim_intents::SimIntents {
+                    crouch: crouch_intent,
+                    sprint: sprint_intent,
+                    dash: dash_pressed,
+                    shoot: shoot_pressed,
+                    use_: use_pressed,
+                    drop: drop_pressed,
+                    assist: assist_held,
+                    ..Default::default()
+                },
             );
             command.select_slot = select_slot;
             let input_tick = netcode::client_peek_next_command_tick(
@@ -697,6 +678,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             capture.set_active(active_token);
             let input_tick = input_tick.unwrap_or_else(|| capture.next_local_tick());
             command.input_tick = input_tick;
+            // A suspension cancel latched on a zero-tick frame rides this
+            // command: a cancel never takes a client tick of its own, so host
+            // and client simulate the same ticks (networking.md §Combat authority).
             command.activation = capture.command(input_tick);
             if tick_index > 0 {
                 command.secondary_button.pressed = false;
@@ -750,7 +734,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 let prediction_tick = app.run_client_predicted_tick(has_player_pawn, |app| {
                     let _scope = prediction_cpu.scope(cpu_timing::PredictionStage::Movement);
                     app.predict_client_weapon_command(&mut command, input_tick, tick_dt);
-                    app.client_predict_movement_tick(&command, tick_dt)
+                    let movement = app.client_predict_movement_tick(&command, tick_dt);
+                    app.predict_client_assist(&command, input_tick);
+                    movement
                 });
                 if let Some(prediction_tick) = prediction_tick {
                     // Predicted movement sounds from the local pawn, swim
@@ -904,6 +890,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             };
             let trigger_system = &mut session.trigger_system;
             let touch_system = &mut session.touch_system;
+            let assist_state = &mut session.assist_state;
             let trigger_volume_bridge = &session.trigger_volume_bridge;
             let trigger_bindings = &app.trigger_bindings;
             let presentation_camera_aim = (app.camera.pitch, app.camera.yaw + local_respawn_yaw);
@@ -959,6 +946,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 },
                 tick_dt,
                 touch_system,
+                assist_state,
                 descriptors,
                 descriptor_generation,
                 &data_registry.factions,
@@ -1084,12 +1072,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 pending_death_events.extend(app.host_run_remote_hit_death_sweep());
             }
             // The tick has settled: every hit this tick authorized, its death
-            // sweep and the accumulators have landed. Player events read that
-            // snapshot, then apply their in-tick commands.
+            // sweep and the accumulators have landed. This tick's assist
+            // completions apply first, so the snapshot sees their writes;
+            // player events then read that snapshot and apply their in-tick
+            // commands.
             {
                 let _scope = sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::PlayerEvents);
-                app.player_events
-                    .run_tick(&script_ctx, &mut pending_player_event_residuals);
+                app.player_events.run_tick(
+                    &script_ctx,
+                    &tick_events.assist_completions,
+                    &mut pending_player_event_residuals,
+                );
             }
             // A `spawnFromSpawner` in a player event's fire list runs at the
             // seam above, after the drains earlier in this tick. Repeat them
@@ -1211,6 +1204,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // are client presentation only and never enter replication.
     app.update_client_presentation_pose_inputs(frame_anim_time, render_camera_yaw);
     app.update_client_overlay_anchors(&script_ctx, frame_anim_time);
+    app.update_client_revive_markers(frame_anim_time);
     app.run_client_fire_path_post_loop(
         frame_dt,
         frame_anim_time,
@@ -1622,6 +1616,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 );
         }
     }
+    // Revive-marker range reads the authoritative pose the assist pass read;
+    // anchors follow the presented pose below.
+    app.select_host_revive_markers();
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::HostSend);
@@ -1639,6 +1636,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // authoritative tick plus the render sub-tick `alpha`, so the presented
     // pose varies smoothly per render frame instead of stepping at 60 Hz.
     app.host_present_client_pawns(frame_result.alpha, frame_anim_time);
+    app.anchor_host_revive_markers(frame_anim_time);
     // Every presented pose is written: ghost membership reads them, ahead of the
     // render collectors.
     app.update_ghost_links(frame_result.alpha, now);
@@ -2669,6 +2667,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // second `app.session.as_mut()` here would alias it.
         let frontend_menu_is_present =
             frontend_root_is_pushed(&session.modal_stack, frontend_menu_name);
+        let assist_projection =
+            crate::client_assist::ui_projection(&app.client_assist, session, frame_result.alpha);
         let mut ui_snapshot = App::build_ui_read_snapshot(
             &session.modal_stack,
             &mut session.presentation_cells,
@@ -2687,6 +2687,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 display: &mut app.life_state_display,
                 frame_dt: std::time::Duration::from_secs_f32(frame_script_delta.max(0.0)),
             }),
+            Some(assist_projection),
         );
         ui_snapshot.wheel = app.ui_wheel.take();
         crate::app::glyph_art::resolve_snapshot_glyphs(&mut ui_snapshot, session);

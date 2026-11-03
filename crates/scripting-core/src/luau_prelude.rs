@@ -200,6 +200,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "inLifeState",
     "becomes",
     "ceases",
+    "assistReceived",
+    "assistGiven",
     "wait",
     "fire",
     "scopeReactions",
@@ -218,6 +220,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "set",
     "update",
     "when",
+    "assist",
 ];
 
 /// UI-reactions SDK fields exported through `require("postretro/ui")`.
@@ -283,6 +286,7 @@ const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 const UI_PRESENTATION_FIELDS: &[&str] = &[
     "definePresentationTemplate",
     "damagedEnemies",
+    "assistableTeammates",
     "defineOverlay",
     "fact",
 ];
@@ -295,6 +299,7 @@ const UI_DATA_SCRIPT_FIELDS: &[&str] = &["present"];
 const UI_STATE_MODULE_FIELDS: &[&str] = &[
     "bindState",
     "stateEquals",
+    "stateCompare",
     "createLocalState",
     "ui",
     "Switch",
@@ -336,12 +341,14 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "defineUiTree",
     "definePresentationTemplate",
     "damagedEnemies",
+    "assistableTeammates",
     "defineOverlay",
     "fact",
     "present",
     "getGameState",
     "bindState",
     "stateEquals",
+    "stateCompare",
     "createLocalState",
     "ui",
     "Switch",
@@ -394,6 +401,8 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "inLifeState",
     "becomes",
     "ceases",
+    "assistReceived",
+    "assistGiven",
     "wait",
     "fire",
     "scopeReactions",
@@ -412,6 +421,7 @@ pub const POSTRETRO_ROOT_MODULE_EXPORTS: &[&str] = &[
     "set",
     "update",
     "when",
+    "assist",
     "brain",
     "candidate",
     "state",

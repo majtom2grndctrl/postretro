@@ -71,8 +71,10 @@ pub fn restore_carried_health(
 /// grounded tick. An epoch-14 client would predict the old friction model
 /// against a host running the new one; the epoch check rejects it instead.
 /// 16: sorted life-state names, per-pawn capability profiles and table revision
-/// supply the client prediction and reconcile gates.
-pub const TUNING_PAYLOAD_EPOCH: u32 = 16;
+/// supply the client prediction and reconcile gates. 17: a life-state profile
+/// gains `assistable` (a literal or IR `radius` and `holdMs`); an epoch-16
+/// reader rejects the unknown profile key.
+pub const TUNING_PAYLOAD_EPOCH: u32 = 17;
 
 /// Host-resolved values for one occupied wieldable slot.
 ///

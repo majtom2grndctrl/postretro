@@ -1,6 +1,11 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+pub mod assist;
+pub mod assist_pairs;
+mod assist_pass;
+mod assist_scratch;
+pub mod assist_snapshot;
 pub mod cpu_stages;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
@@ -124,6 +129,10 @@ pub struct SimCommand {
     /// the full command alongside `use_pressed`; `MovementInput` mirrors it for
     /// the client-prediction input boundary.
     pub drop_pressed: bool,
+    /// The resolved `assist` level, true on every command built while the
+    /// assist binding is down. Read by both runners from here, never from
+    /// `MovementInput`; a gap-held command carries it as a level.
+    pub assist_held: bool,
 }
 
 pub struct PostMovementCommand {
@@ -426,6 +435,10 @@ pub struct TickEvents {
     /// `TriggerEvent.fire` filtered by `edge == Exit`; a non-`cfg(test)` field
     /// because the scheduler consumes it in release, unlike `trigger_fires`.
     pub trigger_exit_fires: Vec<(EntityId, PlayerId)>,
+    /// This tick's assist completions, in `players()` order of the helper, at
+    /// most one per target. Each carries the target's life state and elapsed
+    /// at record for the player-event pass's re-check.
+    pub assist_completions: Vec<assist::AssistCompletion>,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
     /// keeping the detailed sequence out of non-test builds avoids a hot-path
     /// diagnostic allocation.
@@ -497,6 +510,7 @@ where
     AiResult: Into<AiTickResult>,
 {
     let mut touch_system = TouchSystem::default();
+    let mut assist_state = assist::AssistState::default();
     let touch_edges = HashMap::new();
     let factions = FactionRegistry::default();
     let faction_sentiment = RefCell::new(FactionSentimentState::default());
@@ -518,6 +532,7 @@ where
         post_movement,
         tick_dt,
         &mut touch_system,
+        &mut assist_state,
         &[],
         0,
         &factions,
@@ -555,6 +570,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
     touch_system: &mut TouchSystem,
+    assist_state: &mut assist::AssistState,
     descriptors: &[EntityTypeDescriptor],
     descriptor_generation: u64,
     factions: &FactionRegistry,
@@ -598,6 +614,11 @@ where
     let auto_close_timers = trigger_context
         .as_ref()
         .and_then(|context| context.auto_close_timers.clone());
+    // The assist pass seeds pair sides from the store after the trigger stage
+    // has consumed the context.
+    let assist_slot_table = trigger_context
+        .as_ref()
+        .map(|context| context.slot_table.clone());
     let stage = cpu.scope(SimStage::Movers);
     // Commands applied since the last blocking pass (the frame-end script
     // drain, player-event fire lists) reach the driver only along a course
@@ -1060,6 +1081,17 @@ where
     }
     drop(stage);
     let death = run_death_sweep(&registry);
+    // The assist accumulator reads the tick after the Weapons stage and the
+    // death sweep, so an in-tick self-revive or kill is seen.
+    let assist_completions = assist_state.run_host_pass(
+        &mut registry.borrow_mut(),
+        assist_slot_table
+            .as_ref()
+            .map(|table| table.borrow())
+            .as_deref(),
+        command,
+        &remote_pawn_commands,
+    );
 
     let mut repointed_pawns = touch_events.repointed_pawns;
     if let Some(pawn) = repointed_pawn {
@@ -1103,6 +1135,7 @@ where
         dropped_item_meshes: touch_events.dropped_item_meshes,
         trigger_residuals,
         trigger_exit_fires,
+        assist_completions,
         #[cfg(test)]
         trigger_fires,
         #[cfg(test)]
@@ -2388,6 +2421,7 @@ mod tests {
 
     pub(super) fn sim_command(fire: bool, reload: bool) -> SimCommand {
         SimCommand {
+            assist_held: false,
             input_tick: 0,
             secondary_button: crate::weapon::FireButtonState {
                 pressed: false,
@@ -3228,6 +3262,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),
@@ -3351,6 +3386,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),
@@ -3474,6 +3510,7 @@ mod tests {
             },
             1.0 / 60.0,
             &mut touch_system,
+            &mut Default::default(),
             &[],
             0,
             &FactionRegistry::default(),

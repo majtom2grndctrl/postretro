@@ -1873,6 +1873,8 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
                 "player.cell",
                 "player.cellCapacity",
                 "player.health",
@@ -1906,6 +1908,8 @@ mod tests {
             vec![
                 "player.ammo",
                 "player.ammoReserve",
+                "player.assistProgress",
+                "player.assistReceivedProgress",
                 "player.cell",
                 "player.cellCapacity",
                 "player.health",

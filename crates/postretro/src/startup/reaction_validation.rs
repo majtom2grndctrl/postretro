@@ -2445,7 +2445,7 @@ mod tests {
                             None,
                         );
                         let mut residuals = Vec::new();
-                        table.run_tick(&ctx, &mut residuals);
+                        table.run_tick(&ctx, &[], &mut residuals);
                         residuals.is_empty()
                     }
                     "fire" => {

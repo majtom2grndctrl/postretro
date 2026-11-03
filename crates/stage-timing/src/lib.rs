@@ -40,8 +40,9 @@ pub fn mark_frame() {
 }
 
 /// Largest stage set a crate may declare. Bounds per-frame storage to a fixed
-/// array so recording never allocates.
-pub const MAX_STAGES_PER_SET: usize = 32;
+/// array so recording never allocates. `StageFrame` tracks which stages ran in
+/// one `u64` bit set, so this cannot exceed 64.
+pub const MAX_STAGES_PER_SET: usize = 64;
 
 /// Whether CPU stage timing is on. Read once at startup by the binary and
 /// handed to each timed crate as a value, so tests switch it without touching

@@ -42,8 +42,8 @@
     motion: { rise: number; easing: PresentationEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    /** Overlay-only authored socket and vertical world offset. */
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only authored socket (optional) and vertical world offset. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** Recently damaged target source. Shield values remain raw IR expressions. */
   export type DamagedEnemiesOverlay = {
@@ -52,9 +52,13 @@
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   };
-  /** Passive target-keyed overlay declaration consumed only by the host. */
+  /** Marker over every remote teammate who can be assisted; stamps the `inRange` Bool fact. */
+  export type AssistableTeammatesOverlay = { kind: "assistableTeammates" };
+  /** Passive overlay declaration. Each machine draws it locally; it never crosses the wire. */
   export type PresentationOverlay = {
-    over: DamagedEnemiesOverlay;
+    over: DamagedEnemiesOverlay | AssistableTeammatesOverlay;
     template: string;
     maxVisible: number;
   };
+  /** `ModManifest.presentationOverlays`: one overlay, or an array with at most one per source kind. */
+  export type PresentationOverlays = PresentationOverlay | readonly PresentationOverlay[];

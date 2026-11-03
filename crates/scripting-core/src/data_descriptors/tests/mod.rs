@@ -30,6 +30,7 @@ mod movement_view_feel;
 mod movement_view_pose;
 mod player_events;
 mod predicate_compare;
+mod presentation_overlay_drains;
 mod reactions;
 mod respawn_args;
 mod sounds;

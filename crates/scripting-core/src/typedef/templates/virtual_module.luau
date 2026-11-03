@@ -56,8 +56,13 @@ export type PostretroUiModule = {
   },
   --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
-  --- Bind an overlay source to a socket-anchored presentation template.
-  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
+  --- Build the assistable-teammate marker source. It takes no options: the
+  --- engine picks the teammates on each machine and stamps the `inRange` Bool fact.
+  assistableTeammates: (options: {}?) -> AssistableTeammatesSource,
+  --- Bind an overlay source to a world-anchored presentation template.
+  --- `maxVisible` is an integer from 1 to 64. Register one result as
+  --- `presentationOverlays`, or several as an array with at most one per source kind.
+  defineOverlay: (props: { over: PresentationOverlaySource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),

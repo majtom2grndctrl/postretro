@@ -2024,3 +2024,6 @@ mod assist_sdk;
 
 #[path = "assist_source_sdk_tests.rs"]
 mod assist_source_sdk;
+
+#[path = "presentation_overlay_sdk_tests.rs"]
+mod presentation_overlay_sdk;

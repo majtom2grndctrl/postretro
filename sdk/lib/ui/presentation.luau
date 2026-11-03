@@ -11,7 +11,9 @@ export type PresentationTemplateProps = {
   fade: { startMs: number },
   -- Maximum random screen-space offset per spawn, in device pixels.
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  -- `socket` names a model socket or hit-zone tag; without one, or when the
+  -- model lacks it, the overlay source's fallback anchor applies.
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 export type PresentationTemplate = {
   id: string,
@@ -20,7 +22,9 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: WidgetEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  -- `socket` names a model socket or hit-zone tag; without one, or when the
+  -- model lacks it, the overlay source's fallback anchor applies.
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 
 export type OverlayEntity = {
@@ -40,8 +44,15 @@ export type DamagedEnemiesSource = {
   hideAtFull: boolean,
   shield: { value: RuntimeValue, max: RuntimeValue }?,
 }
+-- Marker source over every remote teammate who can be assisted. Each instance
+-- carries one Bool fact, `inRange`: true only on the teammate a held `assist`
+-- would revive right now.
+export type AssistableTeammatesSource = {
+  kind: "assistableTeammates",
+}
+export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource
 export type PresentationOverlay = {
-  over: DamagedEnemiesSource,
+  over: PresentationOverlaySource,
   template: string,
   maxVisible: number,
 }
@@ -181,8 +192,8 @@ local function validatePassiveWidget(value: any, path: string)
     error(`definePresentationTemplate: \`{path}\` must be a kind-tagged widget descriptor`, 3)
   end
   local kind = value.kind
-  if kind ~= "text" and kind ~= "bar" and kind ~= "image" and kind ~= "vstack" and kind ~= "hstack" then
-    error(`definePresentationTemplate: \`{path}.kind\` "{kind}" is not supported; passive templates allow text, bar, image, vstack, and hstack`, 3)
+  if kind ~= "text" and kind ~= "bar" and kind ~= "image" and kind ~= "glyph" and kind ~= "vstack" and kind ~= "hstack" then
+    error(`definePresentationTemplate: \`{path}.kind\` "{kind}" is not supported; passive templates allow text, bar, image, glyph, vstack, and hstack`, 3)
   end
   if kind == "text" then
     validateWidgetF32(value.fontSize, `{path}.fontSize`, true)
@@ -198,6 +209,10 @@ local function validatePassiveWidget(value: any, path: string)
         error(`definePresentationTemplate: \`{path}.exitFade\` must be a table`, 3)
       end
       validateWidgetF32(value.exitFade.durationMs, `{path}.exitFade.durationMs`, true)
+    end
+  elseif kind == "glyph" then
+    if type(value.command) ~= "string" or #value.command == 0 then
+      error(`definePresentationTemplate: \`{path}.command\` must be nonempty`, 3)
     end
   elseif kind == "vstack" or kind == "hstack" then
     if type(value.gap) == "number" then validateWidgetF32(value.gap, `{path}.gap`) end
@@ -229,7 +244,11 @@ local function validate(props: any)
   if type(props.spawnScatter) ~= "table" then error("definePresentationTemplate: `spawnScatter` must be a table", 3) end
   validateWidgetF32(props.spawnScatter.radius, "spawnScatter.radius")
   if props.worldAnchor ~= nil then
-    if type(props.worldAnchor) ~= "table" or type(props.worldAnchor.socket) ~= "string" or #props.worldAnchor.socket == 0 then
+    if type(props.worldAnchor) ~= "table" then
+      error("definePresentationTemplate: `worldAnchor` must be a table", 3)
+    end
+    local socket = props.worldAnchor.socket
+    if socket ~= nil and (type(socket) ~= "string" or #socket == 0) then
       error("definePresentationTemplate: `worldAnchor.socket` must be nonempty", 3)
     end
     requireStoredF32(props.worldAnchor.offsetY, "worldAnchor.offsetY", "definePresentationTemplate")
@@ -251,7 +270,9 @@ function PresentationSdk.definePresentationTemplate(id: string, props: Presentat
     spawnScatter = table.freeze({ radius = props.spawnScatter.radius }),
   }
   if props.worldAnchor ~= nil then
-    output.worldAnchor = table.freeze({ socket = props.worldAnchor.socket, offsetY = props.worldAnchor.offsetY })
+    local anchor: any = { offsetY = props.worldAnchor.offsetY }
+    if props.worldAnchor.socket ~= nil then anchor.socket = props.worldAnchor.socket end
+    output.worldAnchor = table.freeze(anchor)
   end
   return table.freeze(output)
 end
@@ -284,10 +305,26 @@ function PresentationSdk.damagedEnemies(props: DamagedEnemiesProps): DamagedEnem
   return table.freeze(output)
 end
 
-function PresentationSdk.defineOverlay(props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }): PresentationOverlay
+--- Build the assistable-teammate marker source. It takes no options: the
+--- engine picks the teammates and stamps the `inRange` Bool fact.
+function PresentationSdk.assistableTeammates(options: {}?): AssistableTeammatesSource
+  if options ~= nil then
+    if type(options) ~= "table" then error("assistableTeammates: takes no options", 2) end
+    local unknownKey = next(options)
+    if unknownKey ~= nil then
+      error(`assistableTeammates: unknown key \`{tostring(unknownKey)}\``, 2)
+    end
+  end
+  return table.freeze({ kind = "assistableTeammates" }) :: any
+end
+
+--- Bind one passive template to a fact-driven source. Register the result as
+--- `presentationOverlays = overlay`, or several as `presentationOverlays = { a, b }`
+--- with at most one per source kind.
+function PresentationSdk.defineOverlay(props: { over: PresentationOverlaySource, template: PresentationTemplate, maxVisible: number }): PresentationOverlay
   if type(props) ~= "table" then error("defineOverlay: props must be a table", 2) end
-  if type(props.over) ~= "table" or props.over.kind ~= "damagedEnemies" then
-    error("defineOverlay: `over` must come from damagedEnemies", 2)
+  if type(props.over) ~= "table" or (props.over.kind ~= "damagedEnemies" and props.over.kind ~= "assistableTeammates") then
+    error("defineOverlay: `over` must come from damagedEnemies or assistableTeammates", 2)
   end
   if type(props.template) ~= "table" or type(props.template.id) ~= "string" then
     error("defineOverlay: `template` must come from definePresentationTemplate", 2)

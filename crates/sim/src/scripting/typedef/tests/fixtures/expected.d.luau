@@ -1636,8 +1636,8 @@ export type ModManifest = {
   uiTrees: {ModUiTree}?,
   --- Passive world-presentation templates. They never participate in modal UI input or focus.
   presentationTemplates: {PresentationTemplate}?,
-  --- One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.
-  presentationOverlays: PresentationOverlay?,
+  --- Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning.
+  presentationOverlays: PresentationOverlays?,
   --- Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default.
   theme: ThemeTokens?,
   --- Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart.
@@ -2662,7 +2662,7 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 --- `motion.rise` and `spawnScatter.radius` are device pixels, not world metres.
 export type PresentationTemplateProps = {
@@ -2671,7 +2671,7 @@ export type PresentationTemplateProps = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
@@ -2690,11 +2690,21 @@ export type DamagedEnemiesSource = {
   hideAtFull: boolean,
   shield: { value: RuntimeValue, max: RuntimeValue }?,
 }
+--- Marker source over every remote teammate who can be assisted. Each instance
+--- carries one Bool fact, `inRange`: true only on the teammate a held `assist`
+--- would revive right now.
+export type AssistableTeammatesSource = {
+  kind: "assistableTeammates",
+}
+export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource
 export type PresentationOverlay = {
-  over: DamagedEnemiesSource,
+  over: PresentationOverlaySource,
   template: string,
   maxVisible: number,
 }
+--- `ModManifest.presentationOverlays`: one overlay, or an array with at most
+--- one per source kind.
+export type PresentationOverlays = PresentationOverlay | {PresentationOverlay}
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
@@ -2926,7 +2936,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one
+--- descriptor or an array of them, at most one per source kind.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -3045,7 +3056,7 @@ export type ModManifestInput = {
   ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
-  presentationOverlays: PresentationOverlay?,
+  presentationOverlays: PresentationOverlays?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   uiImages: { [string]: string }?,
@@ -3648,8 +3659,13 @@ export type PostretroUiModule = {
   },
   --- Build a damaged-enemy source selected by the host in co-op or locally in single player.
   damagedEnemies: (props: DamagedEnemiesProps) -> DamagedEnemiesSource,
-  --- Bind an overlay source to a socket-anchored presentation template.
-  defineOverlay: (props: { over: DamagedEnemiesSource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
+  --- Build the assistable-teammate marker source. It takes no options: the
+  --- engine picks the teammates on each machine and stamps the `inRange` Bool fact.
+  assistableTeammates: (options: {}?) -> AssistableTeammatesSource,
+  --- Bind an overlay source to a world-anchored presentation template.
+  --- `maxVisible` is an integer from 1 to 64. Register one result as
+  --- `presentationOverlays`, or several as an array with at most one per source kind.
+  defineOverlay: (props: { over: PresentationOverlaySource, template: PresentationTemplate, maxVisible: number }) -> PresentationOverlay,
   --- Add a passive visual effect to an impact policy `do` array.
   present: (template: PresentationTemplate, value: NumberValue) -> Effect,
   getGameState: typeof(getGameState),

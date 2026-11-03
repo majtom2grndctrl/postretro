@@ -166,7 +166,9 @@ fn client_overlay_anchor(
     anim_time: f64,
 ) -> Option<Vec3> {
     let offset = Vec3::Y * anchor.offset_y;
-    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    if let Some(socket) = (!anchor.socket.is_empty())
+        .then(|| hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time))
+        .flatten()
     {
         return Some(socket + offset);
     }

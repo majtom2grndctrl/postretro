@@ -119,7 +119,8 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only anchor. `socket` names a model socket or hit-zone tag; without one, or when the model lacks it, the overlay source's fallback anchor applies. `offsetY` lifts the anchor in world units. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -129,7 +130,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    worldAnchor?: { socket?: string; offsetY: number };
   }>;
   export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
   export type DamagedEnemiesProps = {
@@ -146,8 +147,12 @@ declare module "postretro/ui" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   }>;
+  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY`. */
+  export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
+  /** Every source an overlay can bind to. */
+  export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;
   export type PresentationOverlay = Readonly<{
-    over: DamagedEnemiesSource;
+    over: PresentationOverlaySource;
     template: string;
     maxVisible: number;
   }>;
@@ -162,8 +167,10 @@ declare module "postretro/ui" {
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
   /** Build a damaged-enemy source selected by the host in co-op or locally in single player. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
-  /** Bind an overlay source to a world-anchored presentation template. */
-  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Build the assistable-teammate marker source. It takes no options: the engine picks the teammates on each machine and stamps the `inRange` Bool fact. */
+  export function assistableTeammates(options?: Record<string, never>): AssistableTeammatesSource;
+  /** Bind an overlay source to a world-anchored presentation template. `maxVisible` is an integer from 1 to 64. Register one result as `presentationOverlays`, or several as an array with at most one per source kind. */
+  export function defineOverlay(props: { over: PresentationOverlaySource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Bind producer-stamped per-instance values inside a presentation template. */
   export const fact: PresentationFactApi;
   /** Add a passive visual effect to an impact policy `do:` array. */

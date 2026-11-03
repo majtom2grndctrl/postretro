@@ -84,12 +84,20 @@ export type {
   OverlayEntity,
   DamagedEnemiesProps,
   DamagedEnemiesSource,
+  AssistableTeammatesSource,
+  PresentationOverlaySource,
   PresentationOverlay,
   PresentationFactApi,
   NumberFactOptions,
   ScalarFactOptions,
 } from "./ui/presentation";
-export { defineOverlay, definePresentationTemplate, damagedEnemies, fact } from "./ui/presentation";
+export {
+  assistableTeammates,
+  defineOverlay,
+  definePresentationTemplate,
+  damagedEnemies,
+  fact,
+} from "./ui/presentation";
 export { present } from "./data_script";
 
 export type {

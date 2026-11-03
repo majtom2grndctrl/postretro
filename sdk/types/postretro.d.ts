@@ -1637,8 +1637,8 @@ declare module "postretro" {
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
-    /** One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning. */
-    presentationOverlays?: PresentationOverlay;
+    /** Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. */
+    presentationOverlays?: PresentationOverlays;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
     /** Font assets: family name → TTF asset path. Optional; changing custom font assets requires an engine restart. */
@@ -2729,8 +2729,8 @@ declare module "postretro" {
     motion: { rise: number; easing: PresentationEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    /** Overlay-only authored socket and vertical world offset. */
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only authored socket (optional) and vertical world offset. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** Recently damaged target source. Shield values remain raw IR expressions. */
   export type DamagedEnemiesOverlay = {
@@ -2739,17 +2739,21 @@ declare module "postretro" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   };
-  /** Passive target-keyed overlay declaration consumed only by the host. */
+  /** Marker over every remote teammate who can be assisted; stamps the `inRange` Bool fact. */
+  export type AssistableTeammatesOverlay = { kind: "assistableTeammates" };
+  /** Passive overlay declaration. Each machine draws it locally; it never crosses the wire. */
   export type PresentationOverlay = {
-    over: DamagedEnemiesOverlay;
+    over: DamagedEnemiesOverlay | AssistableTeammatesOverlay;
     template: string;
     maxVisible: number;
   };
+  /** `ModManifest.presentationOverlays`: one overlay, or an array with at most one per source kind. */
+  export type PresentationOverlays = PresentationOverlay | readonly PresentationOverlay[];
   /** An entity descriptor returned by `defineEntity` that declares a weapon block and can be referenced from an inventory loadout. */
   export type WeaponEntityDescriptor = EntityTypeDescriptor & { components: EntityTypeComponents & { weapon: WeaponDescriptor } };
   /** Lowers `components.inventory.loadout` weapon descriptor references to their canonical names after validating each reference by value. */
   export function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T;
-  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
+  /** Pure identity builder for the mod manifest consumed from the default export. `config.name`, `config.id`, and `config.version` are required. Peers must declare the same id to connect. `id` must match `[A-Za-z0-9_.-]{1,64}`; `:` is not allowed, and the id may not consist entirely of dots. `version` is displayed and never compared; neither field is a security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. `factionSentimentDecay` is an optional non-negative return-to-baseline rate and defaults to zero (hold). */
   export function defineMod(config: ModManifestInput): ModManifest;
   /** Build a stable named faction declaration for `ModManifest.factions`. Entity archetypes refer to its name through `components.faction`; the engine assigns the numeric storage index at manifest commit. Names beginning with `@postretro.` are engine-reserved. */
   export function defineFaction(name: string): FactionDescriptor;
@@ -3133,7 +3137,8 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    /** Overlay-only anchor. `socket` names a model socket or hit-zone tag; without one, or when the model lacks it, the overlay source's fallback anchor applies. `offsetY` lifts the anchor in world units. */
+    worldAnchor?: { socket?: string; offsetY: number };
   };
   /** `motion.rise` and `spawnScatter.radius` are device pixels, not world metres. */
   export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -3143,7 +3148,7 @@ declare module "postretro/ui" {
     motion: { rise: number; easing: WidgetEasing };
     fade: { startMs: number };
     spawnScatter: { radius: number };
-    worldAnchor?: { socket: string; offsetY: number };
+    worldAnchor?: { socket?: string; offsetY: number };
   }>;
   export type OverlayEntity = Readonly<{ state(name: string): RuntimeValue }>;
   export type DamagedEnemiesProps = {
@@ -3160,8 +3165,12 @@ declare module "postretro/ui" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   }>;
+  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY`. */
+  export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
+  /** Every source an overlay can bind to. */
+  export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;
   export type PresentationOverlay = Readonly<{
-    over: DamagedEnemiesSource;
+    over: PresentationOverlaySource;
     template: string;
     maxVisible: number;
   }>;
@@ -3176,8 +3185,10 @@ declare module "postretro/ui" {
   export function definePresentationTemplate<const Props extends PresentationTemplateProps>(props: Props): PresentationTemplate<string>;
   /** Build a damaged-enemy source selected by the host in co-op or locally in single player. */
   export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource;
-  /** Bind an overlay source to a world-anchored presentation template. */
-  export function defineOverlay(props: { over: DamagedEnemiesSource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
+  /** Build the assistable-teammate marker source. It takes no options: the engine picks the teammates on each machine and stamps the `inRange` Bool fact. */
+  export function assistableTeammates(options?: Record<string, never>): AssistableTeammatesSource;
+  /** Bind an overlay source to a world-anchored presentation template. `maxVisible` is an integer from 1 to 64. Register one result as `presentationOverlays`, or several as an array with at most one per source kind. */
+  export function defineOverlay(props: { over: PresentationOverlaySource; template: PresentationTemplate; maxVisible: number }): PresentationOverlay;
   /** Bind producer-stamped per-instance values inside a presentation template. */
   export const fact: PresentationFactApi;
   /** Add a passive visual effect to an impact policy `do:` array. */

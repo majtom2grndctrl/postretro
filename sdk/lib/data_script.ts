@@ -747,7 +747,7 @@ export function defineEntity<T>(
  * first committed id and version remain active across staged reloads. Optional
  * arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`, `presentationTemplates`,
  * `reactions`, `events`, `crossings`, `triggerEvents`, `triggerPools`,
- * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor. Pure: no engine side
+ * `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor or an array of them, at most one per source kind. Pure: no engine side
  * effects until the manifest is returned and validated. `factionSentimentDecay`
  * is an optional non-negative global return-to-baseline rate; it defaults to
  * zero (hold), and an individual sentiment row may override it with `decay`.

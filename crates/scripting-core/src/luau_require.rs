@@ -491,6 +491,7 @@ mod tests {
                 "definePresentationTemplate",
                 "fact",
                 "damagedEnemies",
+                "assistableTeammates",
                 "defineOverlay",
                 "present",
                 "getGameState",

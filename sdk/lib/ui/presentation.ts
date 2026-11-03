@@ -24,8 +24,13 @@ export type PresentationTemplateProps = {
   fade: { startMs: number };
   /** Maximum random screen-space offset per spawn, in device pixels. */
   spawnScatter: { radius: number };
-  /** Required by an overlay consumer; ignored by event-spawn presentation. */
-  worldAnchor?: { socket: string; offsetY: number };
+  /**
+   * Required by an overlay consumer; ignored by event-spawn presentation.
+   * `socket` names a model socket or hit-zone tag; without one, or when the
+   * model lacks it, the overlay source's fallback anchor applies. `offsetY`
+   * lifts the anchor in world units.
+   */
+  worldAnchor?: { socket?: string; offsetY: number };
 };
 
 export type PresentationTemplate<Name extends string = string> = Readonly<{
@@ -35,7 +40,7 @@ export type PresentationTemplate<Name extends string = string> = Readonly<{
   motion: { rise: number; easing: WidgetEasing };
   fade: { startMs: number };
   spawnScatter: { radius: number };
-  worldAnchor?: { socket: string; offsetY: number };
+  worldAnchor?: { socket?: string; offsetY: number };
 }>;
 
 export type OverlayEntity = Readonly<{
@@ -58,8 +63,18 @@ export type DamagedEnemiesSource = Readonly<{
   shield?: { value: RuntimeValue; max: RuntimeValue };
 }>;
 
+/**
+ * Marker source over every remote teammate who can be assisted. Each instance
+ * carries one Bool fact, `inRange`: true only on the teammate a held `assist`
+ * would revive right now. The anchor falls back to the pawn's origin.
+ */
+export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
+
+/** Every source an overlay can bind to. */
+export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;
+
 export type PresentationOverlay = Readonly<{
-  over: DamagedEnemiesSource;
+  over: PresentationOverlaySource;
   /** Stable id copied from the template; the template stays in presentationTemplates. */
   template: string;
   maxVisible: number;
@@ -240,9 +255,9 @@ function validatePassiveWidget(value: unknown, path: string): void {
   if (typeof widget.kind !== "string") {
     throw new TypeError(`definePresentationTemplate: \`${path}.kind\` must be a string`);
   }
-  if (!["text", "bar", "image", "vstack", "hstack"].includes(widget.kind)) {
+  if (!["text", "bar", "image", "glyph", "vstack", "hstack"].includes(widget.kind)) {
     throw new TypeError(
-      `definePresentationTemplate: \`${path}.kind\` "${widget.kind}" is not supported; passive templates allow text, bar, image, vstack, and hstack`,
+      `definePresentationTemplate: \`${path}.kind\` "${widget.kind}" is not supported; passive templates allow text, bar, image, glyph, vstack, and hstack`,
     );
   }
 
@@ -264,6 +279,10 @@ function validatePassiveWidget(value: unknown, path: string): void {
         `${path}.exitFade.durationMs`,
         true,
       );
+    }
+  } else if (widget.kind === "glyph") {
+    if (typeof widget.command !== "string" || widget.command.length === 0) {
+      throw new TypeError(`definePresentationTemplate: \`${path}.command\` must be nonempty`);
     }
   } else if (widget.kind === "vstack" || widget.kind === "hstack") {
     if (typeof widget.gap === "number") validateWidgetF32(widget.gap, `${path}.gap`);
@@ -312,7 +331,8 @@ function validateProps(props: PresentationTemplateProps): void {
     if (props.worldAnchor === null || typeof props.worldAnchor !== "object") {
       throw new TypeError("definePresentationTemplate: `worldAnchor` must be an object");
     }
-    if (typeof props.worldAnchor.socket !== "string" || props.worldAnchor.socket.length === 0) {
+    if (props.worldAnchor.socket !== undefined
+      && (typeof props.worldAnchor.socket !== "string" || props.worldAnchor.socket.length === 0)) {
       throw new TypeError("definePresentationTemplate: `worldAnchor.socket` must be nonempty");
     }
     requireStoredF32(props.worldAnchor.offsetY, "worldAnchor.offsetY", "definePresentationTemplate");
@@ -347,7 +367,12 @@ export function definePresentationTemplate(
     spawnScatter: Object.freeze({ radius: props.spawnScatter.radius }),
     ...(props.worldAnchor === undefined
       ? {}
-      : { worldAnchor: Object.freeze({ socket: props.worldAnchor.socket, offsetY: props.worldAnchor.offsetY }) }),
+      : {
+          worldAnchor: Object.freeze({
+            ...(props.worldAnchor.socket === undefined ? {} : { socket: props.worldAnchor.socket }),
+            offsetY: props.worldAnchor.offsetY,
+          }),
+        }),
   });
 }
 
@@ -389,18 +414,37 @@ export function damagedEnemies(props: DamagedEnemiesProps): DamagedEnemiesSource
   });
 }
 
+/** Build the assistable-teammate marker source. It takes no options: the
+ * engine picks the teammates and stamps the `inRange` Bool fact. */
+export function assistableTeammates(options?: Record<string, never>): AssistableTeammatesSource {
+  const props: unknown = options;
+  if (props !== undefined) {
+    if (props === null || typeof props !== "object" || Array.isArray(props)) {
+      throw new TypeError("assistableTeammates: takes no options");
+    }
+    const unknownKey = Object.keys(props)[0];
+    if (unknownKey !== undefined) {
+      throw new TypeError(`assistableTeammates: unknown key \`${unknownKey}\``);
+    }
+  }
+  return Object.freeze({ kind: "assistableTeammates" });
+}
+
+const OVERLAY_SOURCE_KINDS: readonly string[] = ["damagedEnemies", "assistableTeammates"];
+
 /** Bind one passive template to a fact-driven source. Register the returned
- * descriptor directly as `defineMod({ presentationOverlays: overlay })`. */
+ * descriptor as `defineMod({ presentationOverlays: overlay })`, or several as
+ * `presentationOverlays: [a, b]` with at most one per source kind. */
 export function defineOverlay(props: {
-  over: DamagedEnemiesSource;
+  over: PresentationOverlaySource;
   template: PresentationTemplate;
   maxVisible: number;
 }): PresentationOverlay {
   if (props === null || typeof props !== "object" || Array.isArray(props)) {
     throw new TypeError("defineOverlay: props must be an object");
   }
-  if (props.over === null || typeof props.over !== "object" || props.over.kind !== "damagedEnemies") {
-    throw new TypeError("defineOverlay: `over` must come from damagedEnemies");
+  if (props.over === null || typeof props.over !== "object" || !OVERLAY_SOURCE_KINDS.includes(props.over.kind)) {
+    throw new TypeError("defineOverlay: `over` must come from damagedEnemies or assistableTeammates");
   }
   if (props.template === null || typeof props.template !== "object" || typeof props.template.id !== "string") {
     throw new TypeError("defineOverlay: `template` must come from definePresentationTemplate");

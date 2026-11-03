@@ -275,9 +275,12 @@ fn validate_presentation_widget(widget: &Widget, path: &str) -> Result<(), Strin
         Widget::Spacer(_) => Err(format!(
             "{path}.kind `spacer` is not supported in passive presentation templates"
         )),
-        Widget::Glyph(_) => Err(format!(
-            "{path}.kind `glyph` is not supported in passive presentation templates"
-        )),
+        Widget::Glyph(glyph) => {
+            if glyph.command.is_empty() {
+                return Err(format!("{path}.command must be nonempty"));
+            }
+            Ok(())
+        }
         Widget::Button(_) => Err(format!(
             "{path}.kind `button` is interactive and is not supported in passive presentation templates"
         )),
@@ -387,19 +390,20 @@ pub struct PresentationTemplateSpawnScatter {
 }
 
 /// Model-local anchor selected by an overlay template. The host resolves the
-/// named socket (or a matching hit-zone tag) from CPU-side hit-zone data.
+/// named socket (or a matching hit-zone tag) from CPU-side hit-zone data. With
+/// no socket, or one the model lacks, the overlay source's own fallback anchor
+/// applies.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentationWorldAnchor {
+    /// Empty when the template names no socket.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub socket: String,
     pub offset_y: f32,
 }
 
 impl PresentationWorldAnchor {
     fn validate(&self) -> Result<(), String> {
-        if self.socket.is_empty() {
-            return Err("presentation template `worldAnchor.socket` must be nonempty".to_string());
-        }
         if !self.offset_y.is_finite() {
             return Err("presentation template `worldAnchor.offsetY` must be finite".to_string());
         }
@@ -407,10 +411,13 @@ impl PresentationWorldAnchor {
     }
 }
 
-/// The fact-driven passive overlay declaration from
-/// `ModManifest.presentationOverlays`. The manifest field accepts one of these,
-/// not an array. It is host-local authoring data, never a transport payload.
+/// Upper bound on one overlay's `maxVisible`.
 pub const MAX_PRESENTATION_OVERLAY_VISIBLE: usize = 64;
+
+/// One fact-driven passive overlay declaration from
+/// `ModManifest.presentationOverlays`. The manifest field accepts one of these
+/// or an array of them, at most one per [`PresentationOverlayKind`]. It is
+/// host-local authoring data, never a transport payload.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -441,6 +448,79 @@ impl PresentationOverlay {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PresentationOverlaySource {
     DamagedEnemies(DamagedEnemiesOverlay),
+}
+
+impl PresentationOverlaySource {
+    pub fn kind(&self) -> PresentationOverlayKind {
+        match self {
+            Self::DamagedEnemies(_) => PresentationOverlayKind::DamagedEnemies,
+        }
+    }
+}
+
+/// The discriminant of [`PresentationOverlaySource`]. A manifest carries at
+/// most one overlay per kind, and each kind owns its own presentation instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PresentationOverlayKind {
+    DamagedEnemies,
+    AssistableTeammates,
+}
+
+impl PresentationOverlayKind {
+    /// The authored `over.kind` string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DamagedEnemies => "damagedEnemies",
+            Self::AssistableTeammates => "assistableTeammates",
+        }
+    }
+}
+
+impl std::fmt::Display for PresentationOverlayKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Marker over every remote teammate whose life state is assistable. It has
+/// no authored parameters: the engine decides which teammates are marked and
+/// stamps the Bool fact [`ASSISTABLE_TEAMMATES_IN_RANGE_FACT`] on each one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistableTeammatesOverlay {}
+
+/// Bool fact stamped on each `assistableTeammates` overlay instance: true only
+/// for the one teammate a held `assist` would revive right now.
+pub const ASSISTABLE_TEAMMATES_IN_RANGE_FACT: &str = "inRange";
+
+/// Keep the first overlay of each kind, in authored order, and warn once for
+/// every later repeat, naming its kind.
+pub fn first_presentation_overlay_per_kind(
+    overlays: Vec<PresentationOverlay>,
+    scope: &str,
+) -> Vec<PresentationOverlay> {
+    let mut seen = std::collections::BTreeSet::new();
+    overlays
+        .into_iter()
+        .filter(|overlay| {
+            let kind = overlay.over.kind();
+            let first = seen.insert(kind);
+            if !first {
+                log::warn!(
+                    "[Scripting] {scope}: `presentationOverlays` repeats kind `{kind}`; only the first `{kind}` overlay is kept"
+                );
+            }
+            first
+        })
+        .collect()
+}
+
+/// The overlay of `kind` in a manifest's overlay list, if one was declared.
+pub fn presentation_overlay_of_kind(
+    overlays: &[PresentationOverlay],
+    kind: PresentationOverlayKind,
+) -> Option<&PresentationOverlay> {
+    overlays.iter().find(|overlay| overlay.over.kind() == kind)
 }
 
 /// Event-driven enemy status overlay configuration. `shield` carries raw IR
@@ -518,6 +598,96 @@ mod tests {
                 .validate()
                 .unwrap_err(),
             "presentation overlay `maxVisible` must be at most 64"
+        );
+    }
+
+    fn template(root: serde_json::Value, world_anchor: serde_json::Value) -> PresentationTemplate {
+        serde_json::from_value(serde_json::json!({
+            "id": "marker",
+            "root": root,
+            "lifetimeMs": 1, "motion": { "rise": 0, "easing": "linear" },
+            "fade": { "startMs": 1 }, "spawnScatter": { "radius": 0 },
+            "worldAnchor": world_anchor,
+        }))
+        .expect("test template descriptor is valid")
+    }
+
+    fn anchor() -> serde_json::Value {
+        serde_json::json!({ "socket": "head", "offsetY": 0 })
+    }
+
+    #[test]
+    fn presentation_templates_admit_glyphs_at_the_root_and_nested() {
+        let glyph = serde_json::json!({ "kind": "glyph", "command": "assist" });
+        template(glyph.clone(), anchor()).validate().unwrap();
+        template(
+            serde_json::json!({ "kind": "vstack", "gap": 2, "padding": 0, "align": "start", "children": [
+                { "kind": "hstack", "gap": 4, "padding": 0, "align": "start",
+                  "visibleWhen": { "fact": "inRange" }, "children": [glyph] },
+            ] }),
+            anchor(),
+        )
+        .validate()
+        .unwrap();
+
+        assert_eq!(
+            template(
+                serde_json::json!({ "kind": "glyph", "command": "" }),
+                anchor()
+            )
+            .validate()
+            .unwrap_err(),
+            "presentation template `root`.command must be nonempty"
+        );
+        assert_eq!(
+            template(
+                serde_json::json!({ "kind": "hstack", "gap": 0, "padding": 0, "align": "start",
+                    "children": [{ "kind": "glyph", "command": "" }] }),
+                anchor(),
+            )
+            .validate()
+            .unwrap_err(),
+            "presentation template `root`.children[0].command must be nonempty"
+        );
+    }
+
+    #[test]
+    fn presentation_templates_still_reject_every_other_unsupported_kind() {
+        for (root, message) in [
+            (
+                serde_json::json!({ "kind": "spacer", "flexGrow": 1 }),
+                "presentation template `root`.kind `spacer` is not supported in passive presentation templates",
+            ),
+            (
+                serde_json::json!({ "kind": "button", "id": "b", "label": "x", "onPress": "go" }),
+                "presentation template `root`.kind `button` is interactive and is not supported in passive presentation templates",
+            ),
+        ] {
+            let template: Result<PresentationTemplate, _> =
+                serde_json::from_value(serde_json::json!({
+                    "id": "marker", "root": root, "lifetimeMs": 1,
+                    "motion": { "rise": 0, "easing": "linear" }, "fade": { "startMs": 1 },
+                    "spawnScatter": { "radius": 0 },
+                }));
+            match template {
+                Ok(template) => assert_eq!(template.validate().unwrap_err(), message),
+                Err(error) => panic!("test descriptor must deserialize: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn world_anchor_socket_is_optional_and_omitted_when_absent() {
+        let socketless = template(
+            serde_json::json!({ "kind": "glyph", "command": "assist" }),
+            serde_json::json!({ "offsetY": 0.6 }),
+        );
+        socketless.validate().unwrap();
+        let anchor = socketless.world_anchor.as_ref().unwrap();
+        assert!(anchor.socket.is_empty());
+        assert_eq!(
+            serde_json::to_value(anchor).unwrap(),
+            serde_json::json!({ "offsetY": 0.6 })
         );
     }
 }

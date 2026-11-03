@@ -286,6 +286,7 @@ const UI_TREE_FIELDS: &[&str] = &["Tree", "defineUiTree"];
 const UI_PRESENTATION_FIELDS: &[&str] = &[
     "definePresentationTemplate",
     "damagedEnemies",
+    "assistableTeammates",
     "defineOverlay",
     "fact",
 ];
@@ -340,6 +341,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "defineUiTree",
     "definePresentationTemplate",
     "damagedEnemies",
+    "assistableTeammates",
     "defineOverlay",
     "fact",
     "present",

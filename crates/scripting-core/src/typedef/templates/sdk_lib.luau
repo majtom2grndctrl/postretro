@@ -795,7 +795,7 @@ export type PresentationTemplate = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 --- `motion.rise` and `spawnScatter.radius` are device pixels, not world metres.
 export type PresentationTemplateProps = {
@@ -804,7 +804,7 @@ export type PresentationTemplateProps = {
   motion: { rise: number, easing: PresentationEasing },
   fade: { startMs: number },
   spawnScatter: { radius: number },
-  worldAnchor: { socket: string, offsetY: number }?,
+  worldAnchor: { socket: string?, offsetY: number }?,
 }
 export type OverlayEntity = {
   state: (self: OverlayEntity, name: string) -> RuntimeValue,
@@ -823,11 +823,21 @@ export type DamagedEnemiesSource = {
   hideAtFull: boolean,
   shield: { value: RuntimeValue, max: RuntimeValue }?,
 }
+--- Marker source over every remote teammate who can be assisted. Each instance
+--- carries one Bool fact, `inRange`: true only on the teammate a held `assist`
+--- would revive right now.
+export type AssistableTeammatesSource = {
+  kind: "assistableTeammates",
+}
+export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource
 export type PresentationOverlay = {
-  over: DamagedEnemiesSource,
+  over: PresentationOverlaySource,
   template: string,
   maxVisible: number,
 }
+--- `ModManifest.presentationOverlays`: one overlay, or an array with at most
+--- one per source kind.
+export type PresentationOverlays = PresentationOverlay | {PresentationOverlay}
 
 --- Crossing condition: fires when the watched slot crosses the threshold in
 --- one direction. Exactly one of `below`/`above` is given. `max` is the
@@ -1059,7 +1069,8 @@ declare function defineEntity<T>(descriptor: T & EntityTypeDescriptor): T
 --- `version` is displayed and never compared; neither field is a
 --- security mechanism. Optional arrays include `entities`, `factions`, `sentiment`, `fluids`, `ghostStyles`, `maps`, `uiTrees`,
 --- `presentationTemplates`, `reactions`, `events`, `crossings`, `triggerEvents`,
---- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one descriptor.
+--- `triggerPools`, `playerEvents`, and `stores`; `presentationOverlays` accepts one
+--- descriptor or an array of them, at most one per source kind.
 --- `factionSentimentDecay` is an optional non-negative return-to-baseline
 --- rate and defaults to zero (hold).
 declare function defineMod(config: ModManifestInput): ModManifest
@@ -1339,7 +1350,7 @@ export type ModManifestInput = {
   ghostStyles: {GhostStyleDescriptor}?,
   uiTrees: {ModUiTree}?,
   presentationTemplates: {PresentationTemplate}?,
-  presentationOverlays: PresentationOverlay?,
+  presentationOverlays: PresentationOverlays?,
   theme: ThemeTokens?,
   fonts: { [string]: string }?,
   uiImages: { [string]: string }?,

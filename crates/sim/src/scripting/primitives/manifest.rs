@@ -289,8 +289,8 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         )
         .field(
             "presentationOverlays?",
-            "PresentationOverlay",
-            "One fact-driven enemy-status overlay, shared from the host in co-op and local in single player; arrays and malformed descriptors are ignored with a warning.",
+            "PresentationOverlays",
+            "Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning.",
         )
         .field(
             "theme?",

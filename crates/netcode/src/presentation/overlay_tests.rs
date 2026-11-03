@@ -292,7 +292,7 @@ impl Host {
         self.runtime.replace_presentation_templates(vec![template]);
         self.runtime
             .replace_presentation_overlays(vec![overlay_declaration(cap, linger_ms, template_id)]);
-        self.pool.clear_overlays();
+        self.pool.clear_all_overlays();
         self.tracker.clear_for_authoring();
         // Cosmetic edits retain compatibility and must not demote participants.
         self.server.set_mod_digest(Some([7; 32]));
@@ -614,7 +614,7 @@ impl Peer {
     fn ids(&self) -> Vec<NetworkId> {
         let mut ids: Vec<_> = self
             .pool
-            .tracked_overlay_ids_iter()
+            .tracked_overlay_ids_iter(OverlayKind::DamagedEnemies)
             .map(|entity| self.replication.network_id_for_entity(entity).unwrap())
             .collect();
         ids.sort_by_key(|id| id.0);
@@ -623,7 +623,9 @@ impl Peer {
 
     fn facts(&self, id: NetworkId) -> &std::collections::BTreeMap<String, PresentationFact> {
         let entity = self.replication.entity_for_network_id(id).unwrap();
-        self.pool.overlay_facts(entity).unwrap()
+        self.pool
+            .overlay_facts(OverlayKind::DamagedEnemies, entity)
+            .unwrap()
     }
 }
 
@@ -685,13 +687,21 @@ fn shared_roster_streams_all_attackers_through_transport_baselines_and_pools() {
                     .get_component::<HealthComponent>(entity)
                     .is_err()
             );
-            let anchor = peer.pool.overlay_anchor(entity).unwrap();
+            let anchor = peer
+                .pool
+                .overlay_anchor(OverlayKind::DamagedEnemies, entity)
+                .unwrap();
             approx(anchor.y, 2.0);
         }
     }
     for (index, &target) in targets.iter().enumerate() {
         approx(
-            number(host.pool.overlay_facts(target).unwrap(), "healthFraction"),
+            number(
+                host.pool
+                    .overlay_facts(OverlayKind::DamagedEnemies, target)
+                    .unwrap(),
+                "healthFraction",
+            ),
             (90.0 - index as f32) / 100.0,
         );
     }
@@ -961,11 +971,21 @@ fn recharge_updates_fractions_and_moving_client_anchor_without_extending_expiry(
     assert!((recharged.damaged_at - original.damaged_at).abs() < 1.0e-9);
     assert!((recharged.expires_at - original.expires_at).abs() < 1.0e-9);
     approx(
-        number(host.pool.overlay_facts(target).unwrap(), "healthFraction"),
+        number(
+            host.pool
+                .overlay_facts(OverlayKind::DamagedEnemies, target)
+                .unwrap(),
+            "healthFraction",
+        ),
         0.95,
     );
     approx(
-        number(host.pool.overlay_facts(target).unwrap(), "shieldFraction"),
+        number(
+            host.pool
+                .overlay_facts(OverlayKind::DamagedEnemies, target)
+                .unwrap(),
+            "shieldFraction",
+        ),
         0.8,
     );
     peer.deliver(host.packets(&peer));
@@ -983,7 +1003,10 @@ fn recharge_updates_fractions_and_moving_client_anchor_without_extending_expiry(
         .set_presentation_transform(entity, displayed)
         .unwrap();
     peer.project(&config, 10.2, Some(0.0));
-    let anchor = peer.pool.overlay_anchor(entity).unwrap();
+    let anchor = peer
+        .pool
+        .overlay_anchor(OverlayKind::DamagedEnemies, entity)
+        .unwrap();
     approx(anchor.x, 3.0);
     approx(anchor.y, 6.0);
     approx(anchor.z, 5.0);
@@ -1279,7 +1302,7 @@ fn compatible_client_authoring_reload_restyles_without_reviving_retired_or_expir
     assert_eq!(peer.ids().len(), 2);
     let revision = peer.state.revision().unwrap();
     let restyled = authored_client_config(1, 1_000, "test.client-restyled");
-    peer.pool.clear_overlays();
+    peer.pool.clear_all_overlays();
     peer.state.clear_projections();
     peer.net.set_mod_digest(Some([7; 32]));
     assert!(peer.net.is_participating());
@@ -1333,7 +1356,7 @@ fn compatible_client_authoring_reload_restyles_without_reviving_retired_or_expir
     peer.project_optional(None, 11.2, Some(0.0));
     assert!(peer.state.roster.as_ref().unwrap().entries.is_empty());
     let expired_revision = peer.state.revision().unwrap();
-    peer.pool.clear_overlays();
+    peer.pool.clear_all_overlays();
     peer.state.clear_projections();
     host.snapshot(&mut peer, 2, 4.45, 11.2);
     // A fresh packet with the current host revision still contains the entry

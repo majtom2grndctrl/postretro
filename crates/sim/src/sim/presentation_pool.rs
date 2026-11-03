@@ -1,15 +1,19 @@
 //! App-side lifetime, projection, and temporary draw assembly for presentation spawns.
 
-use std::collections::HashMap;
-
 use glam::{Mat4, Vec2};
 use postretro_entities::{
-    EntityId, EntityRegistry, PresentationEasing, PresentationFacts, PresentationSpawn,
+    EntityRegistry, PresentationEasing, PresentationFacts, PresentationSpawn,
     PresentationTemplateHandle,
 };
 use postretro_foundation::PresentationDrawInput;
 
 use super::presentation_projection::project_world_to_screen;
+
+#[path = "presentation_pool_overlays.rs"]
+mod overlays;
+
+use overlays::KeyedOverlays;
+pub use overlays::OverlayKind;
 
 /// Production budget for transient spawn presentation. Keyed overlays receive
 /// their own independently bounded map configured by their descriptor.
@@ -37,7 +41,7 @@ pub struct PresentationPool {
     next_instance_id: u64,
     next_spawn_sequence: u64,
     spawns: Vec<LivePresentationSpawn>,
-    overlays: HashMap<EntityId, LivePresentationOverlay>,
+    overlays: KeyedOverlays,
     pending_spawns: Vec<PresentationSpawn>,
     draw_inputs: Vec<PresentationDrawInput>,
 }
@@ -51,22 +55,6 @@ struct LivePresentationSpawn {
     scatter: Vec2,
 }
 
-#[derive(Debug, Clone)]
-struct LivePresentationOverlay {
-    template: PresentationTemplateHandle,
-    facts: PresentationFacts,
-    world_anchor: glam::Vec3,
-    last_damaged_time_seconds: f64,
-    /// Stable producer identity used only when local damage times tie.
-    /// Authoritative overlays are selected externally and never ranked here.
-    eviction_order: u64,
-    instance_id: u64,
-    linger_seconds: f64,
-    suppressed: bool,
-    /// The authoritative roster owns expiry/removal independently of drawing.
-    authoritative: bool,
-}
-
 impl PresentationPool {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -75,7 +63,7 @@ impl PresentationPool {
             next_instance_id: 0,
             next_spawn_sequence: 0,
             spawns: Vec::with_capacity(capacity),
-            overlays: HashMap::new(),
+            overlays: KeyedOverlays::default(),
             pending_spawns: Vec::new(),
             draw_inputs: Vec::with_capacity(capacity),
         }
@@ -106,10 +94,7 @@ impl PresentationPool {
         self.spawns.retain(|live| {
             age_seconds_at(frame_time_seconds, live) < lifetime_seconds(&live.spawn)
         });
-        self.overlays.retain(|_, overlay| {
-            overlay.authoritative
-                || frame_time_seconds - overlay.last_damaged_time_seconds < overlay.linger_seconds
-        });
+        self.overlays.expire_lingering(frame_time_seconds);
 
         self.collect_draw_inputs(view_projection, viewport_size, motion)
     }
@@ -240,239 +225,6 @@ impl PresentationPool {
             .iter()
             .map(|live| self.age_seconds(live))
             .collect()
-    }
-
-    /// Create or refresh one target-keyed overlay. Its cap is separate from
-    /// the spawn ring's `capacity`; neither archetype can evict the other.
-    pub fn refresh_overlay(
-        &mut self,
-        entity: EntityId,
-        template: PresentationTemplateHandle,
-        linger_seconds: f64,
-        max_visible: usize,
-        eviction_order: u64,
-    ) {
-        if max_visible == 0 {
-            return;
-        }
-        if self.overlays.capacity() < max_visible {
-            self.overlays
-                .reserve(max_visible.saturating_sub(self.overlays.len()));
-        }
-        if let Some(overlay) = self.overlays.get_mut(&entity) {
-            overlay.template = template;
-            overlay.linger_seconds = linger_seconds.max(0.0);
-            overlay.last_damaged_time_seconds = self.frame_time_seconds;
-            overlay.eviction_order = eviction_order;
-            overlay.authoritative = false;
-            return;
-        }
-        if self.overlays.len() >= max_visible {
-            let Some((least_recent, least_recent_key)) = self.least_recent_overlay() else {
-                return;
-            };
-            let incoming_key = (self.frame_time_seconds, eviction_order);
-            if incoming_key <= least_recent_key {
-                return;
-            }
-            self.overlays.remove(&least_recent);
-        }
-        let instance_id = self.next_instance_id;
-        self.next_instance_id = self.next_instance_id.wrapping_add(1);
-        self.overlays.insert(
-            entity,
-            LivePresentationOverlay {
-                template,
-                facts: PresentationFacts::new(),
-                world_anchor: glam::Vec3::ZERO,
-                last_damaged_time_seconds: self.frame_time_seconds,
-                eviction_order,
-                instance_id,
-                linger_seconds: linger_seconds.max(0.0),
-                suppressed: true,
-                authoritative: false,
-            },
-        );
-    }
-
-    /// Project an externally selected roster without ranking or restarting a
-    /// local linger clock. The caller removes outgoing members before adding
-    /// replacements, and owns host-time expiry even when rendering is skipped.
-    pub fn upsert_authoritative_overlay(
-        &mut self,
-        entity: EntityId,
-        template: PresentationTemplateHandle,
-        max_visible: usize,
-    ) -> bool {
-        if max_visible == 0 {
-            return false;
-        }
-        if let Some(overlay) = self.overlays.get_mut(&entity) {
-            overlay.template = template;
-            overlay.authoritative = true;
-            return true;
-        }
-        if self.overlays.len() >= max_visible {
-            return false;
-        }
-        if self.overlays.capacity() < max_visible {
-            self.overlays
-                .reserve(max_visible.saturating_sub(self.overlays.len()));
-        }
-        let instance_id = self.next_instance_id;
-        self.next_instance_id = self.next_instance_id.wrapping_add(1);
-        self.overlays.insert(
-            entity,
-            LivePresentationOverlay {
-                template,
-                facts: PresentationFacts::new(),
-                world_anchor: glam::Vec3::ZERO,
-                last_damaged_time_seconds: 0.0,
-                eviction_order: 0,
-                instance_id,
-                linger_seconds: 0.0,
-                suppressed: true,
-                authoritative: true,
-            },
-        );
-        true
-    }
-
-    /// Update the shipped damaged-enemy fact tuple in place. These three names
-    /// are stable template vocabulary, so the warm per-frame stamp reuses map
-    /// nodes and key Strings instead of rebuilding a BTreeMap.
-    pub fn stamp_damaged_enemy_overlay(
-        &mut self,
-        entity: EntityId,
-        health_fraction: f32,
-        shield_fraction: f32,
-        has_shield: bool,
-        world_anchor: glam::Vec3,
-        suppressed: bool,
-    ) {
-        let Some(overlay) = self.overlays.get_mut(&entity) else {
-            return;
-        };
-        update_fact(
-            &mut overlay.facts,
-            "healthFraction",
-            postretro_entities::PresentationFact::Number(health_fraction),
-        );
-        update_fact(
-            &mut overlay.facts,
-            "shieldFraction",
-            postretro_entities::PresentationFact::Number(shield_fraction),
-        );
-        update_fact(
-            &mut overlay.facts,
-            "hasShield",
-            postretro_entities::PresentationFact::Bool(has_shield),
-        );
-        overlay.world_anchor = world_anchor;
-        overlay.suppressed = suppressed;
-    }
-
-    /// Update only the moving world anchor and anchor-derived suppression.
-    /// Value-only network facts must not reset the last-damage linger clock.
-    pub fn update_overlay_anchor(
-        &mut self,
-        entity: EntityId,
-        world_anchor: Option<glam::Vec3>,
-        suppressed: bool,
-    ) {
-        let Some(overlay) = self.overlays.get_mut(&entity) else {
-            return;
-        };
-        let Some(world_anchor) = world_anchor else {
-            overlay.suppressed = true;
-            return;
-        };
-        overlay.world_anchor = world_anchor;
-        overlay.suppressed = suppressed;
-    }
-
-    pub fn evict_overlay(&mut self, entity: EntityId) {
-        self.overlays.remove(&entity);
-    }
-
-    /// Prune the projected set in place to match its externally owned roster.
-    pub fn retain_overlays(&mut self, mut predicate: impl FnMut(EntityId) -> bool) {
-        self.overlays.retain(|entity, _| predicate(*entity));
-    }
-
-    /// Whether this entity owns a projected keyed overlay. Local overlays use
-    /// frame-time linger; authoritative overlays remain until explicit removal.
-    pub fn has_overlay(&self, entity: EntityId) -> bool {
-        self.overlays.contains_key(&entity)
-    }
-
-    /// Drop all keyed overlays after their authoring snapshot is replaced.
-    /// Spawn presentation intentionally survives this separately-owned reset.
-    pub fn clear_overlays(&mut self) {
-        self.overlays.clear();
-    }
-
-    /// Drop every world-anchored instance at a level-lifetime boundary.
-    /// Template registrations are session-scoped, but their live anchors and
-    /// facts are not.
-    pub fn clear_world_instances(&mut self) {
-        self.spawns.clear();
-        self.overlays.clear();
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn live_counts(&self) -> (usize, usize) {
-        (self.spawns.len(), self.overlays.len())
-    }
-
-    #[cfg(test)]
-    pub fn tracked_overlay_ids(&self) -> Vec<EntityId> {
-        self.overlays.keys().copied().collect()
-    }
-
-    pub fn tracked_overlay_ids_iter(&self) -> impl Iterator<Item = EntityId> + '_ {
-        self.overlays.keys().copied()
-    }
-
-    fn least_recent_overlay(&self) -> Option<(EntityId, (f64, u64))> {
-        self.overlays
-            .iter()
-            .min_by(|(_, left), (_, right)| {
-                left.last_damaged_time_seconds
-                    .partial_cmp(&right.last_damaged_time_seconds)
-                    .expect("presentation frame clock stays finite")
-                    .then_with(|| left.eviction_order.cmp(&right.eviction_order))
-            })
-            .map(|(entity, overlay)| {
-                (
-                    *entity,
-                    (overlay.last_damaged_time_seconds, overlay.eviction_order),
-                )
-            })
-    }
-
-    #[cfg(test)]
-    fn overlay_ids(&self) -> Vec<EntityId> {
-        let mut ids: Vec<_> = self.overlays.keys().copied().collect();
-        ids.sort_by_key(|id| id.to_raw());
-        ids
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn overlay_facts(&self, entity: EntityId) -> Option<&PresentationFacts> {
-        self.overlays.get(&entity).map(|overlay| &overlay.facts)
-    }
-
-    #[cfg(test)]
-    pub fn overlay_is_suppressed(&self, entity: EntityId) -> Option<bool> {
-        self.overlays.get(&entity).map(|overlay| overlay.suppressed)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn overlay_anchor(&self, entity: EntityId) -> Option<glam::Vec3> {
-        self.overlays
-            .get(&entity)
-            .map(|overlay| overlay.world_anchor)
     }
 }
 
@@ -777,17 +529,35 @@ mod tests {
         let third = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
 
-        pool.refresh_overlay(first, PresentationTemplateHandle::from("status"), 1.0, 2, 1);
         pool.refresh_overlay(
+            OverlayKind::DamagedEnemies,
+            first,
+            PresentationTemplateHandle::from("status"),
+            1.0,
+            2,
+            1,
+        );
+        pool.refresh_overlay(
+            OverlayKind::DamagedEnemies,
             second,
             PresentationTemplateHandle::from("status"),
             1.0,
             2,
             2,
         );
-        pool.refresh_overlay(third, PresentationTemplateHandle::from("status"), 1.0, 2, 3);
+        pool.refresh_overlay(
+            OverlayKind::DamagedEnemies,
+            third,
+            PresentationTemplateHandle::from("status"),
+            1.0,
+            2,
+            3,
+        );
 
-        assert_eq!(pool.overlay_ids(), [second, third]);
+        assert_eq!(
+            pool.overlay_ids(OverlayKind::DamagedEnemies),
+            [second, third]
+        );
         registry.push_presentation_spawn(spawn("damage-number", Vec3::ZERO, 1.0));
         let _ = pool.advance_and_collect_inputs(
             &mut registry,
@@ -798,7 +568,10 @@ mod tests {
         );
 
         assert_eq!(pool.live_template_names(), ["damage-number"]);
-        assert_eq!(pool.overlay_ids(), [second, third]);
+        assert_eq!(
+            pool.overlay_ids(OverlayKind::DamagedEnemies),
+            [second, third]
+        );
     }
 
     #[test]
@@ -807,6 +580,7 @@ mod tests {
         let target = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
         pool.refresh_overlay(
+            OverlayKind::DamagedEnemies,
             target,
             PresentationTemplateHandle::from("status"),
             0.1,
@@ -823,7 +597,7 @@ mod tests {
             MotionPreference::Full,
         );
 
-        assert!(pool.overlay_ids().is_empty());
+        assert!(pool.overlay_ids(OverlayKind::DamagedEnemies).is_empty());
         assert_eq!(pool.live_template_names(), ["damage-number"]);
     }
 
@@ -833,6 +607,7 @@ mod tests {
         let target = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(1);
         assert!(pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
             target,
             PresentationTemplateHandle::from("status"),
             1,
@@ -853,6 +628,7 @@ mod tests {
         // No draw calls occur while the external host roster advances. Its
         // next draw may advance far beyond every local linger duration.
         assert!(pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
             target,
             PresentationTemplateHandle::from("updated-status"),
             1,
@@ -885,8 +661,8 @@ mod tests {
         assert!(resumed[0].visible);
 
         // External removal applies immediately, without waiting for a draw.
-        pool.retain_overlays(|_| false);
-        assert!(!pool.has_overlay(target));
+        pool.retain_overlays(OverlayKind::DamagedEnemies, |_| false);
+        assert!(!pool.has_overlay(OverlayKind::DamagedEnemies, target));
         assert!(
             pool.advance_and_collect_inputs(
                 &mut registry,
@@ -907,18 +683,49 @@ mod tests {
         let third = registry.spawn(Transform::default());
         let mut pool = PresentationPool::new(0);
         let template = PresentationTemplateHandle::from("status");
-        assert!(!pool.upsert_authoritative_overlay(first, template.clone(), 0));
-        assert!(pool.upsert_authoritative_overlay(first, template.clone(), 2));
-        assert!(pool.upsert_authoritative_overlay(second, template.clone(), 2));
-        assert!(!pool.upsert_authoritative_overlay(third, template.clone(), 2));
-        assert_eq!(pool.overlay_ids(), [first, second]);
-        pool.retain_overlays(|entity| entity == second);
-        assert!(pool.upsert_authoritative_overlay(third, template.clone(), 2));
-        assert_eq!(pool.overlay_ids(), [second, third]);
+        assert!(!pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            first,
+            template.clone(),
+            0
+        ));
+        assert!(pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            first,
+            template.clone(),
+            2
+        ));
+        assert!(pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            second,
+            template.clone(),
+            2
+        ));
+        assert!(!pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            third,
+            template.clone(),
+            2
+        ));
+        assert_eq!(
+            pool.overlay_ids(OverlayKind::DamagedEnemies),
+            [first, second]
+        );
+        pool.retain_overlays(OverlayKind::DamagedEnemies, |entity| entity == second);
+        assert!(pool.upsert_authoritative_overlay(
+            OverlayKind::DamagedEnemies,
+            third,
+            template.clone(),
+            2
+        ));
+        assert_eq!(
+            pool.overlay_ids(OverlayKind::DamagedEnemies),
+            [second, third]
+        );
 
         // Returning an existing projection to the single-player path restores
         // its ordinary local linger ownership.
-        pool.refresh_overlay(second, template, 0.1, 2, 2);
+        pool.refresh_overlay(OverlayKind::DamagedEnemies, second, template, 0.1, 2, 2);
         let _ = pool.advance_and_collect_inputs(
             &mut registry,
             0.11,
@@ -926,9 +733,9 @@ mod tests {
             [800, 600],
             MotionPreference::Full,
         );
-        assert_eq!(pool.overlay_ids(), [third]);
-        pool.evict_overlay(third);
-        assert!(pool.overlay_ids().is_empty());
+        assert_eq!(pool.overlay_ids(OverlayKind::DamagedEnemies), [third]);
+        pool.evict_overlay(OverlayKind::DamagedEnemies, third);
+        assert!(pool.overlay_ids(OverlayKind::DamagedEnemies).is_empty());
     }
 
     // Regression: returning to the frontend retained live world anchors from
@@ -947,6 +754,7 @@ mod tests {
             MotionPreference::Full,
         );
         pool.refresh_overlay(
+            OverlayKind::DamagedEnemies,
             target,
             PresentationTemplateHandle::from("old-bar"),
             1.0,
@@ -957,7 +765,7 @@ mod tests {
         pool.clear_world_instances();
 
         assert!(pool.live_template_names().is_empty());
-        assert!(pool.overlay_ids().is_empty());
+        assert!(pool.overlay_ids(OverlayKind::DamagedEnemies).is_empty());
     }
 
     // Equal-time local selection is stable even if damage enumeration order
@@ -973,6 +781,7 @@ mod tests {
 
         for (entity, order) in [(first, 1), (second, 2), (third, 3)] {
             forward.refresh_overlay(
+                OverlayKind::DamagedEnemies,
                 entity,
                 PresentationTemplateHandle::from("status"),
                 1.0,
@@ -982,6 +791,7 @@ mod tests {
         }
         for (entity, order) in [(third, 3), (second, 2), (first, 1)] {
             reverse.refresh_overlay(
+                OverlayKind::DamagedEnemies,
                 entity,
                 PresentationTemplateHandle::from("status"),
                 1.0,
@@ -990,7 +800,13 @@ mod tests {
             );
         }
 
-        assert_eq!(forward.overlay_ids(), [second, third]);
-        assert_eq!(reverse.overlay_ids(), [second, third]);
+        assert_eq!(
+            forward.overlay_ids(OverlayKind::DamagedEnemies),
+            [second, third]
+        );
+        assert_eq!(
+            reverse.overlay_ids(OverlayKind::DamagedEnemies),
+            [second, third]
+        );
     }
 }

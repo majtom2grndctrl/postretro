@@ -174,6 +174,7 @@ fn unload_level_preserves_slot_table_and_entity_type_registry() {
             crate::presentation_pool::MotionPreference::Full,
         );
         session.presentation_pool.refresh_overlay(
+            crate::presentation_pool::OverlayKind::DamagedEnemies,
             presentation_target,
             postretro_entities::PresentationTemplateHandle::from("old-level-overlay"),
             1.0,

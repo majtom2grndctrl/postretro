@@ -928,6 +928,7 @@ impl ImpactPolicyRuntime {
         for damage in &frame.damage {
             if !is_remote_source(damage.source) {
                 pool.refresh_overlay(
+                    crate::presentation_pool::OverlayKind::DamagedEnemies,
                     damage.entity,
                     binding.template.clone(),
                     binding.linger_seconds,
@@ -939,7 +940,7 @@ impl ImpactPolicyRuntime {
 
         frame.facts = self.sample_damaged_enemy_overlay_facts(
             registry,
-            pool.tracked_overlay_ids_iter()
+            pool.tracked_overlay_ids_iter(crate::presentation_pool::OverlayKind::DamagedEnemies)
                 .chain(remote_tracked_entities)
                 .chain(frame.damage.iter().map(|damage| damage.entity)),
         );
@@ -947,10 +948,16 @@ impl ImpactPolicyRuntime {
         for fact in &frame.facts {
             let entity = fact.entity;
             if !fact.alive {
-                pool.evict_overlay(entity);
+                pool.evict_overlay(
+                    crate::presentation_pool::OverlayKind::DamagedEnemies,
+                    entity,
+                );
                 continue;
             }
-            if pool.has_overlay(entity) {
+            if pool.has_overlay(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                entity,
+            ) {
                 if let Some(anchor) = overlay_anchor(
                     registry,
                     hit_zones,
@@ -970,7 +977,10 @@ impl ImpactPolicyRuntime {
                                 .is_ok_and(|health| health.current == health.max),
                     );
                 } else {
-                    pool.evict_overlay(entity);
+                    pool.evict_overlay(
+                        crate::presentation_pool::OverlayKind::DamagedEnemies,
+                        entity,
+                    );
                 }
             }
         }
@@ -2066,15 +2076,24 @@ mod tests {
             );
         }
 
-        assert_eq!(pool.tracked_overlay_ids(), [enemy]);
         assert_eq!(
-            pool.overlay_facts(enemy)
+            pool.tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies),
+            [enemy]
+        );
+        assert_eq!(
+            pool.overlay_facts(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy)
                 .and_then(|facts| facts.get("healthFraction")),
             Some(&PresentationFact::Number(0.99))
         );
-        assert_eq!(pool.overlay_is_suppressed(enemy), Some(false));
         assert_eq!(
-            pool.overlay_anchor(enemy),
+            pool.overlay_is_suppressed(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                enemy
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            pool.overlay_anchor(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy),
             Some(glam::Vec3::new(0.0, 2.0, 0.0))
         );
 
@@ -2100,7 +2119,13 @@ mod tests {
                 |_| false,
             );
         }
-        assert_eq!(pool.overlay_is_suppressed(enemy), Some(true));
+        assert_eq!(
+            pool.overlay_is_suppressed(
+                crate::presentation_pool::OverlayKind::DamagedEnemies,
+                enemy
+            ),
+            Some(true)
+        );
 
         let mut health = ctx
             .registry
@@ -2124,7 +2149,10 @@ mod tests {
                 |_| false,
             );
         }
-        assert!(pool.tracked_overlay_ids().is_empty());
+        assert!(
+            pool.tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2181,7 +2209,7 @@ mod tests {
             );
         }
         let facts = pool
-            .overlay_facts(enemy)
+            .overlay_facts(crate::presentation_pool::OverlayKind::DamagedEnemies, enemy)
             .expect("damage stamps overlay facts");
         assert_eq!(
             facts.get("shieldFraction"),
@@ -2216,7 +2244,9 @@ mod tests {
             );
         }
         assert!(
-            !pool.tracked_overlay_ids().contains(&doomed),
+            !pool
+                .tracked_overlay_ids(crate::presentation_pool::OverlayKind::DamagedEnemies)
+                .contains(&doomed),
             "a same-frame damage refresh must not draw a target killed by that hit"
         );
     }

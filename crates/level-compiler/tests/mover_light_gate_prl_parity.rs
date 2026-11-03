@@ -7,20 +7,21 @@
 //!
 //! Baselines: `<map>.prl` for each of [`PARITY_MAPS`] in the directory named
 //! by `POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR`, built at the merge-base
-//! with main in a separate worktree, with exactly the flags [`compile`]
-//! passes. From the workspace root, with `$BASE` an absolute path outside the
-//! worktree:
+//! with main with exactly the flags [`compile`] passes. Build them in **this
+//! checkout**, not a second worktree: `campaign-test` packs its light script's
+//! absolute source path, so a baseline built at another path differs by that
+//! string. From the workspace root, on a clean tree, with `$BASE` an absolute
+//! path outside the checkout:
 //!
 //! ```text
-//! git worktree add ../mover-light-parity-base "$(git merge-base HEAD origin/main)"
-//! cd ../mover-light-parity-base
+//! git switch --detach "$(git merge-base HEAD origin/main)"
 //! mkdir -p "$BASE"
 //! for map in campaign-test mover-setpiece; do
 //!   POSTRETRO_LIGHTMAP_REACH_VERIFY=0 cargo run --release -p postretro-level-compiler \
 //!     --bin prl-build -- "content/dev/maps/$map.map" -o "$BASE/$map.prl" \
 //!     --no-cache --no-tui --jobs 6 --baked-root "$BASE/baked"
 //! done
-//! cd - && git worktree remove ../mover-light-parity-base
+//! git switch -
 //! POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR="$BASE" cargo test -p postretro-level-compiler \
 //!   --test mover_light_gate_prl_parity -- --ignored
 //! ```

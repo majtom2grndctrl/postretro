@@ -61,6 +61,9 @@ read at: af1aab9ef
   - Probes: `TRACER_EPOCH`, `geometry_content_hash`, and the probe grid. A retexture re-gates probes; that costs time but is never wrong.
   - Animated: serialized ids 24/25, the atlas fingerprint, the light's slot.
 - **P3 evidence (`mover-setpiece`, open waypoint 912 → 848).** Section and shadowmask hits; texel and probe memos 5 of 6 lights re-gate; "no pair walked"; 25 layer hits, 0 misses; warm report equals cold.
+- **Parity baselines.** `campaign-test` packs its light script's absolute source path (`…/content/dev/scripts/arena-lights.ts`). A baseline built in a differently named worktree differed by exactly that string's 4-byte length difference. Baselines built at the merge-base in this same checkout match: `campaign-test` sha256 `695e7f5e…`, `mover-setpiece` `e7519115…`, 2 maps compared, passed.
+  - Pre-existing and outside this brief: a PRL carrying a machine-specific absolute path may matter for shipped builds. Roadmap follow-up candidate.
+- **Preflight (d5b1f4d00 + docs).** `cargo fmt --check` clean; workspace clippy `-D warnings` clean; `cargo test --workspace` about 14,000 passed, 0 failed (level compiler 2,570 passed, 63 ignored).
 - **Follow-up candidate.** After a section hit with a non-empty re-read union, the reach index is still built (a flood, no tracing), so mover-only edits pay for it. It is unmeasured on the hallway; building it only on a layer miss is a small change in `reach.rs`.
 - **Window sizes.** The window-size check runs `bake_fused_windowed` in-process at windows 1, 3 and 8. The worker-count check runs `-j 1` against `-j 4`.
 
@@ -106,7 +109,7 @@ Rows are numbered in brief order: Automated, then Manual.
 | 7 | Memos, post-hit union and progress, peak term (`peak.rs`, `tests/lightmap_working_set_contract.rs`) | worker | 2–4 | done: `mover_light_gate/cache.rs`; per-light memos `mover_light_texels`, `mover_light_probes`, `mover_light_animated`; post-hit union re-read; `MetadataCounts::with_movers`; `mover_gate_tests` (5) |
 | 8 | Edge fixtures and tests (rows 3–15, 17, 20) | worker | 6 | done: `mover_light_gate_compile` 13 pass (rows 3, 4, 7, 8, 10–15, 17, 20), `mover_light_gate_setpiece` 3 pass (rows 1, 2, 5, 15) |
 | 9 | Determinism (16) and warm rows (18) | worker | 7 | done: `mover_light_gate_cache` 11 pass (3.9 s): P3, P8, every row-18 edit, `-j 1` vs `-j 4`, two cold builds; windows 1/3/8 in `mover_gate_tests` |
-| 10 | PRL parity test (19) | worker | — | test written (`mover_light_gate_prl_parity`, ignored, `POSTRETRO_MOVER_LIGHT_PARITY_BASELINE_DIR`); baselines built at the gate run |
+| 10 | PRL parity test (19) | worker | — | done: `mover_light_gate_prl_parity` passed, 2 maps compared (baselines at af1aab9ef, built in this checkout) |
 | 11 | Docs (`build_pipeline.md` step 12, §Build Cache), manual measurements (21, 22), `research.md` totals | integrating executor | 9 | |
 
 Tasks 2, 3, 5 and 10 can run concurrently once task 1 lands. Tasks 6 and 7 share no files.

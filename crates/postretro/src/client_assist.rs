@@ -1,7 +1,8 @@
 // Connected-client assist presentation: the helper's predicted progress, its
 // records and their correction toward host samples at the acknowledged input
 // tick, and the `player.assistProgress` display projection on every role.
-// See: context/lib/networking.md §What gates, and what replicates instead · context/lib/ui.md §3
+// Also owns the world-anchored teammate revive markers (`markers`), on every role.
+// See: context/lib/networking.md §What gates, and what replicates instead · context/lib/ui.md §1, §3
 //
 // The prediction never writes the slot store: host samples land there as they
 // arrive, so crossings, conditions and store reads see only the host. The

@@ -290,7 +290,7 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
         .field(
             "presentationOverlays?",
             "PresentationOverlays",
-            "Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning.",
+            "Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. The declaration is host-local: in single player it is local, and in co-op the host selects damaged enemies for every machine while assistable-teammate markers are derived on each machine.",
         )
         .field(
             "theme?",

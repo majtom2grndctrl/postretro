@@ -4900,7 +4900,12 @@ rejected. Bind a value the engine supplies with `fact.number("name")` or
 `fact.bool("name")`; facts are valid only inside templates. `worldAnchor`
 lifts the template above its target: `socket` is an optional model socket and
 `offsetY` raises the anchor in world units. With no socket, or a model that has
-none, the anchor is the target's origin plus `offsetY`.
+none, the fallback anchor depends on the source. `damagedEnemies` uses the
+hitbox top, or the model's bound top. `assistableTeammates` uses the pawn's
+origin plus `offsetY`.
+
+An overlay's template must declare `worldAnchor`. Without it, the overlay is
+skipped with a warning.
 
 `defineOverlay` binds a template to a source of targets that the engine
 tracks for you:
@@ -4908,7 +4913,7 @@ tracks for you:
 | Source | Marks | Facts |
 |---|---|---|
 | `damagedEnemies({ lingerMs, hideAtFull })` | Enemies hurt within `lingerMs` | `healthFraction`, plus shield facts when configured |
-| `assistableTeammates()` | Other players in a state that can be assisted (downed), at any distance | `inRange` (Bool) |
+| `assistableTeammates()` | Other players in a state that can be assisted (downed), at any distance. At most `maxVisible` markers show: the teammate a hold would revive always keeps its marker, and others fill the rest in player order | `inRange` (Bool) |
 
 `assistableTeammates()` never marks your own pawn, and it adds nothing to the
 network: each machine works the marker out from what it already knows. A

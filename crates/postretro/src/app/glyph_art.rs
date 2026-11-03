@@ -1,5 +1,6 @@
 // Glyphs: the mod's art loads into the UI image registry, and each frame's
 // snapshot resolves every `glyph` widget into the image or text it draws.
+// Presentation templates' glyphs are resolved by `template_glyphs` on change.
 // See: context/lib/ui.md §4 · context/lib/input.md §2, §6
 
 use std::cell::RefCell;
@@ -44,10 +45,18 @@ impl GlyphArtState {
             .is_some_and(|(dirs, generation)| dirs == glyphs && *generation == reload_generation)
     }
 
-    /// Forget the uploaded art so the next sync registers it again: the
-    /// renderer holding it is gone, or other images just took its keys.
+    /// Forget the uploaded art so the next sync registers it again: other
+    /// images just took its keys. The reload bumps the art generation, so only
+    /// template sets holding a glyph re-send.
     pub(crate) fn invalidate(&mut self) {
         self.loaded = None;
+    }
+
+    /// The renderer holding the art and the presentation templates is gone:
+    /// upload the art again and re-send every installed template set, glyph
+    /// or not, to the next one.
+    pub(crate) fn forget_renderer(&mut self) {
+        self.invalidate();
         self.templates.resend();
     }
 

@@ -365,7 +365,9 @@ impl ImpactPolicyRuntime {
         self.presentation_overlays.clear();
         self.assistable_teammates_overlay = None;
         self.pending_overlay_damage.clear();
-        for overlay in first_presentation_overlay_per_kind(overlays, "presentation overlays") {
+        for overlay in
+            first_presentation_overlay_per_kind(overlays, "impact policy presentation overlays")
+        {
             if let Err(error) = overlay.validate() {
                 log::warn!("[Impact] presentation overlay was ignored: {error}");
                 continue;
@@ -1105,9 +1107,10 @@ fn overlay_anchor(
     anim_time: f64,
 ) -> Option<glam::Vec3> {
     let offset = glam::Vec3::Y * anchor.offset_y;
-    if let Some(socket) = (!anchor.socket.is_empty())
-        .then(|| hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time))
-        .flatten()
+    if let Some(socket) = anchor
+        .socket
+        .as_deref()
+        .and_then(|socket| hit_zones.posed_socket_world(registry, entity, socket, anim_time))
     {
         return Some(socket + offset);
     }
@@ -1690,7 +1693,7 @@ mod tests {
     fn overlay_template(id: &str) -> PresentationTemplate {
         let mut template = presentation_template(id);
         template.world_anchor = Some(PresentationWorldAnchor {
-            socket: "status".to_string(),
+            socket: Some("status".to_string()),
             offset_y: 0.25,
         });
         template

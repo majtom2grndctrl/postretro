@@ -54,7 +54,7 @@
   };
   /** Marker over every remote teammate who can be assisted; stamps the `inRange` Bool fact. */
   export type AssistableTeammatesOverlay = { kind: "assistableTeammates" };
-  /** Passive overlay declaration. Each machine draws it locally; it never crosses the wire. */
+  /** Passive overlay declaration. The declaration is host-local and never crosses the wire. In single player it is local; in co-op the host selects damaged enemies for every machine, while assistable-teammate markers are derived on each machine. */
   export type PresentationOverlay = {
     over: DamagedEnemiesOverlay | AssistableTeammatesOverlay;
     template: string;

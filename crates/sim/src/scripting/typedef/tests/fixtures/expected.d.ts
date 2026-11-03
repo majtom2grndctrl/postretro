@@ -1637,7 +1637,7 @@ declare module "postretro" {
     uiTrees?: ReadonlyArray<ModUiTree>;
     /** Passive world-presentation templates. They never participate in modal UI input or focus. */
     presentationTemplates?: ReadonlyArray<PresentationTemplate>;
-    /** Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. */
+    /** Fact-driven passive overlays: one descriptor, or an array with at most one per source kind (`damagedEnemies`, `assistableTeammates`). A repeated kind keeps the first and warns; a malformed descriptor is skipped with a warning. The declaration is host-local: in single player it is local, and in co-op the host selects damaged enemies for every machine while assistable-teammate markers are derived on each machine. */
     presentationOverlays?: PresentationOverlays;
     /** Theme token overrides (colors/fonts/spacing). Optional; merged per-token into the engine default. */
     theme?: ThemeTokens;
@@ -2741,7 +2741,7 @@ declare module "postretro" {
   };
   /** Marker over every remote teammate who can be assisted; stamps the `inRange` Bool fact. */
   export type AssistableTeammatesOverlay = { kind: "assistableTeammates" };
-  /** Passive overlay declaration. Each machine draws it locally; it never crosses the wire. */
+  /** Passive overlay declaration. The declaration is host-local and never crosses the wire. In single player it is local; in co-op the host selects damaged enemies for every machine, while assistable-teammate markers are derived on each machine. */
   export type PresentationOverlay = {
     over: DamagedEnemiesOverlay | AssistableTeammatesOverlay;
     template: string;
@@ -3165,7 +3165,7 @@ declare module "postretro/ui" {
     hideAtFull: boolean;
     shield?: { value: RuntimeValue; max: RuntimeValue };
   }>;
-  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY`. */
+  /** Marker source over every remote teammate who can be assisted. Each instance carries one Bool fact, `inRange`: true only on the teammate a held `assist` would revive right now. The anchor falls back to the pawn's origin plus `worldAnchor.offsetY` when no socket is posed. At most `maxVisible` markers show; the teammate a hold would revive always keeps its marker and others fill the rest in player order. */
   export type AssistableTeammatesSource = Readonly<{ kind: "assistableTeammates" }>;
   /** Every source an overlay can bind to. */
   export type PresentationOverlaySource = DamagedEnemiesSource | AssistableTeammatesSource;

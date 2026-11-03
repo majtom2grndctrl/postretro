@@ -228,6 +228,8 @@ cosmetic-only refresh within the same participation rebuilds local projections
 while preserving revision and expiry fences; level and participation resets
 clear them.
 
+The revive marker (`assistableTeammates` overlay) is not rostered and adds no wire data. Each machine derives it from assist facts, positions and the pair table it already holds, and it never marks the local pawn; it stays out of the mod digest like every overlay. See `ui.md` §1.
+
 All Presentation payloads, including disposable damage-number spawns, recoverable
 rosters and private commands, carry the existing participation epoch. The client
 accepts only its active epoch, so packets from before demotion are rejected after

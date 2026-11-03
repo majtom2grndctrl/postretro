@@ -90,6 +90,12 @@ the Network tab profile, and pass or fail with what was seen.
    bar resets, and only the first helper is paid.
 10. **Reduce motion / flash limiter.** With reduce motion on, the bars still advance; no
     effect should flash.
+11. **Revive marker (M1).** Two-seat run at 150 ms RTT, on both the host and the client seat.
+    A downed teammate shows a marker at any range and through walls. "Hold [E] to revive"
+    appears within 1.5 m and goes away past it. After gamepad input, the glyph switches to the
+    west button. The marker goes away when the teammate is revived or bleeds out. A downed
+    player never sees a marker on themselves. With both players down, each sees the other's
+    marker with no prompt.
 
 ## What would fail the proof
 

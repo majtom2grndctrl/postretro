@@ -4887,6 +4887,85 @@ splash. To fill the window with a picture instead, give the tree a
 In Luau, the same manifest fields are `loading = { tree = { "loadingSkyline", "loadingAlley" } }`
 and `loadingTree = "loadingEntry"` on a map entry.
 
+### Presentation templates and world overlays
+
+Some UI is not a tree you push: it is a small template the engine stamps at a
+world position and projects to the screen each frame. Floating damage numbers,
+damaged-enemy bars and the revive marker all work this way. They are passive:
+no focus, no input, and no state of their own.
+
+`definePresentationTemplate` declares the template. Its root may use `Text`,
+`Bar`, `Image`, `Glyph`, `VStack` and `HStack`; interactive widgets are
+rejected. Bind a value the engine supplies with `fact.number("name")` or
+`fact.bool("name")`; facts are valid only inside templates. `worldAnchor`
+lifts the template above its target: `socket` is an optional model socket and
+`offsetY` raises the anchor in world units. With no socket, or a model that has
+none, the anchor is the target's origin plus `offsetY`.
+
+`defineOverlay` binds a template to a source of targets that the engine
+tracks for you:
+
+| Source | Marks | Facts |
+|---|---|---|
+| `damagedEnemies({ lingerMs, hideAtFull })` | Enemies hurt within `lingerMs` | `healthFraction`, plus shield facts when configured |
+| `assistableTeammates()` | Other players in a state that can be assisted (downed), at any distance | `inRange` (Bool) |
+
+`assistableTeammates()` never marks your own pawn, and it adds nothing to the
+network: each machine works the marker out from what it already knows. A
+marker draws through walls, since the projection does no depth test.
+`inRange` is true only on the one teammate that holding `assist` would revive
+right now. If two are close enough, only the nearer one is true, and it is
+false while you are down yourself.
+
+`ModManifest.presentationOverlays` takes one overlay or an array, with at
+most one overlay per source. A repeated source keeps the first and logs a
+warning.
+
+`Glyph({ command })` inside a template draws the same art or label as a HUD
+glyph, follows rebinding and the device you last used, and draws nothing when
+the command is unbound. Pair it with `visibleWhen: fact.bool(...)` to show a
+prompt only when it applies. A glyph label is drawn at 16 pt regardless of the
+text size next to it.
+
+```typescript
+import {
+  Glyph, HStack, Text, VStack, assistableTeammates, defineOverlay,
+  definePresentationTemplate, fact,
+} from "postretro/ui";
+
+export const reviveMarker = definePresentationTemplate({
+  root: VStack({ gap: 2 }, [
+    Text({ content: "DOWNED", fontSize: 14, color: [1, 0.3, 0.3, 1] }),
+    HStack({ gap: 4, visibleWhen: fact.bool("inRange") }, [
+      Text({ content: "Hold", fontSize: 14, color: [1, 1, 1, 1] }),
+      Glyph({ command: "assist" }),
+      Text({ content: "to revive", fontSize: 14, color: [1, 1, 1, 1] }),
+    ]),
+  ]),
+  lifetimeMs: 1,
+  motion: { rise: 0, easing: "linear" },
+  fade: { startMs: 1 },
+  spawnScatter: { radius: 0 },
+  worldAnchor: { offsetY: 0.6 },
+});
+
+export const reviveMarkerOverlay = defineOverlay({
+  over: assistableTeammates(),
+  template: reviveMarker,
+  maxVisible: 8,
+});
+
+// defineMod({
+//   presentationTemplates: [reviveMarker, damagedEnemyBar],
+//   presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
+// })
+```
+
+In Luau the source is `UI.assistableTeammates()` and the manifest field is
+`presentationOverlays = { damagedEnemyOverlay, reviveMarkerOverlay }`.
+
+"Hold" is plain text you write yourself; the engine does not word the prompt.
+
 ## Reactive UI (selection, visibility, a11y)
 
 The reactive-UI layer makes **selection-driven** widgets — tabs, segmented

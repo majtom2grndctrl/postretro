@@ -103,6 +103,7 @@ import {
   damagedEnemyOverlay,
   damageNumber,
 } from "./scripts/combat-presentation";
+import { reviveMarker, reviveMarkerOverlay } from "./scripts/revive-marker";
 import { markSwimming, splashSound, swimStats } from "./scripts/swim-events";
 
 const player = getGameState().player;
@@ -175,8 +176,8 @@ export default defineMod({
   loading: { tree: loadingPool },
   // DEV FIXTURE — these remain global so any dev map using the shared combat
   // policies exposes floating damage and recently-damaged enemy feedback.
-  presentationTemplates: [damageNumber, damagedEnemyBar],
-  presentationOverlays: damagedEnemyOverlay,
+  presentationTemplates: [damageNumber, damagedEnemyBar, reviveMarker],
+  presentationOverlays: [damagedEnemyOverlay, reviveMarkerOverlay],
   theme: hudTheme,
   reactions: [
     ...playerDeath.reactions,

@@ -77,6 +77,42 @@ fn repeated_kind_keeps_the_first_descriptor_and_warns_naming_the_kind() {
 }
 
 #[test]
+fn both_overlay_kinds_lower_to_the_same_json_in_both_runtimes() {
+    let js = drain_js(
+        r#"({ presentationOverlays: [
+            { over: { kind: "damagedEnemies", lingerMs: 1, hideAtFull: false }, template: "enemyStatus", maxVisible: 2 },
+            { over: { kind: "assistableTeammates" }, template: "reviveMarker", maxVisible: 8 },
+            { over: { kind: "assistableTeammates" }, template: "duplicate", maxVisible: 8 },
+        ] })"#,
+    );
+    let lua = drain_lua(
+        r#"return { presentationOverlays = {
+            { over = { kind = "damagedEnemies", lingerMs = 1, hideAtFull = false }, template = "enemyStatus", maxVisible = 2 },
+            { over = { kind = "assistableTeammates" }, template = "reviveMarker", maxVisible = 8 },
+            { over = { kind = "assistableTeammates" }, template = "duplicate", maxVisible = 8 },
+        } }"#,
+    );
+    assert_eq!(js, lua);
+    assert_eq!(
+        kinds(&js),
+        [
+            PresentationOverlayKind::DamagedEnemies,
+            PresentationOverlayKind::AssistableTeammates
+        ]
+    );
+    let marker =
+        presentation_overlay_of_kind(&js, PresentationOverlayKind::AssistableTeammates).unwrap();
+    assert_eq!(marker.template, "reviveMarker");
+    assert!(
+        drain_js(
+            r#"({ presentationOverlays: { over: { kind: "assistableTeammates", radius: 2 }, template: "m", maxVisible: 1 } })"#
+        )
+        .is_empty(),
+        "unknown source keys are rejected"
+    );
+}
+
+#[test]
 fn malformed_entries_are_skipped_and_a_malformed_field_is_ignored() {
     let capture = LogCapture::start();
     let js = drain_js(

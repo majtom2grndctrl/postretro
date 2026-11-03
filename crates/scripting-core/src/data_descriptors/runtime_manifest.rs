@@ -448,12 +448,14 @@ impl PresentationOverlay {
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PresentationOverlaySource {
     DamagedEnemies(DamagedEnemiesOverlay),
+    AssistableTeammates(AssistableTeammatesOverlay),
 }
 
 impl PresentationOverlaySource {
     pub fn kind(&self) -> PresentationOverlayKind {
         match self {
             Self::DamagedEnemies(_) => PresentationOverlayKind::DamagedEnemies,
+            Self::AssistableTeammates(_) => PresentationOverlayKind::AssistableTeammates,
         }
     }
 }
@@ -674,6 +676,23 @@ mod tests {
                 Err(error) => panic!("test descriptor must deserialize: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn assistable_teammates_source_is_a_bare_kind_tag_and_rejects_unknown_keys() {
+        let source: PresentationOverlaySource =
+            serde_json::from_value(serde_json::json!({ "kind": "assistableTeammates" })).unwrap();
+        assert_eq!(source.kind(), PresentationOverlayKind::AssistableTeammates);
+        assert_eq!(
+            serde_json::to_value(&source).unwrap(),
+            serde_json::json!({ "kind": "assistableTeammates" })
+        );
+        assert!(
+            serde_json::from_value::<PresentationOverlaySource>(
+                serde_json::json!({ "kind": "assistableTeammates", "radius": 2 })
+            )
+            .is_err()
+        );
     }
 
     #[test]

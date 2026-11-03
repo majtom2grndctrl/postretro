@@ -16,7 +16,7 @@ use postretro_foundation::ir::{
 use postretro_foundation::{ImpactEventDescriptor, validate_ascii_identifier};
 use postretro_scripting_core::data_descriptors::{
     DamagedEnemiesOverlay, PresentationOverlay, PresentationOverlaySource, PresentationTemplate,
-    PresentationWorldAnchor,
+    PresentationWorldAnchor, first_presentation_overlay_per_kind,
 };
 use postretro_scripting_core::ir_scopes::{EntityOutputHandle, EntityScope};
 use postretro_scripting_core::store_bridge::validate_slot_value;
@@ -27,6 +27,9 @@ use std::collections::HashMap;
 use crate::impact_effects::{ImpactEffect, apply_effect};
 use postretro_foundation::FACTION_STATE_FIELD;
 
+pub use assistable_overlay::AssistableTeammatesOverlayConfig;
+
+mod assistable_overlay;
 mod source_life_state;
 #[cfg(test)]
 mod source_life_state_ordering_tests;
@@ -47,6 +50,7 @@ pub struct ImpactPolicyRuntime {
     global_events: Vec<ImpactEventDescriptor>,
     presentation_templates: HashMap<String, PresentationTemplate>,
     presentation_overlays: Vec<BoundPresentationOverlay>,
+    assistable_teammates_overlay: Option<AssistableTeammatesOverlayConfig>,
     /// Local dispatch-driven tracking input, coalesced to authored max-visible
     /// live targets. Hosted evaluation streams edges without using this queue.
     pending_overlay_damage: Vec<DamagedEnemyOverlayDamage>,
@@ -264,6 +268,7 @@ impl ImpactPolicyRuntime {
             global_events: Vec::new(),
             presentation_templates: HashMap::new(),
             presentation_overlays: Vec::new(),
+            assistable_teammates_overlay: None,
             pending_overlay_damage: Vec::new(),
             overlay_entity_scratch: Vec::new(),
             level_events: Vec::new(),
@@ -348,20 +353,19 @@ impl ImpactPolicyRuntime {
             })
     }
 
-    /// Replace the complete passive overlay declaration snapshot. Currently
-    /// one `damagedEnemies` source owns the EntityId-keyed overlay map; later
-    /// overlay source kinds can add their own disjoint key namespace instead of
-    /// making two declarations fight over one target key.
+    /// The marker overlay's authored configuration, when the manifest declares
+    /// an `assistableTeammates` overlay.
+    pub fn assistable_teammates_overlay_config(&self) -> Option<&AssistableTeammatesOverlayConfig> {
+        self.assistable_teammates_overlay.as_ref()
+    }
+
+    /// Replace the complete passive overlay declaration snapshot. Each overlay
+    /// kind keeps at most one declaration; a repeated kind keeps the first.
     pub fn replace_presentation_overlays(&mut self, overlays: Vec<PresentationOverlay>) {
         self.presentation_overlays.clear();
+        self.assistable_teammates_overlay = None;
         self.pending_overlay_damage.clear();
-        if overlays.len() > 1 {
-            log::warn!(
-                "[Impact] presentation overlay snapshot contained more than one descriptor; all overlays were ignored"
-            );
-            return;
-        }
-        for overlay in overlays {
+        for overlay in first_presentation_overlay_per_kind(overlays, "presentation overlays") {
             if let Err(error) = overlay.validate() {
                 log::warn!("[Impact] presentation overlay was ignored: {error}");
                 continue;
@@ -380,13 +384,20 @@ impl ImpactPolicyRuntime {
                 );
                 continue;
             };
-            let PresentationOverlaySource::DamagedEnemies(source) = overlay.over;
-            match bind_damaged_enemies_overlay(
-                PresentationTemplateHandle::from(template.id.clone()),
-                world_anchor,
-                overlay.max_visible,
-                source,
-            ) {
+            let template = PresentationTemplateHandle::from(template.id.clone());
+            let source = match overlay.over {
+                PresentationOverlaySource::DamagedEnemies(source) => source,
+                PresentationOverlaySource::AssistableTeammates(_) => {
+                    self.assistable_teammates_overlay = Some(AssistableTeammatesOverlayConfig {
+                        template,
+                        world_anchor,
+                        max_visible: overlay.max_visible,
+                    });
+                    continue;
+                }
+            };
+            match bind_damaged_enemies_overlay(template, world_anchor, overlay.max_visible, source)
+            {
                 Ok(binding) => self.presentation_overlays.push(binding),
                 Err(error) => {
                     log::warn!("[Impact] presentation overlay was skipped during bind: {error}")
@@ -1094,7 +1105,9 @@ fn overlay_anchor(
     anim_time: f64,
 ) -> Option<glam::Vec3> {
     let offset = glam::Vec3::Y * anchor.offset_y;
-    if let Some(socket) = hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time)
+    if let Some(socket) = (!anchor.socket.is_empty())
+        .then(|| hit_zones.posed_socket_world(registry, entity, &anchor.socket, anim_time))
+        .flatten()
     {
         return Some(socket + offset);
     }

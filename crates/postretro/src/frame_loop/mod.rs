@@ -1,7 +1,6 @@
 // The windowed frame loop: one `RedrawRequested` frame from timing through present.
 // See: context/lib/rendering_pipeline.md §1 · context/lib/entity_model.md §5
 
-mod cancel_command;
 mod mirror_content;
 pub(crate) mod named_drains;
 mod planar;
@@ -447,19 +446,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         gameplay_snapshot
     };
 
-    if ticks == 0 && app.is_connected_client() {
-        let session = app.session.as_mut().expect("running session installed");
-        if let Some(token) = session.gameplay_input_latch.activation.take_cancel() {
-            let command =
-                cancel_command::cancel_only_command(gameplay_snapshot.as_ref(), &app.camera, token);
-            let _ = netcode::client_send_input_command_in_registry(
-                session.net_endpoint.as_mut(),
-                &command,
-                &session.scripting.script_ctx.registry.borrow(),
-            );
-        }
-    }
-
     // The script tranche lives on `Session` (built post-first-pixel).
     // Clone the `ScriptCtx` handle once for this Game-logic phase (cheap
     // `Rc` bump) so the many `script_ctx.*` reads below borrow nothing of
@@ -690,6 +676,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             capture.set_active(active_token);
             let input_tick = input_tick.unwrap_or_else(|| capture.next_local_tick());
             command.input_tick = input_tick;
+            // A suspension cancel latched on a zero-tick frame rides this
+            // command: a cancel never takes a client tick of its own, so host
+            // and client simulate the same ticks (networking.md §Combat authority).
             command.activation = capture.command(input_tick);
             if tick_index > 0 {
                 command.secondary_button.pressed = false;

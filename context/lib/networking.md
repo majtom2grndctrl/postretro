@@ -414,8 +414,7 @@ policies govern resolution:
   and neutralization clears. Only a `Real` command advances assist
   progress, so a held tick keeps it and a re-resolved tick counts once. A neutral after the
   grace resets progress as a release does but does not end a completed hold; only a real
-  release does, so a client's zero-tick cancel-only command carries the current `assist`
-  level rather than a neutral one. A client that has never sent a command resolves
+  release does. A client that has never sent a command resolves
   to nothing — its pawn holds its authoritative pose. Clean loopback reaches the empty
   frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
   data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
@@ -469,7 +468,7 @@ policies govern resolution:
   `INPUT_BUFFER_TARGET < INPUT_BUFFER_MAX` still bounds the buildup latch's
   standing depth well below the trim.
 
-**Teleport yaw stamp.** Each input command carries the accumulated teleport yaw its client held when it sampled the command's facing; zero-tick and multi-tick sends sample facing and stamp together. Host resolution, a retained activation start's aim, and client prediction and replay apply one rule, `facing_in_teleport_frame`: facing, and the movement intent relative to it, rotate by the pawn's current accumulated yaw minus the stamp. A held or neutral command the host synthesizes keeps its source command's stamp with its facing. A command sampled before the client's first record for its pawn carries zero, since its facing was never turned. A pawn without a movement component holds no teleport frame, so its commands and starts keep the facing they declared. The participation epoch drops stamped input from an earlier level or session before it reaches the queue.
+**Teleport yaw stamp.** Each input command carries the accumulated teleport yaw its client held when it sampled the command's facing; every tick of a multi-tick frame samples facing and stamps together. Host resolution, a retained activation start's aim, and client prediction and replay apply one rule, `facing_in_teleport_frame`: facing, and the movement intent relative to it, rotate by the pawn's current accumulated yaw minus the stamp. A held or neutral command the host synthesizes keeps its source command's stamp with its facing. A command sampled before the client's first record for its pawn carries zero, since its facing was never turned. A pawn without a movement component holds no teleport frame, so its commands and starts keep the facing they declared. The participation epoch drops stamped input from an earlier level or session before it reaches the queue.
 
 Reload uses a reliable edge lane beside command playout. Host intake observes reload
 rising edges before stale-drop and backlog trimming, then delivers each due edge once on
@@ -479,6 +478,9 @@ the preserved press so weapon-side level dedup sees a genuine rising edge. Use a
 presses ride the same kind of lane: rising edges observed at intake, each delivered once
 on an advancing resolution, so a trim cannot lose a door press or a weapon drop.
 Activation starts and their release/cancel edges have their own lane (§Combat authority).
+Every queued command is one step the client predicted: a client tick is allocated only by
+a predicted fixed tick, and edges, cancels included, ride those commands rather than
+minting ticks of their own, so host and client count the same ticks.
 Weapon switches have a lane too: up to 64 per client, retained on arrival from Input,
 released on any resolution including a non-advancing hold, and applied after command
 resolution and before the tick's simulation. Every lane delivers in the client's tick
@@ -784,8 +786,12 @@ suppresses it. A cancel stamped after its execution's release waits behind that
 release while the release can still fire a charge (a charged execution that has not
 fired), whoever stamped the cancel, so a charge released before a cancel mints its
 shot; for any other execution the release is inert and the cancel goes at once.
-Focus/menu suspension sends reliable cancellation even on a render-only frame; intent does not advance execution, and the host applies
-it on its next tick. Switch, drop, death, disconnect, level change, and descriptor
+Focus/menu suspension latches a cancel that rides the client's next ticked command, at
+most one fixed tick later. **A cancel never consumes a client tick of its own:** one client
+tick is one simulated step on host and client alike, so a render-only frame sends nothing,
+and a cancel latched on one is stamped with the next command's tick, after any release
+already sent. Intent does not advance execution, and the host applies the cancel through
+this lane by its stamp. Switch, drop, death, disconnect, level change, and descriptor
 replacement also cancel future work without refunding authorized shots, and so does
 vault entry with fire blocked, below.
 

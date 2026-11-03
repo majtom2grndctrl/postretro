@@ -387,7 +387,6 @@ fn client_weapon_zero_tick_suspend_refocus_then_fixed_cancel_produces_no_shot() 
         .unwrap();
     frame.suspend(&registry);
     capture.suspend();
-    assert_eq!(capture.take_cancel(), Some(token));
     assert_eq!(
         *registry
             .get_component::<WeaponComponent>(id)
@@ -399,7 +398,6 @@ fn client_weapon_zero_tick_suspend_refocus_then_fixed_cancel_produces_no_shot() 
         before,
         "no semantic advance on zero-tick frames"
     );
-    assert_eq!(capture.take_cancel(), None); // refocus still has no fixed tick
     let mut next = command(false, false);
     next.activation = capture.command(9);
     predict(&mut frame, &mut registry, &mut next, 9);

@@ -3694,6 +3694,8 @@ mod lane_delivery;
 // Weapon-switch declarations ordered by client tick with starts and presses.
 mod switch_order;
 mod switch_timing;
+// A suspension cancel latched on a zero-tick frame rides the next ticked command.
+mod zero_tick_cancel;
 
 // --- Vault fire gate on the host's remote path ---------------------------------
 

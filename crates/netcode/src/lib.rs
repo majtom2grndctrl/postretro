@@ -1407,33 +1407,12 @@ pub fn client_peek_next_command_tick(endpoint: Option<&NetEndpoint>) -> Option<u
     }
 }
 
-/// Zero-tick sends must sample the same pawn teleport frame as their facing.
-/// The prediction identity is armed throughout the first-record gate; until that
-/// record merges the pawn's movement component is absent or descriptor-default,
-/// so the stamp is zero.
-pub fn client_send_input_command_in_registry(
-    endpoint: Option<&mut NetEndpoint>,
-    command: &SimCommand,
-    registry: &EntityRegistry,
-) -> Option<u32> {
-    let Some(NetEndpoint::Client {
-        client, prediction, ..
-    }) = endpoint
-    else {
-        return None;
-    };
-    let input = stamped_client_input(prediction, command, registry);
-    let client_tick = input.client_tick;
-    client.send_input(wire::encode(&wire::ClientMessage::Input(input)));
-    prediction.diag_record_fire_send();
-    Some(client_tick)
-}
-
 /// Allocate the next command tick and stamp it with the teleport frame its facing
 /// was sampled in: the armed pawn's accumulated teleport yaw, read from the same
 /// registry state the camera follows. Before the client's first record for its pawn
 /// (and after a level unload disarms prediction) nothing has turned the facing, so
-/// the stamp is zero. Every outbound movement command goes through here.
+/// the stamp is zero. Only [`client_predict_tick`] calls this: one client tick is
+/// one predicted step, and nothing else (a cancel included) allocates a tick.
 pub(crate) fn stamped_client_input(
     prediction: &mut ClientPrediction,
     command: &SimCommand,

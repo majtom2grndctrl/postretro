@@ -73,7 +73,7 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - [ ] Streaming `off` and `sync-proof` compose identical channel output.
 
 ### Manual
-- [ ] Dark-closet fixture, door closed, against today's build (owner A/B): the closet floor and walls near the doorway show no bright-room glow; the door's closet face reads dark; opening the door ramps the glow in with its travel and closing ramps it out.
+- [ ] Dark-closet fixture, door closed (owner judges the outcome; today's build and the static-wall reference render shown beside it): the closet reads dark. The closet floor and walls near the doorway show no bright-room glow, and the door's closet face reads dark. Opening the door ramps the glow in with its travel; closing ramps it out. This bar is not relaxed to "matches the reference": if the reference itself glows, the diagnosis step below stops the build.
 - [ ] `mover-setpiece` station 2, raised room against today's build (owner A/B). The interior receives gated direct light and bounce only through the doorway, ramps while rising, and returns while lowering.
 - [ ] A skinned-mesh entity on the enemy spot darkens while the wall is closed and relights as it opens (owner A/B against today).
 - [ ] A mover's own faces, lit by a light it does not block from them, are no darker than today: the wall's south face under the arena lights, and the room's west face under (640, 320, 192).
@@ -88,8 +88,12 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
   - Bake q for `setpiece_room` raised only, and force t = 1 through a dev override.
   - A/B station 2 and the room's own faces. This falsifies the riskiest assumption: that 1 m probes inside an 8 m room hold the gate.
   - The mover-aware sampler leaks across the mover's walls, because probe depth moments are mover-absent and movers sample with backface rejection off. The rule for probes inside a posed brush decides how dark the mover's own faces go (open question).
-- **Dark-closet fixture.** A small hand map, `content/dev/maps/mover-closet.map` (name delegated): a bright room with static lights, a closet with none, joined by a doorway a two-waypoint `kinematic_mover` door seals at waypoint 0. The reference build is generated in-test with the door swapped for a static brush at its closed pose, as `tests/buried_lights_compile.rs` generates maps. A README in the `mover-setpiece` style names the station.
+- **Dark-closet fixture.** A small hand map, `content/dev/maps/mover-closet.map` (name delegated): a bright room with static lights, a closet with none, joined by a doorway a two-waypoint `kinematic_mover` door seals at waypoint 0. No bright-room light has direct line of sight into the closet through the doorway, because direct light on world surfaces is brief 2's. The door is authored at a typical door thickness, thinner than the probe spacing. The reference build is generated in-test with the door swapped for a static brush at its closed pose, as `tests/buried_lights_compile.rs` generates maps. A README in the `mover-setpiece` style names the station.
 - **Indirect half after the direct first slice.** Once the direct slice holds, bake S^b for the closet door and the raised room only, force t through the dev override, and run the reference-bake row before format work. This is where the posed-brushes-as-patches question is decided.
+- **Leak diagnosis, in that slice, before format work.** Render the reference closet: the door replaced by a static brush of the door's thickness at its closed pose. The sampler weights each probe by one omnidirectional depth mean and variance (`sh_sample.wgsl` `sh_corner_depth_visibility`), so probes straddling a wall thinner than the probe spacing blend light across it, static or posed.
+  - Reference reads dark (owner judges): the leak was the bake's, and S^b_0 must match the reference. Continue.
+  - Reference glows: the residual leak is the sampler's. It already exists for every thin static wall, and this brief cannot cure it alone. **Stop and report** with captures of both. The owner decides whether the roadmap's direction-aware probe visibility leg joins the sprint. Never relax the closet row to pass.
+  - Record which case held, with captures, in the plan of record. The same check runs at the raised room's walls.
 - **Promotion pop.** Root-cause `drafts/animated-promotion-direct-sh-pop.md` before the no-pop row. The channel scales exactly the arm that reads low. Measure whether the static (id-41) arm shares the gap. This brief owns the fix wherever the cause lies (the id-41 or id-45 bake, or the sampler), and the no-pop row stays absolute (owner, 2026-11-03). If the fix grows past this brief's scope, stop and report rather than relaxing the row.
 - **Bake.**
   - `sh_bake/probe.rs` `bake_probe_direct_rgb` → `lightmap_bake::soft_visibility_early_out`. Evaluate one sample set under both traces, static alone and static plus posed brushes, and decide escalation jointly. Otherwise an early-out can price static blocking into one side only.
@@ -117,6 +121,7 @@ Compose (headless GPU, `POSTRETRO_REQUIRE_GPU`):
 - Section name and exact field widths. — **delegated**, within the Wire format below.
 - The indirect half's bake-time and peak-RSS gate on the full hallway. — owner, at review; the build measures and reports first.
 - Whether posed mover brushes contribute patches with their albedo in the bounce bake. — **delegated**: decided against the reference-bake row.
+- If the leak diagnosis finds the static reference glows, does direction-aware probe visibility join this sprint, ahead of the closet row? — owner, when the diagnosis reports; blocks only the closet row.
 
 ## Wire format
 

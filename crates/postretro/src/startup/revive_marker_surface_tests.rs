@@ -5,6 +5,7 @@
 //! context/plans/in-progress/E18--player-revive-assist/addendum-revive-marker.md.
 //!
 //! See: context/lib/ui.md §1 · context/lib/scripting.md §12 (Assist)
+use super::fluids_swim_surface_tests::dev_manifest;
 use super::player_death_surface_tests::{Consumer, command};
 use crate::client_assist::{MarkerScratch, anchor_host_markers, select_host_markers};
 use crate::impact_policy::AssistableTeammatesOverlayConfig;
@@ -16,7 +17,8 @@ use postretro_entities::{
 };
 use postretro_foundation::PlayerMovementComponent;
 use postretro_scripting_core::data_descriptors::{
-    ASSISTABLE_TEAMMATES_IN_RANGE_FACT, PresentationWorldAnchor,
+    ASSISTABLE_TEAMMATES_IN_RANGE_FACT, PresentationOverlayKind, PresentationWorldAnchor,
+    presentation_overlay_of_kind,
 };
 use postretro_sim::scripting_systems::hit_zones::HitZoneStore;
 
@@ -275,4 +277,60 @@ fn revive_marker_r13_host_markers_survive_the_no_config_damaged_enemy_pass() {
         markers.pool.recycle_draw_inputs(inputs);
         assert_eq!(markers.marked(), vec![h.other]);
     }
+}
+
+/// Whether any node of the serialized widget tree satisfies `found`.
+fn any_node(
+    value: &serde_json::Value,
+    found: &dyn Fn(&serde_json::Map<String, serde_json::Value>) -> bool,
+) -> bool {
+    match value {
+        serde_json::Value::Object(map) => found(map) || map.values().any(|v| any_node(v, found)),
+        serde_json::Value::Array(items) => items.iter().any(|v| any_node(v, found)),
+        _ => false,
+    }
+}
+
+#[test]
+fn revive_marker_r11_dev_mod_declares_both_overlays_and_the_marker_template() {
+    let manifest = dev_manifest();
+
+    let overlays = &manifest.presentation_overlays;
+    assert_eq!(
+        overlays.len(),
+        2,
+        "damaged-enemy and revive-marker overlays"
+    );
+    for overlay in overlays {
+        overlay.validate().expect("overlay validates");
+    }
+    assert!(
+        presentation_overlay_of_kind(overlays, PresentationOverlayKind::DamagedEnemies).is_some()
+    );
+    let marker =
+        presentation_overlay_of_kind(overlays, PresentationOverlayKind::AssistableTeammates)
+            .expect("the dev mod declares the assistable-teammates overlay");
+
+    let template = manifest
+        .presentation_templates
+        .iter()
+        .find(|template| template.id == marker.template)
+        .unwrap_or_else(|| panic!("no template `{}` registered", marker.template));
+    template.validate().expect("marker template validates");
+
+    let root = serde_json::to_value(&template.root).expect("template root serializes");
+    assert!(
+        any_node(&root, &|node| node.get("kind").and_then(|k| k.as_str())
+            == Some("glyph")
+            && node.get("command").and_then(|c| c.as_str()) == Some("assist")),
+        "marker template has an `assist` Glyph: {root}"
+    );
+    assert!(
+        any_node(&root, &|node| node
+            .get("visibleWhen")
+            .is_some_and(|gate| gate
+                .to_string()
+                .contains(ASSISTABLE_TEAMMATES_IN_RANGE_FACT))),
+        "marker template gates something on `inRange`: {root}"
+    );
 }

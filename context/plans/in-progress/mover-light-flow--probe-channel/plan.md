@@ -1,7 +1,7 @@
 # mover-light-flow--probe-channel — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 44881f797
 
 Feature branch: `feat/mover-light-flow--probe-channel`. The brief was claimed on `main` at 44881f797. Every symbol cited by Decisions and Path was re-read at that commit. Since the brief's 33ac590, the bake, format and physics crates changed only in `reflection_probes`, and `frame_loop/mod.rs` kept its mover sites. No Decision premise is false. No Acceptance row needs restatement.

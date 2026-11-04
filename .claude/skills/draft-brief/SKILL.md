@@ -23,8 +23,7 @@ A brief is written for a reader with the repo. One integrating executor owns the
 
 1. **Nothing is restated for an agent that cannot see the rest.** Every executor gets the whole brief, relevant research and context, and the source tree. There is no task-paragraph contract.
 2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
-3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. The detail review, `/review-brief`, belongs to the orchestrating session (`/draft-session`), which runs it after this skill returns. The drafter does not run it.
-4. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
+3. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
 
 ## Process
 

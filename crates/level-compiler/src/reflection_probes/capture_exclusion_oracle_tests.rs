@@ -4,15 +4,15 @@
 use glam::{DVec3, Vec3};
 
 use super::capture_bounds::HELD_DEPTH_SLACK_M;
-use super::capture_exclusion::{CONTACT_TOLERANCE_M, ProbeExclusion, RayOutcome};
+use super::capture_exclusion::{CONTACT_TOLERANCE_M, RayOutcome};
 use super::capture_exclusion_test_fixtures::{
     CaptureFixture, ROOM_MAX, ROOM_MIN, TRIM_TEXTURE, exclusion, pool_entity, textured_room,
 };
 use super::capture_exclusion_tests::{UNITS_PER_METER, boxed};
-use super::hit::RAY_EPSILON;
 use super::placement_test_fixtures::{engine, textured_box_brush};
 use super::shading::CaptureScene;
 use crate::map_data::BrushVolume;
+use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 /// Map units per millimetre.
 const MM: f64 = 0.001 * UNITS_PER_METER;
@@ -26,36 +26,44 @@ const RAYS_PER_LAYOUT: usize = 24;
 /// The platform's nominal top, in map units.
 const PLATFORM_TOP: f64 = 8.0;
 
-/// A leak outside the held-depth class, recorded in §5.2 (Accepted limits) and
-/// not fixed. All are grazing rays in sub-millimetre gaps, read the same with
-/// the carried depth off, and carry no kept depth at any exit.
+/// A leak outside the held-depth class, recorded in §5.2 (Known leaks) and not
+/// fixed. All are grazing rays in sub-millimetre gaps. No kept solid is passed
+/// over at any exit they cross, so each reads the same with the carried depth
+/// off, which the oracle asserts.
 #[derive(Debug, Clone, Copy)]
 enum KnownLimit {
     /// An excluded near brush's back and the excluded block's front are
     /// coplanar. The ray's tolerance hit on the block's front lands one `f32`
-    /// step before the near brush's exit, so the re-trace's open lower bound
-    /// steps over it and the pass beside is never classified.
+    /// step before the near brush's exit. The re-trace restarts from that
+    /// exit, past the hit, so the pass beside is never classified.
     CoplanarPassSteppedOver,
-    /// The ray enters the excluded block and takes a tolerance hit on an
-    /// excluded piece at the same `f32` distance. Hit order takes the piece,
-    /// so the block's exit, held by that piece and by a kept one, is never
-    /// classified.
+    /// The ray takes hits on the block and an excluded piece at one `f32`
+    /// distance, at least one a real entry. Hit order takes the piece, so the
+    /// block's exit or pass beside, held by that piece and a kept one, is
+    /// never classified.
     TiedEntryNeverClassified,
     /// Two excluded pieces hold the block's exit; the nearer is taken. The
     /// ray then enters the other through a top CSG removed, unseen, and
     /// leaves it into kept solid through a face CSG removed against it.
     /// The excluded-depth sibling of the held-depth class.
     ExcludedNeighbourPassedOver,
-    /// With the block excluded, the ray reaches a kept face CSG removed
-    /// against an excluded piece it passes without a hit, and reads through.
+    /// The ray enters an excluded piece through a face CSG removed, taking no
+    /// hit, so the trace never classifies it, and leaves it into kept solid
+    /// through a face CSG removed against it.
+    UnseenExcludedHull,
+    /// With the block or a near brush excluded, the ray reaches a kept face
+    /// CSG removed against an excluded piece it passes without a hit, and
+    /// reads through.
     ExposedCsgHole,
 }
 
 /// The rays the oracle skips: layout, index into its rays, and why. Named per
 /// ray, not per layout, so every other ray of these layouts stays checked.
 const KNOWN_LIMITS: &[(&str, usize, KnownLimit)] = &[
+    ("seed 20", 0, KnownLimit::UnseenExcludedHull),
     ("seed 20", 7, KnownLimit::CoplanarPassSteppedOver),
     ("seed 20", 8, KnownLimit::CoplanarPassSteppedOver),
+    ("seed 20", 18, KnownLimit::UnseenExcludedHull),
     ("seed 20", 23, KnownLimit::CoplanarPassSteppedOver),
     ("seed 23", 16, KnownLimit::ExposedCsgHole),
     ("seed 29", 0, KnownLimit::TiedEntryNeverClassified),
@@ -64,8 +72,14 @@ const KNOWN_LIMITS: &[(&str, usize, KnownLimit)] = &[
     ("seed 29", 15, KnownLimit::TiedEntryNeverClassified),
     ("seed 29", 16, KnownLimit::TiedEntryNeverClassified),
     ("seed 43", 4, KnownLimit::CoplanarPassSteppedOver),
+    ("seed 43", 5, KnownLimit::UnseenExcludedHull),
+    ("seed 43", 10, KnownLimit::UnseenExcludedHull),
+    ("seed 43", 15, KnownLimit::UnseenExcludedHull),
+    ("seed 43", 18, KnownLimit::UnseenExcludedHull),
     ("seed 43", 22, KnownLimit::CoplanarPassSteppedOver),
+    ("seed 48", 10, KnownLimit::UnseenExcludedHull),
     ("seed 57", 8, KnownLimit::ExcludedNeighbourPassedOver),
+    ("seed 64", 7, KnownLimit::ExposedCsgHole),
     ("seed 150", 16, KnownLimit::CoplanarPassSteppedOver),
 ];
 
@@ -113,8 +127,7 @@ struct Layout {
     rays: Vec<([f64; 3], f64)>,
 }
 
-/// A block over a platform split into pieces along the ray, the shape every
-/// case of the held-depth class takes: the block from map x 100 to 116, its
+/// A block over a platform split into pieces along the ray: the block from map x 100 to 116, its
 /// bottom a contact or near-contact gap over the nominal platform top; under
 /// it two to four pieces butted, in contact or just past it, each topped a
 /// fraction of a millimetre off nominal; an optional kept-or-excluded near
@@ -174,7 +187,7 @@ fn generated(seed: u64) -> Layout {
     }
 }
 
-/// R6 (`research.md` §R6 by reading) as a fixed case: the block, an
+/// R6 as a fixed case: the block, an
 /// excluded N topped 0.5 mm over the platform and a kept K, R6's ray.
 fn r6() -> Layout {
     let h = PLATFORM_TOP;
@@ -202,7 +215,8 @@ fn r6() -> Layout {
 }
 
 /// A read the oracle refuses: the trace's outcome lies past the first point
-/// the ray is inside kept solid that touches an excluded hull it met.
+/// the ray is inside kept solid that touches an excluded hull it crossed or
+/// passed beside.
 #[derive(Debug)]
 struct Leak {
     layout: String,
@@ -219,13 +233,11 @@ struct Leak {
     read_brush: Option<u32>,
 }
 
-impl Leak {
-    /// Whether `KNOWN_LIMITS` names this ray.
-    fn is_known_limit(&self) -> bool {
-        KNOWN_LIMITS
-            .iter()
-            .any(|&(layout, index, _)| layout == self.layout && index == self.index)
-    }
+/// Whether `KNOWN_LIMITS` names ray `index` of `layout`.
+fn is_known_limit(layout: &str, index: usize) -> bool {
+    KNOWN_LIMITS
+        .iter()
+        .any(|&(named, ray, _)| named == layout && ray == index)
 }
 
 impl std::fmt::Display for Leak {
@@ -253,12 +265,13 @@ impl std::fmt::Display for Leak {
     }
 }
 
-/// Where the ray enters and leaves a convex hull, from its planes.
-fn hull_span(hull: &BrushVolume, origin: DVec3, direction: DVec3) -> (f64, f64) {
+/// Where the ray enters and leaves a convex hull, from its planes, each moved
+/// `grow` outward.
+fn hull_span(hull: &BrushVolume, (origin, direction): (DVec3, DVec3), grow: f64) -> (f64, f64) {
     let (mut enters, mut leaves) = (f64::NEG_INFINITY, f64::INFINITY);
     for plane in &hull.planes {
         let rate = plane.normal.dot(direction);
-        let inside = plane.distance - plane.normal.dot(origin);
+        let inside = plane.distance + grow - plane.normal.dot(origin);
         if rate == 0.0 {
             if inside < 0.0 {
                 return (f64::INFINITY, f64::NEG_INFINITY);
@@ -272,36 +285,6 @@ fn hull_span(hull: &BrushVolume, origin: DVec3, direction: DVec3) -> (f64, f64) 
     (enters, leaves)
 }
 
-/// The first hit the ray takes within `reach` on a face of any of `brushes`,
-/// a real entry or a tolerance hit beside it, every other face set aside;
-/// its distance. A ray that takes none on a brush reads the same with that
-/// brush kept or excluded, so its read is no exclusion of it.
-fn first_hit_on(
-    room: &CaptureFixture,
-    scene: &CaptureScene<'_>,
-    brushes: &[u32],
-    (origin, direction): (Vec3, Vec3),
-    reach: f64,
-) -> Option<f64> {
-    let faces = room.world.face_brushes.len() as u32;
-    let every = scene.tracer.face_mask(0..faces);
-    let others = scene.tracer.face_mask(
-        (0..faces).filter(|&face| room.face_brush(face).is_none_or(|b| !brushes.contains(&b))),
-    );
-    scene
-        .tracer
-        .closest_hit_masked(
-            origin,
-            direction,
-            RAY_EPSILON,
-            reach as f32,
-            &every,
-            &others,
-        )
-        .skipped
-        .map(|hit| f64::from(hit.distance))
-}
-
 /// Whether two hulls' bounds lie within the capture's contact of each other.
 fn in_contact(a: &BrushVolume, b: &BrushVolume) -> bool {
     (0..3).all(|axis| {
@@ -310,28 +293,32 @@ fn in_contact(a: &BrushVolume, b: &BrushVolume) -> bool {
     })
 }
 
-/// The no-leak bound for one ray from the brush planes: of the excluded
-/// hulls `met`, every kept brush in contact with one; the first point the
-/// ray is inside any of them. Kept solid the ray is already inside where it
-/// first meets an excluded hull, at `first_met`, does not count: up to that
-/// hit the ray is the unmasked one, so it entered that solid through a face
-/// CSG removed against a kept brush, which the unmasked capture reads
-/// through too (`research.md` §Audit). `None` when there is none.
+/// The no-leak bound for one ray, from the brush planes alone: of the excluded
+/// hulls it crosses or passes within τ of before `read`, every kept brush in
+/// contact with one; the first point the ray is inside any of them. Kept
+/// solid entered before `unmasked`, the unmasked capture's read, does not
+/// count: up to there the ray is the unmasked one, so it entered that solid
+/// through a face CSG removed against a kept brush, which the unmasked
+/// capture reads through too. `None` when there is none.
 fn kept_solid_bound(
     volumes: &[BrushVolume],
     excluded: &[u32],
-    (met, first_met): (&[u32], f64),
-    (origin, direction): (DVec3, DVec3),
+    (read, unmasked): (f64, f64),
+    ray: (DVec3, DVec3),
 ) -> Option<(f64, u32, u32)> {
     let mut bound: Option<(f64, u32, u32)> = None;
-    for &e in met {
+    for &e in excluded {
         let hull = &volumes[e as usize];
+        let (enters, leaves) = hull_span(hull, ray, f64::from(TRACER_TOLERANCE_METERS));
+        if !(enters < leaves && leaves > 0.0 && enters < read) {
+            continue;
+        }
         for (k, kept) in volumes.iter().enumerate() {
             if excluded.contains(&(k as u32)) || !in_contact(hull, kept) {
                 continue;
             }
-            let (enters, leaves) = hull_span(kept, origin, direction);
-            if enters < leaves && leaves > 0.0 && enters >= first_met - HELD_DEPTH_SLACK_M {
+            let (enters, leaves) = hull_span(kept, ray, 0.0);
+            if enters < leaves && leaves > 0.0 && enters >= unmasked - HELD_DEPTH_SLACK_M {
                 let first = enters.max(0.0);
                 if bound.is_none_or(|(b, ..)| first < b) {
                     bound = Some((first, e, k as u32));
@@ -342,8 +329,18 @@ fn kept_solid_bound(
     bound
 }
 
-/// Every ray of `layout` the oracle refuses, carried depth on or off.
-fn leaks(layout: &Layout, carried: bool) -> Vec<Leak> {
+/// One ray's traces and the oracle's verdict on each.
+struct Verdict {
+    layout: String,
+    index: usize,
+    carried: RayOutcome,
+    uncarried: RayOutcome,
+    leak: Option<Leak>,
+    uncarried_leak: Option<Leak>,
+}
+
+/// Every ray of `layout`, traced with the carried depth on and off.
+fn judged(layout: &Layout) -> Vec<Verdict> {
     let mut world = textured_room();
     for piece in &layout.pieces {
         world.push(textured_box_brush(piece.min, piece.max, TRIM_TEXTURE));
@@ -361,52 +358,66 @@ fn leaks(layout: &Layout, carried: bool) -> Vec<Leak> {
     room.with_scene(|scene, probes| {
         let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
         let filter = exclusion(scene, &probe, &excluded);
-        let filter = if carried {
-            filter
-        } else {
-            filter.ignoring_held_depth()
+        let control = exclusion(scene, &probe, &excluded).ignoring_held_depth();
+        let plain = exclusion(scene, &probe, &[]);
+        let judge = |index: usize, (crossing, slope): ([f64; 3], f64)| {
+            let direction = engine([1.0, 0.0, -slope]).normalize();
+            let origin = (engine(crossing) - direction).as_vec3();
+            let direction: Vec3 = direction.as_vec3();
+            let unmasked = scene.trace(origin, direction, &plain);
+            let refuses = |outcome: RayOutcome| {
+                refused(
+                    (layout, index),
+                    (&room, scene, &excluded),
+                    (origin, direction),
+                    (outcome, unmasked),
+                )
+            };
+            let carried = scene.trace(origin, direction, &filter);
+            let uncarried = scene.trace(origin, direction, &control);
+            Verdict {
+                layout: layout.name.clone(),
+                index,
+                carried,
+                uncarried,
+                leak: refuses(carried),
+                uncarried_leak: refuses(uncarried),
+            }
         };
         layout
             .rays
             .iter()
             .enumerate()
-            .filter_map(|(index, &ray)| {
-                refused(layout, scene, &filter, &excluded, (index, ray), &room)
-            })
+            .map(|(index, &ray)| judge(index, ray))
             .collect()
     })
 }
 
-/// The oracle's verdict on one ray.
+/// How far along the ray `outcome` reads; `None` for the leak guard.
+fn read_at(outcome: RayOutcome, scene: &CaptureScene<'_>) -> Option<f64> {
+    match outcome {
+        RayOutcome::LeakGuard(_) => None,
+        RayOutcome::Hit(hit) => Some(f64::from(hit.distance)),
+        RayOutcome::Fill(fill) => Some(f64::from(fill.distance)),
+        RayOutcome::Miss => Some(f64::from(scene.max_distance)),
+    }
+}
+
+/// The oracle's verdict on one trace of one ray. A read the unmasked capture
+/// makes too is no exclusion's doing.
 fn refused(
-    layout: &Layout,
-    scene: &CaptureScene<'_>,
-    filter: &ProbeExclusion<'_>,
-    excluded: &[u32],
-    (index, (crossing, slope)): (usize, ([f64; 3], f64)),
-    room: &CaptureFixture,
+    (layout, index): (&Layout, usize),
+    (room, scene, excluded): (&CaptureFixture, &CaptureScene<'_>, &[u32]),
+    (origin, direction): (Vec3, Vec3),
+    (outcome, unmasked): (RayOutcome, RayOutcome),
 ) -> Option<Leak> {
-    let direction = engine([1.0, 0.0, -slope]).normalize();
-    let origin = (engine(crossing) - direction).as_vec3();
-    let direction: Vec3 = direction.as_vec3();
-    let outcome = scene.trace(origin, direction, filter);
-    let read = match outcome {
-        RayOutcome::LeakGuard(_) => return None,
-        RayOutcome::Hit(hit) => f64::from(hit.distance),
-        RayOutcome::Fill(fill) => f64::from(fill.distance),
-        RayOutcome::Miss => f64::from(scene.max_distance),
-    };
-    // The excluded hulls the ray crosses or passes beside before its read:
-    // those whose faces it takes a hit on.
-    let met: Vec<u32> = excluded
-        .iter()
-        .copied()
-        .filter(|&e| first_hit_on(room, scene, &[e], (origin, direction), read).is_some())
-        .collect();
-    let first_met = first_hit_on(room, scene, &met, (origin, direction), read)?;
+    let read = read_at(outcome, scene)?;
+    if outcome == unmasked {
+        return None;
+    }
+    let reads = (read, read_at(unmasked, scene)?);
     let ray = (origin.as_dvec3(), direction.as_dvec3());
-    let (bound, met, kept) =
-        kept_solid_bound(&room.world.brushes, excluded, (&met, first_met), ray)?;
+    let (bound, met, kept) = kept_solid_bound(&room.world.brushes, excluded, reads, ray)?;
     let read_brush = match outcome {
         RayOutcome::Hit(hit) => room.face_brush(hit.face),
         RayOutcome::Fill(fill) => Some(fill.brush),
@@ -415,7 +426,7 @@ fn refused(
     (read > bound + HELD_DEPTH_SLACK_M).then(|| Leak {
         layout: layout.name.clone(),
         index,
-        ray: (crossing, slope),
+        ray: layout.rays[index],
         outcome,
         bound,
         read,
@@ -425,23 +436,31 @@ fn refused(
     })
 }
 
+/// Every generated ray's verdict, and R6's.
+fn all_verdicts() -> Vec<Verdict> {
+    SEEDS
+        .map(generated)
+        .chain([r6()])
+        .flat_map(|layout| judged(&layout))
+        .collect()
+}
+
 // No-leak oracle (`resource_management.md` §5.2 No leaks): over generated
 // layouts of boxes in contact and just past it, some excluded, every ray
 // into their gaps reads at or before the first point it is inside kept solid
-// touching an excluded hull it met, or takes the leak guard. The bound comes
-// from the brush planes, not from the trace's exit classification. R6 rides
-// along as a fixed case. `KNOWN_LIMITS` are skipped, and each must still leak:
-// one that stops is closed, and leaves the table and §5.2.
+// touching an excluded hull it crossed or passed beside, or takes the leak
+// guard. The bound comes from the brush planes, not from the trace's exit
+// classification. R6 rides along as a fixed case. `KNOWN_LIMITS` are skipped.
+// Each must still leak, and read the same with the carried depth off, which
+// keeps it outside the class: one that stops is closed, and leaves the table
+// and §5.2.
 #[test]
 fn generated_layouts_never_read_through_kept_solid_touching_a_met_excluded_hull() {
-    let found: Vec<Leak> = SEEDS
-        .map(generated)
-        .chain([r6()])
-        .flat_map(|layout| leaks(&layout, true))
-        .collect();
-    let unnamed: Vec<String> = found
+    let verdicts = all_verdicts();
+    let unnamed: Vec<String> = verdicts
         .iter()
-        .filter(|leak| !leak.is_known_limit())
+        .filter_map(|verdict| verdict.leak.as_ref())
+        .filter(|leak| !is_known_limit(&leak.layout, leak.index))
         .map(ToString::to_string)
         .collect();
     assert!(
@@ -450,17 +469,20 @@ fn generated_layouts_never_read_through_kept_solid_touching_a_met_excluded_hull(
         unnamed.len(),
         unnamed.join("\n")
     );
-    let closed: Vec<_> = KNOWN_LIMITS
+    let stale: Vec<_> = KNOWN_LIMITS
         .iter()
         .filter(|&&(layout, index, _)| {
-            !found
-                .iter()
-                .any(|leak| leak.layout == layout && leak.index == index)
+            !verdicts.iter().any(|verdict| {
+                verdict.layout == layout
+                    && verdict.index == index
+                    && verdict.leak.is_some()
+                    && verdict.carried == verdict.uncarried
+            })
         })
         .collect();
     assert!(
-        closed.is_empty(),
-        "no longer leak; drop them here and from §5.2: {closed:?}"
+        stale.is_empty(),
+        "no longer leak, or now turn on the carried depth; drop them here and from §5.2: {stale:?}"
     );
 }
 
@@ -469,14 +491,38 @@ fn generated_layouts_never_read_through_kept_solid_touching_a_met_excluded_hull(
 // generator reaches the class and the oracle above does not pass vacuously.
 #[test]
 fn the_no_leak_oracle_refuses_the_trace_without_the_carried_depth() {
+    let refused: Vec<(String, usize)> = all_verdicts()
+        .iter()
+        .filter_map(|verdict| verdict.uncarried_leak.as_ref())
+        .filter(|leak| !is_known_limit(&leak.layout, leak.index))
+        .map(|leak| (leak.layout.clone(), leak.index))
+        .collect();
     assert!(
-        !leaks(&r6(), false).is_empty(),
+        refused.iter().any(|(layout, _)| layout == "R6"),
         "the oracle refuses R6 uncarried"
     );
-    let generated = SEEDS
-        .map(generated)
-        .flat_map(|layout| leaks(&layout, false))
-        .filter(|leak| !leak.is_known_limit())
-        .count();
-    assert!(generated > 0, "no generated case reaches the class");
+    assert!(
+        refused.iter().any(|(layout, _)| layout != "R6"),
+        "no generated case reaches the class"
+    );
+}
+
+// The carried depth never raises a false guard: over the same rays, it changes
+// only reads the oracle refuses without it. The oracle above cannot see this,
+// as it accepts every leak guard.
+#[test]
+fn the_carried_depth_changes_only_reads_the_oracle_refuses_without_it() {
+    let changed = all_verdicts();
+    let false_guards: Vec<String> = changed
+        .iter()
+        .filter(|verdict| verdict.carried != verdict.uncarried && verdict.uncarried_leak.is_none())
+        .map(|verdict| format!("{} ray {}", verdict.layout, verdict.index))
+        .collect();
+    assert!(false_guards.is_empty(), "{false_guards:?}");
+    assert!(
+        changed
+            .iter()
+            .any(|verdict| verdict.carried != verdict.uncarried),
+        "the carried depth changes some read"
+    );
 }

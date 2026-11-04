@@ -33,7 +33,7 @@ pub(super) fn held_at(
 pub(super) enum Held {
     /// Kept solid: the leak guard.
     Kept,
-    /// The excluded hull in this slot of [`ProbeExclusion::excluded`], which
+    /// The excluded hull in this slot of [`super::capture_exclusion::ProbeExclusion::excluded`], which
     /// the ray goes on through and leaves at this distance.
     Excluded { slot: usize, leaves: f64 },
 }
@@ -83,6 +83,7 @@ pub(super) fn nearest_held(
 /// entry face's normal, and stays a third of [`CONTACT_TOLERANCE_M`], so no
 /// face CSG left behind the depth comes within it.
 pub(super) const HELD_DEPTH_SLACK_M: f64 = TRACER_TOLERANCE_METERS as f64;
+const _: () = assert!(HELD_DEPTH_SLACK_M < CONTACT_TOLERANCE_M);
 
 /// The least depth of kept solid a trace passed over: a kept neighbour that
 /// held an excluded hull's exit ([`held_at`]) behind the nearer excluded one

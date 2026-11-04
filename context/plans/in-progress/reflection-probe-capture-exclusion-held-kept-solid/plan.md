@@ -39,7 +39,7 @@ re-checked at: main 0297abebe merged (2026-11-03). Main's only changes under `re
 | 3 | Carried kept depth through `cross` and `trace_counting`, checked at each read point; read-kind seam rows; `STAGE_VERSION` bump | integrating executor | 2 | done: R6 green; read-kind seam row green; 185 `reflection_probes` tests pass; `STAGE_VERSION` 12 → 13 |
 | 4 | Later-hull row, kept-behind at-depth assertion, off-box R6 variant | integrating executor | 3 | done: all green; R6 and later-hull rows also assert the uncarried trace reads the wall behind |
 | 5 | No-leak oracle over generated layouts, and its disabled-check run | integrating executor | 3 | done: green with 13 rays named as known limits (see Known limits); 189 `reflection_probes` tests pass |
-| 6 | Cache and bytes check on `reflection-probes-test.map` | integrating executor | 3 | |
+| 6 | Cache and bytes check on `reflection-probes-test.map` | integrating executor | 3 | done: pre-change binary is main 0297abebe. Warm over its cache: `reflection_probes` misses, the other 12 cached stages hit. Cold `--release` before and after: byte-identical, all 36 sections; id 54 (148 630 B) did not move |
 
 ## Oracle record
 - Seeds 0..160, one generated layout each, 24 rays each (3 840 rays), plus R6 as a fixed case. Runtime 1.4 s per oracle test in the default test profile (both tests together ≈ 2.7 s).

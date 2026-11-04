@@ -82,7 +82,7 @@ A spike is not a route. Build-to-learn work takes the brief or spec route with t
 
 Routing is provisional. `/validate-plan` can still return *Not a spec* or *Under-scoped* once an artifact exists; surface that verdict, never act on it unilaterally.
 
-**Brief loop.** After `/draft-brief` and a *Direction sound* verdict from `/validate-plan`, run the `/review-brief` loop before promotion: review → fix → self-review → re-review, until its stop rule or an owner item. Planning authorization covers it; the loop edits the draft, not source.
+**Brief loop.** `/draft-brief` drafts; it may run in a subagent. The orchestrating session owns what follows. Once `/validate-plan` returns *Direction sound*, run the `/review-brief` loop yourself: review → fix → self-review → re-review, until its stop rule or an owner item. Promotion waits for the loop and the owner's sign-off. Planning authorization covers the loop; it edits the draft, not source.
 
 **Direct build loop.** `/build-brief` assumes a promoted brief and lifecycle directories; a direct build has neither, so its loop is stated here. The session is the integrating executor:
 

@@ -23,7 +23,7 @@ A brief is written for a reader with the repo. One integrating executor owns the
 
 1. **Nothing is restated for an agent that cannot see the rest.** Every executor gets the whole brief, relevant research and context, and the source tree. There is no task-paragraph contract.
 2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
-3. **Direction gate, then the review loop.** `/validate-plan` runs once. Then the `/review-brief` loop runs to its stop rule. No implementability review. The diff is reviewed at build, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. The loop edits Decisions only to correct a premise or tighten wording with its meaning unchanged; any other finding on Decisions is the owner's.
+3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. The detail review, `/review-brief`, belongs to the orchestrating session (`/draft-session`), which runs it after this skill returns. The drafter does not run it.
 4. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
 
 ## Process
@@ -158,16 +158,11 @@ Run `/validate-plan <name>`. It reads the brief the same way it reads a spec; th
 
 Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a spec*, or *Under-scoped* unilaterally — those are owner decisions.
 
-### 7. Review loop
-
-When `/validate-plan` returns *Direction sound* (or the owner accepted a reshape), run the `/review-brief` loop. It ends on its stop rule or at the owner.
-
-### 8. Report
+### 7. Report
 
 - The problem, in one line
 - Decision count, AC count, open-question count by kind
 - The `/validate-plan` verdict
-- The review loop result: reviews run, Blockers per review, owner items
 - Open questions marked **blocks build**, for the owner
 - The brief lives in `drafts/` until promoted
 
@@ -179,7 +174,6 @@ Between draft and promotion the owner and the drafter resolve **blocks build** q
 
 A brief is ready when:
 - `/validate-plan` returned *Direction sound*, or the owner accepted a reshape and the brief reflects it
-- The `/review-brief` loop met its stop rule, and the owner has seen its owner items
 - No **blocks build** entries remain; every surviving entry is **delegated**
 - The owner signs off
 

@@ -1,14 +1,14 @@
 # reflection-probe-capture-exclusion-held-kept-solid — plan of record
 
 mode: compact
-status: active
+status: done
 read at: cc660f45b (no source under `reflection_probes/` changed since the brief's ffd61b87b; Decision reads reused)
 re-checked at: main 0297abebe merged (2026-11-03). Main's only changes under `reflection_probes/` and `ray_traversal/` are visibility and a test-harness wrapper. After the merge: R6 and later-hull rows green (and still red uncarried); oracle refuses the same 13 rays as before the merge, the first A–D; the disabled-check oracle test still fails as required; every other level-compiler test passes.
 
 ## Corrections
 - Path names `held_at`, `Held`, `nearest_held` and `ProjectionBox` for the split → `held_at` calls `outside_by`, which `capture_fill` also uses; it moves with them so the new module owns the hull-distance rule. The carried depth's type lives there too. Module: `capture_bounds.rs` (what bounds an excluded trace's reads).
 - The brief says "builds after `watertight-tracer` lands on main" → landed (2f94024ec, merge of #638); this branch is cut from main after it.
-- Acceptance, no-leak oracle: "the first point … inside a kept contact of a hull it crossed or passed beside" → one exception added, for the owner to confirm: a read the unmasked capture makes too is not refused, and kept solid entered before the unmasked read does not count, since up to there the ray is the unmasked one (`research.md` §Audit). "Crossed or passed beside" is the row's: the hull's planes, grown by τ, meet the ray before its read. Without the exception the row refuses 137 rays: 87 read as the unmasked capture does, 29 were already inside kept solid at their first excluded hit, and the 21 named below remain.
+- Acceptance, no-leak oracle: "the first point … inside a kept contact of a hull it crossed or passed beside" → one exception added, accepted by the owner 2026-11-03: a read the unmasked capture makes too is not refused, and kept solid entered before the unmasked read does not count, since up to there the ray is the unmasked one (`research.md` §Audit). "Crossed or passed beside" is the row's: the hull's planes, grown by τ, meet the ray before its read. Without the exception the row refuses 137 rays: 87 read as the unmasked capture does, 29 were already inside kept solid at their first excluded hit, and the 21 named below remain.
 - An earlier oracle counted a hull only when the ray took a hit on its faces, on the premise that a ray taking no hit on a brush reads the same with it kept or excluded. Review disproved that (N in R6 reads differently kept), and the narrowing hid 8 real leaks, reported to the owner as read-the-same false positives. Replaced by the plane test above.
 
 ## Delegated answers
@@ -25,7 +25,7 @@ re-checked at: main 0297abebe merged (2026-11-03). Main's only changes under `re
 | Kept-behind row | existing row, plus an assertion that its front lies at the held depth | achievable as stated | pass |
 | Split-platform, exact-tie, selection-rule, beside budget, crate-seam, all capture/fill tests unchanged | `cargo test -p postretro-level-compiler --bin prl-build reflection_probes` | achievable as stated | pass: 194 `reflection_probes` tests |
 | Off-box invariant | existing seam test + R6 layout with the box short of the kept brush, kept vs excluded, on a 16-ray grid including R6's ray | achievable as stated | pass: 16 sampled rays, not every ray |
-| No-leak oracle | generated-layout test, plane-derived bound | achievable as stated | pass with 21 named known limits; its one exception awaits the owner (Corrections) |
+| No-leak oracle | generated-layout test, plane-derived bound | achievable as stated | pass with 21 named known limits; its one exception accepted by the owner (Corrections) |
 | The oracle sees the class | same oracle with the carried-depth check disabled (test-only switch): fails on ≥1 generated case and on R6 | achievable as stated | pass: R6 and 10 unnamed generated rays |
 | Oracle in default `cargo test`; seeds, count, runtime, known limits recorded here | not `#[ignore]`; recorded below | achievable as stated | pass |
 | Review addition: no false guards | `the_carried_depth_changes_only_reads_the_oracle_refuses_without_it` over the same rays | added in review | pass: agrees with the oracle; shares its slack |

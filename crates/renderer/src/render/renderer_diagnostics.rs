@@ -425,7 +425,8 @@ impl Renderer {
     /// pawn `Transform.position`s collected client-side by
     /// `netcode::remote_entity_positions`; `radius`/`half_height` size the
     /// capsule to the standing player volume. Cyan so it reads clearly against
-    /// the world. No-op when `centers` is empty (single-player and host).
+    /// the world. No-op when `centers` is empty (single-player and host), and
+    /// while the Network-tab toggle is off (the default).
     ///
     /// Routed through the **overlay (always-on-top)** debug-line path
     /// (`push_capsule_overlay`), NOT the depth-tested `push_capsule`: the marker's
@@ -442,10 +443,24 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_remote_entity_markers(&mut self, centers: &[Vec3], radius: f32, half_height: f32) {
         const REMOTE_ENTITY_COLOR: [u8; 4] = [0, 255, 255, 255]; // cyan
+        if !self.full().show_remote_entity_markers {
+            return;
+        }
         let debug_lines = &mut self.full_mut().debug_lines;
         for &center in centers {
             debug_lines.push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
         }
+    }
+
+    /// `true` when the Network tab's remote-entity capsule markers are on.
+    #[cfg(feature = "dev-tools")]
+    pub fn remote_entity_markers_enabled(&self) -> bool {
+        self.full().show_remote_entity_markers
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_remote_entity_markers_enabled(&mut self, enabled: bool) {
+        self.full_mut().show_remote_entity_markers = enabled;
     }
 
     /// `true` when the navmesh overlay is toggled on (`Alt+Shift+N`). Lets a

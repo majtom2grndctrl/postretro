@@ -249,6 +249,10 @@ pub(in crate::render) struct FullRenderer {
     /// site to decide whether to push region/portal debug lines this frame.
     #[cfg(feature = "dev-tools")]
     pub(in crate::render) show_navmesh: bool,
+    /// Cyan capsule markers for replicated entities that have no mesh yet,
+    /// toggled from the Network tab. Off by default.
+    #[cfg(feature = "dev-tools")]
+    pub(in crate::render) show_remote_entity_markers: bool,
 
     /// Live dev-tools value. `update_per_frame_uniforms` snapshots it into
     /// `frame_light_term_mask` before scene recording begins.

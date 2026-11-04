@@ -387,7 +387,7 @@ pub fn draw_diagnostics_panel(
                 lightmap_streaming,
                 streaming_reach,
             ),
-            DiagnosticsTab::Network => network_tab::draw_network_tab(ui, network_lag),
+            DiagnosticsTab::Network => network_tab::draw_network_tab(ui, renderer, network_lag),
         }
     });
 }

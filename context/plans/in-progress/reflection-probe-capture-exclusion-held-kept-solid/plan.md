@@ -3,6 +3,7 @@
 mode: compact
 status: blocked
 read at: cc660f45b (no source under `reflection_probes/` changed since the brief's ffd61b87b; Decision reads reused)
+re-checked at: main 0297abebe merged (2026-11-03). Main's only changes under `reflection_probes/` and `ray_traversal/` are visibility and a test-harness wrapper. After the merge: R6 and later-hull rows green (and still red uncarried); oracle refuses the same 13 rays (A–D below, same seeds); the disabled-check oracle test still fails as required; every other level-compiler test passes.
 
 ## Corrections
 - Path names `held_at`, `Held`, `nearest_held` and `ProjectionBox` for the split → `held_at` calls `outside_by`, which `capture_fill` also uses; it moves with them so the new module owns the hull-distance rule. The carried depth's type lives there too. Module: `capture_bounds.rs` (what bounds an excluded trace's reads).

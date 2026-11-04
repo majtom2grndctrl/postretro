@@ -78,6 +78,30 @@ Adopted 2026-11-03.
 - **Bake row 3's reference.** A static door changes faces, patches and cells, not only occlusion. I expect closet probes to agree, since both are near dark. If they miss the BC6H bar, I stop and report without relaxing it.
 - **The door's closet face (Manual 3).** That face also samples bright-side probes, with backface rejection off and mover-absent depth moments. A bright-side probe looking toward the door sees the door's lit face, so the closet face could read bright even with correct channel data. This is `research.md`'s leak-across-walls risk. Task 4's slice PRL is the first evidence; if it glows, I stop and report.
 
+## Leak diagnosis result (task 1, Manual 1)
+
+**Awaiting the owner's verdict. Do not start task 2 until it is recorded here.**
+
+Built with today's compiler at 7af769fba from `content/dev/maps/mover-closet.map`. Captures are in `captures/`; `verdict-sheet.png` holds the six panels that matter. Values are post-tonemap sRGB, 0–255, so they rank brightness but are not linear light.
+
+The reference glows at the worst lattice phase, in a narrow band at the door:
+
+| Build | Station 3 frame mean | Station 2 frame mean | Floor 0.04 m past the door plane | 0.26 m | 0.48 m |
+|---|---|---|---|---|---|
+| Today, mover door | 6.60 | 6.83 | 23 | 19 | 17 |
+| Reference, door 8 units back (the fixture) | 0.50 | 0.15 | 13 | 2 | 0 |
+| Reference, door flush with the closet wall | 0.26 | 0.14 | 17 | 10 | 1 |
+| Reference, no plane straddles the door | 0.00 | 0.00 | not profiled | not profiled | not profiled |
+
+The floor columns are means across the doorway's width. In the fixture's 8-unit reveal, 0.07–0.18 m before the door plane, the reference floor reads 18–21 against today's 25–27, so the band there is nearly as bright as today's build.
+
+- **Most of the closet's glow is the bake's.** Today's glow fills the room. The reference's stays within about 0.5 m of the door. The channel can remove the first, not the second.
+- **The rest is the sampler's, and it depends on the lattice.** The first reference capture read pure black because a probe plane fell inside the door slab, which leaves no valid bright-side probe sharing a cell with the closet. Sweeping the closet's north wall through a full period (y 768, 760, 752, 744, 736) gave leaks at exactly the phases the lattice predicts, for both door placements. About 59% of placements of a 16-unit door are exposed: (39.37 − 16) ÷ 39.37. The fixture is fixed at y 760, the worst phase measured, so Bake row 3 cannot pass by luck.
+- **Why it leaks, by reading, not by experiment.** A probe 3.6 units from the door sees the bright room in most directions, so its one omnidirectional depth mean stays large and `sh_corner_depth_visibility` does not reject the closet fragment behind the door. This matches the Decision's prediction. No experiment here isolates it.
+- **Fixture checks.** Door recognition seals the doorway (`1 of 1`, portals 4 and 5). Static-direct-only captures read black in the closet in all four builds (frame mean ≤ 0.0012), so no bright-room light reaches it directly. The bright room reads 143. The gate's 345 texels for the closed door are therefore outside the closet; the soft emitter's far edge reaches the doorway floor as far as y 493, inside the door slab's footprint, which likely accounts for them.
+- **Door's closet face (Manual 3 risk).** Today it reads 1.7 at slab centre, through the fog, against the reference's 0. That is mover-absent data, so it says nothing yet about the face under a gated bake. Task 4 remains the first evidence.
+- **Water.** Turning the reflection term off changes no pixel statistic in today's build, so the pool's teal is not the reflection probe. Its source was not isolated. The reference's water reads black.
+
 ## AC-to-proof
 
 Rows number in brief order within each group.
@@ -149,7 +173,7 @@ Three stops are built in. Task 1 stops for the owner's verdict. Task 4 stops for
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Leak diagnosis.** Author `content/dev/maps/mover-closet.map` and README, build it and a static-door reference with today's compiler, capture both. Stop for the owner's verdict (Manual 1). | integrating executor | — | |
+| 1 | **Leak diagnosis.** Author `content/dev/maps/mover-closet.map` and README, build it and a static-door reference with today's compiler, capture both. Stop for the owner's verdict (Manual 1). | integrating executor | — | Built and captured; reference glows at the worst phase. **Awaiting owner verdict.** See Leak diagnosis result. |
 | 2 | **Mover state and capture pose.** Arc-length t in physics; registry-driven collector; renderer setter with install reset; capture forced mover t (whole pose) and forced static promotion weight. Scalar rows that need no compose. | delegated slice, physics and game; executor owns the setter seam | 1 | |
 | 3 | **Direct first slice.** Two-trace soft visibility and q (Bake 1). Bake `setpiece_room` raised through the slice switch; A/B station 2 and the room's faces. Decide the inside-brush rule. | integrating executor | 1, 2 | |
 | 4 | **Bounce slice.** Hand the patch cache out of `bake_sh_base`; posed gather for the closet door and raised room; Bake 3; patches decision; bounce placement by measured peak; domain drift measured. Cold and warm mover-only hallway cost. Stop for the owner's gate (Manual 2). | integrating executor | 3 | |

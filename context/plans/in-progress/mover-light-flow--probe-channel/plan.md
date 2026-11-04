@@ -1,7 +1,8 @@
 # mover-light-flow--probe-channel — plan of record
 
 mode: resumable
-status: approved
+status: blocked
+blocked on: direction-aware probe visibility, its own spec (owner verdict 2026-11-04, see Leak diagnosis result)
 read at: 44881f797
 
 Feature branch: `feat/mover-light-flow--probe-channel`. The brief was claimed on `main` at 44881f797. Every symbol cited by Decisions and Path was re-read at that commit. Since the brief's 33ac590, the bake, format and physics crates changed only in `reflection_probes`, and `frame_loop/mod.rs` kept its mover sites. No Decision premise is false. No Acceptance row needs restatement.
@@ -80,7 +81,7 @@ Adopted 2026-11-03.
 
 ## Leak diagnosis result (task 1, Manual 1)
 
-**Awaiting the owner's verdict. Do not start task 2 until it is recorded here.**
+**Owner verdict, 2026-11-04: the reference glows.** The owner sees a little glow in the static-door column of `verdict-sheet.png`. Under the owner's ruling, direction-aware probe visibility comes first as its own spec, and this brief pauses. Do not start task 2. Resume here once that spec has landed, and re-capture the reference before continuing. The closet bar stands unchanged.
 
 Built with today's compiler at 7af769fba from `content/dev/maps/mover-closet.map`. Captures are in `captures/`; `verdict-sheet.png` holds the six panels that matter. Values are post-tonemap sRGB, 0–255, so they rank brightness but are not linear light.
 
@@ -173,7 +174,7 @@ Three stops are built in. Task 1 stops for the owner's verdict. Task 4 stops for
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Leak diagnosis.** Author `content/dev/maps/mover-closet.map` and README, build it and a static-door reference with today's compiler, capture both. Stop for the owner's verdict (Manual 1). | integrating executor | — | Built and captured; reference glows at the worst phase. **Awaiting owner verdict.** See Leak diagnosis result. |
+| 1 | **Leak diagnosis.** Author `content/dev/maps/mover-closet.map` and README, build it and a static-door reference with today's compiler, capture both. Stop for the owner's verdict (Manual 1). | integrating executor | — | Done. Owner verdict 2026-11-04: reference glows, so the brief pauses for direction-aware probe visibility. See Leak diagnosis result. |
 | 2 | **Mover state and capture pose.** Arc-length t in physics; registry-driven collector; renderer setter with install reset; capture forced mover t (whole pose) and forced static promotion weight. Scalar rows that need no compose. | delegated slice, physics and game; executor owns the setter seam | 1 | |
 | 3 | **Direct first slice.** Two-trace soft visibility and q (Bake 1). Bake `setpiece_room` raised through the slice switch; A/B station 2 and the room's faces. Decide the inside-brush rule. | integrating executor | 1, 2 | |
 | 4 | **Bounce slice.** Hand the patch cache out of `bake_sh_base`; posed gather for the closet door and raised room; Bake 3; patches decision; bounce placement by measured peak; domain drift measured. Cold and warm mover-only hallway cost. Stop for the owner's gate (Manual 2). | integrating executor | 3 | |

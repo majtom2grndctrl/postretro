@@ -9,7 +9,7 @@ use cosmic_text::FontSystem;
 use taffy::prelude::{AvailableSpace, Display, NodeId, Size, TaffyTree};
 
 use super::super::descriptor::AnchoredTree;
-use super::super::layout::{Anchor, REFERENCE_HEIGHT, REFERENCE_WIDTH};
+use super::super::layout::{Anchor, device_scale, logical_canvas_size};
 use super::super::theme::UiTheme;
 use postretro_entities::SlotValue;
 
@@ -19,7 +19,7 @@ use super::bindings::{
     drive_ring_scalar_binding, drive_text_binding,
 };
 use super::build::build_node;
-use super::draw::{UiDrawData, anchor_fractions, bar_max_value, bar_slot_value, canvas_origin};
+use super::draw::{UiDrawData, anchor_fractions, bar_max_value, bar_slot_value};
 use super::node_context::ValueText;
 use super::predicate::{evaluate_predicate, resolve_value_text};
 use super::scroll::{Placement, ScrollInput, ScrollViews};
@@ -39,8 +39,10 @@ pub struct UiTree {
     pub(super) offset: [f32; 2],
     /// Device size the cached layout was computed against. `None` until the
     /// first `build_draw_data`. A change here forces a recompute even when the
-    /// tree is otherwise unchanged (resize re-resolves the letterbox/scale and
-    /// any device-space sizing), since taffy's dirty state only tracks the tree.
+    /// tree is otherwise unchanged (resize re-resolves the scale and the logical
+    /// canvas the root lays out in and anchors against — an aspect change at
+    /// the same scale still changes the canvas), since taffy's dirty state only
+    /// tracks the tree.
     last_viewport: Option<[u32; 2]>,
     /// Number of times `compute_layout_with_measure` actually ran. The gate
     /// skips the compute on an unchanged frame, so this stops incrementing when
@@ -147,23 +149,24 @@ impl UiTree {
         self.scroll.carry_from(&previous.scroll);
     }
 
-    /// Where the laid-out root sits on the device: its reference origin (the
-    /// anchor plus offset, pivoted by the root's size), the reference→device
-    /// scale, and the letterboxed canvas origin. Shared by the draw walk, the focus export,
-    /// and the scroll update so all three project identically.
+    /// Where the laid-out root sits on the device: its logical origin (the
+    /// anchor point on the backbuffer-sized logical canvas plus offset, pivoted
+    /// by the root's size) and the logical→device scale. The canvas spans the
+    /// whole backbuffer, so a corner anchor sits on the backbuffer's corner at
+    /// every aspect. Shared by the draw walk, the focus export, and the scroll
+    /// update so all three project identically.
     pub(super) fn placement(&self, device_size: [u32; 2]) -> Placement {
         let root_size = self.taffy.layout(self.root).expect("root has layout").size;
         let (afx, afy) = anchor_fractions(self.anchor);
-        let anchor_x = REFERENCE_WIDTH * afx + self.offset[0];
-        let anchor_y = REFERENCE_HEIGHT * afy + self.offset[1];
-        let scale = super::super::layout::device_scale(device_size);
+        let canvas = logical_canvas_size(device_size);
+        let anchor_x = canvas[0] * afx + self.offset[0];
+        let anchor_y = canvas[1] * afy + self.offset[1];
         Placement {
             root_origin: [
                 anchor_x - root_size.width * afx,
                 anchor_y - root_size.height * afy,
             ],
-            scale,
-            canvas_origin: canvas_origin(device_size, scale),
+            scale: device_scale(device_size),
         }
     }
 
@@ -221,14 +224,15 @@ impl UiTree {
         self.taffy.style(node).expect("node has a style").display == Display::None
     }
 
-    /// Compute layout against the 1280x720 logical-reference canvas, then read
-    /// the laid-out rects back into a device-pixel draw list + shaped-text lines.
+    /// Compute layout against the logical canvas (`layout::logical_canvas_size`:
+    /// the backbuffer in logical px, exactly 1280x720 at 16:9), then read the
+    /// laid-out rects back into a device-pixel draw list + shaped-text lines.
     ///
     /// Two-stage placement: taffy lays the tree out at the canvas origin, then
-    /// the root's computed content size is placed in reference space per the
-    /// envelope's `anchor`/`offset`, and finally every node's reference-space
-    /// rect is projected to device pixels (uniform scale + letterbox) via the
-    /// `layout` projection path. Quads land in `UiDrawList`; text runs in the
+    /// the root's computed content size is placed on the canvas per the
+    /// envelope's `anchor`/`offset`, and finally every node's logical rect is
+    /// projected to device pixels (uniform scale from the backbuffer's
+    /// top-left). Quads land in `UiDrawList`; text runs in the
     /// returned `Vec<UiText>` (device-positioned, device-scaled font size).
     ///
     /// Text nodes are sized through `font_system`: the measure closure shapes
@@ -296,10 +300,10 @@ impl UiTree {
             .dirty(self.root)
             .expect("root node exists in its own tree");
         if viewport_changed || structural_change {
-            // Lay the tree out with the reference canvas as the available space,
-            // so percentage/stretch resolve against 1280x720. taffy positions
-            // the root at its own origin; the anchor/offset transform re-places
-            // it after.
+            // Lay the tree out with the logical canvas as the available space,
+            // so stretch resolves against the backbuffer's logical extent
+            // (1280x720 at 16:9). taffy positions the root at its own origin;
+            // the anchor/offset transform re-places it after.
             //
             // `compute_layout_with_measure` gives each leaf a measure callback.
             // Text nodes shape through `font_system` and return their real glyph
@@ -311,10 +315,7 @@ impl UiTree {
             self.taffy
                 .compute_layout_with_measure(
                     self.root,
-                    Size {
-                        width: AvailableSpace::Definite(REFERENCE_WIDTH),
-                        height: AvailableSpace::Definite(REFERENCE_HEIGHT),
-                    },
+                    canvas_available_space(device_size),
                     |inputs, _node_id, node_context, style| {
                         layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
@@ -438,10 +439,7 @@ impl UiTree {
             self.taffy
                 .compute_layout_with_measure(
                     self.root,
-                    Size {
-                        width: AvailableSpace::Definite(REFERENCE_WIDTH),
-                        height: AvailableSpace::Definite(REFERENCE_HEIGHT),
-                    },
+                    canvas_available_space(device_size),
                     |inputs, _node_id, node_context, style| {
                         layout_leaf(inputs, style, node_context, font_system, image_sizes)
                     },
@@ -802,6 +800,16 @@ impl UiTree {
             diff.appearance_changed = true;
         }
         diff
+    }
+}
+
+/// The logical canvas as taffy available space for a layout root: a retained
+/// tree root or a presentation template root.
+pub(super) fn canvas_available_space(device_size: [u32; 2]) -> Size<AvailableSpace> {
+    let [width, height] = logical_canvas_size(device_size);
+    Size {
+        width: AvailableSpace::Definite(width),
+        height: AvailableSpace::Definite(height),
     }
 }
 

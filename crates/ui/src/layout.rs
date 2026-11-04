@@ -1,5 +1,5 @@
-// UI layout/projection: maps 1280x720 logical-reference rects to device-pixel
-// quad instances. Pure CPU-side — no wgpu call, holds no GPU handle — so the
+// UI layout/projection: maps logical-reference rects (1280x720 scale basis,
+// widened to the backbuffer aspect) to device-pixel quad instances. Pure CPU-side — no wgpu call, holds no GPU handle — so the
 // produced draw list is GPU-independent and asserted by the CPU draw-list tests.
 // See: context/lib/ui.md
 
@@ -7,8 +7,10 @@ use super::{UiDrawList, UiInstance};
 
 pub use postretro_scripting_core::ui::layout::Anchor;
 
-/// Logical-reference width. All UI is authored against this 1280x720 canvas;
-/// the device scale derives from `device_size / reference` at encode time.
+/// Logical-reference width. UI is authored in logical px whose scale basis is
+/// this 1280x720 reference: the device scale derives from `device_size /
+/// reference` at encode time, and the logical canvas widens past it on the
+/// axis the backbuffer has spare (see [`logical_canvas_size`]).
 pub const REFERENCE_WIDTH: f32 = 1280.0;
 /// Logical-reference height (see `REFERENCE_WIDTH`).
 pub const REFERENCE_HEIGHT: f32 = 720.0;
@@ -94,31 +96,41 @@ impl UiElement {
 /// 1280x720 logical reference.
 ///
 /// **Aspect-ratio handling:** a single uniform scale is used for both axes —
-/// `min(device.x / ref.x, device.y / ref.y)`. Picking the smaller ratio means
-/// the logical canvas is letterboxed (never cropped) when the backbuffer aspect
-/// differs from 16:9, and crucially an element keeps its authored aspect at
-/// every resolution. The plan requires "only the uniform device scale applies,
-/// never an independent x/y stretch" — the logo must not stretch — so an
-/// independent x/y scale is deliberately rejected.
+/// `min(device.x / ref.x, device.y / ref.y)` — so an element keeps its authored
+/// aspect at every resolution and never stretches. The axis that bounds the
+/// scale spans exactly the reference size; the other axis widens the logical
+/// canvas (see [`logical_canvas_size`]) instead of leaving a letterbox margin.
 pub fn device_scale(device_size: [u32; 2]) -> f32 {
     let sx = device_size[0] as f32 / REFERENCE_WIDTH;
     let sy = device_size[1] as f32 / REFERENCE_HEIGHT;
     sx.min(sy)
 }
 
-/// Logical canvas origin in device pixels: the top-left of the scaled
-/// 1280x720 canvas, centered in the backbuffer so the letterbox margin is
-/// split evenly. Combined with `device_scale` this maps logical-reference
-/// coordinates to device pixels: `device = origin + logical * scale`. Now
-/// test-only: the boot splash and gameplay paths project through `tree`, which
-/// owns its own `canvas_origin`.
-fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
-    let scaled_w = REFERENCE_WIDTH * scale;
-    let scaled_h = REFERENCE_HEIGHT * scale;
-    [
-        (device_size[0] as f32 - scaled_w) * 0.5,
-        (device_size[1] as f32 - scaled_h) * 0.5,
-    ]
+/// Logical size of the whole device backbuffer, in logical-reference px:
+/// `device_size / device_scale`. The axis that bounds the scale is exactly the
+/// reference size; the other is at least its reference size (wider on a wide
+/// window, taller on a tall one). At 16:9 this is exactly 1280x720.
+///
+/// The canvas starts at the backbuffer's top-left, so `device = logical *
+/// scale`. Anchors resolve against this size, which puts a corner anchor on
+/// the backbuffer's corner at every aspect. A degenerate (zero-area) backbuffer
+/// reports the reference size so layout never sees an infinite extent.
+pub fn logical_canvas_size(device_size: [u32; 2]) -> [f32; 2] {
+    let (w, h) = (device_size[0] as f32, device_size[1] as f32);
+    let sx = w / REFERENCE_WIDTH;
+    let sy = h / REFERENCE_HEIGHT;
+    if !(sx > 0.0 && sy > 0.0 && sx.is_finite() && sy.is_finite()) {
+        return [REFERENCE_WIDTH, REFERENCE_HEIGHT];
+    }
+    // The bounding axis is pinned to the reference value rather than divided
+    // back out, so an exact 16:9 backbuffer yields exactly 1280x720.
+    if sx > sy {
+        [(w / sy).max(REFERENCE_WIDTH), REFERENCE_HEIGHT]
+    } else if sy > sx {
+        [REFERENCE_WIDTH, (h / sx).max(REFERENCE_HEIGHT)]
+    } else {
+        [REFERENCE_WIDTH, REFERENCE_HEIGHT]
+    }
 }
 
 /// Project one logical-reference element to a device-pixel `UiInstance`, with
@@ -130,21 +142,21 @@ fn canvas_origin(device_size: [u32; 2], scale: f32) -> [f32; 2] {
 /// keeps sub-pixel positions. Test-only since the boot splash stopped projecting
 /// through `layout`.
 fn project_element(elem: &UiElement, device_size: [u32; 2], scale: f32) -> UiInstance {
-    let origin = canvas_origin(device_size, scale);
+    let canvas = logical_canvas_size(device_size);
     let (afx, afy) = anchor_fractions(elem.anchor);
 
     // Anchor point on the canvas, in logical-reference px, then the element's
     // own pivot (same fractions) backs the top-left out from there.
-    let anchor_x = REFERENCE_WIDTH * afx + elem.offset[0];
-    let anchor_y = REFERENCE_HEIGHT * afy + elem.offset[1];
+    let anchor_x = canvas[0] * afx + elem.offset[0];
+    let anchor_y = canvas[1] * afy + elem.offset[1];
     let logical_left = anchor_x - elem.size[0] * afx;
     let logical_top = anchor_y - elem.size[1] * afy;
 
     // Logical -> device, then snap each edge to a whole device pixel. Snapping
     // edges (not pos+size) keeps abutting elements gap-free and preserves the
     // on-screen width/height as the difference of two rounded edges.
-    let dev_left = origin[0] + logical_left * scale;
-    let dev_top = origin[1] + logical_top * scale;
+    let dev_left = logical_left * scale;
+    let dev_top = logical_top * scale;
     let dev_right = dev_left + elem.size[0] * scale;
     let dev_bottom = dev_top + elem.size[1] * scale;
 
@@ -219,13 +231,87 @@ mod tests {
     }
 
     #[test]
-    fn scale_is_uniform_and_letterboxes_on_mismatched_aspect() {
+    fn scale_is_uniform_on_mismatched_aspect() {
         // 1280x1440: x ratio 1.0, y ratio 2.0. Uniform scale takes the min, so
-        // the logo never stretches — scale is 1.0 and the canvas letterboxes
-        // vertically.
+        // nothing stretches — scale is 1.0.
         assert!(approx(device_scale([1280, 1440]), 1.0));
         // 2560x720: x ratio 2.0, y ratio 1.0 -> min 1.0.
         assert!(approx(device_scale([2560, 720]), 1.0));
+    }
+
+    #[test]
+    fn logical_canvas_is_exactly_the_reference_at_16_9() {
+        for size in [
+            [1280, 720],
+            [1920, 1080],
+            [2560, 1440],
+            [3840, 2160],
+            [1600, 900],
+            [16, 9],
+        ] {
+            assert_eq!(
+                logical_canvas_size(size),
+                [REFERENCE_WIDTH, REFERENCE_HEIGHT],
+                "{size:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn logical_canvas_widens_the_spare_axis() {
+        // Wide: height bounds the scale, width grows.
+        let [w, h] = logical_canvas_size([2560, 1080]);
+        assert!(approx(h, 720.0) && approx(w, 2560.0 / 1.5), "{w}x{h}");
+        let [w, h] = logical_canvas_size([3440, 1440]);
+        assert!(approx(h, 720.0) && approx(w, 1720.0), "{w}x{h}");
+        // Tall / narrow: width bounds the scale, height grows.
+        let [w, h] = logical_canvas_size([1080, 1920]);
+        assert!(
+            approx(w, 1280.0) && approx(h, 1920.0 * 1280.0 / 1080.0),
+            "{w}x{h}"
+        );
+        let [w, h] = logical_canvas_size([1000, 1000]);
+        assert!(approx(w, 1280.0) && approx(h, 1280.0), "{w}x{h}");
+        // Degenerate backbuffer: the reference, never an infinite extent.
+        assert_eq!(logical_canvas_size([0, 720]), [1280.0, 720.0]);
+        assert_eq!(logical_canvas_size([0, 0]), [1280.0, 720.0]);
+    }
+
+    #[test]
+    fn corner_anchors_land_on_backbuffer_corners_on_wide_and_tall_windows() {
+        for device in [[2560, 1080], [3440, 1440], [1080, 1920], [1000, 1000]] {
+            let scale = device_scale(device);
+            let (dw, dh) = (device[0] as f32, device[1] as f32);
+            let size = [100.0, 40.0];
+            let (sw, sh) = ((size[0] * scale).round(), (size[1] * scale).round());
+            let tl = project(
+                &[UiElement::panel(Anchor::TopLeft, [0.0; 2], size, [1.0; 4])],
+                device,
+            );
+            let br = project(
+                &[UiElement::panel(
+                    Anchor::BottomRight,
+                    [0.0; 2],
+                    size,
+                    [1.0; 4],
+                )],
+                device,
+            );
+            let r = tl.instances[0].rect;
+            assert!(
+                approx(r[0], 0.0) && approx(r[1], 0.0),
+                "{device:?} TL {r:?}"
+            );
+            let r = br.instances[0].rect;
+            assert!(
+                (r[0] + r[2] - dw).abs() <= 1.0 && (r[1] + r[3] - dh).abs() <= 1.0,
+                "{device:?} BR {r:?}"
+            );
+            assert!(
+                (r[2] - sw).abs() <= 1.0 && (r[3] - sh).abs() <= 1.0,
+                "{device:?} size"
+            );
+        }
     }
 
     #[test]

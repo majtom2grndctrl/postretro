@@ -1,6 +1,6 @@
 // Headless GPU proof for `AnchoredTree.background`: the UI quad pass must sample
 // the background's `uv_rect` for an image batch and fill the WHOLE backbuffer,
-// including the letterbox margins outside the 1280x720 logical canvas, with a
+// including the bands above and below a 16:9 frame at this 4:3 target, with a
 // widget drawn on top.
 //
 // CPU tests in `postretro-ui` prove the draw list (rect `[0, 0, device_w,
@@ -33,12 +33,12 @@ use super::{UiComposition, UiImageRegistry, UiPass};
 use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_staged, try_init_gpu};
 use crate::render::uploads::UploadQueue;
 
-/// 4:3 target. The 1280x720 canvas scales by 0.75 to 960x540 and letterboxes 90 px
-/// above and below, so the margin rows are the proof the background is not
-/// canvas-sized.
+/// 4:3 target. A 16:9 frame at this width is 960x540, leaving 90 px above and
+/// below, so those rows prove the background covers the backbuffer rather than a
+/// 16:9-shaped area.
 const TARGET_W: u32 = 960;
 const TARGET_H: u32 = 720;
-const LETTERBOX_ROWS: u32 = 90;
+const OUTSIDE_16_9_ROWS: u32 = 90;
 
 const KEY: &str = "test/background-stripes";
 const IMAGE_W: u32 = 16;
@@ -273,15 +273,15 @@ fn tree_background_fills_backbuffer_with_centered_cover_crop_beneath_widgets() {
         green.first()
     );
 
-    // Corners and the letterbox margins (rows outside the scaled canvas) are image
+    // Corners and the rows outside a 16:9 frame are image
     // colored: left side leans red, right side leans blue.
     let last_x = TARGET_W - 1;
     let last_y = TARGET_H - 1;
     for (x, y) in [
         (0, 0),
         (0, last_y),
-        (0, LETTERBOX_ROWS / 2),
-        (0, last_y - LETTERBOX_ROWS / 2),
+        (0, OUTSIDE_16_9_ROWS / 2),
+        (0, last_y - OUTSIDE_16_9_ROWS / 2),
     ] {
         let p = rb.at(x, y);
         assert!(
@@ -292,8 +292,8 @@ fn tree_background_fills_backbuffer_with_centered_cover_crop_beneath_widgets() {
     for (x, y) in [
         (last_x, 0),
         (last_x, last_y),
-        (last_x, LETTERBOX_ROWS / 2),
-        (last_x, last_y - LETTERBOX_ROWS / 2),
+        (last_x, OUTSIDE_16_9_ROWS / 2),
+        (last_x, last_y - OUTSIDE_16_9_ROWS / 2),
     ] {
         let p = rb.at(x, y);
         assert!(
@@ -303,14 +303,14 @@ fn tree_background_fills_backbuffer_with_centered_cover_crop_beneath_widgets() {
     }
 
     // Away from the crop edge and the red/blue seam (both blend across half a
-    // texel, 40 px), the stripes read as their pure colors, in the letterbox
-    // margins as well as the canvas band.
+    // texel, 40 px), the stripes read as their pure colors, in the outer bands
+    // as well as the middle.
     let half_texel = PX_PER_TEXEL / 2;
     let seam = TARGET_W / 2;
     let rows = [
-        LETTERBOX_ROWS / 2,
+        OUTSIDE_16_9_ROWS / 2,
         TARGET_H / 2 - 130,
-        last_y - LETTERBOX_ROWS / 2,
+        last_y - OUTSIDE_16_9_ROWS / 2,
     ];
     for y in rows {
         for x in [half_texel + 20, 200, seam - half_texel - 20] {

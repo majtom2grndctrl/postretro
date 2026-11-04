@@ -59,6 +59,7 @@ if "--flush" in sys.argv:
 
 def main():
     static_door = "--static-door" in sys.argv
+    no_door = "--no-door" in sys.argv
     o = [
         "// Game: Postretro",
         "// Format: Standard",
@@ -92,7 +93,7 @@ def main():
     if static_door:
         o += box("closet_door_static", DOOR_LO, DOOR_HI, DOOR)
     o.append("}")
-    if not static_door:
+    if not static_door and not no_door:
         o += [
             "// Door: closed at waypoint 0, slides up into the lintel.",
             "{",

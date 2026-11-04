@@ -242,6 +242,7 @@ struct AnimationDescriptor {
 // Uploaded by `LightBridge::update → Renderer::upload_bridge_descriptors`.
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
+@group(3) @binding(30) var pdd_tiles: texture_2d_array<f32>; // SPIKE HACK
 
 // Group 4 — baked directional lightmap (static direct lighting). Bindings 0,
 // 1 and 6 are the cell-block pool, holding each block at the pool layer and

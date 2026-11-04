@@ -24,6 +24,21 @@ pub const BIND_DYNAMIC_DIRECT_PARAMS: u32 = BIND_SH_DIRECT_ATLAS + 1;
 /// layout can expose it to the billboard vertex stage without changing mesh
 /// bindings.
 pub const BIND_BILLBOARD_DIRECT_SCATTER: u32 = BIND_DYNAMIC_DIRECT_PARAMS + 1;
+
+// SPIKE HACK (per-direction-depth): tile binding and the T word in `_pad0`.
+pub const BIND_PDD_TILES: u32 = 30;
+pub const PDD_ATLAS_EDGE: u32 = 2048;
+static PDD_STATE: std::sync::Mutex<Option<(u32, Option<[u32; 3]>)>> = std::sync::Mutex::new(None);
+
+/// `dims` names the grid a sidecar was baked for. `None` is the Q2 cost mode:
+/// tiles are indexed by stored SH slot and hold synthetic values.
+pub fn pdd_publish(tile: u32, dims: Option<[u32; 3]>) {
+    *PDD_STATE.lock().unwrap() = Some((tile, dims));
+}
+
+fn pdd_env_f32(key: &str) -> Option<f32> {
+    std::env::var(key).ok().map(|v| v.parse().unwrap())
+}
 pub const DYNAMIC_DIRECT_PARAMS_SIZE: usize = 16;
 
 /// Byte size of `ShGridInfo` — six `vec4` slots to satisfy std140 alignment
@@ -103,6 +118,16 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
     bytes[16..20].copy_from_slice(&params.cell_size[0].to_ne_bytes());
     bytes[20..24].copy_from_slice(&params.cell_size[1].to_ne_bytes());
     bytes[24..28].copy_from_slice(&params.cell_size[2].to_ne_bytes());
+    // SPIKE HACK: `_pad0` carries the tile size; a sidecar for another grid is fatal.
+    if let Some((tile, dims)) = *PDD_STATE.lock().unwrap()
+        && params.present
+    {
+        if let Some(dims) = dims {
+            assert_eq!(dims, params.grid_dimensions, "[pdd] tile sidecar grid mismatch");
+        }
+        bytes[28..32].copy_from_slice(&tile.to_ne_bytes());
+        bytes[92..96].copy_from_slice(&u32::from(dims.is_none()).to_ne_bytes());
+    }
     // grid_dimensions vec3<u32> at 32..44, _pad1 at 44..48.
     bytes[32..36].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());
     bytes[36..40].copy_from_slice(&params.grid_dimensions[1].to_ne_bytes());
@@ -127,6 +152,14 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
     bytes[80..84].copy_from_slice(&(params.probe_occlusion_enabled as u32).to_ne_bytes());
     bytes[84..88].copy_from_slice(&params.tiles_per_layer.to_ne_bytes());
     bytes[88..92].copy_from_slice(&params.atlas_layer_count.to_ne_bytes());
+    // SPIKE HACK: diagnostic overrides. `_pad1` is the visibility floor; the unread
+    // `atlas_tile_rows` word is the bias fraction plus one, so a zero bias stays set.
+    if let Some(v) = pdd_env_f32("POSTRETRO_PDD_MINVIS") {
+        bytes[44..48].copy_from_slice(&v.to_ne_bytes());
+    }
+    if let Some(v) = pdd_env_f32("POSTRETRO_PDD_BIAS") {
+        bytes[68..72].copy_from_slice(&(v + 1.0).to_ne_bytes());
+    }
     bytes
 }
 

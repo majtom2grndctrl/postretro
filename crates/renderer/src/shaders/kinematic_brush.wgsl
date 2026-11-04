@@ -133,6 +133,7 @@ struct ShGridInfo {
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
+@group(4) @binding(30) var pdd_tiles: texture_2d_array<f32>; // SPIKE HACK
 @group(4) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;
 
 struct DynamicDirectParams {

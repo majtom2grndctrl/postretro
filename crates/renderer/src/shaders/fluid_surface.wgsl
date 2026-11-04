@@ -105,6 +105,7 @@ struct AnimationDescriptor {
 @group(3) @binding(12) var<storage, read> anim_samples: array<f32>;
 @group(3) @binding(13) var<storage, read> scripted_light_descriptors: array<AnimationDescriptor>;
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
+@group(3) @binding(30) var pdd_tiles: texture_2d_array<f32>; // SPIKE HACK
 // Baked direct SH. Fluid takes baked direct from here per vertex (`vs_main`), never from
 // the VERTEX-only billboard scatter volume (binding 17).
 @group(3) @binding(15) var sh_direct_atlas: texture_2d_array<f32>;

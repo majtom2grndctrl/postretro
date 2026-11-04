@@ -224,6 +224,19 @@ pub(super) fn append_shared_bind_group_layout_entries(
         },
         count: None,
     });
+    // SPIKE HACK: per-direction depth tiles.
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: postretro_render_cpu::sh_volume::BIND_PDD_TILES,
+        visibility: wgpu::ShaderStages::VERTEX
+            | wgpu::ShaderStages::FRAGMENT
+            | wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+        count: None,
+    });
 }
 
 pub(super) fn mesh_dynamic_direct_params_layout_entry() -> wgpu::BindGroupLayoutEntry {

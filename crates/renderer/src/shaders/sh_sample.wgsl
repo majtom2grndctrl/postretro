@@ -9,7 +9,12 @@ const SH_AFFINITY_FACTOR: u32 = 4u;
 
 fn sh_probe_depth_bias() -> f32 {
     let cell_min = min(min(sh_grid.cell_size.x, sh_grid.cell_size.y), sh_grid.cell_size.z);
-    return max(cell_min, 0.0) * SH_DEPTH_BIAS_CELL_FRACTION;
+    // SPIKE HACK: bias override, stored plus one in the unread `atlas_tile_rows` word.
+    var fraction = SH_DEPTH_BIAS_CELL_FRACTION;
+    if (sh_grid.atlas_tile_rows != 0u) {
+        fraction = bitcast<f32>(sh_grid.atlas_tile_rows) - 1.0;
+    }
+    return max(cell_min, 0.0) * fraction;
 }
 
 fn sh_depth_moment_pair(packed: vec4<u32>) -> vec2<f32> {
@@ -24,20 +29,50 @@ fn sh_probe_indirection(idx: vec3<i32>) -> ShProbeIndirection {
     return sh_indirection_from_moment_texel(textureLoad(sh_depth_moments, idx, 0));
 }
 
+// SPIKE HACK (per-direction-depth): `_pad0` is the tile size, 0 for today's path.
+// Tiles sit in the probes' linear order, one bordered tile each, bilinear-sampled.
+fn sh_pdd_moments(idx: vec3<i32>, packed: vec4<u32>, dir: vec3<f32>) -> vec2<f32> {
+    let t = sh_grid._pad0;
+    let stride = t + 2u;
+    let atlas = textureDimensions(pdd_tiles);
+    let per_row = atlas.x / stride;
+    var tile = u32(idx.x)
+        + sh_grid.grid_dimensions.x * (u32(idx.y) + sh_grid.grid_dimensions.y * u32(idx.z));
+    // Q2 cost mode: one tile per stored SH slot.
+    if (sh_grid._pad3 != 0u) {
+        tile = sh_indirection_from_moment_texel(packed).slot;
+    }
+    let layer = tile / (per_row * per_row);
+    let local = tile - layer * per_row * per_row;
+    let origin = vec2<u32>(local % per_row, local / per_row) * stride;
+    let texel = vec2<f32>(origin) + vec2<f32>(1.0) + oct_encode_unquantized(dir) * f32(t);
+    return textureSampleLevel(pdd_tiles, sh_atlas_sampler, texel / vec2<f32>(atlas), i32(layer), 0.0).xy;
+}
+
 fn sh_corner_depth_visibility(idx: vec3<i32>, sample_world: vec3<f32>, is_valid: bool) -> f32 {
     if (!is_valid) {
         return 0.0;
     }
 
-    let moments = sh_depth_moment_pair(textureLoad(sh_depth_moments, idx, 0));
+    let probe_world = sh_grid.grid_origin + vec3<f32>(idx) * sh_grid.cell_size;
+    let to_sample = sample_world - probe_world;
+    let distance = length(to_sample);
+    let packed = textureLoad(sh_depth_moments, idx, 0);
+    var moments = sh_depth_moment_pair(packed);
+    if (sh_grid._pad0 != 0u && distance > 1.0e-4) {
+        moments = sh_pdd_moments(idx, packed, to_sample);
+    }
     let mean = moments.x;
     let mean2 = moments.y;
     let variance = max(mean2 - mean * mean, SH_DEPTH_MIN_VARIANCE_M2);
-    let probe_world = sh_grid.grid_origin + vec3<f32>(idx) * sh_grid.cell_size;
-    let distance = length(sample_world - probe_world);
     let delta = max(distance - mean - sh_probe_depth_bias(), 0.0);
     let visibility = select(1.0, variance / (variance + delta * delta), delta > 0.0);
-    return clamp(visibility, SH_DEPTH_MIN_VISIBILITY, 1.0);
+    // SPIKE HACK: visibility floor override in `_pad1`.
+    var floor_visibility = SH_DEPTH_MIN_VISIBILITY;
+    if (sh_grid._pad1 != 0u) {
+        floor_visibility = bitcast<f32>(sh_grid._pad1);
+    }
+    return clamp(visibility, floor_visibility, 1.0);
 }
 
 struct ShDirPair {

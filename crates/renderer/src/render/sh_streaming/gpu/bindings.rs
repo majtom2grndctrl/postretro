@@ -60,6 +60,10 @@ pub(super) fn create_sample_bind_groups(
             resource: wgpu::BindingResource::TextureView(&depth_view),
         },
         wgpu::BindGroupEntry {
+            binding: postretro_render_cpu::sh_volume::BIND_PDD_TILES,
+            resource: wgpu::BindingResource::TextureView(&sh.pdd_tiles_view),
+        },
+        wgpu::BindGroupEntry {
             binding: BIND_SH_DIRECT_ATLAS,
             resource: wgpu::BindingResource::TextureView(direct_view),
         },

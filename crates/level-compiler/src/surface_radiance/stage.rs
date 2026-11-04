@@ -73,6 +73,7 @@ pub(crate) fn bake_sh_base(
     let lights = static_light_refs(ctx);
     let plan = LayerPlan::new(&lights, &light_reach, embedded);
     let layout = probe_grid_layout(ctx, config);
+    crate::sh_bake::pdd::run(ctx, &layout); // SPIKE HACK
     #[cfg(test)]
     let _held = [
         crate::live_bytes::hold_vec("per-light metadata", &lights),

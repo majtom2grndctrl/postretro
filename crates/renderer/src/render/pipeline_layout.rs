@@ -522,7 +522,8 @@ pub(crate) fn billboard_pipeline_vertex_sampled_texture_count() -> u32 {
 pub(crate) const FORWARD_BIND_GROUP_COUNT: usize = 7;
 /// Forward group 6: the VERTEX-only lightmap block table.
 pub(crate) const LIGHTMAP_BLOCK_TABLE_GROUP: u32 = 6;
-pub(crate) const FORWARD_SAMPLED_TEXTURE_BUDGET: u32 = 16;
+// SPIKE HACK: 17 for the tile texture. Metal's ceiling is 16.
+pub(crate) const FORWARD_SAMPLED_TEXTURE_BUDGET: u32 = 17;
 
 pub(crate) fn forward_bind_group_layout_entries(
     cube_array_supported: bool,

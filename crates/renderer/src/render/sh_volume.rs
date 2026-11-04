@@ -68,6 +68,7 @@ const PROBE_IRRADIANCE_PLACEHOLDER: [f32; 3] = [0.25, 0.25, 0.25];
 /// - **total**: one `Rgba16Float` texture with both sampled and storage views.
 ///   Consumers sample this texture; the compose pass writes it each frame.
 pub struct ShVolumeResources {
+    pub pdd_tiles_view: wgpu::TextureView, // SPIKE HACK
     pub bind_group: wgpu::BindGroup,
     pub bind_group_layout: wgpu::BindGroupLayout,
     /// Mesh group-4 SUPERSET bind group: every entry of `bind_group` PLUS the
@@ -394,6 +395,7 @@ impl ShVolumeResources {
             billboard_direct_scatter: billboard_direct_scatter_section,
             animated_billboard_direct_scatter_delta: animated_billboard_direct_scatter_delta_section,
         } = sections;
+        let pdd_tiles_view = crate::render::pdd_tiles::create_view(device, queue); // SPIKE HACK
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SH Volume Bind Group Layout"),
             entries: &sh_bind_group_layout_entries(),
@@ -799,6 +801,10 @@ impl ShVolumeResources {
                 resource: wgpu::BindingResource::TextureView(&direct.atlas_view),
             },
             wgpu::BindGroupEntry {
+                binding: postretro_render_cpu::sh_volume::BIND_PDD_TILES,
+                resource: wgpu::BindingResource::TextureView(&pdd_tiles_view),
+            },
+            wgpu::BindGroupEntry {
                 binding: BIND_BILLBOARD_DIRECT_SCATTER,
                 resource: wgpu::BindingResource::TextureView(
                     &billboard_direct_scatter.sampled_view,
@@ -847,6 +853,7 @@ impl ShVolumeResources {
             oor_warned: false,
         };
         Self {
+            pdd_tiles_view,
             bind_group,
             bind_group_layout,
             mesh_bind_group,

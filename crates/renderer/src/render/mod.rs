@@ -3,6 +3,7 @@
 mod animated_direct_sh_compose;
 mod animated_lightmap;
 mod billboard_direct_scatter;
+mod pdd_tiles; // SPIKE HACK
 mod billboard_direct_scatter_compose;
 mod billboard_ghost;
 mod bloom;

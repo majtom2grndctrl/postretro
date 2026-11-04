@@ -34,6 +34,7 @@ pub(crate) use sh_math::pack_octahedral_irradiance_tile;
 pub(crate) use trace::{Hit, bounce_hit, gather_hit, segment_clear};
 
 pub(crate) use animation::animation_descriptor_for_light;
+pub(crate) mod pdd; // SPIKE HACK
 use probe::{bake_probe_with_source, probe_gather_directions};
 use sh_math::pack_octahedral_irradiance_atlas;
 

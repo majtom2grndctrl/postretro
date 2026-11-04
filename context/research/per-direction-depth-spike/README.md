@@ -60,3 +60,72 @@ From `spike/memory-measure-tour`, `context/plans/drafts/E20--memory-visibility/m
 ## Results
 
 Add a `## Windows` section here and push to this branch.
+
+## Windows
+
+Q0 and Q1 are measured. The owner has not yet judged the captures, so none of this is a pass. Q2 and Q3 are not done.
+
+**Setup.** NVIDIA GeForce GTX 1660 SUPER, driver 621.01, Vulkan, Windows 11. Base 52938ca84. `dev` profile, feature `capture`. Captures use `POSTRETRO_SH_STREAMING=sync-proof` and `force_full_resident_sh_compose`, 960×540, the views in `kit/final.py`. Scripts are in `kit/win/`, run from the worktree root:
+
+```bash
+python3 context/research/per-direction-depth-spike/kit/win/closet.py gen
+bash context/research/per-direction-depth-spike/kit/win/q1.sh <scratch dir> tiles
+bash context/research/per-direction-depth-spike/kit/win/q1.sh <scratch dir> run
+```
+
+**Instrument.** Frame mean is Rec. 709 luma, which reproduces the Mac's four PNGs exactly. Capture FOV is horizontal. The floor rows are not the Mac's formula: this script reads 20.1 / 16.1 / 13.9 and 11.0 / 1.8 / 0.0 on the Mac's PNGs, against 23 / 19 / 17 and 13 / 2 / 0 in the table above. All floor rows below use this script, on both machines' images.
+
+### Q0: the reference glows here
+
+| Build | Station 3 mean | Station 2 mean | Floor 0.04 m | 0.26 m | 0.48 m |
+|---|---|---|---|---|---|
+| Mac PNGs, mover door | 6.60 | 6.83 | 20.1 | 16.1 | 13.9 |
+| Windows, mover door | 6.66 | 6.87 | 20.1 | 16.0 | 13.9 |
+| Mac PNGs, static door | 0.50 | 0.15 | 11.0 | 1.8 | 0.0 |
+| Windows, static door | 0.50 | 0.15 | 11.0 | 1.8 | 0.0 |
+
+### Q1: per-direction depth
+
+The sheet for the owner is `captures-win/verdict-sheet.png`: the static reference at today / 4×4 / 6×6 / 8×8, stations 2 and 3, at true brightness and 8× gain. Individual captures are beside it.
+
+Static-door reference, 256 rays:
+
+| Sampler | Station 3 mean | Station 2 mean | Floor 0.04 m | 0.26 m | 0.48 m |
+|---|---|---|---|---|---|
+| Today | 0.50 | 0.15 | 11.0 | 1.8 | 0.0 |
+| 4×4 | 0.13 | 0.03 | 1.3 | 0.0 | 0.0 |
+| 6×6 | 0.05 | 0.01 | 0.7 | 0.0 | 0.0 |
+| 8×8 | 0.04 | 0.01 | 0.6 | 0.0 | 0.0 |
+
+Measured controls:
+
+- **Tiles off.** The patched binary is byte-identical to the baseline on all six static-door and no-door captures.
+- **Isotropic control.** Every texel holds the probe's own single mean, read through the same tile path. The glow returns exactly: 0.50 / 0.15, floor 11.0 / 1.8 / 0.0. So direction is what removes the leak, not the tile path. This is the first experimental support for the cause the README inferred from reading the code.
+- **Open doorway.** With no door, frame means are 29.86 / 15.03–15.04 at every size, against 29.86 / 15.04 today, and the floor is unchanged at 20.0 / 15.8 / 13.7. The worst view is 8×8 at station 2: 445 of 518,400 pixels move by more than 2 levels, with a maximum of −8.7. No dark band is visible in the captures.
+- **Noise.** At 1,024 rays, frame means and floors move by at most 0.01. At most 345 pixels move by more than 2 levels (4×4, station 3). At 256 rays an 8×8 tile has at least 1 ray per texel and no empty texel.
+
+**What remains.** At 8× gain a thin outline stays on the door edges and the floor strip at every size, thinnest at 6×6 and 8×8.
+
+Diagnostic at 6×6, for cause only, not a proposed fix:
+
+| Variant | Station 3 mean | Station 2 mean | Floor 0.04 m |
+|---|---|---|---|
+| Shipping floor 0.03, bias 5% | 0.05 | 0.01 | 0.7 |
+| Floor 0.003 | 0.03 | 0.01 | 0.2 |
+| Bias 0 | 0.05 | 0.01 | 0.7 |
+| Floor 0.003 and bias 0 | 0.03 | 0.01 | 0.1 |
+
+Most of the floor residual is `SH_DEPTH_MIN_VISIBILITY`. The bias alone changes nothing. The frame mean stops at 0.03, so something else holds the rest; its source is not isolated. With both changes the open doorway reads the same frame means as the shipping constants.
+
+### Hacks in this code
+
+Every site carries a `SPIKE HACK` comment.
+
+- **17th sampled texture.** Tiles are a new binding (30) on the shared SH layout, and `FORWARD_SAMPLED_TEXTURE_BUDGET` is raised from 16 to 17. No slot was borrowed. **Metal's ceiling is 16, so this cannot run on the Mac, and all Q2 figures are 1660-only until a slot is found.**
+- **Sidecar, no format work.** `prl-build` writes tiles beside the map when `PDD_OUT` is set, from its own depth-only trace (`sh_bake/pdd.rs`). Radiance is untouched, so the 1,024-ray runs vary depth only. The engine reads the file named by `POSTRETRO_PDD_TILES` and aborts if its grid differs from the level's.
+- **No streaming.** The closet's tiles are one resident atlas in linear probe order.
+- **Spare uniform words.** `ShGridInfo._pad0` holds the tile size, `_pad1` the floor override, `_pad3` the Q2 mode, and the unread `atlas_tile_rows` the bias override.
+- **Tile format.** `Rg16Float`, one bordered tile per probe, bilinear through the existing atlas sampler. A ray is binned into its texel, with no cosine-weighted filter. E[d²] in f16 has the same precision limit as today's moments.
+- **Fixture.** `gen_closet.py` gained `--no-door`.
+
+IP: every probe keeps a continuous weight. No probe is excluded, and no mask or binary visibility decision was added.

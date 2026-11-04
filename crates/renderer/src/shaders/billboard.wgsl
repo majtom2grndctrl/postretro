@@ -137,6 +137,7 @@ struct AnimationDescriptor {
 // path deliberately skips backface rejection because sprites have no stable
 // geometric surface normal.
 @group(3) @binding(14) var sh_depth_moments: texture_3d<u32>;
+@group(3) @binding(30) var pdd_tiles: texture_2d_array<f32>; // SPIKE HACK
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (binding 15) on the SHARED `ShVolumeResources` bind
 // group layout — declared here at group 3, the same group billboard binds

@@ -228,6 +228,7 @@ struct ShGridInfo {
 @group(4) @binding(2) var sh_atlas_sampler: sampler;
 @group(4) @binding(10) var<uniform> sh_grid: ShGridInfo;
 @group(4) @binding(14) var sh_depth_moments: texture_3d<u32>;
+@group(4) @binding(30) var pdd_tiles: texture_2d_array<f32>; // SPIKE HACK
 // Baked static direct SH atlas (BC6H-at-rest, hardware-decoded to f32). Bound at
 // `BIND_SH_DIRECT_ATLAS` (group 4 binding 15) on the mesh group-4 superset by
 // render/sh_volume.rs. Same octahedral tile geometry as `sh_total_atlas`, so it

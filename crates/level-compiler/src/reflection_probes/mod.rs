@@ -7,6 +7,7 @@ mod animated_direct;
 mod authored;
 mod box_fit;
 mod capture;
+mod capture_bounds;
 mod capture_exclusion;
 mod capture_fill;
 mod capture_point;
@@ -26,6 +27,10 @@ mod shading;
 mod share;
 mod stage_key;
 
+#[cfg(test)]
+mod capture_exclusion_held_tests;
+#[cfg(test)]
+mod capture_exclusion_oracle_tests;
 #[cfg(test)]
 mod capture_exclusion_test_fixtures;
 #[cfg(test)]
@@ -117,7 +122,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// each kept contact candidate's faces, planes and sides.
 /// 12: an excluded hull's exit reads the neighbour the ray is inside first,
 /// kept solid winning a tie, not the first excluded one in brush order.
-const STAGE_VERSION: u32 = 12;
+/// 13: kept solid passed over at an exit for a nearer excluded neighbour
+/// bounds every later read: past its depth the ray takes the leak guard.
+const STAGE_VERSION: u32 = 13;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {

@@ -16,7 +16,7 @@ Owner-reviewed patent avoidance (`ip-check.md`). Paste the brief's first Decisio
 
 Places where source, or another row of the brief, disagrees with the brief's text, or where the brief leaves a constraint unpriced.
 
-- **Bake row 1 denominator (clarification).** The row says "divided by its baked visibility"; the Path says to decide escalation jointly so an early-out does not price static blocking into one side only. The two differ in one case: the baked trace agrees all-clear at 4 samples (v = 1.0) while the posed trace splits and escalates. Read literally, q then carries static blocking the baked v skipped. The clarification takes the Path's side: the denominator is the static count from the same joint sample set. Early-outs fire only on full agreement, so q ≤ 1 under either reading; this is about the asymmetry, not a bound. `soft_visibility_with` (`lightmap_bake.rs:1107`) takes one trace, so a two-trace function is new.
+- **Bake row 1 denominator (clarification).** The row says "divided by its baked visibility"; the Path says to decide escalation jointly so an early-out does not price static blocking into one side only. The two differ in one case: the baked trace agrees all-clear at 4 samples (v = 1.0) while the posed trace splits and escalates. Read literally, q then carries static blocking the baked v skipped. **Owner ruling, 2026-11-03:** the denominator is the static count from the same joint sample set. The deciding reason is the multiply Decision: q must hold only the mover's own effect, or two movers on one light count a hidden static occluder twice. Early-outs fire only on full agreement, so q ≤ 1 under either reading; this is about the asymmetry, not a bound. A fully sealed mover stores q = 0 either way. `soft_visibility_with` (`lightmap_bake.rs:1107`) takes one trace, so a two-trace function is new.
 - **Direct memo key.** The Decision says "shaped like `mover_light_probes`", but that key folds `geometry_content_hash`, which serializes `GeometryResult` with texture names and indices, so a retexture moves it. Bake row 12 needs a retexture to re-bake no direct entry. The q key folds an occlusion-only geometry hash (positions, indices, solidity, as the SDF key does) and the light's seed axis, which the gate key lacks.
 - **Compose binding walls (unpriced by the brief).** Engine limit is the default 8 storage buffers per stage. Pass B and `sh_compose` use 8 of 8; Pass A uses 6 of 8. `GridDims` is exactly 64 KiB with no headroom. Proposal: one renderer-owned channel storage buffer per pass, holding entries, q bytes, tiles and a per-mover t block at its head. Freeing that slot in Pass B and `sh_compose` means merging two read-only `u32` arrays; task 8 picks the pair and checks their lifetimes match. The engine limit is not raised.
 - **"Force t through the dev override."** No override exists yet, and format work waits on the bounce gate. See the slice method below.
@@ -55,17 +55,28 @@ Runtime:
 
 ## Delegated answers
 
+Adopted by the owner, 2026-11-03. Two are firm leans that a slice still has to confirm.
+
 - **Section name and widths:** `MoverProbeChannel` (`build_pipeline.md` already uses it), id 57, widths as the brief's Wire format table.
 - **Clamp rule:** per-texel `max(0)` on the summed base tile, before id-27 deltas add. The tile stores per-direction irradiance and the sampler's weights are convex, so non-negative texels give non-negative irradiance in every direction.
-- **q for a valid probe inside a posed brush:** open; task 3 decides it against Manual row 4.
-- **Posed brushes as patches:** open; task 4 decides it against Bake row 3.
+- **q for a valid probe inside a posed brush:** test it without the brush containing it, keeping the mover's other brushes as occluders. Nothing lives inside a brush; these probes feed only that mover's own faces. Dark drags lit faces down, and full ignores the other brushes. Task 3 confirms against Manual row 4.
+- **Posed brushes as patches:** yes, with their albedo, unless task 4 prices them out. The Problem asks for bounce that matches a bake with the mover in place, and a black door leaves a dark halo on its bright side. Task 4 confirms against Bake row 3 and reports the cost.
+
+## Owner answers
+
+Adopted 2026-11-03.
+
+- `light_ramp_start` / `light_ramp_end`: keep the names.
+- Bake row 4's "no brighter" is proved on tile mean. A posed wall can correctly brighten one direction.
+- If the static reference closet glows, direction-aware probe visibility comes first, as its own spec, and this brief pauses. The leak is foundation work that hits every thin wall. Task 1 still stops for the owner's verdict on the captures.
+- Bounce cost gate: still open; the owner sets it from task 4's report. Proposed shape: gate mainly on warm one-mover edit time, with cold growth held to a ratio of SH Bake.
 
 ## Risks for the owner's skim
 
-- **Global later-bounce drift (highest).** Later bounces carry a mover's effect across every connected surface. A flat or dark tile's round-trip error can be near zero, and under `--uncompressed-irradiance` the bar is exact. So the affected domain could spread well past the mover, which breaks Bake row 3's "beyond the doorway's reach store no entry" and inflates bytes. Task 4 measures it. If the bar admits far probes, I stop and report; the bar is a Decision and I won't change it.
+- **Global later-bounce drift (highest).** Later bounces carry a mover's effect across every connected surface. A flat or dark tile's round-trip error can be near zero, and under `--uncompressed-irradiance` the bar is exact. So the affected domain could spread well past the mover, which breaks Bake row 3's "beyond the doorway's reach store no entry" and inflates bytes. Task 4 measures it. If the bar admits far probes, I stop and report. The bar is a Decision, and a perceptual floor on dark or flat tiles would change it, so that is the owner's call.
 - **Gate prediction before the domain is known.** The base gate runs before any ray, but stored bounce bytes depend on the derived domain. An all-valid-probes bound could refuse maps that would fit: the hallway has 11 movers. Task 4 reports the bound against the measured peak.
 - **Bake row 3's reference.** A static door changes faces, patches and cells, not only occlusion. I expect closet probes to agree, since both are near dark. If they miss the BC6H bar, I stop and report without relaxing it.
-- **Bake row 4's "no brighter".** Posed walls as patches could brighten one direction near the doorway. The row is proved on tile mean unless the owner wants per-texel.
+- **The door's closet face (Manual 3).** That face also samples bright-side probes, with backface rejection off and mover-absent depth moments. A bright-side probe looking toward the door sees the door's lit face, so the closet face could read bright even with correct channel data. This is `research.md`'s leak-across-walls risk. Task 4's slice PRL is the first evidence; if it glows, I stop and report.
 
 ## AC-to-proof
 

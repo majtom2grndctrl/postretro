@@ -3,6 +3,7 @@
 mode: resumable
 status: blocked
 blocked on: direction-aware probe visibility, its own spec (owner verdict 2026-11-04, see Leak diagnosis result)
+returned to drafts: 2026-11-04, by the owner. Promote it again before resuming; this plan and its captures stay as the record.
 read at: 44881f797
 
 Feature branch: `feat/mover-light-flow--probe-channel`. The brief was claimed on `main` at 44881f797. Every symbol cited by Decisions and Path was re-read at that commit. Since the brief's 33ac590, the bake, format and physics crates changed only in `reflection_probes`, and `frame_loop/mod.rs` kept its mover sites. No Decision premise is false. No Acceptance row needs restatement.

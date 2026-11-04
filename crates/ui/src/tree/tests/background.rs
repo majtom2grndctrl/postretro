@@ -71,24 +71,26 @@ fn assert_uv(actual: [f32; 4], expected: [f32; 4]) {
 }
 
 #[test]
-fn background_rect_covers_the_device_backbuffer_not_the_letterboxed_canvas() {
-    // 1280x1024 letterboxes the 1280x720 canvas 152 px down from the top; a
-    // canvas-sized image would leave bands above and below.
+fn background_rect_covers_the_device_backbuffer_at_any_aspect() {
+    // 1280x1024 is taller than 16:9; a 16:9-shaped image would leave bands
+    // above and below.
     let data = fresh(&background_tree(Some(KEY)), [1280, 1024], &sized_images());
     let background = background_op(&data).expect("background is paint op 0");
     assert_eq!(background.rect, [0.0, 0.0, 1280.0, 1024.0]);
     let uw = 1350.0 / 1920.0;
     assert_uv(background.uv_rect, [(1.0 - uw) / 2.0, 0.0, uw, 1.0]);
 
-    // The root itself still sits inside the letterboxed canvas.
+    // The bottom-anchored root sits 40 px above the backbuffer's real bottom
+    // edge (scale 1.0), independent of the background.
     let root_quad = data.quads.instances[0];
-    assert!(
-        root_quad.rect[1] >= 152.0,
-        "root quad must stay on the canvas, got {:?}",
+    assert_eq!(
+        root_quad.rect[1] + root_quad.rect[3],
+        1024.0 - 40.0,
+        "root quad anchors to the backbuffer bottom, got {:?}",
         root_quad.rect
     );
 
-    // Pillarboxed ultrawide: the rect spans the full width too.
+    // Ultrawide: the rect spans the full width too.
     let wide = fresh(&background_tree(Some(KEY)), [2560, 1080], &sized_images());
     let background = background_op(&wide).expect("background is paint op 0");
     assert_eq!(background.rect, [0.0, 0.0, 2560.0, 1080.0]);

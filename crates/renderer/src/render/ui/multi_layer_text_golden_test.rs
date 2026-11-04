@@ -35,7 +35,7 @@ use crate::render::gpu_test_harness::{GpuCtx, Readback, read_texture_rgba8_stage
 use crate::render::uploads::UploadQueue;
 
 /// Offscreen target = the EXACT 1280x720 logical-reference canvas. At this size
-/// `layout::device_scale` is 1.0 with a zero letterbox origin, so a `TopLeft`
+/// `layout::device_scale` is 1.0 and the logical canvas is the target, so a `TopLeft`
 /// anchored tree's `offset` maps 1:1 to device pixels and `font_size` is its
 /// device size. That makes the per-band scan geometry below predictable instead of
 /// depending on a sub-1.0 scale (the `splash_golden_test` 1:1 rationale). 1280*4 =

@@ -24,8 +24,8 @@ impl UiTree {
     /// outer taffy nodes in lockstep; private visual descendants (such as a
     /// slider's track and readout) remain inside that outer focus rect.
     ///
-    /// Uses the SAME device-pixel projection as the draw (`project_rect`,
-    /// `canvas_origin`, `device_scale`) so a hit lands on exactly the rect drawn.
+    /// Uses the SAME device-pixel projection as the draw (`placement`,
+    /// `project_rect`) so a hit lands on exactly the rect drawn.
     /// Assumes layout is already computed for `device_size` (the caller's gate ran
     /// the compute). Pure read-back — no taffy mutation, no GPU.
     ///
@@ -46,11 +46,7 @@ impl UiTree {
         cell_values: &CellValues,
     ) -> FocusRectList {
         let placement = self.placement(device_size);
-        let (root_origin, scale, canvas_origin) = (
-            placement.root_origin,
-            placement.scale,
-            placement.canvas_origin,
-        );
+        let (root_origin, scale) = (placement.root_origin, placement.scale);
 
         let mut out = FocusRectList {
             initial_focus: descriptor.initial_focus.clone(),
@@ -69,7 +65,6 @@ impl UiTree {
             &mut tablists,
             root_origin,
             scale,
-            canvas_origin,
             &mut z,
             &mut out,
             slot_values,
@@ -94,7 +89,6 @@ impl UiTree {
         tablists: &mut usize,
         ref_origin: [f32; 2],
         scale: f32,
-        canvas_origin: [f32; 2],
         z: &mut u32,
         out: &mut FocusRectList,
         slot_values: &HashMap<String, SlotValue>,
@@ -123,7 +117,7 @@ impl UiTree {
             id.map(|id| (id, neighbors, interaction))
         });
         if let Some((id, neighbors, interaction)) = stop {
-            let rect = project_rect(ref_origin, layout, scale, canvas_origin);
+            let rect = project_rect(ref_origin, layout, scale);
             let rect_index = out.rects.len();
             // M13 G2: resolve the widget's a11y `selected`/`checked` predicates (if
             // any) to 0.0/1.0 and read its `disabled` bit. These ride the readback
@@ -174,7 +168,7 @@ impl UiTree {
                     repeat: policy.repeat().map(Into::into),
                     members: Vec::new(),
                     parent: group,
-                    bounds: project_rect(ref_origin, layout, scale, canvas_origin),
+                    bounds: project_rect(ref_origin, layout, scale),
                     axis: match widget {
                         Widget::VStack(_) => Some(FocusAxis::Vertical),
                         Widget::HStack(_) => Some(FocusAxis::Horizontal),
@@ -191,7 +185,7 @@ impl UiTree {
         let scroll_offset = scroll_offset(&self.scroll.states, node);
         let child_clip = match scroll_offset {
             Some(_) => {
-                let viewport = project_rect(ref_origin, layout, scale, canvas_origin);
+                let viewport = project_rect(ref_origin, layout, scale);
                 Some(clip.map_or(viewport, |clip| intersect_rects(clip, viewport)))
             }
             None => clip,
@@ -216,7 +210,6 @@ impl UiTree {
                     tablists,
                     child_origin,
                     scale,
-                    canvas_origin,
                     z,
                     out,
                     slot_values,

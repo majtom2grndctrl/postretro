@@ -44,8 +44,8 @@ impl BackgroundState {
 }
 
 /// A full-backbuffer quad sampling the cover-fit crop of an `image_size` image.
-/// The rect is device pixels `[0, 0, w, h]` from the backbuffer's top-left, not
-/// the letterboxed canvas, so no splash-color band shows at any aspect.
+/// The rect is device pixels `[0, 0, w, h]` from the backbuffer's top-left, so
+/// no splash-color band shows at any aspect.
 /// Untinted, no 9-slice margin.
 fn cover_instance(device_size: [u32; 2], image_size: [f32; 2]) -> Option<UiInstance> {
     let uv_rect = cover_uv_rect(device_size, image_size)?;

@@ -4609,14 +4609,18 @@ const hud = Tree(
   non-visual `Announce`; interactive `Button` / `Slider` (see *Operable UI*
   above) — `(props)`.
 - **Envelope:** `Tree({ anchor, offset, captureMode?, initialFocus?, textEntryTarget?, restoreOnReturn?, background? }, root)`
-  places the whole tree once on the 1280×720 logical canvas. `captureMode`
+  places the whole tree once on the window. A corner or edge anchor sits on the
+  window's corner or edge at any aspect ratio, and `center` stays centered.
+  Positions and sizes are in layout pixels. Layout scales uniformly to fit a
+  1280×720 frame in the window (exactly 1280×720 at 16:9), and a wider or
+  taller window gives the layout extra room on that side. `captureMode`
   defaults to `"passthrough"` (a HUD never captures input); `"capture"` routes
   UI input to the tree, suppresses player controls, and freezes lower UI trees.
   `restoreOnReturn` defaults to `true`: when a tree pushed above closes, focus
   returns to the control it left (see *Focus and repeat props*).
   `background: { image }` draws one UI image (the same keys as `Image`'s
-  `asset`) behind the whole tree, filling the entire window rather than the
-  1280×720 canvas. It scales to cover the window and crops the overflow, so it
+  `asset`) behind the whole tree, filling the entire window. It scales to
+  cover the window and crops the overflow, so it
   never stretches or leaves bars at any aspect ratio. It ignores `anchor` and
   `offset` and is purely decorative. If the image isn't loaded, nothing is drawn
   behind the tree. An empty `image` or any key other than `image` is an error.
@@ -4794,8 +4798,8 @@ In Luau the field is the same table: `uiImages = { ["loading/skyline"] = "ui/loa
 
 ### Image size
 
-An `Image` draws at its PNG's natural size unless you give it one, in pixels of
-the 1280×720 layout canvas:
+An `Image` draws at its PNG's natural size unless you give it one, in layout
+pixels (1280×720 at 16:9):
 
 ```typescript
 Image({ asset: "loading/skyline", width: 640, decorative: true });         // height follows the art

@@ -38,9 +38,12 @@ fn sh_pdd_moments(idx: vec3<i32>, packed: vec4<u32>, dir: vec3<f32>) -> vec2<f32
     let per_row = atlas.x / stride;
     var tile = u32(idx.x)
         + sh_grid.grid_dimensions.x * (u32(idx.y) + sh_grid.grid_dimensions.y * u32(idx.z));
-    // Q2 cost mode: one tile per stored SH slot.
-    if (sh_grid._pad3 != 0u) {
+    // Q2 cost modes: 1 is one tile per stored SH slot. 2 is the cache worst case,
+    // scattering by grid index, so it does not depend on the slots being distinct.
+    if (sh_grid._pad3 == 1u) {
         tile = sh_indirection_from_moment_texel(packed).slot;
+    } else if (sh_grid._pad3 == 2u) {
+        tile = (tile * 2654435761u) % 1000000u;
     }
     let layer = tile / (per_row * per_row);
     let local = tile - layer * per_row * per_row;

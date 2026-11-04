@@ -63,7 +63,7 @@ Add a `## Windows` section here and push to this branch.
 
 ## Windows
 
-Q0 and Q1 are measured. The owner has not yet judged the captures, so none of this is a pass. Q2 and Q3 are not done.
+All four questions are measured. The owner has not yet judged the captures, so none of this is a pass. Findings are at the end of this section.
 
 **Setup.** NVIDIA GeForce GTX 1660 SUPER, driver 621.01, Vulkan, Windows 11. Base 52938ca84. `dev` profile, feature `capture`. Captures use `POSTRETRO_SH_STREAMING=sync-proof` and `force_full_resident_sh_compose`, 960×540, the views in `kit/final.py`. Scripts are in `kit/win/`, run from the worktree root:
 
@@ -117,6 +117,75 @@ Diagnostic at 6×6, for cause only, not a proposed fix:
 
 Most of the floor residual is `SH_DEPTH_MIN_VISIBILITY`. The bias alone changes nothing. The frame mean stops at 0.03, so something else holds the rest; its source is not isolated. With both changes the open doorway reads the same frame means as the shipping constants.
 
+### Q2: forward-pass cost
+
+Hallway PRL from 2026-10-31, 1920×1080, one camera position at three yaws, 240 warmup and 600 sample frames, `POSTRETRO_GPU_TIMING=1`, feature `capture,dev-tools`. `kit/win/q2.py` interleaves configurations. Base is an unpatched build of 52938ca84. No run lost the device.
+
+`forward` in ms, mean of two runs, tiles as synthetic noise with one tile per SH slot:
+
+| View | Base | Patched, tiles off | 4×4 | 6×6 | 8×8 |
+|---|---|---|---|---|---|
+| a | 2.01 | 2.01 | 2.35 | 2.34 | 2.36 |
+| b | 3.04 | 3.06 | 3.19 | 3.20 | 3.24 |
+| c | 2.55 | 2.59 | 2.79 | 2.77 | 2.74 |
+
+- **Cost.** Tiles add 0.16–0.35 ms, or 5–17%. Tile size makes no measurable difference. Run-to-run spread reaches about 0.1 ms.
+- **Whole frame.** CPU completion stays at about 9–10 ms with no clear change.
+- **Cache control.** Scattering tiles by hashed grid index across the whole 396 MiB atlas costs the same: 2.36 / 3.16 / 2.70 against 2.34 / 3.18 / 2.69 (one run). Inferred, not measured: the cost is per-sample shader work, not memory.
+- **Real tiles.** One run with baked tiles reads 2.33 / 3.15 / 2.66 at 6×6 and 2.34 / 3.22 / 2.77 at 8×8, against 2.12 / 3.07 / 2.50 tiles off in the same batch. This agrees with the synthetic numbers.
+
+Limits: 1660 only, one hallway position, `dev` profile rather than release, and `forward` alone, though fog, fluid and billboard use the same sampler.
+
+### Q3: how many probes need a tile
+
+**Definition.** For each valid probe, compare the sampler's visibility, isotropic against tile, toward its 26 lattice neighbours at the neighbour's distance, with shipping floor and bias. A probe counts if visibility differs by more than 0.1 toward a valid neighbour. This is a full count, not a sample: a depth-only trace of 962,636 probes takes 63 s and exits before the SH gather (`PDD_Q3`), so no rebake was needed. The current map and the 10-31 PRL agree on validity for all 2,212,901 grid probes.
+
+| Tile | Probes | Share of valid | Level 0 (679,176) | Level 1 (230,137) | Level 2 (53,323) | Any neighbour, valid or not |
+|---|---|---|---|---|---|---|
+| 4×4 | 5,828 | 0.61% | 4,610 | 1,214 | 4 | 24.8% |
+| 6×6 | 16,481 | 1.71% | 13,246 | 3,211 | 24 | 29.6% |
+| 8×8 | 13,451 | 1.40% | 10,925 | 2,508 | 18 | 29.6% |
+
+The levels are `density_level`. By reading the sampler, levels 0 and 2 read one slot and level 1 reads eight corner slots; I did not convert these to a slot count. Nearly every change makes a neighbour darker: no probe got brighter by more than 0.1, because the isotropic test almost never rejects at this distance. The last column counts directions into solid, where no receiver sits, so it overstates need.
+
+**Does the flag agree with the geometry?** Each valid-neighbour direction was checked against a traced probe-to-neighbour segment.
+
+| Map, tile | Blocked directions flagged | Clear directions flagged |
+|---|---|---|
+| Closet, 4×4 | 133 of 172 (77%) | 6 of 35,330 |
+| Closet, 6×6 | 152 of 172 (88%) | 11 of 35,330 |
+| Closet, 8×8 | 160 of 172 (93%) | 10 of 35,330 |
+| Hallway, 4×4 | 5,598 of 38,268 (15%) | 3,693 of 21,847,088 |
+| Hallway, 6×6 | 13,435 of 38,268 (35%) | 18,071 of 21,847,088 |
+| Hallway, 8×8 | 16,074 of 38,268 (42%) | 13,126 of 21,847,088 |
+
+On the closet, all 35 probes with a blocked valid neighbour are flagged at every size, so the metric finds the probes that leak. On the hallway, 13,802 probes (1.43%) have a blocked valid neighbour and tiles catch a minority of those directions, and 40–57% of flags are on clear segments. Why is not isolated. A centre-line segment can be blocked by a small occluder or an edge that most of a texel's rays pass, which would make these misses harmless, but that is a guess. No leak was observed at these probes.
+
+**False flags on the real map.** Hallway captures with baked tiles against tiles off, at the three Q2 views: no pixel darkens by more than 2 levels at 6×6 or 8×8, and at most 11 of 2,073,600 pixels brighten by more than 2 (8×8). That is one room, not the map.
+
+**Sparse tiles, tested on the closet only.** `kit/win/sparse.py` keeps tiles only on Q3-flagged probes and gives every other probe its isotropic mean. With 40 of 3,780 tiles at 8×8 and 41 at 6×6, static-door captures are pixel-identical to giving every probe a tile. The no-door map keeps 23 tiles and reads 29.87 / 15.03. Sampling was not changed, so a real sparse lookup's cost is unmeasured.
+
+**Memory, computed, not measured.** Tiles for all of about 907k slots, with a 1-texel border: 125 / 221 / 346 MiB at 4×4 / 6×6 / 8×8. Flagged probes only: 0.8 / 4.0 / 5.1 MiB, before any lookup structure.
+
+### Findings
+
+Measured against the questions, pending the owner's glow verdict:
+
+- **Q1.** Per-direction moments remove most of the sampler's glow and leave the open doorway alone. The isotropic control ties the effect to direction.
+- **Q2.** About 0.2–0.35 ms on the forward pass on the 1660, independent of tile size.
+- **Q3.** About 1.4–1.7% of hallway probes change outcome. If sparse storage holds up, memory stops being the constraint.
+
+**Recommendation.** If the owner accepts the glow, take per-direction moments to `/draft-session`, with 8×8 sparse tiles as the candidate. It has the lowest residual, the best agreement with geometry, and costs the same as smaller tiles. If tiles must cover every slot, memory argues for a smaller size, and 4×4 leaves about three times the residual of 8×8.
+
+**Open before a spec:**
+
+- **A texture slot on Metal.** This build uses a 17th; Metal's limit is 16.
+- **IP review of sparse tiles.** Deciding at bake time which probes carry a tile is not a runtime visibility test, and every probe keeps a continuous weight. But it is a per-probe selection, so it needs the owner's check against `ip-check.md` before anyone builds it.
+- **Sparse lookup cost.** Unmeasured, as is sparse behaviour on the hallway.
+- **The remaining outline.** Mostly the 3% visibility floor, and the rest is unexplained.
+- **Hallway disagreement with geometry.** See Q3.
+- **Closed mover doors.** Still unsolved, as the README states: tiles are baked with movers absent.
+
 ### Hacks in this code
 
 Every site carries a `SPIKE HACK` comment.
@@ -124,6 +193,8 @@ Every site carries a `SPIKE HACK` comment.
 - **17th sampled texture.** Tiles are a new binding (30) on the shared SH layout, and `FORWARD_SAMPLED_TEXTURE_BUDGET` is raised from 16 to 17. No slot was borrowed. **Metal's ceiling is 16, so this cannot run on the Mac, and all Q2 figures are 1660-only until a slot is found.**
 - **Sidecar, no format work.** `prl-build` writes tiles beside the map when `PDD_OUT` is set, from its own depth-only trace (`sh_bake/pdd.rs`). Radiance is untouched, so the 1,024-ray runs vary depth only. The engine reads the file named by `POSTRETRO_PDD_TILES` and aborts if its grid differs from the level's.
 - **No streaming.** The closet's tiles are one resident atlas in linear probe order.
+- **Q2 cost modes.** `POSTRETRO_PDD_Q2_T` fills tiles with noise that always passes the test, one per SH slot, and `POSTRETRO_PDD_Q2_SCATTER` hashes grid indices across the atlas. The Q2 matrix ran on a build whose scatter hashed the slot; the scatter figures above are from the corrected build, which differs only in that branch.
+- **Q3 pass.** `PDD_Q3` in `prl-build` counts, writes one byte per probe, and exits. `POSTRETRO_PDD_Q3_BITS` logs that count by density level at load.
 - **Spare uniform words.** `ShGridInfo._pad0` holds the tile size, `_pad1` the floor override, `_pad3` the Q2 mode, and the unread `atlas_tile_rows` the bias override.
 - **Tile format.** `Rg16Float`, one bordered tile per probe, bilinear through the existing atlas sampler. A ray is binned into its texel, with no cosine-weighted filter. E[d²] in f16 has the same precision limit as today's moments.
 - **Fixture.** `gen_closet.py` gained `--no-door`.

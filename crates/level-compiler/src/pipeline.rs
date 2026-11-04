@@ -888,6 +888,8 @@ fn run_after_parsing(
         total_light_count: map_data.lights.len(),
     };
 
+    sh_bake::pdd::q3(&sh_ctx, &sh_config); // SPIKE HACK: exits when PDD_Q3 is set
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::ShBake);
     let sh_progress = StageProgress::indeterminate();
     reporter.declare_progress(StageId::ShBake, sh_progress.clone());

@@ -184,3 +184,37 @@ fn load(
     log::info!("[pdd] {path}: T {t}, {rays} rays, grid {dims:?}, {layers} layer(s) of {edge}");
     texture
 }
+
+/// Q3 join: `POSTRETRO_PDD_Q3_BITS` is the compiler's byte per linear probe. Logs
+/// flagged probes by the density level the loaded level stored them at.
+pub(crate) fn report_q3(probes: &[postretro_level_format::sh_volume::OctahedralShProbe]) {
+    let Ok(path) = std::env::var("POSTRETRO_PDD_Q3_BITS") else {
+        return;
+    };
+    let bits = std::fs::read(&path).unwrap_or_else(|e| panic!("[pdd] {path}: {e}"));
+    assert_eq!(bits.len(), probes.len(), "[pdd] Q3 bitmap grid mismatch");
+    let mut rows = [[0u64; 5]; 4];
+    let mut mismatched = 0u64;
+    for (probe, b) in probes.iter().zip(&bits) {
+        let traced = b & 0x80 != 0;
+        if traced != (probe.validity != 0) {
+            mismatched += 1;
+        }
+        if probe.validity == 0 {
+            continue;
+        }
+        let row = &mut rows[(probe.density_level as usize).min(3)];
+        row[0] += 1;
+        for ti in 0..3 {
+            row[1 + ti] += u64::from(b >> ti & 1);
+        }
+        row[4] += u64::from(probe.node_scale);
+    }
+    for (level, r) in rows.iter().enumerate() {
+        log::info!(
+            "[pdd q3] level {level}: {} valid, flagged T4 {} T6 {} T8 {}, node_scale sum {}",
+            r[0], r[1], r[2], r[3], r[4]
+        );
+    }
+    log::info!("[pdd q3] validity disagreements with the current map: {mismatched}");
+}

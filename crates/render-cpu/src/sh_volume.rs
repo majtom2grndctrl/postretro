@@ -126,7 +126,9 @@ pub fn build_grid_info_bytes(params: ShGridInfoParams) -> [u8; SH_GRID_INFO_SIZE
             assert_eq!(dims, params.grid_dimensions, "[pdd] tile sidecar grid mismatch");
         }
         bytes[28..32].copy_from_slice(&tile.to_ne_bytes());
-        bytes[92..96].copy_from_slice(&u32::from(dims.is_none()).to_ne_bytes());
+        let scatter = std::env::var_os("POSTRETRO_PDD_Q2_SCATTER").is_some();
+        let mode = u32::from(dims.is_none()) + u32::from(dims.is_none() && scatter);
+        bytes[92..96].copy_from_slice(&mode.to_ne_bytes());
     }
     // grid_dimensions vec3<u32> at 32..44, _pad1 at 44..48.
     bytes[32..36].copy_from_slice(&params.grid_dimensions[0].to_ne_bytes());

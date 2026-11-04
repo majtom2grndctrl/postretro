@@ -1,0 +1,17 @@
+[pdd q3] grid [197, 47, 239], cell [1.0, 1.0, 1.0], 2212901 probes, 962636 valid, 256 rays, fraction 1
+[pdd q3] traced 962636 probes in 63.1 s
+[pdd q3] T4 >0.05: valid-neighbour 7271 (0.76%), darker 7268 (0.76%), brighter 4 (0.00%), all-neighbour 242076 (25.15%)
+[pdd q3] T4 >0.1: valid-neighbour 5828 (0.61%), darker 5828 (0.61%), brighter 0 (0.00%), all-neighbour 238405 (24.77%)
+[pdd q3] T4 >0.2: valid-neighbour 3787 (0.39%), darker 3787 (0.39%), brighter 0 (0.00%), all-neighbour 233718 (24.28%)
+[pdd q3] T4 >0.5: valid-neighbour 1588 (0.16%), darker 1588 (0.16%), brighter 0 (0.00%), all-neighbour 222150 (23.08%)
+[pdd q3] T6 >0.05: valid-neighbour 19973 (2.07%), darker 19970 (2.07%), brighter 4 (0.00%), all-neighbour 294224 (30.56%)
+[pdd q3] T6 >0.1: valid-neighbour 16481 (1.71%), darker 16481 (1.71%), brighter 0 (0.00%), all-neighbour 284928 (29.60%)
+[pdd q3] T6 >0.2: valid-neighbour 12665 (1.32%), darker 12665 (1.32%), brighter 0 (0.00%), all-neighbour 283043 (29.40%)
+[pdd q3] T6 >0.5: valid-neighbour 7330 (0.76%), darker 7330 (0.76%), brighter 0 (0.00%), all-neighbour 272392 (28.30%)
+[pdd q3] T8 >0.05: valid-neighbour 16318 (1.70%), darker 16315 (1.69%), brighter 4 (0.00%), all-neighbour 286065 (29.72%)
+[pdd q3] T8 >0.1: valid-neighbour 13451 (1.40%), darker 13451 (1.40%), brighter 0 (0.00%), all-neighbour 284487 (29.55%)
+[pdd q3] T8 >0.2: valid-neighbour 10758 (1.12%), darker 10758 (1.12%), brighter 0 (0.00%), all-neighbour 282890 (29.39%)
+[pdd q3] T8 >0.5: valid-neighbour 6431 (0.67%), darker 6431 (0.67%), brighter 0 (0.00%), all-neighbour 280440 (29.13%)
+[pdd q3] T4 truth: directions blocked 38268 (flagged 5598, missed 32670), clear 21847088 (flagged 3693, passed 21843395); probes with a blocked valid neighbour 13802, with a correct flag 2605, with a false flag 3395
+[pdd q3] T6 truth: directions blocked 38268 (flagged 13435, missed 24833), clear 21847088 (flagged 18071, passed 21829017); probes with a blocked valid neighbour 13802, with a correct flag 7413, with a false flag 9539
+[pdd q3] T8 truth: directions blocked 38268 (flagged 16074, missed 22194), clear 21847088 (flagged 13126, passed 21833962); probes with a blocked valid neighbour 13802, with a correct flag 7131, with a false flag 6680

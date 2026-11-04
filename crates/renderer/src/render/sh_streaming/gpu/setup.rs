@@ -228,6 +228,7 @@ impl StreamingGpuPools {
             ..Default::default()
         });
 
+        crate::render::pdd_tiles::report_q3(&base.probes); // SPIKE HACK
         let indirection_len = u64::try_from(base.probes.len())
             .ok()
             .and_then(|count| count.checked_mul(u64::from(std::mem::size_of::<u32>() as u32)))

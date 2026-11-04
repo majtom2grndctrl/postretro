@@ -17,20 +17,20 @@ re-checked at: main 0297abebe merged (2026-11-03). Main's only changes under `re
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| R6 layout | `r6_*` row in the new sibling test module; fails pre-fix with a hit on the wall behind | achievable as stated |
-| A later hull | split-N row in the same module | achievable as stated |
-| Every read kind, both sides | seam unit test on the carried-depth check: hit / fill / open exit, at depth and past it; the nested-K row drives the open-exit arm through the trace | achievable as stated |
-| Kept-behind row | existing row, plus an assertion that its front lies at the held depth | achievable as stated |
-| Split-platform, exact-tie, selection-rule, beside budget, crate-seam, all capture/fill tests unchanged | `cargo test -p postretro-level-compiler --bin prl-build reflection_probes` | achievable as stated |
-| Off-box invariant | existing seam test + R6 layout with the box short of the kept brush, kept vs excluded, on a 16-ray grid including R6's ray | achievable as stated |
-| No-leak oracle | generated-layout test, plane-derived bound | achievable as stated |
-| The oracle sees the class | same oracle with the carried-depth check disabled (test-only switch): fails on ≥1 generated case and on R6 | achievable as stated |
-| Oracle in default `cargo test`; seeds, count, runtime, known limits recorded here | not `#[ignore]`; recorded below | achievable as stated |
-| Review addition: no false guards | `the_carried_depth_changes_only_reads_the_oracle_refuses_without_it` over the same rays | added in review |
-| Capture stage version +1, tracer epoch unchanged | diff | achievable as stated |
-| Warm build over pre-change cache misses capture, hits tracing stages before it; cold differs in id 54 at most | prl-build on `reflection-probes-test.map`, pre-change binary vs this branch | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| R6 layout | `r6_*` row in the new sibling test module; fails pre-fix with a hit on the wall behind | achievable as stated | pass: guard on the block's front; failed pre-fix on the wall behind; uncarried control reads the wall |
+| A later hull | split-N row in the same module | achievable as stated | pass: two hull passes, uncarried control reads the wall |
+| Every read kind, both sides | seam unit test on the carried-depth check: hit / fill / open exit, at depth and past it; the nested-K row drives the open-exit arm through the trace | achievable as stated | pass: hit and fill at the seam; open exit by predicate and by the nested-K row |
+| Kept-behind row | existing row, plus an assertion that its front lies at the held depth | achievable as stated | pass |
+| Split-platform, exact-tie, selection-rule, beside budget, crate-seam, all capture/fill tests unchanged | `cargo test -p postretro-level-compiler --bin prl-build reflection_probes` | achievable as stated | pass: 194 `reflection_probes` tests |
+| Off-box invariant | existing seam test + R6 layout with the box short of the kept brush, kept vs excluded, on a 16-ray grid including R6's ray | achievable as stated | pass: 16 sampled rays, not every ray |
+| No-leak oracle | generated-layout test, plane-derived bound | achievable as stated | pass with 21 named known limits; its one exception awaits the owner (Corrections) |
+| The oracle sees the class | same oracle with the carried-depth check disabled (test-only switch): fails on ≥1 generated case and on R6 | achievable as stated | pass: R6 and 10 unnamed generated rays |
+| Oracle in default `cargo test`; seeds, count, runtime, known limits recorded here | not `#[ignore]`; recorded below | achievable as stated | pass |
+| Review addition: no false guards | `the_carried_depth_changes_only_reads_the_oracle_refuses_without_it` over the same rays | added in review | pass: agrees with the oracle; shares its slack |
+| Capture stage version +1, tracer epoch unchanged | diff | achievable as stated | pass: `STAGE_VERSION` 12 → 13, `TRACER_EPOCH` unchanged |
+| Warm build over pre-change cache misses capture, hits tracing stages before it; cold differs in id 54 at most | prl-build on `reflection-probes-test.map`, pre-change binary vs this branch | achievable as stated | pass: capture misses, 12 other stages hit; final-code cold build byte-identical, id 54 did not move |
 
 ## Tasks
 
@@ -58,3 +58,10 @@ The oracle found leaks outside R6's class, which stopped the build under Decisio
 - **C. Excluded neighbour passed over** (seed 57 ray 8). Two excluded pieces hold the block's exit; the nearer is taken and the other dropped, as R6 drops kept solid. The ray later enters the dropped piece through its top CSG removed under the block, unseen, and leaves it into a kept piece through a face CSG removed against it. R6's sibling with an excluded depth in place of a kept one.
 - **D. Exposed CSG hole** (seed 23 ray 16; seed 64 ray 7). With an excluded brush gone, the ray reaches a kept piece's front, which CSG removed against an excluded piece the ray passes less than 0.5 mm over without a hit (no front-facing plane near it), and reads through.
 - **E. Unseen excluded hull** (seed 20 rays 0, 18; seed 43 rays 5, 10, 15, 18; seed 48 ray 10). The ray leaves an excluded near brush into open space, then enters an excluded piece through a face CSG removed, taking no hit, so the trace never classifies it. It leaves that piece into a kept piece through a face CSG removed against it, and reads what lies behind.
+
+## Review loop
+- Preflight on bf18b0955: fmt, clippy `-D warnings`, `cargo test` (14 321 passed, 0 failed, 101 ignored), `cargo check --release`, crate-graph, all pass.
+- Round 1 (tracer, adversarial tester and contract verifier on Opus, hygiene and drift on Sonnet): no must-fix; no defect in how the depth is produced, carried or read. Acted on: the oracle's narrowing (Corrections), rows for a pass beside, a second hull of one classification and the open-exit arm, the false-guard test, seed 29 ray 16's construction, group A's cause, doc pointers, the slack's const assert.
+- Round 2 (adversarial tester on Opus, on the rewritten oracle): no must-fix. Acted on: named limits now assert they carry no depth, kept behind joins the oracle, wording that claimed more than the tests prove.
+- Mutants, each failing a row: last depth wins, depth carried on the first hop only, open-exit arm deleted.
+- Not acted on: `hull_span` and `in_contact` resemble `span` and `bounds_touch`, so a shared plane-sign error would pass the oracle (the hand rows would still catch one); `capture_bounds` and `capture_exclusion` import each other.

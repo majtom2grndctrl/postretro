@@ -136,15 +136,18 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 - [ ] An unknown FGD `crush_damage_type` warns once at level load and crushes untyped. A script `.damage(n, { type })` with an unknown type is dropped at install with a log naming the reaction.
 
 ### Drain
-- [ ] A mod with no types or layers: health results and every existing impact fact are identical to before.
+- [ ] A mod with no types or layers: health results and every existing impact fact are identical to before, so the existing chokepoint, contributor-ledger, impact-policy and overlay tests pass unmodified.
 - [ ] Ordered spillover: shield 30, armor 50, health 100; an untyped 100 leaves 0 / 0 / 80.
 - [ ] Spillover in raw units: shock (shield ×2, health ×0.75) for 20 against shield 30 empties the shield on 15 raw, and health loses 3.75.
-- [ ] Multiplier 0 on a layer leaves it untouched and passes the hit on. Multiplier 0 on health deals no health damage. `resist` scales on top, and `resist` 0 makes the entity immune to that type.
+- [ ] Multiplier 0 on a layer leaves it untouched and passes the hit on. Multiplier 0 on health deals no health damage. `resist` scales on top, and `resist` 0 makes the entity immune to that type. An immune hit still restarts the delay and credits no contributor (R-P11).
 - [ ] A fully absorbed hit leaves health unchanged, dispatches the impact with `absorbed` and `amount` both equal to the points drained, and never latches death.
 - [ ] For a shock 20 hit on shield 30 with health ×0.75: `raw` is 20, `amount` is 33.75 (30 shield + 3.75 health), `absorbed` is 30, and `healthBefore − healthAfter` is 3.75. For a hit bypassing every layer, `absorbed` is 0 and `amount` equals the health lost.
 - [ ] A zero-valued layer is skipped and never reports `broke`.
 - [ ] Two hits on one tick drain in order: the second sees the first's result, and only the hit that empties a layer reports `broke`.
-- [ ] Each producer drains a test shield by its type's multiplier: hitscan, direct projectile, splash, NPC melee, NPC ranged, trap, crush and the script verb.
+- [ ] Each producer drains a test shield by its type's multiplier: hitscan, direct projectile, splash, NPC melee, NPC ranged, trap, crush and the script verb, and a host-validated client hit, typed from the host's weapon descriptor.
+- [ ] Producers on one tick drain in stage order, and a flushed client hit drains after them: crush, then hitscan, then a flushed client hit, 20 each against shield 30, leave health 70, and only the hitscan reports broke (R-P1).
+- [ ] A capacity-0 layer reads 0 / 0, is skipped by every hit with no broke, takes no grant, and counts as full for hide-at-full (R-P9).
+- [ ] A lethal hit counts overkill: shield 10, health 5, untyped 30 gives amount 30, absorbed 10 and healthAfter −15, and the ledger records 30 (R-P10).
 
 ### Recharge
 - [ ] Nothing recharges before the delay. After it, the layer ramps at the rate and stops at capacity.
@@ -152,23 +155,35 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 - [ ] A hit on the tick the delay expires: that tick's recharge applies first, the hit then drains, and the delay restarts.
 - [ ] An expression parameter tracks a store change on the next tick. Lowering capacity clamps the value; raising it does not fill. A faulted expression keeps its last good value and warns once.
 - [ ] An entity latched at zero health does not recharge. Respawn refills every layer.
+- [ ] A hit after the tick restarts the delay exactly as an in-tick hit on that tick does: a flushed client hit and frame-end script damage each first recharge on the same tick as a weapon hit, in co-op and in single player (R-P2).
+- [ ] Delay expiry is tick-exact: a 3000 ms delay at 60 Hz first recharges 180 ticks after the hit, by rate × dt, and does the same after long uptime (R-P3).
+- [ ] Expression results clamp into the literal ranges: a capacity of 2e6 evaluates as 1e6, −5 as 0, and a delay of 90000 ms as 60000. A non-finite result is a fault and keeps the last good value.
+- [ ] A connected client runs no layer recharge and evaluates no layer parameter. Its layer reads come only from the host.
 
 ### Grants
 - [ ] `grantLayer(layer)` fills to capacity, and `grantLayer(layer, n)` adds n, clamped to capacity. Neither resets the recharge delay: a grant mid-delay leaves recharge starting at the original time.
 - [ ] Raising capacity leaves the value unchanged until a grant or recharge. A level-up reaction that grants health and layers in one fire restores both to full on the same tick.
-- [ ] A negative amount warns and does nothing. A recipient without that layer warns and is skipped, while its siblings are still granted. `impact.source.grantLayer` credits the damager on an in-tick hit.
+- [ ] A negative amount warns and does nothing. A recipient without that layer warns and is skipped, while its siblings are still granted. `impact.source.grantLayer` credits the damager on an in-tick hit, including a host-validated client hit flushed after the tick.
+- [ ] A grant and hits on one tick apply in tick order: a hit after a grant drains the granted points and reports broke when it empties them. grantLayer on a latched entity fills the layer and leaves the latch set (R-P7).
+- [ ] A call-site gate holds layer value writes to the damage chokepoint, recharge, grantLayer, spawn and hot reload, respawn and carry restore.
 
 ### Lifecycle
 - [ ] Level change, same-map restart and rejoin carry a player's layer values, clamped to the new capacity. Spawn fills. Hot reload clamps kept layers, fills added ones and drops removed ones.
+- [ ] An entity spawned mid-tick with an expression capacity is full at once: a hit on its spawn tick drains the layer, not health (R-P5).
+- [ ] A hot reload during the delay keeps each layer's value by name across a reorder, and keeps the tick recharge starts on (R-P8).
+- [ ] setHealth and grantHealth leave a 10 / 100 shield at 10, including on a latched pawn they revive. Respawn fills it to 100, and a carry restore sets its carried value.
 
 ### Reads
 - [ ] An impact policy reads `absorbed`, `broke`, the per-type Bool, and the target's layer value and max after the hit.
 - [ ] An enemy brain guard reads its own layer and changes state when the layer breaks.
 - [ ] The overlay's `shield` reads the layer. A shield-only hit at full health keeps the overlay shown.
-- [ ] The player's layer value and max read the host value on the host and on a connected client. A pawn without that layer reads absent.
+- [ ] The player's layer value and max read the host value on the host and on a connected client. A pawn without that layer reads absent, on the host and on that pawn's client, never the host pawn's value.
 - [ ] A player who only drained an enemy's shield is credited as a contributor when the enemy dies. Brain threat counts points dealt. A fully absorbed hit resets brain damage recency.
 - [ ] The Scripting surface example runs as `content/dev` content and loads clean in both runtimes.
 - [ ] `docs/scripting-reference.md` documents the vocabulary, the drain rules and a Borderlands recipe. Every command in it runs from an SDK bundle.
+- [ ] Declaring a layer adds its two owner-private slots and changes the state-schema fingerprint, and WIRE_VERSION is unchanged.
+- [ ] An overlay bound to @state.shield reads as it does today, and no hit or recharge ever changes @state.shield.
+- [ ] In a player-event condition, a plain layer read means the player being evaluated. shield.value.byPlayer(impact.source) in an impact policy reads the attacker's layer.
 
 ### Manual
 - [ ] Playtest the triangle in the dev mod: shock strips a shielded enemy, corrosive eats an armored one, each is weak on the other.

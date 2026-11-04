@@ -326,11 +326,6 @@ fn kept_solid_passed_over_at_a_second_hull_of_one_classification_bounds_the_re_t
     let excluded = room.brush_at([102.0, 0.0, h / 2.0]);
     let kept = room.brush_at([110.0, 0.0, h / 2.0]);
     let fore = room.brush_at([92.0, 0.0, 24.0]);
-    assert_eq!(
-        room.faces_on_plane(fore, 0, [100.0, 0.0, 0.0]),
-        0,
-        "CSG removes F's back against the block"
-    );
     let (origin, direction) = over_the_platform(R6_RAY.0, R6_RAY.1);
     room.with_scene(|scene, probes| {
         let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
@@ -343,10 +338,16 @@ fn kept_solid_passed_over_at_a_second_hull_of_one_classification_bounds_the_re_t
         let slot = |brush: u32| filter.excluded().binary_search(&brush).unwrap();
         assert!(filter.contacts_of(slot(fore)).1.contains(&block));
         assert!(filter.contacts_of(slot(block)).0.contains(&kept));
-        assert_eq!(
-            scene.trace(origin, direction, &filter),
-            RayOutcome::LeakGuard(front)
+        let mut hull_passes = 0;
+        let outcome = filter.trace_counting(
+            &scene.tracer,
+            origin,
+            direction,
+            scene.max_distance,
+            &mut hull_passes,
         );
+        assert_eq!(outcome, RayOutcome::LeakGuard(front));
+        assert_eq!(hull_passes, 1, "F and the block fall in one classification");
         let control = filter.ignoring_held_depth();
         assert_reads_the_wall_behind(&room, scene.trace(origin, direction, &control));
     });

@@ -7,6 +7,7 @@ use super::capture_exclusion::CONTACT_TOLERANCE_M;
 use super::placement::{PLANE_TOLERANCE_M, PlacedProbe};
 use crate::map_data::BrushVolume;
 use crate::partition::Aabb;
+use crate::partition::brush_bsp::REGION_CLASSIFICATION_EPSILON;
 use crate::ray_traversal::TRACER_TOLERANCE_METERS;
 
 /// Where a neighbour the ray spans over `(enters, leaves)` holds what lies
@@ -83,7 +84,7 @@ pub(super) fn nearest_held(
 /// entry face's normal, and stays a third of [`CONTACT_TOLERANCE_M`], so no
 /// face CSG left behind the depth comes within it.
 pub(super) const HELD_DEPTH_SLACK_M: f64 = TRACER_TOLERANCE_METERS as f64;
-const _: () = assert!(HELD_DEPTH_SLACK_M < CONTACT_TOLERANCE_M);
+const _: () = assert!(HELD_DEPTH_SLACK_M < REGION_CLASSIFICATION_EPSILON);
 
 /// The least depth of kept solid a trace passed over: a kept neighbour that
 /// held an excluded hull's exit ([`held_at`]) behind the nearer excluded one

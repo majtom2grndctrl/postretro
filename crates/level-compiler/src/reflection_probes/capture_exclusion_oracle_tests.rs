@@ -23,13 +23,17 @@ const SEEDS: std::ops::Range<u64> = 0..160;
 /// Rays per generated layout.
 const RAYS_PER_LAYOUT: usize = 24;
 
+/// The fixed case [`kept_behind`]'s name.
+const KEPT_BEHIND: &str = "kept behind";
+
 /// The platform's nominal top, in map units.
 const PLATFORM_TOP: f64 = 8.0;
 
 /// A leak outside the held-depth class, recorded in §5.2 (Known leaks) and not
-/// fixed. All are grazing rays in sub-millimetre gaps. No kept solid is passed
-/// over at any exit they cross, so each reads the same with the carried depth
-/// off, which the oracle asserts.
+/// fixed. All are grazing rays in sub-millimetre gaps. Each trace reaches its
+/// read carrying no depth, which the oracle asserts: that keeps them outside
+/// the class. The variant records the construction found by tracing; no test
+/// reads it.
 #[derive(Debug, Clone, Copy)]
 enum KnownLimit {
     /// An excluded near brush's back and the excluded block's front are
@@ -51,9 +55,8 @@ enum KnownLimit {
     /// hit, so the trace never classifies it, and leaves it into kept solid
     /// through a face CSG removed against it.
     UnseenExcludedHull,
-    /// With the block or a near brush excluded, the ray reaches a kept face
-    /// CSG removed against an excluded piece it passes without a hit, and
-    /// reads through.
+    /// With an excluded brush gone, the ray reaches a kept face CSG removed
+    /// against an excluded piece it passes without a hit, and reads through.
     ExposedCsgHole,
 }
 
@@ -214,6 +217,34 @@ fn r6() -> Layout {
     }
 }
 
+/// The kept-behind row as a fixed case: kept solid passed over at the block's
+/// exit whose front stands at the carried depth, so the ray reads it. A kept
+/// near brush and a 1 u kept sliver, the excluded brush from map x 101 to 105,
+/// a kept brush from 106.
+fn kept_behind() -> Layout {
+    let h = PLATFORM_TOP;
+    let platform = |x0: f64, x1: f64, excluded: bool| Piece {
+        min: [x0, -8.0, 0.0],
+        max: [x1, 8.0, h],
+        excluded,
+    };
+    Layout {
+        name: KEPT_BEHIND.to_string(),
+        pieces: vec![
+            Piece {
+                min: [100.0, -8.0, h + 0.8 * MM],
+                max: [116.0, 8.0, 40.0],
+                excluded: true,
+            },
+            platform(84.0, 100.0, false),
+            platform(100.0, 101.0, false),
+            platform(101.0, 105.0, true),
+            platform(106.0, 116.0, false),
+        ],
+        rays: vec![([100.0, 0.5, h + 0.6 * MM], 0.006)],
+    }
+}
+
 /// A read the oracle refuses: the trace's outcome lies past the first point
 /// the ray is inside kept solid that touches an excluded hull it crossed or
 /// passed beside.
@@ -298,8 +329,8 @@ fn in_contact(a: &BrushVolume, b: &BrushVolume) -> bool {
 /// contact with one; the first point the ray is inside any of them. Kept
 /// solid entered before `unmasked`, the unmasked capture's read, does not
 /// count: up to there the ray is the unmasked one, so it entered that solid
-/// through a face CSG removed against a kept brush, which the unmasked
-/// capture reads through too. `None` when there is none.
+/// through a face CSG removed, which the unmasked capture reads through too.
+/// `None` when there is none.
 fn kept_solid_bound(
     volumes: &[BrushVolume],
     excluded: &[u32],
@@ -335,6 +366,9 @@ struct Verdict {
     index: usize,
     carried: RayOutcome,
     uncarried: RayOutcome,
+    /// Whether the trace carried a depth to its read. A read the depth
+    /// refused is a leak guard either way, so this holds only of a read.
+    carried_a_depth: bool,
     leak: Option<Leak>,
     uncarried_leak: Option<Leak>,
 }
@@ -359,6 +393,7 @@ fn judged(layout: &Layout) -> Vec<Verdict> {
         let probe = boxed(&probes[0], ROOM_MIN, ROOM_MAX);
         let filter = exclusion(scene, &probe, &excluded);
         let control = exclusion(scene, &probe, &excluded).ignoring_held_depth();
+        let refusing = exclusion(scene, &probe, &excluded).refusing_any_held_depth();
         let plain = exclusion(scene, &probe, &[]);
         let judge = |index: usize, (crossing, slope): ([f64; 3], f64)| {
             let direction = engine([1.0, 0.0, -slope]).normalize();
@@ -380,6 +415,7 @@ fn judged(layout: &Layout) -> Vec<Verdict> {
                 index,
                 carried,
                 uncarried,
+                carried_a_depth: scene.trace(origin, direction, &refusing) != carried,
                 leak: refuses(carried),
                 uncarried_leak: refuses(uncarried),
             }
@@ -436,11 +472,11 @@ fn refused(
     })
 }
 
-/// Every generated ray's verdict, and R6's.
+/// Every generated ray's verdict, and the fixed cases'.
 fn all_verdicts() -> Vec<Verdict> {
     SEEDS
         .map(generated)
-        .chain([r6()])
+        .chain([r6(), kept_behind()])
         .flat_map(|layout| judged(&layout))
         .collect()
 }
@@ -451,9 +487,8 @@ fn all_verdicts() -> Vec<Verdict> {
 // touching an excluded hull it crossed or passed beside, or takes the leak
 // guard. The bound comes from the brush planes, not from the trace's exit
 // classification. R6 rides along as a fixed case. `KNOWN_LIMITS` are skipped.
-// Each must still leak, and read the same with the carried depth off, which
-// keeps it outside the class: one that stops is closed, and leaves the table
-// and §5.2.
+// Each must still leak, and reach its read carrying no depth, which keeps it
+// outside the class: one that stops is closed, and leaves the table and §5.2.
 #[test]
 fn generated_layouts_never_read_through_kept_solid_touching_a_met_excluded_hull() {
     let verdicts = all_verdicts();
@@ -476,13 +511,13 @@ fn generated_layouts_never_read_through_kept_solid_touching_a_met_excluded_hull(
                 verdict.layout == layout
                     && verdict.index == index
                     && verdict.leak.is_some()
-                    && verdict.carried == verdict.uncarried
+                    && !verdict.carried_a_depth
             })
         })
         .collect();
     assert!(
         stale.is_empty(),
-        "no longer leak, or now turn on the carried depth; drop them here and from §5.2: {stale:?}"
+        "no longer leak, or now carry a depth; drop them here and from §5.2: {stale:?}"
     );
 }
 
@@ -502,27 +537,30 @@ fn the_no_leak_oracle_refuses_the_trace_without_the_carried_depth() {
         "the oracle refuses R6 uncarried"
     );
     assert!(
-        refused.iter().any(|(layout, _)| layout != "R6"),
+        refused.iter().any(|(layout, _)| layout.starts_with("seed")),
         "no generated case reaches the class"
     );
 }
 
-// The carried depth never raises a false guard: over the same rays, it changes
-// only reads the oracle refuses without it. The oracle above cannot see this,
-// as it accepts every leak guard.
+// The carried depth agrees with the oracle: over the same rays, it changes only
+// reads the oracle refuses without it. The oracle above accepts every leak
+// guard, so this is what holds a depth to the rule from the other side. It
+// shares the slack with the trace, so it says nothing finer than that; the
+// kept-behind row is the proof at the depth. Rays that carry a depth and read
+// are the ones a too-tight depth would guard: kept behind is pinned among them.
 #[test]
 fn the_carried_depth_changes_only_reads_the_oracle_refuses_without_it() {
-    let changed = all_verdicts();
-    let false_guards: Vec<String> = changed
+    let verdicts = all_verdicts();
+    let unrefused: Vec<String> = verdicts
         .iter()
         .filter(|verdict| verdict.carried != verdict.uncarried && verdict.uncarried_leak.is_none())
         .map(|verdict| format!("{} ray {}", verdict.layout, verdict.index))
         .collect();
-    assert!(false_guards.is_empty(), "{false_guards:?}");
+    assert!(unrefused.is_empty(), "{unrefused:?}");
     assert!(
-        changed
-            .iter()
-            .any(|verdict| verdict.carried != verdict.uncarried),
-        "the carried depth changes some read"
+        verdicts.iter().any(|verdict| verdict.layout == KEPT_BEHIND
+            && verdict.carried_a_depth
+            && matches!(verdict.carried, RayOutcome::Hit(_))),
+        "kept behind carries a depth and reads its front"
     );
 }

@@ -125,6 +125,15 @@ impl RayOutcome {
     }
 }
 
+/// How a test's trace treats a carried [`HeldDepth`].
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum HeldDepthCheck {
+    Bounds,
+    Ignored,
+    RefusesAny,
+}
+
 /// One probe's excluded set as its capture rays read it.
 #[derive(Debug, Clone)]
 pub(crate) struct ProbeExclusion<'a> {
@@ -149,7 +158,7 @@ pub(crate) struct ProbeExclusion<'a> {
     /// Whether reads past a [`HeldDepth`] take the leak guard; off only so
     /// the no-leak oracle can show it catches the trace without it.
     #[cfg(test)]
-    carries_held_depth: bool,
+    held_depth_check: HeldDepthCheck,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -282,7 +291,7 @@ impl<'a> ProbeExclusion<'a> {
             kept,
             projection_box,
             #[cfg(test)]
-            carries_held_depth: true,
+            held_depth_check: HeldDepthCheck::Bounds,
         }
     }
 
@@ -290,15 +299,25 @@ impl<'a> ProbeExclusion<'a> {
     /// the depth was carried: the no-leak oracle's control.
     #[cfg(test)]
     pub(super) fn ignoring_held_depth(mut self) -> Self {
-        self.carries_held_depth = false;
+        self.held_depth_check = HeldDepthCheck::Ignored;
+        self
+    }
+
+    /// This exclusion with any carried [`HeldDepth`] refusing every read, at
+    /// any distance: a read that differs from the real trace's carried one.
+    #[cfg(test)]
+    pub(super) fn refusing_any_held_depth(mut self) -> Self {
+        self.held_depth_check = HeldDepthCheck::RefusesAny;
         self
     }
 
     /// Whether `held` admits a read `distance` from the ray origin.
     pub(super) fn admits(&self, held: HeldDepth, distance: f64) -> bool {
         #[cfg(test)]
-        if !self.carries_held_depth {
-            return true;
+        match self.held_depth_check {
+            HeldDepthCheck::Bounds => {}
+            HeldDepthCheck::Ignored => return true,
+            HeldDepthCheck::RefusesAny => return held == HeldDepth::NONE,
         }
         held.admits(distance)
     }

@@ -6,7 +6,7 @@ description: >
   change: a review pass adds Acceptance rows and research pin rows only; the
   loop's fix step adds meaning-preserving edits, and every finding that changes
   a Decision or an Acceptance measurement goes to the owner.
-  Never /review-draft-spec on a brief. Runs as a review → fix → self-review →
+  Runs as a review → fix → self-review →
   re-review loop after /validate-plan returns Direction sound, before
   promotion.
 argument-hint: "[brief-name]"
@@ -14,13 +14,13 @@ argument-hint: "[brief-name]"
 
 # Review Brief
 
-The detail review for the brief process. Same three concerns as `/review-draft-spec` — is the source claim true, is the ordering pinned, is the shape right — under one rule that skill does not have: **a reviewer's text lands only in Acceptance and `research.md`.** Decisions are owner-owned. A finding about a Decision is a question for the owner, never a clause applied to it.
+The detail review for the brief process. Three concerns — is the source claim true, is the ordering pinned, is the shape right — under one rule: **a reviewer's text lands only in Acceptance and `research.md`.** Decisions are owner-owned. A finding about a Decision is a question for the owner, never a clause applied to it.
 
 ## Premise
 
-`/review-draft-spec` is built for a spec's anatomy: task paragraphs to fact-check, pin rows to assign to tasks, prose fixes landed as `FIND`/`REPLACE`. Run on a brief, its lenses still emit that shape, and applied it does one thing reliably: it appends reviewer prose to Decisions. Every clause a finding adds to a Decision is binding on the executor, so one round turns judgment the owner recorded into mechanism the reviewer prescribed — "must be witnessed", "covered by the reload family", a parenthetical answering a finding nobody else will ever read. The brief grows back toward a spec, one applied fix at a time.
+Every clause a finding adds to a Decision is binding on the executor. Applied freely, review turns judgment the owner recorded into mechanism the reviewer prescribed — "must be witnessed", "covered by the reload family", a parenthetical answering a finding nobody else will ever read. The brief grows into a task-by-task plan, one applied fix at a time.
 
-The lenses are not the problem. Where their output is allowed to go is. This skill keeps the lenses and moves the boundary.
+The lenses find real defects. The boundary on where their output may land keeps the brief a brief.
 
 ## What may change
 
@@ -39,7 +39,7 @@ A "completion" finishes what a row already meant — names the edge it implied, 
 
 ### 1. Locate and read
 
-Argument is a plan folder name; look in `drafts/` first, then `ready/` for an a-la-carte read on a brief already promoted. The line under the title must mark it as a brief; on a `/draft-plan` spec, stop and point at `/review-draft-spec`.
+Argument is a plan folder name; look in `drafts/` first, then `ready/` for an a-la-carte read on a brief already promoted. The line under the title must mark it as a brief; otherwise stop and report.
 
 Read the brief and `research.md` yourself. Snapshot both to the scratch directory before any reviewer runs: briefs are amended into one commit, so the snapshot is the only per-round diff.
 

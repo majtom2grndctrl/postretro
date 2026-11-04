@@ -66,7 +66,7 @@ Two recently merged spec PRs were reviewed: **#247** (E17-C trigger command surf
 6. **lychee `--offline`** over `context/`, `docs/`, `README.md` — checks local links/anchors only (fully deterministic, no network flake). Broken links between context docs are exactly the rot that burns agent tokens.
 7. **cargo-nextest** for the test gate (faster, per-test isolation, would surface finding-class flakes like the gate-recorder race sooner).
 8. **xtask additions** (project-specific, each a few dozen lines):
-   - `spec-lint`: resolve backticked identifiers and `file:~line` anchors in `context/plans/{drafts,ready}/**` against the tree; flag duplicated blocks. Makes the review-draft-spec "codebase-anchor" pass deterministic instead of LLM-best-effort.
+   - `spec-lint`: resolve backticked identifiers and `file:~line` anchors in `context/plans/{drafts,ready}/**` against the tree; flag duplicated blocks. Makes the review-brief premise lens deterministic instead of LLM-best-effort.
    - non-test-LOC ratchet per development_guide §2.1.
    - `alloc_probe` windowed zero-alloc assertions extended to an idle sim tick.
 

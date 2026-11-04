@@ -273,11 +273,11 @@ pathological map provokes it. Floods per source cell are independent, so they pa
 
 ## Build guidance
 
-- **Build WITH the first real consumer, in one build-spec run** — not ahead of one, and not
+- **Build WITH the first real consumer, in one build-brief run** — not ahead of one, and not
   inline-then-extract. Draft one plan: **Task A** = the Cell-visibility relation (bake +
   PRL section + neutral-crate query), **Task B** = the first consumer, sequenced A → B. Add an
   explicit **generalizability-gate** AC: run the smell tests and the second-consumer paper-check
-  before merge. This is the `build-spec` shape that lands "generalizable substrate + first consumer"
+  before merge. This is the `build-brief` shape that lands "generalizable substrate + first consumer"
   decomposed and de-coupled in a single pass — the intended payoff of building *with* rather than
   *after*.
 - **Trigger is a *real* consumer need**, not a hunch: E15 Phase 4's measured bandwidth pressure

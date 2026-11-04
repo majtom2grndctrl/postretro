@@ -1,7 +1,7 @@
 ---
 name: draft-brief
 description: >
-  Drafts a problem brief for PostRetro — the lightweight spec form for a
+  Drafts a problem brief for PostRetro — the lightweight plan form for a
   repo-aware executor. Records the problem, decisions, acceptance criteria,
   and a non-binding path. Chooses compact or resumable execution before prose
   grows around the work. Use after /draft-session routes work to a brief.
@@ -120,7 +120,15 @@ External stress and performance rows follow `context/lib/testing_guide.md` §Res
 
 **Size smell** is on the Problem paragraph, not the document. Two problems in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor. Required boundary and wire tables do not count toward the target.
 
-**Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
+**Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append both sections below. They pin what sides built separately must agree on.
+
+*Boundary inventory.* Casing and encoding for every cross-boundary name, pinned once. Reference it instead of re-deciding inline.
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| (example) `BillboardEmitter` | `ComponentValue::BillboardEmitter` | `"billboard_emitter"` | `"billboard_emitter"` | `"billboard_emitter"` | n/a |
+
+*Wire format.* For each new binary surface: endianness, integer signedness, length-prefix width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null per runtime. Name the existing section the layout mirrors.
 
 **Spikes.** A build-to-learn brief follows `context/lib/experimental_spikes.md`: honesty-gate ACs are pass/fail, measured findings are measure-and-report, and the last delivered item is a findings note.
 
@@ -153,9 +161,9 @@ Do not update `context/lib/` during drafting. Durable capture happens at promoti
 
 ### 6. Validate direction
 
-Run `/validate-plan <name>`. It reads the brief the same way it reads a spec; the six questions apply unchanged.
+Run `/validate-plan <name>`. 
 
-Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a spec*, or *Under-scoped* unilaterally — those are owner decisions.
+Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a brief*, or *Under-scoped* unilaterally — those are owner decisions.
 
 ### 7. Report
 

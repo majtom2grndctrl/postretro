@@ -1,13 +1,14 @@
 ---
 name: review-brief
 description: >
-  Opt-in detail review of a problem brief in `context/plans/drafts/`. Three
+  Detail review of a problem brief in `context/plans/drafts/`. Three
   lenses — premise, rows, subtract — each confined to the sections it may
-  change: reviewers may add Acceptance rows and research pin rows, and nothing
-  else is edited; every finding on Decisions, Problem or Path goes to the owner.
-  Never /review-draft-spec on a brief. Run after /validate-plan, before
-  promotion, when the stakes warrant an independent read — a renderer state
-  machine, a wire format, a cache key, a one-way door. Not a default step.
+  change: a review pass adds Acceptance rows and research pin rows only; the
+  loop's fix step adds meaning-preserving edits, and every finding that changes
+  a Decision or an Acceptance measurement goes to the owner.
+  Never /review-draft-spec on a brief. Runs as a review → fix → self-review →
+  re-review loop after /validate-plan returns Direction sound, before
+  promotion.
 argument-hint: "[brief-name]"
 ---
 
@@ -52,7 +53,16 @@ Every prompt carries: the confirmed absolute paths of the brief and `research.md
 
 **Rows lens** — Acceptance and the pin table. Two passes:
 
-- *Ordering.* Attack the Decisions temporally: two events on one tick, B before A, a timer across a reset, N where one is expected, zero iterations, a slot re-tenanted the frame its layer is freed. Every ordering that is implied and not written becomes a row — `(id, scenario, ordering, expected outcome)` in `research.md`, and an Acceptance row that cites it. A row is the whole output; the ordering is never a sentence added to a Decision.
+- *Ordering.* Construct a sequence that satisfies every Decision as written and still violates the Problem's intent. No constructible sequence, no finding. Where a Decision asserts an order of operations, open the function and confirm the real order. Probe each stated invariant and each piece of mutable state or timer:
+  - *Same tick.* Two events the prose puts on different ticks arrive on one.
+  - *Reversed.* B arrives before A.
+  - *Boundary.* A timer, queued intent, or in-flight message crosses a reset, unload, respawn, or authority handoff.
+  - *Batching.* N of the same event, including 0 and 1.
+  - *Zero duration.* A duration authored at 0 or under one tick.
+  - *Stage order.* Input → Game logic → Audio → Render → Present: does a reader see pre- or post-mutation state?
+  - *Sampling.* A consumer slower than its producer; a slot re-tenanted the frame its layer is freed.
+
+  Every ordering implied and not written becomes a row — `(id, scenario, ordering, expected outcome)` in `research.md`, and an Acceptance row that cites it. A row is the whole output; the ordering is never a sentence added to a Decision. Skip for a brief with no mutable state, timer, or event ordering.
 - *Achievable and proving.* Per Acceptance row: can a test assert this against current source (counters behind `#[cfg(test)]`, an observable warn, a fixture literal that exists)? Could it pass on a build that leaves the Problem's defect in place? A negative-existence row is a grep gate; say so. Once for the section: is there a Decision with no row that would fail if it were violated, and is there a row no Decision makes necessary?
 
 **Subtract lens** — shape, answered before source. Four questions, each with a named answer:
@@ -82,7 +92,7 @@ Read all three files. Merge rows that pin the same ordering — lenses cannot se
 
 - Append `research-row` findings to the pin table, and `acceptance-row` findings to Acceptance, each row citing its pin.
 - Apply a completion to an existing row only when it does not change the measurement. When in doubt it does.
-- Everything targeted `owner` goes in the report, grouped by section, with the proposed text. Nothing is applied to Problem, Decisions, Path or Open questions, whatever the severity.
+- Everything targeted `owner` goes in the report, grouped by section, with the proposed text. A review pass applies nothing to Problem, Decisions, Path or Open questions, whatever the severity; the loop's Fix step below owns those edits.
 
 Read the diff against the snapshot, not the result. Then re-read Decisions against the rows you added: a row that is only satisfiable by a mechanism no Decision names is a missing Decision, and that is an owner item too.
 
@@ -94,13 +104,32 @@ Under fifteen lines:
 
 - Rows added, completions applied, by lens
 - Owner items, grouped by section, each with its proposed text — a false premise first
-- Recommendation: *promote*; *owner decides* (list); or *reshape*, when the subtract lens found a rival the brief never held — that one goes back through `/validate-plan`, not through another round here
+- Recommendation: *promote*; *owner decides* (list); or *reshape*, when the subtract lens found a rival the brief never held — that one goes back through `/validate-plan`, not through another review
 
-One pass. A second runs only after the owner has edited Decisions, and then only the premise lens over the bullets that changed.
+## Review loop
+
+Runs once `/validate-plan` returns *Direction sound*. Steps 1–4 are one review. Repeat:
+
+1. **Review.** Steps 1–4. From the second review on, reviewers also get the prior findings and the snapshot diff: confirm each fix landed, look for new defects, do not re-raise resolved ones.
+2. **Fix.** Apply each finding that helps an executor build the right thing or helps PostRetro long term. A finding is a candidate, not a mandate: check it against source, and skip one whose premise fails, saying so in the report.
+3. **Self-review.** Re-read the brief as the executor would. Fix contradictions, orphaned Decisions, a stale Problem, rows no Decision makes necessary. Repeat until the brief is correct and coherent.
+4. **Re-review.** Fresh lenses on the fixed brief.
+
+Stop on one review with no Blockers, or two consecutive reviews with one Blocker or fewer. Stop at four reviews and hand the owner the open Blockers.
+
+Stop for the owner at once when:
+
+- A fix would change what a Decision means or what an Acceptance row measures.
+- A Blocker needs an owner decision.
+- A round's fixes manufacture the next round's Blockers. The Decisions are wrong; that is `/validate-plan`.
+
+Fix authority in the loop: Acceptance, `research.md`, Path, and Open questions are editable. A Decision changes only to correct a false premise or tighten wording with its meaning unchanged. Reviewer prose never lands in a Decision as a new clause.
+
+Report once, when the loop ends: reviews run, Blockers per review, fixes applied, findings skipped and why, owner items.
 
 ## Working rules
 
 - The table under **What may change** is the skill. A finding with no legal target is an owner item, not an exception.
 - Reviewers never edit. The orchestrator edits only rows.
-- No rounds. Convergence by accretion is the failure this skill exists to prevent; if the brief needs a third pass, its Decisions are wrong, and that is `/validate-plan`.
+- Every round ends in the stop rule or the owner. Convergence by accretion is the failure to prevent; a brief still producing Blockers after four reviews has wrong Decisions, and that is `/validate-plan`.
 - No padding, no praise, no emojis. Match the voice of `/draft-brief`.

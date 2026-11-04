@@ -111,6 +111,8 @@ Delegate only when a slice has clear ownership and can be reviewed independently
 
 Run independent workers concurrently when their files and contracts do not overlap. The integrating executor resolves shared seams and runs Cargo commands after concurrent edits finish.
 
+**Cargo under concurrency.** Concurrent workers run in isolated worktrees cut from the feature branch, each with its own `target/`, within the limits in `context/lib/development_guide.md` §Worktree builds. A fresh worktree's first build is cold and the engine's most expensive compile, so concurrent workers skip `cargo check` and tests. The integrating executor merges their work into the feature branch, then runs `cargo check` and focused tests once against its warm target. Sequential workers use the feature branch directly and check and test per task.
+
 For each task:
 
 1. Read dependent code before editing.

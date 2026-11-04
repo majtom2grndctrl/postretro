@@ -2617,8 +2617,8 @@ impl std::fmt::Display for SnapshotDecodeError {
 impl std::error::Error for SnapshotDecodeError {}
 
 /// Standing-player collision-capsule dimensions, used to size the debug
-/// wireframe drawn over each replicated remote entity so it matches the real
-/// player volume. Sourced from the canonical standing descriptor
+/// wireframe drawn over each meshless replicated entity (while the Network
+/// tab's marker toggle is on) so it matches the real player volume. Sourced from the canonical standing descriptor
 /// (`scripting/components/player_movement.rs` and `main.rs`'s built-in pawn:
 /// `CapsuleParams { radius: 0.4, half_height: 0.8, .. }`). Duplicated here as
 /// named consts rather than threading a deep movement-descriptor dependency

@@ -97,7 +97,7 @@ pub(super) fn draw_network_tab(
         .checkbox(&mut markers, "Entity capsule markers")
         .on_hover_text(
             "Cyan always-on-top capsules at replicated entities that have no mesh \
-             yet (movers, triggers, meshless NPCs). Off by default.",
+             yet (pawns, movers, meshless NPCs). Off by default.",
         )
         .changed()
     {

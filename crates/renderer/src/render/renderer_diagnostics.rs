@@ -422,11 +422,11 @@ impl Renderer {
 
     /// Draw an "ugly-but-honest" wireframe capsule at each replicated remote
     /// entity position (M15 Phase 1 netcode visibility aid). `centers` are the
-    /// pawn `Transform.position`s collected client-side by
-    /// `netcode::remote_entity_positions`; `radius`/`half_height` size the
-    /// capsule to the standing player volume. Cyan so it reads clearly against
-    /// the world. No-op when `centers` is empty (single-player and host), and
-    /// while the Network-tab toggle is off (the default).
+    /// `Transform.position`s of meshless replicated entities collected on a
+    /// host or client by `netcode::remote_entity_positions`; `radius`/
+    /// `half_height` size the capsule to the standing player volume. Cyan so it
+    /// reads clearly against the world. No-op when `centers` is empty
+    /// (single-player), and while the Network-tab toggle is off (the default).
     ///
     /// Routed through the **overlay (always-on-top)** debug-line path
     /// (`push_capsule_overlay`), NOT the depth-tested `push_capsule`: the marker's
@@ -452,7 +452,8 @@ impl Renderer {
         }
     }
 
-    /// `true` when the Network tab's remote-entity capsule markers are on.
+    /// `true` when the Network tab's remote-entity capsule markers are on. Lets
+    /// the caller skip collecting marker centers while the toggle is off.
     #[cfg(feature = "dev-tools")]
     pub fn remote_entity_markers_enabled(&self) -> bool {
         self.full().show_remote_entity_markers

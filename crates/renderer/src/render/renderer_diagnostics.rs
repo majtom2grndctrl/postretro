@@ -422,10 +422,11 @@ impl Renderer {
 
     /// Draw an "ugly-but-honest" wireframe capsule at each replicated remote
     /// entity position (M15 Phase 1 netcode visibility aid). `centers` are the
-    /// pawn `Transform.position`s collected client-side by
-    /// `netcode::remote_entity_positions`; `radius`/`half_height` size the
-    /// capsule to the standing player volume. Cyan so it reads clearly against
-    /// the world. No-op when `centers` is empty (single-player and host).
+    /// `Transform.position`s of meshless replicated entities collected on a
+    /// host or client by `netcode::remote_entity_positions`; `radius`/
+    /// `half_height` size the capsule to the standing player volume. Cyan so it
+    /// reads clearly against the world. No-op when `centers` is empty
+    /// (single-player), and while the Network-tab toggle is off (the default).
     ///
     /// Routed through the **overlay (always-on-top)** debug-line path
     /// (`push_capsule_overlay`), NOT the depth-tested `push_capsule`: the marker's
@@ -442,10 +443,25 @@ impl Renderer {
     #[cfg(feature = "dev-tools")]
     pub fn emit_remote_entity_markers(&mut self, centers: &[Vec3], radius: f32, half_height: f32) {
         const REMOTE_ENTITY_COLOR: [u8; 4] = [0, 255, 255, 255]; // cyan
+        if !self.full().show_remote_entity_markers {
+            return;
+        }
         let debug_lines = &mut self.full_mut().debug_lines;
         for &center in centers {
             debug_lines.push_capsule_overlay(center, radius, half_height, REMOTE_ENTITY_COLOR);
         }
+    }
+
+    /// `true` when the Network tab's remote-entity capsule markers are on. Lets
+    /// the caller skip collecting marker centers while the toggle is off.
+    #[cfg(feature = "dev-tools")]
+    pub fn remote_entity_markers_enabled(&self) -> bool {
+        self.full().show_remote_entity_markers
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub fn set_remote_entity_markers_enabled(&mut self, enabled: bool) {
+        self.full_mut().show_remote_entity_markers = enabled;
     }
 
     /// `true` when the navmesh overlay is toggled on (`Alt+Shift+N`). Lets a
@@ -676,6 +692,44 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Network-tab toggle gates the remote-entity capsules: a fresh
+    /// renderer draws none, turning the toggle on routes them to the
+    /// always-on-top stream, and turning it off again stops them.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn remote_entity_markers_draw_only_while_toggle_is_on() {
+        let Some(mut renderer) = super::super::gpu_test_harness::offscreen_renderer_or_skip(
+            "remote_entity_markers_draw_only_while_toggle_is_on",
+            8,
+            8,
+        ) else {
+            return;
+        };
+        renderer
+            .ensure_full_ready()
+            .expect("full renderer init succeeds on an adapter that built the renderer");
+        let centers = [Vec3::new(0.0, 1.0, 0.0), Vec3::new(4.0, 1.0, -2.0)];
+        let overlay = |renderer: &Renderer| renderer.full().debug_lines.overlay_segment_count();
+
+        assert!(!renderer.remote_entity_markers_enabled(), "off by default");
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert_eq!(overlay(&renderer), 0, "toggle off draws nothing");
+
+        renderer.set_remote_entity_markers_enabled(true);
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert!(overlay(&renderer) > 0, "toggle on draws the capsules");
+        assert_eq!(
+            renderer.full().debug_lines.segment_count(),
+            0,
+            "markers ride the always-on-top stream, never the depth-tested one"
+        );
+
+        renderer.full_mut().debug_lines.clear();
+        renderer.set_remote_entity_markers_enabled(false);
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert_eq!(overlay(&renderer), 0, "toggle back off draws nothing");
+    }
 
     fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
         postretro_render_data::geometry::BvhLeaf {

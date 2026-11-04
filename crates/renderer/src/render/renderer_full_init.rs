@@ -407,6 +407,8 @@ pub(crate) fn build_full_renderer(
         agent_overlay: AgentOverlayState::default(),
         #[cfg(feature = "dev-tools")]
         show_navmesh: false,
+        #[cfg(feature = "dev-tools")]
+        show_remote_entity_markers: false,
         light_term_mask: LightTermMask::ALL,
         sdf_shadow_mode: SdfShadowMode::On,
         sdf_force_visibility_one: std::env::var("POSTRETRO_SDF_FORCE_VISIBILITY_ONE")

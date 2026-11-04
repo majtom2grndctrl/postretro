@@ -92,8 +92,10 @@ Lag is off until you ask for it. Two ways to set it:
   beyond a slider's range is kept until you drag that slider. **Standard**
   sets 45 ms delay, up to 60 ms jitter, and 5% loss, and **Off** clears it.
   The tab also shows whether you are the host or a client and, on a client,
-  the measured round trip. In single-player it shows "Not in a networked
-  session".
+  the measured round trip. Its **Entity capsule markers** checkbox (off by
+  default) draws a cyan capsule, visible through walls, at each networked
+  entity that has no model yet. In single-player the tab shows "Not in a
+  networked session".
 
 Settings apply to this machine's traffic, in **each direction**. Delay is
 added on the way out and again on the way back, so a 75 ms delay adds roughly

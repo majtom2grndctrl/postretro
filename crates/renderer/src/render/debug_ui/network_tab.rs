@@ -4,6 +4,9 @@
 //!
 //! The lever is plain data so the renderer never sees netcode types; the
 //! caller builds it from the live endpoint and writes a changed lever back.
+//! The tab also owns the entity capsule marker toggle (off by default).
+
+use super::super::Renderer;
 
 /// The networked role the tab reports; read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +71,11 @@ impl NetworkLagLever {
     }
 }
 
-pub(super) fn draw_network_tab(ui: &mut egui::Ui, lever: Option<&mut NetworkLagLever>) {
+pub(super) fn draw_network_tab(
+    ui: &mut egui::Ui,
+    renderer: &mut Renderer,
+    lever: Option<&mut NetworkLagLever>,
+) {
     let Some(lever) = lever else {
         ui.label("Not in a networked session");
         return;
@@ -84,6 +91,18 @@ pub(super) fn draw_network_tab(ui: &mut egui::Ui, lever: Option<&mut NetworkLagL
             ui.label(egui::RichText::new(format_rtt(lever)).monospace());
             ui.end_row();
         });
+    ui.separator();
+    let mut markers = renderer.remote_entity_markers_enabled();
+    if ui
+        .checkbox(&mut markers, "Entity capsule markers")
+        .on_hover_text(
+            "Cyan always-on-top capsules at replicated entities that have no mesh \
+             yet (pawns, movers, meshless NPCs). Off by default.",
+        )
+        .changed()
+    {
+        renderer.set_remote_entity_markers_enabled(markers);
+    }
     ui.separator();
     ui.label("Simulated lag");
     ui.label(

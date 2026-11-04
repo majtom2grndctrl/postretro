@@ -312,6 +312,11 @@ impl DebugLineRenderer {
         self.cpu_vertices.len() / 2
     }
 
+    #[cfg(test)]
+    pub(super) fn overlay_segment_count(&self) -> usize {
+        self.overlay_cpu_vertices.len() / 2
+    }
+
     pub(super) fn depth_tested_overflowed(&self) -> bool {
         self.overflowed_this_frame
     }

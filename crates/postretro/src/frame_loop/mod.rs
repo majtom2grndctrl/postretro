@@ -2631,9 +2631,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // draw capsules only for replicated entities that still lack
             // mesh presentation. Thin delegation — `netcode` collects
             // centers (registry read, no wgpu); the renderer owns the draw.
-            // No-op in single-player and once every replicated entity here
-            // has materialized its descriptor mesh.
-            if let Some(endpoint) = session.net_endpoint.as_ref() {
+            // Gated up front on the Network tab's marker toggle (off by
+            // default) so the registry walk and its Vec are skipped while
+            // nothing would be drawn. No-op in single-player and once every
+            // replicated entity here has materialized its descriptor mesh.
+            if let Some(endpoint) = session.net_endpoint.as_ref()
+                && renderer.remote_entity_markers_enabled()
+            {
                 let registry = script_ctx.registry.borrow();
                 let centers = netcode::remote_entity_positions(endpoint, &registry);
                 renderer.emit_remote_entity_markers(

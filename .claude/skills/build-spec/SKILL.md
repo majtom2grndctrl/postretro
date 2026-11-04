@@ -130,6 +130,18 @@ When the user says "land the plane":
 - Remove session worktrees, their dedicated target dirs, and session-owned temporary files
 - Reclaim integration target space: run `cargo clean -p <crate>` for crates with significant session churn. Never run bare `cargo clean`.
 - Commit & push `feature/<plan-name>`
+- Open a pull request into `main` unless one already exists for the branch (if it does, update its description). Use `gh pr create` where `gh` is available, otherwise the GitHub MCP `create_pull_request` tool. You hold the session's context, so you write the description; do not delegate it.
+- Report the PR link to the user.
+
+**PR description.** Write it from the plan and the session, not the commit log. Mirror the repo's PR template if one exists; otherwise cover:
+- **Summary** — the plan's Goal and what changed, naming the plan.
+- **Acceptance results** — each acceptance criterion with pass, fail, or outstanding manual proof.
+- **Phases** — what each phase delivered and any task that completed partially or was skipped, with the reason.
+- **Review** — `/review-panel` findings, what was fixed, what was left and why.
+- **Verification** — the preflight result, plus anything that could not run in this environment.
+- **Manual checks for the reviewer** — anything still to try in-engine.
+
+Add the Claude Code attribution footer the session instructs for pull requests.
 
 ### Error handling
 

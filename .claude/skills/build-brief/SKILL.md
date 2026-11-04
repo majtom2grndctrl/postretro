@@ -158,6 +158,22 @@ When the owner says "land the plane":
 4. Remove session worktrees, their dedicated target dirs, and session-owned temporary files.
 5. Run `cargo clean -p <crate>` for crates with heavy session churn. Never run bare `cargo clean`.
 6. Push the feature branch.
+7. Open a pull request into `main` unless one already exists for the branch (check first; if it does, update its description instead). Use `gh pr create` where `gh` is available, otherwise the GitHub MCP `create_pull_request` tool. The orchestrator opens the PR and writes the description itself, because it holds the session's context.
+8. Report the PR link to the owner.
+
+### Pull request description
+
+Write the description from `plan.md` and the session, not from the commit log. If the repo has a PR template, mirror its headings. Otherwise use:
+
+- **Summary.** The problem the brief solved and what changed, in a few sentences. Name the brief.
+- **Acceptance results.** The final AC-to-proof table: pass, fail, or outstanding manual proof for every row. No silent gaps.
+- **Corrections and decisions.** Corrections recorded against the brief, and any owner rulings made during the build.
+- **Review.** What `/review-panel` found, what was fixed, and what was deliberately left, each with its reason.
+- **Verification.** The gate that ran (preflight, focused tests) and its result, plus anything that could not run in this environment, such as GPU-gated tests.
+- **Context updated.** The `context/lib/` docs changed by step 1.
+- **Manual checks for the reviewer.** Anything the owner still has to try in-engine.
+
+Add the Claude Code attribution footer the session instructs for pull requests.
 
 ## Merged
 

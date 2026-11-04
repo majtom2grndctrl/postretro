@@ -693,6 +693,44 @@ impl Renderer {
 mod tests {
     use super::*;
 
+    /// The Network-tab toggle gates the remote-entity capsules: a fresh
+    /// renderer draws none, turning the toggle on routes them to the
+    /// always-on-top stream, and turning it off again stops them.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn remote_entity_markers_draw_only_while_toggle_is_on() {
+        let Some(mut renderer) = super::super::gpu_test_harness::offscreen_renderer_or_skip(
+            "remote_entity_markers_draw_only_while_toggle_is_on",
+            8,
+            8,
+        ) else {
+            return;
+        };
+        renderer
+            .ensure_full_ready()
+            .expect("full renderer init succeeds on an adapter that built the renderer");
+        let centers = [Vec3::new(0.0, 1.0, 0.0), Vec3::new(4.0, 1.0, -2.0)];
+        let overlay = |renderer: &Renderer| renderer.full().debug_lines.overlay_segment_count();
+
+        assert!(!renderer.remote_entity_markers_enabled(), "off by default");
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert_eq!(overlay(&renderer), 0, "toggle off draws nothing");
+
+        renderer.set_remote_entity_markers_enabled(true);
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert!(overlay(&renderer) > 0, "toggle on draws the capsules");
+        assert_eq!(
+            renderer.full().debug_lines.segment_count(),
+            0,
+            "markers ride the always-on-top stream, never the depth-tested one"
+        );
+
+        renderer.full_mut().debug_lines.clear();
+        renderer.set_remote_entity_markers_enabled(false);
+        renderer.emit_remote_entity_markers(&centers, 0.4, 0.8);
+        assert_eq!(overlay(&renderer), 0, "toggle back off draws nothing");
+    }
+
     fn leaf(cell_id: u32) -> postretro_render_data::geometry::BvhLeaf {
         postretro_render_data::geometry::BvhLeaf {
             aabb_min: [0.0, 0.0, 0.0],

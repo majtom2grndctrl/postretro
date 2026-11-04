@@ -60,7 +60,7 @@ All of these read raw `payload.amount` today:
 
 Drafts that read the amount:
 - `E10--enemy-stagger` accumulates `payload.amount` in the chokepoint.
-- `coop--predicted-combat-feedback` relies on `@impact.amount` being client-predictable from `zone_multipliers`. That is why the brief keeps `@impact.amount` as the incoming amount.
+- `coop--predicted-combat-feedback` relies on `@impact.amount` being client-predictable from `zone_multipliers`. Once `amount` means points dealt against host-only layers, it is no longer predictable; that draft moves to `@impact.raw` or to host-confirmed numbers. The owner chose the long-term vocabulary over keeping the drafts unchanged.
 
 ## Lifecycle seams
 

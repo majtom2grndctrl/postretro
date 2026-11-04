@@ -30,15 +30,24 @@ HUDs, the enemy overlay, impact policies and enemy brains can all read the resul
   - Leveling and gear raise a store slot, and the expression reads it. Persistence and co-op stay single-source, and no write verb exists.
   - The expression scope reads global store values, the entity's own `@state.*`, and (on the player entity only) the pawn's engine per-player slots and its seat's per-owner store slots, as plain reads. A per-owner read on any other descriptor rejects load.
   - Expressions are evaluated each tick, on the host, for entities that carry layers. Results clamp into the literal ranges. A fault keeps the last good value and warns once per descriptor and field.
-  - Lowering capacity clamps the current value down. Raising capacity never fills the layer; recharge does.
+  - Lowering capacity clamps the current value down. Raising capacity never fills the layer on its own; recharge or an authored grant does.
+- **Authors refill layers with an additive grant.** `grantLayer(layer, amount?)` joins `grantHealth` and `grantAmmo` (`scripting.md` §10.8).
+  - It goes through the one grant chokepoint, on the same targets: group and subject tokens, plus `impact.source`.
+  - An omitted amount fills to capacity, so "level up restores health and shields" is `grantHealth` plus `grantLayer` in one reaction.
+  - Amounts are finite author-time numbers. A negative amount warns and does nothing, and the result clamps to capacity. A recipient without that layer warns and is skipped.
+  - A grant never resets the recharge delay.
 - **A mod-wide matrix plus per-descriptor resistances decide how much a typed hit drains.** `defineDamageType(name, { against: { <layer kind> | health: m } })` sets how much one raw point of that type takes from each pool. A missing entry is 1. `health: { resist: { <type>: m } }` multiplies every pool for that type on that entity. Multipliers fall in [0, 64].
   - Untyped damage is ×1 everywhere, so a mod without types or layers behaves exactly as it does today.
-  - Type identity never enters the IR as a value. Policies read a Bool per type (`scripting.md` §11: "prefer a field on the named thing"), so this brief does not wait on interning.
+  - Type identity never enters the IR as a value. Policies read a Bool per declared type. This is a workaround: it is an identity comparison expanded at bind, so this brief does not wait on the interning `scripting.md` §11 has decided but not built. Once interning lands, an interned type read can sit beside the Bools without breaking a mod.
 - **Drain order and spillover are engine rules (owner: every source drains, Borderlands lean).** All of this happens in the damage chokepoint, for every producer.
   - The incoming amount (after hit zones, as today) meets each layer in order. A layer above zero takes `raw × m` points.
   - When a layer empties, only the raw remainder it could not absorb moves on to the next layer. A shock bonus against shields therefore never carries over to flesh.
   - A multiplier of 0 means the type bypasses that layer without touching it. A zero-valued layer is skipped. Health takes the remainder × its multiplier.
   - The death latch, the sweep and `target_was_live` keep reading health only.
+- **Spillover, recharge shape and no-fill-on-raise are engine taste points, chosen deliberately.** `scripting.md` §1 says the engine owns no game's taste, and §11 places recharge curves in author policy. These defaults diverge from that because each ships a Borderlands-correct rule a novice can use untouched. Each has a named axis to grow along, every extension defaulting to today's rule:
+  - spillover: a per-layer `overflow` option (gate, scaled);
+  - recharge shape: new inputs to the parameter scope (time since hit, the layer's own value), or a per-layer recharge expression;
+  - fill on raise: authored through `grantLayer`.
 - **Every producer carries a type.**
   - Weapons carry a weapon-level `damageType`, which covers hitscan, projectiles, splash, NPC ranged attacks and traps.
   - NPC melee attacks carry `attacks.<name>.damageType`.
@@ -55,11 +64,14 @@ HUDs, the enemy overlay, impact policies and enemy brains can all read the resul
   - Spawn fills every layer.
   - Level change, same-map restart and rejoin carry each value beside carried health, clamped to the new capacity.
   - Hot reload clamps kept layers, fills added ones and drops removed ones.
-- **Impact facts keep their meaning and gain new ones.**
-  - Unchanged: `@impact.amount` stays the incoming amount before type and layers, and `healthBefore` / `healthAfter` stay health-only. Mods, the `coop--predicted-combat-feedback` draft's prediction rule and the `E10--enemy-stagger` draft's accumulator keep the meaning they rely on.
-  - New, all in pool points: `absorbed` (total drained from layers by this hit), `broke` (this hit took some layer from above zero to zero) and a Bool per declared type.
-  - The target's layer values and maxes are readable after the hit. This is a deviation: the session handoff recommended changing `@impact.amount` to mean post-mitigation damage. Keeping it as incoming damage protects existing readers at no cost to expressiveness.
-- **Credit and threat count points dealt.** The contributor ledger and kill credit, and brain threat, record the points dealt across layers and health together. A player who only stripped a shield is a contributor. Brain damage recency resets on any hit with a positive incoming amount.
+- **One quantity, "points dealt", means damage everywhere downstream of the chokepoint.** Points dealt is the total drained from layers plus health, after type multipliers and resistances.
+  - `@impact.amount` is points dealt. That matches `research/combat-events.md`, where the unqualified `damage` is post-mitigation. The plain name serves the common reader: damage numbers, lifesteal, stagger.
+  - `@impact.raw` is the incoming amount after hit zones and before type and layers, combat-events' `rawDamage`.
+  - `@impact.absorbed` is the part of the points dealt that came from layers. `healthBefore` / `healthAfter` stay health-only, and an unfloored `healthAfter` still yields overkill.
+  - `@impact.broke` is true when this hit took some layer from above zero to zero. There is also a Bool per declared type. The target's layer values and maxes are readable after the hit.
+  - For untyped damage on an entity without layers, points dealt equals the incoming amount, so existing mods read the same numbers.
+  - The contributor ledger, kill credit and brain threat record points dealt, so a player who only stripped a shield is a contributor. Brain damage recency resets on any hit with a positive raw amount.
+  - Drafts that read the amount (`E10--enemy-stagger`, `coop--predicted-combat-feedback`) adopt this vocabulary. A client cannot predict points dealt against host-only layers, so predicted feedback predicts `raw` or waits for the host.
 - **One read surface serves the HUD, the overlay and AI.**
   - A layer handle's `.value` / `.max` reads the evaluated entity: the impact target, the brain's own enemy, or the overlay entity.
   - In HUD, store and crossing reads it means the local player. It takes `byPlayer` wherever per-player slots do.
@@ -71,7 +83,6 @@ HUDs, the enemy overlay, impact policies and enemy brains can all read the resul
   - Crits.
   - Shield special effects (nova, spike, absorb-to-ammo).
   - Per-action damage types. Weapon-level only; augments may add one later (`research/weapon-model.md` §3).
-  - A verb that refills a layer (a shield booster pickup). An additive grant, later.
   - Teammate shield bars. Owner-private values never leave their owner; a teammate HUD is its own replication decision.
   - Client prediction of layer values. Host samples are enough for a bar.
   - Impact policies for script and environmental damage. Roadmap "DoT / environmental death policy" owns that; layers still drain on those paths.
@@ -105,6 +116,10 @@ health: { max: 70, layers: [{ layer: "armor", capacity: 120 }], resist: { shock:
 attacks: { spit: { damage: 15, damageType: "corrosive", maxRange: 2, cooldownMs: 800 } }
 npcs({ tag: "turret" }).damage(40, { type: "shock" });
 
+// refills: level-up restores everything; a booster pickup adds 25
+const levelUp = defineReaction("levelUp", [players().grantHealth(100), players().grantLayer(shield)]);
+on.activators.grantLayer(shield, 25);
+
 // reads
 hudBar({ value: shield.value, max: shield.max });          // local player
 when(impact.broke.and(impact.type(shock)), [/* … */]);     // impact policy
@@ -125,7 +140,8 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 - [ ] Ordered spillover: shield 30, armor 50, health 100; an untyped 100 leaves 0 / 0 / 80.
 - [ ] Spillover in raw units: shock (shield ×2, health ×0.75) for 20 against shield 30 empties the shield on 15 raw, and health loses 3.75.
 - [ ] Multiplier 0 on a layer leaves it untouched and passes the hit on. Multiplier 0 on health deals no health damage. `resist` scales on top, and `resist` 0 makes the entity immune to that type.
-- [ ] A fully absorbed hit leaves health unchanged, dispatches the impact with `absorbed` equal to the points drained, and never latches death.
+- [ ] A fully absorbed hit leaves health unchanged, dispatches the impact with `absorbed` and `amount` both equal to the points drained, and never latches death.
+- [ ] For a shock 20 hit on shield 30 with health ×0.75: `raw` is 20, `amount` is 33.75 (30 shield + 3.75 health), `absorbed` is 30, and `healthBefore − healthAfter` is 3.75. For a hit bypassing every layer, `absorbed` is 0 and `amount` equals the health lost.
 - [ ] A zero-valued layer is skipped and never reports `broke`.
 - [ ] Two hits on one tick drain in order: the second sees the first's result, and only the hit that empties a layer reports `broke`.
 - [ ] Each producer drains a test shield by its type's multiplier: hitscan, direct projectile, splash, NPC melee, NPC ranged, trap, crush and the script verb.
@@ -136,6 +152,11 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 - [ ] A hit on the tick the delay expires: that tick's recharge applies first, the hit then drains, and the delay restarts.
 - [ ] An expression parameter tracks a store change on the next tick. Lowering capacity clamps the value; raising it does not fill. A faulted expression keeps its last good value and warns once.
 - [ ] An entity latched at zero health does not recharge. Respawn refills every layer.
+
+### Grants
+- [ ] `grantLayer(layer)` fills to capacity, and `grantLayer(layer, n)` adds n, clamped to capacity. Neither resets the recharge delay: a grant mid-delay leaves recharge starting at the original time.
+- [ ] Raising capacity leaves the value unchanged until a grant or recharge. A level-up reaction that grants health and layers in one fire restores both to full on the same tick.
+- [ ] A negative amount warns and does nothing. A recipient without that layer warns and is skipped, while its siblings are still granted. `impact.source.grantLayer` credits the damager on an in-tick hit.
 
 ### Lifecycle
 - [ ] Level change, same-map restart and rejoin carry a player's layer values, clamped to the new capacity. Spawn fills. Hot reload clamps kept layers, fills added ones and drops removed ones.
@@ -159,7 +180,7 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 - **Chosen shape vs the strongest rival.** Chosen: an engine layer stack with an authored matrix and expression parameters. Strongest rival: the same engine storage, drain and last-hit stamp, but recharge (and optionally overflow) authored as an IR expression over a layer-local scope (value, max, time since hit, tick delta). That is `scripting.md` §11's split read literally, and the hot IR write path `plans/done/M14--movement-dash-runtime-values` earmarked shield recharge for. The chosen shape is a subset of it: adding those inputs to the parameter scope, or a per-layer recharge expression beside delay and rate, grows into the rival without breaking a mod. Not now, because it builds the per-entity IR write path before any mod needs more than delay-then-rate. A weaker rival, author `@state` layers, is schema-less, unreplicated and silent on typos.
 - **First slice:** one player shield end to end, covering descriptor, drain, literal recharge and the owner-private read on a connected client. That slice falsifies the riskiest pieces: the new owner-private family and the tick-start recharge order.
 - **Split first.** These files run past ~800 lines: `impact_policy.rs`, `state_slots.rs`, `scopes.rs`, `combat.rs`, `health.rs`. Split each first where the brief extends it: behavior-preserving, in its own commit.
-- **Coordinate with the drafts.** On landing, update the stagger and predicted-feedback drafts with a line on which amount they read.
+- **Coordinate with the drafts.** On landing, revise `E10--enemy-stagger` (accumulate points dealt) and `coop--predicted-combat-feedback` (predict `raw`, or wait for the host) to the points-dealt vocabulary.
 
 ## Open questions
 - Whether layers get a per-tick cost bound (count of layered entities × expression size) beyond the IR's own depth and node caps — **delegated**: measure on the dev mod and report in the plan of record.
@@ -177,5 +198,6 @@ Luau mirrors every name: `Postretro.defineDefenseLayer("shield")`, `shield.value
 | Crush type | executor | n/a | n/a | n/a | `crush_damage_type` |
 | Script damage type | `ApplyDamageArgs` field | `{ amount, type }` | `.damage(n, { type })` | `:damage(n, { type = … })` | n/a |
 | Layer read | IR input | `@layer.<name>`, `@layer.<name>.max` | `handle.value`, `handle.max` | same | n/a |
-| Impact facts | IR inputs | `@impact.absorbed`, `@impact.broke`, `@impact.type.<name>` | `impact.absorbed`, `impact.broke`, `impact.type(handle)` | same, `:` calls | n/a |
+| Impact facts | IR inputs | `@impact.raw`, `@impact.absorbed`, `@impact.broke`, `@impact.type.<name>` (`@impact.amount` keeps its name, now points dealt) | `impact.raw`, `impact.absorbed`, `impact.broke`, `impact.type(handle)` | same, `:` calls | n/a |
+| Layer grant | grant chokepoint | `grantLayer` `{ layer, amount? }` | `.grantLayer(handle, amount?)` | `:grantLayer(handle, amount?)` | n/a |
 | Owner-private family | catalog rows per declared layer | slot names `player.layer.<name>`, `player.layer.<name>.max` | via handle | via handle | n/a |

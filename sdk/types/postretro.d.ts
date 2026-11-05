@@ -646,6 +646,8 @@ declare module "postretro" {
     knockback?: KnockbackDescriptor;
     /** Base weapon damage. Hitscan shells apply it per pellet; direct projectiles apply it on contact; splash applies it at the blast center before distance falloff. Must be finite and ≥ 0. */
     damage: number;
+    /** Optional damage type this weapon deals, a handle `defineMod({ damageTypes })` registers. Omit to deal the mod's `defaultDamageType`. Applies to every direct hit and splash. */
+    damageType?: DamageType;
     /** Pellets resolved per hitscan shell. Range: 1..=32; defaults to 1. Projectile weapons require exactly 1. */
     pelletCount?: number;
     /** Uniform-cone half-angle in degrees for each shell's pellets. Range: 0..=45; defaults to 0 (exact aim axis). */
@@ -779,8 +781,8 @@ declare module "postretro" {
     attack: string;
   };
 
-  /** One named enemy attack. A contact attack supplies all three inline combat stats. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
-  export type AttackParams = { weapon?: never; damage: number; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
+  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. */
+  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
   export type PatrolMode =
@@ -3213,7 +3215,7 @@ declare module "postretro/ui" {
     spawnScatter: { radius: number };
     worldAnchor?: { socket?: string; offsetY: number };
   }>;
-  /** The sampled entity: its own state, and its own layer as `current` / `capacity` (an entity without the layer reads 0 / 0; a bad reference skips the shield pair at install). */
+  /** The sampled entity: its own state, and its own layer as `current` / `capacity`. An entity without the layer reads 0 / 0; a bad reference skips the shield pair. */
   export type OverlayEntity = Readonly<{
     state(name: string): RuntimeValue;
     defense(layer: import("postretro").DefenseLayer): Readonly<{ current: RuntimeValue; capacity: RuntimeValue }>;

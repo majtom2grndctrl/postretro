@@ -267,7 +267,7 @@ view or mirror, it adds no new reads: the lightmap holds and counts its blocks, 
 visible targeting takes its cells only on a completed mirror walk with the main view on a
 walk path.
 During Settling its cells join the settle set on any path, as the main view's drawn cells
-do (`boot_sequence.md` §1). It never requests probes. Its cells outside the baked set are
+do (`boot_sequence.md` §1). Its cells outside the baked set are
 over-inclusion (§2), whose demand is never refused, so they count against the bake-gap
 gate: under one pool policy, the pool may defer no more lightmap texel area with the
 mirror than without it. In the dev-tools Streaming tab, a level-scope slider sets L (default 16 m,

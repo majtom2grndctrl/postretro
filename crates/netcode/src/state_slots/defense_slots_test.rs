@@ -215,3 +215,65 @@ fn registering_a_layer_changes_fingerprint_not_wire_version() {
         plain_fingerprint
     );
 }
+
+// R16: a connected client runs no layer step of its own; each owner reads
+// its layer from the host's frames alone, so the value moves only when the
+// host's recharge moves it.
+#[test]
+fn connected_client_reads_layers_only_from_host() {
+    let mut session = Session::new();
+    let pawn_a = session
+        .host
+        .registry
+        .borrow()
+        .pawn_for_seat(Seat(1))
+        .expect("client A's pawn holds seat 1");
+    let mut recharging = shield(30.0, 50.0);
+    recharging.layers[0].recharge_delay_ms = 0.0;
+    recharging.layers[0].recharge_rate = 60.0;
+    session
+        .host
+        .registry
+        .borrow_mut()
+        .set_component(pawn_a, recharging)
+        .unwrap();
+    // Recharge runs only for a pawn above zero health.
+    session
+        .host
+        .registry
+        .borrow_mut()
+        .set_component(
+            pawn_a,
+            postretro_entities::components::health::HealthComponent::from_descriptor(
+                &postretro_foundation::HealthDescriptor {
+                    max: 100.0,
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    let client_a = |session: &Session| slot(&session.clients[0].1, "player.defense.shield");
+    session.frame();
+    assert_eq!(client_a(&session), Some(SlotValue::Number(30.0)));
+    for expected in [31.0, 32.0, 33.0] {
+        {
+            let mut registry = session.host.registry.borrow_mut();
+            registry.advance_host_tick();
+            postretro_sim::sim::defense_layers::recharge_defense_layers(&mut registry);
+        }
+        session.frame();
+        match client_a(&session) {
+            Some(SlotValue::Number(value)) => assert!(
+                (value - expected).abs() < 1.0e-3,
+                "the host's recharge reaches the owner: {value} vs {expected}"
+            ),
+            other => panic!("client A reads {other:?}"),
+        }
+    }
+    // A host frame with no host tick moves nothing on the client.
+    session.frame();
+    match client_a(&session) {
+        Some(SlotValue::Number(value)) => assert!((value - 33.0).abs() < 1.0e-3),
+        other => panic!("client A reads {other:?}"),
+    }
+}

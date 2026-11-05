@@ -13,6 +13,8 @@ pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
 pub(crate) mod data_script_staleness;
+#[cfg(test)]
+mod e16_content_tests;
 pub(crate) mod environment_install;
 pub(crate) mod first_launch_hold;
 #[cfg(test)]

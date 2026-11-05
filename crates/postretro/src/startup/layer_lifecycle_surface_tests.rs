@@ -399,3 +399,37 @@ fn late_join_seed_refills_only_layers_full_at_pre_seed_capacity() {
         }
     }
 }
+
+// L6: a fresh joiner whose seed lands before its pawn materializes arrives
+// full at the seeded capacity: the seat bind evaluates with the seed's
+// per-owner values in place.
+#[test]
+fn fresh_join_arrives_full_at_seeded_capacity() {
+    let mut w = world();
+    w.set_capacity(Seat(1), 0.0);
+    let mut ledger = postretro_scripting_core::store_identity::StoreIdentityLedger::empty();
+    ledger
+        .slots
+        .insert(CAPACITY_SLOT.to_string(), "e16-cap".to_string());
+    // No pawn holds seat 1 yet, so the seed marks nothing.
+    crate::apply_host_join_seed(
+        &w.ctx,
+        &mut w.ctx.registry.borrow_mut(),
+        Some(&ledger),
+        &BTreeSet::from([CAPACITY_SLOT.to_string()]),
+        Seat(1),
+        [(
+            "e16-cap".to_string(),
+            postretro_net::wire::JoinSeedValue::Number(100.0),
+        )]
+        .into(),
+    );
+    let (_, joiner) = w.materialize();
+    assert_eq!(
+        w.shield(joiner),
+        (150.0, 150.0),
+        "full at the seeded capacity"
+    );
+    w.tick();
+    assert_eq!(w.shield(joiner), (150.0, 150.0));
+}

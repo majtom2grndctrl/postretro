@@ -417,6 +417,33 @@ end)
     assert_eq!(state(&ctx, target, "shocked"), 1.0);
 }
 
+// D3: a level script that re-declares a registered type with another matrix
+// only gets a handle; hits drain by the matrix `defineMod` registered.
+#[test]
+fn redeclared_damage_type_drains_by_the_registered_matrix() {
+    let script = handle_script(
+        r#"
+-- Not the registered shock (×2 on shields): only the name crosses.
+local shock = Postretro.defineDamageType("shock", { shield = 10 })
+local body = Postretro.defineReaction("e16.body", function(on)
+  return { on.player:damage(20, { type = shock }) }
+end)
+"#,
+        "{ reactions = { body }, playerEvents = { Postretro.players():on(tripped, { body }) } }",
+    );
+    let (mut app, ctx, pawns, _) = install_script(script);
+    trip(&ctx);
+    player_event_frame(&mut app);
+    for &pawn in &pawns {
+        assert_eq!(
+            shield(&ctx, pawn),
+            (60.0, 100.0),
+            "20 shock drains 40 by the registered ×2, not 200"
+        );
+        assert_eq!(health(&ctx, pawn), 100.0);
+    }
+}
+
 // D6: a bad defense reference drops only the definition holding it, on each
 // install surface; its siblings install and run.
 #[test]

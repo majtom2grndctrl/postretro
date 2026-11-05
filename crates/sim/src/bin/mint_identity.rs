@@ -161,10 +161,15 @@ fn reconcile_ledger(
     Ok(additions.len())
 }
 
-/// Append only new members at the validated `slots` object boundary. Every
-/// existing byte stays in the same order: the separator comma goes directly
-/// after the final existing value, and each new member takes the indentation
-/// of the entry before it, so the diff reads like a hand-written addition.
+/// Append new members at the end of the `slots` object so the diff reads like
+/// a hand-written addition. `original` must already parse as a ledger: the
+/// splice-point reasoning below depends on JSON's grammar.
+///
+/// The separator comma goes directly after the final existing value, and each
+/// new member takes the indentation of that value's line. Every existing byte
+/// stays, in order, except the whitespace inside an empty `slots` object.
+/// Where no prior entry has its own line (empty or compact `slots`), new
+/// members sit one step deeper than the opening brace's line.
 fn append_ledger_entries(original: &str, additions: &[(String, String)]) -> Result<String, String> {
     let (open, close) = slots_object_bounds(original)?;
     let newline = if original.contains("\r\n") {
@@ -184,7 +189,9 @@ fn append_ledger_entries(original: &str, additions: &[(String, String)]) -> Resu
     // JSON forbids trailing commas and comments, so the last non-whitespace
     // byte before `}` is either the opening `{` (empty object) or the end of
     // the final member's value.
-    let body_end = original[..close].trim_end_matches(is_json_whitespace).len();
+    let body_end = original[..close]
+        .trim_end_matches(|character: char| u8::try_from(character).is_ok_and(is_json_whitespace))
+        .len();
     let has_entries = body_end > open + 1;
 
     let entry_indent = if has_entries {
@@ -217,7 +224,7 @@ fn append_ledger_entries(original: &str, additions: &[(String, String)]) -> Resu
         );
     }
 
-    let mut updated = String::with_capacity(original.len() + entries.len() + 8);
+    let mut updated = String::with_capacity(original.len() + entries.len());
     if has_entries {
         updated.push_str(&original[..body_end]);
         updated.push(',');
@@ -225,7 +232,7 @@ fn append_ledger_entries(original: &str, additions: &[(String, String)]) -> Resu
         updated.push_str(&original[body_end..]);
     } else {
         // An empty object holds only whitespace; replace it so the closing
-        // brace lands on its own line at the `"slots"` line's indent.
+        // brace lands on its own line at the opening brace's line indent.
         updated.push_str(&original[..=open]);
         updated.push_str(&entries);
         updated.push_str(newline);
@@ -235,8 +242,10 @@ fn append_ledger_entries(original: &str, additions: &[(String, String)]) -> Resu
     Ok(updated)
 }
 
-fn is_json_whitespace(character: char) -> bool {
-    matches!(character, ' ' | '\t' | '\n' | '\r')
+/// JSON's insignificant whitespace (RFC 8259 §2); narrower than
+/// `u8::is_ascii_whitespace`, which also accepts form feed.
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 fn line_start(text: &str, index: usize) -> usize {
@@ -327,7 +336,7 @@ fn json_string_end(bytes: &[u8], start: usize) -> Result<usize, String> {
 fn skip_json_whitespace(bytes: &[u8], mut index: usize) -> usize {
     while bytes
         .get(index)
-        .is_some_and(|byte| byte.is_ascii_whitespace())
+        .is_some_and(|byte| is_json_whitespace(*byte))
     {
         index += 1;
     }
@@ -460,12 +469,16 @@ mod tests {
 
         assert_eq!(mint_identity(root).expect("mint succeeds"), 1);
         let text = fs::read_to_string(root.join(IDENTITY_FILE_NAME)).expect("read minted ledger");
-        assert!(text.contains(&existing_line));
-        assert!(
-            text.contains(&format!("{existing_line},\r\n\t\t\"computed.value\": \"")),
-            "the separator follows the preceding entry and the new entry keeps its indent: {text:?}"
+        let minted_key = StoreIdentityLedger::parse(&text)
+            .expect("minted ledger parses")
+            .slots["computed.value"]
+            .clone();
+        assert_eq!(
+            text,
+            format!(
+                "{{\r\n\t\"slots\" : {{\r\n{existing_line},\r\n\t\t\"computed.value\": \"{minted_key}\"\r\n\t}},\r\n\t\"version\" : 1\r\n}}\r\n"
+            ),
         );
-        assert!(text.ends_with("\t\"version\" : 1\r\n}\r\n"));
         assert_eq!(
             durable_slot_names(root),
             BTreeSet::from(["computed.value".to_string(), "legacy.value".to_string()]),
@@ -532,15 +545,60 @@ mod tests {
     }
 
     #[test]
-    fn ledger_append_into_empty_slots_object_formats_as_block() {
-        let original = "{\n  \"version\": 1,\n  \"slots\": {}\n}\n";
+    fn ledger_append_handles_empty_and_compact_slots_objects() {
         let additions = vec![("story.score".to_string(), "k1111111111111111".to_string())];
+        let block = "{\n  \"version\": 1,\n  \"slots\": {\n    \"story.score\": \"k1111111111111111\"\n  }\n}\n";
+        let cases = [
+            ("{\n  \"version\": 1,\n  \"slots\": {}\n}\n", block.to_string()),
+            ("{\n  \"version\": 1,\n  \"slots\": { }\n}\n", block.to_string()),
+            ("{\n  \"version\": 1,\n  \"slots\": {\n  }\n}\n", block.to_string()),
+            (
+                "{\n\t\"version\": 1,\n\t\"slots\": {}\n}\n",
+                "{\n\t\"version\": 1,\n\t\"slots\": {\n\t\t\"story.score\": \"k1111111111111111\"\n\t}\n}\n"
+                    .to_string(),
+            ),
+            (
+                "{\"version\":1,\"slots\":{}}",
+                "{\"version\":1,\"slots\":{\n  \"story.score\": \"k1111111111111111\"\n}}".to_string(),
+            ),
+            // Compact ledger with an entry: valid, if not pretty. Authors who
+            // keep compact ledgers re-format by hand.
+            (
+                "{\"version\":1,\"slots\":{\"old.one\":\"k0123456789abcdef\"}}",
+                "{\"version\":1,\"slots\":{\"old.one\":\"k0123456789abcdef\",\n  \"story.score\": \"k1111111111111111\"}}"
+                    .to_string(),
+            ),
+        ];
 
-        let updated = append_ledger_entries(original, &additions).expect("append entries");
+        for (original, expected) in cases {
+            let updated = append_ledger_entries(original, &additions).expect("append entries");
+            assert_eq!(updated, expected, "appending to {original:?}");
+            StoreIdentityLedger::parse(&updated).expect("updated ledger validates");
+        }
+    }
 
+    #[test]
+    fn ledger_append_to_fresh_ledger_matches_pretty_serialization() {
+        let mut ledger = StoreIdentityLedger::empty();
+        ledger
+            .slots
+            .insert("a.first".to_string(), "k1111111111111111".to_string());
+        let original = ledger.serialize_pretty().expect("serialize fresh ledger");
+
+        let updated = append_ledger_entries(
+            &original,
+            &[("b.second".to_string(), "k2222222222222222".to_string())],
+        )
+        .expect("append entries");
+
+        // A first mint writes `serialize_pretty`; later mints append. When the
+        // new key sorts last, both paths must agree byte for byte.
+        ledger
+            .slots
+            .insert("b.second".to_string(), "k2222222222222222".to_string());
         assert_eq!(
             updated,
-            "{\n  \"version\": 1,\n  \"slots\": {\n    \"story.score\": \"k1111111111111111\"\n  }\n}\n",
+            ledger.serialize_pretty().expect("serialize full ledger")
         );
     }
 

@@ -84,6 +84,7 @@ impl PresentationCellStore {
     /// `trees` are the frame's retained descriptor trees (every pushed entry,
     /// including visually occluded ones, plus composed always-on layers); the
     /// walk collects each `localState` scope declaration.
+    #[cfg(test)]
     pub(crate) fn reconcile(&mut self, trees: &[&AnchoredTree]) {
         let pushes: Vec<(u64, &AnchoredTree)> = trees.iter().map(|tree| (0, *tree)).collect();
         self.reconcile_pushes(&pushes);

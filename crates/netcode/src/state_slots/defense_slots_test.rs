@@ -22,7 +22,9 @@ fn shield(value: f32, capacity: f32) -> DefenseLayersComponent {
             capacity,
             recharge_delay_ms: 3_000.0,
             recharge_rate: 0.0,
+            resist: Vec::new(),
         }],
+        health_resist: Vec::new(),
         last_hit_tick: None,
     }
 }

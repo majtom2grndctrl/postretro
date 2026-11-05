@@ -700,6 +700,7 @@ mod tests {
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();

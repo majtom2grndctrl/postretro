@@ -258,7 +258,7 @@ pub(super) fn bind_command_at(
                 };
             Some(BoundTriggerCommand::Damage {
                 target: target(primitive)?,
-                amount: args.amount,
+                args,
             })
         }
         "grantHealth" => {

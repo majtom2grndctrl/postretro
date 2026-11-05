@@ -353,8 +353,26 @@ pub(crate) fn check_entity_defense_references(
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,
 ) -> Result<(), String> {
     for (index, descriptor) in entities.iter().enumerate() {
+        let components = format!("entities[{index}].components");
         if let Some(health) = &descriptor.health {
-            vocabulary.check_health(&format!("entities[{index}].components.health"), health)?;
+            vocabulary.check_health(&format!("{components}.health"), health)?;
+        }
+        if let Some(handle) = descriptor
+            .weapon
+            .as_ref()
+            .and_then(|weapon| weapon.damage_type.as_ref())
+        {
+            vocabulary.check_damage_type(&format!("{components}.weapon.damageType"), handle)?;
+        }
+        if let Some(behavior) = &descriptor.behavior {
+            for (name, attack) in &behavior.attacks {
+                if let Some(handle) = &attack.damage_type {
+                    vocabulary.check_damage_type(
+                        &format!("{components}.behavior.attacks.{name}.damageType"),
+                        handle,
+                    )?;
+                }
+            }
         }
     }
     Ok(())

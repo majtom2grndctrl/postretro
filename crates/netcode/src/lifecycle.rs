@@ -631,6 +631,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -878,6 +879,7 @@ mod tests {
                 is_projectile: false,
                 fire_origin: glam::Vec3::ZERO,
                 timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+                damage_type: None,
             },
             CLIENT_A,
         );
@@ -1278,6 +1280,7 @@ mod tests {
                 is_projectile: false,
                 fire_origin: glam::Vec3::ZERO,
                 timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+                damage_type: None,
             },
             CLIENT_A,
         );

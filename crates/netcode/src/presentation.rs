@@ -755,6 +755,7 @@ mod tests {
                 is_projectile: true,
                 fire_origin: Vec3::ZERO,
                 timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+                damage_type: None,
             },
             PREDICTED_OWNER_CLIENT,
         );

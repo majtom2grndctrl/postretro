@@ -662,6 +662,7 @@ mod tests {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         );
         behavior

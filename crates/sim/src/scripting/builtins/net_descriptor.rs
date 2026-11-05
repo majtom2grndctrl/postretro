@@ -1000,6 +1000,7 @@ mod tests {
                 let payload = DamagePayload {
                     amount: 10.0,
                     impulse: Vec3::ZERO,
+                    damage_type: None,
                 };
                 assert!(!apply_damage_with_context(
                     &mut registry,
@@ -1422,6 +1423,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,

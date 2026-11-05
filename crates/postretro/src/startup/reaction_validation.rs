@@ -189,6 +189,42 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             continue;
         }
 
+        // `.damage(amount, { type })`: a bad damage-type reference or an
+        // unknown option drops that one reaction; its siblings install.
+        let damage_violation = {
+            let vocabulary = &data_registry.defense;
+            match &data_registry.reactions[index].descriptor {
+                ReactionDescriptor::Primitive(primitive) => (primitive.primitive == "applyDamage")
+                    .then(|| {
+                        postretro_sim::health::reactions::validate_apply_damage_args(
+                            &primitive.args,
+                            vocabulary,
+                        )
+                        .err()
+                    })
+                    .flatten(),
+                ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
+                    (step.primitive == "applyDamage")
+                        .then(|| {
+                            postretro_sim::health::reactions::validate_apply_damage_args(
+                                &step.args, vocabulary,
+                            )
+                            .err()
+                        })
+                        .flatten()
+                }),
+                ReactionDescriptor::Progress(_) => None,
+            }
+        };
+        if let Some(error) = damage_violation {
+            let name = &data_registry.reactions[index].name;
+            log::error!(
+                "[Scripting] reaction `{name}`: applyDamage {error}. Dropping the reaction"
+            );
+            data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
+            continue;
+        }
+
         let ReactionDescriptor::Sequence(steps) = &data_registry.reactions[index].descriptor else {
             continue;
         };

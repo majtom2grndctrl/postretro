@@ -1456,6 +1456,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2071,6 +2072,7 @@ mod tests {
                     &DamagePayload {
                         amount: 1.0,
                         impulse: glam::Vec3::ZERO,
+                        damage_type: None,
                     },
                     context,
                 );
@@ -2346,6 +2348,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2404,6 +2407,7 @@ mod tests {
             &DamagePayload {
                 amount: 100.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             damage,
         );
@@ -2507,6 +2511,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2555,7 +2560,7 @@ mod tests {
 
     #[test]
     fn impact_dispatch_point_never_becomes_an_ir_input() {
-        assert_eq!(IMPACT_DISPATCH_INPUTS.len(), 4);
+        assert_eq!(IMPACT_DISPATCH_INPUTS.len(), 7);
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
         let mut context = DamageContext::new("impact-policy-test", DamageProducer::InTick);
@@ -2566,6 +2571,7 @@ mod tests {
             &DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );
@@ -2613,6 +2619,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );
@@ -2726,6 +2733,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );
@@ -2795,6 +2803,7 @@ mod tests {
             &DamagePayload {
                 amount: 50.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.gib", DamageProducer::InTick),
         );
@@ -2855,6 +2864,7 @@ mod tests {
                 &DamagePayload {
                     amount: 3.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 DamageContext::new("weapon.shotgun", DamageProducer::InTick),
             );
@@ -2888,6 +2898,7 @@ mod tests {
             &DamagePayload {
                 amount: 3.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.shotgun", DamageProducer::InTick),
         );
@@ -3021,6 +3032,7 @@ mod tests {
                 &DamagePayload {
                     amount: 1.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 context,
             );

@@ -501,6 +501,8 @@ pub struct LoadedKinematicMover {
     pub close_sound: Option<String>,
     pub blocked_sound: Option<String>,
     pub crush_sound: Option<String>,
+    /// The crusher's damage-type name, resolved at level install.
+    pub crush_damage_type: Option<String>,
 }
 
 /// Runtime copy of a KinematicGeometry member-light relation. Alpha-light
@@ -564,6 +566,7 @@ impl From<KinematicMoverRecord> for LoadedKinematicMover {
             close_sound: record.close_sound,
             blocked_sound: record.blocked_sound,
             crush_sound: record.crush_sound,
+            crush_damage_type: record.crush_damage_type,
         }
     }
 }
@@ -5710,6 +5713,7 @@ mod tests {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

@@ -2201,6 +2201,7 @@ fn ingest_hit_declaration(
                     knockback.upward_bias,
                     open.shot.projectile_direction.unwrap_or(Vec3::ZERO),
                 ),
+                damage_type: None,
             });
             crate::sim::apply_authorized_weapon_impact_damage(
                 context.registry,
@@ -2229,6 +2230,7 @@ fn ingest_hit_declaration(
             open.shot.pawn,
             true,
             open.shot.credit_source.clone(),
+            open.shot.damage_type,
             &mut on_impact,
         );
         return HitDeclarationResult {
@@ -2495,6 +2497,7 @@ fn apply_valid_hit_record(
                     direction,
                 )
             }),
+            damage_type: shot.damage_type,
         }),
     };
     crate::sim::apply_authorized_weapon_impact_damage(
@@ -3113,6 +3116,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -3200,6 +3204,7 @@ mod tests {
             lower_ms: 45,
             raise_ms: 70,
             block_during_reload: None,
+            damage_type: None,
         };
         let mut live = registry
             .get_component::<WeaponComponent>(weapon_id)
@@ -3632,6 +3637,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -3986,6 +3992,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,
@@ -4059,6 +4066,7 @@ mod tests {
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+            damage_type: None,
         }
     }
 
@@ -4906,6 +4914,7 @@ mod tests {
                     is_projectile: false,
                     fire_origin: Vec3::ZERO,
                     timeout_budget_ticks: MAX_OPEN_SHOT_AGE_TICKS,
+                    damage_type: None,
                 },
                 7,
             );
@@ -6929,6 +6938,33 @@ mod tests {
         assert_eq!(entry.last_hit_damage, 25.0);
         assert_eq!(entry.last_hit_zone.as_deref(), Some("head"));
         assert_eq!(entry.last_attacker, Some(fixture.pawn));
+    }
+
+    #[test]
+    fn host_validated_client_hit_takes_type_from_host_weapon() {
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: Vec::new(),
+                damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                    name: "heavy".to_string(),
+                    matrix: std::collections::BTreeMap::from([(
+                        "health".to_string(),
+                        postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                    )]),
+                }],
+                default_damage_type: None,
+            },
+        ));
+        // The type was frozen from the host's weapon at FIRE; the client's
+        // declaration carries no type of its own.
+        fixture.shot_mut().damage_type = Some(0);
+        let declaration =
+            fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+
+        assert!(fixture.ingest(7, &declaration));
+        let health = fixture.target_health();
+        assert_eq!(health.current, 80.0, "a heavy 10-point hit is ×2 on health");
     }
 
     // Regression: connected-client level unload can leave the transport connected

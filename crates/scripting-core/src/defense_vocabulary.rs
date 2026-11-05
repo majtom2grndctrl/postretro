@@ -14,5 +14,9 @@ pub fn commit_defense_vocabulary(ctx: &ScriptCtx, vocabulary: DefenseVocabulary)
     ctx.slot_table
         .borrow_mut()
         .replace_player_defense_slots(&vocabulary.layers);
-    ctx.data_registry.borrow_mut().defense = Arc::new(vocabulary);
+    let vocabulary = Arc::new(vocabulary);
+    ctx.registry
+        .borrow_mut()
+        .set_defense_vocabulary(Arc::clone(&vocabulary));
+    ctx.data_registry.borrow_mut().defense = vocabulary;
 }

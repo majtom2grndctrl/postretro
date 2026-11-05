@@ -951,6 +951,7 @@ mod tests {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {

@@ -143,6 +143,7 @@ struct PendingKinematicMover {
     close_sound: Option<String>,
     blocked_sound: Option<String>,
     crush_sound: Option<String>,
+    crush_damage_type: Option<String>,
     move_mode: KinematicMoveMode,
     start_on_spawn: bool,
     brush_ids: Vec<BrushId>,
@@ -501,6 +502,9 @@ fn parse_kinematic_mover(
     let close_sound = optional_event("close_sound");
     let blocked_sound = optional_event("blocked_sound");
     let crush_sound = optional_event("crush_sound");
+    // A damage-type name; the engine resolves it against the mod's registered
+    // types at level load and warns on an unknown one.
+    let crush_damage_type = optional_event("crush_damage_type");
 
     let move_mode = match props
         .get("move_mode")
@@ -556,6 +560,7 @@ fn parse_kinematic_mover(
         close_sound,
         blocked_sound,
         crush_sound,
+        crush_damage_type,
         move_mode,
         start_on_spawn,
         brush_ids,
@@ -2410,6 +2415,7 @@ fn resolve_kinematic_movers(
             close_sound: pending.close_sound,
             blocked_sound: pending.blocked_sound,
             crush_sound: pending.crush_sound,
+            crush_damage_type: pending.crush_damage_type,
             move_mode: pending.move_mode,
             start_on_spawn: pending.start_on_spawn,
             brush_volumes,
@@ -4394,6 +4400,7 @@ mod tests {
             "carry_yaw(choices) : \"Carry world-up player yaw while rotating; never pitch or roll\" : 0 =",
             "block_policy(choices) : \"Response to a player or enemy in its way: displace pushes, stop holds, reverse backs off. A player it would press into geometry or another mover makes it hold (reverse backs off if it can); crush keeps moving and deals crush_damage\" : \"displace\" =",
             "crush_damage(float) : \"Damage per crusher hit\" : \"0\"",
+            "crush_damage_type(string) : \"Damage type a crush deals, by its registered name; blank or unknown deals the mod default type\" : \"\"",
             "crush_interval_ms(float) : \"Milliseconds between crusher hits (0 hits every tick)\" : \"0\"",
             "auto_close_ms(float) : \"Milliseconds before automatic close; blank inherits the mod default, 0 disables\" : \"\"",
             "open_event(string) : \"Named event when the mover reaches its open terminus\" : \"\"",

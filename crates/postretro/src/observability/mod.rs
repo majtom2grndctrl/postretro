@@ -320,6 +320,7 @@ mod tests {
                     lower_ms: 0,
                     raise_ms: 0,
                     block_during_reload: None,
+                    damage_type: None,
                 }))
             }
             ComponentKind::DescriptorProvenance => {
@@ -374,6 +375,7 @@ mod tests {
                             cooldown_ms: Some(500.0),
                             engagement_radius: None,
                             standoff_distance: None,
+                            damage_type: None,
                         },
                     )]),
                     engagement_radius: None,
@@ -500,6 +502,7 @@ mod tests {
                 flipbook_active: false,
                 impact_light: None,
                 splash: None,
+                damage_type: None,
             }),
         }
     }

@@ -926,6 +926,7 @@ mod tests {
             raw: amount,
             absorbed: 0.0,
             broke: false,
+            damage_type: None,
             health_before: 10.0,
             health_after: 5.0,
             max_health: 10.0,

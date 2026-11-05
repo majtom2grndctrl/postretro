@@ -343,6 +343,24 @@ impl DefenseVocabulary {
         self.check_resist_keys(&format!("{path}.resist"), health.resist.keys())
     }
 
+    /// Check a `damageType` reference at `path`: a handle of a registered
+    /// damage type. Returns its index.
+    pub fn check_damage_type(
+        &self,
+        path: &str,
+        handle: &crate::AuthoredHandle,
+    ) -> Result<usize, String> {
+        let handle = handle.handle(path)?;
+        let name = handle
+            .expect_damage_type()
+            .map_err(|error| format!("`{path}`: {error}"))?;
+        self.type_index(name).ok_or_else(|| {
+            format!(
+                "`{path}`: damage type `{name}` is not registered in `defineMod({{ damageTypes }})`"
+            )
+        })
+    }
+
     fn check_resist_keys<'a>(
         &self,
         path: &str,

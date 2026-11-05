@@ -469,6 +469,7 @@ mod tests {
             cooldown_ms: None,
             engagement_radius: None,
             standoff_distance: None,
+            damage_type: None,
         }
     }
 
@@ -568,6 +569,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,

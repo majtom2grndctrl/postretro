@@ -71,6 +71,7 @@ fn hit(registry: &mut EntityRegistry, target: EntityId) {
         &DamagePayload {
             amount: 10.0,
             impulse: Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("app-host-overlay", DamageProducer::InTick),
     );

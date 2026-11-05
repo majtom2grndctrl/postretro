@@ -222,7 +222,11 @@ where
         {
             let attack_name = pending.attack_name.clone();
             let attack_fired = match pending.effect {
-                AttackOutcome::Contact { damage } => {
+                AttackOutcome::Contact {
+                    damage,
+                    damage_type,
+                } => {
+                    let damage_type = registry.damage_type_index(damage_type.as_deref());
                     if commit_attack_fire(
                         registry,
                         outcome.id,
@@ -235,6 +239,7 @@ where
                             &DamagePayload {
                                 amount: damage,
                                 impulse: glam::Vec3::ZERO,
+                                damage_type,
                             },
                             DamageContext {
                                 source_id: ENEMY_ATTACK_SOURCE_ID.to_string(),

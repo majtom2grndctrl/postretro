@@ -1698,6 +1698,7 @@ fn wieldable_descriptor() -> postretro_foundation::WeaponDescriptor {
         lower_ms: 0,
         raise_ms: 0,
         block_during_reload: None,
+        damage_type: None,
     }
 }
 
@@ -1813,6 +1814,7 @@ fn conditioned_client_dummy_hit_commits_host_damage_owner_credit_and_despawn() {
             is_projectile: false,
             fire_origin: Vec3::ZERO,
             timeout_budget_ticks: 180,
+            damage_type: None,
         },
         CLIENT_A,
     );

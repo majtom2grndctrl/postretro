@@ -867,6 +867,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         });
         weapon.magazine = magazine;
         weapon

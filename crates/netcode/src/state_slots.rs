@@ -2191,6 +2191,7 @@ mod tests {
                     bloom_accumulator_degrees: 0.0,
                     bloom_idle_ms: 0.0,
                     reload_feedback: Default::default(),
+                    damage_type: None,
                 },
             )
             .unwrap();
@@ -2285,6 +2286,7 @@ mod tests {
                     bloom_accumulator_degrees: 0.0,
                     bloom_idle_ms: 0.0,
                     reload_feedback: Default::default(),
+                    damage_type: None,
                 },
             )
             .unwrap();

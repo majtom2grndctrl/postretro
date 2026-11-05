@@ -206,6 +206,7 @@ pub fn advance(
                     component.owner_pawn,
                     !component.attackerless,
                     component.credit_source.clone(),
+                    component.damage_type,
                     on_impact,
                 );
             } else {
@@ -422,6 +423,7 @@ fn advance_matching(
         ) {
             if let ActivationOutcome::Hit(payload) = &mut impact.outcome {
                 payload.impulse = Vec3::from_array(component.knockback_impulse);
+                payload.damage_type = component.damage_type;
             }
             pending.push(PendingProjectileAction::Impact {
                 projectile: projectile_id,
@@ -561,6 +563,7 @@ pub fn resolve_projectile_impact(
             outcome: ActivationOutcome::Hit(DamagePayload {
                 amount: damage,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         },
         NearestProjectileHit::Entity(entity) => WeaponImpact {
@@ -571,6 +574,7 @@ pub fn resolve_projectile_impact(
             outcome: ActivationOutcome::Hit(DamagePayload {
                 amount: damage,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         },
     })
@@ -798,6 +802,7 @@ mod tests {
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .expect("projectile component attaches");
@@ -2184,5 +2189,51 @@ mod tests {
         assert_eq!(health.contributor_ledger.total_recorded_hits(), 1);
         assert!(!registry.exists(first));
         assert!(!registry.exists(later));
+    }
+
+    #[test]
+    fn direct_projectile_hit_deals_its_frozen_damage_type() {
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        registry
+            .borrow_mut()
+            .set_defense_vocabulary(std::sync::Arc::new(
+                postretro_foundation::defense::DefenseVocabulary {
+                    layers: Vec::new(),
+                    damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                        name: "heavy".to_string(),
+                        matrix: std::collections::BTreeMap::from([(
+                            "health".to_string(),
+                            postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                        )]),
+                    }],
+                    default_damage_type: None,
+                },
+            ));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        {
+            let mut registry = registry.borrow_mut();
+            let mut component = registry
+                .get_component::<ProjectileComponent>(projectile)
+                .unwrap()
+                .clone();
+            component.damage_type = Some(0);
+            registry.set_component(projectile, component).unwrap();
+        }
+        advance_once(&registry, 1.0);
+        advance_once(&registry, 1.0);
+        let current = registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .current;
+        assert!(
+            (current - 10.0).abs() <= f32::EPSILON,
+            "heavy is ×2: {current}"
+        );
     }
 }

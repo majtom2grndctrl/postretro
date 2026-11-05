@@ -596,7 +596,7 @@ export type TickParams = { dt: RuntimeRead }
 --- only before any `wait`. Call its verbs with `:`.
 export type ActivatorsTarget = {
   --- Damage this fire's activators by a finite, non-negative amount.
-  damage: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: ActivatorsTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   --- Add health to this fire's activators.
   grantHealth: (self: ActivatorsTarget, amount: number) -> SubjectTokenCommand,
   --- Enter an authored life state.
@@ -634,7 +634,7 @@ export type EmitterParams = { emitter: EmitterTarget }
 export type PlayerTarget = {
   __playerTarget: true,
   --- Damage this event's player by a finite, non-negative amount.
-  damage: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
+  damage: (self: PlayerTarget, amount: number, options: DamageOptions?) -> SubjectTokenCommand,
   --- Add health to this event's player.
   grantHealth: (self: PlayerTarget, amount: number) -> SubjectTokenCommand,
   --- Enter an authored life state.
@@ -777,7 +777,10 @@ export type SourceHandle = {
   --- values degrade the relationship; positive values strengthen its bond.
   adjustSentimentToward: (self: SourceHandle, toward: TargetHandle | SourceHandle, delta: NumberValue) -> Effect,
 }
-export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef }
+--- One impact's facts. `amount` is points dealt; `raw` is the incoming amount
+--- after hit zones; `absorbed` is the layers' share; `broke` is true when this hit
+--- emptied a layer; `type(damageType)` is true when the hit dealt that type.
+export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef, raw: NumberRef, absorbed: NumberRef, broke: BoolRef, type: (damageType: DamageType) -> BoolRef }
 export type ImpactEvent = {
   kind: "impact",
   isOverride: boolean,
@@ -976,7 +979,7 @@ export type NpcGroup = {
   --- Apply a typed partial to each NPC's state.
   update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
   --- Damage each NPC by a finite, non-negative amount.
-  damage: (self: NpcGroup, amount: number) -> GroupCommand,
+  damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
 }
 --- Options for relocating a player to its seat placement on the next tick.
 --- `health` lies in (0, max] and defaults to the pawn's maximum; a value
@@ -991,7 +994,7 @@ export type RespawnOptions = { health: number?, lifeState: string? }
 --- host and in single player only.
 export type PlayerGroup = {
   --- Damage each player by a finite, non-negative amount.
-  damage: (self: PlayerGroup, amount: number) -> GroupCommand,
+  damage: (self: PlayerGroup, amount: number, options: DamageOptions?) -> GroupCommand,
   --- Add health to each player.
   grantHealth: (self: PlayerGroup, amount: number) -> GroupCommand,
   --- Enter an authored life state.
@@ -1392,6 +1395,9 @@ export type DefenseLayer = {
 export type DamageTypeMatrix = { [string]: number | "bypass" }
 --- A registered damage type. It crosses the manifest as `{ kind, name }`.
 export type DamageType = { kind: "damageType", name: string }
+--- `.damage` options: `type` is a registered damage-type handle; any other key
+--- drops the reaction at install.
+export type DamageOptions = { type: DamageType? }
 --- Declare a defense layer kind. Luau passes the name explicitly. Register it
 --- with `defineMod({ defenseLayers = { layer } })`. `options` is reserved.
 declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer

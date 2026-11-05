@@ -490,6 +490,7 @@ impl Level {
                         &DamagePayload {
                             amount: 10_000.0,
                             impulse: Vec3::ZERO,
+                            damage_type: None,
                         },
                         context,
                     );

@@ -434,6 +434,10 @@ pub struct WeaponDescriptor {
     pub splash: Option<SplashDescriptor>,
     #[serde(default, rename = "creditSource")]
     pub credit_source: Option<String>,
+    /// The damage type every hit this weapon deals carries: hitscan,
+    /// projectiles and splash. Absent, the mod's default type, if any.
+    #[serde(default)]
+    pub damage_type: Option<crate::AuthoredHandle>,
     /// Optional content-relative rigid prop model mounted at the pawn's third-person hand socket.
     /// Uses forward slashes and may not be absolute or contain parent traversal.
     #[serde(default, rename = "thirdPersonModel")]
@@ -591,6 +595,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }
     }
 

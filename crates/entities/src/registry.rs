@@ -892,6 +892,9 @@ pub struct EntityRegistry {
     /// the tick (a flushed client hit, frame-end script damage) stamps the
     /// tick it follows. Advanced only by the tick start.
     host_tick: u64,
+    /// The committed damage vocabulary the chokepoint scales hits by. Empty
+    /// until a mod registers one, which leaves every hit untyped.
+    defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     /// App-side presentation producers enqueue transient spawn facts here. The
     /// registry is the sole bridge between fixed-tick producers and the
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
@@ -932,6 +935,7 @@ impl EntityRegistry {
             inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
             host_tick: 0,
+            defense_vocabulary: Default::default(),
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
             dropped_impact_particle_requests: 0,
@@ -1344,6 +1348,28 @@ impl EntityRegistry {
     /// Publish one damage-chokepoint dispatch for the engine's impact-policy
     /// consumer. This is intentionally separate from component columns: it is
     /// ephemeral per-fire data, not persistent entity state.
+    /// The committed damage vocabulary.
+    pub fn defense_vocabulary(
+        &self,
+    ) -> &std::sync::Arc<postretro_foundation::defense::DefenseVocabulary> {
+        &self.defense_vocabulary
+    }
+
+    /// The registered index of the damage type named `name`. An unregistered
+    /// name resolves to `None`, which deals the default type.
+    pub fn damage_type_index(&self, name: Option<&str>) -> Option<u16> {
+        name.and_then(|name| self.defense_vocabulary.type_index(name))
+            .and_then(|index| u16::try_from(index).ok())
+    }
+
+    /// Install the committed damage vocabulary; the chokepoint reads it.
+    pub fn set_defense_vocabulary(
+        &mut self,
+        vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    ) {
+        self.defense_vocabulary = vocabulary;
+    }
+
     /// Index of the most recently started fixed tick.
     pub fn host_tick(&self) -> u64 {
         self.host_tick

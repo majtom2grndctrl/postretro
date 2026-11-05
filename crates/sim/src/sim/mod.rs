@@ -7,6 +7,8 @@ mod assist_pass;
 mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
+#[cfg(test)]
+mod damage_type_tests;
 pub mod defense_layers;
 #[cfg(test)]
 mod defense_layers_tests;
@@ -2355,6 +2357,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -2401,6 +2404,7 @@ mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         };
         let descriptor = descriptor.validate().unwrap();
         let mut ammo_reserve = AmmoReserve::new();
@@ -4554,6 +4558,7 @@ mod tests {
             outcome: weapon::ActivationOutcome::Hit(weapon::DamagePayload {
                 amount: 10.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         };
         {

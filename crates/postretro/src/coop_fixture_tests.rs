@@ -151,6 +151,7 @@ fn fixture_world() -> postretro_level_loader::LevelWorld {
                 close_sound: None,
                 blocked_sound: None,
                 crush_sound: None,
+                crush_damage_type: None,
             }),
             "kinematic_waypoint" => {
                 world

@@ -146,6 +146,50 @@ fn bad_layer_references_fail_load_naming_the_key_path() {
                globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1", defenseLayers: [shield] });"#,
             "defenseLayers[0].options.recharge",
         ),
+        (
+            "weapon-type-unregistered",
+            r#"const shock = defineDamageType("shock", {});
+               const plasma = defineDamageType("plasma", {});
+               globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+                 damageTypes: [shock],
+                 entities: [{ canonicalName: "w", components: { weapon: {
+                   damage: 1, range: 10, resolution: "hitscan", damageType: plasma,
+                   primary: { trigger: "press", recoveryMs: 100, steps: [{ kind: "shot" }] } } } }] });"#,
+            "entities[0].components.weapon.damageType",
+        ),
+        (
+            "weapon-type-is-layer",
+            r#"const shield = defineDefenseLayer("shield");
+               globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+                 defenseLayers: [shield],
+                 entities: [{ canonicalName: "w", components: { weapon: {
+                   damage: 1, range: 10, resolution: "hitscan", damageType: shield,
+                   primary: { trigger: "press", recoveryMs: 100, steps: [{ kind: "shot" }] } } } }] });"#,
+            "expected a damage type handle",
+        ),
+        (
+            "resist-key-unregistered",
+            r#"const shield = defineDefenseLayer("shield");
+               globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+                 defenseLayers: [shield],
+                 entities: [{ canonicalName: "e", components: { health: { max: 10,
+                   layers: [{ layer: shield, capacity: 5, resist: { shock: 0.5 } }] } } }] });"#,
+            "components.health.layers[0].resist.shock",
+        ),
+        (
+            "health-resist-out-of-range",
+            r#"const shock = defineDamageType("shock", {});
+               globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+                 damageTypes: [shock],
+                 entities: [{ canonicalName: "e", components: { health: { max: 10, resist: { shock: 65 } } } }] });"#,
+            "components.health.resist.shock",
+        ),
+        (
+            "matrix-key-unregistered",
+            r#"const shock = defineDamageType("shock", { shield: 2 });
+               globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1", damageTypes: [shock] });"#,
+            "damageTypes[0].matrix.shield",
+        ),
     ];
     for (label, source, needle) in cases {
         let result = build(label, "start-script.js", source);
@@ -195,5 +239,26 @@ fn luau_layer_names_outside_the_grammar_fail_load() {
     assert_eq!(
         build("luau_long", "start-script.luau", &source).status,
         StagedManifestBuildStatus::Failed
+    );
+}
+
+#[test]
+fn a_valid_vocabulary_with_both_resists_and_a_mixed_matrix_loads() {
+    let source = r#"
+        const shield = defineDefenseLayer("shield");
+        const armor = defineDefenseLayer("armor");
+        const shock = defineDamageType("shock", { shield: 2, armor: 0, health: 0.75 });
+        const flechette = defineDamageType("flechette", { shield: "bypass", armor: 0 });
+        globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+          defenseLayers: [shield, armor], damageTypes: [shock, flechette], defaultDamageType: shock,
+          entities: [{ canonicalName: "e", components: { health: { max: 70, resist: { shock: 0.5 },
+            layers: [{ layer: shield, capacity: 30, resist: { flechette: 0 } }, { layer: armor, capacity: 120 }] } } }] });
+    "#;
+    let manifest = built(build("valid-mixed", "start-script.js", source));
+    assert_eq!(manifest.defense.layers, ["shield", "armor"]);
+    assert_eq!(manifest.defense.default_damage_type, Some(0));
+    assert_eq!(
+        manifest.entities[0].health.as_ref().unwrap().layers.len(),
+        2
     );
 }

@@ -539,6 +539,7 @@ pub(crate) mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         });
 
         let mut inventory = entity_descriptor();

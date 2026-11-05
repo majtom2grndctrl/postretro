@@ -44,6 +44,7 @@ pub(super) fn wieldable_descriptor() -> WeaponDescriptor {
         lower_ms: 0,
         raise_ms: 0,
         block_during_reload: None,
+        damage_type: None,
     }
 }
 
@@ -319,6 +320,7 @@ fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
         is_projectile: false,
         fire_origin: Vec3::ZERO,
         timeout_budget_ticks: 180,
+        damage_type: None,
     };
     let ctx = ScriptCtx::new();
     ctx.slot_table

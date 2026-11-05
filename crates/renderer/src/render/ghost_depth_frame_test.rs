@@ -283,6 +283,7 @@ fn mover(mover_id: u32, quads: &[[Vertex; 4]]) -> postretro_level_loader::Loaded
         crush_sound: None,
         sealed_portal_ids: Vec::new(),
         carried_lights: Vec::new(),
+        crush_damage_type: None,
     }
 }
 

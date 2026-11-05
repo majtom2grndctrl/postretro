@@ -416,6 +416,7 @@ mod tests {
             &DamagePayload {
                 amount: 7.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("script.explicit", DamageProducer::InTick),
         );
@@ -777,6 +778,7 @@ mod tests {
             &DamagePayload {
                 amount: 5.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("script.after-latch", DamageProducer::InTick),
         );
@@ -817,6 +819,7 @@ mod tests {
             &DamagePayload {
                 amount: 10.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.lethal", DamageProducer::InTick),
         );
@@ -826,6 +829,7 @@ mod tests {
             &DamagePayload {
                 amount: 25.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
         );

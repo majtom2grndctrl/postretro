@@ -17,12 +17,25 @@ pub const IMPACT_AMOUNT_INPUT: &str = "@impact.amount";
 pub const IMPACT_HEALTH_BEFORE_INPUT: &str = "@impact.healthBefore";
 pub const IMPACT_HEALTH_AFTER_INPUT: &str = "@impact.healthAfter";
 pub const IMPACT_MAX_HEALTH_INPUT: &str = "@impact.maxHealth";
+/// The incoming amount after hit zones, before type and layers.
+pub const IMPACT_RAW_INPUT: &str = "@impact.raw";
+/// The layers' share of points dealt.
+pub const IMPACT_ABSORBED_INPUT: &str = "@impact.absorbed";
+/// This hit took some layer from above zero to zero.
+pub const IMPACT_BROKE_INPUT: &str = "@impact.broke";
+/// Prefix of the per-type Bools: `@impact.type.<name>` is true when the hit
+/// dealt that registered type, the mod's default included. Each binds against
+/// the registered vocabulary, so a type's identity never enters the IR.
+pub const IMPACT_TYPE_INPUT_PREFIX: &str = "@impact.type.";
 
-pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 4] = [
+pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 7] = [
     (IMPACT_AMOUNT_INPUT, IrType::Number),
     (IMPACT_HEALTH_BEFORE_INPUT, IrType::Number),
     (IMPACT_HEALTH_AFTER_INPUT, IrType::Number),
     (IMPACT_MAX_HEALTH_INPUT, IrType::Number),
+    (IMPACT_RAW_INPUT, IrType::Number),
+    (IMPACT_ABSORBED_INPUT, IrType::Number),
+    (IMPACT_BROKE_INPUT, IrType::Bool),
 ];
 
 /// Exact command-target token for the damaged entity in an impact dispatch.
@@ -47,6 +60,9 @@ pub struct ImpactDispatch {
     pub absorbed: f32,
     /// This hit took some layer from above zero to zero.
     pub broke: bool,
+    /// The registered damage type the hit dealt, the mod's default included.
+    /// `None` for an untyped hit.
+    pub damage_type: Option<u16>,
     pub health_before: f32,
     /// The raw post-subtraction value before the stored health is floored.
     pub health_after: f32,
@@ -62,7 +78,7 @@ pub struct ImpactDispatch {
 impl ImpactDispatch {
     /// Values for the numeric half of the impact dispatch scope, ordered by
     /// the fixed vocabulary so a later consumer can seed a bound scope directly.
-    pub fn ir_values(&self) -> [(&'static str, IrValue); 4] {
+    pub fn ir_values(&self) -> [(&'static str, IrValue); 7] {
         [
             (IMPACT_AMOUNT_INPUT, IrValue::Number(self.amount)),
             (
@@ -74,6 +90,9 @@ impl ImpactDispatch {
                 IrValue::Number(self.health_after),
             ),
             (IMPACT_MAX_HEALTH_INPUT, IrValue::Number(self.max_health)),
+            (IMPACT_RAW_INPUT, IrValue::Number(self.raw)),
+            (IMPACT_ABSORBED_INPUT, IrValue::Number(self.absorbed)),
+            (IMPACT_BROKE_INPUT, IrValue::Bool(self.broke)),
         ]
     }
 }

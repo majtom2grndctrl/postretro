@@ -34,6 +34,9 @@ pub struct ProjectileComponent {
     #[serde(default)]
     pub knockback_impulse: [f32; 3],
     pub credit_source: String,
+    /// The shot's registered damage type, frozen at fire.
+    #[serde(default)]
+    pub damage_type: Option<u16>,
     pub owner_pawn: EntityId,
     pub owner_weapon: EntityId,
     /// A shot with no shooter to credit (a projectile trap). Its damage,

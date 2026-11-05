@@ -39,7 +39,7 @@ pub(crate) enum BoundTriggerCommand {
     },
     Damage {
         target: BoundTarget,
-        amount: f32,
+        args: ApplyDamageArgs,
     },
     GrantHealth {
         target: BoundTarget,
@@ -403,13 +403,9 @@ impl BoundTriggerCommand {
                 command,
                 command_diagnostics,
             ),
-            Self::Damage { target, amount } => {
+            Self::Damage { target, args } => {
                 let targets = target.resolve(registry, fire_context);
-                if let Err(error) = health_reactions::dispatch(
-                    registry,
-                    targets.as_slice(),
-                    &ApplyDamageArgs { amount: *amount },
-                ) {
+                if let Err(error) = health_reactions::dispatch(registry, targets.as_slice(), args) {
                     log::warn!("[Trigger] applyDamage binding failed: {error}");
                 }
             }

@@ -834,6 +834,7 @@ fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();

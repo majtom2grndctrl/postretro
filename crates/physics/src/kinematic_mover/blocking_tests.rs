@@ -2248,3 +2248,51 @@ fn held_world_participation_rechecks_queued_crush_victims_after_callback() {
         .collect();
     assert_eq!(healths.iter().sum::<f32>(), 84.0);
 }
+
+#[test]
+fn crush_deals_its_crush_damage_type() {
+    let mover_id = 43;
+    let mut registry = EntityRegistry::new();
+    registry.set_defense_vocabulary(std::sync::Arc::new(
+        postretro_foundation::defense::DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                name: "heavy".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                )]),
+            }],
+            default_damage_type: None,
+        },
+    ));
+    let mover_entity = registry.spawn(Transform::default());
+    let mut mover = mover(mover_id);
+    mover.block_policy = BlockPolicy::Crush;
+    mover.completed = true;
+    mover.crush_damage = 10.0;
+    mover.crush_damage_type = Some(0);
+    registry.set_component(mover_entity, mover).unwrap();
+    let player = add_player(&mut registry, Some(100.0));
+    set_player_ground(&mut registry, player, GroundRef::Mover(mover_id));
+
+    run_mover_blocking_pass(
+        &mut registry,
+        &blocking_static_wall(),
+        std::slice::from_ref(&swept_wall(mover_id)),
+        &moving_contact_pose(mover_id),
+        &mut MoverBlockingState::default(),
+        0.1,
+        &mut Vec::new(),
+        &mut |_| {},
+    );
+
+    assert_eq!(
+        registry
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .current,
+        80.0,
+        "a heavy crush is ×2 on health"
+    );
+}

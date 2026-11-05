@@ -26,6 +26,9 @@ pub enum EntityInputHandle {
     /// `source.inLifeState(name)`: the resolved id against the source pawn's
     /// life state from the fire's snapshot.
     OwnedLifeState(u8),
+    /// `@impact.type.<name>`: whether this hit dealt the registered type at
+    /// this index.
+    ImpactType(u16),
 }
 
 /// A resolved output in an [`EntityScope`].
@@ -68,6 +71,8 @@ pub struct EntityScope {
     /// The impact source pawn's life-state id, refreshed with `owner_seat`;
     /// none for a source that is not a player pawn.
     owner_life_state: Option<u8>,
+    /// The damage type this fire's hit dealt, refreshed each fire.
+    impact_type: Option<u16>,
     /// Engine owner reads already warned about, one bit per
     /// `PlayerSlot::index()`: an absent value warns once per scope, not once
     /// per hit.
@@ -97,6 +102,7 @@ impl EntityScope {
             owner_seat: None,
             owner_engine: [None; PlayerSlot::ALL.len()],
             owner_life_state: None,
+            impact_type: None,
             warned_owned_engine: std::cell::Cell::new(0),
             warned_owned_store: RefCell::new(Vec::new()),
         }
@@ -108,6 +114,7 @@ impl EntityScope {
         for (name, value) in dispatch.ir_values() {
             self.dispatch.seed(name, value)?;
         }
+        self.impact_type = dispatch.damage_type;
         let registry = self.registry.clone();
         let registry = registry.borrow();
         self.seed_owner_seat_from_registry(&registry, dispatch.source);
@@ -129,6 +136,7 @@ impl EntityScope {
         for (name, value) in dispatch.ir_values() {
             self.dispatch.seed(name, value)?;
         }
+        self.impact_type = dispatch.damage_type;
         self.seed_owner_seat_from_registry(registry, dispatch.source);
         self.seed_target_from_registry(registry, dispatch.target);
         Ok(())
@@ -317,6 +325,17 @@ impl BindingScope for EntityScope {
                 ir_type: IrType::Number,
             });
         }
+        // An unregistered type name fails the bind, so the policy holding it
+        // drops at install.
+        if let Some(type_name) =
+            name.strip_prefix(crate::components::health::IMPACT_TYPE_INPUT_PREFIX)
+        {
+            let index = self.registry.borrow().damage_type_index(Some(type_name))?;
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::ImpactType(index),
+                ir_type: IrType::Bool,
+            });
+        }
 
         self.dispatch.resolve_input(name).and_then(|resolved| {
             let handle = match resolved.handle {
@@ -405,6 +424,7 @@ impl BindingScope for EntityScope {
             EntityInputHandle::OwnedLifeState(id) => {
                 IrValue::Bool(self.owner_life_state == Some(*id))
             }
+            EntityInputHandle::ImpactType(index) => IrValue::Bool(self.impact_type == Some(*index)),
         }
     }
 

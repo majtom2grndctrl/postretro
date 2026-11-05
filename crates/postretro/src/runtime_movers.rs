@@ -475,6 +475,8 @@ fn spawn_from_geometry_with_auto_close_default(
     let waypoint_indices = waypoint_index_map(&geometry.waypoints)?;
     let mut spawned = Vec::with_capacity(geometry.movers.len());
 
+    // An unknown crush type warns once per name per level load.
+    let mut warned_crush_types = std::collections::HashSet::new();
     let spawn_result = (|| {
         for mover in &geometry.movers {
             let spin_axis = mover.spin_axis.normalize_or_zero();
@@ -539,6 +541,17 @@ fn spawn_from_geometry_with_auto_close_default(
             );
             component.block_policy = block_policy_from_loaded(mover)?;
             component.crush_damage = mover.crush_damage;
+            component.crush_damage_type = mover.crush_damage_type.as_deref().and_then(|name| {
+                let index = registry.damage_type_index(Some(name));
+                if index.is_none() && warned_crush_types.insert(name.to_string()) {
+                    log::warn!(
+                        "[Loader] kinematic mover {} (`{}`) names unknown crush_damage_type `{name}`; it crushes with the default damage type",
+                        mover.mover_id,
+                        mover.name
+                    );
+                }
+                index
+            });
             component.crush_interval_ms = mover.crush_interval_ms;
             component.auto_close_ms = mover.auto_close_ms.unwrap_or(mod_auto_close_ms);
             if component.auto_close_ms > 0.0 && component.waypoints.len() < 2 {
@@ -847,6 +860,7 @@ pub(crate) mod tests {
             crush_sound: None,
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
+            crush_damage_type: None,
         }
     }
 
@@ -1381,6 +1395,53 @@ pub(crate) mod tests {
         assert_eq!(mover.close_sound, None);
         assert_eq!(mover.blocked_sound.as_deref(), Some("sfx/door_blocked"));
         assert_eq!(mover.crush_sound.as_deref(), Some("sfx/door_crush"));
+    }
+
+    #[test]
+    fn unknown_crush_damage_type_warns_once_and_crushes_as_default() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let mut geometry = geometry(1);
+        let mut second = geometry.movers[0].clone();
+        second.mover_id += 1;
+        second.name = format!("{}_second", second.name);
+        geometry.movers.push(second);
+        geometry.movers[0].crush_damage_type = Some("missing".to_string());
+        geometry.movers[1].crush_damage_type = Some("missing".to_string());
+        let mut registry = EntityRegistry::new();
+        registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: Vec::new(),
+                damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                    name: "ballistic".to_string(),
+                    matrix: Default::default(),
+                }],
+                default_damage_type: Some(0),
+            },
+        ));
+        let ids = spawn_from_geometry(&mut registry, &geometry).unwrap();
+        for id in ids {
+            let mover = registry.get_component::<KinematicMoverComponent>(id).unwrap();
+            assert_eq!(
+                mover.crush_damage_type, None,
+                "an unknown name counts as absent, so the crush deals the default type"
+            );
+        }
+        capture.assert_logged_once(log::Level::Warn, "unknown crush_damage_type `missing`");
+
+        // A registered name resolves to its index; a new level load warns again.
+        let mut known = geometry.clone();
+        known.movers[0].crush_damage_type = Some("ballistic".to_string());
+        known.movers[1].crush_damage_type = None;
+        let mut registry_b = EntityRegistry::new();
+        registry_b.set_defense_vocabulary(std::sync::Arc::clone(registry.defense_vocabulary()));
+        let id = spawn_from_geometry(&mut registry_b, &known).unwrap()[0];
+        assert_eq!(
+            registry_b
+                .get_component::<KinematicMoverComponent>(id)
+                .unwrap()
+                .crush_damage_type,
+            Some(0)
+        );
     }
 
     #[test]

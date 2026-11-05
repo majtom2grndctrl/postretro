@@ -378,7 +378,7 @@
   export interface ActivatorsTarget {
     readonly [activatorsTargetBrand]: true;
     /** Damage this fire's activators by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this fire's activators. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -412,7 +412,7 @@
   export interface PlayerTarget {
     readonly [playerTargetBrand]: true;
     /** Damage this event's player by a finite, non-negative amount. */
-    damage(amount: number): SubjectTokenCommand;
+    damage(amount: number, options?: DamageOptions): SubjectTokenCommand;
     /** Add health to this event's player. */
     grantHealth(amount: number): SubjectTokenCommand;
     /** Enter an authored life state. */
@@ -535,7 +535,8 @@
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -658,14 +659,14 @@
     /** Apply a typed partial to each NPC's state. */
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
   /** Every player pawn bound to a seat; a seat in a disconnect hold is skipped, and single player reaches the local pawn. Opaque: no members, no length. Commands run on the host and in single player only. */
   export interface PlayerGroup {
     /** Damage each player by a finite, non-negative amount. */
-    damage(amount: number): GroupCommand;
+    damage(amount: number, options?: DamageOptions): GroupCommand;
     /** Add health to each player. */
     grantHealth(amount: number): GroupCommand;
     /** Enter an authored life state. */
@@ -809,6 +810,8 @@
   export type DamageTypeMatrix = { readonly [pool: string]: number | "bypass" };
   /** A registered damage type. It crosses the manifest as `{ kind, name }`. */
   export type DamageType = { readonly kind: "damageType"; readonly name: string };
+  /** `.damage` options: `type` is a registered damage-type handle; a hit that names none deals the mod's `defaultDamageType`. Any other key drops the reaction at install. */
+  export type DamageOptions = { readonly type?: DamageType };
 
   /** Declare a defense layer kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })` and attach it in `components.health.layers`. */
   export function defineDefenseLayer(options?: DefenseLayerOptions): DefenseLayer;

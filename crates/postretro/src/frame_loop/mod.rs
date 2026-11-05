@@ -801,8 +801,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let pending_tick = sim::begin_tick(&script_ctx.registry, Some(&script_ctx));
             {
-                let _scope =
-                    sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::DefenseLayers);
+                let _scope = sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::DefenseLayers);
                 postretro_sim::sim::defense_layers::recharge_defense_layers(
                     &mut script_ctx.registry.borrow_mut(),
                 );

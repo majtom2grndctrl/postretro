@@ -114,6 +114,7 @@ fn shot_through(
                     splash: None,
                     source_weapon: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .unwrap();
@@ -192,6 +193,7 @@ fn a_splash_on_a_ghost_damages_nothing_while_one_on_the_real_member_does() {
             shooter,
             true,
             "probe".into(),
+            None,
             &mut |_| {},
         )
     };

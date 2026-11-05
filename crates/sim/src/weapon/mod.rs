@@ -39,6 +39,8 @@ mod client_pull;
 mod damage;
 mod fluid_splash;
 #[cfg(test)]
+mod damage_type_tests;
+#[cfg(test)]
 mod fluid_splash_tests;
 mod impact;
 pub mod spread;
@@ -94,6 +96,7 @@ pub mod test_fixtures {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 }
@@ -370,6 +373,8 @@ pub struct ProjectileLaunch {
     pub damage: f32,
     pub knockback_impulse: Vec3,
     pub credit_source: String,
+    /// The shot's registered damage type, frozen at fire like its damage.
+    pub damage_type: Option<u16>,
     pub descriptor: ProjectileDescriptor,
     /// Impact-composed radial damage snapshot, independent from projectile
     /// travel tuning and retained by the spawned projectile.
@@ -408,6 +413,7 @@ impl ProjectileLaunch {
             damage,
             knockback_impulse,
             credit_source,
+            damage_type: None,
             descriptor,
             splash,
         }
@@ -626,6 +632,7 @@ pub fn tick_resolved_component(
     let splash = stats.splash.cloned();
     let muzzle_offset = stats.muzzle_offset;
     let credit_source = stats.credit_source.to_string();
+    let damage_type = registry.damage_type_index(stats.damage_type);
     match fire {
         WeaponFireAuthorization::Accepted => {
             // A shell position is consumed whether it is a single exact-axis ray
@@ -675,6 +682,7 @@ pub fn tick_resolved_component(
                 projectile.as_ref(),
                 splash.as_ref(),
                 &credit_source,
+                damage_type,
                 shell_counter,
                 pellet_salt_name,
                 active_slot,
@@ -815,6 +823,7 @@ fn fire_hitscan(
     projectile: Option<&ProjectileDescriptor>,
     splash: Option<&SplashDescriptor>,
     credit_source: &str,
+    damage_type: Option<u16>,
     shell_counter: u32,
     pellet_salt_name: &str,
     active_slot: usize,
@@ -873,6 +882,7 @@ fn fire_hitscan(
                         outcome: ActivationOutcome::Hit(DamagePayload {
                             amount: damage,
                             impulse: glam::Vec3::ZERO,
+                            damage_type: None,
                         }),
                     },
                     None => continue,
@@ -916,12 +926,18 @@ fn fire_hitscan(
                     )
                 }),
                 credit_source: credit_source.to_string(),
+                damage_type,
                 descriptor: projectile.clone(),
                 splash: splash.cloned(),
             });
         }
     }
 
+    for impact in &mut events.impacts {
+        if let ActivationOutcome::Hit(payload) = &mut impact.outcome {
+            payload.damage_type = damage_type;
+        }
+    }
     events
 }
 
@@ -1187,6 +1203,7 @@ fn impact_from_entity(entity: EntityRayHit, damage: f32) -> WeaponImpact {
         outcome: ActivationOutcome::Hit(DamagePayload {
             amount: damage,
             impulse: glam::Vec3::ZERO,
+            damage_type: None,
         }),
     }
 }
@@ -1299,6 +1316,7 @@ pub(crate) mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         })
     }
 
@@ -1358,6 +1376,7 @@ pub(crate) mod tests {
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }
     }
 
@@ -1942,7 +1961,8 @@ pub(crate) mod tests {
             impact.outcome,
             ActivationOutcome::Hit(DamagePayload {
                 amount: 25.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             })
         );
     }
@@ -2882,7 +2902,8 @@ pub(crate) mod tests {
             impact.outcome,
             ActivationOutcome::Hit(DamagePayload {
                 amount: 25.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             })
         );
     }
@@ -3637,6 +3658,7 @@ pub(crate) mod tests {
                         splash: None,
                         source_weapon: None,
                         activation: None,
+                        damage_type: None,
                     },
                 )
                 .expect("predicted projectile state attaches");
@@ -3764,6 +3786,7 @@ pub(crate) mod tests {
                         splash: None,
                         source_weapon: None,
                         activation: None,
+                        damage_type: None,
                     },
                 )
                 .unwrap();

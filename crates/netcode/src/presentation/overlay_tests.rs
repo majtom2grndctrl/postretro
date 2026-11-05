@@ -228,6 +228,7 @@ impl Host {
             &DamagePayload {
                 amount,
                 impulse: Vec3::ZERO,
+                damage_type: None,
             },
             context,
         );

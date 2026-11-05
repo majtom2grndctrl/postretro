@@ -204,6 +204,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -1906,7 +1907,8 @@ fn damage_crossfire_enemy(
         victim,
         &DamagePayload {
             amount,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -2191,6 +2193,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 source_action: None,
                 source_shot: None,
                 activation: None,
+                damage_type: None,
             },
         )
         .expect("active crossfire projectile attaches");
@@ -2527,6 +2530,7 @@ impl FactionSentimentHarness {
                     source_action: None,
                     source_shot: None,
                     activation: None,
+                    damage_type: None,
                 },
             )
             .expect("fixture projectile attaches");
@@ -2897,6 +2901,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                 &DamagePayload {
                     amount: 50.0,
                     impulse: glam::Vec3::ZERO,
+                    damage_type: None,
                 },
                 DamageContext {
                     source_id: "test.remote.lethal".to_string(),
@@ -4255,6 +4260,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(TEST_ATTACK_RANGE),
@@ -6866,6 +6872,7 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
             outcome: crate::weapon::ActivationOutcome::Hit(DamagePayload {
                 amount: 1.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             }),
         },
         "test.player-hitscan".to_string(),
@@ -6897,7 +6904,8 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
         enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("test.entity-melee", DamageProducer::InTick),
     ));
@@ -6913,7 +6921,10 @@ fn time_since_damage_fact_ages_from_each_damage_chokepoint_and_clamps() {
     crate::health::reactions::dispatch(
         &mut registry,
         &[enemy],
-        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+        &crate::health::reactions::ApplyDamageArgs {
+            amount: 1.0,
+            damage_type: None,
+        },
     )
     .expect("applyDamage reaction succeeds for a health-bearing enemy");
     run_ai_tick(&mut registry, &mut runtime, DT);
@@ -6993,7 +7004,8 @@ fn candidate_damage_recency_matches_the_brain_fact_on_the_same_ai_tick() {
         enemy,
         &DamagePayload {
             amount: 7.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -7118,7 +7130,8 @@ fn visible_target_memory_overrides_damage_seed_tracks_live_position_then_ages_an
         enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         damage_context,
     ));
@@ -7273,6 +7286,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -7722,6 +7736,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             cooldown_ms: Some(1000.0),
             engagement_radius: None,
             standoff_distance: None,
+            damage_type: None,
         },
     );
 
@@ -7982,6 +7997,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -8683,6 +8699,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -8695,6 +8712,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ]),
@@ -9030,6 +9048,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -9042,6 +9061,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ]),
@@ -9314,7 +9334,10 @@ fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
     crate::health::reactions::dispatch(
         &mut registry,
         &[enemy],
-        &crate::health::reactions::ApplyDamageArgs { amount: 1.0 },
+        &crate::health::reactions::ApplyDamageArgs {
+            amount: 1.0,
+            damage_type: None,
+        },
     )
     .expect("applyDamage reaction succeeds for a health-bearing enemy");
 
@@ -9350,7 +9373,8 @@ fn contextless_apply_damage_does_not_send_reference_enemy_to_stale_memory() {
         sourced_enemy,
         &DamagePayload {
             amount: 1.0,
-            impulse: glam::Vec3::ZERO
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         context,
     ));
@@ -9889,6 +9913,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
             (
@@ -9901,6 +9926,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
+                    damage_type: None,
                 },
             ),
         ]),
@@ -10141,6 +10167,7 @@ fn an_impact_policy_write_fires_an_authored_state_interrupt_on_the_next_tick() {
         &DamagePayload {
             amount: 5.0,
             impulse: glam::Vec3::ZERO,
+            damage_type: None,
         },
         DamageContext::new("test.weapon", DamageProducer::InTick),
     );
@@ -10354,6 +10381,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -10373,6 +10401,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
             cooldown_ms: None,
             engagement_radius: None,
             standoff_distance: None,
+            damage_type: None,
         },
     );
     graph
@@ -10443,6 +10472,7 @@ fn projectile_weapon_descriptor(
             lower_ms: 0,
             raise_ms: 0,
             block_during_reload: None,
+            damage_type: None,
         }),
         touchable: None,
         mesh: None,
@@ -10549,6 +10579,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(0.0),
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(5.0),
@@ -11756,6 +11787,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -12223,6 +12255,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: Some(ATTACK_RANGE),
@@ -12332,6 +12365,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         );
         assert!(matches!(
@@ -12405,6 +12439,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,
@@ -12909,3 +12944,38 @@ fn event_addresses(events: &[postretro_entities::AiEmission]) -> Vec<Cow<'static
 
 #[path = "held_world_participation_tests.rs"]
 mod held_world_participation;
+
+#[test]
+fn contact_attack_deals_its_damage_type() {
+    let mut reg = EntityRegistry::new();
+    reg.set_defense_vocabulary(std::sync::Arc::new(
+        postretro_foundation::defense::DefenseVocabulary {
+            layers: Vec::new(),
+            damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                name: "heavy".to_string(),
+                matrix: std::collections::BTreeMap::from([(
+                    "health".to_string(),
+                    postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                )]),
+            }],
+            default_damage_type: None,
+        },
+    ));
+    let mut warned = AiRuntime::new();
+    let mut graph = tuning();
+    for attack in graph.attacks.values_mut() {
+        attack.damage_type = Some(postretro_foundation::AuthoredHandle(
+            serde_json::json!({ "kind": "damageType", "name": "heavy" }),
+        ));
+    }
+    let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
+    spawn_enemy(&mut reg, Vec3::ZERO, brain_with(graph, TEST_IDLE_STATE), 50.0);
+
+    let events = run_ai_tick(&mut reg, &mut warned, 0.1);
+    assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);
+    assert_eq!(
+        player_hp(&reg, pawn),
+        100.0 - 2.0 * TEST_ATTACK_DAMAGE,
+        "a heavy contact attack is ×2 on health"
+    );
+}

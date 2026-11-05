@@ -757,10 +757,25 @@ DataScriptSdk.assist = table.freeze({
   target = assistSide("@assist.target"),
 }) :: Assist
 
+-- A bad reference (a bare string, a layer handle) names no registered type,
+-- so its input fails the bind and the policy holding it drops at install.
+local function impactTypeName(handle: any): string
+  if type(handle) == "table" and rawget(handle, "kind") == "damageType" and type(rawget(handle, "name")) == "string" then
+    return rawget(handle, "name")
+  end
+  return "@invalid"
+end
+
 local IMPACT: Impact = table.freeze({
   target = IMPACT_TARGET,
   source = IMPACT_SOURCE,
   amount = numberRef({ op = "input", name = "@impact.amount" }),
+  raw = numberRef({ op = "input", name = "@impact.raw" }),
+  absorbed = numberRef({ op = "input", name = "@impact.absorbed" }),
+  broke = boolRef({ op = "input", name = "@impact.broke" }),
+  type = function(damageType: DamageType): BoolRef
+    return boolRef({ op = "input", name = "@impact.type." .. impactTypeName(damageType) })
+  end,
 })
 
 --- Spawn a passive presentation at the current impact target, shared with every

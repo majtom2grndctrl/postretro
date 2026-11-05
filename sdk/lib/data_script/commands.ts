@@ -158,11 +158,20 @@ export interface TriggerTarget {
 
 type CommandBuilder<R> = (primitive: string, args: Record<string, unknown>) => R;
 
+/** `.damage` options: `type` is a registered damage-type handle. Every key
+ * crosses as authored, so the engine rejects an unknown one at install. */
+type DamageOptions = { readonly type?: import("postretro").DamageType } & Record<string, unknown>;
+
+function damageArgs(amount: number, options?: DamageOptions): Record<string, unknown> {
+  return options === undefined ? { amount } : { ...options, amount };
+}
+
 // The player-facing verbs, shared by `players()`, `on.activators` and
 // `on.player`; only the addressing each stamps differs.
 function playerVerbs<R>(make: CommandBuilder<R>) {
   return {
-    damage: (amount: number): R => make("applyDamage", { amount }),
+    damage: (amount: number, options?: DamageOptions): R =>
+      make("applyDamage", damageArgs(amount, options)),
     grantHealth: (amount: number): R => make("grantHealth", { amount }),
     setLifeState: (state: string): R => make("setLifeState", { state }),
     respawn: (options: RespawnOptions = {}): R => {
@@ -187,7 +196,8 @@ export function npcs(filter?: NpcGroupFilter): NpcGroup {
   const make = groupCommand("npc", filter?.tag);
   return Object.freeze({
     update: (fields: NpcStateUpdateArgs) => make("updateNpcState", fields),
-    damage: (amount: number) => make("applyDamage", { amount }),
+    damage: (amount: number, options?: DamageOptions) =>
+      make("applyDamage", damageArgs(amount, options)),
   });
 }
 

@@ -212,6 +212,7 @@ fn launch_trap_shot(registry: &mut EntityRegistry, due: DueShot, output: &mut Tr
                 postretro_foundation::knockback_impulse(push.speed, push.upward_bias, direction)
             }),
             credit_source: shot.credit_source.clone(),
+            damage_type: registry.damage_type_index(shot.damage_type.as_deref()),
             descriptor: projectile.clone(),
             splash: shot.splash.clone(),
             action: Some(Arc::clone(shot.action())),

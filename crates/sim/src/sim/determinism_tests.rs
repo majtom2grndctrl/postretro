@@ -1256,6 +1256,7 @@ fn spawn_weapon(registry: &mut EntityRegistry) -> EntityId {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
         )
         .expect("weapon component should attach");
@@ -1631,6 +1632,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                damage_type: None,
             },
         )]),
         engagement_radius: None,

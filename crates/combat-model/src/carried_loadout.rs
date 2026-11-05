@@ -159,6 +159,7 @@ impl WieldableTuningPayload {
             placement: None,
             muzzle_offset: self.muzzle_offset,
             block_during_reload: self.block_during_reload,
+            damage_type: None,
         }
     }
 

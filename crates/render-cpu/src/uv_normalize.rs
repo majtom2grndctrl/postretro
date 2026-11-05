@@ -199,6 +199,7 @@ mod tests {
             crush_sound: None,
             sealed_portal_ids: Vec::new(),
             carried_lights: Vec::new(),
+            crush_damage_type: None,
         }
     }
 

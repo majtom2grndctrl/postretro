@@ -284,6 +284,7 @@ impl AiWeaponControllers {
                         )
                     }),
                     credit_source: shot.credit_source.clone(),
+                    damage_type: registry.damage_type_index(shot.damage_type.as_deref()),
                     descriptor: projectile.clone(),
                     splash: shot.splash.clone(),
                     action: Some(Arc::clone(shot.action())),

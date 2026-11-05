@@ -425,7 +425,16 @@ export type Assist = Readonly<{ helper: AssistSide; target: AssistSide }>;
 export type Impact = Readonly<{
   target: TargetHandle;
   source: SourceHandle;
+  /** Points dealt: the total drained from layers and health after type multipliers and resistances. */
   amount: NumberRef;
+  /** The incoming amount after hit zones, before type and layers. */
+  raw: NumberRef;
+  /** The layers' share of `amount`. */
+  absorbed: NumberRef;
+  /** This hit took some layer from above zero to zero. */
+  broke: BoolRef;
+  /** True when the hit dealt `damageType`, the mod's default type included. */
+  type(damageType: import("postretro").DamageType): BoolRef;
 }>;
 
 export interface ImpactEvent {
@@ -547,10 +556,24 @@ export const assist: Assist = Object.freeze({
   target: assistSide("@assist.target"),
 });
 
+// A bad reference (a bare string, a layer handle) names no registered type, so
+// its input fails the bind and the policy holding it drops at install.
+function impactTypeName(handle: unknown): string {
+  const record = handle as { readonly kind?: unknown; readonly name?: unknown } | null;
+  return record !== null && typeof record === "object" && record.kind === "damageType" && typeof record.name === "string"
+    ? record.name
+    : "@invalid";
+}
+
 const IMPACT: Impact = Object.freeze({
   target: IMPACT_TARGET,
   source: IMPACT_SOURCE,
   amount: numberRef({ op: "input", name: "@impact.amount" }),
+  raw: numberRef({ op: "input", name: "@impact.raw" }),
+  absorbed: numberRef({ op: "input", name: "@impact.absorbed" }),
+  broke: boolRef({ op: "input", name: "@impact.broke" }),
+  type: (damageType: import("postretro").DamageType) =>
+    boolRef({ op: "input", name: `@impact.type.${impactTypeName(damageType)}` }),
 });
 
 /**

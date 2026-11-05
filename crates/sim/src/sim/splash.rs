@@ -130,6 +130,7 @@ pub fn emit_splash_damage(
     owner_pawn: EntityId,
     credit_owner: bool,
     credit_source: String,
+    damage_type: Option<u16>,
     on_impact: &mut impl FnMut(&mut EntityRegistry),
 ) -> bool {
     let targets = entities_in_sphere(
@@ -183,7 +184,11 @@ pub fn emit_splash_damage(
             normal: Vec3::Y,
             target: Some(target.entity),
             zone: None,
-            outcome: ActivationOutcome::Hit(DamagePayload { amount, impulse }),
+            outcome: ActivationOutcome::Hit(DamagePayload {
+                amount,
+                impulse,
+                damage_type,
+            }),
         };
         apply_authorized_splash_impact_damage(
             registry,
@@ -330,6 +335,7 @@ mod tests {
             owner,
             true,
             "weapon.splash-test".to_string(),
+            None,
             &mut |_| drains += 1,
         );
 
@@ -385,6 +391,7 @@ mod tests {
             owner,
             true,
             "weapon.splash-test".to_string(),
+            None,
             &mut ignore_impact,
         );
 
@@ -432,6 +439,7 @@ mod tests {
             owner,
             true,
             "weapon.splash-test".to_string(),
+            None,
             &mut ignore_impact,
         );
 
@@ -471,6 +479,7 @@ mod tests {
             owner,
             true,
             "weapon.splash-test".to_string(),
+            None,
             &mut ignore_impact,
         );
 
@@ -539,6 +548,7 @@ mod tests {
             owner,
             true,
             "test.rocket".into(),
+            None,
             &mut |_| drains += 1,
         ));
         assert_eq!(drains, 1);
@@ -589,6 +599,7 @@ mod tests {
             owner,
             true,
             "test.concussion".into(),
+            None,
             &mut |_| {},
         );
         assert!(
@@ -648,6 +659,7 @@ mod tests {
             owner,
             true,
             "test.self".into(),
+            None,
             &mut |_| {},
         );
         assert!(
@@ -667,5 +679,53 @@ mod tests {
                 .length()
                 < 1.0e-5
         );
+    }
+
+    #[test]
+    fn splash_deals_its_shots_damage_type() {
+        let mut registry = EntityRegistry::new();
+        registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: Vec::new(),
+                damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
+                    name: "heavy".to_string(),
+                    matrix: std::collections::BTreeMap::from([(
+                        "health".to_string(),
+                        postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+                    )]),
+                }],
+                default_damage_type: None,
+            },
+        ));
+        let owner = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let center = spawn_target(&mut registry, Vec3::ZERO, Vec3::splat(0.25));
+        let splash = SplashDescriptor {
+            knockback: None,
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        emit_splash_damage(
+            &mut registry,
+            &HitZoneStore::new(),
+            &CollisionWorld::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &splash,
+            10.0,
+            weapon,
+            owner,
+            true,
+            "weapon.typed-splash".to_string(),
+            Some(0),
+            &mut |_| {},
+        );
+        let health = registry.get_component::<HealthComponent>(center).unwrap();
+        assert!(
+            (health.current - 80.0).abs() <= 1.0e-6,
+            "heavy splash is ×2"
+        );
+        assert_eq!(registry.take_impact_dispatches()[0].damage_type, Some(0));
     }
 }

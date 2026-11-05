@@ -87,6 +87,7 @@ fn kill_an_enemy_as(h: &Consumer, pawn: EntityId) {
         &DamagePayload {
             amount: 200.0,
             impulse: Vec3::ZERO,
+            damage_type: None,
         },
         context,
     );

@@ -6845,6 +6845,7 @@ mod tests {
                 crush_sound: None,
                 sealed_portal_ids: vec![0],
                 carried_lights: Vec::new(),
+                crush_damage_type: None,
             }],
             waypoints: vec![
                 KinematicWaypointRecord {
@@ -7472,6 +7473,7 @@ mod tests {
                 lower_ms: 0,
                 raise_ms: 0,
                 block_during_reload: None,
+                damage_type: None,
             }),
             touchable: None,
             mesh: None,

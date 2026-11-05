@@ -69,8 +69,9 @@ pub use super::contributor_ledger::{
     ContributorLedgerOverflow, ContributorLedgerRecord, PendingKillCredit,
 };
 pub use super::impact_dispatch::{
-    IMPACT_AMOUNT_INPUT, IMPACT_DISPATCH_INPUTS, IMPACT_HEALTH_AFTER_INPUT,
-    IMPACT_HEALTH_BEFORE_INPUT, IMPACT_MAX_HEALTH_INPUT, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN,
+    IMPACT_ABSORBED_INPUT, IMPACT_AMOUNT_INPUT, IMPACT_BROKE_INPUT, IMPACT_DISPATCH_INPUTS,
+    IMPACT_HEALTH_AFTER_INPUT, IMPACT_HEALTH_BEFORE_INPUT, IMPACT_MAX_HEALTH_INPUT,
+    IMPACT_RAW_INPUT, IMPACT_SOURCE_TOKEN, IMPACT_TARGET_TOKEN, IMPACT_TYPE_INPUT_PREFIX,
     ImpactDispatch,
 };
 
@@ -205,7 +206,8 @@ pub fn apply_damage_with_context(
     let mut updated = health.clone();
     let health_before = updated.current;
     let max_health = health.max;
-    let drain = super::defense_layers::drain_hit(registry, id, raw);
+    let (drain, damage_type) =
+        super::defense_layers::drain_hit(registry, id, raw, payload.damage_type);
     let health_after = health_before - drain.health_loss;
     updated.current = health_after.max(0.0);
     let target_was_live =
@@ -242,6 +244,7 @@ pub fn apply_damage_with_context(
         raw,
         absorbed: drain.absorbed,
         broke: drain.broke,
+        damage_type,
         health_before,
         health_after,
         max_health,
@@ -450,7 +453,8 @@ mod tests {
             id,
             &DamagePayload {
                 amount: 25.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));
@@ -474,6 +478,7 @@ mod tests {
             &DamagePayload {
                 amount: 999.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.health", DamageProducer::InTick),
         );
@@ -494,6 +499,7 @@ mod tests {
         let payload = DamagePayload {
             amount: 1.0,
             impulse: glam::Vec3::ZERO,
+            damage_type: None,
         };
         let contact = glam::Vec3::new(1.0, 2.0, 3.0);
 
@@ -529,6 +535,7 @@ mod tests {
             &DamagePayload {
                 amount: 25.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext {
                 source_id: "weapon.test".to_string(),
@@ -553,8 +560,11 @@ mod tests {
                 ("@impact.healthBefore", IrType::Number),
                 ("@impact.healthAfter", IrType::Number),
                 ("@impact.maxHealth", IrType::Number),
+                ("@impact.raw", IrType::Number),
+                ("@impact.absorbed", IrType::Number),
+                ("@impact.broke", IrType::Bool),
             ],
-            "only the four numeric facts enter the IR vocabulary"
+            "the fixed impact facts enter the IR vocabulary; per-type Bools bind by name"
         );
         assert_eq!(IMPACT_TARGET_TOKEN, "@impact.target");
         assert_eq!(IMPACT_SOURCE_TOKEN, "@impact.source");
@@ -574,6 +584,9 @@ mod tests {
             (health_before_name, IrValue::Number(health_before)),
             (health_after_name, IrValue::Number(health_after)),
             (max_health_name, IrValue::Number(max_health)),
+            (raw_name, IrValue::Number(raw)),
+            (absorbed_name, IrValue::Number(absorbed)),
+            (broke_name, IrValue::Bool(broke)),
         ] = dispatch.ir_values()
         else {
             panic!("impact dispatch must carry only numeric IR facts");
@@ -584,18 +597,28 @@ mod tests {
                 health_before_name,
                 health_after_name,
                 max_health_name,
+                raw_name,
+                absorbed_name,
+                broke_name,
             ],
             [
                 IMPACT_AMOUNT_INPUT,
                 IMPACT_HEALTH_BEFORE_INPUT,
                 IMPACT_HEALTH_AFTER_INPUT,
                 IMPACT_MAX_HEALTH_INPUT,
+                IMPACT_RAW_INPUT,
+                IMPACT_ABSORBED_INPUT,
+                IMPACT_BROKE_INPUT,
             ]
         );
         assert_number_approx_eq(amount, 25.0);
         assert_number_approx_eq(health_before, 10.0);
         assert_number_approx_eq(health_after, -15.0);
         assert_number_approx_eq(max_health, 10.0);
+        // No layers: the whole raw amount is points dealt, none absorbed.
+        assert_number_approx_eq(raw, 25.0);
+        assert_number_approx_eq(absorbed, 0.0);
+        assert!(!broke);
     }
 
     #[test]
@@ -613,6 +636,7 @@ mod tests {
             &DamagePayload {
                 amount: 25.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
@@ -629,6 +653,7 @@ mod tests {
             &DamagePayload {
                 amount: 90.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
@@ -670,6 +695,7 @@ mod tests {
             &DamagePayload {
                 amount: 25.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext {
                 source_id: "weapon.plasma".to_string(),
@@ -708,6 +734,7 @@ mod tests {
             &DamagePayload {
                 amount: 10.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.lethal", DamageProducer::InTick),
         );
@@ -717,6 +744,7 @@ mod tests {
             &DamagePayload {
                 amount: 50.0,
                 impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("weapon.corpse-hit", DamageProducer::InTick),
         );
@@ -798,7 +826,8 @@ mod tests {
             id,
             &DamagePayload {
                 amount: 25.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));
@@ -819,7 +848,8 @@ mod tests {
             id,
             &DamagePayload {
                 amount: 0.0,
-                impulse: glam::Vec3::ZERO
+                impulse: glam::Vec3::ZERO,
+                damage_type: None,
             },
             DamageContext::new("test.health", DamageProducer::InTick),
         ));

@@ -7039,6 +7039,146 @@ mod tests {
         );
     }
 
+    // One host tick's producers drain a shield in the tick's stage order: the
+    // crusher in the Steering stage, then the host's hitscan in the Weapons
+    // stage. A client hit waiting on that tick's FIRE is flushed after the
+    // tick's death sweep and drains after both, before the next tick start.
+    // Each hit sees the last one's layer state, and only the hit that empties
+    // the shield reports broke.
+    #[test]
+    fn producers_drain_in_stage_order_then_flushed_client_hit() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        use postretro_entities::components::health::{
+            DamageContext, DamageProducer, apply_damage_with_context,
+        };
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture.registry.set_defense_vocabulary(std::sync::Arc::new(
+            postretro_foundation::defense::DefenseVocabulary {
+                layers: vec!["shield".to_string()],
+                ..Default::default()
+            },
+        ));
+        fixture
+            .registry
+            .set_component(
+                fixture.target,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 30.0,
+                        capacity: 30.0,
+                        recharge_delay_ms: 3_000.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        fixture.shot_mut().damage = 20.0;
+        let host_pawn = fixture.registry.spawn(Transform::default());
+        let host_weapon = fixture.registry.spawn(Transform::default());
+        fixture
+            .registry
+            .set_component(host_weapon, test_weapon(20.0, 10.0))
+            .unwrap();
+        let target = fixture.target;
+        let shield = |registry: &EntityRegistry| {
+            registry
+                .get_component::<DefenseLayersComponent>(target)
+                .unwrap()
+                .layers[0]
+                .value
+        };
+        let health = |registry: &EntityRegistry| {
+            registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current
+        };
+
+        // Tick start: the host tick advances and recharge runs before any hit.
+        let tick = fixture.registry.advance_host_tick();
+        postretro_sim::sim::defense_layers::recharge_defense_layers(&mut fixture.registry);
+
+        // Steering stage: the crusher's hit, as the blocking pass deals it.
+        assert!(apply_damage_with_context(
+            &mut fixture.registry,
+            target,
+            &weapon::DamagePayload {
+                amount: 20.0,
+                impulse: Vec3::ZERO,
+                damage_type: None,
+            },
+            DamageContext::new("mover.crush", DamageProducer::InTick),
+        ));
+        let crush = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 10.0);
+        assert_eq!(health(&fixture.registry), 100.0);
+        assert_eq!((crush[0].absorbed, crush[0].broke), (20.0, false));
+
+        // Weapons stage: the host's hitscan takes the last 10 of the shield
+        // and spills 10 raw to health.
+        crate::sim::apply_authorized_weapon_impact_damage(
+            &mut fixture.registry,
+            host_weapon,
+            Some(host_pawn),
+            &WeaponImpact {
+                point: Vec3::new(4.0, 1.5, 0.0),
+                normal: Vec3::Y,
+                target: Some(target),
+                zone: None,
+                outcome: ActivationOutcome::Hit(weapon::DamagePayload {
+                    amount: 20.0,
+                    impulse: Vec3::ZERO,
+                    damage_type: None,
+                }),
+            },
+            "weapon.test.host".to_string(),
+            20.0,
+        );
+        let hitscan = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 0.0);
+        assert_eq!(health(&fixture.registry), 90.0);
+        assert_eq!((hitscan[0].absorbed, hitscan[0].broke), (10.0, true));
+
+        // The tick's death sweep, then the post-tick flush of the client's hit.
+        let registry = std::rc::Rc::new(std::cell::RefCell::new(std::mem::replace(
+            &mut fixture.registry,
+            EntityRegistry::new(),
+        )));
+        assert!(crate::sim::run_death_sweep(&registry).is_empty());
+        fixture.registry = std::rc::Rc::try_unwrap(registry)
+            .ok()
+            .expect("the sweep keeps no handle on the registry")
+            .into_inner();
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+        assert!(fixture.ingest(7, &declaration));
+        let flushed = fixture.registry.take_impact_dispatches();
+        assert_eq!(shield(&fixture.registry), 0.0);
+        assert_eq!(health(&fixture.registry), 70.0);
+        assert_eq!(
+            (flushed[0].absorbed, flushed[0].broke),
+            (0.0, false),
+            "the empty shield is skipped"
+        );
+        assert_eq!(flushed[0].source, Some(fixture.pawn));
+        assert_eq!(
+            fixture
+                .registry
+                .get_component::<DefenseLayersComponent>(target)
+                .unwrap()
+                .last_hit_tick,
+            Some(tick),
+            "the flushed hit restarts the delay from the tick it followed"
+        );
+    }
+
     // Regression: connected-client level unload can leave the transport connected
     // while descriptors are empty. Descriptor-backed snapshots must not apply into
     // that empty level state, but classless Transform traffic remains safe.

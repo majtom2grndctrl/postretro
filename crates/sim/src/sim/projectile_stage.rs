@@ -2236,4 +2236,89 @@ mod tests {
             "heavy is ×2: {current}"
         );
     }
+
+    // A direct impact drains a shield by the projectile's frozen type, taking
+    // that type's matrix entry for the layer.
+    #[test]
+    fn direct_projectile_hit_drains_a_shield_by_its_frozen_damage_type() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        use postretro_foundation::defense::{
+            DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier,
+        };
+        let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+        registry
+            .borrow_mut()
+            .set_defense_vocabulary(std::sync::Arc::new(DefenseVocabulary {
+                layers: vec!["shield".to_string()],
+                damage_types: vec![DamageTypeDeclaration {
+                    name: "plasma".to_string(),
+                    matrix: std::collections::BTreeMap::from([(
+                        "shield".to_string(),
+                        PoolMultiplier::Scale(1.5),
+                    )]),
+                }],
+                default_damage_type: None,
+            }));
+        let target = spawn_target(
+            &mut registry.borrow_mut(),
+            Vec3::new(0.0, 0.0, -0.75),
+            Vec3::splat(0.1),
+        );
+        registry
+            .borrow_mut()
+            .set_component(
+                target,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 10.0,
+                        capacity: 10.0,
+                        recharge_delay_ms: 3_000.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        let projectile = spawn_projectile(&mut registry.borrow_mut(), 2.0, 0.0, 5.0);
+        {
+            let mut registry = registry.borrow_mut();
+            let mut component = registry
+                .get_component::<ProjectileComponent>(projectile)
+                .unwrap()
+                .clone();
+            component.damage_type = Some(0);
+            registry.set_component(projectile, component).unwrap();
+        }
+        advance_once(&registry, 1.0);
+        advance_once(&registry, 1.0);
+        let mut registry = registry.borrow_mut();
+        let shield = registry
+            .get_component::<DefenseLayersComponent>(target)
+            .unwrap()
+            .layers[0]
+            .value;
+        assert!(
+            (shield - 2.5).abs() <= 1.0e-5,
+            "plasma is ×1.5 on the shield: {shield}"
+        );
+        assert_eq!(
+            registry
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            20.0,
+            "the shield absorbs the whole impact"
+        );
+        let dispatches = registry.take_impact_dispatches();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].damage_type, Some(0));
+        assert!((dispatches[0].absorbed - 7.5).abs() <= 1.0e-5);
+    }
 }

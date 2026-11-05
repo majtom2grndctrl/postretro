@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use postretro_entities::components::brain::BrainComponent;
 use postretro_entities::components::defense_layers::DefenseLayersComponent;
 use postretro_entities::components::health::{
     DamageContext, DamageProducer, HealthComponent, ImpactDispatch, apply_damage_with_context,
@@ -12,7 +13,8 @@ use postretro_entities::components::health::{
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::defense::{DefenseVocabulary, HandleRef};
 use postretro_foundation::{
-    AuthoredHandle, DamagePayload, DefenseLayerEntry, HealthDescriptor, NumberOrIr,
+    AuthoredHandle, BehaviorActivityDescriptor, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    DamagePayload, DefenseLayerEntry, HealthDescriptor, MotionVerb, NumberOrIr,
 };
 
 const TYPES: [&str; 7] = [
@@ -494,4 +496,99 @@ fn shield_only_damage_credits_the_attacker_as_a_contributor() {
             .unwrap(),
         20.0
     ));
+}
+
+/// A brain that holds still, enough for the chokepoint to record perception.
+fn idle_brain() -> BrainComponent {
+    BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        knockback: Default::default(),
+        envelope: BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: BTreeMap::from([(
+                "idle".to_string(),
+                BehaviorActivityDescriptor {
+                    sound: None,
+                    animation: None,
+                    motion: Some(MotionVerb::Hold),
+                    action: None,
+                    on_enter: None,
+                    layers: Default::default(),
+                },
+            )]),
+            transitions: Default::default(),
+        },
+        candidate_filter: None,
+        retaliation: None,
+        patrol: None,
+        attacks: Default::default(),
+        engagement_radius: None,
+        move_speed: 1.0,
+    })
+}
+
+fn brain(registry: &EntityRegistry, id: EntityId) -> &BrainComponent {
+    registry.get_component::<BrainComponent>(id).unwrap()
+}
+
+/// Age the brain's damage memory to `ms` since the last hit, as quiet ticks
+/// would.
+fn age_brain(registry: &mut EntityRegistry, id: EntityId, ms: f32) {
+    let mut aged = brain(registry, id).clone();
+    aged.time_since_damage_ms = ms;
+    aged.age_recent_attackers(ms);
+    registry.set_component(id, aged).unwrap();
+}
+
+// Brain threat counts points dealt, so a hit the shield fully absorbs still
+// raises the attacker's threat and resets damage recency. A hit a ×0 layer
+// blocks deals 0 points: it adds no threat and leaves the attacker's own
+// recency alone, while the brain's damage recency still resets on its
+// positive raw amount.
+#[test]
+fn shield_absorbed_hit_raises_threat_by_points_dealt_and_resets_recency() {
+    let attacker = EntityId::from_raw(99);
+    let mut registry = world(None);
+    let id = spawn(
+        &mut registry,
+        100.0,
+        vec![layer("shield", 50.0, &[]), layer("armor", 50.0, &[])],
+        &[],
+    );
+    registry.set_component(id, idle_brain()).unwrap();
+    age_brain(&mut registry, id, 500.0);
+
+    // Plasma is ×1.5 on the shield: 20 raw drains 30, all of it absorbed.
+    let dispatch = hit(&mut registry, id, 20.0, Some("plasma"));
+    assert_eq!(health(&registry, id).current, 100.0);
+    assert!(approx(dispatch.amount, 30.0));
+    assert!(approx(dispatch.absorbed, 30.0));
+    assert_eq!(brain(&registry, id).time_since_damage_ms, 0.0);
+    let threat = brain(&registry, id)
+        .recent_attacker(attacker)
+        .expect("a fully absorbed hit records its attacker");
+    assert!(
+        approx(threat.accumulated_damage, 30.0),
+        "threat is the points dealt, not the raw amount"
+    );
+    assert_eq!(threat.time_since_damage_ms, 0.0);
+
+    // Flechette bypasses the shield and meets armor at ×0: 0 points dealt.
+    age_brain(&mut registry, id, 500.0);
+    let dispatch = hit(&mut registry, id, 20.0, Some("flechette"));
+    assert_eq!(values(&registry, id), [20.0, 50.0]);
+    assert_eq!(dispatch.amount, 0.0);
+    let threat = brain(&registry, id).recent_attacker(attacker).unwrap();
+    assert!(
+        approx(threat.accumulated_damage, 30.0),
+        "a 0-point hit adds no threat"
+    );
+    assert_eq!(
+        threat.time_since_damage_ms, 500.0,
+        "a 0-point hit leaves the attacker's recency alone"
+    );
+    assert_eq!(
+        brain(&registry, id).time_since_damage_ms,
+        0.0,
+        "a blocked hit with a positive raw amount still resets damage recency"
+    );
 }

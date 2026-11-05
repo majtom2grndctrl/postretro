@@ -728,4 +728,86 @@ mod tests {
         );
         assert_eq!(registry.take_impact_dispatches()[0].damage_type, Some(0));
     }
+
+    // A typed splash drains a shield by its type's matrix entry for that
+    // layer, before health.
+    #[test]
+    fn splash_drains_a_shield_by_its_shots_damage_type() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        use postretro_foundation::defense::{
+            DamageTypeDeclaration, DefenseVocabulary, PoolMultiplier,
+        };
+        let mut registry = EntityRegistry::new();
+        registry.set_defense_vocabulary(std::sync::Arc::new(DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            damage_types: vec![DamageTypeDeclaration {
+                name: "explosive".to_string(),
+                matrix: std::collections::BTreeMap::from([
+                    ("shield".to_string(), PoolMultiplier::Scale(0.75)),
+                    ("health".to_string(), PoolMultiplier::Scale(1.25)),
+                ]),
+            }],
+            default_damage_type: None,
+        }));
+        let owner = registry.spawn(Transform::default());
+        let weapon = registry.spawn(Transform::default());
+        let center = spawn_target(&mut registry, Vec3::ZERO, Vec3::splat(0.25));
+        registry
+            .set_component(
+                center,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 30.0,
+                        capacity: 30.0,
+                        recharge_delay_ms: 3_000.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        let splash = SplashDescriptor {
+            knockback: None,
+            radius: 5.0,
+            min_fraction: 0.0,
+            self_damage: true,
+        };
+        emit_splash_damage(
+            &mut registry,
+            &HitZoneStore::new(),
+            &CollisionWorld::default(),
+            Vec3::ZERO,
+            Vec3::ZERO,
+            &splash,
+            20.0,
+            weapon,
+            owner,
+            true,
+            "weapon.typed-splash".to_string(),
+            Some(0),
+            &mut |_| {},
+        );
+        let shield = registry
+            .get_component::<DefenseLayersComponent>(center)
+            .unwrap()
+            .layers[0]
+            .value;
+        assert!(
+            (shield - 15.0).abs() <= 1.0e-5,
+            "explosive is ×0.75 on the shield: {shield}"
+        );
+        let health = registry.get_component::<HealthComponent>(center).unwrap();
+        assert_eq!(health.current, 100.0, "the shield absorbs the whole blast");
+        let dispatch = registry.take_impact_dispatches().remove(0);
+        assert_eq!(dispatch.damage_type, Some(0));
+        assert!((dispatch.absorbed - 15.0).abs() <= 1.0e-5);
+        assert!(!dispatch.broke);
+    }
 }

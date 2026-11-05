@@ -102,7 +102,7 @@ Project deliverable alongside the engine. Defines Postretro-specific entities fo
 | `lightmap_scale_region` | brush | Compiler-only per-surface lightmap density override; excluded from world geometry, collision, and runtime entities. A chart whose first face vertex lies in the region AABB uses `global_density / _lightmap_scale`; overlapping regions resolve last-defined wins in map entity order. | `_lightmap_scale` (finite positive float, default 1.0; below 1 is coarser, above 1 is finer) |
 | `sh_protect_volume` | brush | Forces intersecting SH base-storage bricks and coarsened delta-section bricks to L0; excluded from static world geometry, collision, and runtime entities | `dilation` (world/engine-meter AABB expansion; default 0; negative rejected) |
 | `streaming_seam_volume` | brush | Compiler-only portal cut and preferred far-side SH warm-up; never blocks a door or changes cells, portals or visibility | Exactly one convex brush spanning the intended portal plane; must match at least one runtime portal with positive-area intersection and interior on both sides |
-| `stream_resident_volume` | brush | Compiler-only pin of SH clusters intersecting its region, including their baked owner closure | Exactly one convex brush; must overlap at least one runtime cell by positive AABB volume |
+| `stream_resident_volume` | brush | Compiler-only pin of SH clusters intersecting its region, including their baked owner closure. *(Not built yet: the pin covers those clusters alone.)* | Exactly one convex brush; must overlap at least one runtime cell by positive AABB volume |
 | `stream_priority_region` | brush | Compiler-only rank for optional SH prefetch and seam warm-up under pressure | Exactly one convex brush; `_stream_priority` integer 0–3 (blank defaults to 0); must overlap at least one runtime cell |
 | `fog_lamp` | point | Spherical halo fog emitter; default warm amber | `density`, `glow`, `radius` (sphere radius; sizes AABB), `radial_falloff`, `tint`, `saturation`, `min_brightness`, `light_range`, `scatter_bias`, `ambient_scatter`, `_tags` (ambient color is SH-derived; no `color` KVP) |
 | `fog_tube` | point | Capsule-strip fog emitter; default cool blue-white | `density`, `glow`, `radius` (capsule radius), `height` (capsule length), `pitch` / `yaw` (capsule axis), `radial_falloff`, `tint`, `saturation`, `min_brightness`, `light_range`, `scatter_bias`, `ambient_scatter`, `_tags` (ambient color is SH-derived; no `color` KVP) |
@@ -315,7 +315,8 @@ frontend is active.
   totals, and the mask estimate both ways as a share of the same PRL's packed ids 22, 25 and 42
   ("n/a" at 0 B). Counts and bytes are labelled *est.* Totals sum over rows, so a texel gated at both
   termini counts once per terminus, as two state masks would store it. A level with no movers
-  prints one line reading zero movers.
+  prints one line reading zero movers. *(Not built yet.)* An SH block always prints mandatory bytes and
+  the worst cell, and warns above 512 MiB.
 
 ### PRL section IDs
 
@@ -364,7 +365,7 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | CellVisibility | 46 | Optional, versioned, strictly parsed baked Cell→Cell coupling relation: per-cell reachability component IDs plus canonically ordered coupled-pair distance/aperture graded records. Missing → conservative all-perceivable, no-graded-detail fallback. The relation is symmetric. Owed when runtime-masked couplings land: an armed ghost link couples the cells under its two volumes both ways, masked by armed state, never folded into a reachability component (`networking.md` §Current contract). Id 14 (`LeafPvs`) is a retired hole; do not reuse |
 | BillboardDirectScatterVolume | 47 | Optional dense normal-free direct-scatter base for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Static-only maps omit it when no `static_light_map` source contributes. A map with animated-only `static_light_map` scatter entries may emit an all-zero RGB base solely as the required grid/validity anchor for a valid id-48 companion. Invalid or missing data selects legacy billboard direct lighting |
 | AnimatedBillboardDirectScatterDeltaVolumes | 48 | Optional dense animated billboard direct-scatter deltas: reuses id-45 descriptor mapping and CSR affinity layout, but stores fixed dense 4×4×4 `Rgba16Float` RGB deltas per CSR entry (reserved zero alpha). Required with id 47 whenever id 45 is present; a missing, invalid, or oversized pair selects legacy billboard direct lighting |
-| ClusterDirectory | 49 | Always in current compiler output; deterministic cell clusters, SH-family ownership/halo metadata, and authored seam/pin/priority hints; container-entry and internal version 2 |
+| ClusterDirectory | 49 | Always in current compiler output; deterministic cell clusters, SH-family ownership/halo metadata, and authored seam/pin/priority hints; container-entry and internal version 2. *(Not built yet: version 3 drops ownership and carries the SH mandatory bound.)* |
 | ClusterShPayloads | 50 | When id 49 and id 34 are present; independently readable per-cluster payloads for streamed ids 27/34/35/41/45; container-entry version 1, internal epoch 1 |
 | CellResidencySet | 51 | When the level has usable portals; per-camera-cell lightmap residency relation: CSR over every camera cell id of `(cell, lead)` entries, `lead` the smallest movement lead (id-46 fixed point, max 32 m) at which the cell is mandatory. Pins are not baked (id 49 supplies them). Absent → lightmaps run all-resident. Malformed → load error; internal version 1. See the id-51 paragraph below |
 | EnvironmentVolumes | 52 | Always; internal version 1. Header: level default gravity. Then every `fluid_volume`, `gravity_volume` and `push_volume` record in map entity order: source entity, priority, optional gravity, optional push, fluid name (empty = dry), convex brush leaves, and fluid surface faces. A level with no volumes still carries its gravity. Absent → load error naming the section (stale format; recompile). See the id-52 paragraph below |
@@ -401,6 +402,8 @@ logical PRL. A missing id 49 remains a whole-load level. The loader re-derives t
 range table from cells, probes and the cell locator and rejects any difference; that
 derivation runs in the staged parse on the engine load pool every load, so its cost must never grow as active bricks
 × member cells.
+
+**SH mandatory bound (id 49)** *(not built yet)*. Pack computes the worst mandatory SH demand of any camera cell, with pins and shared storage counted once, at the default lead and at the baked maximum. Compiler and runtime share one default lead, so the bound and the demand it sizes cannot differ. A level with no usable id 51 stores the whole map. The runtime sizes its pool from this figure. The cluster cell limit stays an engine constant, never an author key. Build fails if two chunks disagree on a shared node or row, because the first resident writer wins.
 
 **Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
 cluster-major companion for ids 27/34/35/41/45. It is emitted after id 49 only when id 34

@@ -3180,12 +3180,16 @@ impl App {
         } else {
             modal_stack.always_on_layers()
         };
-        let retained_trees: Vec<&postretro_ui::descriptor::AnchoredTree> = base_layers
+        let retained_trees: Vec<(u64, &postretro_ui::descriptor::AnchoredTree)> = base_layers
             .iter()
-            .map(|entry| &entry.descriptor)
-            .chain(modal_stack.retained_descriptors())
+            .map(|entry| (0, &entry.descriptor))
+            .chain(
+                modal_stack
+                    .retained_pushes()
+                    .map(|(push, descriptor)| (push.id(), descriptor)),
+            )
             .collect();
-        presentation_cells.reconcile(&retained_trees);
+        presentation_cells.reconcile_pushes(&retained_trees);
         let cell_values = presentation_cells.snapshot();
 
         let mut trees = base_layers;

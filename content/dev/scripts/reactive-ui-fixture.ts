@@ -8,7 +8,7 @@
 // `@ts-expect-error` — the narrowing has regressed and the review gate fails.
 //
 // The positive (non-`@ts-expect-error`) lines are the canonical, well-typed
-// authoring shapes the tabs demo (`tabs-demo.ts`) is built from.
+// authoring shapes the options-menu tabs (`frontend-menu.ts`) are built from.
 //
 // See: context/lib/scripting.md §7, context/lib/ui.md §4, docs/scripting-
 // reference.md "Reactive UI", M13 G2 Task 5.

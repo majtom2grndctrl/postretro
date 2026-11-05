@@ -358,6 +358,16 @@ impl ModalStack {
         self.stack.iter().map(|tree| &tree.descriptor)
     }
 
+    /// Like [`Self::retained_descriptors`], paired with each entry's push
+    /// identity. A tree closed and reopened between two renders keeps its name
+    /// and descriptor but gets a new identity, so presentation state keyed to
+    /// the old push can be told apart from the new one.
+    pub fn retained_pushes(&self) -> impl Iterator<Item = (ModalInstance, &AnchoredTree)> {
+        self.stack
+            .iter()
+            .map(|tree| (tree.instance, &tree.descriptor))
+    }
+
     /// The live-stack entries that should draw, bottom→top. The last
     /// `hideBelow` entry becomes the visible floor while earlier entries remain
     /// retained in [`Self::entries`]. The App prepends always-on layers ahead of

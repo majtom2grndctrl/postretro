@@ -5134,8 +5134,8 @@ Keys expand in **lexicographically-sorted order** so the emitted array is
 byte-identical between TypeScript and Luau (Luau table iteration order is
 undefined, so the sort is load-bearing for cross-runtime wire identity). A subtree
 that already carries a `visibleWhen` is rejected — `Switch` owns that field. The
-canonical end-to-end example is the campaign-test tabs demo
-(`content/dev/scripts/tabs-demo.ts`).
+canonical end-to-end example is the options menu
+(`content/dev/scripts/frontend-menu.ts`).
 
 ### Accessible name, role, and `disabled`
 

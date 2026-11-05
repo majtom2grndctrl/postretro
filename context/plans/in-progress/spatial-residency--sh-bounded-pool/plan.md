@@ -1,21 +1,17 @@
 # spatial-residency--sh-bounded-pool — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: b5c39cab8
 
-## Why this is blocked
+## Owner rulings
 
-Four Acceptance rows are written against a slot-level reader epoch that does not exist. Each needs the owner's restatement (rows 3, 7, 33, 34 below). No Decision premise is false. One further owner ruling is open: whether planar mirrors join the bound (see *Owner rulings needed*). On approval, set `status: approved`, apply the rulings to the brief, and start task 1.
+The plan stopped blocked on four Acceptance rows written against a slot-level reader epoch that does not exist: `evict` frees at once (`sh_streaming/rows.rs:128-135`), the allocator can reuse immediately, and queue order is the only protection (`lifecycle.rs:19-25`). The owner delegated the rulings (2026-11-05): re-examine the recommendations, apply what survives, proceed. The brief and `research.md` now carry the result.
 
-**Evidence.** `evict` frees dense ranges and sparse rows in the same call (`sh_streaming/rows.rs:128-135`), and the first-fit allocator can reuse them at once (`allocator.rs:50-60`). Safety is queue order: promotion and eviction share one upload batch, submitted before any install in that drain (`lifecycle.rs:19-25`), so the zero words land before reuse (comment in `rows.rs`, "Publish zeros before freed ranges can be reused"). No reader persists past that ordering. The only compose epochs are promotion gates (`required_compose_epochs`, `sh_streaming.rs:504`), and compose staleness is per row, not per slot. The only retirement is a whole growth generation, one slot per family, released on submitted-work-done (`gpu/growth.rs`; a second growth returns `GpuRetirementPressure`). "Reader epoch" first appears in this brief's draft commit `0d8ae7aeb`, with no earlier source.
-
-Building slot retirement would satisfy the rows literally, but it adds a mechanism with no reader to protect. The proposed wording below keeps each row's intent and points it at the wait states that are real.
-
-## Owner rulings needed
-
-1. **Restate rows 3, 7, 33, 34.** Exact wording is in the AC-to-proof table. `research.md` R5 and R6 follow.
-2. **Planar mirrors join the bound?** Assessment sent to `spatial-residency--lightmap-bounded-pool`'s drafting session at the owner's request. Recommendation: yes, one mirror-inclusive figure, no wire layout change, with the sweep shared between both bounds. Three sub-decisions sit with the owner because both bounds need one answer: where water-plane grouping and the seed rule live (`postretro-render-cpu` is only a dev dependency of the compiler), where the sweep runs (a cached stage, not pack), and whether default-tier players pay for a planar-only figure. This does not block tasks 1–4. It gates task 6's mirror input only.
+- **Reader epoch removed.** Held on review. Slot retirement would protect no reader. Rows 3 and 7 take the wording first proposed.
+- **R5 and R6 reworded.** Shifted on review. Same-drain eviction (Delegated answers) removes the "requested but unconfirmed" wait the first wording named. The one real wait left is a retiring growth generation, so both rows point there.
+- **Planar mirrors do not join the bound in this build.** Shifted on review, from a first recommendation of yes. A sweep needs a crate move and a cached stage, and buys nothing measurable: three of the four bound maps have no water, `campaign-test` could rise 2,092 slots at most, and the hallway decides the cluster rule. Planar runs only at very high and ultra, so a mirror-inclusive figure charges default-tier players for an opt-in tier. Growth is already the logged net, and it is reached only after optional eviction, in a cell near the worst. The bound computes from one `bound_cells` input, so the sweep `spatial-residency--lightmap-bounded-pool` owns can extend it later with no layout change. Row 39 stays as written: it measures `reflection-lake-test`, and growth there is reported rather than extended here.
+- **Refusal stays black, growth stays.** Held on review.
 
 ## Corrections
 
@@ -24,7 +20,7 @@ Building slot retirement would satisfy the rows literally, but it adds a mechani
 - "Roles reduce to dense and affinity" → after owner removal, role equals `resource.domain` (validated at `cluster_directory.rs:562-573`). Under "no unread fields stay behind", the range record drops role entirely.
 - The brief omits id 50's own role word → each sparse row record carries one (`pack/cluster_sh_payloads/sparse.rs:237`, checked at `decode.rs:246-250`). It goes too, and `CLUSTER_SH_PAYLOADS_VERSION` moves 1 → 2. Both id-49 version constants move: `CLUSTER_DIRECTORY_VERSION` and `CLUSTER_DIRECTORY_CONTAINER_VERSION`. The mismatch error gains the id-51 style "re-bake the level" text.
 - "`RowRefTable` already counts affinity rows" → it counts compose-membership contributors, not storage lifetime (`row_refs.rs:21, 131-146`). Sparse rows are written by one owner (`sparse_install.rs:43`), and `install_undoable` errors on a live row (`allocator.rs:205`). Node slots and probe words have no count at all. Three new counts are needed, each with a journal undo: nodes, probe words, sparse rows. The journal's undo list is `install_journal.rs:13-30`.
-- Not in the brief: **a second referencer must wait for the first writer's compose.** `required_compose_epochs` returns the current epoch when a cluster wrote nothing (`sh_streaming.rs:504`), and today only `owner_dependencies` holds it back. With owners gone, a cluster whose nodes are all shared could promote before they compose and publish uncomposed words. A referencing install takes the latest required epoch of what it shares. Added proof: `shared_reference_waits_for_first_writers_compose`.
+- Not in the brief: **a second referencer must wait for the first writer's compose.** `required_compose_epochs` returns the current epoch when a cluster wrote nothing (`sh_streaming.rs:504`), and today only `owner_dependencies` holds it back. With owners gone, a cluster whose nodes are all shared could promote before they compose and publish uncomposed words. Simplest shape: take the highest required epoch among clusters still pending promotion, so no per-node state is needed. Added proof: `shared_reference_waits_for_first_writers_compose`.
 - Brief first slice lists bound, hold and capacity-aware eviction, without reference counts → closure demand cannot fit a 2-layer pool (the research table's "Hold only" row stays at 1,440 MiB), so runtime reference counts are in the slice. The PRL stays v2 there: the runtime stops reading owners before the format drops them.
 - "`begin_drain` carries the Settling flag and `update_targets` does not" → the controller already holds it as `misses_suspended`, set before `update_targets` by both Settling and capture's preload (`capture/prepared.rs:328`). Rename it for what it now means. Capture keeps full demand with no extra plumbing, matching the lightmap's `update_capture_view`.
 - Honest misses need the drawn set, not `sh_visible_cells` → on a fallback that set omits the mirror's drawn cells (`planar.rs:551`). The hold targets from `sh_visible_cells` and counts misses from `DemandFrame::visible_cells`.
@@ -38,9 +34,9 @@ Building slot retirement would satisfy the rows literally, but it adds a mechani
 ## Delegated answers
 
 - **Why refused surfaces render black** — the §4 contract holds, and the floor is simply zero. All-zero words drop every corner in `sh_probe_weight` (`sh_sample.wgsl:211-229`), the sample returns 0 (`:408-444`), and the world shader adds `ambient_floor`, which is `DEFAULT_AMBIENT_FLOOR = 0.0` (`renderer_types.rs:125`), changed only by the dev slider. Refusal does render black, so the fixed-pool rival stays rejected and growth stays. Raising the floor or adding a miss colour would reopen it; both are outside this brief.
-- **Mechanism and policy under references** — the renderer owns capacity truth, the controller owns order, and neither estimates the other's numbers. The renderer defers work it cannot place and reports the shortage in `ShDrainOutcome`. While a shortage stands, the controller sends optional residents as an ordered victim list: SeamWarm and Band by today's pressure comparator, Hysteresis last. The renderer evicts down that list only until the shortage is met, counting real frees through references, and returns what it evicted. With victims exhausted and none pending, it grows once. `DEFAULT_GPU_FLOOR_BYTES` and the additive `apply_budget_policy` projection are deleted, so no second capacity truth remains.
+- **Mechanism and policy under references** — the renderer owns capacity truth, the controller owns order, and neither estimates the other's numbers. On a drain with mandatory work ready, the batch carries an ordered victim list of optional residents: SeamWarm and Band by today's pressure comparator, Hysteresis last. When a mandatory install cannot place, the renderer rolls it back, evicts down the list until the shortfall is met (counting real frees through references, zeros submitted before reuse), and retries in the same drain. With the list exhausted it grows once and warns; past a device limit it refuses. An optional install that cannot place is refused without eviction, and that cluster is suppressed like a pressure victim, so it does not thrash. Evicted victims are suppressed until the horizon changes. `DEFAULT_GPU_FLOOR_BYTES` and the additive `apply_budget_policy` projection are deleted, so no second capacity truth remains.
 - **Pool headroom** — pending. Task 4 measures it; the value is recorded here.
-- **Whether mirror cells join the bound** — taken back by the owner; see *Owner rulings needed*.
+- **Whether mirror cells join the bound** — no, for this build; see *Owner rulings*.
 - **Id 49 tail placement** — a tail, as the Wire format section says. The decoder's exact-length check becomes two-phase: header-derived prefix, then tail. A header field gains nothing, because the bound's length varies.
 
 ## AC-to-proof
@@ -49,11 +45,11 @@ Building slot retirement would satisfy the rows literally, but it adds a mechani
 |---|---|---|---|
 | 1 | Shared node survives either eviction, freed with both, slots reusable | `shared_node_survives_either_eviction_and_frees_with_the_last` | achievable as stated |
 | 2 | Same node on one drain written once | `two_clusters_one_drain_write_a_shared_node_once` | achievable as stated |
-| 3 | Reader epoch delays the free | see wording | **needs restatement:** "Evicting the last reference to a shared row or node zeroes its words and clears its row in a batch submitted before any install in that drain can reuse its slots; with another reference live, nothing is cleared or freed." |
+| 3 | Last reference clears before reuse; live reference clears nothing | `last_reference_clears_before_reuse_and_live_reference_clears_nothing` | achievable as stated |
 | 4 | Sampleable with no other cluster resident | `halo_cluster_samples_alone` | achievable as stated |
 | 5 | Partial install failure restores counts (R4) | `failed_install_restores_every_reference_count` | achievable as stated |
 | 6 | Light over two clusters accumulates once, either order | `shared_light_accumulates_once_in_either_order` | achievable as stated |
-| 7 | Reload leaves nothing (R10) | see wording | **needs restatement:** "Reload with reads in flight, references live and a growth generation retiring leaves no references, pending reads or retiring generation from the old level (R10)." |
+| 7 | Reload leaves nothing (R10) | `reload_mid_flight_leaves_nothing_from_the_old_level` | achievable as stated |
 | 8 | Evict and install on one drain, both orders (R1) | `evict_and_install_one_drain_keep_one_live_copy` | achievable as stated |
 | 9 | Evict and re-request in a frame (R2) | `evict_and_rerequest_counts_references_once` | achievable as stated |
 | 10 | Read finishing for an evicted cluster dropped (R3) | `read_finishing_after_eviction_is_dropped` | achievable as stated |
@@ -79,13 +75,13 @@ Building slot retirement would satisfy the rows literally, but it adds a mechani
 | 30 | Pool never exceeds whole map | `pool_never_exceeds_the_whole_map` | achievable, cap read in whole layers (Corrections) |
 | 31 | Initial size equals bound plus headroom | `initial_pool_is_bound_plus_headroom_capped` | achievable, as row 30 |
 | 32 | Evict before growing, grow before refusing | `capacity_order_is_evict_grow_refuse` | achievable as stated |
-| 33 | Waiting on retiring slots (R5) | see wording | **needs restatement:** "Mandatory work deferred for capacity while its evictions are requested but unconfirmed triggers no growth and no further eviction on later frames; it installs on the drain they free (R5)." |
-| 34 | Growth with retirement pending (R6) | see wording | **needs restatement:** "A growth needed while a prior generation is retiring defers the install and starts no second growth; the old generation's contents stay until submitted work is done, then it frees and the install proceeds (R6)." |
+| 33 | Deferred behind a retiring generation (R5) | `deferred_behind_retiring_generation_evicts_and_grows_nothing` | achievable as stated |
+| 34 | Growth with a generation retiring (R6) | `growth_with_generation_retiring_keeps_contents_until_done` | achievable as stated |
 | 35 | Hallway ceiling | owner, in-engine; task 9 runs the walk | manual |
 | 36 | Cluster size rule | task 4 evidence; task 9 confirms | manual |
 | 37 | Frames on four maps | owner, in-engine | manual |
 | 38 | Theatrical moments | owner, in-engine | manual |
-| 39 | Planar mirrors | owner, in-engine; wording follows the mirror ruling | manual |
+| 39 | Planar mirrors | `reflection-lake-test` at a planar tier; growth is reported, not extended here | manual |
 | 40 | Held frames stay lit | task 4 evidence; owner reviews before the hold stands | manual |
 | 41 | Clipped camera | owner, in-engine | manual |
 | 42 | Cleanup | owner, in-engine | manual |
@@ -96,14 +92,16 @@ Walk, shot and frame-diff tools stay on `spike/memory-measure-tour`. They are po
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Runtime reference counts: nodes, probe words, sparse rows, journal undos, shared compose wait. Owners ignored at runtime; PRL still v2. Rewrite closure tests to the new contract, keeping their edges | integrating executor | rulings | |
-| 2 | Hold: per-path demand, paused hysteresis, honest misses from the drawn set, no-id-51 opt-out | worker, `postretro/src/sh_streaming` (concurrent with 1 only if its tests need no renderer change) | rulings | |
-| 3 | Capacity split: shortage report, victim list, evict → grow → refuse; delete the floor and additive policy | integrating executor | 1, 2 | |
-| 4 | Evidence slice: 2-layer pool, today's clusters, hallway and `campaign-test`. Records held-frame misses and frames, cluster rule, headroom, fragmentation at the cap. **Owner checkpoint: the hold returns to the owner here if frames darken** | integrating executor | 3 | |
-| 5 | Format: move tests out of `cluster_directory.rs` first, then id 49 v3, id 50 v2, bound tail, default lead and byte costs to level-format, old-version refusal | integrating executor | 4 | |
-| 6 | Compiler: stop producing owner data, per-node and per-row hash verification, bound over camera cells, Build Summary, no-id-51 entry, mirror input per ruling | integrating executor | 5 | |
-| 7 | Pool sized once from the bound; whole-map cap; retire the 256 MiB floor for SH | integrating executor | 5, 6 | |
+| 1 | Renderer and render-cpu reference counts: nodes, probe words, sparse rows, journal undos, shared compose wait. Runtime stops reading owners; PRL still v2. Rewrite closure tests to the new contract, keeping their edges | worker, renderer + render-cpu | — | |
+| 2 | App crate: remove owner closure from the controller and topology; hold with per-path demand, paused hysteresis, honest misses from the drawn set, no-id-51 opt-out | worker, `postretro/src/sh_streaming` | 1 | |
+| 3 | Capacity split: same-drain victim list, evict → grow → refuse; delete the floor and additive policy | worker, renderer + app seam | 2 | |
+| 4 | Evidence slice: 2-layer pool, today's clusters, hallway and `campaign-test`. Records held-frame misses and frames, cluster rule, headroom, fragmentation at the cap. **Owner checkpoint: the hold returns to the owner here if frames darken** | worker, measurement branch | 3 | |
+| 5 | Format: move tests out of `cluster_directory.rs` first, then id 49 v3, id 50 v2, bound tail, default lead and byte costs to level-format, old-version refusal | worker, format + loader | 4 | |
+| 6 | Compiler: stop producing owner data, per-node and per-row hash verification, bound over camera cells through `bound_cells`, Build Summary, no-id-51 entry | worker, compiler | 5 | |
+| 7 | Pool sized once from the bound; whole-map cap; retire the 256 MiB floor for SH | worker, renderer | 5, 6 | |
 | 8 | Author text: FGD, `docs/level_design.md`; grep gate | integrating executor | 6 | |
 | 9 | Cold rebake, manual rows, preflight, review panel | integrating executor | 7, 8 | |
+
+Workers run sequentially on the feature branch's warm target: tasks 1–3 share `targeting.rs` and compile through each other. The integrating executor reviews each diff, owns `plan.md`, and commits.
 
 **Hot paths.** `update_targets` and the drain run per frame: no new per-frame allocation beyond today's sets, and held frames issue no reads. Reference updates happen on install and eviction, never per frame. The bound runs on every build, warm id-51 hits included, so it uses a stamp array over nodes per camera cell and its time is reported in Build Summary.

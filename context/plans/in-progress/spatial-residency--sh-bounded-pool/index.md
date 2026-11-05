@@ -30,11 +30,11 @@ A memory spike raised by the owner found `stress-warren-hallway-inspection` allo
 **Reference counts:**
 - [ ] A node shared by two resident clusters survives evicting either one, is freed when both are gone, and its slots are then reusable.
 - [ ] Two clusters, neither depending on the other, installing the same node on one drain write it once.
-- [ ] Evicting a cluster while a reader's epoch still needs a shared row delays the free, and it completes afterwards.
+- [ ] Evicting the last reference to a shared row or node zeroes its words and clears its row in a batch submitted before any install in that drain can reuse its slots; with another reference live, nothing is cleared or freed.
 - [ ] A cluster becomes sampleable with no other cluster resident, on a fixture that today requires an owner first.
 - [ ] An install failing after some references were taken frees any node it alone wrote and restores every count, wherever the failure lands (R4).
 - [ ] A light covering two clusters accumulates once, resident in either order.
-- [ ] Reload with reads in flight and slots pending retirement leaves no references, pending reads or retired slots from the old level (R10).
+- [ ] Reload with reads in flight, references live and a growth generation retiring leaves no references, pending reads or retiring generation from the old level (R10).
 - [ ] A cluster evicted and a cluster needing the same node installed on one drain, in either order, leave the node resident once with its data intact and no stale zero word (R1).
 - [ ] A cluster evicted and re-requested in the same frame is resident again afterwards with its references counted once (R2).
 - [ ] A read finishing for a cluster evicted while in flight is dropped: nothing installs and no references or slots remain (R3).
@@ -66,8 +66,8 @@ A memory spike raised by the owner found `stress-warren-hallway-inspection` allo
 - [ ] Pool size never exceeds the whole-map size.
 - [ ] Initial pool size equals the stored bound plus headroom, capped at the whole map, and the old 256 MiB floor no longer sets it.
 - [ ] Mandatory demand past capacity evicts optional residents before growing, and grows before refusing.
-- [ ] Mandatory work waiting on slots still retiring does not trigger growth or further eviction on later frames; it installs when they free (R5).
-- [ ] A growth while slots are pending retirement keeps those slots' contents until their epoch passes and frees them afterwards (R6).
+- [ ] Mandatory work deferred behind a retiring growth generation evicts nothing further and starts no growth on later frames; it installs when the generation frees (R5).
+- [ ] A growth needed while a prior generation is retiring keeps that generation's contents until submitted work is done, then frees it (R6).
 
 ### Manual
 All on the Mac 5300M, Metal, windowed, cold PRL rebaked at this commit, using `Metal Resource Events` and the 2 km hallway route at 7 m/s from `research.md`.
@@ -86,7 +86,7 @@ Non-binding.
 - **Runtime seams.** `derive_node_ownership`, `request_owner_closure`, `dependent_first_release_order`, `sparse_capacity_floors`. `RowRefTable` already counts affinity rows. Local branch `spike/memory-measure-tour` shows one working shape, not production code, and holds the walk and frame-diff tools the manual rows need.
 - **Sizing and eviction seams.** `plan_initial_pool_floor`, `grow_dense`, `apply_budget_policy`, `is_pressure_eligible`. Lightmap `growth_reserve_layers` is a sibling precedent, not a match.
 - **Hold seams.** `PathDemand::of`, `LightmapDemand::update`. `begin_drain` carries the Settling flag and `update_targets` does not, so it needs plumbing. Tests `non_portal_path_keeps_sh_visible_and_stage_lead_classes`, `planar_mirror_adds_no_sh_reads_on_main_fallback`.
-- **Compiler seams.** Id 49 is emitted at pack, after id 51 exists, so the bound needs no new stage. Selection in `cluster_directory_bake`; `requested_resident_bytes` in `pack/cluster_sh_payloads`; Build Summary precedent in `mover_light_gate/summary.rs`.
+- **Compiler seams.** The bound needs no new stage, but the directory is built before pack, so pack computes the bound from `ChunkPlan`'s node sets and hands it to id-49 serialization and back to Build Summary. Selection in `cluster_directory_bake`; `requested_resident_bytes` in `pack/cluster_sh_payloads`; Build Summary precedent in `mover_light_gate/summary.rs`.
 - **Rival shape.** Fixed-size pool with no growth at all: no peak and less code. Rejected provisionally, on refusal rendering black.
 - **Doors.** Per-direction depth raises bytes per slot, and the bound prices it automatically. `E25--map-transitions` leaves shared versus per-level pools open; per-level bounds serve either. `mover-light-flow--probe-channel` is in progress and showed no owner dependency, but check again at build.
 - **Test churn.** Closure tests in `controller_tests.rs`, `controller_refusal_tests.rs` and `node_ownership_tests.rs` assert the old contract. Rewrite them to the new one; do not delete their edges.
@@ -98,20 +98,22 @@ All integers little-endian and unsigned. Old PRLs are refused by version; pre-re
 | Surface | Change |
 |---|---|
 | Id 49 version | 2 → 3 |
-| Range record | Drops `owner_cluster_id`, and `DENSE_OWNER_SENTINEL` goes with it. Roles reduce to dense and affinity; `Owned` and `Halo` merge |
-| Id 49 tail | After cluster hints: `u32 bound_count`, then `bound_count` entries ascending by lead: `u32 lead` (id 51 fixed-point units), `u32 worst_dense_slots`, `u32 worst_cell`, `u32 family_count`, then `family_count` × (`u32 resource_index`, `u32 worst_units`), ascending by `resource_index`, for affinity-domain resources. Zero families encodes as `family_count` 0. Two entries: default lead and baked maximum, or one when the maximum does not exceed the default. With no usable id 51, one entry at lead 0 holding the whole map, `worst_cell` `u32::MAX` |
+| Range record | Drops `owner_cluster_id` and `role`, and `DENSE_OWNER_SENTINEL` goes with them. Role equals `resource.domain`, so nothing replaces it |
+| Id 49 tail | After cluster hints: `u32 bound_count`, then `bound_count` entries ascending by lead: `u32 lead` (id 51 fixed-point units), `u32 worst_dense_slots`, `u32 worst_cell`, `u32 family_count`, then `family_count` × (`u32 resource_index`, `u32 worst_entries`, `u32 worst_tile_f16`), ascending by `resource_index`, for affinity-domain resources. Zero families encodes as `family_count` 0. Two entries: default lead and baked maximum, or one when the maximum does not exceed the default. With no usable id 51, one entry at lead 0 holding the whole map, `worst_cell` `u32::MAX` |
+| Id 50 version | 1 → 2. Sparse row records drop their role word |
 | Id 50 `requested_resident_bytes` | Bytes for every node and row the chunk touches, not only those it owned; the `semantic` validator follows |
 
 ## Boundary inventory
 | Name | Sides | Note |
 |---|---|---|
-| `worst_dense_slots`, `worst_units` | Compiler → PRL → residency plan | Physical slots and sparse units, not source bytes |
+| `worst_dense_slots`, `worst_entries`, `worst_tile_f16` | Compiler → PRL → residency plan | Physical slots and sparse units, not source bytes. Sparse capacity is two-dimensional |
+| Slot and unit byte costs | `postretro-level-format` → compiler and renderer | One source, so Build Summary prices the bound as the pool does |
 | Default lead | `postretro-level-format` → compiler and runtime | Moves out of the engine binary, so the bound and the runtime cannot differ |
 | Bound report | Compiler → Build Summary | Developer and modder facing log text, no script surface |
 
 ## Open questions
-- Why refused surfaces render black when §4 says an all-miss sample reaches the ambient floor. If that contract holds, the fixed-pool rival reopens — **delegated**: the executor traces it in the first slice and reports it at the plan stop; growth stays unless the owner changes it
-- Mechanism and policy under references: cluster bytes stop being additive, so the controller's ranking cannot know what a victim frees, and `DEFAULT_GPU_FLOOR_BYTES` must not become a second capacity truth — **delegated**: the executor settles the split and reports it in the plan of record
+- Why refused surfaces render black when §4 says an all-miss sample reaches the ambient floor — **settled**: the contract holds and the floor is 0.0, so refusal is black, the fixed-pool rival stays rejected and growth stays (`plan.md`)
+- Mechanism and policy under references: cluster bytes stop being additive, so the controller's ranking cannot know what a victim frees, and `DEFAULT_GPU_FLOOR_BYTES` must not become a second capacity truth — **settled**: `plan.md`, Delegated answers
 - Pool headroom over the bound: the first-fit high-water runs above live, and the value comes from measurement — **delegated**: the executor measures and reports it in the plan of record
-- Whether planar mirror cells join the bound — **delegated**: the executor decides from the manual row and reports it
-- Exact id 49 tail placement if a header field reads better — **delegated**: the executor reports it in the plan of record
+- Whether planar mirror cells join the bound — **settled for this build**: no. The bound stays id 51 within lead plus pins; the Planar mirrors row measures it, and any extension rides the sweep `spatial-residency--lightmap-bounded-pool` owns (`plan.md`)
+- Exact id 49 tail placement if a header field reads better — **settled**: a tail, with a two-phase length check (`plan.md`)

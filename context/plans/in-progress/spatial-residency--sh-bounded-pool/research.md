@@ -80,8 +80,8 @@ Reference counts and hold cost nothing visible, and save nothing: all three stay
 | R2 | Evict and re-request | Same frame, slot re-tenanted | Resident, references counted once |
 | R3 | Read in flight for a victim | Evicted to admit mandatory work, then read completes | Read dropped, nothing retained |
 | R4 | Partial install failure | After k of n references, including a first-written node | Node freed, every count restored |
-| R5 | Optional eviction behind reader epoch | Slots retiring while mandatory work waits | No per-frame growth or further eviction; installs when freed |
-| R6 | Growth with retirement pending | Growth, then epoch passes | Contents kept until the epoch, then freed |
+| R5 | Install behind a retiring generation | Generation retiring while mandatory work waits | No per-frame growth or further eviction; installs when it frees |
+| R6 | Growth with a generation retiring | Growth needed, then submitted work completes | Contents kept until then, then freed |
 | R7 | Portal, fallback, portal | Fallback run longer than hysteresis | Residents not aged out, not dropped on exit |
 | R8 | Teleport during hold | Camera cell jumps while held | Mandatory demand follows the new cell |
 | R9 | Settling ends on a fallback frame | Full demand falls to hold | What Settling loaded stays |

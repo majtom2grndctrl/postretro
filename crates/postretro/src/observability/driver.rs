@@ -734,6 +734,7 @@ mod tests {
             max: 10.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         health.current = 0.0;
         registry.borrow_mut().set_component(target, health).unwrap();
@@ -789,6 +790,7 @@ mod tests {
                     max: 10.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 });
                 registry.set_component(id, health).unwrap();
                 id
@@ -844,6 +846,7 @@ mod tests {
                 max: 10.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             health.current = current;
             health

@@ -2195,6 +2195,7 @@ mod tests {
                 offset: None,
             }),
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         let descriptors = [descriptor];
         crate::scripting::builtins::apply_data_archetype_dispatch(

@@ -110,6 +110,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         reg.set_component(id, health).unwrap();
         id

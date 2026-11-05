@@ -5,7 +5,7 @@ mod health;
 mod projectile_validation;
 mod weapon_validation;
 
-pub use health::{HealthDescriptor, HitboxDescriptor};
+pub use health::{AuthoredHandle, DefenseLayerEntry, HealthDescriptor, HitboxDescriptor};
 
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};

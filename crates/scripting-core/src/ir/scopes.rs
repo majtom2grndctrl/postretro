@@ -923,6 +923,9 @@ mod tests {
     fn impact(target: EntityId, amount: f32) -> ImpactDispatch {
         ImpactDispatch {
             amount,
+            raw: amount,
+            absorbed: 0.0,
+            broke: false,
             health_before: 10.0,
             health_after: 5.0,
             max_health: 10.0,

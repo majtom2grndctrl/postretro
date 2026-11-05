@@ -577,6 +577,7 @@ mod tests {
                 offset: None,
             }),
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         health.current = 37.0;
         registry.set_component(item, health.clone()).unwrap();
@@ -1007,6 +1008,7 @@ mod tests {
                 max: 80.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             },
         );
         let descriptors = [pawn_descriptor.clone(), weapon_descriptor];

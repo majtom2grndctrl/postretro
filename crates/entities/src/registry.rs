@@ -17,6 +17,7 @@ use crate::components::agent::AgentComponent;
 use crate::components::ammo_reserve::AmmoReserve;
 use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
+use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::deferred_effect::DeferredEffectComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
@@ -172,6 +173,9 @@ pub enum ComponentKind {
     /// member categories; scripts address it through member handles, never
     /// raw component attachment.
     GhostLink = 26,
+    /// Host-owned defense-layer stack. Never replicated as a component; a
+    /// player's layer values reach its owner through owner-private slots.
+    DefenseLayers = 27,
 }
 
 impl ComponentKind {
@@ -208,6 +212,7 @@ impl ComponentKind {
             ComponentKind::Teleporter,
             ComponentKind::ProjectileTrap,
             ComponentKind::GhostLink,
+            ComponentKind::DefenseLayers,
         ];
         VARIANTS.len()
     };
@@ -284,6 +289,7 @@ pub enum ComponentValue {
     Teleporter(TeleporterComponent),
     ProjectileTrap(ProjectileTrapComponent),
     GhostLink(GhostLinkComponent),
+    DefenseLayers(DefenseLayersComponent),
 }
 
 impl ComponentValue {
@@ -316,6 +322,7 @@ impl ComponentValue {
             ComponentValue::Teleporter(_) => ComponentKind::Teleporter,
             ComponentValue::ProjectileTrap(_) => ComponentKind::ProjectileTrap,
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
+            ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
         }
     }
 }
@@ -770,6 +777,19 @@ impl Component for GhostLinkComponent {
     }
 }
 
+impl Component for DefenseLayersComponent {
+    const KIND: ComponentKind = ComponentKind::DefenseLayers;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::DefenseLayers(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::DefenseLayers(self)
+    }
+}
+
 impl Component for HitVolumeComponent {
     const KIND: ComponentKind = ComponentKind::HitVolume;
 
@@ -867,6 +887,11 @@ pub struct EntityRegistry {
     /// event payload belongs to the health component module, while the registry
     /// owns the single-threaded handoff to impact-policy consumers.
     impact_dispatches: Vec<ImpactDispatch>,
+    /// Index of the most recently started fixed tick. The damage chokepoint
+    /// stamps a layered entity's last hit with it, so a hit that lands after
+    /// the tick (a flushed client hit, frame-end script damage) stamps the
+    /// tick it follows. Advanced only by the tick start.
+    host_tick: u64,
     /// App-side presentation producers enqueue transient spawn facts here. The
     /// registry is the sole bridge between fixed-tick producers and the
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
@@ -906,6 +931,7 @@ impl EntityRegistry {
             pawn_seats: HashMap::new(),
             inventory_owners: HashMap::new(),
             impact_dispatches: Vec::new(),
+            host_tick: 0,
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
             dropped_impact_particle_requests: 0,
@@ -1104,6 +1130,40 @@ impl EntityRegistry {
         }
     }
 
+    /// Visits every live entity carrying `kind` mutably, beside its `read`
+    /// component when it has one. Like [`Self::for_each_with_kind_mut`] it
+    /// allocates nothing, so a fixed-tick pass that needs a sibling column
+    /// (layer recharge reading health) stays allocation-free.
+    pub fn for_each_with_kind_mut_reading(
+        &mut self,
+        kind: ComponentKind,
+        read: ComponentKind,
+        mut visit: impl FnMut(EntityId, &mut ComponentValue, Option<&ComponentValue>),
+    ) {
+        assert_ne!(
+            kind,
+            ComponentKind::Inventory,
+            "Inventory requires checked replacement"
+        );
+        let Ok([column, read_column]) = self
+            .components
+            .get_disjoint_mut([kind as usize, read as usize])
+        else {
+            panic!("for_each_with_kind_mut_reading needs two different kinds");
+        };
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if !slot.live || slot.retired {
+                continue;
+            }
+            let Some(cell) = column.get_mut(idx).and_then(Option::as_mut) else {
+                continue;
+            };
+            let sibling = read_column.get(idx).and_then(Option::as_ref);
+            // idx as u16 is valid: slots.len() is bounded to u16::MAX by spawn.
+            visit(EntityId::new(idx as u16, slot.generation), cell, sibling);
+        }
+    }
+
     /// Returns `None` when all 65,536 entity slots are exhausted (free list
     /// empty and slot vector at `u16::MAX`). Callers that must not panic
     /// (e.g. script primitives crossing the FFI boundary) should prefer this
@@ -1284,6 +1344,17 @@ impl EntityRegistry {
     /// Publish one damage-chokepoint dispatch for the engine's impact-policy
     /// consumer. This is intentionally separate from component columns: it is
     /// ephemeral per-fire data, not persistent entity state.
+    /// Index of the most recently started fixed tick.
+    pub fn host_tick(&self) -> u64 {
+        self.host_tick
+    }
+
+    /// Start the next fixed tick: called once per tick, before its recharge.
+    pub fn advance_host_tick(&mut self) -> u64 {
+        self.host_tick = self.host_tick.wrapping_add(1);
+        self.host_tick
+    }
+
     pub(crate) fn push_impact_dispatch(&mut self, dispatch: ImpactDispatch) {
         self.impact_dispatches.push(dispatch);
     }

@@ -1352,6 +1352,7 @@ mod tests {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 }),
             )
             .expect("target is live");
@@ -1424,6 +1425,7 @@ mod tests {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: Default::default(),
+                        ..Default::default()
                     }),
                 )
                 .expect("source is live");

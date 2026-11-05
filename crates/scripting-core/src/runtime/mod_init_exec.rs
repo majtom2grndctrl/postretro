@@ -9,28 +9,32 @@ use rquickjs::{Array as JsArray, Context as JsContext, Object as JsObject, Value
 use crate::data_descriptors::{
     EntityTypeDescriptor, PlayerEventSite, drain_audio_profile_js, drain_audio_profile_lua,
     drain_default_weapon_placement_js, drain_default_weapon_placement_lua,
-    drain_faction_sentiment_decay_js, drain_faction_sentiment_decay_lua,
-    drain_faction_sentiments_js, drain_faction_sentiments_lua, drain_factions_js,
-    drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js, drain_fonts_lua,
-    drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js, drain_ghost_styles_lua,
-    drain_global_crossings_js, drain_global_crossings_lua, drain_global_reactions_js,
-    drain_global_reactions_lua, drain_impact_events_js, drain_impact_events_lua,
-    drain_input_block_js, drain_input_block_lua, drain_loading_js, drain_loading_lua,
-    drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js, drain_mod_trigger_events_lua,
-    drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
-    drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
-    drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
-    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_defense_vocabulary_js, drain_defense_vocabulary_lua, drain_faction_sentiment_decay_js,
+    drain_faction_sentiment_decay_lua, drain_faction_sentiments_js, drain_faction_sentiments_lua,
+    drain_factions_js, drain_factions_lua, drain_fluids_js, drain_fluids_lua, drain_fonts_js,
+    drain_fonts_lua, drain_frontend_js, drain_frontend_lua, drain_ghost_styles_js,
+    drain_ghost_styles_lua, drain_global_crossings_js, drain_global_crossings_lua,
+    drain_global_reactions_js, drain_global_reactions_lua, drain_impact_events_js,
+    drain_impact_events_lua, drain_input_block_js, drain_input_block_lua, drain_loading_js,
+    drain_loading_lua, drain_maps_js, drain_maps_lua, drain_mod_trigger_events_js,
+    drain_mod_trigger_events_lua, drain_mover_defaults_js, drain_mover_defaults_lua,
+    drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
+    drain_presentation_overlays_lua, drain_presentation_templates_js,
+    drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
+    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
+    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
+    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
 use crate::quickjs::{QuickJsSubsystem, run_script};
 use crate::store_bridge::{drain_store_declarations_js, drain_store_declarations_lua};
 
-use super::types::{ModManifestResult, validate_mod_manifest_id, validate_mod_manifest_version};
+use super::types::{
+    ModManifestResult, check_entity_defense_references, validate_mod_manifest_id,
+    validate_mod_manifest_version,
+};
 
 pub(super) fn run_mod_init_quickjs(
     subsys: &QuickJsSubsystem,
@@ -226,6 +230,18 @@ pub(super) fn run_mod_init_quickjs(
             }
         };
 
+        let defense = match drain_defense_vocabulary_js(&ctx, &obj) {
+            Ok(defense) => defense,
+            Err(error) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!(
+                        "mod-init: `{source_path}` default mod manifest export damage vocabulary invalid: {error}"
+                    ),
+                });
+                return;
+            }
+        };
+
         // Optional `entities` array. Missing key → empty Vec. Present-but-not-
         // array → InvalidArgument. Each element parses via the shared
         // descriptor reader (`entity_descriptor_from_js`).
@@ -309,6 +325,12 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        if let Err(error) = check_entity_defense_references(&entities, &defense) {
+            out = Err(ScriptError::InvalidArgument {
+                reason: format!("mod-init: `{source_path}` default mod manifest export invalid: {error}"),
+            });
+            return;
+        }
 
         if let Err(error) = crate::data_descriptors::validate_life_state_name_limit(&entities) {
             out = Err(ScriptError::InvalidArgument {
@@ -592,6 +614,7 @@ pub(super) fn run_mod_init_quickjs(
             trigger_pools,
             player_events,
             store_declarations,
+            defense,
         });
     });
 
@@ -701,6 +724,13 @@ pub(super) fn run_mod_init_luau(
             },
         )?;
 
+    let defense =
+        drain_defense_vocabulary_lua(&table).map_err(|error| ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` returned mod manifest damage vocabulary invalid: {error}"
+            ),
+        })?;
+
     // Optional `entities` array. Missing key → empty Vec. Present-but-not-table
     // → InvalidArgument. Each element parses via the shared descriptor reader
     // (`entity_descriptor_from_lua`).
@@ -773,6 +803,11 @@ pub(super) fn run_mod_init_luau(
         } else {
             (Vec::new(), Vec::new())
         };
+    check_entity_defense_references(&entities, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
+        }
+    })?;
 
     crate::data_descriptors::validate_life_state_name_limit(&entities).map_err(|error| {
         ScriptError::InvalidArgument {
@@ -973,6 +1008,7 @@ pub(super) fn run_mod_init_luau(
         trigger_pools,
         player_events,
         store_declarations,
+        defense,
     })
 }
 

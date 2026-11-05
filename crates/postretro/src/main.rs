@@ -11479,6 +11479,7 @@ mod tests {
                     ui_images: Default::default(),
                     loading: Default::default(),
                     store_declarations: Default::default(),
+                    defense: Default::default(),
                     dependency_paths: Vec::new(),
                 },
             )),

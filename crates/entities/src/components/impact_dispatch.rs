@@ -38,7 +38,15 @@ pub const IMPACT_SOURCE_TOKEN: &str = "@impact.source";
 /// and [`IMPACT_SOURCE_TOKEN`], respectively; they are never IR leaves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImpactDispatch {
+    /// Points dealt: the total drained from layers and health after type
+    /// multipliers and resistances. Health's share is unfloored.
     pub amount: f32,
+    /// The incoming amount after hit zones, before type and layers.
+    pub raw: f32,
+    /// The layers' share of `amount`.
+    pub absorbed: f32,
+    /// This hit took some layer from above zero to zero.
+    pub broke: bool,
     pub health_before: f32,
     /// The raw post-subtraction value before the stored health is floored.
     pub health_after: f32,

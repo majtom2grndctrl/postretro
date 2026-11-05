@@ -75,6 +75,7 @@ fn descriptor(initial: &str, rejoin_target: Option<&str>) -> EntityTypeDescripto
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         }),
         behavior: None,
         movement: Some(movement),

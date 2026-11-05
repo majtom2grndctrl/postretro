@@ -340,6 +340,24 @@ pub struct ModManifestResult {
     /// Validated state-store declarations collected during this mod-init
     /// attempt. This is engine metadata, not a `ModManifest` script field.
     pub store_declarations: StoreDeclarationSet,
+    /// The registered damage vocabulary: `defenseLayers`, `damageTypes` and
+    /// `defaultDamageType`. Every descriptor's layer and resist names were
+    /// checked against it before this result was returned.
+    pub defense: postretro_foundation::defense::DefenseVocabulary,
+}
+
+/// Check every descriptor's layer and resist names against the registered
+/// vocabulary, naming the failing key path.
+pub(crate) fn check_entity_defense_references(
+    entities: &[EntityTypeDescriptor],
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    for (index, descriptor) in entities.iter().enumerate() {
+        if let Some(health) = &descriptor.health {
+            vocabulary.check_health(&format!("entities[{index}].components.health"), health)?;
+        }
+    }
+    Ok(())
 }
 
 impl ModManifestResult {

@@ -455,6 +455,8 @@ mod tests {
                 "defineWeaponPlacement",
                 "defineTriggerPool",
                 "defineStore",
+                "defineDefenseLayer",
+                "defineDamageType",
                 "read",
                 "fromRuntime",
                 "set",

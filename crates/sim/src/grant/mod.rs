@@ -106,6 +106,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         component.current = current;
         registry.set_component(id, component).unwrap();

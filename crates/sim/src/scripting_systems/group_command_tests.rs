@@ -175,6 +175,7 @@ impl Fixture {
             max: MAX_HEALTH,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         health.current = START_HEALTH;
         registry.set_component(id, health).unwrap();

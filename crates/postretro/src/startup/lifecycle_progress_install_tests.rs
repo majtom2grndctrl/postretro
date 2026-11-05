@@ -61,6 +61,7 @@ fn install_captures_map_placed_descriptor_npcs_and_excludes_later_spawner_output
             max: 50.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         data.upsert_entity_type(dummy);
         data.upsert_entity_type(behavior_enemy_descriptor(GRUNT));

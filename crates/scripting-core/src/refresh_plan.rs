@@ -1111,6 +1111,7 @@ mod tests {
                 max,
                 hitbox: None,
                 zone_multipliers: std::collections::HashMap::new(),
+                ..Default::default()
             }),
             behavior: None,
         }
@@ -1162,6 +1163,7 @@ mod tests {
                 max: 80.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             descriptor.touchable = Some(TouchableDescriptor {
                 mode: TouchMode::Auto,

@@ -21,6 +21,8 @@ use postretro_scripting_core::player_slots::{
     PlayerSlot, ReloadRead, active_weapon, player_slot_value, weapon_slot_value,
 };
 
+#[cfg(test)]
+mod defense_slots_test;
 mod owner_source;
 #[cfg(test)]
 mod player_slot_lookup_test;
@@ -2112,6 +2114,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         health.current = current;
         registry.set_component(pawn, health).unwrap();
@@ -3014,6 +3017,7 @@ mod tests {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: std::collections::HashMap::new(),
+                    ..Default::default()
                 }),
             )
             .unwrap();
@@ -3390,6 +3394,7 @@ mod tests {
             max: 137.0,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         let spawn_points = [MapEntity {
             map_ordinal: None,
@@ -3670,6 +3675,7 @@ mod tests {
                 max,
                 hitbox: None,
                 zone_multipliers: std::collections::HashMap::new(),
+                ..Default::default()
             });
             health.current = current;
             registry.set_component(pawn, health).unwrap();

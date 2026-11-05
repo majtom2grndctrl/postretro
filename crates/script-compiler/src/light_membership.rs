@@ -605,6 +605,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineWeaponPlacement",
     "defineTriggerPool",
     "defineStore",
+    "defineDefenseLayer",
+    "defineDamageType",
     "read",
     "fromRuntime",
     "set",

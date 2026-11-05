@@ -776,6 +776,7 @@ mod tests {
                     },
                 ),
                 zone_multipliers: Default::default(),
+                ..Default::default()
             },
         );
         descriptor
@@ -1492,6 +1493,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
 
@@ -2251,6 +2253,7 @@ mod tests {
                     offset: None,
                 }),
                 zone_multipliers: Default::default(),
+                ..Default::default()
             });
             descriptor
         }

@@ -654,7 +654,7 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
 }
 
 const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
-const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
+const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0
@@ -755,11 +755,20 @@ export function defineEntity<T>(
 export function defineMod(
   config: ModManifestInput,
 ): import("postretro").ModManifest {
-  if (config.stores === undefined) return config as import("postretro").ModManifest;
-  return {
-    ...config,
-    stores: config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry),
-  } as import("postretro").ModManifest;
+  const manifest: Record<string, unknown> = { ...config };
+  if (config.stores !== undefined) {
+    manifest.stores = config.stores.map((entry) => storeDeclarations.get(entry as object) ?? entry);
+  }
+  // A handle crosses as `{ kind, name }`; the manifest list carries its whole
+  // declaration. A bare string or a handle of the other kind passes through,
+  // and the engine rejects it naming the list entry.
+  if (config.defenseLayers !== undefined) {
+    manifest.defenseLayers = config.defenseLayers.map((entry) => declarationOf(defenseLayerDeclarations, entry));
+  }
+  if (config.damageTypes !== undefined) {
+    manifest.damageTypes = config.damageTypes.map((entry) => declarationOf(damageTypeDeclarations, entry));
+  }
+  return manifest as import("postretro").ModManifest;
 }
 
 /** Pure builder for a stable named faction declaration. Include the result in `defineMod({ factions: [...] })`; archetypes refer to it by `components.faction`. Names beginning with `@postretro.` are reserved by the engine. */
@@ -948,4 +957,52 @@ function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): Stat
     writable: false,
   });
   return Object.freeze(ref) as StateRef;
+}
+
+// Declarations a `defineMod` list resolves its handles through, as stores do.
+const defenseLayerDeclarations = new WeakMap<object, object>();
+const damageTypeDeclarations = new WeakMap<object, object>();
+
+function declarationOf(declarations: WeakMap<object, object>, entry: unknown): unknown {
+  if (entry === null || typeof entry !== "object") return entry;
+  return declarations.get(entry) ?? entry;
+}
+
+function hideProperty(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: false, configurable: false, writable: false });
+}
+
+/** Declare a defense layer kind: a shield, armor or any pool that drains before health. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build, which names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })`, then attach it to descriptors in `components.health.layers`. `current` and `capacity` read the local player's layer. `options` is reserved and must be empty. */
+export function defineDefenseLayer(options?: import("postretro").DefenseLayerOptions): import("postretro").DefenseLayer;
+export function defineDefenseLayer(name: string, options?: import("postretro").DefenseLayerOptions): import("postretro").DefenseLayer;
+export function defineDefenseLayer(
+  nameOrOptions?: string | import("postretro").DefenseLayerOptions,
+  options?: import("postretro").DefenseLayerOptions,
+): import("postretro").DefenseLayer {
+  if (typeof nameOrOptions !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const name = nameOrOptions;
+  const handle = { kind: "defenseLayer", name };
+  hideProperty(handle, "current", storeRef(`player.defense.${name}`, "number", true));
+  hideProperty(handle, "capacity", storeRef(`player.defense.${name}.capacity`, "number", true));
+  Object.freeze(handle);
+  defenseLayerDeclarations.set(handle, Object.freeze({ kind: "defenseLayer", name, options: options ?? {} }));
+  return handle as unknown as import("postretro").DefenseLayer;
+}
+
+/** Declare a damage type by its matrix: how much one raw point takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build. Register it with `defineMod({ damageTypes: [type] })`. `options` is reserved and must be empty. */
+export function defineDamageType(matrix: import("postretro").DamageTypeMatrix, options?: import("postretro").DamageTypeOptions): import("postretro").DamageType;
+export function defineDamageType(name: string, matrix: import("postretro").DamageTypeMatrix, options?: import("postretro").DamageTypeOptions): import("postretro").DamageType;
+export function defineDamageType(
+  nameOrMatrix: string | import("postretro").DamageTypeMatrix,
+  matrix?: import("postretro").DamageTypeMatrix | import("postretro").DamageTypeOptions,
+  options?: import("postretro").DamageTypeOptions,
+): import("postretro").DamageType {
+  if (typeof nameOrMatrix !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const name = nameOrMatrix;
+  const handle = Object.freeze({ kind: "damageType", name });
+  damageTypeDeclarations.set(
+    handle,
+    Object.freeze({ kind: "damageType", name, matrix: { ...(matrix ?? {}) }, options: options ?? {} }),
+  );
+  return handle as unknown as import("postretro").DamageType;
 }

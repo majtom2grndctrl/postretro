@@ -17,7 +17,7 @@ use postretro_entities::registry::{EntityId, EntityRegistry};
 use postretro_entities::slot_table::{SlotOwnership, SlotValue};
 use postretro_foundation::ActivationToken;
 use postretro_scripting_core::player_slots::{
-    PlayerSlot, ReloadRead, player_slot_value, weapon_slot_value,
+    PlayerSlot, ReloadRead, defense_slot, defense_slot_value, player_slot_value, weapon_slot_value,
 };
 
 /// Read the current and maximum HP of the player pawn resolved by the local
@@ -329,6 +329,26 @@ impl PlayerHudStatePublisher {
     pub fn publish_health_from_registry(&mut self, registry: &EntityRegistry) {
         let pawn_health = pawn_health_values(registry);
         self.publish_health_values(pawn_health);
+        self.publish_defense_layers(registry);
+    }
+
+    /// Publish the local pawn's `player.defense.<name>` pair for every
+    /// registered layer. A pawn without a layer reads absent, never another
+    /// player's value. Writes only on change and allocates nothing.
+    fn publish_defense_layers(&mut self, registry: &EntityRegistry) {
+        let pawn = registry.local_player_movement_pawn();
+        let mut slots = self.ctx.slot_table.borrow_mut();
+        for (name, record) in slots.iter_mut() {
+            let Some(value) = pawn.and_then(|pawn| defense_slot_value(registry, name, pawn)) else {
+                if defense_slot(name).is_some() && record.value.is_some() {
+                    record.write_value(None);
+                }
+                continue;
+            };
+            if record.value != value {
+                record.write_value(value);
+            }
+        }
     }
 
     /// Republish the player HUD store slots for this frame.
@@ -367,6 +387,8 @@ impl PlayerHudStatePublisher {
         // cell).
         let pawn_health = pawn_health_values(&self.ctx.registry.borrow());
         self.publish_health_values(pawn_health);
+        let registry = self.ctx.registry.clone();
+        self.publish_defense_layers(&registry.borrow());
         self.publish_swim_values();
         self.publish_assist_progress();
 
@@ -684,6 +706,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         health.current = current;
         let mut registry = ctx.registry.borrow_mut();

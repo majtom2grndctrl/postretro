@@ -425,6 +425,7 @@ fn suppressed_descriptor_models_install_hit_zones_once() {
         max: 100.0,
         hitbox: None,
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     for connected in [false, true] {
         let mut world = level_world("descriptor_install", 1);

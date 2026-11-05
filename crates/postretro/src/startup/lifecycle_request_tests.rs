@@ -375,6 +375,7 @@ fn staged_frontend_commit_replaces_active_frontend_modal() {
             ui_images: Default::default(),
             loading: Default::default(),
             store_declarations: Default::default(),
+            defense: Default::default(),
             dependency_paths: Vec::new(),
             player_events: Vec::new(),
         })),

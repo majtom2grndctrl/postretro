@@ -1307,6 +1307,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         registry.set_component(pawn, health.clone()).unwrap();
         assert!(binding_is_live(&registry, pawn, id, weapon));

@@ -747,6 +747,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::Teleporter => postretro_net::wire::COMPONENT_KIND_TELEPORTER,
         ComponentKind::ProjectileTrap => postretro_net::wire::COMPONENT_KIND_PROJECTILE_TRAP,
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
+        ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
     }
 }
 
@@ -7037,7 +7038,8 @@ mod tests {
                 ComponentKind::Immersion => Some(ComponentKind::Teleporter),
                 ComponentKind::Teleporter => Some(ComponentKind::ProjectileTrap),
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
-                ComponentKind::GhostLink => None,
+                ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
+                ComponentKind::DefenseLayers => None,
             }
         }
 

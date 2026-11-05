@@ -596,6 +596,17 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("max", "f32", "Maximum hit points. Must be finite and >= 1.0; `current` initializes to this value at spawn.")
         .field("hitbox?", "HitboxDescriptor", "Optional direct-impact AABB. Present participates in the shared hitscan/projectile query; absent requires usable model hit zones for targetability.")
         .field("zoneMultipliers?", "ZoneMultipliers", "Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.")
+        .field("layers?", "Vec<DefenseLayerEntry>", "Defense layers in drain order. Every hit drains them before health, scaled per damage type; an empty layer is skipped. Each kind may appear once. Optional; defaults to none.")
+        .field("resist?", "DefenseResistMap", "Health's own resistance per damage type, keyed by the type's name: scales that type on health only (the body; entity-wide on an unlayered entity). Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. Optional.")
+        .finish();
+    registry
+        .register_type("DefenseLayerEntry")
+        .doc("One defense layer on a descriptor: the registered layer kind it instances, its capacity and recharge, and its own resistances. Each parameter is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner store values; results clamp into the literal ranges. A layer recharges at `rechargeRate` once `rechargeDelayMs` has passed since the entity's last hit.")
+        .field("layer", "DefenseLayer", "The layer kind, a handle `defineMod({ defenseLayers })` registers.")
+        .field("capacity", "NumberValue", "Maximum value, in points. A literal must be in [0, 1e6]. Lowering it clamps the current value; raising it never fills the layer.")
+        .field("rechargeDelayMs?", "NumberValue", "Milliseconds after the entity's last hit before recharge starts. A literal must be in [0, 60000]. Defaults to 3000.")
+        .field("rechargeRate?", "NumberValue", "Recharge rate in points per second. A literal must be in [0, 1e6]. Defaults to 0, which never recharges: armor.")
+        .field("resist?", "DefenseResistMap", "This layer's resistance per damage type, keyed by the type's name: scales that type on this layer only. Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1.")
         .finish();
     registry
         .register_enum("MotionVerb")

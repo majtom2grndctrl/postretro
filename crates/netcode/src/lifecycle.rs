@@ -761,6 +761,7 @@ mod tests {
                 offset: None,
             }),
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         let descriptors = [
             player_with_loadout(&["reference_pistol", "reference_pistol"]),

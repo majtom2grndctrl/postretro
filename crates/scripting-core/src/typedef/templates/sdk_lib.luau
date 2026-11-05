@@ -1367,6 +1367,9 @@ export type ModManifestInput = {
   triggerPools: {TriggerPoolDescriptor}?,
   playerEvents: {PlayerEventDescriptor}?,
   stores: {StoreDeclaration | StoreDefinition}?,
+  defenseLayers: {DefenseLayer}?,
+  damageTypes: {DamageType}?,
+  defaultDamageType: DamageType?,
 }
 
 --- Build a frozen state-store handle. Pure: calling it performs no FFI and
@@ -1375,6 +1378,26 @@ export type ModManifestInput = {
 --- Pass the handle through `defineMod({ stores = { store } })`; `defineMod`
 --- resolves declaration data before the manifest crosses the FFI.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+
+--- A registered defense layer kind. It crosses the manifest as `{ kind, name }`.
+--- `current` and `capacity` read the local player's layer.
+export type DefenseLayer = {
+  kind: "defenseLayer",
+  name: string,
+  current: PlayerComputedRef<number>,
+  capacity: PlayerComputedRef<number>,
+}
+--- How much one raw point of a damage type takes from each pool kind, keyed by
+--- layer name or `health`: a multiplier in [0, 64] or, on a layer only, `"bypass"`.
+export type DamageTypeMatrix = { [string]: number | "bypass" }
+--- A registered damage type. It crosses the manifest as `{ kind, name }`.
+export type DamageType = { kind: "damageType", name: string }
+--- Declare a defense layer kind. Luau passes the name explicitly. Register it
+--- with `defineMod({ defenseLayers = { layer } })`. `options` is reserved.
+declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
+--- Declare a damage type by its matrix. Luau passes the name explicitly.
+--- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
+declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)

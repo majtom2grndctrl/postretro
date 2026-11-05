@@ -227,6 +227,7 @@ mod tests {
             max: 90.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         };
         let mut item = weapon_descriptor("item");
         item.touchable = Some(TouchableDescriptor {

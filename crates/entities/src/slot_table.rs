@@ -402,6 +402,36 @@ impl SlotTable {
         self.slots.get(name)
     }
 
+    /// Replace the owner-private defense-layer slots with one
+    /// `player.defense.<name>` and `player.defense.<name>.capacity` pair per
+    /// registered layer. Engine-owned and readonly; each pawn's value comes
+    /// from its layer component, so a removed layer's slots go with it.
+    pub fn replace_player_defense_slots(&mut self, layer_names: &[String]) {
+        use postretro_foundation::defense::{DEFENSE_CAPACITY_SUFFIX, PLAYER_DEFENSE_SLOT_PREFIX};
+        self.slots
+            .retain(|name, _| !name.starts_with(PLAYER_DEFENSE_SLOT_PREFIX));
+        for layer in layer_names {
+            let current = format!("{PLAYER_DEFENSE_SLOT_PREFIX}{layer}");
+            let capacity = format!("{current}{DEFENSE_CAPACITY_SUFFIX}");
+            for name in [current, capacity] {
+                self.slots.insert(
+                    name,
+                    SlotRecord::new(SlotSchema {
+                        slot_type: SlotType::Number,
+                        default: None,
+                        range: None,
+                        persist: false,
+                        readonly: true,
+                        ownership: SlotOwnership::Engine,
+                        network: ReplicationScope::OwnerPrivatePlayer,
+                        per_owner: false,
+                        accumulate: None,
+                    }),
+                );
+            }
+        }
+    }
+
     pub fn get_mut(&mut self, name: &str) -> Option<&mut SlotRecord> {
         self.slots.get_mut(name)
     }

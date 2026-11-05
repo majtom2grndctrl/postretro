@@ -102,6 +102,7 @@ fn pawn(ctx: &ScriptCtx, health: Option<f32>, state: u8, seat: Option<(u16, f32)
             max: 100.0,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         component.current = current;
         registry.set_component(pawn, component).unwrap();

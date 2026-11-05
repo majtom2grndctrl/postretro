@@ -141,6 +141,7 @@ fn spawn_owned_health(
         max,
         hitbox: None,
         zone_multipliers: std::collections::HashMap::new(),
+        ..Default::default()
     };
     let pawn = registry.spawn(Transform::default());
     let mut health = HealthComponent::from_descriptor(&descriptor);

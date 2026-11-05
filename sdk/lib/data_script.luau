@@ -598,6 +598,8 @@ export type StoreDefinition = {
 }
 
 local DataScriptSdk = {}
+local defenseLayerDeclarations = setmetatable({}, { __mode = "k" })
+local damageTypeDeclarations = setmetatable({}, { __mode = "k" })
 local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Part chunks (`data_script/*.luau`) evaluate before this module and publish
@@ -861,7 +863,7 @@ function DataScriptSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
 end
 
 local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
-local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
+local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
 
 local function validateImpactEventId(id: string)
   local valid = #id > 0 and #id <= 64
@@ -968,18 +970,29 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any? }): T
-  if config.stores == nil then
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any? }): T
+  if config.stores == nil and config.defenseLayers == nil and config.damageTypes == nil then
     return config
   end
 
   local manifest = table.clone(config)
-  local stores = {}
-  for key, entry in pairs(config.stores) do
-    local declaration = if type(entry) == "table" then storeDeclarations[entry] else nil
-    stores[key] = if declaration ~= nil then declaration else entry
+  -- A handle crosses as `{ kind, name }`; each list carries its whole
+  -- declaration. A bare string or a handle of the other kind passes through,
+  -- and the engine rejects it naming the list entry.
+  local function resolve(list: any, declarations: any): any
+    if list == nil then
+      return nil
+    end
+    local resolved = {}
+    for key, entry in pairs(list) do
+      local declaration = if type(entry) == "table" then declarations[entry] else nil
+      resolved[key] = if declaration ~= nil then declaration else entry
+    end
+    return resolved
   end
-  manifest.stores = stores
+  manifest.stores = resolve(config.stores, storeDeclarations)
+  manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
+  manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
   return manifest
 end
 
@@ -1177,6 +1190,42 @@ function DataScriptSdk.defineStore(...: any): StoreDefinition
     schema = frozenSchema,
   })
   return handle
+end
+
+--- Declare a defense layer kind: a shield, armor or any pool that drains
+--- before health. Luau passes the name explicitly. Register it with
+--- `defineMod({ defenseLayers = { layer } })`, then attach it to descriptors in
+--- `components.health.layers`. `current` and `capacity` read the local
+--- player's layer. `options` is reserved and must be empty.
+function DataScriptSdk.defineDefenseLayer(...: any): DefenseLayer
+  local name, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local accessors = {
+    current = storeRef("player.defense." .. name, "number", true),
+    capacity = storeRef("player.defense." .. name .. ".capacity", "number", true),
+  }
+  local handle = table.freeze(setmetatable({ kind = "defenseLayer", name = name }, { __index = accessors }))
+  defenseLayerDeclarations[handle] = table.freeze({ kind = "defenseLayer", name = name, options = options or {} })
+  return handle :: any
+end
+
+--- Declare a damage type by its matrix: how much one raw point takes from
+--- each pool kind, keyed by layer name or `health`. Each value is a
+--- multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is
+--- ×1. Luau passes the name explicitly. Register it with
+--- `defineMod({ damageTypes = { type } })`. `options` is reserved and must be
+--- empty.
+function DataScriptSdk.defineDamageType(...: any): DamageType
+  local name, matrix, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local handle = table.freeze({ kind = "damageType", name = name })
+  damageTypeDeclarations[handle] =
+    table.freeze({ kind = "damageType", name = name, matrix = table.clone(matrix or {}), options = options or {} })
+  return handle :: any
 end
 
 -- Merge the part chunks' public builders. Field names are disjoint from the

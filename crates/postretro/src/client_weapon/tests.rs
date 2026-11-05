@@ -46,6 +46,7 @@ fn fixture_with_resource(
                 max: 100.0,
                 hitbox: None,
                 zone_multipliers: Default::default(),
+                ..Default::default()
             }),
         )
         .unwrap();

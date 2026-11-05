@@ -96,6 +96,7 @@ fn descriptor() -> EntityTypeDescriptor {
                 offset: Some([0.0, 0.25, 0.0]),
             }),
             zone_multipliers: Default::default(),
+            ..Default::default()
         }),
     }
 }

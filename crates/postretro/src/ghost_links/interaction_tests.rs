@@ -49,6 +49,7 @@ fn hittable(registry: &mut EntityRegistry, id: EntityId) {
                     offset: None,
                 }),
                 zone_multipliers: HashMap::new(),
+                ..Default::default()
             }),
         )
         .unwrap();

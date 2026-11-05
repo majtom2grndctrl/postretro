@@ -738,6 +738,24 @@ declare module "postretro" {
     hitbox?: HitboxDescriptor;
     /** Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty. */
     zoneMultipliers?: { readonly [tag: string]: number };
+    /** Defense layers in drain order. Every hit drains them before health, scaled per damage type; an empty layer is skipped. Each kind may appear once. Optional; defaults to none. */
+    layers?: ReadonlyArray<DefenseLayerEntry>;
+    /** Health's own resistance per damage type, keyed by the type's name: scales that type on health only (the body; entity-wide on an unlayered entity). Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. Optional. */
+    resist?: { readonly [damageType: string]: NumberValue };
+  };
+
+  /** One defense layer on a descriptor: the registered layer kind it instances, its capacity and recharge, and its own resistances. Each parameter is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner store values; results clamp into the literal ranges. A layer recharges at `rechargeRate` once `rechargeDelayMs` has passed since the entity's last hit. */
+  export type DefenseLayerEntry = {
+    /** The layer kind, a handle `defineMod({ defenseLayers })` registers. */
+    layer: DefenseLayer;
+    /** Maximum value, in points. A literal must be in [0, 1e6]. Lowering it clamps the current value; raising it never fills the layer. */
+    capacity: NumberValue;
+    /** Milliseconds after the entity's last hit before recharge starts. A literal must be in [0, 60000]. Defaults to 3000. */
+    rechargeDelayMs?: NumberValue;
+    /** Recharge rate in points per second. A literal must be in [0, 1e6]. Defaults to 0, which never recharges: armor. */
+    rechargeRate?: NumberValue;
+    /** This layer's resistance per damage type, keyed by the type's name: scales that type on this layer only. Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. */
+    resist?: { readonly [damageType: string]: NumberValue };
   };
 
   /** What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`. */
@@ -1663,6 +1681,12 @@ declare module "postretro" {
     playerEvents?: ReadonlyArray<PlayerEventDescriptor>;
     /** Trigger-volume arming pools. Optional; compose by level tags. */
     triggerPools?: ReadonlyArray<TriggerPoolDescriptor>;
+    /** Defense layer kinds from `defineDefenseLayer(...)`, in registration order. Optional. A descriptor's `components.health.layers` references only a listed kind; two entries with one name, a layer named `health`, or an entry that is not a layer handle fails load. */
+    defenseLayers?: ReadonlyArray<DefenseLayer>;
+    /** Damage types from `defineDamageType(...)`. Optional. Weapons, attacks, crushers and `.damage` name only a listed type; two entries with one name, a matrix key naming no registered layer and not `health`, or an entry that is not a type handle fails load. */
+    damageTypes?: ReadonlyArray<DamageType>;
+    /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
+    defaultDamageType?: DamageType;
     /** Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical. */
     stores?: ReadonlyArray<StoreDeclaration>;
   };
@@ -2661,6 +2685,29 @@ declare module "postretro" {
     namespace: string,
     schema: S,
   ): StoreDefinition<S>;
+
+  /** Reserved options for `defineDefenseLayer`; empty today, and any key rejects load. */
+  export type DefenseLayerOptions = { readonly [key: string]: never };
+  /** A registered defense layer kind. It crosses the manifest as `{ kind, name }`. `current` and `capacity` read the local player's layer (`player.defense.<name>` and `player.defense.<name>.capacity`); a pawn without the layer reads absent. */
+  export type DefenseLayer = {
+    readonly kind: "defenseLayer";
+    readonly name: string;
+    readonly current: PlayerComputedRef<number>;
+    readonly capacity: PlayerComputedRef<number>;
+  };
+  /** Reserved options for `defineDamageType`; empty today, and any key rejects load. */
+  export type DamageTypeOptions = { readonly [key: string]: never };
+  /** How much one raw point of a damage type takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. */
+  export type DamageTypeMatrix = { readonly [pool: string]: number | "bypass" };
+  /** A registered damage type. It crosses the manifest as `{ kind, name }`. */
+  export type DamageType = { readonly kind: "damageType"; readonly name: string };
+
+  /** Declare a defense layer kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })` and attach it in `components.health.layers`. */
+  export function defineDefenseLayer(options?: DefenseLayerOptions): DefenseLayer;
+  export function defineDefenseLayer(name: string, options?: DefenseLayerOptions): DefenseLayer;
+  /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
+  export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+  export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;

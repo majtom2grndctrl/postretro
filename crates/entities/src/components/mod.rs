@@ -8,6 +8,7 @@ pub mod billboard_emitter;
 pub mod brain;
 mod contributor_ledger;
 mod damage_perception;
+pub mod defense_layers;
 pub mod deferred_effect;
 pub mod entity_state;
 pub mod fog_volume;

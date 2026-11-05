@@ -7,6 +7,9 @@ mod assist_pass;
 mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
+pub mod defense_layers;
+#[cfg(test)]
+mod defense_layers_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;

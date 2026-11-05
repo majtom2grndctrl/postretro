@@ -809,6 +809,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         health.current = current;
         health

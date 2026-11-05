@@ -55,6 +55,7 @@ fn health() -> HealthDescriptor {
             offset: None,
         }),
         zone_multipliers: Default::default(),
+        ..Default::default()
     }
 }
 

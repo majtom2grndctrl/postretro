@@ -150,6 +150,8 @@ export {
   defineWeaponPlacement,
   defineTriggerPool,
   defineStore,
+  defineDefenseLayer,
+  defineDamageType,
   read,
   fromRuntime,
   set,

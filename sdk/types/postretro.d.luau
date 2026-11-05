@@ -737,6 +737,24 @@ export type HealthDescriptor = {
   hitbox: HitboxDescriptor?,
   --- Per-skeletal-zone damage multipliers, tag → factor (e.g. `{ head: 1.5 }`). A shot on a tagged zone scales the weapon's payload by this factor; an absent zone or unlisted tag applies 1.0. Each factor must be finite and >= 0. Optional; defaults to empty.
   zoneMultipliers: { [string]: number }?,
+  --- Defense layers in drain order. Every hit drains them before health, scaled per damage type; an empty layer is skipped. Each kind may appear once. Optional; defaults to none.
+  layers: {DefenseLayerEntry}?,
+  --- Health's own resistance per damage type, keyed by the type's name: scales that type on health only (the body; entity-wide on an unlayered entity). Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1. Optional.
+  resist: { [string]: NumberValue }?,
+}
+
+--- One defense layer on a descriptor: the registered layer kind it instances, its capacity and recharge, and its own resistances. Each parameter is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner store values; results clamp into the literal ranges. A layer recharges at `rechargeRate` once `rechargeDelayMs` has passed since the entity's last hit.
+export type DefenseLayerEntry = {
+  --- The layer kind, a handle `defineMod({ defenseLayers })` registers.
+  layer: DefenseLayer,
+  --- Maximum value, in points. A literal must be in [0, 1e6]. Lowering it clamps the current value; raising it never fills the layer.
+  capacity: NumberValue,
+  --- Milliseconds after the entity's last hit before recharge starts. A literal must be in [0, 60000]. Defaults to 3000.
+  rechargeDelayMs: NumberValue?,
+  --- Recharge rate in points per second. A literal must be in [0, 1e6]. Defaults to 0, which never recharges: armor.
+  rechargeRate: NumberValue?,
+  --- This layer's resistance per damage type, keyed by the type's name: scales that type on this layer only. Each value is a literal in [0, 64] or a Number expression, clamped there. A missing type is ×1.
+  resist: { [string]: NumberValue }?,
 }
 
 --- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`.
@@ -1662,6 +1680,12 @@ export type ModManifest = {
   playerEvents: {PlayerEventDescriptor}?,
   --- Trigger-volume arming pools. Optional; compose by level tags.
   triggerPools: {TriggerPoolDescriptor}?,
+  --- Defense layer kinds from `defineDefenseLayer(...)`, in registration order. Optional. A descriptor's `components.health.layers` references only a listed kind; two entries with one name, a layer named `health`, or an entry that is not a layer handle fails load.
+  defenseLayers: {DefenseLayer}?,
+  --- Damage types from `defineDamageType(...)`. Optional. Weapons, attacks, crushers and `.damage` name only a listed type; two entries with one name, a matrix key naming no registered layer and not `health`, or an entry that is not a type handle fails load.
+  damageTypes: {DamageType}?,
+  --- The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies.
+  defaultDamageType: DamageType?,
   --- Engine-global state-store declarations resolved from `defineStore(...)` handles by `defineMod`. Optional; commit atomically only after manifest validation and required durable-identity validation succeed, and preserve existing values when the schema is identical.
   stores: {StoreDeclaration}?,
 }
@@ -3073,6 +3097,9 @@ export type ModManifestInput = {
   triggerPools: {TriggerPoolDescriptor}?,
   playerEvents: {PlayerEventDescriptor}?,
   stores: {StoreDeclaration | StoreDefinition}?,
+  defenseLayers: {DefenseLayer}?,
+  damageTypes: {DamageType}?,
+  defaultDamageType: DamageType?,
 }
 
 --- Build a frozen state-store handle. Pure: calling it performs no FFI and
@@ -3081,6 +3108,26 @@ export type ModManifestInput = {
 --- Pass the handle through `defineMod({ stores = { store } })`; `defineMod`
 --- resolves declaration data before the manifest crosses the FFI.
 declare function defineStore(namespace: string, schema: { [string]: StoreSlotSchema }): StoreDefinition
+
+--- A registered defense layer kind. It crosses the manifest as `{ kind, name }`.
+--- `current` and `capacity` read the local player's layer.
+export type DefenseLayer = {
+  kind: "defenseLayer",
+  name: string,
+  current: PlayerComputedRef<number>,
+  capacity: PlayerComputedRef<number>,
+}
+--- How much one raw point of a damage type takes from each pool kind, keyed by
+--- layer name or `health`: a multiplier in [0, 64] or, on a layer only, `"bypass"`.
+export type DamageTypeMatrix = { [string]: number | "bypass" }
+--- A registered damage type. It crosses the manifest as `{ kind, name }`.
+export type DamageType = { kind: "damageType", name: string }
+--- Declare a defense layer kind. Luau passes the name explicitly. Register it
+--- with `defineMod({ defenseLayers = { layer } })`. `options` is reserved.
+declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
+--- Declare a damage type by its matrix. Luau passes the name explicitly.
+--- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
+declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)
@@ -3805,6 +3852,8 @@ export type PostretroModule = {
   defineTriggerPool: typeof(defineTriggerPool),
   --- Pure state-store builder returning a flattened, frozen schema-keyed handle.
   defineStore: typeof(defineStore),
+  defineDefenseLayer: typeof(defineDefenseLayer),
+  defineDamageType: typeof(defineDamageType),
   --- Read a state ref into an expression value.
   read: typeof(read),
   --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.

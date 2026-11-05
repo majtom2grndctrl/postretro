@@ -367,6 +367,7 @@ impl PersistentAtmosphereHarness {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("fixture remote pawn accepts health");
@@ -385,6 +386,7 @@ impl PersistentAtmosphereHarness {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("fixture local pawn accepts health");

@@ -483,6 +483,7 @@ fn world_item_descriptor(class: &str) -> EntityTypeDescriptor {
         max: 48.0,
         hitbox: None,
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     descriptor.touchable = Some(TouchableDescriptor {
         mode: TouchMode::Auto,

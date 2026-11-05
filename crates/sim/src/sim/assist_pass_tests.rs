@@ -1150,6 +1150,7 @@ fn assist_pass_o54_in_tick_write_is_read_by_the_same_pass() {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: Default::default(),
+                        ..Default::default()
                     },
                 ),
             )

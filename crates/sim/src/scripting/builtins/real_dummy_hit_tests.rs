@@ -86,6 +86,7 @@ fn dummy_descriptor() -> EntityTypeDescriptor {
         max: 48.0,
         hitbox: None,
         zone_multipliers: HashMap::new(),
+        ..Default::default()
     });
     descriptor
 }

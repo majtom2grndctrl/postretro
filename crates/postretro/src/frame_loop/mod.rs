@@ -800,6 +800,13 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let teleport_before =
                 crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let pending_tick = sim::begin_tick(&script_ctx.registry, Some(&script_ctx));
+            {
+                let _scope =
+                    sim_cpu.scope(postretro_sim::sim::cpu_stages::SimStage::DefenseLayers);
+                postretro_sim::sim::defense_layers::recharge_defense_layers(
+                    &mut script_ctx.registry.borrow_mut(),
+                );
+            }
             let mut resolved_remote_commands = app.host_resolve_remote_commands(tick_dt);
             let local_pawn = script_ctx.registry.borrow().local_player_movement_pawn();
             let (started_tick, respawn_turns) = sim::finish_tick_start(

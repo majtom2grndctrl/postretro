@@ -794,6 +794,29 @@
     schema: S,
   ): StoreDefinition<S>;
 
+  /** Reserved options for `defineDefenseLayer`; empty today, and any key rejects load. */
+  export type DefenseLayerOptions = { readonly [key: string]: never };
+  /** A registered defense layer kind. It crosses the manifest as `{ kind, name }`. `current` and `capacity` read the local player's layer (`player.defense.<name>` and `player.defense.<name>.capacity`); a pawn without the layer reads absent. */
+  export type DefenseLayer = {
+    readonly kind: "defenseLayer";
+    readonly name: string;
+    readonly current: PlayerComputedRef<number>;
+    readonly capacity: PlayerComputedRef<number>;
+  };
+  /** Reserved options for `defineDamageType`; empty today, and any key rejects load. */
+  export type DamageTypeOptions = { readonly [key: string]: never };
+  /** How much one raw point of a damage type takes from each pool kind, keyed by layer name or `health`. Each value is a multiplier in [0, 64] or, on a layer only, `"bypass"`; a missing pool is ×1. */
+  export type DamageTypeMatrix = { readonly [pool: string]: number | "bypass" };
+  /** A registered damage type. It crosses the manifest as `{ kind, name }`. */
+  export type DamageType = { readonly kind: "damageType"; readonly name: string };
+
+  /** Declare a defense layer kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ defenseLayers: [layer] })` and attach it in `components.health.layers`. */
+  export function defineDefenseLayer(options?: DefenseLayerOptions): DefenseLayer;
+  export function defineDefenseLayer(name: string, options?: DefenseLayerOptions): DefenseLayer;
+  /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
+  export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+  export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
   export function read(ref: StateRef<boolean>): BoolRef;

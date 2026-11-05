@@ -202,6 +202,11 @@ pub(super) fn pawn_component_slot_for_pawn(
     name: &str,
     pawn: EntityId,
 ) -> Option<Option<SlotValue>> {
+    if let Some(value) =
+        postretro_scripting_core::player_slots::defense_slot_value(registry, name, pawn)
+    {
+        return Some(value);
+    }
     let slot = PlayerSlot::from_name(name).filter(|slot| !slot.reads_active_weapon())?;
     Some(player_slot_value(registry, slot, pawn))
 }

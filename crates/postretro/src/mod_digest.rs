@@ -390,6 +390,7 @@ pub(crate) mod tests {
             trigger_pools: pools(),
             player_events: Vec::new(),
             store_declarations: StoreDeclarationSet::default(),
+            defense: Default::default(),
         }
     }
 
@@ -550,6 +551,7 @@ pub(crate) mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
 
         let mut behavior = entity_descriptor();

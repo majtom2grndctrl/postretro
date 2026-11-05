@@ -323,6 +323,7 @@ mod tests {
                     max: 30.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 });
             }
             descriptor.emitter = Some(emitter("unique_plume", 0.45));

@@ -193,7 +193,10 @@ pub fn apply_damage_with_context(
     payload: &DamagePayload,
     context: DamageContext,
 ) -> bool {
-    if !payload.amount.is_finite() || payload.amount <= 0.0 {
+    // The gate reads raw: a hit a layer fully absorbs or a ×0 pool blocks
+    // still lands, restamps and resets recency, dealing 0 points.
+    let raw = payload.amount;
+    if !raw.is_finite() || raw <= 0.0 {
         return false;
     }
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
@@ -201,8 +204,9 @@ pub fn apply_damage_with_context(
     };
     let mut updated = health.clone();
     let health_before = updated.current;
-    let health_after = health_before - payload.amount;
     let max_health = health.max;
+    let drain = super::defense_layers::drain_hit(registry, id, raw);
+    let health_after = health_before - drain.health_loss;
     updated.current = health_after.max(0.0);
     let target_was_live =
         !updated.death_handled && health_before.is_finite() && health_before > 0.0;
@@ -211,7 +215,7 @@ pub fn apply_damage_with_context(
     // that later sweep; only hits whose pre-impact HP was still alive belong
     // to this down.
     if target_was_live {
-        let mut record = ContributorLedgerRecord::new(context.source_id, payload.amount);
+        let mut record = ContributorLedgerRecord::new(context.source_id, drain.points_dealt);
         record.zone = context.zone;
         record.attacker = context.attacker;
         record.weapon = context.weapon;
@@ -230,11 +234,14 @@ pub fn apply_damage_with_context(
             registry,
             id,
             context.attacker,
-            payload.amount,
+            drain.points_dealt,
         );
     }
     registry.push_impact_dispatch(ImpactDispatch {
-        amount: payload.amount,
+        amount: drain.points_dealt,
+        raw,
+        absorbed: drain.absorbed,
+        broke: drain.broke,
         health_before,
         health_after,
         max_health,
@@ -279,6 +286,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -401,6 +409,7 @@ mod tests {
                 offset: None,
             }),
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         };
         let component = HealthComponent::from_descriptor(&desc);
         let hitbox = component.hitbox.expect("hitbox materialized");

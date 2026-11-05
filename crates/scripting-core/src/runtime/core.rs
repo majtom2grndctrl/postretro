@@ -767,6 +767,11 @@ impl ScriptRuntime {
             // One mutable registry borrow commits the staged whole snapshot, so
             // a render frame cannot observe new descriptors without their
             // matching mod-global weapon-placement default.
+            let next_defense = match &result.status {
+                StagedManifestBuildStatus::Built(manifest) => manifest.defense.clone(),
+                _ => Default::default(),
+            };
+            crate::defense_vocabulary::commit_defense_vocabulary(ctx, next_defense);
             let previous_life_state_names = ctx.data_registry.borrow().life_state_names.clone();
             {
                 let mut data_registry = ctx.data_registry.borrow_mut();
@@ -1312,6 +1317,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         };
         let mut active_descriptor = descriptor("identity_guard", None, None);
         active_descriptor.health = Some(old_health.clone());

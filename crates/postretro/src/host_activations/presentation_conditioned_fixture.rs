@@ -96,6 +96,7 @@ fn descriptors() -> Vec<EntityTypeDescriptor> {
             offset: None,
         }),
         zone_multipliers: Default::default(),
+        ..Default::default()
     });
     vec![mesh, lit, light, particles, dummy]
 }

@@ -205,6 +205,7 @@ impl Level {
             max: MAX_HEALTH,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         health.current = START_HEALTH;
         self.registry.set_component(id, health).unwrap();

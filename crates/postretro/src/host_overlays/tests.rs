@@ -45,6 +45,7 @@ fn fresh_target(registry: &mut EntityRegistry) -> EntityId {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: Default::default(),
+                    ..Default::default()
                 },
             ),
         )

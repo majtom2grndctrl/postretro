@@ -1463,6 +1463,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let brain_entity = registry.spawn(Transform::default());
@@ -1544,6 +1545,7 @@ mod tests {
                     max: 10.0,
                     hitbox: None,
                     zone_multipliers: HashMap::new(),
+                    ..Default::default()
                 }),
             )
             .unwrap();
@@ -1629,6 +1631,7 @@ mod tests {
                         max: 100.0,
                         hitbox: None,
                         zone_multipliers: HashMap::new(),
+                        ..Default::default()
                     }),
                 )
                 .expect("enemy is live");
@@ -1691,6 +1694,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let brain_entity = registry.spawn(Transform::default());
@@ -1794,6 +1798,7 @@ mod tests {
                     max: 100.0,
                     hitbox: None,
                     zone_multipliers: HashMap::new(),
+                    ..Default::default()
                 }),
             )
             .unwrap();

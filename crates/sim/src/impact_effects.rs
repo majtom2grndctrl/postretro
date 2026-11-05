@@ -451,6 +451,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: Default::default(),
+            ..Default::default()
         });
         registry
             .set_component(target, health)

@@ -527,6 +527,14 @@ pub(crate) fn attach_descriptor_components(
             hitbox.offset -= origin_shift;
         }
         let _ = registry.set_component(id, component);
+        // Layers spawn full beside the health they drain before.
+        if let Some(layers) =
+            postretro_entities::components::defense_layers::DefenseLayersComponent::from_descriptor(
+                health_desc,
+            )
+        {
+            let _ = registry.set_component(id, layers);
+        }
         owned_components.insert(DescriptorComponentKind::Health);
     }
 
@@ -1295,6 +1303,7 @@ mod tests {
                     offset: None,
                 }),
                 zone_multipliers: std::collections::HashMap::new(),
+                ..Default::default()
             }),
             behavior: None,
         }];
@@ -2417,6 +2426,7 @@ mod tests {
             max: 100.0,
             hitbox: None,
             zone_multipliers: HashMap::new(),
+            ..Default::default()
         });
         let mut registry = EntityRegistry::new();
         let starts = [
@@ -3405,6 +3415,7 @@ mod tests {
                 offset: Some([0.0, 0.9, 0.0]),
             }),
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         });
         let placement = placement("grunt", &[]);
         let authored_hitbox_center = placement.origin + Vec3::new(0.0, 0.9, 0.0);

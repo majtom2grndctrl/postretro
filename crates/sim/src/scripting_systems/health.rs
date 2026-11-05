@@ -306,6 +306,7 @@ mod tests {
             max,
             hitbox: None,
             zone_multipliers: std::collections::HashMap::new(),
+            ..Default::default()
         }
     }
 

@@ -1079,7 +1079,7 @@ impl ScriptingCore {
             .script_runtime
             .committed_mod_identity()
             .map(|(id, _)| id.to_string());
-        let (events, presentation_templates, presentation_overlays) = {
+        let (events, presentation_templates, presentation_overlays, defense) = {
             let Some(manifest) = self.script_runtime.mod_manifest_mut() else {
                 return;
             };
@@ -1127,8 +1127,13 @@ impl ScriptingCore {
                 std::mem::take(&mut manifest.events),
                 std::mem::take(&mut manifest.presentation_templates),
                 std::mem::take(&mut manifest.presentation_overlays),
+                manifest.defense.clone(),
             )
         };
+        postretro_scripting_core::defense_vocabulary::commit_defense_vocabulary(
+            &self.script_ctx,
+            defense,
+        );
         self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
         self.impact_policy_runtime

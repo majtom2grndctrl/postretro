@@ -97,7 +97,7 @@ impl StoreScope {
 
     /// Project a slot's declared type into the IR value model, or `None` for the
     /// non-projectable kinds (`String`/`Enum`/`Array`).
-    pub(crate) fn project(slot_type: &SlotType) -> Option<IrType> {
+    pub fn project(slot_type: &SlotType) -> Option<IrType> {
         match slot_type {
             SlotType::Number => Some(IrType::Number),
             SlotType::Boolean => Some(IrType::Bool),

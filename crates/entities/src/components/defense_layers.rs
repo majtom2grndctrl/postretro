@@ -45,6 +45,10 @@ pub struct Resist {
 /// one, so the per-tick step visits only those.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DefenseLayersComponent {
+    /// Canonical name of the descriptor the layers came from: the key the
+    /// host's bound expression parameters are found by.
+    #[serde(default)]
+    pub descriptor: Option<String>,
     pub layers: Vec<DefenseLayer>,
     /// Health's own resistance per damage type: scales health only.
     pub health_resist: Vec<Resist>,
@@ -92,6 +96,7 @@ impl DefenseLayersComponent {
             })
             .collect();
         Some(Self {
+            descriptor: None,
             layers,
             health_resist: resists_from(&desc.resist),
             last_hit_tick: None,
@@ -109,6 +114,22 @@ impl DefenseLayersComponent {
             layer.value = layer.capacity;
         }
     }
+}
+
+/// The host's evaluator of expression layer parameters, installed on the
+/// registry by the simulation. A connected client installs none, so it
+/// evaluates nothing.
+pub trait DefenseParameterSource {
+    /// Evaluate `component`'s expression parameters for `entity`, writing
+    /// each good result clamped into its range and keeping the value in force
+    /// on a fault (the entity's last good value), with one warning per
+    /// descriptor and field. Literal parameters are never evaluated.
+    fn evaluate(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+    );
 }
 
 fn resist_for(resists: &[Resist], damage_type: &str) -> f32 {

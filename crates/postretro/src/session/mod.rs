@@ -1134,6 +1134,7 @@ impl ScriptingCore {
             &self.script_ctx,
             defense,
         );
+        postretro_sim::sim::defense_parameters::DefenseParameters::install(&self.script_ctx);
         self.impact_policy_runtime.set_mod_id(mod_id);
         self.impact_policy_runtime.replace_global_events(events);
         self.impact_policy_runtime

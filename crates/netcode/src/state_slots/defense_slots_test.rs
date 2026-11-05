@@ -16,6 +16,7 @@ const CLIENT_B: u64 = 2;
 
 fn shield(value: f32, capacity: f32) -> DefenseLayersComponent {
     DefenseLayersComponent {
+        descriptor: None,
         layers: vec![DefenseLayer {
             name: "shield".to_string(),
             value,

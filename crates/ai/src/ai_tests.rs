@@ -12969,7 +12969,12 @@ fn contact_attack_deals_its_damage_type() {
         ));
     }
     let pawn = spawn_player(&mut reg, Vec3::new(1.0, 0.0, 0.0));
-    spawn_enemy(&mut reg, Vec3::ZERO, brain_with(graph, TEST_IDLE_STATE), 50.0);
+    spawn_enemy(
+        &mut reg,
+        Vec3::ZERO,
+        brain_with(graph, TEST_IDLE_STATE),
+        50.0,
+    );
 
     let events = run_ai_tick(&mut reg, &mut warned, 0.1);
     assert_eq!(events, vec![ENEMY_ATTACK_EVENT]);

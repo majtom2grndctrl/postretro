@@ -1176,7 +1176,7 @@ fn teleport_record_survives_a_movement_descriptor_hot_reload() {
 }
 
 /// The movement descriptor `trigger_movement` builds its component from.
-fn trigger_movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
+pub(crate) fn trigger_movement_descriptor() -> postretro_foundation::PlayerMovementDescriptor {
     use postretro_foundation::{
         AirParams, CapsuleParams, FallParams, GroundParams, PlayerMovementDescriptor, SpeedParams,
     };

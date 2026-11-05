@@ -37,9 +37,9 @@ pub use client_resolution::resolve_client_shot;
 pub use client_resolution::resolve_test_client_shot;
 mod client_pull;
 mod damage;
-mod fluid_splash;
 #[cfg(test)]
 mod damage_type_tests;
+mod fluid_splash;
 #[cfg(test)]
 mod fluid_splash_tests;
 mod impact;

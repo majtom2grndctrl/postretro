@@ -12,6 +12,9 @@ mod damage_type_tests;
 pub mod defense_layers;
 #[cfg(test)]
 mod defense_layers_tests;
+#[cfg(test)]
+mod defense_parameter_tests;
+pub mod defense_parameters;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
@@ -2040,7 +2043,7 @@ mod mover_pin_tick_tests;
 #[cfg(test)]
 pub(crate) mod predict_reconcile;
 #[cfg(test)]
-mod teleport_tick_tests;
+pub(crate) mod teleport_tick_tests;
 #[cfg(test)]
 mod trap_tick_tests;
 

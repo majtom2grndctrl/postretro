@@ -895,6 +895,10 @@ pub struct EntityRegistry {
     /// The committed damage vocabulary the chokepoint scales hits by. Empty
     /// until a mod registers one, which leaves every hit untyped.
     defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// The host's expression-parameter evaluator; `None` on a connected client
+    /// and until the simulation binds one.
+    defense_parameters:
+        Option<std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>>,
     /// App-side presentation producers enqueue transient spawn facts here. The
     /// registry is the sole bridge between fixed-tick producers and the
     /// frame-time presentation pool; it owns no presentation lifetime or GPU
@@ -936,6 +940,7 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             host_tick: 0,
             defense_vocabulary: Default::default(),
+            defense_parameters: None,
             presentation_spawns: Vec::with_capacity(MAX_PENDING_PRESENTATION_SPAWNS),
             impact_particle_requests: Vec::with_capacity(MAX_PENDING_IMPACT_PARTICLE_REQUESTS),
             dropped_impact_particle_requests: 0,
@@ -1368,6 +1373,46 @@ impl EntityRegistry {
         vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     ) {
         self.defense_vocabulary = vocabulary;
+    }
+
+    /// The host's expression-parameter evaluator, when one is installed.
+    pub fn defense_parameters(
+        &self,
+    ) -> Option<&std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>> {
+        self.defense_parameters.as_ref()
+    }
+
+    /// Install (or clear) the host's expression-parameter evaluator.
+    pub fn set_defense_parameters(
+        &mut self,
+        source: Option<std::rc::Rc<dyn crate::components::defense_layers::DefenseParameterSource>>,
+    ) {
+        self.defense_parameters = source;
+    }
+
+    /// Visit every live entity's defense layers with the rest of the registry
+    /// readable: each component is lent out of its column for its visit and
+    /// put back after, so a visitor can read health, entity state and seats.
+    /// Moves values only, so the pass allocates nothing.
+    pub fn for_each_defense_layers_lent(
+        &mut self,
+        mut visit: impl FnMut(&EntityRegistry, EntityId, &mut DefenseLayersComponent),
+    ) {
+        let kind = ComponentKind::DefenseLayers as usize;
+        for index in 0..self.slots.len() {
+            let slot = &self.slots[index];
+            if !slot.live || slot.retired {
+                continue;
+            }
+            let id = EntityId::new(index as u16, slot.generation);
+            let Some(ComponentValue::DefenseLayers(mut component)) =
+                self.components[kind].get_mut(index).and_then(Option::take)
+            else {
+                continue;
+            };
+            visit(self, id, &mut component);
+            self.components[kind][index] = Some(ComponentValue::DefenseLayers(component));
+        }
     }
 
     /// Index of the most recently started fixed tick.

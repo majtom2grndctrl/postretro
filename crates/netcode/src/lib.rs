@@ -6959,8 +6959,7 @@ mod tests {
         // The type was frozen from the host's weapon at FIRE; the client's
         // declaration carries no type of its own.
         fixture.shot_mut().damage_type = Some(0);
-        let declaration =
-            fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
 
         assert!(fixture.ingest(7, &declaration));
         let health = fixture.target_health();

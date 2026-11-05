@@ -1420,7 +1420,9 @@ pub(crate) mod tests {
         ));
         let ids = spawn_from_geometry(&mut registry, &geometry).unwrap();
         for id in ids {
-            let mover = registry.get_component::<KinematicMoverComponent>(id).unwrap();
+            let mover = registry
+                .get_component::<KinematicMoverComponent>(id)
+                .unwrap();
             assert_eq!(
                 mover.crush_damage_type, None,
                 "an unknown name counts as absent, so the crush deals the default type"

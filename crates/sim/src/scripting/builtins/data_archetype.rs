@@ -527,12 +527,19 @@ pub(crate) fn attach_descriptor_components(
             hitbox.offset -= origin_shift;
         }
         let _ = registry.set_component(id, component);
-        // Layers spawn full beside the health they drain before.
-        if let Some(layers) =
+        // Layers spawn full beside the health they drain before, at the
+        // capacity their parameters evaluate to now: a hit on the spawn tick
+        // drains the layer, not health.
+        if let Some(mut layers) =
             postretro_entities::components::defense_layers::DefenseLayersComponent::from_descriptor(
                 health_desc,
             )
         {
+            layers.descriptor = descriptor.canonical_name.clone();
+            if let Some(source) = registry.defense_parameters().cloned() {
+                source.evaluate(registry, id, &mut layers);
+            }
+            layers.fill();
             let _ = registry.set_component(id, layers);
         }
         owned_components.insert(DescriptorComponentKind::Health);

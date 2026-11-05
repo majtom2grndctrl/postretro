@@ -58,6 +58,9 @@ pub mod ir_pair_scope;
 #[path = "ir/pair_validation.rs"]
 pub mod ir_pair_validation;
 
+#[path = "ir/layer_validation.rs"]
+pub mod ir_layer_validation;
+
 pub mod provenance {
     pub use postretro_entities::provenance::*;
 }

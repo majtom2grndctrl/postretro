@@ -196,20 +196,13 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             match &data_registry.reactions[index].descriptor {
                 ReactionDescriptor::Primitive(primitive) => (primitive.primitive == "applyDamage")
                     .then(|| {
-                        postretro_sim::health::reactions::validate_apply_damage_args(
-                            &primitive.args,
-                            vocabulary,
-                        )
-                        .err()
+                        postretro_sim::validate_apply_damage_args(&primitive.args, vocabulary).err()
                     })
                     .flatten(),
                 ReactionDescriptor::Sequence(steps) => steps.iter().find_map(|step| {
                     (step.primitive == "applyDamage")
                         .then(|| {
-                            postretro_sim::health::reactions::validate_apply_damage_args(
-                                &step.args, vocabulary,
-                            )
-                            .err()
+                            postretro_sim::validate_apply_damage_args(&step.args, vocabulary).err()
                         })
                         .flatten()
                 }),

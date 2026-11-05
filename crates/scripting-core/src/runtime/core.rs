@@ -619,7 +619,14 @@ impl ScriptRuntime {
                 &next_descriptors,
                 &next_store_declarations,
                 &ctx.slot_table.borrow(),
-            ) {
+            )
+            .and_then(|()| {
+                crate::ir_layer_validation::validate_layer_expressions(
+                    &next_descriptors,
+                    &next_store_declarations,
+                    &ctx.slot_table.borrow(),
+                )
+            }) {
                 log::error!(
                     "[Scripting] staged mod-init generation {} rejected before commit: {reason}",
                     result.generation,

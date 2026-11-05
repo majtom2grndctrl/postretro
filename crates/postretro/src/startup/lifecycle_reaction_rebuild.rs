@@ -101,6 +101,7 @@ impl App {
         };
         let script_ctx = session.scripting.script_ctx.clone();
         session.assist_state.rebind(&script_ctx);
+        postretro_sim::sim::defense_parameters::DefenseParameters::install(&script_ctx);
         let session = &*session;
         let previous = std::mem::take(&mut self.player_events);
         self.player_events = postretro_sim::player_events::PlayerEventTable::build(

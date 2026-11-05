@@ -499,7 +499,6 @@ struct ShStreamingAllocationSummaryJson {
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ShStreamingLifecycleSummaryJson {
-    non_evictable_overshoot_bytes: u64,
     encoded_current_bytes: u64,
     encoded_high_water_upper_bound_bytes: u64,
     decoding_current_bytes: u64,
@@ -581,7 +580,6 @@ impl From<postretro_renderer::ShComposePassDiagnostics> for ShComposePassDiagnos
 impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
     fn from(summary: ShStreamingLifecycleSummary) -> Self {
         Self {
-            non_evictable_overshoot_bytes: summary.non_evictable_overshoot_bytes,
             encoded_current_bytes: summary.encoded_current_bytes,
             encoded_high_water_upper_bound_bytes: summary.encoded_high_water_upper_bound_bytes,
             decoding_current_bytes: summary.decoding_current_bytes,
@@ -1105,7 +1103,6 @@ mod tests {
             streaming_lifecycle: None,
         }
         .with_streaming_lifecycle_summary(ShStreamingLifecycleSummary {
-            non_evictable_overshoot_bytes: 5,
             encoded_current_bytes: 1,
             encoded_high_water_upper_bound_bytes: 2,
             decoding_current_bytes: 3,
@@ -1179,7 +1176,6 @@ mod tests {
             ),
         ));
         let lifecycle = &json["renderer_accounted_sh"]["streaming_lifecycle"];
-        assert_eq!(lifecycle["non_evictable_overshoot_bytes"], 5);
         assert_eq!(lifecycle["encoded_current_bytes"], 1);
         assert_eq!(lifecycle["ready_high_water_upper_bound_bytes"], 6);
         assert_eq!(lifecycle["permits_in_use"], 2);

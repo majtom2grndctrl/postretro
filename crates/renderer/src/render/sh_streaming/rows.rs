@@ -99,16 +99,18 @@ impl ShResidencyState {
 
     /// Release this cluster's references and free what it alone held. Storage
     /// another reference keeps is left exactly as it is: nothing is zeroed,
-    /// cleared or marked dirty for it.
+    /// cleared or marked dirty for it. Returns whether any pool range came
+    /// free: a cluster sharing everything it names frees nothing.
     pub(super) fn evict(
         &mut self,
         uploads: &mut StagedUploads,
         cluster_id: u32,
-    ) -> Result<(), ShResidencyDrainError> {
+    ) -> Result<bool, ShResidencyDrainError> {
         self.validate_cluster_id(cluster_id)?;
         let Some(installed) = self.installed.remove(&cluster_id) else {
-            return Ok(());
+            return Ok(false);
         };
+        let mut freed = false;
         let mut sample_updates = Vec::with_capacity(installed.patches.len());
         let mut dense_rows = Vec::with_capacity(installed.patches.len());
         for patch in installed.patches {
@@ -150,6 +152,7 @@ impl ShResidencyState {
                 self.probe_readback
                     .retire_slots(range.start..range.start + range.len);
                 self.dense_slots.release(range)?;
+                freed = true;
             }
         }
         for (section_id, row) in installed.sparse_rows {
@@ -166,7 +169,7 @@ impl ShResidencyState {
                 }
             }
             if let Some(pool) = self.sparse_pools.get_mut(&section_id) {
-                pool.evict(row)?;
+                freed |= pool.evict(row)?.is_some();
             }
             self.dirty_rows.insert((section_id, row));
             match section_id {
@@ -208,7 +211,7 @@ impl ShResidencyState {
                 self.grid_dimensions(),
             )?;
         }
-        Ok(())
+        Ok(freed)
     }
 
     /// A cluster that wrote nothing waits on a compose epoch another install

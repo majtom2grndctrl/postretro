@@ -9,23 +9,17 @@ use postretro_test_log_capture::LogCapture;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::tests::{
-    controller, controller_with_nominal_budget, hinted_topology, mark_sampleable, prepared,
-    topology,
+    accept_evicting, controller, hinted_topology, mark_sampleable, prepared, queue_ready, topology,
 };
 use super::*;
 use crate::lightmap_streaming::test_fixtures::{PORTAL, residency_set};
-use crate::sh_streaming::generation::FixedGenerationClock;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 
 const MIB: usize = 1024 * 1024;
 
 fn one_cell_per_cluster(count: usize) -> PlannerTopology {
-    topology(
-        (0..count as u32).collect(),
-        vec![Vec::new(); count],
-        vec![1; count],
-    )
+    topology((0..count as u32).collect(), vec![Vec::new(); count])
 }
 
 /// Six cells, one cluster each. From camera cell 0, cells 1 and 2 lie within
@@ -120,27 +114,11 @@ fn stream_until_idle(controller: &mut ShResidencyController) -> Vec<(u32, Target
     }
 }
 
-fn budgeted(topology: PlannerTopology, floor_bytes: u64) -> ShResidencyController {
-    ShResidencyController::for_test_with_budget(
-        topology,
-        &FixedGenerationClock::new(1),
-        ShGpuBudgetInputs {
-            renderer_effective_floor_bytes: Some(floor_bytes),
-            ..ShGpuBudgetInputs::default()
-        },
-    )
-    .unwrap()
-}
-
 #[test]
 fn sh_mandatory_tier_is_id51_reach_within_lead() {
     // Cells 4 and 5 share cluster 4: cell 4 lies in the band, cell 5 within L,
     // so the cluster takes its nearest cell's lead. Cluster 3 is unreached.
-    let mut controller = controller(topology(
-        vec![0, 1, 2, 3, 4, 4],
-        vec![Vec::new(); 5],
-        vec![1; 5],
-    ));
+    let mut controller = controller(topology(vec![0, 1, 2, 3, 4, 4], vec![Vec::new(); 5]));
     let set = residency_set(
         6,
         &[(0, 0, 0), (0, 1, 8), (0, 2, 20), (0, 4, 25), (0, 5, 10)],
@@ -217,7 +195,6 @@ fn sh_without_id51_targets_no_lead_or_band_tier() {
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2, 3],
         vec![vec![1], vec![0, 2], vec![1, 3], vec![2]],
-        vec![1; 4],
         Vec::new(),
         [1].into_iter().collect(),
         Vec::new(),
@@ -279,7 +256,6 @@ fn authored_priority_outranks_reach_lead_in_request_order() {
     let mut controller = controller(hinted_topology(
         (0..6).collect(),
         vec![Vec::new(); 6],
-        vec![1; 6],
         Vec::new(),
         Default::default(),
         vec![0, 0, 0, 0, 3, 0],
@@ -301,37 +277,41 @@ fn authored_priority_outranks_reach_lead_in_request_order() {
 fn band_yields_farthest_lead_first_mandatory_never_refused() {
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
-    let sized = || topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]);
+    let sized = || topology((0..6).collect(), vec![Vec::new(); 6]);
 
-    // Visible 0 and lead 1, 2 take 24 bytes; one band cluster fits beside them.
-    let mut controller = budgeted(sized(), 32);
+    // Mandatory 0 is ready. Visible 0 and lead 1, 2 are never named; band 3, 4
+    // are, farthest first, and one covers the renderer's shortfall.
+    let mut controller = controller(sized());
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
     let _ = controller.take_async_drain_batch().unwrap();
-    for cluster_id in 0..5 {
+    queue_ready(&mut controller, 0);
+    for cluster_id in 1..5 {
         mark_sampleable(&mut controller, cluster_id);
     }
     let batch = controller.take_async_drain_batch().unwrap();
+    assert_eq!(batch.mandatory, vec![0, 1, 2]);
     assert_eq!(
-        batch.target_remove,
-        vec![4],
+        batch.victims,
+        vec![4, 3],
         "the farthest band cluster yields"
     );
+    accept_evicting(&mut controller, &batch, vec![4]);
     assert!(controller.is_targeted(3), "the nearer band cluster stays");
 
-    // Below the mandatory set: the band yields and the mandatory tier stays,
-    // past the budget.
-    let mut controller = budgeted(sized(), 8);
+    // A bigger shortfall takes the band; the mandatory tier stays regardless.
+    let mut controller = super::tests::controller(sized());
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
     let _ = controller.take_async_drain_batch().unwrap();
-    for cluster_id in 0..5 {
+    queue_ready(&mut controller, 0);
+    for cluster_id in 1..5 {
         mark_sampleable(&mut controller, cluster_id);
     }
     let batch = controller.take_async_drain_batch().unwrap();
-    assert_eq!(batch.target_remove, vec![3, 4]);
+    accept_evicting(&mut controller, &batch, vec![4, 3]);
     for cluster_id in [0, 1, 2] {
         assert!(controller.is_targeted(cluster_id), "mandatory {cluster_id}");
     }
-    assert!(controller.non_evictable_overshoot_bytes() > 0);
+    assert!(clusters_of_class(&controller, TargetClass::Band).is_empty());
 }
 
 #[test]
@@ -382,38 +362,48 @@ fn non_portal_path_holds_drawn_clusters_and_keeps_stage_lead_classes() {
     );
 }
 
-// Regression: the async frame took read requests before its drain's budget
-// policy ran, so a target that policy suppressed was submitted while still
-// published as a target, and an idle issuer could read it before the republish.
+// A cluster the pool refused must not be read again on the very next frame:
+// the view has not changed, so the answer would not either.
 #[test]
-fn async_frame_requests_nothing_its_own_budget_policy_suppresses() {
+fn a_pool_refused_cluster_is_not_requested_until_the_horizon_changes() {
     let set = corridor_set();
     let stage = CellDemand::new(set.max_lead);
-    let mut controller = budgeted(
-        topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]),
-        24,
-    );
+    let mut controller = controller(topology((0..6).collect(), vec![Vec::new(); 6]));
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
     let _ = controller.take_async_drain_batch().unwrap();
-    for cluster_id in 0..4 {
+    for cluster_id in 0..3 {
         mark_sampleable(&mut controller, cluster_id);
     }
-    // The mandatory set fills the pool; band cluster 4, the farthest, is
-    // targeted but has never been requested.
-    assert!(controller.is_targeted(4));
+    let requests = drain_requests(&mut controller);
+    assert_eq!(
+        requests.iter().map(|r| r.cluster_id).collect::<Vec<_>>(),
+        vec![3, 4]
+    );
+    for request in &requests {
+        admit_ready(&mut controller, request.cluster_id);
+    }
+    let (batch, _) = controller.take_async_drain_batch_and_requests().unwrap();
+    assert!(batch.mandatory.is_empty() && batch.victims.is_empty());
+    controller
+        .apply_drain_outcome(ShDrainOutcome {
+            pool_refused: vec![3, 4],
+            ..ShDrainOutcome::default()
+        })
+        .unwrap();
 
-    let (batch, requests) = controller.take_async_drain_batch_and_requests().unwrap();
-    assert_eq!(batch.target_remove, vec![3, 4]);
+    reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.1);
+    let (_, requests) = controller.take_async_drain_batch_and_requests().unwrap();
     assert!(
         requests.is_empty(),
-        "requested {:?} after the drain suppressed it",
+        "requested {:?} on an unchanged horizon",
         requests
             .iter()
             .map(|request| request.cluster_id)
             .collect::<Vec<_>>()
     );
-    assert_eq!(controller.state(4), Some(ClusterResidencyState::Absent));
-    assert_eq!(controller.permits_in_use(), 0);
+    controller
+        .apply_drain_outcome(ShDrainOutcome::default())
+        .unwrap();
 }
 
 fn ready_with_bytes(controller: &mut ShResidencyController, cluster_id: u32, len: usize) {
@@ -529,7 +519,7 @@ fn byte_budget_stops_rather_than_skipping_to_smaller_work() {
 
 #[test]
 fn cancelled_request_on_a_retargeted_cluster_returns_to_absent_without_failure() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]]));
     let capture = LogCapture::start();
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
@@ -574,7 +564,7 @@ fn cancelled_request_on_a_retargeted_cluster_returns_to_absent_without_failure()
 
 #[test]
 fn cancelled_request_with_a_foreign_identity_is_ignored() {
-    let mut controller = controller(topology(vec![0], vec![vec![]], vec![1]));
+    let mut controller = controller(topology(vec![0], vec![vec![]]));
     controller
         .update_targets(&VisibleCells::Culled(vec![0]), None, 0.0)
         .unwrap();
@@ -594,7 +584,6 @@ fn requests_for_visible_and_pinned_targets_are_mandatory() {
     let mut controller = controller(hinted_topology(
         vec![0, 1, 2],
         vec![vec![1], vec![0], Vec::new()],
-        vec![1; 3],
         Vec::new(),
         BTreeSet::from([2]),
         Vec::new(),
@@ -658,8 +647,7 @@ fn band_requests_leave_permits_for_mandatory_work() {
 
 #[test]
 fn admission_counts_every_discarded_completed_read() {
-    let mut controller =
-        controller_with_nominal_budget(topology(vec![0, 1], vec![vec![], vec![]], vec![1, 1]), 64);
+    let mut controller = controller(topology(vec![0, 1], vec![vec![], vec![]]));
     controller
         .update_targets(&VisibleCells::Culled(vec![0, 1]), None, 0.0)
         .unwrap();
@@ -877,7 +865,7 @@ fn target_cluster_one_as_lead(controller: &mut ShResidencyController, now: f64) 
 
 /// Six clusters, one cell each; cluster 1 is a lead target.
 fn cluster_one_lead() -> ShResidencyController {
-    let mut controller = controller(topology((0..6).collect(), vec![Vec::new(); 6], vec![1; 6]));
+    let mut controller = controller(topology((0..6).collect(), vec![Vec::new(); 6]));
     target_cluster_one_as_lead(&mut controller, 0.0);
     let _ = controller.take_async_drain_batch().unwrap();
     controller
@@ -912,18 +900,23 @@ fn visible_miss_lands_in_exactly_one_bucket() {
         (
             "pressure",
             || {
-                // Visible cluster 0 alone overfills the pool, so band
-                // cluster 1 (20 m) yields before it is ever read.
+                // Band cluster 1 (20 m) reads, then the full pool refuses it.
                 let set = residency_set(6, &[(0, 1, 20)], 32);
                 let stage = CellDemand::new(set.max_lead);
-                let mut controller = budgeted(
-                    topology((0..6).collect(), vec![Vec::new(); 6], vec![8; 6]),
-                    4,
-                );
+                let mut controller = controller(topology((0..6).collect(), vec![Vec::new(); 6]));
                 reach_update(&mut controller, &stage, &set, 0, PORTAL, &[0], 0.0);
                 assert_eq!(controller.states[1].class, Some(TargetClass::Band));
                 mark_sampleable(&mut controller, 0);
-                let _ = controller.take_async_drain_batch().unwrap();
+                let _ = controller.take_next_request().unwrap().unwrap();
+                admit_ready(&mut controller, 1);
+                let batch = controller.take_async_drain_batch().unwrap();
+                assert_eq!(batch.ready.len(), 1);
+                controller
+                    .apply_drain_outcome(ShDrainOutcome {
+                        pool_refused: vec![1],
+                        ..ShDrainOutcome::default()
+                    })
+                    .unwrap();
                 assert!(!controller.is_targeted(1), "the band cluster yields");
                 controller
             },

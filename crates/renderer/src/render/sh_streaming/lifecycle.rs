@@ -30,7 +30,8 @@ impl ShResidencyState {
             sh,
             selection_weights,
         };
-        self.install_ready(Some(&mut gpu), batch.ready, &mut outcome)?;
+        let admission = PoolAdmission::new(batch.mandatory, batch.victims);
+        self.install_ready(Some(&mut gpu), batch.ready, admission, &mut outcome)?;
         #[cfg(feature = "dev-tools")]
         self.probe_readback
             .reconcile(self.grid_dimensions, &self.sampled_words);
@@ -66,6 +67,7 @@ impl ShResidencyState {
         &mut self,
         mut gpu: Option<&mut InstallGpu<'_>>,
         ready: Vec<PreparedShCluster>,
+        mut admission: PoolAdmission,
         outcome: &mut ShDrainOutcome,
     ) -> Result<(), ShResidencyDrainError> {
         if ready.is_empty() {
@@ -84,7 +86,8 @@ impl ShResidencyState {
                     outcome.dropped.push(cluster_id);
                     continue;
                 }
-                match self.install(gpu.as_deref_mut(), &prepared) {
+                match self.install_admitted(gpu.as_deref_mut(), &prepared, &mut admission, outcome)
+                {
                     Ok(()) => outcome.accepted.push(cluster_id),
                     // A growth transaction may be blocked behind its one
                     // retiring generation. Keep the ready payload/permit in
@@ -96,6 +99,9 @@ impl ShResidencyState {
                     }
                     Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => {
                         outcome.refused.push(cluster_id);
+                    }
+                    Err(ShResidencyDrainError::PoolShortfall) => {
+                        outcome.pool_refused.push(cluster_id);
                     }
                     Err(error) => return Err(error),
                 }

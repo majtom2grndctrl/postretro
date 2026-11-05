@@ -53,9 +53,7 @@ impl ShResidencyController {
             )?;
             self.last_horizon = horizon.clone();
         }
-        if horizon_changed
-            || self.optional_pressure_has_cleared(&visible, &horizon, hysteresis_seconds)?
-        {
+        if horizon_changed {
             self.clear_optional_suppression();
         }
         for cluster_id in raw_departures {
@@ -79,7 +77,7 @@ impl ShResidencyController {
         self.last_seam_warm = seam_warm;
 
         classes.retain(|cluster_id, directive| {
-            !directive.class.is_pressure_eligible() || !self.states[*cluster_id as usize].suppressed
+            !directive.class.is_optional() || !self.states[*cluster_id as usize].suppressed
         });
 
         let targets: BTreeSet<u32> = classes.keys().copied().collect();
@@ -87,10 +85,9 @@ impl ShResidencyController {
         self.drop_departed_ready(&targets)?;
         for (&cluster_id, directive) in &classes {
             let state = &mut self.states[cluster_id as usize];
-            if !directive.class.is_pressure_eligible() {
+            if !directive.class.is_optional() {
                 // A prior optional classification cannot leave newly visible,
-                // pinned, or retained work suppressed. These classes never
-                // yield to pressure.
+                // pinned, or lead work suppressed: these classes never yield.
                 state.suppressed = false;
             }
             state.class = Some(directive.class);
@@ -116,31 +113,6 @@ impl ShResidencyController {
         self.last_time = Some(monotonic_seconds);
         self.demand_updated = true;
         Ok(())
-    }
-
-    /// Suppression survives ordinary frames so an over-budget doorway does not
-    /// oscillate at the render cadence. It can clear without a horizon change
-    /// only when the complete target set that clearing would restore, including
-    /// live hysteresis, fits the nominal pool.
-    fn optional_pressure_has_cleared(
-        &self,
-        visible: &BTreeSet<u32>,
-        horizon: &BTreeSet<u32>,
-        hysteresis_seconds: f64,
-    ) -> Result<bool, ShResidencyControllerError> {
-        if !self.states.iter().any(|state| state.suppressed) {
-            return Ok(false);
-        }
-
-        let classes = self.unsuppressed_target_classes(visible, horizon, hysteresis_seconds)?;
-        let demand = classes.keys().try_fold(0u64, |total, &cluster_id| {
-            total
-                .checked_add(self.topology.requested_resident_bytes[cluster_id as usize])
-                .ok_or(ShResidencyControllerError::AccountingOverflow(
-                    "optional pressure target demand",
-                ))
-        })?;
-        Ok(demand <= self.accounting.nominal_cluster_bytes()?)
     }
 
     fn unsuppressed_target_classes(

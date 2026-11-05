@@ -1,4 +1,4 @@
-//! Sparse-row reference planning and bounded pool growth.
+//! Sparse-row reference planning.
 //! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use super::*;
@@ -100,35 +100,5 @@ impl ShResidencyState {
             });
         }
         Ok(plans)
-    }
-
-    /// Grow all sparse families needed by the current provisional allocator
-    /// state in one replacement.  This runs before any GPU upload is queued;
-    /// if the sole retirement slot is still occupied, the caller rolls the
-    /// CPU mirrors back and retains the prepared payload for the next drain.
-    pub(super) fn ensure_sparse_capacity(
-        &mut self,
-        gpu: Option<&mut InstallGpu<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
-        let Some(pools) = self.gpu.as_mut() else {
-            return Ok(());
-        };
-        let gpu = gpu.ok_or(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed sparse growth requires device handles",
-        })?;
-        let required = self
-            .sparse_pools
-            .iter()
-            .map(|(&section_id, pool)| (section_id, (pool.entries.capacity, pool.tiles.capacity)))
-            .collect::<SparseCapacityFloors>();
-        pools.grow_sparse(
-            gpu.device,
-            gpu.queue,
-            &self.base_metadata,
-            &self.source_metadata,
-            &required,
-            gpu.sh,
-            gpu.selection_weights,
-        )
     }
 }

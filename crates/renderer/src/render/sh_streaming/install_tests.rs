@@ -856,8 +856,12 @@ fn touched_rows_cover_membership_changes_on(map: SyntheticMap) {
             pool.evict(blocked).unwrap();
         },
         &|state| state.install(None, &map.prepared(state, 1)).unwrap(),
-        &|state| state.evict(&mut StagedUploads::default(), 1).unwrap(),
-        &|state| state.evict(&mut StagedUploads::default(), 0).unwrap(),
+        &|state| {
+            state.evict(&mut StagedUploads::default(), 1).unwrap();
+        },
+        &|state| {
+            state.evict(&mut StagedUploads::default(), 0).unwrap();
+        },
         &|state| state.install(None, &map.prepared(state, 0)).unwrap(),
         // A new generation clears the session and installs in one drain.
         &|state| {

@@ -171,6 +171,31 @@ fn retained_file_reads_original_bytes_after_path_replacement() {
 }
 
 #[test]
+fn drain_batch_keeps_mandatory_work_out_of_the_victim_list() {
+    let batch = |mandatory: Vec<u32>, victims: Vec<u32>| ShDrainBatch {
+        generation: 1,
+        content_tag: [7; 32],
+        mandatory,
+        victims,
+        ..ShDrainBatch::default()
+    };
+    // Victims run in policy order, so they need not be sorted.
+    batch(vec![1, 2], vec![5, 3])
+        .validate_contract(8, [7; 32])
+        .unwrap();
+    for rejected in [
+        batch(vec![2, 1], vec![]),
+        batch(vec![1, 8], vec![]),
+        batch(vec![1], vec![3, 3]),
+        batch(vec![1], vec![8]),
+        batch(vec![1, 2], vec![3, 2]),
+        batch(vec![], vec![3]),
+    ] {
+        assert!(rejected.validate_contract(8, [7; 32]).is_err());
+    }
+}
+
+#[test]
 fn drain_batch_rejects_unsorted_cluster_deltas() {
     assert!(validate_sorted_cluster_ids(&[1, 1], 3, "target-add").is_err());
     assert!(validate_sorted_cluster_ids(&[3], 3, "target-add").is_err());

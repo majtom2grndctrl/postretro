@@ -11,7 +11,7 @@ use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::{
     LightmapDrainOutcome, PrlLoadError, ShStreamManifest, ShStreamingMode,
 };
-use postretro_renderer::{LightmapResidencyDrainError, ShResidencySnapshot};
+use postretro_renderer::LightmapResidencyDrainError;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 use super::*;
@@ -31,18 +31,10 @@ fn sh_hints(manifest: &ShStreamManifest) -> Arc<ClusterHints> {
     Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap())
 }
 
-/// An SH session over `manifest` in `mode`, budgeted as the tests' renderer.
+/// An SH session over `manifest` in `mode`.
 fn sh_session(manifest: Arc<ShStreamManifest>, mode: ShStreamingMode) -> ShStreamingSession {
     let hints = sh_hints(&manifest);
-    let mut session = ShStreamingSession::from_snapshot(
-        manifest,
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        hints,
-    )
-    .unwrap();
+    let mut session = ShStreamingSession::from_manifest(manifest, hints).unwrap();
     session.set_mode_for_test(mode);
     session
 }
@@ -333,15 +325,8 @@ fn sh_and_lightmap_stream_through_one_issuer_and_unload_releases_everything() {
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
     let sh_baseline = Arc::strong_count(&manifest);
-    let mut sh = ShStreamingSession::from_snapshot(
-        Arc::clone(&manifest),
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        sh_hints(&manifest),
-    )
-    .unwrap();
+    let mut sh =
+        ShStreamingSession::from_manifest(Arc::clone(&manifest), sh_hints(&manifest)).unwrap();
     sh.set_mode_for_test(ShStreamingMode::Async);
     let mut sh = Some(sh);
 

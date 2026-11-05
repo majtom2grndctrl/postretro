@@ -56,7 +56,6 @@ pub struct ShStreamingAllocationSummary {
 /// controller, I/O worker, and renderer install counters for the same frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShStreamingLifecycleSummary {
-    pub non_evictable_overshoot_bytes: u64,
     pub encoded_current_bytes: u64,
     pub encoded_high_water_upper_bound_bytes: u64,
     pub decoding_current_bytes: u64,
@@ -134,8 +133,8 @@ impl ShResidencyReport {
 
     /// Overlay app-owned worker/policy state on the immutable install ledger
     /// and renderer-owned live capacity snapshot. This intentionally changes
-    /// no physical total: host phases, counters, and logical overshoot are
-    /// diagnostic ledgers rather than GPU allocations.
+    /// no physical total: host phases and counters are diagnostic ledgers
+    /// rather than GPU allocations.
     pub fn with_streaming_lifecycle_summary(
         mut self,
         summary: ShStreamingLifecycleSummary,
@@ -499,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn non_evictable_logical_overshoot_is_not_temporary_replacement_capacity() {
+    fn controller_lifecycle_figures_change_no_physical_total() {
         let report = ShResidencyReport {
             allocations: Vec::new(),
             total_bytes: 0,
@@ -514,7 +513,7 @@ mod tests {
             ..ShStreamingAllocationSummary::default()
         })
         .with_streaming_lifecycle_summary(ShStreamingLifecycleSummary {
-            non_evictable_overshoot_bytes: 4,
+            ready_current_bytes: 4,
             ..ShStreamingLifecycleSummary::default()
         });
 
@@ -531,9 +530,9 @@ mod tests {
             report
                 .streaming_lifecycle
                 .expect("controller lifecycle summary")
-                .non_evictable_overshoot_bytes,
+                .ready_current_bytes,
             4,
-            "logical policy demand is reported separately from replacement backing"
+            "host payload is reported separately from replacement backing"
         );
     }
 

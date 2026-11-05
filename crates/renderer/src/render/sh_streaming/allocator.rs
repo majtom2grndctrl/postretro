@@ -61,11 +61,21 @@ impl FirstFitRanges {
             return Ok((PoolRange { start, len }, undo));
         }
 
-        let start = self.capacity;
-        self.capacity = self
-            .capacity
+        // A free range touching the high-water extends past it, so a release
+        // at the tail still counts toward an allocation larger than itself.
+        let tail = self
+            .free
+            .last_key_value()
+            .map(|(&start, &available)| (start, available))
+            .filter(|&(start, available)| start.checked_add(available) == Some(self.capacity));
+        let start = tail.map_or(self.capacity, |(start, _)| start);
+        self.capacity = start
             .checked_add(len)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        if let Some((tail_start, _)) = tail {
+            self.free.remove(&tail_start);
+            undo.consumed_free = tail;
+        }
         Ok((PoolRange { start, len }, undo))
     }
 
@@ -205,12 +215,7 @@ impl SparsePool {
                 reason: "sparse row is already live",
             });
         }
-        // The GPU carrier packs two f16 halves per u32.  Rows may contain an
-        // odd number of halves, but their allocation must leave one padding
-        // half so the following row can start on an even word boundary.
-        let reserved_tile_f16 = tile_f16
-            .checked_add(tile_f16 & 1)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
+        let reserved_tile_f16 = reserved_tile_f16(tile_f16)?;
         let (entry_range, entries_undo) = self.entries.allocate_undoable(entries)?;
         let (tile_range, tiles_undo) = match self.tiles.allocate_undoable(reserved_tile_f16) {
             Ok(allocated) => allocated,
@@ -266,9 +271,33 @@ impl SparsePool {
     }
 }
 
+/// The GPU carrier packs two f16 halves per u32. Rows may contain an odd
+/// number of halves, but their allocation must leave one padding half so the
+/// following row can start on an even word boundary.
+pub(super) fn reserved_tile_f16(tile_f16: u32) -> Result<u32, ShResidencyDrainError> {
+    tile_f16
+        .checked_add(tile_f16 & 1)
+        .ok_or(ShResidencyDrainError::SlotOverflow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_allocation_outgrowing_a_free_tail_extends_it_instead_of_stranding_it() {
+        let mut pool = FirstFitRanges::default();
+        pool.allocate(3).unwrap();
+        let tail = pool.allocate(2).unwrap();
+        pool.release(tail).unwrap();
+        let before = pool.clone();
+
+        let (range, undo) = pool.allocate_undoable(4).unwrap();
+        assert_eq!(range, PoolRange { start: 3, len: 4 });
+        assert_eq!(pool.capacity, 7);
+        pool.undo_allocation(undo);
+        assert_eq!(pool, before);
+    }
 
     #[test]
     fn dense_growth_and_eviction_reuse_a_stale_slot_without_relocating_live_slots() {

@@ -56,7 +56,8 @@ pub(crate) use upload_order_fixture::UploadOrderSh;
 use bindings::{create_grid_info, create_sample_bind_groups};
 use capacity::preflight_initial_resource_limits;
 pub(in crate::render::sh_streaming) use capacity::{
-    initial_fixed_metadata_bytes, planned_animated_direct_layout, planned_direct_layout,
+    SparseGrowth, initial_fixed_metadata_bytes, planned_animated_direct_layout,
+    planned_direct_layout,
 };
 
 pub(crate) use crate::render::uploads::StagedUploads;
@@ -167,23 +168,25 @@ impl AtlasShape {
         }
     }
 
+    /// The shape holding `needed_slots`, which must fit the device, sized up
+    /// to `wanted_slots` as far as the device allows.
     fn grown_for_slots(
         self,
-        required_slots: u32,
+        needed_slots: u32,
+        wanted_slots: u32,
         limits: &wgpu::Limits,
     ) -> Result<Self, ShResidencyDrainError> {
-        if required_slots <= self.slots {
+        if needed_slots <= self.slots {
             return Ok(self);
         }
-        let minimum_layers = required_slots.div_ceil(self.tiles_per_layer);
+        let minimum_layers = needed_slots.div_ceil(self.tiles_per_layer);
         if minimum_layers > limits.max_texture_array_layers {
             return Err(ShResidencyDrainError::GpuDeviceLimit {
                 reason: "streamed dense pool cannot append enough texture-array layers",
             });
         }
-        let layers = self
-            .layers
-            .saturating_mul(2)
+        let layers = wanted_slots
+            .div_ceil(self.tiles_per_layer)
             .max(minimum_layers)
             .min(limits.max_texture_array_layers);
         let slots = self

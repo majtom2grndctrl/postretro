@@ -9,7 +9,7 @@ use postretro_level_loader::{
 };
 use thiserror::Error;
 
-use super::budget::{FixedGpuCharges, ShGpuBudgetInputs, ShResidencyAccounting};
+use super::budget::CpuPhaseLedger;
 use super::generation::{GenerationClock, ProcessGenerationClock};
 use super::reach::ShReach;
 use super::topology::PlannerTopology;
@@ -104,6 +104,12 @@ enum TargetClass {
 impl TargetClass {
     const fn is_pressure_eligible(self) -> bool {
         matches!(self, Self::SeamWarm | Self::Band)
+    }
+
+    /// The optional tier: what yields to mandatory work at real capacity.
+    /// Hysteresis goes last, because it is what stops doorway thrash.
+    const fn is_optional(self) -> bool {
+        !self.is_mandatory()
     }
 
     /// The mandatory tier: protected from eviction, read before optional work.
@@ -212,7 +218,6 @@ pub(crate) struct ShResidencyControllerSnapshot {
     pub(crate) installed_uncomposed_clusters: usize,
     pub(crate) sampleable_clusters: usize,
     pub(crate) failed_clusters: usize,
-    pub(crate) non_evictable_overshoot_bytes: u64,
     pub(crate) counters: ShResidencyCounters,
 }
 
@@ -336,11 +341,16 @@ pub(crate) struct ShResidencyController {
     ready: BTreeMap<u32, ReadyCluster>,
     in_drain: BTreeMap<u32, u64>,
     in_drain_evictions: BTreeSet<u32>,
+    /// Capacity victims this drain named. Evicted ones yield until the
+    /// horizon changes; departures in `in_drain_evictions` have no such wait.
+    in_drain_victims: BTreeSet<u32>,
     permits_in_use: usize,
-    accounting: ShResidencyAccounting,
-    non_evictable_overshoot_bytes: u64,
-    overshoot_reported: bool,
+    cpu: CpuPhaseLedger,
     prior_visible_misses: BTreeSet<u32>,
+    /// Clusters this frame draws that its targets do not name: a mirror's, on
+    /// a path whose `visible` leaves them out. No capacity victim comes from
+    /// here, for the frame still draws them.
+    drawn_outside_targets: BTreeSet<u32>,
     /// Targets have been derived from a view at least once. Until then an
     /// empty target set means "not yet asked", not "nothing to hold".
     demand_updated: bool,
@@ -357,51 +367,41 @@ impl ShResidencyController {
     /// resource. The reach arrives each frame from the cell-demand stage.
     pub(crate) fn new(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         hints: Arc<ClusterHints>,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::with_clock(manifest, gpu_budget, hints, &ProcessGenerationClock)
+        Self::with_clock(manifest, hints, &ProcessGenerationClock)
     }
 
     pub(crate) fn with_clock(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         hints: Arc<ClusterHints>,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
         let topology = ShLevelTopology::decode(&manifest, hints)?;
-        Self::from_parts(Some(manifest), topology.topology, clock, gpu_budget)
+        Self::from_parts(Some(manifest), topology.topology, clock)
     }
 
     /// A controller over a topology the level's load already derived (see
     /// [`ShLevelTopology::decode`]), for the same `manifest`. Fails only on
-    /// what is not level data: the generation clock and `gpu_budget`.
+    /// what is not level data: the generation clock.
     pub(crate) fn with_topology(
         manifest: Arc<ShStreamManifest>,
-        gpu_budget: ShGpuBudgetInputs,
         topology: ShLevelTopology,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(
-            Some(manifest),
-            topology.topology,
-            &ProcessGenerationClock,
-            gpu_budget,
-        )
+        Self::from_parts(Some(manifest), topology.topology, &ProcessGenerationClock)
     }
 
     fn from_parts(
         manifest: Option<Arc<ShStreamManifest>>,
         topology: PlannerTopology,
         clock: &impl GenerationClock,
-        gpu_budget: ShGpuBudgetInputs,
     ) -> Result<Self, ShResidencyControllerError> {
         let generation = clock
             .take_generation()
             .filter(|&generation| generation != 0)
             .ok_or(ShResidencyControllerError::GenerationExhausted)?;
         let cluster_count = topology.cluster_count();
-        if topology.requested_resident_bytes.len() != cluster_count
-            || topology.encoded_chunk_bytes.len() != cluster_count
+        if topology.encoded_chunk_bytes.len() != cluster_count
             || topology.chunk_hashes.len() != cluster_count
         {
             return Err(ShResidencyControllerError::InvalidTopology(
@@ -428,11 +428,11 @@ impl ShResidencyController {
             ready: BTreeMap::new(),
             in_drain: BTreeMap::new(),
             in_drain_evictions: BTreeSet::new(),
+            in_drain_victims: BTreeSet::new(),
             permits_in_use: 0,
-            accounting: ShResidencyAccounting::new(gpu_budget)?,
-            non_evictable_overshoot_bytes: 0,
-            overshoot_reported: false,
+            cpu: CpuPhaseLedger::default(),
             prior_visible_misses: BTreeSet::new(),
+            drawn_outside_targets: BTreeSet::new(),
             demand_updated: false,
             full_demand: false,
             hold: hold::HoldState::default(),
@@ -451,17 +451,8 @@ impl ShResidencyController {
     }
 
     #[cfg(test)]
-    pub(crate) fn accounting(&self) -> ShResidencyAccounting {
-        self.accounting
-    }
-
-    /// Updates actual fixed metadata, whole-resident scatter, and pool
-    /// capacity after the renderer allocates or grows its physical resources.
-    pub(crate) fn update_gpu_charges(
-        &mut self,
-        fixed_gpu: FixedGpuCharges,
-    ) -> Result<(), ShResidencyControllerError> {
-        self.accounting.update_fixed_gpu(fixed_gpu)
+    pub(crate) fn cpu(&self) -> CpuPhaseLedger {
+        self.cpu
     }
 
     #[cfg(test)]
@@ -544,18 +535,12 @@ impl ShResidencyController {
         self.counters
     }
 
-    #[cfg(test)]
-    pub(crate) fn non_evictable_overshoot_bytes(&self) -> u64 {
-        self.non_evictable_overshoot_bytes
-    }
-
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {
         let mut snapshot = ShResidencyControllerSnapshot {
-            cpu: self.accounting.cpu,
+            cpu: self.cpu,
             permits_in_use: self.permits_in_use,
             target_clusters: self.targets.len(),
             lead_clusters: self.reach.lead_count(),
-            non_evictable_overshoot_bytes: self.non_evictable_overshoot_bytes,
             counters: self.counters,
             ..ShResidencyControllerSnapshot::default()
         };
@@ -646,7 +631,7 @@ impl ShResidencyController {
     }
 
     fn release_ready_charge(&mut self, bytes: u64) -> Result<(), ShResidencyControllerError> {
-        self.accounting.cpu.ready.remove(bytes, "ready bytes")
+        self.cpu.ready.remove(bytes, "ready bytes")
     }
 
     fn release_permit(&mut self) -> Result<(), ShResidencyControllerError> {
@@ -663,16 +648,7 @@ impl ShResidencyController {
         topology: PlannerTopology,
         clock: &impl GenerationClock,
     ) -> Result<Self, ShResidencyControllerError> {
-        Self::for_test_with_budget(topology, clock, ShGpuBudgetInputs::default())
-    }
-
-    #[cfg(test)]
-    fn for_test_with_budget(
-        topology: PlannerTopology,
-        clock: &impl GenerationClock,
-        gpu_budget: ShGpuBudgetInputs,
-    ) -> Result<Self, ShResidencyControllerError> {
-        Self::from_parts(None, topology, clock, gpu_budget)
+        Self::from_parts(None, topology, clock)
     }
 }
 
@@ -701,6 +677,7 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
         .iter()
         .chain(&outcome.dropped)
         .chain(&outcome.refused)
+        .chain(&outcome.pool_refused)
         .chain(&outcome.evicted)
     {
         if !ids.insert(cluster_id) {
@@ -719,6 +696,9 @@ fn validate_outcome_lists(outcome: &ShDrainOutcome) -> Result<(), ShResidencyCon
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "controller_capacity_tests.rs"]
+mod capacity_tests;
 #[cfg(test)]
 #[path = "controller_reach_and_budget_tests.rs"]
 mod reach_and_budget_tests;

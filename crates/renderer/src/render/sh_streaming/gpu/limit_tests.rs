@@ -2,17 +2,31 @@
 use super::*;
 
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
+use crate::render::sh_streaming::PoolAdmission;
 use crate::render::sh_streaming::floor::{
     DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES, plan_initial_pool_floor,
 };
 use crate::render::sh_streaming::gpu::load_fixture;
 
-fn replace_shape(
+pub(super) fn replace_shape(
     fixture: &mut UploadOrderSh,
     device: &wgpu::Device,
     raw: &wgpu::Queue,
     limits: &wgpu::Limits,
     shape: AtlasShape,
+) {
+    replace_pools(fixture, device, raw, limits, shape, &BTreeMap::new());
+}
+
+/// Pools of exactly `shape` and `sparse_floors`: the fixture's stand-in for a
+/// pool sized from the bound.
+pub(super) fn replace_pools(
+    fixture: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    raw: &wgpu::Queue,
+    limits: &wgpu::Limits,
+    shape: AtlasShape,
+    sparse_floors: &SparseCapacityFloors,
 ) {
     // Every override is at or below the grant; alignments remain the grant's.
     let grant = device.limits();
@@ -29,7 +43,7 @@ fn replace_shape(
             &fixture.map.sources(),
             std::sync::Arc::clone(&fixture.state.sparse_compose),
             shape,
-            &BTreeMap::new(),
+            sparse_floors,
             false,
             &mut fixture.sh,
             &fixture.pipelines,
@@ -48,8 +62,19 @@ fn grow_dense(
     queue: &UploadQueue,
     slots: u32,
 ) -> Result<(), ShResidencyDrainError> {
+    grow_dense_toward(f, device, queue, slots, slots)
+}
+
+fn grow_dense_toward(
+    f: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    needed: u32,
+    wanted: u32,
+) -> Result<(), ShResidencyDrainError> {
     f.state.gpu.as_mut().unwrap().grow_dense(
-        slots,
+        needed,
+        wanted,
         DenseGrowthInputs {
             device,
             queue,
@@ -68,18 +93,55 @@ fn grow_sparse(
     queue: &UploadQueue,
     required: &SparseCapacityFloors,
 ) -> Result<(), ShResidencyDrainError> {
+    let growth = required
+        .iter()
+        .map(|(&section_id, &needed)| {
+            (
+                section_id,
+                SparseGrowth {
+                    needed,
+                    wanted: needed,
+                },
+            )
+        })
+        .collect();
+    grow_sparse_toward(f, device, queue, &growth)
+}
+
+fn grow_sparse_toward(
+    f: &mut UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    growth: &BTreeMap<u32, SparseGrowth>,
+) -> Result<(), ShResidencyDrainError> {
     f.state.gpu.as_mut().unwrap().grow_sparse(
         device,
         queue,
         &f.map.base(),
         &f.map.sources(),
-        required,
+        growth,
         &mut f.sh,
         &f.weights,
     )
 }
 
-fn finish_retirement(f: &mut UploadOrderSh, device: &wgpu::Device) {
+/// Replaces the dense generation's completion flag with one only the test
+/// sets. The real callback fires whenever wgpu polls, so a test spanning
+/// drains would otherwise race it. Returns the flag to set when done.
+pub(super) fn hold_dense_retirement(f: &mut UploadOrderSh) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    f.state
+        .gpu
+        .as_mut()
+        .unwrap()
+        .retiring_dense
+        .as_mut()
+        .expect("a dense generation is retiring")
+        .complete = Arc::clone(&flag);
+    flag
+}
+
+pub(super) fn finish_retirement(f: &mut UploadOrderSh, device: &wgpu::Device) {
     // Waiting is test-only: production growth returns retirement pressure.
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     f.state.release_retired_generations();
@@ -179,6 +241,7 @@ fn sh_growth_production_zero_share_load_holds_every_cluster() {
                     content_tag: manifest.content_tag(),
                     target_reset: (cluster == 0).then(|| vec![(1 << 9) - 1]),
                     ready: vec![ready],
+                    mandatory: vec![cluster],
                     ..Default::default()
                 },
             )
@@ -239,7 +302,8 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
     let mut limits = device.limits();
     limits.max_texture_array_layers = 256;
     let queue = UploadQueue::new(&device, raw.clone(), true);
-    for (layers, expected) in [(200, 256), (100, 200)] {
+    // Growth takes the whole-layer size of what the tier needs, not a doubling.
+    for (layers, expected) in [(200, 201), (100, 101)] {
         let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
             .direct_base_only()
             .with_empty_rows(27, &[0])
@@ -274,12 +338,10 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
             Err(ShResidencyDrainError::GpuDeviceLimit { .. })
         ));
         assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, expected);
-        if expected == 200 {
-            assert!(matches!(
-                grow_dense(&mut f, &device, &queue, 201),
-                Err(ShResidencyDrainError::GpuRetirementPressure { .. })
-            ));
-        }
+        assert!(matches!(
+            grow_dense(&mut f, &device, &queue, expected + 1),
+            Err(ShResidencyDrainError::GpuRetirementPressure { .. })
+        ));
         f.compose(&device, &queue);
         f.drain_many(&device, &queue, &[]).unwrap();
         assert!(f.state.sampleable.contains(&0));
@@ -291,6 +353,11 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
             ),
             2 | 4 | (layers << 5)
         );
+        finish_retirement(&mut f, &device);
+        // Demand past the device clamps to it, and only what the install
+        // itself needs can refuse.
+        grow_dense_toward(&mut f, &device, &queue, expected + 1, 300).unwrap();
+        assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, 256);
         finish_retirement(&mut f, &device);
     }
     let map = SyntheticMap::new([4, 4, 4], [1, 1, 1])
@@ -317,7 +384,7 @@ fn sh_growth_dense_clamps_and_limit_precedes_retirement() {
     assert_eq!(f.state.dense_slots.capacity, 256);
     assert!(f.state.installed.is_empty());
     eprintln!(
-        "[ShGrowthProof] dense drains installed 200→256 and 100→200; 257 refused; GPU sampled-indirection readback ran"
+        "[ShGrowthProof] dense drains installed 200→201 and 100→101, demand clamped at 256; 257 refused; GPU sampled-indirection readback ran"
     );
 }
 
@@ -389,8 +456,8 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                 ));
             }
             finish_retirement(&mut f, &device);
-            // One real row fits each bound, while doubling either seed passes
-            // its bound; both families must install after clamping.
+            // One real row fits each bound, and growth holds exactly what the
+            // row needs: no doubling can pass a bound the demand does not.
             let pool = f.state.sparse_pools.get_mut(&section).unwrap();
             pool.entries.capacity = entry_seed;
             pool.tiles.capacity = tile_seed;
@@ -399,7 +466,7 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
             assert!(outcome.refused.is_empty());
             assert_eq!(
                 f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section),
-                entry_limit
+                f.state.sparse_pools[&section].entries.capacity
             );
             assert_eq!(
                 f.state
@@ -407,10 +474,10 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                     .as_ref()
                     .unwrap()
                     .sparse_tile_f16_capacity(section),
-                tile_limit
+                f.state.sparse_pools[&section].tiles.capacity
             );
-            // A later row exceeds each clamped high-water by one entry or 48
-            // f16 values while the clamped generation still retires.
+            // A later row exceeds each limit by one entry or 48 f16 values
+            // while the generation still retires: a wait could not serve it.
             let before = f.state.sparse_pools[&section].clone();
             f.state
                 .sparse_pools
@@ -442,6 +509,30 @@ fn sh_growth_sparse_clamps_every_family_and_preflights_the_whole_transaction() {
                 ),
                 0
             );
+            finish_retirement(&mut f, &device);
+            // Demand past the bound clamps to it; only the need can refuse.
+            let needed = (
+                f.state.gpu.as_ref().unwrap().sparse_entry_capacity(section) + 1,
+                f.state
+                    .gpu
+                    .as_ref()
+                    .unwrap()
+                    .sparse_tile_f16_capacity(section),
+            );
+            let growth = SparseGrowth {
+                needed,
+                wanted: (entry_limit + 1, tile_limit + 1),
+            };
+            grow_sparse_toward(
+                &mut f,
+                &device,
+                &queue,
+                &BTreeMap::from([(section, growth)]),
+            )
+            .unwrap();
+            let pools = f.state.gpu.as_ref().unwrap();
+            assert_eq!(pools.sparse_entry_capacity(section), entry_limit);
+            assert_eq!(pools.sparse_tile_f16_capacity(section), tile_limit);
             finish_retirement(&mut f, &device);
         }
         // id-27 waits on retirement; id-45 exceeds its compaction limit. The
@@ -614,8 +705,15 @@ fn sh_growth_keeps_dense_commit_when_sparse_refuses_and_classifies_later_cluster
     // a large payload. Required need, not live payload bytes, drives growth.
     f.state.sparse_pools.get_mut(&27).unwrap().tiles.capacity = 512;
     let before_sparse = f.state.sparse_pools[&27].clone();
-    let outcome = f.drain_many(&device, &queue, &[1, 2, 3]).unwrap();
-    assert_eq!(outcome.refused, [1, 3]);
+    let outcome = f.drain_many(&device, &queue, &[1]).unwrap();
+    assert_eq!(outcome.refused, [1]);
+    assert!(outcome.accepted.is_empty() && outcome.evicted.is_empty());
+    assert_eq!(f.state.gpu.as_ref().unwrap().shape.layers, 2);
+    let retirement = hold_dense_retirement(&mut f);
+    // Behind that generation, a later cluster within the limit waits and one
+    // past it refuses at once: a wait could never serve it.
+    let outcome = f.drain_many(&device, &queue, &[2, 3]).unwrap();
+    assert_eq!(outcome.refused, [3]);
     assert_eq!(
         outcome
             .deferred
@@ -644,6 +742,7 @@ fn sh_growth_keeps_dense_commit_when_sparse_refuses_and_classifies_later_cluster
     );
     assert!(f.state.sampleable.contains(&0));
     assert_eq!(f.state.installed.len(), 1);
+    retirement.store(true, Ordering::Release);
     finish_retirement(&mut f, &device);
     eprintln!(
         "[ShGrowthProof] dense commit+sparse refusal; later retirement and limit outcomes; resident sampling preserved, ran on GPU"
@@ -718,7 +817,8 @@ fn sh_growth_contract_and_metadata_errors_remain_fatal() {
     let prepared = f.prepared(0);
     let mut outcome = postretro_level_loader::ShDrainOutcome::default();
     assert!(matches!(
-        f.state.install_ready(None, vec![prepared], &mut outcome),
+        f.state
+            .install_ready(None, vec![prepared], PoolAdmission::default(), &mut outcome),
         Err(ShResidencyDrainError::GpuCapacity {
             reason: "streamed install requires device handles while GPU pools exist",
         })
@@ -775,7 +875,7 @@ fn sh_growth_retained_metadata_error_precedes_dense_device_limit() {
     // The loader-valid body needs 64 slots; the same install would refuse
     // growth, but its corrupted retained metadata must remain fatal.
     assert!(matches!(
-        shape.grown_for_slots(64, &limits),
+        shape.grown_for_slots(64, 64, &limits),
         Err(ShResidencyDrainError::GpuDeviceLimit { .. })
     ));
     f.state.dense_node[0].as_mut().unwrap().level ^= 1;
@@ -1171,7 +1271,7 @@ fn sh_growth_floor_geometry_and_charges_match_gpu_for_every_load_shape() {
     );
 }
 
-fn first_texture_pixel(
+pub(super) fn first_texture_pixel(
     device: &wgpu::Device,
     queue: &UploadQueue,
     texture: &wgpu::Texture,

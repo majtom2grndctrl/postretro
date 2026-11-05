@@ -46,6 +46,8 @@ mod ownership;
 mod patches;
 mod payload;
 mod pipelines;
+mod pool_admission;
+mod pool_demand;
 #[cfg(feature = "dev-tools")]
 mod probe_diagnostics;
 #[cfg(feature = "dev-tools")]
@@ -82,6 +84,7 @@ use ownership::{StoredNode, StoredNodeLayout, rewrite_slot};
 use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
+use pool_admission::PoolAdmission;
 #[cfg(feature = "dev-tools")]
 pub(in crate::render) use probe_diagnostics::ProbeResidencyClass;
 use row_bitset::{RowBitSet, RowQueue};
@@ -106,7 +109,7 @@ const ANIMATED_DIRECT_DELTA_ID: u32 = SectionId::AnimatedDirectShDeltaVolumes as
 
 pub use postretro_render_cpu::sh_residency::ShResidencyDrainError;
 use postretro_render_cpu::sh_residency::{
-    DenseSpans, InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors,
+    ClusterStorage, DenseSpans, InitialDenseSlots, NodeMap, ShResidencyPlan, SparseCapacityFloors,
     SparseComposeLayout, SparseComposeLayouts,
 };
 #[cfg(test)]
@@ -152,7 +155,7 @@ pub struct ShResidencySnapshot {
     pub fixed_metadata_bytes: u64,
     /// Bytes physically allocated by the active streamed generation.
     pub active_capacity_bytes: u64,
-    /// Initial non-evictable streamed pool floor, distinct from later growth.
+    /// The pools' initial physical size, distinct from later growth.
     pub effective_floor_bytes: u64,
     /// Minimum physical capacity for the coupled id-34/id-35 dense pool.
     pub dense_group_minimum_bytes: Option<u64>,
@@ -252,6 +255,8 @@ pub(super) struct ShResidencyState {
         allow(dead_code)
     )]
     dense_spans: DenseSpans,
+    /// What each cluster names, so growth can price targets not yet read.
+    cluster_storage: Vec<ClusterStorage>,
     node_slots: BTreeMap<StoredNode, PoolRange>,
     storage_refs: StorageRefs,
     sparse_capacity_floors: SparseCapacityFloors,

@@ -47,15 +47,13 @@ fn probe_patch_bytes(
 }
 
 impl ShResidencyState {
-    /// Reference every node the chunk's patches name, allocating the ones
-    /// nothing holds. Node identity comes from id-34 metadata, so any chunk
-    /// naming a node can write it.
-    pub(super) fn reference_chunk_nodes(
-        &mut self,
-        journal: &mut InstallJournal,
+    /// The nodes a chunk's patches name, in `StoredNode` order. Node identity
+    /// comes from id-34 metadata, so any chunk naming a node can write it.
+    pub(super) fn chunk_node_set(
+        &self,
         cluster_id: u32,
         chunk: &DecodedClusterShPayload,
-    ) -> Result<ChunkNodes, ShResidencyDrainError> {
+    ) -> Result<BTreeSet<StoredNode>, ShResidencyDrainError> {
         let bytes = probe_patch_bytes(cluster_id, chunk)?;
         let mut nodes = BTreeSet::new();
         // A node covers a brick of probes, so consecutive patches mostly
@@ -75,6 +73,18 @@ impl ShResidencyState {
                 last_node = Some(node);
             }
         }
+        Ok(nodes)
+    }
+
+    /// Reference every node the chunk's patches name, allocating the ones
+    /// nothing holds.
+    pub(super) fn reference_chunk_nodes(
+        &mut self,
+        journal: &mut InstallJournal,
+        cluster_id: u32,
+        chunk: &DecodedClusterShPayload,
+    ) -> Result<ChunkNodes, ShResidencyDrainError> {
+        let nodes = self.chunk_node_set(cluster_id, chunk)?;
         let mut result = ChunkNodes {
             referenced: Vec::with_capacity(nodes.len()),
             first_written: BTreeSet::new(),

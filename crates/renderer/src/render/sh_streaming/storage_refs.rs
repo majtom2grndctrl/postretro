@@ -79,6 +79,10 @@ impl StorageRefs {
         release_keyed_ref(&mut self.sparse_rows, key)
     }
 
+    pub(super) fn holds_sparse_row(&self, key: &(u32, u32)) -> bool {
+        self.sparse_rows.contains_key(key)
+    }
+
     #[cfg(test)]
     pub(super) fn node_refs(&self, node: &StoredNode) -> u32 {
         self.nodes.get(node).copied().unwrap_or(0)

@@ -115,7 +115,10 @@ impl UploadOrderSh {
             .clone()
     }
 
-    fn prepared(&self, cluster: u32) -> postretro_level_loader::PreparedShCluster {
+    pub(in crate::render::sh_streaming) fn prepared(
+        &self,
+        cluster: u32,
+    ) -> postretro_level_loader::PreparedShCluster {
         let mut ready = self.map.prepared(&self.state, cluster);
         // CPU transaction fixtures omit atlas texels; supply real 8x8 slot
         // payloads here so the exact GPU validators and uploads also execute.
@@ -169,16 +172,27 @@ impl UploadOrderSh {
         assert_eq!(outcome.accepted, [cluster]);
     }
 
+    /// Every ready cluster is mandatory here: the old contract's "may grow".
     pub(in crate::render::sh_streaming) fn drain_many(
         &mut self,
         device: &wgpu::Device,
         queue: &UploadQueue,
         clusters: &[u32],
     ) -> Result<postretro_level_loader::ShDrainOutcome, ShResidencyDrainError> {
-        self.drain_batch(device, queue, ShDrainBatch::default(), clusters)
+        let mut mandatory = clusters.to_vec();
+        mandatory.sort_unstable();
+        self.drain_batch(
+            device,
+            queue,
+            ShDrainBatch {
+                mandatory,
+                ..ShDrainBatch::default()
+            },
+            clusters,
+        )
     }
 
-    /// `batch`'s target deltas and evictions, with `clusters` ready.
+    /// `batch`'s target deltas and capacity policy, with `clusters` ready.
     pub(in crate::render::sh_streaming) fn drain_batch(
         &mut self,
         device: &wgpu::Device,
@@ -330,5 +344,7 @@ impl UploadOrderSh {
 
 #[path = "limit_tests.rs"]
 mod limit_tests;
+#[path = "pool_admission_tests.rs"]
+mod pool_admission_tests;
 #[path = "shared_storage_tests.rs"]
 mod shared_storage_tests;

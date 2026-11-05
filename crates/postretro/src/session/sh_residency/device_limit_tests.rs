@@ -6,15 +6,7 @@ use std::time::Duration;
 
 fn session(manifest: Arc<ShStreamManifest>) -> ShStreamingSession {
     let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
-    ShStreamingSession::from_snapshot(
-        manifest,
-        ShResidencySnapshot {
-            effective_floor_bytes: 1024 * 1024,
-            ..ShResidencySnapshot::default()
-        },
-        hints,
-    )
-    .unwrap()
+    ShStreamingSession::from_manifest(manifest, hints).unwrap()
 }
 
 fn refuse_ready(session: &mut ShStreamingSession) {

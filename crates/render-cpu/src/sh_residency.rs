@@ -21,7 +21,9 @@ pub use ownership::{
     DenseNodeLayout, StoredNode, StoredNodeLayout, affinity_index, dense_index,
     derive_dense_node_layout,
 };
-pub use plan::{InitialDenseSlots, ShResidencyPlan, plan_sh_residency, plan_sh_residency_parts};
+pub use plan::{
+    ClusterStorage, InitialDenseSlots, ShResidencyPlan, plan_sh_residency, plan_sh_residency_parts,
+};
 pub use sample_region_tables::SampleRegionTables;
 pub use sample_regions::{
     SAMPLE_REGION_DILATION_CELLS, SampleRegionGrid, ShSampleRegion, affinity_row, brick_rows_in,
@@ -29,7 +31,7 @@ pub use sample_regions::{
 };
 pub use sparse_compose::{
     SparseCapacityFloors, SparseComposeLayout, SparseComposeLayouts, compose_row_capacity,
-    sparse_capacity_floors, sparse_compose_capacity,
+    sparse_capacity_floors, sparse_compose_capacity, sparse_row_demand,
 };
 
 const INDIRECT_DELTA_ID: u32 = SectionId::DeltaShVolumes as u32;
@@ -67,6 +69,10 @@ pub enum ShResidencyDrainError {
     GpuCapacity {
         reason: &'static str,
     },
+    /// An install placed past the pools' physical capacity and was rolled
+    /// back. The drain consumes this internal verdict: mandatory work evicts
+    /// and grows, and optional work lands in `pool_refused`.
+    PoolShortfall,
     /// Only a growth whose required backing exceeds the captured device
     /// limit. The drain consumes this internal verdict into `refused`.
     GpuDeviceLimit {
@@ -118,6 +124,7 @@ impl fmt::Display for ShResidencyDrainError {
             Self::GpuCapacity { reason } => {
                 write!(f, "SH streamed GPU pool capacity error: {reason}")
             }
+            Self::PoolShortfall => write!(f, "SH streamed pools have no room for this install"),
             Self::GpuDeviceLimit { reason } => {
                 write!(f, "SH streamed GPU device limit: {reason}")
             }

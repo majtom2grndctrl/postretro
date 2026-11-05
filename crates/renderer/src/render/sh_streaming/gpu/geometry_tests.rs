@@ -118,7 +118,7 @@ fn fixture_churn_fits_fragmentation_headroom() {
             }
         }
     }
-    assert_eq!(refused, [true, true, false, false, false]);
+    assert_eq!(refused, [true, false, false, false, false]);
     assert_eq!(
         (
             DENSE_FRAGMENTATION_HEADROOM_NUMERATOR,
@@ -127,6 +127,6 @@ fn fixture_churn_fits_fragmentation_headroom() {
         (9, 4)
     );
     eprintln!(
-        "[ShGrowthProof] Churn: 2 fixtures × 8 seeds × 20,000 steps; largest refused 1.25; smallest passing 1.5; chosen 2.25 (1.5 margin)"
+        "[ShGrowthProof] Churn: 2 fixtures × 8 seeds × 20,000 steps; largest refused 1.0; smallest passing 1.25; chosen 2.25 (1.8 margin)"
     );
 }

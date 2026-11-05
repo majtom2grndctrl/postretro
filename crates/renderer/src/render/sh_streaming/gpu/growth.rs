@@ -8,9 +8,12 @@
 use super::*;
 
 impl StreamingGpuPools {
+    /// Replace the dense generation with one holding `needed_slots`, sized to
+    /// `wanted_slots`: a second growth would wait behind this one's retirement.
     pub(in crate::render::sh_streaming) fn grow_dense(
         &mut self,
-        required_slots: u32,
+        needed_slots: u32,
+        wanted_slots: u32,
         inputs: DenseGrowthInputs<'_>,
     ) -> Result<(), ShResidencyDrainError> {
         let DenseGrowthInputs {
@@ -22,11 +25,13 @@ impl StreamingGpuPools {
             sh,
             selection_weights,
         } = inputs;
-        if required_slots <= self.shape.slots {
+        if needed_slots <= self.shape.slots {
             return Ok(());
         }
         let started = std::time::Instant::now();
-        let shape = self.shape.grown_for_slots(required_slots, &self.limits)?;
+        let shape = self
+            .shape
+            .grown_for_slots(needed_slots, wanted_slots, &self.limits)?;
         if self.retiring_dense.is_some() {
             return Err(ShResidencyDrainError::GpuRetirementPressure {
                 family: "dense atlas",
@@ -200,35 +205,18 @@ impl StreamingGpuPools {
         queue: &crate::render::uploads::UploadQueue,
         base: &ShStreamBaseMetadata,
         sources: &ShStreamSourceMetadata,
-        required: &SparseCapacityFloors,
+        required: &std::collections::BTreeMap<u32, SparseGrowth>,
         sh: &mut ShVolumeResources,
         selection_weights: &wgpu::Buffer,
     ) -> Result<(), ShResidencyDrainError> {
         let pipelines = self.pipelines.clone();
         let mut floors = self.sparse_capacity_floors.clone();
         let mut sections_to_grow = Vec::new();
-        for (&section_id, &(required_entries, required_tiles)) in required {
-            let current_entries = self.sparse_entry_capacity(section_id);
-            let current_tiles = self.sparse_tile_f16_capacity(section_id);
-            if required_entries <= current_entries && required_tiles <= current_tiles {
+        for (&section_id, &growth) in required {
+            if !self.sparse_is_short(section_id, growth.needed) {
                 continue;
             }
-            let source = match section_id {
-                27 => sources.indirect_delta.as_ref(),
-                DIRECT_DELTA_SECTION => sources.direct_delta.as_ref(),
-                ANIMATED_DIRECT_DELTA_SECTION => sources.animated_direct_delta.as_ref(),
-                _ => None,
-            }
-            .ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed sparse growth names an absent family",
-            })?;
-            let rows = checked_cell_count(source.affinity_dims)?;
-            let grown = clamped_sparse_capacity(
-                (current_entries, current_tiles),
-                (required_entries, required_tiles),
-                rows,
-                &self.limits,
-            )?;
+            let grown = self.sparse_growth_capacity(section_id, growth, sources)?;
             floors.insert(section_id, grown);
             sections_to_grow.push(section_id);
         }
@@ -576,32 +564,4 @@ impl StreamingGpuPools {
                 ..Default::default()
             })
     }
-}
-
-/// The compaction table includes three immutable words per affinity row plus
-/// one word per entry. It therefore bounds entries before the entry buffer;
-/// tile backing is packed into whole u32 words. Both obey buffer and binding
-/// limits, including a lowered test grant.
-fn clamped_sparse_capacity(
-    current: (u32, u32),
-    required: (u32, u32),
-    rows: u32,
-    limits: &wgpu::Limits,
-) -> Result<(u32, u32), ShResidencyDrainError> {
-    let words = limits
-        .max_buffer_size
-        .min(limits.max_storage_buffer_binding_size)
-        / 4;
-    let prefix = u64::from(rows) * 3;
-    let entry_limit = words.saturating_sub(prefix).min(u64::from(u32::MAX)) as u32;
-    let tile_limit = words.saturating_mul(2).min(u64::from(u32::MAX - 1)) as u32;
-    if required.0 > entry_limit || required.1 > tile_limit {
-        return Err(ShResidencyDrainError::GpuDeviceLimit {
-            reason: "streamed sparse pool needs backing beyond its tightest buffer limit",
-        });
-    }
-    Ok((
-        current.0.saturating_mul(2).max(required.0).min(entry_limit),
-        current.1.saturating_mul(2).max(required.1).min(tile_limit),
-    ))
 }

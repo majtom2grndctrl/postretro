@@ -54,7 +54,7 @@ fn drain(
         .promote_and_evict(&mut StagedUploads::default(), batch.evictions, &mut outcome)
         .unwrap();
     state
-        .install_ready(None, batch.ready, &mut outcome)
+        .install_ready(None, batch.ready, PoolAdmission::default(), &mut outcome)
         .unwrap();
     outcome
 }
@@ -182,9 +182,7 @@ fn two_clusters_one_drain_write_a_shared_node_once() {
     let mut staged_writes = Vec::new();
     for prepared in [&first, &second] {
         let mut journal = InstallJournal::default();
-        let staged = state
-            .stage_install(&mut journal, None, prepared, true)
-            .unwrap();
+        let staged = state.stage_install(&mut journal, prepared, true).unwrap();
         staged_writes.push((
             staged.local_slots.iter().map(|run| run.len).sum::<u32>(),
             staged.sparse_plan.len(),
@@ -425,9 +423,7 @@ fn a_fully_staged_install_rolls_back_as_a_failed_upload_does() {
     let before = mirror(&state);
     let prepared = map.prepared(&state, 1);
     let mut journal = InstallJournal::default();
-    state
-        .stage_install(&mut journal, None, &prepared, true)
-        .unwrap();
+    state.stage_install(&mut journal, &prepared, true).unwrap();
     assert_ne!(mirror(&state), before);
     state.roll_back(journal);
     assert_eq!(mirror(&state), before);

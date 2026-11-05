@@ -481,16 +481,7 @@ mod tests {
                     cluster_directory: world.cluster_directory(),
                     residency_set: None,
                 },
-                |manifest, _, hints| {
-                    ShStreamingSession::from_snapshot(
-                        manifest,
-                        postretro_renderer::ShResidencySnapshot {
-                            effective_floor_bytes: 1024 * 1024,
-                            ..Default::default()
-                        },
-                        hints.unwrap(),
-                    )
-                },
+                |manifest, _, hints| ShStreamingSession::from_manifest(manifest, hints.unwrap()),
             )
             .unwrap();
         let cpu = StageFrame::default();

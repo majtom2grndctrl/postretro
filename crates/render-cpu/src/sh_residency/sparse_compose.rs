@@ -136,7 +136,7 @@ pub fn sparse_capacity_floors(
 }
 
 /// One sparse row's entries and f16 tile halves, from its CSR metadata.
-fn sparse_row_demand(
+pub fn sparse_row_demand(
     sources: &ShStreamSourceMetadata,
     cluster_id: u32,
     section_id: u32,

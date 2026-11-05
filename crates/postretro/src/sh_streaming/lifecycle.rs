@@ -23,23 +23,17 @@ impl ShResidencyController {
             .as_ref()
             .ok_or(ShResidencyControllerError::MissingManifest)?;
         let index = &manifest.payloads().index[request.cluster_id as usize];
-        self.accounting
-            .cpu
-            .encoded
-            .add(index.payload_len, "encoded bytes")?;
+        self.cpu.encoded.add(index.payload_len, "encoded bytes")?;
         let decoded = manifest.read_and_decode_cluster(request.cluster_id);
-        self.accounting
-            .cpu
+        self.cpu
             .encoded
             .remove(index.payload_len, "encoded bytes")?;
         match decoded {
             Ok(chunk) => {
-                self.accounting
-                    .cpu
+                self.cpu
                     .decoding
                     .add(index.decoded_bytes, "decoding bytes")?;
-                self.accounting
-                    .cpu
+                self.cpu
                     .decoding
                     .remove(index.decoded_bytes, "decoding bytes")?;
                 let admission = self.admit_prepared(PreparedShCluster {
@@ -197,7 +191,7 @@ impl ShResidencyController {
         let byte_charge = u64::try_from(prepared.chunk.bytes.len()).map_err(|_| {
             ShResidencyControllerError::AccountingOverflow("ready chunk byte length")
         })?;
-        self.accounting.cpu.ready.add(byte_charge, "ready bytes")?;
+        self.cpu.ready.add(byte_charge, "ready bytes")?;
         self.ready.insert(
             cluster_id,
             ReadyCluster {
@@ -219,7 +213,7 @@ impl ShResidencyController {
         if outcome
             .evicted
             .iter()
-            .any(|cluster_id| !self.in_drain_evictions.contains(cluster_id))
+            .any(|cluster_id| !self.may_evict_this_drain(*cluster_id))
         {
             return Err(ShResidencyControllerError::InvalidDrainOutcome(
                 "renderer released a cluster that this drain did not request for eviction".into(),
@@ -231,6 +225,7 @@ impl ShResidencyController {
             .iter()
             .chain(&outcome.dropped)
             .chain(&outcome.refused)
+            .chain(&outcome.pool_refused)
             .copied()
             .chain(
                 outcome
@@ -271,17 +266,18 @@ impl ShResidencyController {
         self.preflight_drain_outcome(&outcome)?;
 
         // The renderer reports only actual releases; a cluster it kept stays
-        // in this controller's logical ledger and is retried later.
-        for cluster_id in &outcome.evicted {
-            self.accounting
-                .remove_logical(self.topology.requested_resident_bytes[*cluster_id as usize])
-                .expect("preflight validated confirmed eviction accounting");
-            self.states[*cluster_id as usize].state = ClusterResidencyState::Absent;
-            self.states[*cluster_id as usize].evicted = true;
+        // resident and is retried later.
+        for &cluster_id in &outcome.evicted {
+            self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
+            self.states[cluster_id as usize].evicted = true;
             Self::increment_counter(&mut self.counters.evictions, "stream evictions")
                 .expect("preflight validated eviction counter");
+            if self.in_drain_victims.contains(&cluster_id) {
+                self.yield_capacity_victim(cluster_id);
+            }
         }
         self.in_drain_evictions.clear();
+        self.in_drain_victims.clear();
 
         for cluster_id in outcome.accepted {
             let byte_charge = self
@@ -292,9 +288,6 @@ impl ShResidencyController {
                 .expect("preflight validated accepted ready bytes");
             self.release_permit()
                 .expect("preflight validated accepted permit");
-            self.accounting
-                .add_logical(self.topology.requested_resident_bytes[cluster_id as usize])
-                .expect("preflight validated accepted logical accounting");
             self.states[cluster_id as usize].state = ClusterResidencyState::InstalledUncomposed;
             Self::increment_counter(&mut self.counters.installs, "stream installs")
                 .expect("preflight validated install counter");
@@ -324,6 +317,18 @@ impl ShResidencyController {
                 },
             )
             .expect("preflight validated refused permit");
+        }
+        for cluster_id in outcome.pool_refused {
+            let byte_charge = self
+                .in_drain
+                .remove(&cluster_id)
+                .expect("outcome ids were checked");
+            self.release_ready_charge(byte_charge)
+                .expect("preflight validated pool-refused ready bytes");
+            self.release_permit()
+                .expect("preflight validated pool-refused permit");
+            self.states[cluster_id as usize].state = ClusterResidencyState::Absent;
+            self.yield_capacity_victim(cluster_id);
         }
         for prepared in outcome.deferred {
             let cluster_id = prepared.chunk.cluster_id;
@@ -356,7 +361,7 @@ impl ShResidencyController {
         &self,
         outcome: &ShDrainOutcome,
     ) -> Result<(), ShResidencyControllerError> {
-        let mut accounting = self.accounting;
+        let mut cpu = self.cpu;
         let mut permits = self.permits_in_use;
         let mut counters = self.counters;
 
@@ -375,27 +380,29 @@ impl ShResidencyController {
                     "renderer released a controller-nonresident cluster".into(),
                 ));
             }
-            accounting
-                .remove_logical(self.topology.requested_resident_bytes[cluster_id as usize])?;
             Self::increment_counter(&mut counters.evictions, "stream evictions")?;
         }
         for &cluster_id in &outcome.accepted {
             self.preflight_drained_ready_state(cluster_id)?;
             let byte_charge = self.in_drain[&cluster_id];
-            accounting.cpu.ready.remove(byte_charge, "ready bytes")?;
+            cpu.ready.remove(byte_charge, "ready bytes")?;
             permits =
                 permits
                     .checked_sub(1)
                     .ok_or(ShResidencyControllerError::AccountingUnderflow(
                         "stream permits",
                     ))?;
-            accounting.add_logical(self.topology.requested_resident_bytes[cluster_id as usize])?;
             Self::increment_counter(&mut counters.installs, "stream installs")?;
         }
-        for &cluster_id in outcome.dropped.iter().chain(&outcome.refused) {
+        for &cluster_id in outcome
+            .dropped
+            .iter()
+            .chain(&outcome.refused)
+            .chain(&outcome.pool_refused)
+        {
             self.preflight_drained_ready_state(cluster_id)?;
             let byte_charge = self.in_drain[&cluster_id];
-            accounting.cpu.ready.remove(byte_charge, "ready bytes")?;
+            cpu.ready.remove(byte_charge, "ready bytes")?;
             permits =
                 permits
                     .checked_sub(1)
@@ -441,8 +448,8 @@ impl ShResidencyController {
         }
     }
 
-    /// Pressure recovery makes optional work eligible again without changing
-    /// the raw visibility horizon, once its complete target set fits.
+    /// A horizon change makes optional work eligible again: the pool may have
+    /// room for a new view, and only the renderer can say.
     pub(crate) fn clear_optional_suppression(&mut self) {
         for state in &mut self.states {
             state.suppressed = false;

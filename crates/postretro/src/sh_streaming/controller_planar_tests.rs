@@ -13,7 +13,6 @@ fn per_cell_clusters() -> ShResidencyController {
     controller(topology(
         (0..cells as u32).collect(),
         vec![Vec::new(); cells],
-        vec![1; cells],
     ))
 }
 

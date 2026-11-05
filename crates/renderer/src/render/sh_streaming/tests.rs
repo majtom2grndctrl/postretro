@@ -389,6 +389,7 @@ fn coalesced_row_union_drops_a_row_after_its_last_contributor() {
         dense_node_local_slot: Vec::new(),
         node_layouts: NodeMap::default(),
         dense_spans: DenseSpans::default(),
+        cluster_storage: Vec::new(),
         node_slots: BTreeMap::new(),
         storage_refs: StorageRefs::with_probe_count(0),
         sparse_capacity_floors: BTreeMap::new(),

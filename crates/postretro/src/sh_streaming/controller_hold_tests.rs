@@ -32,7 +32,7 @@ fn level() -> (ShResidencyController, CellResidencySetSection) {
         &[(0, 0, 0), (0, 1, 4), (0, 2, 20), (6, 6, 0), (6, 7, 4)],
         32,
     );
-    let controller = controller(topology((0..8).collect(), vec![Vec::new(); 8], vec![1; 8]));
+    let controller = controller(topology((0..8).collect(), vec![Vec::new(); 8]));
     (controller, set)
 }
 
@@ -537,7 +537,6 @@ fn hold_warms_no_new_seam_and_keeps_the_warm_set() {
     let mut c = controller(hinted_topology(
         (0..8).collect(),
         vec![Vec::new(); 8],
-        vec![1; 8],
         seams,
         BTreeSet::new(),
         Vec::new(),
@@ -566,12 +565,10 @@ fn evict_and_rerequest_counts_references_once() {
     let (mut c, set) = level();
     frame(&mut c, &set, 0, PORTAL, &[3], 0.0);
     stream_until_idle(&mut c);
-    let logical = c.accounting().logical_occupancy_bytes;
 
     frame(&mut c, &set, 0, PORTAL, &[], 0.1);
     frame(&mut c, &set, 0, PORTAL, &[], 2.2);
     assert_eq!(drain_evictions(&mut c), vec![3]);
-    assert_eq!(c.accounting().logical_occupancy_bytes, logical - 1);
 
     // Back in view on the frame after its eviction landed.
     frame(&mut c, &set, 0, PORTAL, &[3], 2.3);
@@ -591,7 +588,6 @@ fn evict_and_rerequest_counts_references_once() {
     .unwrap();
     c.promote_composed_clusters();
     assert_eq!(c.state(3), Some(ClusterResidencyState::Sampleable));
-    assert_eq!(c.accounting().logical_occupancy_bytes, logical);
     assert_eq!(c.counters().installs, 5, "0, 1, 2, 3 and 3 again");
 }
 
@@ -632,7 +628,7 @@ fn read_finishing_after_eviction_is_dropped() {
     );
     assert_eq!(c.state(4), Some(ClusterResidencyState::Absent));
     assert_eq!(c.permits_in_use(), permits - 1);
-    assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+    assert_eq!(c.cpu().ready.current_bytes, 0);
     assert_eq!(c.counters().discarded_reads, 1);
     let batch = c.take_async_drain_batch().unwrap();
     assert!(batch.ready.is_empty());

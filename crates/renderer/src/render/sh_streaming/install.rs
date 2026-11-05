@@ -32,7 +32,7 @@ pub(super) struct StagedInstall {
 impl ShResidencyState {
     pub(super) fn install(
         &mut self,
-        mut gpu: Option<&mut InstallGpu<'_>>,
+        gpu: Option<&mut InstallGpu<'_>>,
         prepared: &PreparedShCluster,
     ) -> Result<(), ShResidencyDrainError> {
         let cluster_id = prepared.chunk.cluster_id;
@@ -68,12 +68,7 @@ impl ShResidencyState {
         // or make a half cluster reachable on a later drain, and rollback
         // touches only what this cluster changed.
         let mut journal = InstallJournal::default();
-        let staged = match self.stage_install(
-            &mut journal,
-            gpu.as_deref_mut(),
-            prepared,
-            has_dense_payload,
-        ) {
+        let staged = match self.stage_install(&mut journal, prepared, has_dense_payload) {
             Ok(staged) => staged,
             Err(error) => {
                 self.roll_back(journal);
@@ -88,9 +83,7 @@ impl ShResidencyState {
                 self.stage_uploads(&mut uploads, prepared, has_dense_payload, &staged)
             {
                 // Discarding the batch keeps each GPU word equal to its
-                // mirror: a rolled-back install uploads nothing. GPU growth
-                // performed while staging is not undone; a larger pool with
-                // the same live contents is still a valid pool.
+                // mirror: a rolled-back install uploads nothing.
                 self.roll_back(journal);
                 return Err(error);
             }
@@ -123,13 +116,12 @@ impl ShResidencyState {
     }
 
     /// The fallible half of an install: reference and allocate storage,
-    /// rewrite compose words, mark rows, grow GPU capacity, and validate every
-    /// upload without queueing it. Every CPU mirror mutation goes through
-    /// `journal`; the caller rolls it back on error.
+    /// rewrite compose words, mark rows, check the pools hold it, and validate
+    /// every upload without queueing it. Every CPU mirror mutation goes
+    /// through `journal`; the caller rolls it back on error.
     pub(super) fn stage_install(
         &mut self,
         journal: &mut InstallJournal,
-        mut gpu: Option<&mut InstallGpu<'_>>,
         prepared: &PreparedShCluster,
         has_dense_payload: bool,
     ) -> Result<StagedInstall, ShResidencyDrainError> {
@@ -191,10 +183,9 @@ impl ShResidencyState {
         let required_indirect_epoch = written_indirect_epoch.max(pending_indirect_epoch);
         let required_direct_epoch = written_direct_epoch.max(pending_direct_epoch);
         // Fatal metadata, wire and address contracts must win over a
-        // recoverable growth verdict. All CPU reservations above roll back
-        // together; dense growth still commits before a sparse refusal.
-        self.ensure_dense_capacity(gpu.as_deref_mut())?;
-        self.ensure_sparse_capacity(gpu)?;
+        // recoverable capacity verdict. All CPU reservations above roll back
+        // together, and what happens next belongs to `pool_admission`.
+        self.check_pool_room()?;
         self.validate_staged_on_gpu(
             prepared,
             has_dense_payload,
@@ -413,38 +404,6 @@ impl ShResidencyState {
         Ok(true)
     }
 
-    fn ensure_dense_capacity(
-        &mut self,
-        gpu: Option<&mut InstallGpu<'_>>,
-    ) -> Result<(), ShResidencyDrainError> {
-        // Grow the fixed active atlas before any upload can address the new
-        // ranges. `FirstFitRanges::capacity` is only an address high-water
-        // and may exceed the GPU shape after fragmentation; never let that
-        // turn into an out-of-bounds texture upload. The ranges above are
-        // provisional: a refused growth rolls them back with the install.
-        let probe_occlusion_enabled = self.probe_occlusion_enabled();
-        if let Some(pools) = self.gpu.as_mut()
-            && self.dense_slots.capacity > pools.shape.slots
-        {
-            let gpu = gpu.ok_or(ShResidencyDrainError::GpuCapacity {
-                reason: "streamed dense growth requires device handles",
-            })?;
-            pools.grow_dense(
-                self.dense_slots.capacity,
-                gpu::DenseGrowthInputs {
-                    device: gpu.device,
-                    queue: gpu.queue,
-                    base: &self.base_metadata,
-                    sources: &self.source_metadata,
-                    probe_occlusion_enabled,
-                    sh: gpu.sh,
-                    selection_weights: gpu.selection_weights,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
     /// Start an upload batch with room for about `reserve` bytes.
     pub(super) fn begin_uploads(&mut self, reserve: usize) -> StagedUploads {
         self.gpu.as_mut().map_or_else(
@@ -465,7 +424,7 @@ impl ShResidencyState {
         }
     }
 
-    fn probe_occlusion_enabled(&self) -> bool {
+    pub(super) fn probe_occlusion_enabled(&self) -> bool {
         self.gpu
             .as_ref()
             .is_some_and(StreamingGpuPools::probe_occlusion_enabled)

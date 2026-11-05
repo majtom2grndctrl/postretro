@@ -47,6 +47,7 @@ impl ShResidencyState {
             dense_node_local_slot,
             node_layouts,
             dense_spans,
+            cluster_storage,
             sparse_capacity_floors,
             sparse_pool_rows,
             row_capacity,
@@ -74,6 +75,7 @@ impl ShResidencyState {
             dense_node_local_slot,
             node_layouts,
             dense_spans,
+            cluster_storage,
             node_slots: BTreeMap::new(),
             storage_refs: StorageRefs::with_probe_count(base.probes.len()),
             sparse_capacity_floors,
@@ -147,6 +149,7 @@ impl ShResidencyState {
                     &self.dense_node_local_slot,
                     &self.node_layouts,
                     &self.dense_spans,
+                    &self.cluster_storage,
                 ),
                 (
                     &self.sparse_capacity_floors,
@@ -281,6 +284,7 @@ pub(in crate::render) fn residency_plan_summary(plan: &ShResidencyPlan) -> Strin
                 &plan.dense_node_local_slot,
                 &plan.node_layouts,
                 &plan.dense_spans,
+                &plan.cluster_storage,
             ),
             (
                 &plan.sparse_capacity_floors,

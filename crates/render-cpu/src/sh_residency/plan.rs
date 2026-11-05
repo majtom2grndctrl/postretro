@@ -6,6 +6,7 @@
 // See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_loader::{
@@ -34,6 +35,16 @@ pub struct InitialDenseSlots {
     pub whole: u32,
 }
 
+/// What one cluster names in id 49, as its own ranges: enough to price a
+/// target whose chunk is not in hand.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClusterStorage {
+    /// Dense probe ranges.
+    pub dense: Vec<Range<u32>>,
+    /// Each sparse family's rows, as `(section_id, rows)`.
+    pub sparse: Vec<(u32, Range<u32>)>,
+}
+
 /// Everything the renderer's residency state derives from a streamed level
 /// before any GPU object exists. Every check here can fail on level data, so
 /// a plan error is a load failure, raised before the install.
@@ -46,6 +57,8 @@ pub struct ShResidencyPlan {
     pub node_layouts: NodeMap<StoredNodeLayout>,
     /// Which clusters name each dense probe, for residency diagnostics.
     pub dense_spans: DenseSpans,
+    /// Each cluster's named storage, indexed by cluster.
+    pub cluster_storage: Vec<ClusterStorage>,
     pub sparse_capacity_floors: SparseCapacityFloors,
     /// Each present sparse source's affinity row count, keyed by section id:
     /// the CPU sparse pools' row spaces.
@@ -153,6 +166,7 @@ pub fn plan_sh_residency_parts(
         dense_node_local_slot: dense_layout.local_slots,
         node_layouts: dense_layout.layouts,
         dense_spans: demand.dense_spans,
+        cluster_storage: demand.cluster_storage,
         sparse_capacity_floors,
         sparse_pool_rows,
         row_capacity,
@@ -170,6 +184,7 @@ struct ClusterDemand {
     /// Each cluster's `(section_id, row)` pairs, indexed by cluster.
     cluster_sparse_rows: Vec<BTreeSet<(u32, u32)>>,
     dense_spans: DenseSpans,
+    cluster_storage: Vec<ClusterStorage>,
     /// The first node-bearing probe no cluster names, if any.
     first_uncovered_probe: Option<u32>,
 }
@@ -182,6 +197,7 @@ fn walk_cluster_demand(
     let mut covered = vec![false; dense_layout.nodes.len()];
     let mut spans = Vec::new();
     let mut cluster_sparse_rows = vec![BTreeSet::new(); directory.clusters.len()];
+    let mut cluster_storage = vec![ClusterStorage::default(); directory.clusters.len()];
     let mut largest_cluster_slots = 1u32;
     let mut cluster_nodes = BTreeSet::new();
     for (cluster_index, cluster) in directory.clusters.iter().enumerate() {
@@ -224,6 +240,9 @@ fn walk_cluster_demand(
                         end: range_end,
                         cluster: cluster_id,
                     });
+                    cluster_storage[cluster_index]
+                        .dense
+                        .push(range.start..range_end);
                     // Consecutive probes mostly repeat the previous node.
                     let mut last = None;
                     for &node in dense_layout.nodes[probes].iter().flatten() {
@@ -241,6 +260,9 @@ fn walk_cluster_demand(
                 {
                     cluster_sparse_rows[cluster_index]
                         .extend((range.start..range_end).map(|row| (resource.section_id, row)));
+                    cluster_storage[cluster_index]
+                        .sparse
+                        .push((resource.section_id, range.start..range_end));
                 }
                 _ => {}
             }
@@ -270,6 +292,7 @@ fn walk_cluster_demand(
         largest_cluster_slots,
         cluster_sparse_rows,
         dense_spans: DenseSpans::new(spans),
+        cluster_storage,
         first_uncovered_probe,
     })
 }

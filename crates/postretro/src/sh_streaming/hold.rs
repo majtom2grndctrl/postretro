@@ -90,12 +90,14 @@ impl ShResidencyController {
         } else {
             self.visible_clusters(target_cells)?
         };
+        self.drawn_outside_targets.clear();
         if !self.full_demand {
             if std::ptr::eq(target_cells, drawn_cells) {
                 self.record_visible_misses(&clusters)?;
             } else {
                 let drawn = self.visible_clusters(drawn_cells)?;
                 self.record_visible_misses(&drawn)?;
+                self.drawn_outside_targets = drawn;
             }
         }
         if held {

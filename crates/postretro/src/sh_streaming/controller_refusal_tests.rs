@@ -1,9 +1,6 @@
 //! Device-limit outcomes at the renderer/controller seam.
 
-use super::tests::{
-    controller, controller_with_nominal_budget, hinted_topology, mark_sampleable, prepared,
-    topology,
-};
+use super::tests::{controller, hinted_topology, mark_sampleable, prepared, topology};
 use super::*;
 use crate::lightmap_streaming::test_fixtures::{PORTAL, residency_set};
 use crate::sh_streaming::generation::FixedGenerationClock;
@@ -13,11 +10,7 @@ use crate::streaming::cell_demand::CellDemand;
 use postretro_visibility::VisibleCells;
 
 fn independent(count: usize) -> ShResidencyController {
-    controller(topology(
-        (0..count as u32).collect(),
-        vec![vec![]; count],
-        vec![1; count],
-    ))
+    controller(topology((0..count as u32).collect(), vec![vec![]; count]))
 }
 
 fn view(controller: &mut ShResidencyController, visible: &[u32], now: f64) {
@@ -90,7 +83,7 @@ fn assert_ledger(controller: &ShResidencyController) {
         .map(|r| r.byte_charge)
         .sum::<u64>()
         + controller.in_drain.values().sum::<u64>();
-    assert_eq!(controller.accounting().cpu.ready.current_bytes, bytes);
+    assert_eq!(controller.cpu().ready.current_bytes, bytes);
 }
 
 fn assert_bucket_total(controller: &ShResidencyController) {
@@ -131,7 +124,7 @@ fn refusal_releases_ready_charge_and_permit_once_without_changing_other_work() {
     assert_eq!(c.state(2), Some(ClusterResidencyState::Ready));
     assert_eq!(c.state(3), Some(ClusterResidencyState::Queued));
     assert_eq!(c.permits_in_use(), 2);
-    assert_eq!(c.accounting().cpu.ready.current_bytes, 4);
+    assert_eq!(c.cpu().ready.current_bytes, 4);
     assert_ledger(&c);
     let before = c.report_snapshot();
     assert!(
@@ -202,7 +195,7 @@ fn refusal_accounting_underflow_rejects_the_whole_outcome_before_eviction() {
     ready_requested(&mut c, 0);
     let batch = c.take_async_drain_batch().unwrap();
     assert_eq!(batch.evictions, vec![1]);
-    c.accounting.cpu.ready.current_bytes = 0;
+    c.cpu.ready.current_bytes = 0;
     let before = c.report_snapshot();
     assert!(matches!(
         c.apply_drain_outcome(ShDrainOutcome {
@@ -271,7 +264,6 @@ fn refused_optional_seam_target_does_not_hold_settling() {
     let mut c = controller(hinted_topology(
         vec![0, 1],
         vec![vec![]; 2],
-        vec![1; 2],
         vec![SeamPortalEndpoint {
             portal_id: 0,
             front_cluster_id: 0,
@@ -316,7 +308,6 @@ fn refusal_read_retry_sequences_preserve_the_lifetime_read_budget_and_warning() 
         let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
         let mut c = ShResidencyController::with_clock(
             Arc::clone(&manifest),
-            ShGpuBudgetInputs::default(),
             hints,
             &FixedGenerationClock::new(1),
         )
@@ -370,7 +361,7 @@ fn refusal_blocks_only_the_refused_cluster_until_it_leaves_and_returns() {
     for now in [0.1, 1.0, 3.0] {
         view(&mut c, &[0, 1], now);
         assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
-        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+        assert_eq!(c.cpu().ready.current_bytes, 0);
     }
     assert_eq!(
         c.take_next_request().unwrap().unwrap().cluster_id,
@@ -538,7 +529,7 @@ fn refusal_preflight_rejects_the_whole_outcome_before_evictions_and_other_change
         if corrupt_permits {
             c.permits_in_use = 0;
         } else {
-            c.accounting.cpu.ready.current_bytes = 0;
+            c.cpu.ready.current_bytes = 0;
         }
         let before = c.report_snapshot();
         let in_drain = c.in_drain.clone();
@@ -557,12 +548,12 @@ fn refusal_preflight_rejects_the_whole_outcome_before_evictions_and_other_change
         assert!(c.states[0].failure.is_none());
 
         c.permits_in_use = 3;
-        c.accounting.cpu.ready.current_bytes = 4;
+        c.cpu.ready.current_bytes = 4;
         c.apply_drain_outcome(outcome()).unwrap();
         assert_eq!(c.state(5), Some(ClusterResidencyState::Absent));
         assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
         assert_eq!(c.permits_in_use(), 2, "the old reads keep their permits");
-        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+        assert_eq!(c.cpu().ready.current_bytes, 0);
         assert_ledger(&c);
     }
 }
@@ -591,7 +582,7 @@ fn two_refusals_in_one_outcome_leave_accepted_and_resident_work_alone() {
     assert_eq!(c.state(0), Some(ClusterResidencyState::Sampleable));
     assert_eq!(c.state(3), Some(ClusterResidencyState::InstalledUncomposed));
     assert_eq!(c.permits_in_use(), 0);
-    assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
+    assert_eq!(c.cpu().ready.current_bytes, 0);
     assert_ledger(&c);
 }
 
@@ -725,18 +716,14 @@ fn later_eviction_does_not_wake_targeted_refusal_and_refusal_does_not_request_ev
 }
 
 #[test]
-fn refusal_does_not_evict_pin_lead_visible_or_optional_residents_when_floor_covers_targets() {
-    let mut c = controller_with_nominal_budget(
-        hinted_topology(
-            vec![0, 1, 2, 3, 4, 5],
-            vec![vec![]; 6],
-            vec![1; 6],
-            vec![],
-            BTreeSet::from([1]),
-            vec![],
-        ),
-        6,
-    );
+fn refusal_evicts_no_pin_lead_visible_or_optional_resident_while_nothing_mandatory_is_ready() {
+    let mut c = controller(hinted_topology(
+        vec![0, 1, 2, 3, 4, 5],
+        vec![vec![]; 6],
+        vec![],
+        BTreeSet::from([1]),
+        vec![],
+    ));
     let set = residency_set(6, &[(0, 2, 4), (0, 4, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
     let visible = VisibleCells::Culled(vec![0, 3, 5]);
@@ -750,35 +737,30 @@ fn refusal_does_not_evict_pin_lead_visible_or_optional_residents_when_floor_cove
         c.update_targets(&visible, Some(stage.frame(&set, 0, PORTAL, &visible)), now)
             .unwrap();
         let batch = c.take_async_drain_batch().unwrap();
-        assert!(batch.evictions.is_empty());
+        assert!(batch.evictions.is_empty() && batch.victims.is_empty());
         assert!(batch.ready.is_empty());
         c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
         for id in [1, 2, 3, 4] {
             assert_eq!(c.state(id), Some(ClusterResidencyState::Sampleable));
         }
-        assert_eq!(c.non_evictable_overshoot_bytes(), 0);
     }
 }
 
 #[test]
-fn optional_refusal_is_skipped_only_by_trim_and_does_not_inflate_protected_overshoot() {
-    let mut c = controller_with_nominal_budget(
-        hinted_topology(
-            vec![0, 1],
-            vec![vec![]; 2],
-            vec![8; 2],
-            vec![SeamPortalEndpoint {
-                portal_id: 0,
-                front_cluster_id: 0,
-                back_cluster_id: 1,
-            }],
-            BTreeSet::new(),
-            vec![],
-        ),
-        8,
-    );
+fn a_device_refused_optional_is_no_victim_and_keeps_its_target() {
+    let mut c = controller(hinted_topology(
+        vec![0, 1, 2],
+        vec![vec![]; 3],
+        vec![SeamPortalEndpoint {
+            portal_id: 0,
+            front_cluster_id: 0,
+            back_cluster_id: 1,
+        }],
+        BTreeSet::new(),
+        vec![],
+    ));
     view(&mut c, &[0], 0.0);
-    // Read optional 1 while 0 is in flight, so the initial floor permits its install attempt.
+    // Read optional 1 while 0 is in flight, so its install attempt happens.
     let requests = c.take_requests().unwrap();
     assert_eq!(requests.len(), 2);
     ready_requested(&mut c, 1);
@@ -792,22 +774,16 @@ fn optional_refusal_is_skipped_only_by_trim_and_does_not_inflate_protected_overs
     })
     .unwrap();
     c.promote_composed_clusters();
-    // Lower the policy floor to force trimming even though the refused optional has no occupancy.
-    c.accounting = ShResidencyAccounting::new(ShGpuBudgetInputs {
-        renderer_effective_floor_bytes: Some(4),
-        ..ShGpuBudgetInputs::default()
-    })
-    .unwrap();
-    c.accounting.add_logical(8).unwrap();
+
+    // Mandatory work reaches a full pool: a cluster holding nothing can free
+    // nothing, and it must not lose the target its retry waits on.
+    view(&mut c, &[0, 2], 0.1);
+    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 2);
+    ready_requested(&mut c, 2);
     let batch = c.take_async_drain_batch().unwrap();
-    assert!(batch.evictions.is_empty());
+    assert!(batch.evictions.is_empty() && batch.victims.is_empty());
     assert!(c.is_targeted(1));
     assert!(!c.states[1].suppressed);
-    assert_eq!(
-        c.non_evictable_overshoot_bytes(),
-        4,
-        "only visible cluster 0 contributes"
-    );
 }
 
 #[test]
@@ -815,7 +791,6 @@ fn early_seam_reentry_never_wakes_on_time_alone_and_later_reentry_does() {
     let mut c = controller(hinted_topology(
         vec![0, 1, 2],
         vec![vec![]; 3],
-        vec![1; 3],
         vec![SeamPortalEndpoint {
             portal_id: 0,
             front_cluster_id: 1,
@@ -854,7 +829,6 @@ fn rapid_seam_flicker_reads_refused_cluster_at_most_once_per_hysteresis_window()
     let mut c = controller(hinted_topology(
         vec![0, 1, 2],
         vec![vec![]; 3],
-        vec![1; 3],
         vec![SeamPortalEndpoint {
             portal_id: 0,
             front_cluster_id: 1,
@@ -896,21 +870,14 @@ fn rapid_seam_flicker_reads_refused_cluster_at_most_once_per_hysteresis_window()
 }
 
 #[test]
-fn rapid_horizon_churn_under_pressure_keeps_targeted_refusal_failed() {
-    let mut c =
-        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 24);
+fn rapid_horizon_churn_keeps_targeted_refusal_failed() {
+    let mut c = controller(topology(vec![0, 1, 2], vec![vec![]; 3]));
     view(&mut c, &[1, 2], 0.0);
     for id in [1, 2] {
         mark_sampleable(&mut c, id);
     }
     view(&mut c, &[0, 1], 0.0);
     refusal(&mut c, 0);
-    c.accounting = ShResidencyAccounting::new(ShGpuBudgetInputs {
-        renderer_effective_floor_bytes: Some(4),
-        ..ShGpuBudgetInputs::default()
-    })
-    .unwrap();
-    c.accounting.add_logical(16).unwrap();
     for tick in 1..=400 {
         let now = f64::from(tick) / 60.0;
         view(&mut c, &[0, if tick % 2 == 0 { 1 } else { 2 }], now);
@@ -925,9 +892,8 @@ fn rapid_horizon_churn_under_pressure_keeps_targeted_refusal_failed() {
 }
 
 #[test]
-fn pressure_on_band_work_cannot_churn_a_refused_band_cluster() {
-    let mut c =
-        controller_with_nominal_budget(topology(vec![0, 1, 2, 3], vec![vec![]; 4], vec![8; 4]), 32);
+fn pool_refusals_of_band_work_cannot_churn_a_refused_band_cluster() {
+    let mut c = controller(topology(vec![0, 1, 2, 3], vec![vec![]; 4]));
     view(&mut c, &[2, 3], 0.0);
     for id in [2, 3] {
         mark_sampleable(&mut c, id);
@@ -945,34 +911,38 @@ fn pressure_on_band_work_cannot_churn_a_refused_band_cluster() {
     };
     update(&mut c, 2, 0.0);
     refusal(&mut c, 0);
-    c.accounting = ShResidencyAccounting::new(ShGpuBudgetInputs {
-        renderer_effective_floor_bytes: Some(4),
-        ..ShGpuBudgetInputs::default()
-    })
-    .unwrap();
-    c.accounting.add_logical(16).unwrap();
+    let mut pool_refusals = 0;
     for tick in 1..=400 {
         let now = f64::from(tick) / 60.0;
-        // Each pair has a stable horizon frame in which pressure suppresses
-        // the band, followed by a changed horizon that restores it.
+        // Each pair has a stable horizon frame in which the band stays out,
+        // followed by a changed horizon that restores it to be refused again.
         let camera = if (tick / 2) % 2 == 0 { 2 } else { 3 };
         update(&mut c, camera, now);
         let batch = c.take_async_drain_batch().unwrap();
         assert!(batch.evictions.is_empty());
         c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
-        assert!(c.take_requests().unwrap().is_empty());
+        for request in c.take_requests().unwrap() {
+            assert_eq!(request.cluster_id, 1);
+            ready_requested(&mut c, 1);
+            let batch = c.take_async_drain_batch().unwrap();
+            assert_eq!(batch.ready.len(), 1);
+            c.apply_drain_outcome(ShDrainOutcome {
+                pool_refused: vec![1],
+                ..ShDrainOutcome::default()
+            })
+            .unwrap();
+            pool_refusals += 1;
+        }
         assert_eq!(c.state(1), Some(ClusterResidencyState::Absent));
         assert_eq!(c.permits_in_use(), 0);
-        assert_eq!(c.accounting().cpu.ready.current_bytes, 0);
-        // Trim skips the refused cluster, so it stays targeted and never
+        assert_eq!(c.cpu().ready.current_bytes, 0);
+        // Yielding skips the refused cluster, so it stays targeted and never
         // earns the leave-and-return retry.
         assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));
         assert!(c.is_targeted(0));
-        assert!(
-            !c.states[0].suppressed,
-            "trim must skip the refused cluster"
-        );
+        assert!(!c.states[0].suppressed, "only a refused install yields");
     }
+    assert!(pool_refusals > 0);
     assert_eq!(c.counters().retries, 0);
 }
 
@@ -993,9 +963,8 @@ fn newly_visible_refused_cluster_counts_device_limited_before_it_reenters_the_ta
 }
 
 #[test]
-fn ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction() {
-    let mut c =
-        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 16);
+fn a_victim_evicted_in_a_refusal_drain_triggers_no_further_eviction() {
+    let mut c = controller(topology(vec![0, 1, 2], vec![vec![]; 3]));
     let set = residency_set(3, &[(2, 1, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
     let visible = VisibleCells::Culled(vec![0, 2]);
@@ -1008,9 +977,9 @@ fn ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction
     ready_requested(&mut c, 0);
     let batch = c.take_async_drain_batch().unwrap();
     assert_eq!(
-        batch.evictions,
+        batch.victims,
         vec![1],
-        "ordinary pressure sees Ready demand before refusal"
+        "the renderer evicts before it refuses"
     );
     assert_eq!(batch.ready.len(), 1);
     c.apply_drain_outcome(ShDrainOutcome {
@@ -1020,40 +989,39 @@ fn ordinary_pressure_eviction_in_refusal_drain_does_not_trigger_further_eviction
     })
     .unwrap();
     let later = c.take_async_drain_batch().unwrap();
-    assert!(later.evictions.is_empty());
+    assert!(later.evictions.is_empty() && later.victims.is_empty());
     assert!(later.ready.is_empty());
     assert_eq!(c.state(2), Some(ClusterResidencyState::Sampleable));
-    assert_eq!(c.accounting().logical_occupancy_bytes, 8);
     assert_ledger(&c);
 }
 
 #[test]
-fn lifting_suppression_without_a_horizon_change_does_not_retry_refusal() {
-    let mut c =
-        controller_with_nominal_budget(topology(vec![0, 1, 2], vec![vec![]; 3], vec![8; 3]), 32);
+fn a_horizon_change_lifting_suppression_does_not_retry_a_targeted_refusal() {
+    let mut c = controller(topology(vec![0, 1, 2, 3], vec![vec![]; 4]));
     mark_sampleable(&mut c, 2);
-    let set = residency_set(3, &[(2, 0, 24), (2, 1, 24)], 32);
+    let set = residency_set(4, &[(2, 0, 24), (2, 1, 24)], 32);
     let stage = CellDemand::new(set.max_lead);
-    let visible = VisibleCells::Culled(vec![2]);
-    let update = |c: &mut ShResidencyController, now| {
+    let update = |c: &mut ShResidencyController, drawn: &[u32], now| {
+        let visible = VisibleCells::Culled(drawn.to_vec());
         c.update_targets(&visible, Some(stage.frame(&set, 2, PORTAL, &visible)), now)
             .unwrap();
     };
-    update(&mut c, 0.0);
+    update(&mut c, &[2], 0.0);
     refusal(&mut c, 0);
-    c.update_gpu_charges(FixedGpuCharges {
-        fixed_metadata_bytes: 28,
-        ..FixedGpuCharges::default()
+    assert_eq!(c.take_next_request().unwrap().unwrap().cluster_id, 1);
+    ready_requested(&mut c, 1);
+    let batch = c.take_async_drain_batch().unwrap();
+    assert_eq!(batch.ready.len(), 1);
+    c.apply_drain_outcome(ShDrainOutcome {
+        pool_refused: vec![1],
+        ..ShDrainOutcome::default()
     })
     .unwrap();
-    let batch = c.take_async_drain_batch().unwrap();
-    assert!(batch.evictions.is_empty());
-    c.apply_drain_outcome(ShDrainOutcome::default()).unwrap();
     assert!(c.states[1].suppressed);
-    update(&mut c, 0.1);
+    update(&mut c, &[2], 0.1);
     assert!(!c.is_targeted(1));
-    c.update_gpu_charges(FixedGpuCharges::default()).unwrap();
-    update(&mut c, 3.0);
+    mark_sampleable(&mut c, 3);
+    update(&mut c, &[2, 3], 3.0);
     assert!(c.is_targeted(0));
     assert!(c.is_targeted(1));
     assert_eq!(c.state(0), Some(ClusterResidencyState::Failed));

@@ -21,7 +21,6 @@ pub(super) struct PlannerTopology {
     /// supplements normal adjacency for warm-up only; it is never fed back to
     /// the visibility traversal.
     pub(super) seam_portals: Vec<SeamPortalEndpoint>,
-    pub(super) requested_resident_bytes: Vec<u64>,
     /// Encoded id-50 chunk length per cluster: the bytes a read of it moves.
     pub(super) encoded_chunk_bytes: Vec<u64>,
     pub(super) chunk_hashes: Vec<[u8; 32]>,
@@ -136,12 +135,6 @@ impl PlannerTopology {
                 )));
             }
         }
-        let requested_resident_bytes = manifest
-            .payloads
-            .index
-            .iter()
-            .map(|entry| entry.requested_resident_bytes)
-            .collect();
         let encoded_chunk_bytes = manifest
             .payloads
             .index
@@ -158,7 +151,6 @@ impl PlannerTopology {
             hints,
             adjacency,
             seam_portals,
-            requested_resident_bytes,
             encoded_chunk_bytes,
             chunk_hashes,
         })

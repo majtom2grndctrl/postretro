@@ -267,13 +267,6 @@ fn cluster_tables_come_from_the_id50_index_whatever_probes_and_halos_say() {
                     let index = &manifest.payloads.index;
                     assert_eq!(topology.cluster_count(), cluster_count as usize);
                     assert_eq!(
-                        topology.requested_resident_bytes,
-                        index
-                            .iter()
-                            .map(|entry| entry.requested_resident_bytes)
-                            .collect::<Vec<_>>()
-                    );
-                    assert_eq!(
                         topology.chunk_hashes,
                         index.iter().map(|entry| entry.hash).collect::<Vec<_>>()
                     );

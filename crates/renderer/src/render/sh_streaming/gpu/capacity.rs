@@ -6,6 +6,124 @@
 
 use super::*;
 
+/// One sparse family's growth: the `(entries, tiles)` an install cannot go
+/// without, and what the mandatory tier would fill.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::render::sh_streaming) struct SparseGrowth {
+    pub(in crate::render::sh_streaming) needed: (u32, u32),
+    pub(in crate::render::sh_streaming) wanted: (u32, u32),
+}
+
+impl StreamingGpuPools {
+    pub(super) fn sparse_is_short(&self, section_id: u32, (entries, tiles): (u32, u32)) -> bool {
+        entries > self.sparse_entry_capacity(section_id)
+            || tiles > self.sparse_tile_f16_capacity(section_id)
+    }
+
+    /// `section_id`'s capacity after `growth`, or the device's refusal.
+    pub(super) fn sparse_growth_capacity(
+        &self,
+        section_id: u32,
+        growth: SparseGrowth,
+        sources: &ShStreamSourceMetadata,
+    ) -> Result<(u32, u32), ShResidencyDrainError> {
+        let source = match section_id {
+            27 => sources.indirect_delta.as_ref(),
+            DIRECT_DELTA_SECTION => sources.direct_delta.as_ref(),
+            ANIMATED_DIRECT_DELTA_SECTION => sources.animated_direct_delta.as_ref(),
+            _ => None,
+        }
+        .ok_or(ShResidencyDrainError::GpuCapacity {
+            reason: "streamed sparse growth names an absent family",
+        })?;
+        clamped_sparse_capacity(
+            (
+                self.sparse_entry_capacity(section_id),
+                self.sparse_tile_f16_capacity(section_id),
+            ),
+            growth,
+            checked_cell_count(source.affinity_dims)?,
+            &self.limits,
+        )
+    }
+
+    /// Which family's retiring generation holds back a need of `dense` slots
+    /// and `sparse` backing. Limits read first, so a need no wait could serve
+    /// is never parked behind one, and `None` also covers a need that fits.
+    pub(in crate::render::sh_streaming) fn retirement_wait(
+        &self,
+        dense: u32,
+        sparse: &SparseCapacityFloors,
+        sources: &ShStreamSourceMetadata,
+    ) -> Result<Option<&'static str>, ShResidencyDrainError> {
+        let mut waits_on = None;
+        if dense > self.shape.slots {
+            match self.shape.grown_for_slots(dense, dense, &self.limits) {
+                Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => return Ok(None),
+                grown => {
+                    grown?;
+                }
+            }
+            if self.retiring_dense.is_some() {
+                waits_on = Some("dense atlas");
+            }
+        }
+        for (&section_id, &needed) in sparse {
+            if !self.sparse_is_short(section_id, needed) {
+                continue;
+            }
+            let growth = SparseGrowth {
+                needed,
+                wanted: needed,
+            };
+            match self.sparse_growth_capacity(section_id, growth, sources) {
+                Err(ShResidencyDrainError::GpuDeviceLimit { .. }) => return Ok(None),
+                grown => {
+                    grown?;
+                }
+            }
+            if sparse_family_has_retiring_generation(
+                section_id,
+                self.retiring_indirect.is_some(),
+                self.retiring_direct_promotion.is_some(),
+                self.retiring_direct_animated.is_some(),
+            ) {
+                waits_on = waits_on.or(Some("sparse compose"));
+            }
+        }
+        Ok(waits_on)
+    }
+}
+
+/// The compaction table includes three immutable words per affinity row plus
+/// one word per entry. It therefore bounds entries before the entry buffer;
+/// tile backing is packed into whole u32 words. Both obey buffer and binding
+/// limits, including a lowered test grant.
+fn clamped_sparse_capacity(
+    current: (u32, u32),
+    growth: SparseGrowth,
+    rows: u32,
+    limits: &wgpu::Limits,
+) -> Result<(u32, u32), ShResidencyDrainError> {
+    let words = limits
+        .max_buffer_size
+        .min(limits.max_storage_buffer_binding_size)
+        / 4;
+    let prefix = u64::from(rows) * 3;
+    let entry_limit = words.saturating_sub(prefix).min(u64::from(u32::MAX)) as u32;
+    let tile_limit = words.saturating_mul(2).min(u64::from(u32::MAX - 1)) as u32;
+    let SparseGrowth { needed, wanted } = growth;
+    if needed.0 > entry_limit || needed.1 > tile_limit {
+        return Err(ShResidencyDrainError::GpuDeviceLimit {
+            reason: "streamed sparse pool needs backing beyond its tightest buffer limit",
+        });
+    }
+    Ok((
+        current.0.max(needed.0).max(wanted.0).min(entry_limit),
+        current.1.max(needed.1).max(wanted.1).min(tile_limit),
+    ))
+}
+
 pub(in crate::render::sh_streaming) fn initial_fixed_metadata_bytes(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,

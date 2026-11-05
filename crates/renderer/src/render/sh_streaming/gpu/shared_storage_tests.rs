@@ -46,7 +46,11 @@ fn read_words(
     words
 }
 
-fn gpu_compose_words(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<u32> {
+pub(super) fn gpu_compose_words(
+    f: &UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+) -> Vec<u32> {
     let pools = f.state.gpu.as_ref().unwrap();
     read_words(
         device,
@@ -56,7 +60,11 @@ fn gpu_compose_words(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQue
     )
 }
 
-fn gpu_sampled_words(f: &UploadOrderSh, device: &wgpu::Device, queue: &UploadQueue) -> Vec<u32> {
+pub(super) fn gpu_sampled_words(
+    f: &UploadOrderSh,
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+) -> Vec<u32> {
     let pools = f.state.gpu.as_ref().unwrap();
     read_words(
         device,
@@ -102,6 +110,7 @@ fn eviction_zeros_reach_the_queue_before_the_same_drains_install() {
                 target_add: vec![1],
                 target_remove: vec![0],
                 evictions: vec![0],
+                mandatory: vec![1],
                 ..Default::default()
             },
             &[1],

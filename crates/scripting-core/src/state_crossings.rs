@@ -34,8 +34,10 @@ enum Watcher {
         source_id: usize,
         program: BoundProgram<StoreScope>,
         scope: Box<StoreScope>,
+        // Boxed: the debug-only context would otherwise dwarf the threshold
+        // variant.
         #[cfg(debug_assertions)]
-        script_ctx: ScriptCtx,
+        script_ctx: Box<ScriptCtx>,
         fire: Vec<String>,
         both_edges: bool,
         previous: bool,
@@ -145,7 +147,7 @@ impl CrossingDetector {
                         program,
                         scope: Box::new(scope),
                         #[cfg(debug_assertions)]
-                        script_ctx: script_ctx.clone(),
+                        script_ctx: Box::new(script_ctx.clone()),
                         fire: crossing.fire.clone(),
                         both_edges: crossing.edge.as_deref() == Some("both"),
                         previous,

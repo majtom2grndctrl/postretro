@@ -1,12 +1,10 @@
-//! Dense-node closure, ownership, and probe-patch assembly for id-50 chunks.
+//! Dense-node closure and probe-patch assembly for id-50 chunks.
 //! See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::SectionId;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-};
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_LOGICAL_TILE_DIMENSION, ClusterShPayloadsBaseMetadata,
     ClusterShPayloadsSourceMetadata, ClusterShPayloadsValidationInputs,
@@ -49,7 +47,6 @@ pub(super) struct ChunkPlan<'a> {
     prefix: StoredBrickPrefixSum,
     pub(super) affinity_dimensions: [u32; 3],
     dense_nodes: Vec<BTreeSet<usize>>,
-    dense_node_owner: BTreeMap<usize, u32>,
     sparse_sources: SparseSources<'a>,
 }
 
@@ -81,20 +78,11 @@ impl<'a> ChunkPlan<'a> {
             }
             dense_nodes.push(nodes);
         }
-        let mut dense_node_owner = BTreeMap::new();
-        for (cluster_id, nodes) in dense_nodes.iter().enumerate() {
-            for node in nodes {
-                dense_node_owner
-                    .entry(*node)
-                    .or_insert(u32::try_from(cluster_id)?);
-            }
-        }
         Ok(Self {
             inputs,
             prefix,
             affinity_dimensions,
             dense_nodes,
-            dense_node_owner,
             sparse_sources,
         })
     }
@@ -125,12 +113,7 @@ impl<'a> ChunkPlan<'a> {
         for source in self.sparse_sources.iter() {
             let rows = affinity_indices(self.inputs.directory, cluster_id, source.section_id)?;
             if !rows.is_empty() {
-                sparse_chunks.push(encode_sparse_block(
-                    self.inputs.directory,
-                    cluster_id,
-                    source,
-                    &rows,
-                )?);
+                sparse_chunks.push(encode_sparse_block(source, &rows)?);
             }
         }
         let affinity_patch_count = sparse_chunks.iter().try_fold(0u32, |total, sparse| {
@@ -212,18 +195,17 @@ impl<'a> ChunkPlan<'a> {
         Ok(result)
     }
 
+    /// Bytes for every node and row this chunk touches. Clusters share
+    /// storage, so these figures do not sum to a map total.
     fn requested_resident_bytes(
         &self,
         cluster_id: u32,
         nodes: &BTreeSet<usize>,
     ) -> anyhow::Result<u64> {
-        let owned_tiles = nodes.iter().try_fold(0u64, |total, node| {
-            if self.dense_node_owner[node] != cluster_id {
-                return Ok(total);
-            }
+        let dense_tiles = nodes.iter().try_fold(0u64, |total, node| {
             total
                 .checked_add(u64::from(self.prefix.bricks[*node].stored_tile_count))
-                .ok_or_else(|| anyhow::anyhow!("id-50 owned dense tile count overflow"))
+                .ok_or_else(|| anyhow::anyhow!("id-50 dense tile count overflow"))
         })?;
         let mut total = 0u64;
         for source in self.inputs.sources {
@@ -233,7 +215,7 @@ impl<'a> ChunkPlan<'a> {
                 } => {
                     total = total
                         .checked_add(
-                            owned_tiles
+                            dense_tiles
                                 .checked_mul(isolated_tile_bytes(*irradiance_format)?)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!("id-50 dense resident bytes overflow")
@@ -244,15 +226,6 @@ impl<'a> ChunkPlan<'a> {
                 ClusterShPayloadsSourceMetadata::Sparse { section_id, .. } => {
                     let source = self.sparse_sources.find(*section_id)?;
                     for row in affinity_indices(self.inputs.directory, cluster_id, *section_id)? {
-                        if super::sparse::sparse_row_role(
-                            self.inputs.directory,
-                            cluster_id,
-                            *section_id,
-                            row,
-                        )? != ClusterRangeRole::Owned
-                        {
-                            continue;
-                        }
                         let entry_count = u64::from(source.entry_count(row)?);
                         let tile_bytes = u64::from(source.tile_count(row)?)
                             .checked_mul(entry_count)
@@ -357,10 +330,6 @@ fn dense_indices(directory: &ClusterDirectorySection, cluster_id: u32) -> anyhow
         if range.resource_index as usize != resource_index {
             continue;
         }
-        anyhow::ensure!(
-            range.role == ClusterRangeRole::Dense,
-            "id-50 id-34 range has an affinity role"
-        );
         let range_end = range
             .start
             .checked_add(range.count)

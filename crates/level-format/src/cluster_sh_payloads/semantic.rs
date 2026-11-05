@@ -1,4 +1,4 @@
-//! Metadata-derived closure, ownership, and index validation for id 50.
+//! Metadata-derived node closure and index validation for id 50.
 //! See: context/lib/build_pipeline.md §PRL section IDs.
 
 use super::*;
@@ -25,7 +25,6 @@ pub(super) struct ExpectedSparseRow {
     pub(super) global_affinity_index: u32,
     pub(super) first_entry: u32,
     pub(super) entry_count: u32,
-    pub(super) role: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +58,6 @@ pub(super) struct ValidationPlan<'a> {
     inputs: ClusterShPayloadsValidationInputs<'a>,
     prefix: StoredBrickPrefixSum,
     dense_nodes_per_cluster: Vec<BTreeSet<usize>>,
-    node_owner: BTreeMap<usize, u32>,
 }
 
 impl<'a> ValidationPlan<'a> {
@@ -84,17 +82,10 @@ impl<'a> ValidationPlan<'a> {
             }
             dense_nodes_per_cluster.push(nodes);
         }
-        let mut node_owner = BTreeMap::new();
-        for (cluster_id, nodes) in dense_nodes_per_cluster.iter().enumerate() {
-            for &node in nodes {
-                node_owner.entry(node).or_insert(cluster_id as u32);
-            }
-        }
         Ok(Self {
             inputs,
             prefix,
             dense_nodes_per_cluster,
-            node_owner,
         })
     }
 
@@ -195,8 +186,6 @@ impl<'a> ValidationPlan<'a> {
                     global_affinity_index: row,
                     first_entry: entry_cursor,
                     entry_count,
-                    role: sparse_row_role(self.inputs.directory, cluster_id, *section_id, row)?
-                        as u32,
                 });
                 let level = Level::from_u8(cell_levels[row as usize]).ok_or_else(|| {
                     ClusterShPayloadsError::SourceMismatch(format!(
@@ -322,8 +311,7 @@ impl<'a> ValidationPlan<'a> {
                 .and_then(|value| value.checked_add(decoded_bytes))
                 .ok_or(ClusterShPayloadsError::SizeOverflow("chunk payload bytes"))?
         };
-        let requested_resident_bytes =
-            self.requested_resident_bytes(cluster_id, nodes, &sparse_rows)?;
+        let requested_resident_bytes = self.requested_resident_bytes(nodes, &sparse_rows)?;
         Ok(ExpectedChunk {
             stored_tile_count,
             dense_patch_count,
@@ -337,27 +325,25 @@ impl<'a> ValidationPlan<'a> {
         })
     }
 
+    /// Bytes for every node and row this chunk touches. Clusters share
+    /// storage, so these figures do not sum to a map total.
     fn requested_resident_bytes(
         &self,
-        cluster_id: u32,
         nodes: &BTreeSet<usize>,
         sparse_rows: &BTreeMap<u32, Vec<u32>>,
     ) -> Result<u64, ClusterShPayloadsError> {
         let mut total = 0u64;
-        let owned_tiles = nodes.iter().try_fold(0u64, |count, node| {
-            if self.node_owner[node] != cluster_id {
-                return Ok(count);
-            }
+        let dense_tiles = nodes.iter().try_fold(0u64, |count, node| {
             count
                 .checked_add(u64::from(self.prefix.bricks[*node].stored_tile_count))
-                .ok_or(ClusterShPayloadsError::SizeOverflow("owned dense tiles"))
+                .ok_or(ClusterShPayloadsError::SizeOverflow("dense tile count"))
         })?;
         for source in self.inputs.sources {
             match source {
                 ClusterShPayloadsSourceMetadata::Dense { .. } => {
                     total = total
                         .checked_add(
-                            owned_tiles
+                            dense_tiles
                                 .checked_mul(isolated_tile_bytes(dense_format(*source)?)?)
                                 .ok_or(ClusterShPayloadsError::SizeOverflow(
                                     "dense resident bytes",
@@ -376,11 +362,6 @@ impl<'a> ValidationPlan<'a> {
                         .get(section_id)
                         .expect("all sparse rows recorded");
                     for &row in rows {
-                        if sparse_row_role(self.inputs.directory, cluster_id, *section_id, row)?
-                            != ClusterRangeRole::Owned
-                        {
-                            continue;
-                        }
                         let start = affinity_offsets[row as usize];
                         let end = affinity_offsets[row as usize + 1];
                         let entry_count = u64::from(end - start);

@@ -32,6 +32,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use glam::Vec3;
+use postretro_level_format::cell_residency_set::DEFAULT_LEAD_METRES;
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_format::lightmap_pool::place_all_resident;
 use postretro_level_loader::LevelWorld;
@@ -39,7 +40,7 @@ use postretro_level_loader::LevelWorld;
 use super::topology::PlannerTopology;
 use crate::lightmap_streaming::block_map::LevelBlockMap;
 use crate::lightmap_streaming::source::{LightmapBlockSource, ManifestBlockSource};
-use crate::streaming::cell_demand::{DEFAULT_LEAD_METRES, LEAD_UNITS_PER_METRE};
+use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::{ClusterHints, decode_level_hints};
 
 const PRL_ENV: &str = "POSTRETRO_SH_REACH_PRL";

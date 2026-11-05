@@ -7,7 +7,7 @@
 
 use super::*;
 use postretro_level_format::cluster_directory::{
-    ClusterRangeRecord, ClusterRangeRole, ClusterRecord, ClusterResourceRecord,
+    ClusterRangeRecord, ClusterRecord, ClusterResourceRecord,
 };
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShBlock;
 use postretro_level_format::sh_volume::OctahedralShProbe;
@@ -235,8 +235,6 @@ impl SyntheticMap {
                     resource_index: 0,
                     start,
                     count,
-                    owner_cluster_id: cluster_id,
-                    role: ClusterRangeRole::Dense,
                 });
             }
             let sparse_runs = runs(self.cluster_sparse_rows(cluster_id));
@@ -246,8 +244,6 @@ impl SyntheticMap {
                         resource_index,
                         start,
                         count,
-                        owner_cluster_id: cluster_id,
-                        role: ClusterRangeRole::Owned,
                     });
                 }
             }
@@ -272,6 +268,7 @@ impl SyntheticMap {
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         }
     }
 
@@ -451,13 +448,7 @@ impl SyntheticMap {
             let mut first_entry = 0;
             for &row in &rows {
                 let count = self.entry_count(section_id, row);
-                // The v2 role word: 1 on the row's home, 2 on a halo copy.
-                let role = if self.sparse_home(row) == cluster_id {
-                    1
-                } else {
-                    2
-                };
-                words.extend_from_slice(&[row, first_entry, count, role]);
+                words.extend_from_slice(&[row, first_entry, count]);
                 first_entry += count;
             }
             for index in 0..entry_total {

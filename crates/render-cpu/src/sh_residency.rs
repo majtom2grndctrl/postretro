@@ -9,18 +9,14 @@ use postretro_level_format::SectionId;
 
 mod dense_spans;
 mod node_map;
-mod ownership;
 mod plan;
 mod sample_region_tables;
 mod sample_regions;
 mod sparse_compose;
+mod stored_nodes;
 
 pub use dense_spans::{DenseSpan, DenseSpans};
 pub use node_map::NodeMap;
-pub use ownership::{
-    DenseNodeLayout, StoredNode, StoredNodeLayout, affinity_index, dense_index,
-    derive_dense_node_layout,
-};
 pub use plan::{
     ClusterStorage, InitialDenseSlots, ShResidencyPlan, plan_sh_residency, plan_sh_residency_parts,
 };
@@ -32,6 +28,10 @@ pub use sample_regions::{
 pub use sparse_compose::{
     SparseCapacityFloors, SparseComposeLayout, SparseComposeLayouts, compose_row_capacity,
     sparse_capacity_floors, sparse_compose_capacity, sparse_row_demand,
+};
+pub use stored_nodes::{
+    DenseNodeLayout, StoredNode, StoredNodeLayout, affinity_index, dense_index,
+    derive_dense_node_layout,
 };
 
 const INDIRECT_DELTA_ID: u32 = SectionId::DeltaShVolumes as u32;

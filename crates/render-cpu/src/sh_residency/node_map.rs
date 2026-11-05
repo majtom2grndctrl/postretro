@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::ops::Index;
 
-use super::ownership::StoredNode;
+use super::stored_nodes::StoredNode;
 
 #[derive(Debug)]
 pub struct NodeMap<V> {

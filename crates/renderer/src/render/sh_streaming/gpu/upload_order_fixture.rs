@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
+
 use super::*;
 use crate::render::sh_streaming::install_tests::SyntheticMap;
 use crate::render::sh_streaming::{ShDrainBatch, ShResidencyState};
@@ -144,9 +146,9 @@ impl UploadOrderSh {
                 let mut words = vec![rows, entries, entries * stride, 0];
                 let mut entry = 0;
                 for row in 0..rows {
-                    let offset = 16 + row as usize * 16;
+                    let offset = 16 + row as usize * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
                     let count = word(offset + 8);
-                    words.extend_from_slice(&[word(offset), entry, count, 1]);
+                    words.extend_from_slice(&[word(offset), entry, count]);
                     entry += count;
                 }
                 for entry in 0..entries {

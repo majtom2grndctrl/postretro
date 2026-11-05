@@ -1355,8 +1355,8 @@ mod tests {
         CELL_FLAG_DRAWABLE, CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord, CellsSection,
     };
     use postretro_level_format::cluster_directory::{
-        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRecord,
+        ClusterResourceDomain, ClusterResourceRecord,
     };
     use postretro_level_format::fog_volumes::{
         FogVolumeRecord, FogVolumesSection, MAX_FOG_VOLUMES,
@@ -1562,6 +1562,7 @@ mod tests {
             ranges: Vec::new(),
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         }
     }
 
@@ -1590,22 +1591,16 @@ mod tests {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 1,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 2,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
         ];
         directory.clusters[0].range_count = 3;

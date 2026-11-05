@@ -30,7 +30,7 @@ pub struct DenseNodeLayout {
 }
 
 /// Rebuild the v11 stored-node prefix from the always-resident id-34
-/// projection. The stream wire's local rank is closure-relative; installs use
+/// projection. The stream wire's local rank is chunk-relative; installs use
 /// this retained layout to recover the rank *within* the node before adding
 /// the live pool base.
 pub fn derive_dense_node_layout(

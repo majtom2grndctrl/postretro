@@ -21,9 +21,8 @@ use crate::{
     sh_volume::OctahedralShVolumeSection,
 };
 
-#[cfg(test)]
-#[path = "cluster_directory/affinity_ownership_tests.rs"]
-mod affinity_ownership_tests;
+#[path = "cluster_directory/bound.rs"]
+mod bound;
 #[path = "cluster_directory/canonical_partition.rs"]
 mod canonical_partition;
 #[path = "cluster_directory/coverage.rs"]
@@ -36,23 +35,29 @@ mod coverage_oracle;
 mod coverage_tests;
 #[path = "cluster_directory/probe_locate.rs"]
 mod probe_locate;
+#[cfg(test)]
+#[path = "cluster_directory/tests.rs"]
+mod tests;
 #[path = "cluster_directory/wire.rs"]
 mod wire;
 
+pub use bound::{
+    BOUND_ENTRY_HEADER_SIZE, BOUND_FAMILY_RECORD_SIZE, MAX_BOUND_ENTRIES, ShMandatoryBoundEntry,
+    ShMandatoryBoundFamily, WHOLE_MAP_WORST_CELL,
+};
 pub use canonical_partition::{CanonicalCellPartition, canonical_cell_partition};
 
-pub const CLUSTER_DIRECTORY_VERSION: u32 = 2;
-pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 2;
+pub const CLUSTER_DIRECTORY_VERSION: u32 = 3;
+pub const CLUSTER_DIRECTORY_CONTAINER_VERSION: u16 = 3;
 pub const HEADER_SIZE: usize = 40;
 pub const CLUSTER_RECORD_SIZE: usize = 48;
 pub const RESOURCE_RECORD_SIZE: usize = 24;
 pub const MEMBER_RECORD_SIZE: usize = 4;
-pub const RANGE_RECORD_SIZE: usize = 24;
+pub const RANGE_RECORD_SIZE: usize = 16;
 pub const CLUSTER_HINT_RECORD_SIZE: usize = 16;
 
 pub const CLUSTER_FLAG_INDIVISIBLE_OVERSIZE: u32 = 1;
 pub const CLUSTER_HINT_FLAG_PINNED: u32 = 1;
-pub const DENSE_OWNER_SENTINEL: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -68,27 +73,6 @@ impl ClusterResourceDomain {
             1 => Ok(Self::AffinityCell),
             _ => Err(ClusterDirectoryError::InvalidData(format!(
                 "resource domain {value} is unknown"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum ClusterRangeRole {
-    Dense = 0,
-    Owned = 1,
-    Halo = 2,
-}
-
-impl ClusterRangeRole {
-    fn parse(value: u32) -> Result<Self, ClusterDirectoryError> {
-        match value {
-            0 => Ok(Self::Dense),
-            1 => Ok(Self::Owned),
-            2 => Ok(Self::Halo),
-            _ => Err(ClusterDirectoryError::InvalidData(format!(
-                "range role {value} is unknown"
             ))),
         }
     }
@@ -118,8 +102,6 @@ pub struct ClusterRangeRecord {
     pub resource_index: u32,
     pub start: u32,
     pub count: u32,
-    pub owner_cluster_id: u32,
-    pub role: ClusterRangeRole,
 }
 
 /// Compiler-authored policy metadata for one canonical cluster.
@@ -146,11 +128,16 @@ pub struct ClusterDirectorySection {
     pub seam_portal_ids: Vec<u32>,
     /// Sorted, non-no-op policy records keyed by canonical cluster ID.
     pub cluster_hints: Vec<ClusterHintRecord>,
+    /// Worst mandatory SH demand of any camera cell, ascending by lead. Empty
+    /// on a level with no id 34.
+    pub mandatory_bound: Vec<ShMandatoryBoundEntry>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ClusterDirectoryError {
-    #[error("ClusterDirectoryVersionMismatch: version {version}, expected {expected}")]
+    #[error(
+        "ClusterDirectoryVersionMismatch: version {version}, expected {expected}; re-bake the level"
+    )]
     VersionMismatch { version: u32, expected: u32 },
     #[error("ClusterDirectorySeamPortalOrder: portal ids must be strictly ascending")]
     SeamPortalOrder,
@@ -192,6 +179,38 @@ pub enum ClusterDirectoryError {
     ClusterHintNoOp { hint: usize },
     #[error("ClusterDirectoryHintReserved: hint {hint}, reserved {reserved}")]
     ClusterHintReserved { hint: u32, reserved: u32 },
+    #[error("ClusterDirectoryBoundTruncated: {needed} tail bytes past {available} available")]
+    BoundTruncated { needed: usize, available: usize },
+    #[error("ClusterDirectoryBoundTrailingBytes: {extra} bytes past the last bound entry")]
+    BoundTrailingBytes { extra: usize },
+    #[error("ClusterDirectoryBoundCount: {count} entries, at most {limit}")]
+    BoundCount { count: u32, limit: u32 },
+    #[error("ClusterDirectoryBoundLeadOrder: leads must be strictly ascending")]
+    BoundLeadOrder,
+    #[error("ClusterDirectoryBoundCellOutOfRange: entry {entry}, cell {cell}, cell count {count}")]
+    BoundCellOutOfRange { entry: usize, cell: u32, count: u32 },
+    #[error(
+        "ClusterDirectoryBoundWholeMapShape: the whole-map marker needs one entry at lead 0; entry {entry}, lead {lead}, {entries} entries"
+    )]
+    BoundWholeMapShape {
+        entry: usize,
+        lead: u32,
+        entries: usize,
+    },
+    #[error(
+        "ClusterDirectoryBoundFamilyOrder: entry {entry} resource indices must be strictly ascending"
+    )]
+    BoundFamilyOrder { entry: usize },
+    #[error(
+        "ClusterDirectoryBoundFamilyResource: entry {entry}, resource {resource} is not an affinity-domain resource of {count}"
+    )]
+    BoundFamilyResource {
+        entry: usize,
+        resource: u32,
+        count: usize,
+    },
+    #[error("ClusterDirectoryBoundWithoutProbes: a directory with no id 34 stores no bound")]
+    BoundWithoutProbes,
     #[error("ClusterDirectoryCanonicalPartitionMismatch: {0}")]
     CanonicalPartitionMismatch(String),
     #[error("ClusterDirectoryInvalidData: {0}")]
@@ -347,13 +366,6 @@ pub fn populate_canonical_resource_ranges(
 
 impl ClusterDirectorySection {
     pub fn validate_structure(&self) -> Result<(), ClusterDirectoryError> {
-        self.validate_tables()?;
-        validate_affinity_ownership(self)
-    }
-
-    /// Every structural check except cross-cluster affinity ownership. The
-    /// ownership sweep relies on the per-cluster range invariants proven here.
-    fn validate_tables(&self) -> Result<(), ClusterDirectoryError> {
         if self.primitive_limit == 0 || self.cell_limit == 0 {
             return invalid("primitive_limit and cell_limit must be positive");
         }
@@ -371,9 +383,10 @@ impl ClusterDirectorySection {
                 || !self.ranges.is_empty()
                 || !self.seam_portal_ids.is_empty()
                 || !self.cluster_hints.is_empty()
+                || !self.mandatory_bound.is_empty()
             {
                 return invalid(
-                    "standalone empty directory must contain no clusters, members, resources, ranges, seams, or hints",
+                    "standalone empty directory must contain no clusters, members, resources, ranges, seams, hints, or bound entries",
                 );
             }
             return Ok(());
@@ -556,34 +569,6 @@ impl ClusterDirectorySection {
                         limit,
                     });
                 }
-                match resource.domain {
-                    ClusterResourceDomain::DenseProbe
-                        if range.role != ClusterRangeRole::Dense
-                            || range.owner_cluster_id != DENSE_OWNER_SENTINEL =>
-                    {
-                        return invalid(format!(
-                            "cluster {cluster_id} dense range has affinity ownership fields"
-                        ));
-                    }
-                    ClusterResourceDomain::AffinityCell
-                        if range.role == ClusterRangeRole::Dense
-                            || range.owner_cluster_id >= self.clusters.len() as u32 =>
-                    {
-                        return invalid(format!(
-                            "cluster {cluster_id} affinity range has invalid role/owner"
-                        ));
-                    }
-                    ClusterResourceDomain::AffinityCell
-                        if (range.role == ClusterRangeRole::Owned)
-                            != (range.owner_cluster_id == cluster_id as u32) =>
-                    {
-                        return invalid(format!(
-                            "cluster {cluster_id} affinity range role disagrees with owner {}",
-                            range.owner_cluster_id
-                        ));
-                    }
-                    _ => {}
-                }
                 if let Some(prev) = previous {
                     if (prev.resource_index, prev.start) >= (range.resource_index, range.start) {
                         return invalid(format!("cluster {cluster_id} ranges are not sorted"));
@@ -596,12 +581,9 @@ impl ClusterDirectorySection {
                         if prev_end > range.start {
                             return invalid(format!("cluster {cluster_id} ranges overlap"));
                         }
-                        if prev_end == range.start
-                            && prev.role == range.role
-                            && prev.owner_cluster_id == range.owner_cluster_id
-                        {
+                        if prev_end == range.start {
                             return invalid(format!(
-                                "cluster {cluster_id} adjacent compatible ranges were not coalesced"
+                                "cluster {cluster_id} adjacent ranges were not coalesced"
                             ));
                         }
                     }
@@ -609,7 +591,7 @@ impl ClusterDirectorySection {
                 previous = Some(range);
             }
         }
-        Ok(())
+        bound::validate_bound_entries(self)
     }
 
     pub fn validate_semantics(
@@ -842,6 +824,9 @@ fn validate_resources(
             return Err(ClusterDirectoryError::ResourceMismatch(
                 "directory without id 34 must not contain ranges".into(),
             ));
+        }
+        if !directory.mandatory_bound.is_empty() {
+            return Err(ClusterDirectoryError::BoundWithoutProbes);
         }
         return Ok(());
     };
@@ -1134,139 +1119,6 @@ fn sparse_offsets(inventory: ClusterDirectoryShInventory<'_>) -> Vec<&[u32]> {
     result
 }
 
-/// Every affinity cell referenced by any cluster must have one agreed owner,
-/// and that owner cluster must reference it exactly once as `Owned`.
-///
-/// Requires [`ClusterDirectorySection::validate_tables`] to have already
-/// passed: every range has a positive `count`; `start + count` fits within
-/// the resource's extent (no overflow); every affinity range's
-/// `owner_cluster_id` indexes `clusters`; and one cluster's ranges for one
-/// resource are sorted and non-overlapping. Given those, a cluster
-/// contributes at most one covering range to any interval, and the endpoint
-/// sweep below is exhaustive. This function does not re-check those
-/// invariants and is not safe to call on unvalidated input.
-///
-/// Collection is O(affinity resources × total ranges): every resource walks
-/// every cluster's range slice once. The sort and sweep are O(n log n) per
-/// resource, in that resource's own range count, instead of scanning every
-/// cluster once per elementary interval. Between consecutive endpoints the
-/// covering set is constant, so checking once per interval start is
-/// exhaustive. Errors name the first failing interval start, in resource
-/// order.
-fn validate_affinity_ownership(
-    directory: &ClusterDirectorySection,
-) -> Result<(), ClusterDirectoryError> {
-    struct Span {
-        start: u32,
-        end: u32,
-        owner: u32,
-        // Covering a cell as its own owner. Once every covering span agrees on
-        // one owner, these are exactly that owner's `Owned` references.
-        self_owned: bool,
-    }
-
-    let mut owner_counts = vec![0u32; directory.clusters.len()];
-    let mut spans: Vec<Span> = Vec::new();
-    let mut by_end: Vec<usize> = Vec::new();
-    for (resource_index, resource) in directory.resources.iter().enumerate() {
-        if resource.domain != ClusterResourceDomain::AffinityCell {
-            continue;
-        }
-        spans.clear();
-        for (cluster_id, cluster) in directory.clusters.iter().enumerate() {
-            let begin = cluster.range_start as usize;
-            let end = begin + cluster.range_count as usize;
-            for range in directory.ranges[begin..end]
-                .iter()
-                .filter(|range| range.resource_index as usize == resource_index)
-            {
-                debug_assert!(
-                    range.count > 0,
-                    "validate_tables guarantees every range has a positive count"
-                );
-                debug_assert!(
-                    range.start.checked_add(range.count).is_some(),
-                    "validate_tables guarantees start + count does not overflow"
-                );
-                spans.push(Span {
-                    start: range.start,
-                    end: range.start + range.count,
-                    owner: range.owner_cluster_id,
-                    self_owned: range.role == ClusterRangeRole::Owned
-                        && range.owner_cluster_id == cluster_id as u32,
-                });
-            }
-        }
-        spans.sort_unstable_by_key(|span| span.start);
-        by_end.clear();
-        by_end.extend(0..spans.len());
-        by_end.sort_unstable_by_key(|&index| spans[index].end);
-
-        let mut active = 0usize;
-        let mut distinct_owners = 0usize;
-        let mut self_owned = 0usize;
-        let (mut next_start, mut next_end) = (0usize, 0usize);
-        loop {
-            let pending_start = spans.get(next_start).map(|span| span.start);
-            let pending_end = by_end.get(next_end).map(|&index| spans[index].end);
-            let Some(position) = pending_start.into_iter().chain(pending_end).min() else {
-                break;
-            };
-            while let Some(&index) = by_end.get(next_end) {
-                let span = &spans[index];
-                if span.end != position {
-                    break;
-                }
-                let count = owner_slot(&mut owner_counts, span.owner);
-                *count -= 1;
-                if *count == 0 {
-                    distinct_owners -= 1;
-                }
-                active -= 1;
-                self_owned -= usize::from(span.self_owned);
-                next_end += 1;
-            }
-            while let Some(span) = spans.get(next_start) {
-                if span.start != position {
-                    break;
-                }
-                let count = owner_slot(&mut owner_counts, span.owner);
-                if *count == 0 {
-                    distinct_owners += 1;
-                }
-                *count += 1;
-                active += 1;
-                self_owned += usize::from(span.self_owned);
-                next_start += 1;
-            }
-            // No covering span: a gap between ranges, or the final endpoint.
-            if active == 0 {
-                continue;
-            }
-            if distinct_owners != 1 {
-                return invalid(format!(
-                    "resource {resource_index} affinity cell {position} has disagreeing owners"
-                ));
-            }
-            if self_owned != 1 {
-                return invalid(format!(
-                    "resource {resource_index} affinity cell {position} does not have exactly one covering owner"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-// `validate_tables` bounds every affinity range's `owner_cluster_id` by the cluster count (see `validate_affinity_ownership`'s precondition doc).
-fn owner_slot(owner_counts: &mut [u32], owner: u32) -> &mut u32 {
-    debug_assert!(
-        (owner as usize) < owner_counts.len(),
-        "affinity owner {owner} outside the cluster table"
-    );
-    &mut owner_counts[owner as usize]
-}
-
 fn locate_cell(
     locator: &CellLocatorSection,
     runtime_cell_count: u32,
@@ -1489,1225 +1341,4 @@ fn canonical_mismatch<T>(message: impl Into<String>) -> Result<T, ClusterDirecto
 }
 fn resource_mismatch<T>(message: impl Into<String>) -> Result<T, ClusterDirectoryError> {
     Err(ClusterDirectoryError::ResourceMismatch(message.into()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        animated_direct_sh_delta_volumes::ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION,
-        bvh::BvhLeaf,
-        cells::{CELL_FLAG_DRAWABLE, CellRecord},
-        delta_sh_volumes::AFFINITY_FACTOR,
-        portals::PortalRecord,
-        sh_volume::{OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe},
-    };
-
-    fn empty_directory() -> ClusterDirectorySection {
-        ClusterDirectorySection {
-            runtime_cell_count: 0,
-            primitive_limit: 64,
-            cell_limit: 16,
-            clusters: Vec::new(),
-            resources: Vec::new(),
-            members: Vec::new(),
-            ranges: Vec::new(),
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        }
-    }
-
-    fn one_cell_directory() -> ClusterDirectorySection {
-        ClusterDirectorySection {
-            runtime_cell_count: 1,
-            primitive_limit: 64,
-            cell_limit: 16,
-            clusters: vec![ClusterRecord {
-                bounds_min: [0.0, 0.0, 0.0],
-                bounds_max: [1.0, 1.0, 1.0],
-                member_start: 0,
-                member_count: 1,
-                range_start: 0,
-                range_count: 0,
-                primitive_count: 0,
-                flags: 0,
-            }],
-            resources: Vec::new(),
-            members: vec![0],
-            ranges: Vec::new(),
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        }
-    }
-
-    fn cells(count: usize) -> CellsSection {
-        CellsSection {
-            cells: (0..count)
-                .map(|index| CellRecord {
-                    bounds_min: [index as f32, 0.0, 0.0],
-                    bounds_max: [index as f32 + 1.0, 1.0, 1.0],
-                    flags: CELL_FLAG_DRAWABLE,
-                    face_start: 0,
-                    face_count: 0,
-                    portal_ref_start: 0,
-                    portal_ref_count: 0,
-                })
-                .collect(),
-            portal_refs: Vec::new(),
-        }
-    }
-
-    fn empty_bvh() -> BvhSection {
-        BvhSection {
-            nodes: Vec::new(),
-            leaves: Vec::new(),
-            root_node_index: 0,
-        }
-    }
-
-    fn base_volume(
-        dimensions: [u32; 3],
-        probes: Vec<OctahedralShProbe>,
-    ) -> OctahedralShVolumeSection {
-        OctahedralShVolumeSection {
-            grid_origin: [0.0; 3],
-            cell_size: [1.0; 3],
-            grid_dimensions: dimensions,
-            probe_stride: OCTAHEDRAL_PROBE_STRIDE,
-            tile_dimension: 6,
-            tile_border: 1,
-            atlas_dimensions: [0, 0],
-            layer_count: 0,
-            tiles_per_layer: 0,
-            atlas_tiles_per_row: 0,
-            probes,
-            irradiance_format: 1,
-            compact_atlas: Vec::new(),
-            animation_descriptors: Vec::new(),
-            slot_for_map_light: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn cluster_directory_empty_and_single_cluster_round_trip_exact_wire() {
-        let empty = empty_directory();
-        let bytes = empty.try_to_bytes().unwrap();
-        assert_eq!(bytes.len(), HEADER_SIZE);
-        assert_eq!(ClusterDirectorySection::from_bytes(&bytes).unwrap(), empty);
-
-        let single = one_cell_directory();
-        let bytes = single.try_to_bytes().unwrap();
-        assert_eq!(
-            bytes.len(),
-            HEADER_SIZE + CLUSTER_RECORD_SIZE + MEMBER_RECORD_SIZE
-        );
-        assert_eq!(ClusterDirectorySection::from_bytes(&bytes).unwrap(), single);
-    }
-
-    #[test]
-    fn cluster_directory_parser_rejects_v1_counts_length_and_unknown_values() {
-        let bytes = empty_directory().try_to_bytes().unwrap();
-        let mut bad = bytes.clone();
-        bad[0..4].copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&bad),
-            Err(ClusterDirectoryError::VersionMismatch { .. })
-        ));
-        let mut bad = bytes.clone();
-        bad[32..36].copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&bad),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        let mut bad = bytes;
-        bad.push(0);
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&bad),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-
-        let mut section = one_cell_directory();
-        section.resources.push(ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [1, 1, 1],
-        });
-        section.clusters[0].range_count = 1;
-        section.ranges.push(ClusterRangeRecord {
-            resource_index: 0,
-            start: 0,
-            count: 1,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
-        });
-        let mut bytes = section.try_to_bytes().unwrap();
-        let resource_offset = HEADER_SIZE + CLUSTER_RECORD_SIZE;
-        bytes[resource_offset + 4..resource_offset + 8].copy_from_slice(&9u32.to_le_bytes());
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&bytes),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_v2_appends_seams_and_cluster_hints_after_legacy_tables() {
-        let mut section = one_cell_directory();
-        section.clusters[0].primitive_count = 65;
-        section.clusters[0].flags = CLUSTER_FLAG_INDIVISIBLE_OVERSIZE;
-        section.seam_portal_ids = vec![1, 2];
-        section.cluster_hints = vec![ClusterHintRecord {
-            cluster_id: 0,
-            flags: CLUSTER_HINT_FLAG_PINNED,
-            priority: 3,
-        }];
-        let bytes = section.try_to_bytes().unwrap();
-        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().unwrap()), 1);
-        assert_eq!(
-            bytes.len(),
-            HEADER_SIZE
-                + CLUSTER_RECORD_SIZE
-                + MEMBER_RECORD_SIZE
-                + 2 * MEMBER_RECORD_SIZE
-                + CLUSTER_HINT_RECORD_SIZE
-        );
-        assert_eq!(
-            ClusterDirectorySection::from_bytes(&bytes).unwrap(),
-            section
-        );
-        assert_eq!(
-            ClusterDirectorySection::from_bytes(&bytes)
-                .unwrap()
-                .clusters[0]
-                .flags,
-            CLUSTER_FLAG_INDIVISIBLE_OVERSIZE
-        );
-
-        let seam_start = HEADER_SIZE + CLUSTER_RECORD_SIZE + MEMBER_RECORD_SIZE;
-        let mut malformed_order = bytes.clone();
-        malformed_order[seam_start + MEMBER_RECORD_SIZE..seam_start + 2 * MEMBER_RECORD_SIZE]
-            .copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&malformed_order),
-            Err(ClusterDirectoryError::SeamPortalOrder)
-        ));
-
-        let mut malformed = bytes;
-        let hint_reserved_offset = malformed.len() - 4;
-        malformed[hint_reserved_offset..].copy_from_slice(&1u32.to_le_bytes());
-        assert!(matches!(
-            ClusterDirectorySection::from_bytes(&malformed),
-            Err(ClusterDirectoryError::ClusterHintReserved { .. })
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_rejects_noncanonical_hint_records() {
-        let mut section = one_cell_directory();
-        section.seam_portal_ids = vec![1, 1];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::SeamPortalOrder)
-        ));
-
-        let mut section = one_cell_directory();
-        section.cluster_hints = vec![ClusterHintRecord {
-            cluster_id: 0,
-            flags: 0,
-            priority: 0,
-        }];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::ClusterHintNoOp { .. })
-        ));
-
-        let mut section = one_cell_directory();
-        section.cluster_hints = vec![ClusterHintRecord {
-            cluster_id: 0,
-            flags: 2,
-            priority: 0,
-        }];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::ClusterHintFlagsInvalid { .. })
-        ));
-
-        let mut section = one_cell_directory();
-        section.cluster_hints = vec![ClusterHintRecord {
-            cluster_id: 0,
-            flags: 0,
-            priority: 4,
-        }];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::ClusterHintPriorityOutOfRange { .. })
-        ));
-
-        let mut section = one_cell_directory();
-        section.cluster_hints = vec![ClusterHintRecord {
-            cluster_id: 1,
-            flags: CLUSTER_HINT_FLAG_PINNED,
-            priority: 0,
-        }];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::ClusterHintClusterOutOfRange { .. })
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_structure_rejects_membership_bounds_flags_order_and_grid_ranges() {
-        let mut section = one_cell_directory();
-        section.members[0] = 1;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::CellOutOfRange { .. })
-        ));
-
-        let mut section = one_cell_directory();
-        section.clusters[0].bounds_min[0] = f32::NAN;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        let mut section = one_cell_directory();
-        section.clusters[0].bounds_min[0] = -0.0;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        let mut section = one_cell_directory();
-        section.clusters[0].flags = 2;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-
-        let mut section = one_cell_directory();
-        section.resources.push(ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [2, 1, 1],
-        });
-        section.clusters[0].range_count = 1;
-        section.ranges.push(ClusterRangeRecord {
-            resource_index: 0,
-            start: u32::MAX,
-            count: 2,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
-        });
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::SizeOverflow(_))
-        ));
-
-        let mut section = one_cell_directory();
-        section.resources.push(ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [2, 1, 1],
-        });
-        section.clusters[0].range_count = 1;
-        section.ranges.push(ClusterRangeRecord {
-            resource_index: 0,
-            start: 1,
-            count: 2,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
-        });
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::GridRangeOutOfRange { .. })
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_structure_rejects_bad_range_order_overlap_coalescing_and_owner() {
-        let mut section = one_cell_directory();
-        section.resources.push(ClusterResourceRecord {
-            section_id: 27,
-            domain: ClusterResourceDomain::AffinityCell,
-            dimensions: [4, 1, 1],
-        });
-        section.clusters[0].range_count = 2;
-        section.ranges = vec![
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 0,
-                count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
-            },
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 1,
-                count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
-            },
-        ];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        section.ranges[1].start = 0;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        section.ranges.truncate(1);
-        section.clusters[0].range_count = 1;
-        section.ranges[0].role = ClusterRangeRole::Halo;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_structure_requires_one_affinity_owner_and_halo_agreement() {
-        let mut section = ClusterDirectorySection {
-            runtime_cell_count: 2,
-            primitive_limit: 4,
-            cell_limit: 1,
-            clusters: vec![
-                ClusterRecord {
-                    bounds_min: [0.0; 3],
-                    bounds_max: [1.0; 3],
-                    member_start: 0,
-                    member_count: 1,
-                    range_start: 0,
-                    range_count: 1,
-                    primitive_count: 0,
-                    flags: 0,
-                },
-                ClusterRecord {
-                    bounds_min: [1.0, 0.0, 0.0],
-                    bounds_max: [2.0, 1.0, 1.0],
-                    member_start: 1,
-                    member_count: 1,
-                    range_start: 1,
-                    range_count: 1,
-                    primitive_count: 0,
-                    flags: 0,
-                },
-            ],
-            resources: vec![ClusterResourceRecord {
-                section_id: 27,
-                domain: ClusterResourceDomain::AffinityCell,
-                dimensions: [1, 1, 1],
-            }],
-            members: vec![0, 1],
-            ranges: vec![
-                ClusterRangeRecord {
-                    resource_index: 0,
-                    start: 0,
-                    count: 1,
-                    owner_cluster_id: 0,
-                    role: ClusterRangeRole::Owned,
-                },
-                ClusterRangeRecord {
-                    resource_index: 0,
-                    start: 0,
-                    count: 1,
-                    owner_cluster_id: 0,
-                    role: ClusterRangeRole::Halo,
-                },
-            ],
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        };
-        section.validate_structure().unwrap();
-        section.ranges[1].owner_cluster_id = 1;
-        section.ranges[1].role = ClusterRangeRole::Owned;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_structure_rejects_membership_gap_and_duplicate() {
-        let mut section = ClusterDirectorySection {
-            runtime_cell_count: 2,
-            primitive_limit: 4,
-            cell_limit: 2,
-            clusters: vec![ClusterRecord {
-                bounds_min: [0.0; 3],
-                bounds_max: [1.0; 3],
-                member_start: 0,
-                member_count: 2,
-                range_start: 0,
-                range_count: 0,
-                primitive_count: 0,
-                flags: 0,
-            }],
-            resources: Vec::new(),
-            members: vec![0, 0],
-            ranges: Vec::new(),
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        };
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        section.members = vec![0];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_structure_rejects_budget_dimension_and_resource_order_violations() {
-        let mut section = one_cell_directory();
-        section.clusters[0].primitive_count = section.primitive_limit + 1;
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        section.clusters[0].flags = CLUSTER_FLAG_INDIVISIBLE_OVERSIZE;
-        section.validate_structure().unwrap();
-
-        section.resources = vec![ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [1, 0, 1],
-        }];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-        section.resources = vec![
-            ClusterResourceRecord {
-                section_id: 35,
-                domain: ClusterResourceDomain::DenseProbe,
-                dimensions: [0, 0, 0],
-            },
-            ClusterResourceRecord {
-                section_id: 34,
-                domain: ClusterResourceDomain::DenseProbe,
-                dimensions: [0, 0, 0],
-            },
-        ];
-        assert!(matches!(
-            section.validate_structure(),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_semantics_validate_partition_connectivity_bounds_and_bvh_counts() {
-        let cells = cells(2);
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: vec![PortalRecord {
-                vertex_start: 0,
-                vertex_count: 0,
-                front_leaf: 0,
-                back_leaf: 1,
-            }],
-        };
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let mut directory = ClusterDirectorySection {
-            runtime_cell_count: 2,
-            primitive_limit: 4,
-            cell_limit: 4,
-            clusters: vec![ClusterRecord {
-                bounds_min: [0.0, 0.0, 0.0],
-                bounds_max: [2.0, 1.0, 1.0],
-                member_start: 0,
-                member_count: 2,
-                range_start: 0,
-                range_count: 0,
-                primitive_count: 1,
-                flags: 0,
-            }],
-            resources: Vec::new(),
-            members: vec![0, 1],
-            ranges: Vec::new(),
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        };
-        let mut bvh = empty_bvh();
-        bvh.leaves.push(BvhLeaf {
-            aabb_min: [0.0; 3],
-            material_bucket_id: 0,
-            aabb_max: [1.0; 3],
-            index_offset: 0,
-            index_count: 3,
-            cell_id: 1,
-            chunk_range_start: 0,
-            chunk_range_count: 0,
-        });
-        let inputs = ClusterDirectoryValidationInputs {
-            cells: &cells,
-            portals: &portals,
-            bvh: &bvh,
-            cell_locator: &locator,
-            sh: ClusterDirectoryShInventory::default(),
-        };
-        directory.validate_semantics(inputs).unwrap();
-
-        let disconnected = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let inputs = ClusterDirectoryValidationInputs {
-            portals: &disconnected,
-            ..inputs
-        };
-        assert!(matches!(
-            directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::CanonicalPartitionMismatch(_))
-        ));
-        directory.clusters[0].bounds_max[0] = 3.0;
-        let inputs = ClusterDirectoryValidationInputs {
-            portals: &portals,
-            ..inputs
-        };
-        assert!(matches!(
-            directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::CanonicalPartitionMismatch(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_semantics_rejects_connected_noncanonical_greedy_membership() {
-        let cells = cells(3);
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: vec![
-                PortalRecord {
-                    vertex_start: 0,
-                    vertex_count: 0,
-                    front_leaf: 0,
-                    back_leaf: 1,
-                },
-                PortalRecord {
-                    vertex_start: 0,
-                    vertex_count: 0,
-                    front_leaf: 1,
-                    back_leaf: 2,
-                },
-            ],
-        };
-        let bvh = BvhSection {
-            nodes: Vec::new(),
-            leaves: (0..3)
-                .map(|cell_id| BvhLeaf {
-                    aabb_min: [cell_id as f32, 0.0, 0.0],
-                    material_bucket_id: 0,
-                    aabb_max: [cell_id as f32 + 1.0, 1.0, 1.0],
-                    index_offset: 0,
-                    index_count: 3,
-                    cell_id,
-                    chunk_range_start: 0,
-                    chunk_range_count: 0,
-                })
-                .collect(),
-            root_node_index: 0,
-        };
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        // Regression: [0], [1, 2] is connected and within both limits, but the
-        // pinned greedy rule emits [0, 1], [2].
-        let directory = ClusterDirectorySection {
-            runtime_cell_count: 3,
-            primitive_limit: 2,
-            cell_limit: 3,
-            clusters: vec![
-                ClusterRecord {
-                    bounds_min: [0.0, 0.0, 0.0],
-                    bounds_max: [1.0, 1.0, 1.0],
-                    member_start: 0,
-                    member_count: 1,
-                    range_start: 0,
-                    range_count: 0,
-                    primitive_count: 1,
-                    flags: 0,
-                },
-                ClusterRecord {
-                    bounds_min: [1.0, 0.0, 0.0],
-                    bounds_max: [3.0, 1.0, 1.0],
-                    member_start: 1,
-                    member_count: 2,
-                    range_start: 0,
-                    range_count: 0,
-                    primitive_count: 2,
-                    flags: 0,
-                },
-            ],
-            resources: Vec::new(),
-            members: vec![0, 1, 2],
-            ranges: Vec::new(),
-            seam_portal_ids: Vec::new(),
-            cluster_hints: Vec::new(),
-        };
-        directory.validate_structure().unwrap();
-
-        let error = directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory::default(),
-            })
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ClusterDirectoryError::CanonicalPartitionMismatch(_)
-        ));
-        assert!(error.to_string().contains("canonical greedy partition"));
-    }
-
-    #[test]
-    fn canonical_partition_cuts_a_seam_even_when_an_alternate_route_connects_its_cells() {
-        let cells = cells(3);
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: vec![
-                PortalRecord {
-                    vertex_start: 0,
-                    vertex_count: 0,
-                    front_leaf: 0,
-                    back_leaf: 1,
-                },
-                PortalRecord {
-                    vertex_start: 0,
-                    vertex_count: 0,
-                    front_leaf: 0,
-                    back_leaf: 2,
-                },
-                PortalRecord {
-                    vertex_start: 0,
-                    vertex_count: 0,
-                    front_leaf: 2,
-                    back_leaf: 1,
-                },
-            ],
-        };
-        let bvh = empty_bvh();
-        let no_hints = canonical_cell_partition(&cells, &portals, &bvh, 8, 3, &[]).unwrap();
-        assert_eq!(no_hints.members, vec![0, 1, 2]);
-        assert_eq!(no_hints.clusters.len(), 1);
-
-        let cut = canonical_cell_partition(&cells, &portals, &bvh, 8, 3, &[0]).unwrap();
-        assert_eq!(cut.members, vec![0, 2, 1]);
-        assert_eq!(
-            cut.clusters
-                .iter()
-                .map(|cluster| cluster.member_count)
-                .collect::<Vec<_>>(),
-            vec![2, 1]
-        );
-
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let cut_directory = ClusterDirectorySection {
-            runtime_cell_count: 3,
-            primitive_limit: 8,
-            cell_limit: 3,
-            clusters: cut.clusters,
-            resources: Vec::new(),
-            members: cut.members,
-            ranges: Vec::new(),
-            seam_portal_ids: vec![0],
-            cluster_hints: Vec::new(),
-        };
-        cut_directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory::default(),
-            })
-            .unwrap();
-
-        let mut out_of_range = cut_directory.clone();
-        out_of_range.seam_portal_ids = vec![3];
-        let error = out_of_range
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory::default(),
-            })
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ClusterDirectoryError::SeamPortalOutOfRange { .. }
-        ));
-
-        let mut same_cell_portals = portals.clone();
-        same_cell_portals.portals[0].back_leaf = 0;
-        let error = cut_directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &same_cell_portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory::default(),
-            })
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ClusterDirectoryError::SeamPortalSameCell { .. }
-        ));
-
-        let noncanonical = ClusterDirectorySection {
-            clusters: no_hints.clusters,
-            members: no_hints.members,
-            seam_portal_ids: vec![0],
-            ..cut_directory
-        };
-        let error = noncanonical
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory::default(),
-            })
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            ClusterDirectoryError::SeamPortalSameCluster { .. }
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_semantics_rejects_locator_terminal_cell_outside_runtime_count() {
-        let cells = cells(1);
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(1),
-            nodes: Vec::new(),
-        };
-        let mut probes = vec![OctahedralShProbe::default()];
-        probes[0].validity = 1;
-        let base = base_volume([1, 1, 1], probes);
-        let mut directory = one_cell_directory();
-        directory.resources = vec![ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [1, 1, 1],
-        }];
-        directory.clusters[0].range_count = 1;
-        directory.ranges = vec![ClusterRangeRecord {
-            resource_index: 0,
-            start: 0,
-            count: 1,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
-        }];
-
-        // Regression: malformed locator terminals previously indexed cell_to_cluster and panicked.
-        assert!(matches!(
-            directory.validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory {
-                    octahedral: Some(&base),
-                    ..Default::default()
-                },
-            }),
-            Err(ClusterDirectoryError::InvalidData(_))
-        ));
-    }
-
-    #[test]
-    fn cluster_directory_accepts_valid_empty_sparse_companion_with_nonzero_dimensions() {
-        let dims = [4, 4, 4];
-        let mut probes = vec![OctahedralShProbe::default(); 64];
-        probes[0].validity = 1;
-        let base = base_volume(dims, probes);
-        let sparse = AnimatedDirectShDeltaVolumesSection {
-            affinity_factor: AFFINITY_FACTOR,
-            affinity_dims: [1, 1, 1],
-            tile_dimension: 6,
-            tile_border: 1,
-            animation_descriptor_indices: Vec::new(),
-            valid_probe_masks: vec![0],
-            cell_levels: vec![0],
-            affinity_offsets: vec![0, 0],
-            affinity_lights: Vec::new(),
-            delta_subblocks: Vec::new(),
-        };
-        let sparse_bytes = sparse.try_to_bytes().unwrap();
-        assert_eq!(sparse_bytes[0], ANIMATED_DIRECT_SH_DELTA_VOLUMES_VERSION);
-        let sparse = AnimatedDirectShDeltaVolumesSection::from_bytes(&sparse_bytes).unwrap();
-        let cells = CellsSection {
-            cells: vec![CellRecord {
-                bounds_min: [-1.0; 3],
-                bounds_max: [4.0; 3],
-                flags: CELL_FLAG_DRAWABLE,
-                face_start: 0,
-                face_count: 0,
-                portal_ref_start: 0,
-                portal_ref_count: 0,
-            }],
-            portal_refs: Vec::new(),
-        };
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let mut directory = one_cell_directory();
-        directory.clusters[0].bounds_min = [-1.0; 3];
-        directory.clusters[0].bounds_max = [4.0; 3];
-        directory.resources = vec![
-            ClusterResourceRecord {
-                section_id: 34,
-                domain: ClusterResourceDomain::DenseProbe,
-                dimensions: dims,
-            },
-            ClusterResourceRecord {
-                section_id: 45,
-                domain: ClusterResourceDomain::AffinityCell,
-                dimensions: [1, 1, 1],
-            },
-        ];
-        directory.clusters[0].range_count = 2;
-        directory.ranges = vec![
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 0,
-                count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
-            },
-            ClusterRangeRecord {
-                resource_index: 1,
-                start: 0,
-                count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
-            },
-        ];
-        directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory {
-                    octahedral: Some(&base),
-                    animated_direct_delta: Some(&sparse),
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn cluster_directory_scale_zero_closure_stays_local_on_wide_grid() {
-        let dims = [20, 4, 4];
-        let mut probes = vec![OctahedralShProbe::default(); 320];
-        probes[0].validity = 1;
-        let base = base_volume(dims, probes);
-        let cells = CellsSection {
-            cells: vec![CellRecord {
-                bounds_min: [-0.1; 3],
-                bounds_max: [0.1; 3],
-                flags: CELL_FLAG_DRAWABLE,
-                face_start: 0,
-                face_count: 0,
-                portal_ref_start: 0,
-                portal_ref_count: 0,
-            }],
-            portal_refs: Vec::new(),
-        };
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let mut directory = one_cell_directory();
-        directory.clusters[0].bounds_min = [-0.1; 3];
-        directory.clusters[0].bounds_max = [0.1; 3];
-        directory.resources = vec![ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: dims,
-        }];
-        for z in 0..4 {
-            for y in 0..4 {
-                directory.ranges.push(ClusterRangeRecord {
-                    resource_index: 0,
-                    start: y * 20 + z * 80,
-                    count: 4,
-                    owner_cluster_id: DENSE_OWNER_SENTINEL,
-                    role: ClusterRangeRole::Dense,
-                });
-            }
-        }
-        directory.clusters[0].range_count = directory.ranges.len() as u32;
-        directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory {
-                    octahedral: Some(&base),
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-        assert_eq!(
-            directory
-                .ranges
-                .iter()
-                .map(|range| range.count)
-                .sum::<u32>(),
-            64
-        );
-    }
-
-    #[test]
-    fn cluster_directory_scaled_node_closure_adds_exact_constituent_cube() {
-        let dims = [8, 8, 8];
-        let mut probes = vec![OctahedralShProbe::default(); 512];
-        for probe in &mut probes {
-            probe.node_scale = 1;
-        }
-        probes[0].validity = 1;
-        let base = base_volume(dims, probes);
-        let cells = CellsSection {
-            cells: vec![CellRecord {
-                bounds_min: [-0.1; 3],
-                bounds_max: [0.1; 3],
-                flags: CELL_FLAG_DRAWABLE,
-                face_start: 0,
-                face_count: 0,
-                portal_ref_start: 0,
-                portal_ref_count: 0,
-            }],
-            portal_refs: Vec::new(),
-        };
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let mut directory = one_cell_directory();
-        directory.clusters[0].bounds_min = [-0.1; 3];
-        directory.clusters[0].bounds_max = [0.1; 3];
-        directory.resources = vec![ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: dims,
-        }];
-        directory.ranges = vec![ClusterRangeRecord {
-            resource_index: 0,
-            start: 0,
-            count: 512,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
-        }];
-        directory.clusters[0].range_count = 1;
-        directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory {
-                    octahedral: Some(&base),
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn cluster_directory_partial_edge_scale_zero_uses_clipped_probe_range() {
-        let dims = [5, 1, 1];
-        let mut probes = vec![OctahedralShProbe::default(); 5];
-        probes[4].validity = 1;
-        let base = base_volume(dims, probes);
-        let cells = CellsSection {
-            cells: vec![CellRecord {
-                bounds_min: [3.9, -0.1, -0.1],
-                bounds_max: [4.1, 0.1, 0.1],
-                flags: CELL_FLAG_DRAWABLE,
-                face_start: 0,
-                face_count: 0,
-                portal_ref_start: 0,
-                portal_ref_count: 0,
-            }],
-            portal_refs: Vec::new(),
-        };
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let mut directory = one_cell_directory();
-        directory.clusters[0].bounds_min = [3.9, -0.1, -0.1];
-        directory.clusters[0].bounds_max = [4.1, 0.1, 0.1];
-        directory.resources = vec![
-            ClusterResourceRecord {
-                section_id: 27,
-                domain: ClusterResourceDomain::AffinityCell,
-                dimensions: [2, 1, 1],
-            },
-            ClusterResourceRecord {
-                section_id: 34,
-                domain: ClusterResourceDomain::DenseProbe,
-                dimensions: dims,
-            },
-        ];
-        let sparse = DeltaShVolumesSection {
-            affinity_factor: 4,
-            affinity_dims: [2, 1, 1],
-            tile_dimension: 6,
-            tile_border: 1,
-            animation_descriptor_indices: Vec::new(),
-            valid_probe_masks: vec![0, 0],
-            cell_levels: vec![0, 0],
-            affinity_offsets: vec![0, 0, 0],
-            affinity_lights: Vec::new(),
-            delta_subblocks: Vec::new(),
-        };
-        directory.ranges = vec![
-            ClusterRangeRecord {
-                resource_index: 0,
-                start: 1,
-                count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
-            },
-            ClusterRangeRecord {
-                resource_index: 1,
-                start: 4,
-                count: 1,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
-            },
-        ];
-        directory.clusters[0].range_count = 2;
-        directory
-            .validate_semantics(ClusterDirectoryValidationInputs {
-                cells: &cells,
-                portals: &portals,
-                bvh: &bvh,
-                cell_locator: &locator,
-                sh: ClusterDirectoryShInventory {
-                    octahedral: Some(&base),
-                    delta: Some(&sparse),
-                    ..Default::default()
-                },
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn cluster_directory_resource_inventory_and_descriptor_dependencies_are_strict() {
-        let base = base_volume([0, 0, 0], Vec::new());
-        let cells = cells(1);
-        let portals = PortalsSection {
-            vertices: Vec::new(),
-            portals: Vec::new(),
-        };
-        let bvh = empty_bvh();
-        let locator = CellLocatorSection {
-            root: CellLocatorChild::Cell(0),
-            nodes: Vec::new(),
-        };
-        let directory = one_cell_directory();
-        let inputs = ClusterDirectoryValidationInputs {
-            cells: &cells,
-            portals: &portals,
-            bvh: &bvh,
-            cell_locator: &locator,
-            sh: ClusterDirectoryShInventory {
-                octahedral: Some(&base),
-                ..Default::default()
-            },
-        };
-        assert!(matches!(
-            directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::MissingResource(_))
-        ));
-
-        let mut directory = one_cell_directory();
-        directory.resources.push(ClusterResourceRecord {
-            section_id: 34,
-            domain: ClusterResourceDomain::DenseProbe,
-            dimensions: [0, 0, 0],
-        });
-        directory.validate_semantics(inputs).unwrap();
-
-        let delta = DeltaShVolumesSection {
-            affinity_factor: 4,
-            affinity_dims: [0, 0, 0],
-            tile_dimension: 6,
-            tile_border: 1,
-            animation_descriptor_indices: vec![0],
-            valid_probe_masks: Vec::new(),
-            cell_levels: Vec::new(),
-            affinity_offsets: vec![0],
-            affinity_lights: Vec::new(),
-            delta_subblocks: Vec::new(),
-        };
-        directory.resources.insert(
-            0,
-            ClusterResourceRecord {
-                section_id: 27,
-                domain: ClusterResourceDomain::AffinityCell,
-                dimensions: [0, 0, 0],
-            },
-        );
-        let inputs = ClusterDirectoryValidationInputs {
-            sh: ClusterDirectoryShInventory {
-                octahedral: Some(&base),
-                delta: Some(&delta),
-                ..Default::default()
-            },
-            ..inputs
-        };
-        assert!(matches!(
-            directory.validate_semantics(inputs),
-            Err(ClusterDirectoryError::ResourceMismatch(_))
-        ));
-    }
 }

@@ -1,13 +1,13 @@
-//! The planner reads no per-probe or ownership data: a cluster's table rows come
-//! from the id-50 index alone, whatever the probes and halo ranges say, so no
+//! The planner reads no per-probe data: a cluster's table rows come from the
+//! id-50 index alone, whatever the probes and shared ranges say, so no
 //! cluster's topology depends on another's. Random manifests, because scales
-//! and halos are drawn per probe and per range.
+//! and shared rows are drawn per probe and per range.
 //! See: context/lib/rendering_pipeline.md §4 (Cluster SH residency)
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-    ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+    ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+    ClusterResourceRecord,
 };
 use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord, ClusterShPayloadsSection,
@@ -69,8 +69,8 @@ struct Shape {
     max_scale: u32,
     /// Leave some valid probes outside every dense range.
     leave_gaps: bool,
-    /// Add sparse halo ranges that may name any cluster.
-    sparse_halos: bool,
+    /// Add sparse ranges that clusters may share.
+    sparse_shared: bool,
 }
 
 fn synthetic(rng: &mut Rng, dims: [u32; 3], cluster_count: u32, shape: Shape) -> SyntheticManifest {
@@ -115,14 +115,12 @@ fn synthetic(rng: &mut Rng, dims: [u32; 3], cluster_count: u32, shape: Shape) ->
             let start = rng.below(probe_count);
             ranges.push(dense_range(start, 1 + rng.below(probe_count - start)));
         }
-        if shape.sparse_halos {
+        if shape.sparse_shared {
             for _ in 0..rng.below(3) {
                 ranges.push(ClusterRangeRecord {
                     resource_index: 1,
                     start: 0,
                     count: 1,
-                    owner_cluster_id: rng.below(cluster_count),
-                    role: ClusterRangeRole::Halo,
                 });
             }
         }
@@ -143,7 +141,7 @@ fn synthetic(rng: &mut Rng, dims: [u32; 3], cluster_count: u32, shape: Shape) ->
         internal_version: SH_VOLUME_VERSION,
         kind: ClusterShPayloadsSourceKind::DenseBaseAtlas,
     }];
-    if shape.sparse_halos {
+    if shape.sparse_shared {
         sources.push(ClusterShPayloadsSourceRecord {
             section_id: SectionId::DeltaShVolumes as u32,
             internal_version: 6,
@@ -172,6 +170,7 @@ fn synthetic(rng: &mut Rng, dims: [u32; 3], cluster_count: u32, shape: Shape) ->
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         },
         payloads: ClusterShPayloadsSection {
             header: ClusterShPayloadsHeader {
@@ -220,8 +219,6 @@ fn dense_range(start: u32, count: u32) -> ClusterRangeRecord {
         resource_index: 0,
         start,
         count,
-        owner_cluster_id: DENSE_OWNER_SENTINEL,
-        role: ClusterRangeRole::Dense,
     }
 }
 
@@ -252,14 +249,14 @@ fn cluster_tables_come_from_the_id50_index_whatever_probes_and_halos_say() {
     for round in 0..12 {
         for dims in GRID_SHAPES {
             for cluster_count in [1, 2, 5, 9] {
-                for (max_scale, leave_gaps, sparse_halos) in
+                for (max_scale, leave_gaps, sparse_shared) in
                     [(3, false, false), (3, true, false), (40, true, true)]
                 {
                     let shape = Shape {
                         mixed_scales: round % 2 == 0,
                         max_scale,
                         leave_gaps,
-                        sparse_halos,
+                        sparse_shared,
                     };
                     let manifest = synthetic(&mut rng, dims, cluster_count, shape);
                     let topology = topology_of(&manifest)
@@ -286,7 +283,7 @@ fn a_dense_range_past_the_id34_metadata_is_refused_by_name() {
             mixed_scales: false,
             max_scale: 3,
             leave_gaps: false,
-            sparse_halos: false,
+            sparse_shared: false,
         };
         let mut manifest = synthetic(&mut rng, dims, 2, shape);
         let last = manifest.directory.ranges.len() - 1;

@@ -9,7 +9,7 @@ pub(super) fn validate_sparse_caps(
             .checked_mul(4)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         let tile_bytes = u64::from(plan.capacity.1.div_ceil(2))
-            .checked_mul(SPARSE_F16_WORD_BYTES)
+            .checked_mul(SH_SPARSE_F16_WORD_BYTES)
             .ok_or(ShResidencyDrainError::SlotOverflow)?;
         let row_pair_bytes = u64::from(plan.cell_count.max(1))
             .checked_mul(8)

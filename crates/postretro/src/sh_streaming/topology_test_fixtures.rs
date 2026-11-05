@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-    ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+    ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+    ClusterResourceRecord,
 };
 use postretro_level_format::cluster_sh_payloads::{
     ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord, ClusterShPayloadsSection,
@@ -47,6 +47,7 @@ impl ManifestFixture {
                 ranges: vec![dense_range(0), dense_range(1)],
                 seam_portal_ids: Vec::new(),
                 cluster_hints: Vec::new(),
+                mandatory_bound: Vec::new(),
             },
             payloads: ClusterShPayloadsSection {
                 header: ClusterShPayloadsHeader {
@@ -158,8 +159,6 @@ fn dense_range(start: u32) -> ClusterRangeRecord {
         resource_index: 0,
         start,
         count: 1,
-        owner_cluster_id: DENSE_OWNER_SENTINEL,
-        role: ClusterRangeRole::Dense,
     }
 }
 

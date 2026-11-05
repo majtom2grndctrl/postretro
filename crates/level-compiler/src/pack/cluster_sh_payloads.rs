@@ -187,14 +187,13 @@ mod tests {
     use postretro_level_format::cell_locator::{CellLocatorChild, CellLocatorSection};
     use postretro_level_format::cells::{CELL_FLAG_DRAWABLE, CellRecord, CellsSection};
     use postretro_level_format::cluster_directory::{
-        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
-        canonical_cell_partition,
+        CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterRangeRecord, ClusterRecord,
+        ClusterResourceDomain, ClusterResourceRecord, canonical_cell_partition,
     };
     use postretro_level_format::cluster_sh_payloads::{
         CLUSTER_SH_LOGICAL_TILE_DIMENSION, CLUSTER_SH_PAYLOADS_CONTAINER_VERSION,
-        ClusterShPayloadsBaseMetadata, ClusterShPayloadsValidationInputs,
-        source_metadata_from_sections,
+        CLUSTER_SH_SPARSE_ROW_RECORD_SIZE, ClusterShPayloadsBaseMetadata,
+        ClusterShPayloadsValidationInputs, source_metadata_from_sections,
     };
     use postretro_level_format::delta_sh_volumes::{
         AFFINITY_FACTOR, DEFAULT_DELTA_PROBE_F16_STRIDE, DeltaShVolumesSection,
@@ -455,24 +454,18 @@ mod tests {
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             });
         }
         ranges.push(ClusterRangeRecord {
             resource_index: base_resource,
             start: 0,
             count: 64,
-            owner_cluster_id: DENSE_OWNER_SENTINEL,
-            role: ClusterRangeRole::Dense,
         });
         if with_direct {
             ranges.push(ClusterRangeRecord {
                 resource_index: base_resource + 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             });
         }
         ClusterDirectorySection {
@@ -494,10 +487,11 @@ mod tests {
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         }
     }
 
-    fn directory_with_owned_and_halo_sparse_rows() -> ClusterDirectorySection {
+    fn directory_with_shared_sparse_rows() -> ClusterDirectorySection {
         let resources = vec![
             ClusterResourceRecord {
                 section_id: SectionId::DeltaShVolumes as u32,
@@ -525,47 +519,37 @@ mod tests {
                 dimensions: [1, 1, 1],
             },
         ];
-        let ranges_for = |role| {
+        let ranges_for = || {
             vec![
                 ClusterRangeRecord {
                     resource_index: 0,
                     start: 0,
                     count: 1,
-                    owner_cluster_id: 0,
-                    role,
                 },
                 ClusterRangeRecord {
                     resource_index: 1,
                     start: 0,
                     count: 64,
-                    owner_cluster_id: DENSE_OWNER_SENTINEL,
-                    role: ClusterRangeRole::Dense,
                 },
                 ClusterRangeRecord {
                     resource_index: 2,
                     start: 0,
                     count: 64,
-                    owner_cluster_id: DENSE_OWNER_SENTINEL,
-                    role: ClusterRangeRole::Dense,
                 },
                 ClusterRangeRecord {
                     resource_index: 3,
                     start: 0,
                     count: 1,
-                    owner_cluster_id: 0,
-                    role,
                 },
                 ClusterRangeRecord {
                     resource_index: 4,
                     start: 0,
                     count: 1,
-                    owner_cluster_id: 0,
-                    role,
                 },
             ]
         };
-        let mut ranges = ranges_for(ClusterRangeRole::Owned);
-        ranges.extend(ranges_for(ClusterRangeRole::Halo));
+        let mut ranges = ranges_for();
+        ranges.extend(ranges_for());
         ClusterDirectorySection {
             runtime_cell_count: 2,
             primitive_limit: 64,
@@ -597,6 +581,7 @@ mod tests {
             ranges,
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         }
     }
 
@@ -625,11 +610,10 @@ mod tests {
                 resource_index: 0,
                 start: 0,
                 count: 8 * 8 * 8,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             }],
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         }
     }
 
@@ -748,7 +732,7 @@ mod tests {
 
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "60287285b1ffcbae6c889974bded26085e18df4a220bc3b528651b7b83090d47"
+            "c3679c171b6576428bba29cbda46df933791a6f057da9c1e12adcb57272d6cef"
         );
     }
 
@@ -762,7 +746,7 @@ mod tests {
         let selection = EntityShadowLightsSection {
             light_indices: vec![99],
         };
-        let directory = directory_with_owned_and_halo_sparse_rows();
+        let directory = directory_with_shared_sparse_rows();
         let emission = FinalizedShEmissionView::new(
             &base,
             Some(&direct),
@@ -785,7 +769,7 @@ mod tests {
         assert_eq!(directory.clusters.len(), 2);
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "817ab1de29cad06ddb23245954f7617fe8f275ae96be4e4237c480800045d960"
+            "9c96ac41a690012a1ed0636bce77aea60bea8ca8f02d7304937c4c87a009dd00"
         );
     }
 
@@ -879,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn cluster_payload_keeps_owned_and_halo_rows_for_each_sparse_namespace() {
+    fn cluster_payload_gives_both_clusters_a_shared_row_for_each_sparse_namespace() {
         let base = raw_octahedral_source();
         let direct = raw_direct_source(&base);
         let delta = raw_delta_source_for_light(7, 0x3c00);
@@ -888,7 +872,7 @@ mod tests {
         let selection = EntityShadowLightsSection {
             light_indices: vec![99],
         };
-        let directory = directory_with_owned_and_halo_sparse_rows();
+        let directory = directory_with_shared_sparse_rows();
         let emission = FinalizedShEmissionView::new(
             &base,
             Some(&direct),
@@ -922,24 +906,24 @@ mod tests {
             sources: &metadata_sources,
         };
         let payload = std::fs::read(spool.spool.path()).unwrap();
-        let owned_range = spool.section.payload_range(0).unwrap();
-        let halo_range = spool.section.payload_range(1).unwrap();
-        let decoded_owned = spool
+        let first_range = spool.section.payload_range(0).unwrap();
+        let second_range = spool.section.payload_range(1).unwrap();
+        let decoded_first = spool
             .section
             .decode_chunk(
                 0,
-                payload[usize::try_from(owned_range.start).unwrap()
-                    ..usize::try_from(owned_range.end).unwrap()]
+                payload[usize::try_from(first_range.start).unwrap()
+                    ..usize::try_from(first_range.end).unwrap()]
                     .to_vec(),
                 inputs,
             )
             .unwrap();
-        let decoded_halo = spool
+        let decoded_second = spool
             .section
             .decode_chunk(
                 1,
-                payload[usize::try_from(halo_range.start).unwrap()
-                    ..usize::try_from(halo_range.end).unwrap()]
+                payload[usize::try_from(second_range.start).unwrap()
+                    ..usize::try_from(second_range.end).unwrap()]
                     .to_vec(),
                 inputs,
             )
@@ -949,52 +933,47 @@ mod tests {
             (SectionId::DirectShDeltaVolumes as u32, 0, 0x3555),
             (SectionId::AnimatedDirectShDeltaVolumes as u32, 11, 0x3666),
         ] {
-            let owned = decoded_owned
+            let first = decoded_first
                 .blocks
                 .iter()
                 .find(|block| {
                     block.section_id == section_id && block.kind == BLOCK_KIND_SPARSE_ROWS
                 })
                 .unwrap();
-            let halo = decoded_halo
+            let second = decoded_second
                 .blocks
                 .iter()
                 .find(|block| {
                     block.section_id == section_id && block.kind == BLOCK_KIND_SPARSE_ROWS
                 })
                 .unwrap();
-            let owned_body = &decoded_owned.bytes[owned.body.clone()];
-            let halo_body = &decoded_halo.bytes[halo.body.clone()];
+            let first_body = &decoded_first.bytes[first.body.clone()];
+            let second_body = &decoded_second.bytes[second.body.clone()];
             assert_eq!(
-                u32::from_le_bytes(owned_body[12..16].try_into().unwrap()),
+                u32::from_le_bytes(first_body[12..16].try_into().unwrap()),
                 0
             );
+            let entries = 16 + CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
             assert_eq!(
-                u32::from_le_bytes(owned_body[28..32].try_into().unwrap()),
-                ClusterRangeRole::Owned as u32
-            );
-            assert_eq!(
-                u32::from_le_bytes(halo_body[28..32].try_into().unwrap()),
-                ClusterRangeRole::Halo as u32
-            );
-            assert_eq!(
-                u32::from_le_bytes(owned_body[32..36].try_into().unwrap()),
+                u32::from_le_bytes(first_body[entries..entries + 4].try_into().unwrap()),
                 expected_light
             );
+            let tiles = entries + 16;
             assert_eq!(
-                u16::from_le_bytes(owned_body[48..50].try_into().unwrap()),
+                u16::from_le_bytes(first_body[tiles..tiles + 2].try_into().unwrap()),
                 expected_value
             );
-            let mut halo_with_owned_role = halo_body.to_vec();
-            halo_with_owned_role[28..32]
-                .copy_from_slice(&(ClusterRangeRole::Owned as u32).to_le_bytes());
             assert_eq!(
-                owned_body, halo_with_owned_role,
-                "halo must retain the owned row payload"
+                first_body, second_body,
+                "either cluster's chunk must carry the whole shared row"
             );
         }
-        assert!(spool.section.index[0].requested_resident_bytes > 0);
-        assert_eq!(spool.section.index[1].requested_resident_bytes, 0);
+        let (first_index, second_index) = (&spool.section.index[0], &spool.section.index[1]);
+        assert!(first_index.requested_resident_bytes > 0);
+        assert_eq!(
+            first_index.requested_resident_bytes, second_index.requested_resident_bytes,
+            "a chunk reports every byte it touches, shared or not"
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::*;
 
+use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use postretro_level_loader::ShStreamDirectMetadata;
 
 fn base(format: u32) -> ShStreamBaseMetadata {
@@ -153,16 +154,16 @@ fn floor_charges_every_coupled_direct_dense_texture() {
     // id34 BC6H base + indirect total + id35 BC6H base + direct total
     // + animated direct intermediate: 64 + 512 + 64 + 512 + 512 bytes.
     let expected_dense_bytes = 100_u64 * 1_664;
-    let expected_sparse_bytes = 2 * sparse_capacity_bytes((1, 2)).unwrap();
+    let expected_sparse_bytes = 2 * sparse_capacity_bytes((1, 2));
     assert_eq!(plan.dense_slots, 100);
     assert_eq!(plan.dense_group_minimum_bytes, 100 * 1_664);
     assert_eq!(
         plan.sparse_group_minimum_bytes[&41],
-        sparse_capacity_bytes((1, 2)).unwrap()
+        sparse_capacity_bytes((1, 2))
     );
     assert_eq!(
         plan.sparse_group_minimum_bytes[&45],
-        sparse_capacity_bytes((1, 2)).unwrap()
+        sparse_capacity_bytes((1, 2))
     );
     assert_eq!(
         plan.effective_floor_bytes,

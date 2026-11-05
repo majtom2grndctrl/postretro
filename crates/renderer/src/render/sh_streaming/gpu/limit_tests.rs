@@ -969,8 +969,8 @@ fn sh_growth_slot_address_overflow_escapes_drain_refusal_classifier() {
 /// independently of corrupt-on-disk handling.
 fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::PreparedShCluster {
     use postretro_level_format::cluster_directory::{
-        ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord, DENSE_OWNER_SENTINEL,
+        ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+        ClusterResourceRecord,
     };
     use postretro_level_format::cluster_sh_payloads::*;
     use postretro_level_format::delta_sh_volumes::DELTA_SH_VOLUMES_VERSION;
@@ -1077,26 +1077,21 @@ fn loader_validated_chunk(f: &UploadOrderSh) -> postretro_level_loader::Prepared
                 resource_index: 0,
                 start: 0,
                 count: 1,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             },
             ClusterRangeRecord {
                 resource_index: 1,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
             ClusterRangeRecord {
                 resource_index: 2,
                 start: 0,
                 count: 64,
-                owner_cluster_id: DENSE_OWNER_SENTINEL,
-                role: ClusterRangeRole::Dense,
             },
         ],
         seam_portal_ids: vec![],
         cluster_hints: vec![],
+        mandatory_bound: Vec::new(),
     };
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {

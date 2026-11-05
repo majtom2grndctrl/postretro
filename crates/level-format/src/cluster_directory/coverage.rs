@@ -6,10 +6,9 @@ use crate::{cells::CellsSection, sh_volume::OctahedralShVolumeSection};
 
 use super::{
     ClusterDirectoryCoverageStats, ClusterDirectoryError, ClusterDirectorySection,
-    ClusterDirectoryValidationInputs, ClusterRangeRecord, ClusterRangeRole, ClusterResourceDomain,
-    DENSE_OWNER_SENTINEL, brick_coords, brick_probe_bounds, cell_to_cluster, checked_product,
-    flatten, locate_cell, probe_coords, probe_locate::ProbeLocator, probe_position,
-    resource_mismatch, sparse_offsets, u32_len,
+    ClusterDirectoryValidationInputs, ClusterRangeRecord, ClusterResourceDomain, brick_coords,
+    brick_probe_bounds, cell_to_cluster, checked_product, flatten, locate_cell, probe_coords,
+    probe_locate::ProbeLocator, probe_position, resource_mismatch, sparse_offsets, u32_len,
 };
 
 /// Unset slot in the per-brick tag arrays below. Cluster ids index a `Vec`
@@ -174,15 +173,6 @@ pub(super) fn derive_ranges_with_counts(
     let maximum_visited_nodes_per_cluster =
         close_over_adaptive_nodes(&mut coverage, base, affinity_dims, affinity_count)?;
 
-    let mut owners = vec![NO_CLUSTER; affinity_count];
-    for (cluster, bricks) in coverage.iter().enumerate() {
-        for &brick in bricks {
-            let owner = &mut owners[brick as usize];
-            if *owner == NO_CLUSTER {
-                *owner = cluster as u32;
-            }
-        }
-    }
     let mut result = Vec::new();
     let mut counts = Vec::with_capacity(directory.clusters.len());
     let mut dense_runs = Vec::new();
@@ -191,7 +181,7 @@ pub(super) fn derive_ranges_with_counts(
         .resources
         .iter()
         .any(|resource| resource.domain == ClusterResourceDomain::DenseProbe);
-    for (cluster_id, bricks) in coverage.iter().enumerate() {
+    for bricks in &coverage {
         cluster_ranges.clear();
         dense_runs.clear();
         if has_dense {
@@ -206,19 +196,11 @@ pub(super) fn derive_ranges_with_counts(
                             resource_index,
                             start,
                             count: end - start,
-                            owner_cluster_id: DENSE_OWNER_SENTINEL,
-                            role: ClusterRangeRole::Dense,
                         }
                     }));
                 }
                 ClusterResourceDomain::AffinityCell => {
-                    push_affinity_runs(
-                        bricks,
-                        &owners,
-                        cluster_id as u32,
-                        resource_index,
-                        &mut cluster_ranges,
-                    );
+                    push_affinity_runs(bricks, resource_index, &mut cluster_ranges);
                 }
             }
         }
@@ -467,36 +449,25 @@ fn dense_probe_runs(
     }
 }
 
-/// Maximal runs of consecutive bricks with one owner, as `Owned` when the
-/// owner is this cluster and `Halo` otherwise.
-fn push_affinity_runs(
+/// Maximal runs of consecutive bricks (sorted, unique). A shared brick needs
+/// no marking: every cluster covering it lists it, and storage is reference
+/// counted at runtime.
+pub(super) fn push_affinity_runs(
     bricks: &[u32],
-    owners: &[u32],
-    cluster_id: u32,
     resource_index: u32,
     ranges: &mut Vec<ClusterRangeRecord>,
 ) {
     let mut start = 0;
     while start < bricks.len() {
         let first = bricks[start];
-        let owner = owners[first as usize];
         let mut end = start + 1;
-        while end < bricks.len()
-            && bricks[end] == bricks[end - 1] + 1
-            && owners[bricks[end] as usize] == owner
-        {
+        while end < bricks.len() && bricks[end] == bricks[end - 1] + 1 {
             end += 1;
         }
         ranges.push(ClusterRangeRecord {
             resource_index,
             start: first,
             count: (end - start) as u32,
-            owner_cluster_id: owner,
-            role: if owner == cluster_id {
-                ClusterRangeRole::Owned
-            } else {
-                ClusterRangeRole::Halo
-            },
         });
         start = end;
     }

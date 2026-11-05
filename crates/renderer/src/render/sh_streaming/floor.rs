@@ -4,7 +4,10 @@
 use std::collections::BTreeMap;
 
 use postretro_level_format::delta_sh_volumes::delta_probe_f16_stride;
-use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
+use postretro_level_format::sh_pool_cost::{
+    SH_SPARSE_ENTRY_BYTES, SH_SPARSE_F16_WORD_BYTES, ShDenseSlotTextures, sh_dense_slot_bytes,
+    sh_sparse_capacity_bytes,
+};
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_loader::{
     ShStreamBaseMetadata, ShStreamSourceMetadata, ShStreamSparseMetadata,
@@ -19,10 +22,6 @@ use validation::{validate_fixed_storage_bindings, validate_sparse_caps};
 /// Native-desktop requested GPU floor for fixed streaming metadata, retained
 /// billboard scatter, and the initial active pool generation.
 pub(crate) const DEFAULT_STREAMED_SH_POOL_FLOOR_BYTES: u64 = 256 * 1024 * 1024;
-
-const DENSE_COMPOSED_CELL_BYTES: u64 = 8 * 8 * 8;
-const SPARSE_ENTRY_BYTES: u64 = 8;
-const SPARSE_F16_WORD_BYTES: u64 = 4;
 
 /// Finalized initial capacities before the GPU owner chooses atlas geometry.
 ///
@@ -63,7 +62,7 @@ impl SparsePlan {
             .ok_or(ShResidencyDrainError::SlotOverflow)
     }
 
-    fn capacity_bytes(self) -> Result<u64, ShResidencyDrainError> {
+    fn capacity_bytes(self) -> u64 {
         sparse_capacity_bytes(self.capacity)
     }
 }
@@ -102,8 +101,8 @@ pub(crate) fn plan_initial_pool_floor(
     validate_sparse_caps(&sparse, limits)?;
     let sparse_group_minimum_bytes = sparse
         .iter()
-        .map(|(&section_id, plan)| Ok((section_id, sparse_capacity_bytes(plan.minimum)?)))
-        .collect::<Result<BTreeMap<_, _>, ShResidencyDrainError>>()?;
+        .map(|(&section_id, plan)| (section_id, sparse_capacity_bytes(plan.minimum)))
+        .collect::<BTreeMap<_, _>>();
 
     let fixed_and_scatter_bytes = fixed_bytes
         .checked_add(scatter_bytes)
@@ -202,35 +201,18 @@ fn dense_slot_bytes(
     base: &ShStreamBaseMetadata,
     sources: &ShStreamSourceMetadata,
 ) -> Result<u64, ShResidencyDrainError> {
-    let mut bytes = atlas_cell_bytes(base.irradiance_format)?
-        .checked_add(DENSE_COMPOSED_CELL_BYTES)
-        .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    if let Some(direct) = &sources.direct {
-        bytes = bytes
-            .checked_add(atlas_cell_bytes(direct.irradiance_format)?)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    }
-    if sources.direct_delta.is_some() || sources.animated_direct_delta.is_some() {
-        bytes = bytes
-            .checked_add(DENSE_COMPOSED_CELL_BYTES)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    }
-    if sources.animated_direct_delta.is_some() {
-        bytes = bytes
-            .checked_add(DENSE_COMPOSED_CELL_BYTES)
-            .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    }
-    Ok(bytes)
-}
-
-fn atlas_cell_bytes(format: u32) -> Result<u64, ShResidencyDrainError> {
-    match format {
-        IRRADIANCE_FORMAT_BC6H => Ok(64),
-        IRRADIANCE_FORMAT_RGBA16F => Ok(DENSE_COMPOSED_CELL_BYTES),
-        _ => Err(ShResidencyDrainError::GpuCapacity {
-            reason: "streamed SH metadata has an unsupported atlas format",
-        }),
-    }
+    sh_dense_slot_bytes(ShDenseSlotTextures {
+        indirect_format: base.irradiance_format,
+        direct_format: sources
+            .direct
+            .as_ref()
+            .map(|direct| direct.irradiance_format),
+        direct_compose: sources.direct_delta.is_some() || sources.animated_direct_delta.is_some(),
+        animated_direct_compose: sources.animated_direct_delta.is_some(),
+    })
+    .ok_or(ShResidencyDrainError::GpuCapacity {
+        reason: "streamed SH metadata has an unsupported atlas format",
+    })
 }
 
 fn sparse_plans(
@@ -267,7 +249,7 @@ fn sparse_plans(
                 has_descriptor_indices,
                 descriptor_index_count: source.animation_descriptor_indices.len(),
                 entry_weight_bytes: u64::from(whole_entries)
-                    .checked_mul(SPARSE_ENTRY_BYTES)
+                    .checked_mul(SH_SPARSE_ENTRY_BYTES)
                     .ok_or(ShResidencyDrainError::SlotOverflow)?,
                 tile_weight_bytes: u64::from(whole_tiles)
                     .checked_mul(2)
@@ -408,10 +390,10 @@ fn sparse_capacity_for_share(
         proportional_share_ceil(family_share_bytes, plan.entry_weight_bytes, weight_bytes)?;
     let tile_share =
         proportional_share_ceil(family_share_bytes, plan.tile_weight_bytes, weight_bytes)?;
-    let requested_entries = ceil_div_u64(entry_share, SPARSE_ENTRY_BYTES)?
+    let requested_entries = ceil_div_u64(entry_share, SH_SPARSE_ENTRY_BYTES)?
         .checked_add(1)
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
-    let requested_tiles = ceil_div_u64(tile_share, SPARSE_F16_WORD_BYTES)?
+    let requested_tiles = ceil_div_u64(tile_share, SH_SPARSE_F16_WORD_BYTES)?
         .checked_mul(2)
         .and_then(|tiles| tiles.checked_add(2))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
@@ -434,7 +416,7 @@ fn active_capacity_bytes(
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
     sparse.try_fold(dense, |total, plan| {
         total
-            .checked_add(plan.capacity_bytes()?)
+            .checked_add(plan.capacity_bytes())
             .ok_or(ShResidencyDrainError::SlotOverflow)
     })
 }
@@ -538,15 +520,8 @@ fn ceil_div_u64(value: u64, divisor: u64) -> Result<u64, ShResidencyDrainError> 
         .ok_or(ShResidencyDrainError::SlotOverflow)
 }
 
-fn sparse_capacity_bytes((entries, tiles): (u32, u32)) -> Result<u64, ShResidencyDrainError> {
-    u64::from(entries)
-        .checked_mul(SPARSE_ENTRY_BYTES)
-        .and_then(|bytes| {
-            u64::from(tiles.div_ceil(2))
-                .checked_mul(SPARSE_F16_WORD_BYTES)
-                .and_then(|tile_bytes| bytes.checked_add(tile_bytes))
-        })
-        .ok_or(ShResidencyDrainError::SlotOverflow)
+fn sparse_capacity_bytes((entries, tiles): (u32, u32)) -> u64 {
+    sh_sparse_capacity_bytes(entries, tiles)
 }
 
 #[cfg(test)]

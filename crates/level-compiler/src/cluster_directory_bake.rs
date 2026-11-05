@@ -10,7 +10,7 @@ use postretro_level_format::cells::CellsSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_FLAG_INDIVISIBLE_OVERSIZE, CLUSTER_HINT_FLAG_PINNED, CanonicalCellPartition,
     ClusterDirectorySection, ClusterDirectoryValidationInputs, ClusterHintRecord, ClusterRecord,
-    canonical_cell_partition, populate_canonical_resource_ranges,
+    ShMandatoryBoundEntry, canonical_cell_partition, populate_canonical_resource_ranges,
 };
 use postretro_level_format::portals::PortalsSection;
 
@@ -168,6 +168,7 @@ fn bake_cluster_directory_with_hints_and_limits(
         ranges: Vec::new(),
         seam_portal_ids: streaming_hints.seam_portal_ids.clone(),
         cluster_hints,
+        mandatory_bound: initial_sh_mandatory_bound(),
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,
@@ -201,6 +202,13 @@ fn bake_cluster_directory_with_hints_and_limits(
         },
         directory,
     })
+}
+
+/// Id-49 bound entries of a freshly baked directory: none, so it writes
+/// `bound_count` 0. The bound prices per-cluster node sets, which exist only
+/// once pack has built `ChunkPlan`, after this directory.
+fn initial_sh_mandatory_bound() -> Vec<ShMandatoryBoundEntry> {
+    Vec::new()
 }
 
 fn cluster_hints_for_partition(
@@ -700,31 +708,23 @@ mod tests {
             let percentile = |values: &[u32], percentile: usize| {
                 values[(values.len().saturating_sub(1) * percentile) / 100]
             };
+            let is_dense =
+                |range: &&postretro_level_format::cluster_directory::ClusterRangeRecord| {
+                    baked.directory.resources[range.resource_index as usize].domain
+                    == postretro_level_format::cluster_directory::ClusterResourceDomain::DenseProbe
+                };
             let dense_addresses: u64 = baked
                 .directory
                 .ranges
                 .iter()
-                .filter(|range| {
-                    range.role == postretro_level_format::cluster_directory::ClusterRangeRole::Dense
-                })
+                .filter(is_dense)
                 .map(|range| u64::from(range.count))
                 .sum();
             let affinity_addresses: u64 = baked
                 .directory
                 .ranges
                 .iter()
-                .filter(|range| {
-                    range.role != postretro_level_format::cluster_directory::ClusterRangeRole::Dense
-                })
-                .map(|range| u64::from(range.count))
-                .sum();
-            let owned_affinity_addresses: u64 = baked
-                .directory
-                .ranges
-                .iter()
-                .filter(|range| {
-                    range.role == postretro_level_format::cluster_directory::ClusterRangeRole::Owned
-                })
+                .filter(|range| !is_dense(range))
                 .map(|range| u64::from(range.count))
                 .sum();
             let mut per_cluster_dense = Vec::new();
@@ -735,20 +735,20 @@ mod tests {
                 per_cluster_dense.push(
                     baked.directory.ranges[begin..end]
                         .iter()
-                        .filter(|range| range.role == postretro_level_format::cluster_directory::ClusterRangeRole::Dense)
+                        .filter(is_dense)
                         .map(|range| u64::from(range.count))
                         .sum::<u64>(),
                 );
                 per_cluster_affinity.push(
                     baked.directory.ranges[begin..end]
                         .iter()
-                        .filter(|range| range.role != postretro_level_format::cluster_directory::ClusterRangeRole::Dense)
+                        .filter(|range| !is_dense(range))
                         .map(|range| u64::from(range.count))
                         .sum::<u64>(),
                 );
             }
             println!(
-                "candidate={primitive_limit}/{cell_limit} clusters={} primitive_p50/p95/max={}/{}/{} cell_p50/p95/max={}/{}/{} oversize={} directory_bytes={} dense_addresses={} dense_max_per_cluster={} affinity_addresses={} affinity_max_per_cluster={} affinity_owned/halo={}/{} covering_refs={} construction_metadata_upper_bytes={} serialization_peak_upper_bytes={} elapsed_ms={:.3}",
+                "candidate={primitive_limit}/{cell_limit} clusters={} primitive_p50/p95/max={}/{}/{} cell_p50/p95/max={}/{}/{} oversize={} directory_bytes={} dense_addresses={} dense_max_per_cluster={} affinity_addresses={} affinity_max_per_cluster={} covering_refs={} construction_metadata_upper_bytes={} serialization_peak_upper_bytes={} elapsed_ms={:.3}",
                 baked.stats.cluster_count,
                 percentile(&primitive_counts, 50),
                 percentile(&primitive_counts, 95),
@@ -762,8 +762,6 @@ mod tests {
                 per_cluster_dense.iter().copied().max().unwrap_or(0),
                 affinity_addresses,
                 per_cluster_affinity.iter().copied().max().unwrap_or(0),
-                owned_affinity_addresses,
-                affinity_addresses - owned_affinity_addresses,
                 baked.stats.covering_references,
                 baked.stats.construction_metadata_bytes,
                 baked.stats.construction_metadata_bytes + baked.stats.directory_bytes,

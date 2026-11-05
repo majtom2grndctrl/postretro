@@ -23,13 +23,14 @@ use postretro_level_format::cell_locator::{
 use postretro_level_format::cells::{CellRecord, CellsSection};
 use postretro_level_format::cluster_directory::{
     CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectorySection, ClusterDirectoryShInventory,
-    ClusterDirectoryValidationInputs, ClusterRecord, populate_canonical_resource_ranges,
+    ClusterDirectoryValidationInputs, ClusterRecord, ShMandatoryBoundEntry, ShMandatoryBoundFamily,
+    populate_canonical_resource_ranges,
 };
 use postretro_level_format::cluster_sh_payloads::{
-    CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_VERSION, ClusterShPayloadsHeader,
-    ClusterShPayloadsIndexRecord, ClusterShPayloadsSection, ClusterShPayloadsSourceRecord,
-    ClusterShPayloadsValidationInputs, cluster_sh_isolated_atlas_array_layout,
-    source_metadata_from_sections,
+    CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_VERSION,
+    CLUSTER_SH_SPARSE_ROW_RECORD_SIZE, ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord,
+    ClusterShPayloadsSection, ClusterShPayloadsSourceRecord, ClusterShPayloadsValidationInputs,
+    cluster_sh_isolated_atlas_array_layout, source_metadata_from_sections,
 };
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -174,6 +175,73 @@ fn malformed_id50_with_a_valid_directory_is_rejected_before_off_mode() {
     assert!(
         error.to_string().contains("SH streaming validation error"),
         "id-50 validation must fail before the mode can choose legacy loading: {error}"
+    );
+}
+
+// Row 13, on the streaming path: id 49's container check runs before its bytes
+// are read here, and id 50's epoch check guards its own section.
+#[test]
+fn old_stream_section_versions_are_refused_by_name() {
+    let old_directory = write_stream_fixture_with(
+        Id50Body::Valid,
+        DirectoryShape {
+            container_version: 2,
+            ..DirectoryShape::default()
+        },
+    );
+    let old_payloads = write_stream_fixture(Id50Body::OldVersion);
+    for (fixture, name) in [
+        (old_directory, "ClusterDirectoryVersionMismatch"),
+        (old_payloads, "ClusterShPayloadsVersionMismatch"),
+    ] {
+        for mode in [ShStreamingMode::Async, ShStreamingMode::Off] {
+            let message =
+                load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), mode)
+                    .unwrap_err()
+                    .to_string();
+            assert!(message.contains(name), "{message}");
+            assert!(message.contains("re-bake the level"), "{message}");
+        }
+    }
+}
+
+// The renderer and controller read the tail from the loaded directory, so the
+// bound must survive the streaming load unchanged.
+#[test]
+fn stream_load_hands_the_bound_tail_on_with_the_directory() {
+    let mandatory_bound = vec![
+        ShMandatoryBoundEntry {
+            lead: 160,
+            worst_dense_slots: 11,
+            worst_cell: 0,
+            families: vec![ShMandatoryBoundFamily {
+                resource_index: 0,
+                worst_entries: 3,
+                worst_tile_f16: 5,
+            }],
+        },
+        ShMandatoryBoundEntry {
+            lead: 320,
+            worst_dense_slots: 13,
+            worst_cell: 0,
+            families: Vec::new(),
+        },
+    ];
+    let fixture = write_stream_fixture_with(
+        Id50Body::Valid,
+        DirectoryShape {
+            mandatory_bound: mandatory_bound.clone(),
+            ..DirectoryShape::default()
+        },
+    );
+    let world = load_prl_with_streaming_mode_for_test(
+        fixture.path.to_str().unwrap(),
+        ShStreamingMode::Async,
+    )
+    .unwrap();
+    assert_eq!(
+        world.cluster_directory.unwrap().mandatory_bound,
+        mandatory_bound
     );
 }
 
@@ -350,9 +418,30 @@ fn read_file_span_rejects_ranges_outside_the_id50_payload_region() {
 pub(crate) enum Id50Body {
     Valid,
     Malformed,
+    /// Valid but for the previous internal version.
+    OldVersion,
+}
+
+/// What a stream fixture's id 49 differs in from a current bake.
+struct DirectoryShape {
+    container_version: u16,
+    mandatory_bound: Vec<ShMandatoryBoundEntry>,
+}
+
+impl Default for DirectoryShape {
+    fn default() -> Self {
+        Self {
+            container_version: CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            mandatory_bound: Vec::new(),
+        }
+    }
 }
 
 pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
+    write_stream_fixture_with(id50_body, DirectoryShape::default())
+}
+
+fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> StreamFixture {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("cluster-stream.prl");
     let cells = fixture_cells();
@@ -377,7 +466,7 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
     let shadow_selection = EntityShadowLightsSection {
         light_indices: vec![0],
     };
-    let cluster_directory = cluster_directory(
+    let mut cluster_directory = cluster_directory(
         &cells,
         &portals,
         &bvh,
@@ -391,16 +480,25 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
         &billboard,
         &animated_billboard,
     );
-    let id50 = match id50_body {
-        Id50Body::Valid => valid_id50(
+    cluster_directory.mandatory_bound = shape.mandatory_bound;
+    let valid_body = || {
+        valid_id50(
             &cluster_directory,
             &base,
             &direct,
             &indirect_delta,
             &direct_delta,
             &animated_direct_delta,
-        ),
+        )
+    };
+    let id50 = match id50_body {
+        Id50Body::Valid => valid_body(),
         Id50Body::Malformed => vec![0],
+        Id50Body::OldVersion => {
+            let mut bytes = valid_body();
+            bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+            bytes
+        }
     };
     let id50_metadata_len = ClusterShPayloadsSection::metadata_len_from_header(&id50).unwrap_or(0);
 
@@ -445,7 +543,7 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
         ),
         blob(
             SectionId::ClusterDirectory,
-            CLUSTER_DIRECTORY_CONTAINER_VERSION,
+            shape.container_version,
             cluster_directory.try_to_bytes().unwrap(),
         ),
         blob(
@@ -711,6 +809,7 @@ fn cluster_directory(
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let inputs = ClusterDirectoryValidationInputs {
         cells,
@@ -926,13 +1025,12 @@ fn empty_sparse_rows() -> Vec<u8> {
         push_u32(&mut bytes, row);
         push_u32(&mut bytes, 0);
         push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 1);
     }
     bytes
 }
 
 fn sparse_rows_len() -> usize {
-    16 + AFFINITY_COUNT as usize * 16
+    16 + AFFINITY_COUNT as usize * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE
 }
 
 fn one_entry_sparse_rows() -> Vec<u8> {
@@ -945,7 +1043,6 @@ fn one_entry_sparse_rows() -> Vec<u8> {
         push_u32(&mut bytes, row);
         push_u32(&mut bytes, u32::from(row != 0));
         push_u32(&mut bytes, u32::from(row == 0));
-        push_u32(&mut bytes, 1);
     }
     push_u32(&mut bytes, 0);
     push_u32(&mut bytes, 0);

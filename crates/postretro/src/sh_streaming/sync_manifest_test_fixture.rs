@@ -95,6 +95,7 @@ pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
         ranges: Vec::new(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let directory_inputs = ClusterDirectoryValidationInputs {
         cells: &cells,

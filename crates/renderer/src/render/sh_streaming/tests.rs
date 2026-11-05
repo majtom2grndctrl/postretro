@@ -2,8 +2,7 @@
 
 use super::*;
 use postretro_level_format::cluster_directory::{
-    ClusterRangeRecord, ClusterRangeRole, ClusterRecord, ClusterResourceDomain,
-    ClusterResourceRecord,
+    ClusterRangeRecord, ClusterRecord, ClusterResourceDomain, ClusterResourceRecord,
 };
 use postretro_level_format::cluster_sh_payloads::{DecodedClusterShBlock, DecodedClusterShPayload};
 use postretro_level_format::sh_volume::OctahedralShProbe;
@@ -94,19 +93,11 @@ fn all_sparse_sources() -> postretro_level_loader::ShStreamSourceMetadata {
     }
 }
 
-fn range(
-    resource_index: u32,
-    start: u32,
-    count: u32,
-    owner_cluster_id: u32,
-    role: ClusterRangeRole,
-) -> ClusterRangeRecord {
+fn range(resource_index: u32, start: u32, count: u32) -> ClusterRangeRecord {
     ClusterRangeRecord {
         resource_index,
         start,
         count,
-        owner_cluster_id,
-        role,
     }
 }
 
@@ -123,16 +114,15 @@ fn state_with_clusters(cluster_count: u32) -> ShResidencyState {
         }],
         members: Vec::new(),
         ranges: (0..cluster_count)
-            .map(|cluster_id| ClusterRangeRecord {
+            .map(|_| ClusterRangeRecord {
                 resource_index: 0,
                 start: 0,
                 count: 64,
-                owner_cluster_id: cluster_id,
-                role: ClusterRangeRole::Owned,
             })
             .collect(),
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     ShResidencyState::from_parts(
         [9; 32],
@@ -171,12 +161,10 @@ fn overlapping_dense_ranges_are_both_named_and_counted_in_each_clusters_demand()
             dimensions: [4, 4, 4],
         }],
         members: Vec::new(),
-        ranges: vec![
-            range(0, 0, 64, 1, ClusterRangeRole::Halo),
-            range(0, 0, 64, 1, ClusterRangeRole::Owned),
-        ],
+        ranges: vec![range(0, 0, 64), range(0, 0, 64)],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let state = ShResidencyState::from_parts(
         [7; 32],
@@ -231,17 +219,18 @@ fn sparse_halo_ranges_size_every_family_from_each_clusters_own_rows() {
         resources,
         members: Vec::new(),
         ranges: vec![
-            range(0, 0, 64, 1, ClusterRangeRole::Halo),
-            range(1, 0, 1, 1, ClusterRangeRole::Halo),
-            range(2, 0, 1, 1, ClusterRangeRole::Halo),
-            range(3, 0, 1, 1, ClusterRangeRole::Halo),
-            range(0, 0, 64, 1, ClusterRangeRole::Owned),
-            range(1, 0, 1, 1, ClusterRangeRole::Owned),
-            range(2, 0, 1, 1, ClusterRangeRole::Owned),
-            range(3, 0, 1, 1, ClusterRangeRole::Owned),
+            range(0, 0, 64),
+            range(1, 0, 1),
+            range(2, 0, 1),
+            range(3, 0, 1),
+            range(0, 0, 64),
+            range(1, 0, 1),
+            range(2, 0, 1),
+            range(3, 0, 1),
         ],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
 
     let state = ShResidencyState::from_parts(
@@ -273,12 +262,10 @@ fn one_stored_node_can_serve_clusters_naming_distinct_probes() {
             dimensions: [4, 4, 4],
         }],
         members: Vec::new(),
-        ranges: vec![
-            range(0, 0, 1, 0, ClusterRangeRole::Owned),
-            range(0, 1, 63, 1, ClusterRangeRole::Owned),
-        ],
+        ranges: vec![range(0, 0, 1), range(0, 1, 63)],
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     };
     let state = ShResidencyState::from_parts(
         [12; 32],
@@ -322,9 +309,10 @@ fn paired_direct_manifest_refuses_a_chunk_missing_id35() {
                 dimensions: [4, 4, 4],
             }],
             members: Vec::new(),
-            ranges: vec![range(0, 0, 64, 0, ClusterRangeRole::Owned)],
+            ranges: vec![range(0, 0, 64)],
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         },
         &one_l0_brick(),
         &all_sparse_sources(),

@@ -3,9 +3,7 @@
 
 use postretro_level_format::SectionId;
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
-use postretro_level_format::cluster_directory::{
-    ClusterDirectorySection, ClusterRangeRole, ClusterResourceDomain,
-};
+use postretro_level_format::cluster_directory::{ClusterDirectorySection, ClusterResourceDomain};
 use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_LOGICAL_TILE_DIMENSION;
 use postretro_level_format::delta_sh_volumes::{DeltaShVolumesSection, delta_probe_f16_stride};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -215,8 +213,6 @@ impl<'a> SparseSource<'a> {
 }
 
 pub(super) fn encode_sparse_block(
-    directory: &ClusterDirectorySection,
-    cluster_id: u32,
     source: &SparseSource<'_>,
     rows: &[u32],
 ) -> anyhow::Result<EncodedSparse> {
@@ -232,10 +228,6 @@ pub(super) fn encode_sparse_block(
         push_u32(&mut body, *row);
         push_u32(&mut body, entry_cursor);
         push_u32(&mut body, count);
-        push_u32(
-            &mut body,
-            sparse_row_role(directory, cluster_id, source.section_id, *row)? as u32,
-        );
         entry_cursor = entry_cursor
             .checked_add(count)
             .ok_or_else(|| anyhow::anyhow!("id-50 sparse entry cursor overflow"))?;
@@ -305,41 +297,4 @@ pub(super) fn affinity_indices(
         result.extend(range.start..range_end);
     }
     Ok(result)
-}
-
-pub(super) fn sparse_row_role(
-    directory: &ClusterDirectorySection,
-    cluster_id: u32,
-    section_id: u32,
-    row: u32,
-) -> anyhow::Result<ClusterRangeRole> {
-    let cluster = directory
-        .clusters
-        .get(cluster_id as usize)
-        .ok_or_else(|| anyhow::anyhow!("id-50 cluster {cluster_id} is outside id 49"))?;
-    let resource_index = directory
-        .resources
-        .iter()
-        .position(|resource| resource.section_id == section_id)
-        .ok_or_else(|| anyhow::anyhow!("id 49 lacks sparse source {section_id}"))?;
-    let start = usize::try_from(cluster.range_start)?;
-    let end = start
-        .checked_add(usize::try_from(cluster.range_count)?)
-        .ok_or_else(|| anyhow::anyhow!("id-50 sparse role range overflow"))?;
-    directory
-        .ranges
-        .get(start..end)
-        .ok_or_else(|| anyhow::anyhow!("id-50 sparse role range exceeds id 49"))?
-        .iter()
-        .find(|range| {
-            range.resource_index as usize == resource_index
-                && range.start <= row
-                && row < range.start.saturating_add(range.count)
-        })
-        .map(|range| range.role)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "id-50 cluster {cluster_id} does not cover row {row} of source {section_id}"
-            )
-        })
 }

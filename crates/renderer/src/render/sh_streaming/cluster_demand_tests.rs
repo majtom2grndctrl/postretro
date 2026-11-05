@@ -4,14 +4,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::cluster_directory::{
-    ClusterRangeRecord, ClusterRangeRole, ClusterRecord, ClusterResourceDomain,
-    ClusterResourceRecord,
+    ClusterRangeRecord, ClusterRecord, ClusterResourceDomain, ClusterResourceRecord,
 };
 use postretro_level_loader::{
     ShStreamBaseMetadata, ShStreamSourceMetadata, ShStreamSparseMetadata,
 };
 
-use super::ownership::equivalence_tests::{
+use super::stored_nodes::equivalence_tests::{
     GRID_SHAPES, Rng, base_with_probes, oracle_derive, synthetic_probes,
 };
 use super::*;
@@ -67,13 +66,11 @@ fn cluster_record(range_start: u32, range_count: u32) -> ClusterRecord {
     }
 }
 
-fn dense_range(cluster_id: u32, start: u32, count: u32) -> ClusterRangeRecord {
+fn dense_range(start: u32, count: u32) -> ClusterRangeRecord {
     ClusterRangeRecord {
         resource_index: 0,
         start,
         count,
-        owner_cluster_id: cluster_id,
-        role: ClusterRangeRole::Owned,
     }
 }
 
@@ -88,15 +85,11 @@ fn synthetic_directory(
 ) -> ClusterDirectorySection {
     let mut ranges = Vec::new();
     let mut clusters = Vec::new();
-    for cluster_id in 0..cluster_count {
+    for _ in 0..cluster_count {
         let first = ranges.len() as u32;
         for _ in 0..1 + rng.below(3) {
             let start = rng.below(probe_count);
-            ranges.push(dense_range(
-                cluster_id,
-                start,
-                1 + rng.below(probe_count - start),
-            ));
+            ranges.push(dense_range(start, 1 + rng.below(probe_count - start)));
         }
         if sparse {
             for _ in 0..rng.below(3) {
@@ -104,12 +97,6 @@ fn synthetic_directory(
                     resource_index: 1,
                     start: 0,
                     count: 1,
-                    owner_cluster_id: rng.below(cluster_count),
-                    role: if rng.chance(70) {
-                        ClusterRangeRole::Halo
-                    } else {
-                        ClusterRangeRole::Owned
-                    },
                 });
             }
         }
@@ -136,16 +123,14 @@ fn synthetic_directory(
         ranges,
         seam_portal_ids: Vec::new(),
         cluster_hints: Vec::new(),
+        mandatory_bound: Vec::new(),
     }
 }
 
 /// Have the last cluster also name every probe, so each valid probe is
 /// covered and the others overlap it.
 fn cover_every_probe(directory: &mut ClusterDirectorySection, probe_count: u32) {
-    let last_cluster = directory.clusters.len() as u32 - 1;
-    directory
-        .ranges
-        .push(dense_range(last_cluster, 0, probe_count));
+    directory.ranges.push(dense_range(0, probe_count));
     let last = directory.clusters.last_mut().unwrap();
     last.range_count += 1;
     // The appended range is the last cluster's final range, so it must also
@@ -245,8 +230,8 @@ fn a_valid_probe_no_cluster_names_fails_the_plan_by_index() {
     // Clusters that stop short of the last probes leave them uncovered.
     let mut directory = synthetic_directory(&mut rng, 2, 512, dims, false);
     directory.ranges.clear();
-    directory.ranges.push(dense_range(0, 0, 300));
-    directory.ranges.push(dense_range(1, 200, 200));
+    directory.ranges.push(dense_range(0, 300));
+    directory.ranges.push(dense_range(200, 200));
     directory.clusters[0] = cluster_record(0, 1);
     directory.clusters[1] = cluster_record(1, 1);
 
@@ -275,7 +260,7 @@ fn a_dense_range_past_the_last_probe_fails_the_plan() {
     let base = base_with_probes(dims, synthetic_probes(&mut rng, dims, false, 0));
     let mut directory = synthetic_directory(&mut rng, 1, 512, dims, false);
     directory.ranges.clear();
-    directory.ranges.push(dense_range(0, 0, 513));
+    directory.ranges.push(dense_range(0, 513));
     directory.clusters[0] = cluster_record(0, 1);
     assert_eq!(
         plan_sh_residency_parts(

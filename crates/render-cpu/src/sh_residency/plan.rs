@@ -15,11 +15,13 @@ use postretro_level_loader::{
 
 use super::dense_spans::{DenseSpan, DenseSpans};
 use super::node_map::NodeMap;
-use super::ownership::{DenseNodeLayout, StoredNode, StoredNodeLayout, derive_dense_node_layout};
 use super::sample_region_tables::SampleRegionTables;
 use super::sample_regions::{SampleRegionGrid, ShSampleRegion};
 use super::sparse_compose::{
     SparseCapacityFloors, SparseComposeLayouts, compose_row_capacity, sparse_capacity_floors,
+};
+use super::stored_nodes::{
+    DenseNodeLayout, StoredNode, StoredNodeLayout, derive_dense_node_layout,
 };
 use super::{
     ANIMATED_DIRECT_DELTA_ID, DIRECT_DELTA_ID, INDIRECT_BASE_ID, INDIRECT_DELTA_ID,

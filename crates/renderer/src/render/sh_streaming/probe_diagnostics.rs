@@ -67,8 +67,8 @@ impl ShResidencyState {
 mod tests {
     use super::*;
     use postretro_level_format::cluster_directory::{
-        ClusterDirectorySection, ClusterRangeRecord, ClusterRangeRole, ClusterRecord,
-        ClusterResourceDomain, ClusterResourceRecord,
+        ClusterDirectorySection, ClusterRangeRecord, ClusterRecord, ClusterResourceDomain,
+        ClusterResourceRecord,
     };
     use postretro_level_format::sh_volume::OctahedralShProbe;
     use postretro_level_loader::ShStreamSourceMetadata;
@@ -132,11 +132,10 @@ mod tests {
                 resource_index: 0,
                 start: 0,
                 count: 64,
-                owner_cluster_id: 0,
-                role: ClusterRangeRole::Owned,
             }],
             seam_portal_ids: Vec::new(),
             cluster_hints: Vec::new(),
+            mandatory_bound: Vec::new(),
         };
         ShResidencyState::from_parts(
             [1; 32],

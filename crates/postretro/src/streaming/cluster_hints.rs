@@ -143,6 +143,7 @@ mod tests {
             ranges: Vec::new(),
             seam_portal_ids: Vec::new(),
             cluster_hints,
+            mandatory_bound: Vec::new(),
         }
     }
 

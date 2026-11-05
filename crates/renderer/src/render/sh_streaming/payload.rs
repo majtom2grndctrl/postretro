@@ -3,6 +3,8 @@
 //! These types are intentionally CPU-only. They borrow no wgpu state and
 //! exist only until their drain has written its validated row data.
 
+use postretro_level_format::cluster_sh_payloads::CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -92,7 +94,7 @@ pub(super) fn parse_sparse_rows(
         ));
     }
     let rows_bytes = (row_count as usize)
-        .checked_mul(16)
+        .checked_mul(CLUSTER_SH_SPARSE_ROW_RECORD_SIZE)
         .and_then(|count| count.checked_add(16))
         .ok_or(ShResidencyDrainError::SlotOverflow)?;
     let entries_bytes = (entry_count as usize)
@@ -109,14 +111,12 @@ pub(super) fn parse_sparse_rows(
     let mut rows = Vec::with_capacity(row_count as usize);
     let mut expected_entry = 0u32;
     for row_index in 0..row_count as usize {
-        let offset = 16 + row_index * 16;
+        let offset = 16 + row_index * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
         let row = u32_at(bytes, offset).ok_or(malformed(cluster_id, "truncated sparse row"))?;
         let first_entry =
             u32_at(bytes, offset + 4).ok_or(malformed(cluster_id, "truncated sparse row"))?;
         let count =
             u32_at(bytes, offset + 8).ok_or(malformed(cluster_id, "truncated sparse row"))?;
-        // The record's fourth word is a retired id-50 field, checked by the
-        // format crate and read by nothing here.
         if first_entry != expected_entry {
             return Err(malformed(
                 cluster_id,
@@ -243,7 +243,7 @@ mod tests {
     fn sparse_zero_tile_entry_at_allocation_end_is_valid_but_positive_overrun_is_not() {
         // Regression: compiler-emitted id-50 rows can retain a light with no kept tiles.
         let mut block = Vec::new();
-        for word in [1u32, 2, 108, 0, 8, 0, 2, 1, 7, 0, 108, 0, 9, 108, 0, 0] {
+        for word in [1u32, 2, 108, 0, 8, 0, 2, 7, 0, 108, 0, 9, 108, 0, 0] {
             block.extend_from_slice(&word.to_le_bytes());
         }
         block.resize(block.len() + 108 * 2, 0);
@@ -264,7 +264,7 @@ mod tests {
         ));
 
         let mut empty_block = Vec::new();
-        for word in [1u32, 1, 0, 0, 9, 0, 1, 1, 7, 0, 0, 0] {
+        for word in [1u32, 1, 0, 0, 9, 0, 1, 7, 0, 0, 0] {
             empty_block.extend_from_slice(&word.to_le_bytes());
         }
         let empty_row = parse_sparse_rows(0, &empty_block).unwrap();

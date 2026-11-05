@@ -42,7 +42,6 @@ mod install_journal;
 #[cfg(test)]
 mod install_tests;
 mod lifecycle;
-mod ownership;
 mod patches;
 mod payload;
 mod pipelines;
@@ -64,6 +63,7 @@ mod sparse_install;
 mod storage_refs;
 #[cfg(test)]
 mod storage_refs_tests;
+mod stored_nodes;
 #[cfg(test)]
 mod tests;
 
@@ -80,7 +80,6 @@ pub(in crate::render) use gpu::write_nine_cluster_prl;
 use gpu::{AtlasShape, buffer_with_zeroes, checked_cell_count, u32_bytes};
 use install::InstallGpu;
 use install_journal::InstallJournal;
-use ownership::{StoredNode, StoredNodeLayout, rewrite_slot};
 use patches::{ChunkPatches, SlotRun};
 use payload::{ParsedSparseRow, SparseInstallPlan, parse_sparse_rows};
 pub(crate) use pipelines::StreamingShPipelines;
@@ -91,6 +90,7 @@ use row_bitset::{RowBitSet, RowQueue};
 use row_refs::{RowRefTable, RowSet, decrement_row_ref, increment_row_ref, row_counts};
 use sample_region_index::SampleRegionIndex;
 use storage_refs::StorageRefs;
+use stored_nodes::{StoredNode, StoredNodeLayout, rewrite_slot};
 
 const PROBE_PATCH_BLOCK: u32 = 0;
 const ISOLATED_ATLAS_BLOCK: u32 = 1;

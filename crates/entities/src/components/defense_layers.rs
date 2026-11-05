@@ -562,11 +562,10 @@ mod tests {
 
     #[test]
     fn refreshed_clamps_a_kept_layer_to_a_lowered_literal_capacity() {
-        let live =
-            DefenseLayersComponent::from_descriptor(&descriptor(vec![entry(NumberOrIr::Literal(
-                100.0,
-            ))]))
-            .unwrap();
+        let live = DefenseLayersComponent::from_descriptor(&descriptor(vec![entry(
+            NumberOrIr::Literal(100.0),
+        )]))
+        .unwrap();
         let refreshed = DefenseLayersComponent::refreshed(
             Some(&live),
             &descriptor(vec![entry(NumberOrIr::Literal(40.0))]),

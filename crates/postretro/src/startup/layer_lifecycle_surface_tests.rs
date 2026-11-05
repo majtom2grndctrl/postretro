@@ -420,7 +420,12 @@ fn join_seed_refill_holds_through_a_zero_grant_before_the_next_tick() {
     let (_, joiner) = w.materialize();
     assert_eq!(w.shield(joiner), (50.0, 50.0));
     w.seed_joiner();
-    grant_layer(&mut w.ctx.registry.borrow_mut(), joiner, "shield", Some(0.0));
+    grant_layer(
+        &mut w.ctx.registry.borrow_mut(),
+        joiner,
+        "shield",
+        Some(0.0),
+    );
     w.tick();
     assert_eq!(w.shield(joiner), (150.0, 150.0));
 }

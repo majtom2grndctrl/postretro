@@ -136,7 +136,10 @@ fn on_player_layer_read_of_a_pawn_without_the_layer_is_missing() {
 
     scope.seed_event_player(&ctx.registry.borrow(), Some(bare));
     let _ = eval_value(&current, &scope);
-    assert!(scope.take_missing_event_player_value(), "absent without the layer");
+    assert!(
+        scope.take_missing_event_player_value(),
+        "absent without the layer"
+    );
 
     scope.seed_event_player(&ctx.registry.borrow(), Some(shielded));
     assert_eq!(number(&current, &scope), 30.0);
@@ -171,8 +174,11 @@ fn impact_source_layer_read_of_a_source_without_the_layer_reads_zero_and_warns_o
     let npc = ctx.registry.borrow_mut().spawn(Transform::default());
     let target = ctx.registry.borrow_mut().spawn(Transform::default());
     let mut scope = EntityScope::impact(ctx.clone());
-    let current =
-        bind(&read("player.defense.shield", Some("@impact.source")), &scope).expect("binds");
+    let current = bind(
+        &read("player.defense.shield", Some("@impact.source")),
+        &scope,
+    )
+    .expect("binds");
 
     let capture = LogCapture::start();
     for source in [Some(bare), Some(npc), None, Some(bare)] {

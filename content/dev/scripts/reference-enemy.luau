@@ -3,8 +3,8 @@
 
 local M = {}
 
-local DamageTypes = require("./damage-types.luau")
-local Defenses = require("./defenses.luau")
+local DamageTypes = require("./scripts/damage-types.luau")
+local Defenses = require("./scripts/defenses.luau")
 
 M.REFERENCE_ENEMY_CLASSNAME = "reference_enemy"
 

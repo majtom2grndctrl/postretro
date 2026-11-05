@@ -4,7 +4,7 @@
 
 local Postretro = require("postretro")
 local UI = require("postretro/ui")
-local Defenses = require("./defenses.luau")
+local Defenses = require("./scripts/defenses.luau")
 
 -- Mirror combat-lifecycle.ts and leveling.ts; the mod manifest registers both
 -- stores, so these declarations only supply the slot refs.

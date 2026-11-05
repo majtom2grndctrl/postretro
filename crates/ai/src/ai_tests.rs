@@ -9149,8 +9149,8 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         .create_function(|lua, path: String| {
             let handles = lua.create_table()?;
             let (kind, names): (&str, &[&str]) = match path.as_str() {
-                "./defenses.luau" => ("defenseLayer", &["shield", "armor"]),
-                "./damage-types.luau" => (
+                "./scripts/defenses.luau" => ("defenseLayer", &["shield", "armor"]),
+                "./scripts/damage-types.luau" => (
                     "damageType",
                     &[
                         "ballistic",

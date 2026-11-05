@@ -6,7 +6,7 @@
 -- dev play; weapon keys name curated clips.
 
 local UI = require("postretro/ui")
-local DamageTypes = require("./damage-types.luau")
+local DamageTypes = require("./scripts/damage-types.luau")
 
 local M = {}
 

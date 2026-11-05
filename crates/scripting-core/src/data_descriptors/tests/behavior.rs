@@ -488,10 +488,9 @@ pub(super) fn shipped_reference_descriptor_from_luau(
     export_name: &str,
     module_name: &str,
 ) -> EntityTypeDescriptor {
-    // Rooted at the dev scripts directory: a relative `require` resolves
-    // against the mod root, and the dev enemy requires its vocabulary modules
-    // from beside it.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/scripts");
+    // Rooted at the dev mod: a relative `require` resolves against the mod
+    // root, so the dev enemy requires `./scripts/defenses.luau`.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
     let lua = crate::luau::build_lua_state(&[], None, Some(&root)).expect("mod-rooted luau state");
     let source = format!("local M = (function()\n{source}\nend)()\nreturn M.{export_name}");
     let value: LuaValue = lua

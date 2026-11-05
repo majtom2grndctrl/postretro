@@ -11,7 +11,7 @@ use postretro_entities::{
     EntityId, ReplicationScope, ScriptCtx, SlotOwnership, SlotRecord, SlotSchema, SlotType,
     SlotValue, Transform,
 };
-use postretro_foundation::defense::{DefenseVocabulary, HandleRef};
+use postretro_foundation::defense::HandleRef;
 use postretro_foundation::{
     AuthoredHandle, DamagePayload, DefenseLayerEntry, IrNode, NumberOrIr, Seat,
 };
@@ -117,20 +117,8 @@ fn install_script(
     register_all(&mut primitives, ctx.clone());
     initialize_dev_mod(&mut app, &primitives);
 
-    postretro_scripting_core::defense_vocabulary::commit_defense_vocabulary(
-        &ctx,
-        DefenseVocabulary {
-            layers: vec!["shield".to_string()],
-            damage_types: vec![postretro_foundation::defense::DamageTypeDeclaration {
-                name: "shock".to_string(),
-                matrix: std::collections::BTreeMap::from([(
-                    "shield".to_string(),
-                    postretro_foundation::defense::PoolMultiplier::Scale(2.0),
-                )]),
-            }],
-            default_damage_type: None,
-        },
-    );
+    // The dev mod registers the vocabulary: shield and armor, and shock at
+    // ×2 on shields among its damage types.
     {
         let mut slots = ctx.slot_table.borrow_mut();
         slots.insert("e16.trip".into(), number_slot(true)).unwrap();
@@ -435,7 +423,8 @@ end)
 fn bad_defense_reference_drops_only_its_definition_at_install() {
     let script = handle_script(
         r#"
-local armor = Postretro.defineDefenseLayer("armor")
+-- `ward` is declared here but no `defineMod` registers it.
+local ward = Postretro.defineDefenseLayer("ward")
 local good = Postretro.defineReaction("e16.good", function(on)
   return { on.player:damage(5) }
 end)
@@ -445,8 +434,8 @@ end)
 local damageLayer = Postretro.defineReaction("e16.damageLayer", function(on)
   return { on.player:damage(5, { type = shield }) }
 end)
-local grantArmor = Postretro.defineReaction("e16.grantArmor", function(on)
-  return { on.player:grantLayer(armor) }
+local grantWard = Postretro.defineReaction("e16.grantWard", function(on)
+  return { on.player:grantLayer(ward) }
 end)
 local goodPolicy = Postretro.defineImpactEvent("e16.goodPolicy", { tag = "enemy" }, function(impact)
   return { impact.target:setState("good", 1) }
@@ -455,10 +444,10 @@ local badPolicy = Postretro.defineImpactEvent("e16.badPolicy", { tag = "enemy" }
   return { impact.target:setState("bad", impact.target:defense(shock).current) }
 end)
 "#,
-        "{ reactions = { good, grantType, damageLayer, grantArmor }, events = { goodPolicy, badPolicy }, playerEvents = { Postretro.players():on(tripped, { good }), Postretro.players():on(Postretro.becomes(read(armor.current):le(0)), { good }) } }",
+        "{ reactions = { good, grantType, damageLayer, grantWard }, events = { goodPolicy, badPolicy }, playerEvents = { Postretro.players():on(tripped, { good }), Postretro.players():on(Postretro.becomes(read(ward.current):le(0)), { good }) } }",
     );
     let (mut app, ctx, pawns, records) = install_script(script);
-    for name in ["e16.grantType", "e16.damageLayer", "e16.grantArmor"] {
+    for name in ["e16.grantType", "e16.damageLayer", "e16.grantWard"] {
         assert!(
             records
                 .iter()

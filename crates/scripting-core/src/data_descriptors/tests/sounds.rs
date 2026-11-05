@@ -315,9 +315,9 @@ fn fixture_ts_json(export_name: &str) -> serde_json::Value {
 
 /// One export of the Luau fixture, evaluated with the engine prelude and lowered to JSON.
 fn fixture_luau_json(export_name: &str) -> serde_json::Value {
-    // Rooted at the dev scripts directory, where the fixture's relative
-    // `require` of its damage types resolves.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev/scripts");
+    // Rooted at the dev mod, where the fixture's mod-root `require` of its
+    // damage types resolves.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
     let lua = crate::luau::build_lua_state(&[], None, Some(&root)).expect("mod-rooted luau state");
     let source =
         format!("local M = (function()\n{FIXTURE_LUAU_SRC}\nend)()\nreturn M.{export_name}");

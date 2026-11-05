@@ -79,7 +79,8 @@ fn run(
             compiled_bytes: source.into_bytes(),
             source_path: path.to_string_lossy().into_owned(),
         },
-        path.parent().unwrap(),
+        // The mod root, so `./scripts/defenses.luau` resolves.
+        path.parent().unwrap().parent().unwrap(),
     );
     let raw = captured
         .borrow_mut()
@@ -176,7 +177,12 @@ fn player_events_twins_emit_byte_identical_wire_data() {
             "setState",
             "playSound",
             "flashScreen",
-            "screenShake"
+            "screenShake",
+            // The level-up raises shield capacity, then refills health and
+            // the shield to it, in body order.
+            "addSlot",
+            "grantHealth",
+            "grantLayer"
         ]
     );
     assert_eq!(

@@ -72,7 +72,7 @@ fn number<S: BindingScope>(program: &postretro_foundation::BoundProgram<S>, scop
     }
 }
 
-// Q6: In a player-event condition a plain layer read means the player being
+// In a player-event condition a plain layer read means the player being
 // evaluated; a pawn without the layer has no value, so it is not observed.
 #[test]
 fn player_event_condition_layer_read_means_evaluated_player() {
@@ -99,7 +99,7 @@ fn player_event_condition_layer_read_means_evaluated_player() {
     );
 }
 
-// Q6: `byPlayer(on.player)` in a player-event reaction reads that player.
+// `byPlayer(on.player)` in a player-event reaction reads that player.
 #[test]
 fn on_player_layer_read_reads_the_event_player() {
     let ctx = ctx();

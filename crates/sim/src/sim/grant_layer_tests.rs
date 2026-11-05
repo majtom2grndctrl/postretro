@@ -100,7 +100,7 @@ fn grant_clamps_to_evaluated_capacity_then_adds() {
     hit(&ctx, id, 20.0, None);
     assert_eq!(shield(&ctx, id), (80.0, 100.0));
 
-    // R-P18: Lower to 40, grant with no amount, then a 30-point hit.
+    // Lower to 40, grant with no amount, then a 30-point hit.
     set_global(&ctx, "tune.cap", 40.0);
     grant(&ctx, id, None);
     assert_eq!(
@@ -115,7 +115,7 @@ fn grant_clamps_to_evaluated_capacity_then_adds() {
         "the hit sees the grant's capacity"
     );
 
-    // R-P21: The grant's evaluation is the last good value when the
+    // The grant's evaluation is the last good value when the
     // expression faults next tick.
     set_global(&ctx, "tune.ward", 0.0);
     tick(&ctx);
@@ -125,7 +125,7 @@ fn grant_clamps_to_evaluated_capacity_then_adds() {
         "descriptor `enemy` `components.health.layers[0].capacity` faulted",
     );
 
-    // R-P18 variant: A full 100 / 100, capacity raised to 125, then +25.
+    // A full 100 / 100, capacity raised to 125, then +25.
     set_global(&ctx, "tune.cap", 100.0);
     let full = spawn(&ctx, "full");
     set_global(&ctx, "tune.cap", 125.0);

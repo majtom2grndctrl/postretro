@@ -203,7 +203,7 @@ fn captured(app: &App, light: EntityId) -> bool {
         .contains_key(&(light, ComponentKind::Light))
 }
 
-// S9: A host-mirrored tail on a client plays its sound and dispatches neither
+// S9: a host-mirrored tail on a client plays its sound and dispatches neither
 // the member step nor the group command, which reach it by replication; the
 // host lands all three, presenting the sound locally.
 #[test]
@@ -254,7 +254,7 @@ fn s10_fire_from_a_level_load_tail_plays_once_on_each_machine() {
     assert_tail_quiet(&capture);
 }
 
-// S11: A member light step in a `levelLoad` landing is captured as a host-only
+// S11: a member light step in a `levelLoad` landing is captured as a host-only
 // override, inline and through `fire`; the sound plays once per machine.
 #[test]
 fn s11_member_step_in_a_landing_is_captured_on_the_host_and_replicates() {
@@ -296,7 +296,7 @@ fn s11_member_step_in_a_landing_is_captured_on_the_host_and_replicates() {
     }
 }
 
-// S38: A tail with nothing machine-local parks nothing on the client and logs
+// S38: a tail with nothing machine-local parks nothing on the client and logs
 // nothing above debug; the host lands it.
 #[test]
 fn s38_client_parks_nothing_for_a_tail_with_nothing_to_land() {
@@ -316,7 +316,7 @@ fn s38_client_parks_nothing_for_a_tail_with_nothing_to_land() {
     assert_tail_quiet(&capture);
 }
 
-// S36: The client drops a replicated write, so a later step reads the
+// S36: the client drops a replicated write, so a later step reads the
 // client's own value at its own landing rather than waiting for replication.
 // The host's write reaching the client is slot replication's own contract.
 #[test]
@@ -418,7 +418,7 @@ fn r_tail(sound: &str, wait_ms: f64) -> NamedReaction {
     )
 }
 
-// S12: A trigger's `fire(r)` and a shared-state crossing's fire of `r` inside
+// S12: a trigger's `fire(r)` and a shared-state crossing's fire of `r` inside
 // its wait park separately, so each machine plays `x` twice, as it would with
 // `x` before the wait.
 #[test]
@@ -445,7 +445,7 @@ fn s12_one_reaction_under_two_source_classes_parks_twice() {
     );
 }
 
-// S31: Two shared-state crossing fires under one class and clock share an
+// S31: two shared-state crossing fires under one class and clock share an
 // instance: the second, inside the first's wait, is a re-fire and ignored.
 #[test]
 fn s31_two_crossings_under_one_class_and_clock_share_an_instance() {
@@ -649,7 +649,7 @@ fn own_state_warnings(capture: &LogCapture) -> Vec<String> {
         .collect()
 }
 
-// S13: An own-state crossing's tail plays on the machine that crossed, from
+// S13: an own-state crossing's tail plays on the machine that crossed, from
 // its own landing; the host never sends it.
 #[test]
 fn s13_own_state_crossing_tail_plays_on_the_machine_that_crossed() {
@@ -775,7 +775,7 @@ fn own_state_tail_member_step_stays_on_the_machine_that_crossed() {
     }
 }
 
-// S40: An own-state tail's step on a networked light is captured, as the same
+// S40: an own-state tail's step on a networked light is captured, as the same
 // step is before the wait, so every client sees the host's fade; none warns.
 #[test]
 fn s40_own_state_tail_on_a_networked_light_is_captured() {

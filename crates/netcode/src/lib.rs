@@ -6966,7 +6966,7 @@ mod tests {
         assert_eq!(health.current, 80.0, "a heavy 10-point hit is ×2 on health");
     }
 
-    // G12: A flushed client hit dispatches with the client's pawn as the impact
+    // A flushed client hit dispatches with the client's pawn as the impact
     // source, so `impact.source.grantLayer` credits the damager.
     #[test]
     fn flushed_client_hit_policy_grants_the_damager() {

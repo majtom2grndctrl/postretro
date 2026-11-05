@@ -90,7 +90,7 @@ fn latch(ctx: &ScriptCtx, id: EntityId) {
     registry.set_component(id, health).unwrap();
 }
 
-// R10 / R-P14: Latched time counts toward the delay, recharge needs a tick
+// Latched time counts toward the delay, recharge needs a tick
 // that begins above zero health, and a hit on a latched entity restamps.
 #[test]
 fn revived_pawn_recharges_on_first_live_tick() {
@@ -125,7 +125,7 @@ fn revived_pawn_recharges_on_first_live_tick() {
     }
 }
 
-// R12 / R-P27: Respawn refills at the capacity it evaluates and neither sets
+// Respawn refills at the capacity it evaluates and neither sets
 // nor clears the stamp.
 #[test]
 fn respawn_neither_sets_nor_clears_the_last_hit_stamp() {
@@ -166,7 +166,7 @@ fn respawn_neither_sets_nor_clears_the_last_hit_stamp() {
     assert!(approx(layer(&ctx, id, "shield").0, 101.0));
 }
 
-// R14 / R-P4: A respawn evaluates capacity itself and refills to it; a hit
+// A respawn evaluates capacity itself and refills to it; a hit
 // later in the tick a store write lowers capacity uses the capacity in force.
 #[test]
 fn respawn_fills_to_capacity_in_force() {
@@ -237,7 +237,7 @@ fn spawn_owned(ctx: &ScriptCtx, name: &str) -> EntityId {
     id
 }
 
-// L3 / R-P8: Hot reload keeps values, last good parameters and the stamp by
+// Hot reload keeps values, last good parameters and the stamp by
 // layer name, in the edit's order.
 #[test]
 fn hot_reload_keeps_layer_values_and_stamp_by_name() {
@@ -329,7 +329,7 @@ fn hot_reload_keeps_layer_values_and_stamp_by_name() {
     }
 }
 
-// R-P15: A reload that adds a layer evaluates its parameters as spawn does,
+// A reload that adds a layer evaluates its parameters as spawn does,
 // then fills it.
 #[test]
 fn hot_reload_evaluates_and_fills_an_added_layer() {
@@ -355,7 +355,7 @@ fn hot_reload_evaluates_and_fills_an_added_layer() {
     assert_eq!(layer(&ctx, id, "shield"), (20.0, 100.0));
 }
 
-// L4: Health writes leave layers alone; respawn fills them; a carry restores
+// Health writes leave layers alone; respawn fills them; a carry restores
 // them only with carried health.
 #[test]
 fn health_writes_leave_layers_alone() {
@@ -423,7 +423,7 @@ fn spawn_seated(ctx: &ScriptCtx, seat: Seat) -> EntityId {
     id
 }
 
-// L5 / R-P6 (sim half): An unseated spawn waits silently for its seat; the
+// An unseated spawn waits silently for its seat; the
 // bind evaluates per-owner capacity, fills, and applies a carried value.
 #[test]
 fn seat_bind_evaluates_per_owner_capacity_and_restores_carry() {
@@ -457,7 +457,7 @@ fn seat_bind_evaluates_per_owner_capacity_and_restores_carry() {
     capture.assert_not_logged(log::Level::Warn, "faulted");
 }
 
-// L7 sim half / R-P16, R-P24, R-P25, R-P28: A landed seed redoes the spawn
+// A landed seed redoes the spawn
 // fill at the next tick start, before its hits, only for a layer full at
 // its pre-seed capacity, however it got full.
 #[test]
@@ -467,7 +467,7 @@ fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
         mark_layers_for_join_seed(&mut ctx.registry.borrow_mut(), pawn);
     };
     let seed = |ctx: &ScriptCtx, pawn: EntityId| seed_to(ctx, pawn, 100.0);
-    // R-P16: Full 50 / 50 refills to 150; 30 / 50 keeps 30.
+    // Full 50 / 50 refills to 150; 30 / 50 keeps 30.
     for (pre_hit, expected) in [(None, 150.0), (Some(20.0), 30.0)] {
         let ctx = per_owner_pawn(50.0, 0.0);
         let pawn = spawn_seated(&ctx, Seat(1));
@@ -484,14 +484,14 @@ fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
             "{pre_hit:?}"
         );
     }
-    // R-P24: The refill lands before that tick's first hit.
+    // The refill lands before that tick's first hit.
     let ctx = per_owner_pawn(50.0, 0.0);
     let pawn = spawn_seated(&ctx, Seat(1));
     seed(&ctx, pawn);
     tick(&ctx);
     hit(&ctx, pawn, 20.0, None);
     assert_eq!(layer(&ctx, pawn, "shield"), (130.0, 150.0));
-    // R-P25: Hit, then a grant refill, before the seed.
+    // Hit, then a grant refill, before the seed.
     let ctx = per_owner_pawn(50.0, 0.0);
     let pawn = spawn_seated(&ctx, Seat(1));
     hit(&ctx, pawn, 20.0, None);
@@ -499,7 +499,7 @@ fn join_seed_refills_only_layers_full_at_pre_seed_capacity() {
     seed(&ctx, pawn);
     tick(&ctx);
     assert_eq!(layer(&ctx, pawn, "shield"), (150.0, 150.0));
-    // R-P28: 0 / 0 is full; the refill beats the recharge.
+    // 0 / 0 is full; the refill beats the recharge.
     let ctx = per_owner_pawn(0.0, 60.0);
     let pawn = spawn_seated(&ctx, Seat(1));
     assert_eq!(layer(&ctx, pawn, "shield"), (0.0, 0.0));

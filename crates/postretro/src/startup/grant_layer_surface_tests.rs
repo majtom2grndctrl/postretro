@@ -255,7 +255,7 @@ fn break_shield(ctx: &ScriptCtx, pawn: EntityId) {
     );
 }
 
-// G6 / R-P26: Grant 25 then damage 20 against shield 0 / 100 and health 100
+// Grant 25 then damage 20 against shield 0 / 100 and health 100
 // leaves 5 / 100 and health 100; the reverse order leaves 25 / 100 and 80.
 #[test]
 fn body_grant_and_damage_apply_in_body_order() {
@@ -285,7 +285,7 @@ fn body_grant_and_damage_apply_in_body_order() {
     }
 }
 
-// G3: The crossing player's own capacity raise, then its fill, in one body.
+// The crossing player's own capacity raise, then its fill, in one body.
 #[test]
 fn crossing_body_raises_capacity_then_grants_in_body_order() {
     let (mut app, ctx, pawns) =
@@ -304,7 +304,7 @@ fn crossing_body_raises_capacity_then_grants_in_body_order() {
     }
 }
 
-// G4: A host crossing's global `setState`, then `players().grantLayer`.
+// A host crossing's global `setState`, then `players().grantLayer`.
 #[test]
 fn crossing_set_state_then_grant_layer_reads_new_capacity() {
     let (mut app, ctx, pawns) =
@@ -383,7 +383,7 @@ fn state(ctx: &ScriptCtx, entity: EntityId, name: &str) -> f32 {
         .map_or(0.0, |state| state.get(name))
 }
 
-// D2: A level script's own handles reference the registered vocabulary:
+// A level script's own handles reference the registered vocabulary:
 // `impact.type(shock)` in a policy and `.damage(n, { type })` in a reaction.
 #[test]
 fn level_script_handles_reference_registered_vocabulary() {
@@ -417,7 +417,7 @@ end)
     assert_eq!(state(&ctx, target, "shocked"), 1.0);
 }
 
-// D3: A level script that re-declares a registered type with another matrix
+// A level script that re-declares a registered type with another matrix
 // only gets a handle; hits drain by the matrix `defineMod` registered.
 #[test]
 fn redeclared_damage_type_drains_by_the_registered_matrix() {
@@ -444,7 +444,7 @@ end)
     }
 }
 
-// D6: A bad defense reference drops only the definition holding it, on each
+// A bad defense reference drops only the definition holding it, on each
 // install surface; its siblings install and run.
 #[test]
 fn bad_defense_reference_drops_only_its_definition_at_install() {

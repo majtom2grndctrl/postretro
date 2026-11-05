@@ -539,7 +539,7 @@ mod tests {
         }
     }
 
-    // Q2: A guard reads the brain entity's own layer as `state(name)` reads
+    // A guard reads the brain entity's own layer as `state(name)` reads
     // its own state, and flips when that layer breaks.
     #[test]
     fn brain_guard_transitions_when_own_armor_breaks() {

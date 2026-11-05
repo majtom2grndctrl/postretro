@@ -447,7 +447,8 @@ fn check_reserved_options(
 ) -> Result<(), String> {
     match object.get("options") {
         None | Some(serde_json::Value::Null) => Ok(()),
-        // Luau encodes an empty table as an empty array.
+        // An empty Luau table has no sequence/map distinction, so it can arrive
+        // as an empty array or an empty object; both mean no options.
         Some(serde_json::Value::Array(entries)) if entries.is_empty() => Ok(()),
         Some(serde_json::Value::Object(options)) => match options.keys().next() {
             None => Ok(()),

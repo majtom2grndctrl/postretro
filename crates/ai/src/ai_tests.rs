@@ -9263,6 +9263,7 @@ fn step_reference_enemy_graph_with_hostility(
     registry
         .set_component(enemy, BrainComponent::from_graph(&graph))
         .expect("fresh enemy is live");
+    give_reference_armor(&mut registry, enemy);
 
     let mut programs = BrainPrograms::new();
     let mut warned = HashSet::new();
@@ -9621,12 +9622,38 @@ fn reference_player_x(tick: u32) -> f32 {
 }
 
 /// Run the scripted approach against one brain and record its per-tick output.
+/// The shipped reference enemy spawns with 120 armor: without it, its own
+/// armor reads 0 and its `defense(armor)` guard sends it straight to retreat.
+fn give_reference_armor(registry: &mut EntityRegistry, enemy: EntityId) {
+    use postretro_entities::components::defense_layers::{DefenseLayer, DefenseLayersComponent};
+    registry
+        .set_component(
+            enemy,
+            DefenseLayersComponent {
+                descriptor: None,
+                layers: vec![DefenseLayer {
+                    name: "armor".to_string(),
+                    value: 120.0,
+                    capacity: 120.0,
+                    recharge_delay_ms: 3_000.0,
+                    recharge_rate: 0.0,
+                    resist: Vec::new(),
+                    refill: Default::default(),
+                }],
+                health_resist: Vec::new(),
+                last_hit_tick: None,
+            },
+        )
+        .expect("the enemy is live");
+}
+
 fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     const TICKS: u32 = 200;
     let mut reg = EntityRegistry::new();
     let mut runtime = AiRuntime::new();
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    give_reference_armor(&mut reg, enemy);
 
     (0..TICKS)
         .map(|tick| {

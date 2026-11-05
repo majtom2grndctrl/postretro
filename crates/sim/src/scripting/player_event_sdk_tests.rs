@@ -137,13 +137,21 @@ fn set_per_seat(world: &World, name: &str, seat: Seat, value: f32) {
 /// hand-written declarations mirror the dev mod's stores: `progression.xp`
 /// (`content/dev/scripts/combat-lifecycle.ts`) and `leveling.level` /
 /// `leveling.lastLevelUpXp` (`content/dev/scripts/leveling.ts`). Each slot's
-/// `per_owner` and `network` follow those modules: xp and level are per-owner
-/// `ownerPrivate`, `lastLevelUpXp` is one `shared` value. Keep them in step.
+/// `per_owner` and `network` follow those modules: xp, the shield capacity
+/// bonus and level are per-owner `ownerPrivate`, `lastLevelUpXp` is one
+/// `shared` value. Keep them in step.
 fn example_world() -> World {
     let world = World::new();
     world.spawn_player(Some(Seat(1)), 100.0);
     world.spawn_player(Some(Seat(2)), 100.0);
     declare(&world, XP, 0.0, ReplicationScope::OwnerPrivatePlayer, true);
+    declare(
+        &world,
+        "progression.shieldCapacity",
+        0.0,
+        ReplicationScope::OwnerPrivatePlayer,
+        true,
+    );
     declare(
         &world,
         LEVEL,

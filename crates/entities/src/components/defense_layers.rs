@@ -400,11 +400,12 @@ pub(crate) fn drain_hit(
     damage_type: Option<u16>,
 ) -> (DrainOutcome, Option<u16>) {
     let vocabulary = std::sync::Arc::clone(registry.defense_vocabulary());
-    let damage_type = damage_type
-        .or(vocabulary
-            .default_damage_type
-            .and_then(|index| u16::try_from(index).ok()))
-        .filter(|index| usize::from(*index) < vocabulary.damage_types.len());
+    // An unknown type counts as absent, so it deals the default type.
+    let known = |index: &u16| usize::from(*index) < vocabulary.damage_types.len();
+    let damage_type = damage_type.filter(known).or(vocabulary
+        .default_damage_type
+        .and_then(|index| u16::try_from(index).ok())
+        .filter(known));
     let declaration = damage_type.map(|index| &vocabulary.damage_types[usize::from(index)]);
     let matrix_entry = |pool: &str| {
         declaration.map_or(PoolMultiplier::ONE, |declaration| {

@@ -196,10 +196,19 @@ pub fn drain_layers<'a>(
         outcome.absorbed += held;
         *value = 0.0;
         outcome.broke = true;
-        remaining = (remaining - held / scale).max(0.0);
+        // A layer that took exactly what it could leaves nothing, not the
+        // rounding residue of `remaining - held / scale`.
+        remaining = if scaled == held {
+            0.0
+        } else {
+            (remaining - held / scale).max(0.0)
+        };
     }
-    outcome.health_loss = remaining * health_multiplier;
-    outcome.points_dealt = outcome.absorbed + outcome.health_loss;
+    // A finite raw times a large multiplier can overflow; the losses stay
+    // finite so the contributor ledger still credits the hit.
+    let finite_cap = |amount: f32| if amount > f32::MAX { f32::MAX } else { amount };
+    outcome.health_loss = finite_cap(remaining * health_multiplier);
+    outcome.points_dealt = finite_cap(outcome.absorbed + outcome.health_loss);
     outcome
 }
 

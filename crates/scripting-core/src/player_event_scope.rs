@@ -90,10 +90,12 @@ pub fn reaction_uses_event_player(descriptor: &ReactionDescriptor) -> bool {
     }
 }
 
-/// Whether `name` is a per-player slot: an engine per-player slot or a mod
-/// per-owner slot.
+/// Whether `name` is a per-player slot: an engine per-player slot, a
+/// defense-layer slot (`player.defense.<name>[.capacity]`, whose value lives
+/// on each pawn) or a mod per-owner slot.
 pub fn is_per_player_slot(name: &str, slot_table: &SlotTable) -> bool {
     PlayerSlot::from_name(name).is_some()
+        || crate::player_slots::defense_slot(name).is_some()
         || slot_table
             .get(name)
             .is_some_and(|record| record.schema.per_owner)
@@ -149,4 +151,42 @@ pub fn plain_per_player_read(
         ReactionDescriptor::Progress(_) => {}
     }
     first
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_descriptors::PrimitiveDescriptor;
+
+    fn reaction_reading(name: &str, owner: Option<&str>) -> ReactionDescriptor {
+        let mut input = serde_json::json!({ "op": "input", "name": name });
+        if let Some(owner) = owner {
+            input["owner"] = owner.into();
+        }
+        ReactionDescriptor::Primitive(PrimitiveDescriptor {
+            primitive: "setSlot".to_string(),
+            target: None,
+            kind: None,
+            tag: None,
+            on_complete: None,
+            args: serde_json::json!({ "value": input }),
+        })
+    }
+
+    // A defense-layer slot is per-pawn, so a plain read outside a condition
+    // is rejected like any other per-player slot; an owned read passes.
+    #[test]
+    fn plain_defense_slot_read_is_a_per_player_read() {
+        let table = SlotTable::new();
+        for name in ["player.defense.shield", "player.defense.shield.capacity"] {
+            assert_eq!(
+                plain_per_player_read(&reaction_reading(name, None), &table).as_deref(),
+                Some(name)
+            );
+            assert_eq!(
+                plain_per_player_read(&reaction_reading(name, Some(EVENT_PLAYER_TOKEN)), &table),
+                None
+            );
+        }
+    }
 }

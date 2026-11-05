@@ -1,6 +1,7 @@
-// `grantLayer` in a crossing-fired body, through the production level-load
-// pipeline: the body's store writes, grants and damage land at dispatch, in
-// body order, and each grant evaluates the capacity in force when it applies.
+// `grantLayer` in a crossing-fired body or a UI press, through the production
+// level-load pipeline: the body's store writes, grants and damage land at
+// dispatch, in body order, and each grant evaluates the capacity in force when
+// it applies.
 // See: context/lib/scripting.md §11 (Defense layers), §12 (Player events)
 
 use postretro_entities::components::defense_layers::DefenseLayersComponent;
@@ -509,4 +510,103 @@ end)
     shocked_hit(&mut app, &ctx, target);
     assert_eq!(state(&ctx, target, "good"), 1.0, "the sibling policy runs");
     assert_eq!(state(&ctx, target, "bad"), 0.0, "the bad policy dropped");
+}
+
+/// Last frame's focus export: one focused button whose `onPress` fires
+/// `reaction`.
+fn export_press_button(app: &mut crate::App, reaction: &str) {
+    use postretro_ui::tree::{FocusRect, FocusRectList, NodeInteraction};
+    app.session.as_mut().unwrap().ui_focus_rects = Some(FocusRectList {
+        rects: vec![FocusRect {
+            id: "press".to_string(),
+            rect: [0.0, 0.0, 100.0, 20.0],
+            z: 0,
+            group: None,
+            neighbors: Default::default(),
+            interaction: Some(NodeInteraction::Button {
+                on_press: reaction.to_string(),
+                repeat_on_hold: None,
+            }),
+            selected: None,
+            checked: None,
+            disabled: false,
+            tablist: None,
+            clip: None,
+        }],
+        ..Default::default()
+    });
+}
+
+/// One frame's game-logic read of the UI captures, in `frame_loop` order:
+/// take what earlier frames captured, then promote this frame's captures.
+fn take_frame_intents(app: &mut crate::App) -> Vec<crate::input::UiIntent> {
+    let dispatch = &mut app.session.as_mut().unwrap().ui_dispatch;
+    let ready = dispatch.take_ready();
+    dispatch.advance_frame();
+    ready
+}
+
+fn global_number(ctx: &ScriptCtx, slot: &str) -> f32 {
+    match ctx
+        .slot_table
+        .borrow()
+        .get(slot)
+        .and_then(|record| record.value.clone())
+    {
+        Some(SlotValue::Number(value)) => value,
+        other => panic!("{slot} is {other:?}"),
+    }
+}
+
+// In single player a UI press reaches game logic on the frame after its
+// input. Its body's store write lands at dispatch, before that frame's fixed
+// ticks, so the tick start evaluates the shield capacity the press raised.
+#[test]
+fn ui_press_store_write_lands_before_that_frames_ticks() {
+    use crate::input::{NavIntent, UiCaptureMode, UiIntentPayload};
+    let (mut app, ctx, pawns) =
+        install("UI.updateState(e16.cap, 150), Postretro.players():grantLayer(shield)");
+    export_press_button(&mut app, "e16.body");
+
+    // Frame N's input stage captures the confirm on the focused button.
+    {
+        let dispatch = &mut app.session.as_mut().unwrap().ui_dispatch;
+        dispatch.set_mode(UiCaptureMode::Capture);
+        let _ = dispatch.dispatch_event(Some(UiIntentPayload::Nav(NavIntent::Confirm)));
+    }
+    // Frame N's game-logic phase does not see it yet.
+    assert!(take_frame_intents(&mut app).is_empty());
+    assert_eq!(global_number(&ctx, "e16.cap"), 100.0);
+
+    // Frame N+1's game-logic phase takes it, and the button fires.
+    let intents = take_frame_intents(&mut app);
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent.payload, UiIntentPayload::Nav(NavIntent::Confirm)))
+    );
+    app.fire_focused_button_activation(Some("press"));
+    assert_eq!(
+        global_number(&ctx, "e16.cap"),
+        150.0,
+        "the write is in the store when the press's dispatch returns"
+    );
+    for &pawn in &pawns {
+        assert_eq!(shield(&ctx, pawn), (150.0, 150.0));
+    }
+
+    // That frame's fixed tick starts after the press: its capacity evaluation
+    // reads 150, so the full layer is not clamped back to 100.
+    {
+        let mut registry = ctx.registry.borrow_mut();
+        registry.advance_host_tick();
+        postretro_sim::sim::defense_layers::recharge_defense_layers(&mut registry);
+    }
+    for &pawn in &pawns {
+        assert_eq!(
+            shield(&ctx, pawn),
+            (150.0, 150.0),
+            "the tick start reads the press's write"
+        );
+    }
 }

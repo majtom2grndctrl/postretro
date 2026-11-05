@@ -130,6 +130,16 @@ pub trait DefenseParameterSource {
         entity: EntityId,
         component: &mut DefenseLayersComponent,
     );
+
+    /// Evaluate only layer `index`'s capacity, as a grant does: the result
+    /// becomes the capacity in force, and the entity's last good value.
+    fn evaluate_capacity(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+        index: usize,
+    );
 }
 
 fn resist_for(resists: &[Resist], damage_type: &str) -> f32 {

@@ -21,7 +21,24 @@ pub(crate) mod health;
 #[cfg(feature = "test-support")]
 pub mod health;
 /// Install-time check of a `.damage` step's args against the vocabulary.
+pub use grant::validate_grant_layer_args;
 pub use health::reactions::validate_apply_damage_args;
+
+/// Check a reaction step's defense references against the committed
+/// vocabulary: `applyDamage`'s damage type and `grantLayer`'s layer. Other
+/// primitives pass. The error names the primitive.
+pub fn validate_defense_reference_args(
+    primitive: &str,
+    args: &serde_json::Value,
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    match primitive {
+        "applyDamage" => validate_apply_damage_args(args, vocabulary)
+            .map_err(|error| format!("applyDamage {error}")),
+        "grantLayer" => validate_grant_layer_args(args, vocabulary),
+        _ => Ok(()),
+    }
+}
 pub mod impact_effects;
 pub mod impact_policy;
 pub mod life_state_commands;

@@ -701,12 +701,14 @@ mod tests {
     fn vocabulary_load_failures_name_the_key_path() {
         let layer = |name: &str| serde_json::json!({"kind": "defenseLayer", "name": name});
         let ty = |name: &str, matrix: serde_json::Value| serde_json::json!({"kind": "damageType", "name": name, "matrix": matrix});
-        let cases: Vec<(
+        // (defenseLayers, damageTypes, defaultDamageType, expected key path)
+        type Case = (
             Option<serde_json::Value>,
             Option<serde_json::Value>,
             Option<serde_json::Value>,
-            &str,
-        )> = vec![
+            &'static str,
+        );
+        let cases: Vec<Case> = vec![
             (
                 Some(serde_json::json!([layer("health")])),
                 None,

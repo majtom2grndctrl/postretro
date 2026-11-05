@@ -2496,6 +2496,9 @@ export type ActivatorsTarget = {
   respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this fire's activators' named ammo-reserve pool.
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  --- Refill `layer` on this fire's activators: omit `amount` to fill to
+  --- capacity, or add it, clamped to capacity.
+  grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -2534,6 +2537,9 @@ export type PlayerTarget = {
   respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   --- Add `amount` to this event's player's named ammo-reserve pool.
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
+  --- Refill `layer` on this event's player: omit `amount` to fill to
+  --- capacity, or add it, clamped to capacity.
+  grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   --- Add `delta` to this event's player's value of a per-owner numeric slot.
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -2621,6 +2627,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "grantLayer", target: "@impact.source", args: { layer: DefenseLayer, amount: any? } }
   | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
@@ -2656,6 +2663,10 @@ export type SourceHandle = {
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
   --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  --- Refill `layer` on the impact damager: omit `amount` to fill to
+  --- capacity, or add it, clamped to capacity evaluated when the grant
+  --- applies. A fire with no damager skips this effect.
+  grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,
   --- Whether the damager is a player pawn in life state `name` at this fire.
   --- False for a damager that is not a player. An unknown name skips the policy.
   inLifeState: (self: SourceHandle, name: string) -> BoolRef,
@@ -2894,6 +2905,9 @@ export type PlayerGroup = {
   respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   --- Add `amount` to each player's named ammo-reserve pool.
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  --- Refill `layer` on each player: omit `amount` to fill to capacity, or
+  --- add it, clamped to capacity.
+  grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   --- Fire `fire` once per player whenever `edge`'s condition crosses for that

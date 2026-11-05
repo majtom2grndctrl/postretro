@@ -13,7 +13,7 @@ use postretro_scripting_core::store_bridge::{json_value_for_slot, validate_slot_
 use serde::Deserialize;
 
 use super::TRIGGER_EVENT_INPUTS;
-use crate::grant::{GrantAmmoArgs, GrantHealthArgs};
+use crate::grant::{GrantAmmoArgs, GrantHealthArgs, GrantLayerArgs};
 use crate::health::reactions::ApplyDamageArgs;
 use crate::mover_commands::MoverSetSpinRateArgs;
 use crate::scripting::reactions::animation::SetAnimationStateArgs;
@@ -294,6 +294,38 @@ pub(super) fn bind_command_at(
             Some(BoundTriggerCommand::GrantAmmo {
                 target: target(primitive)?,
                 ammo_type: args.ammo_type,
+                amount: args.amount,
+            })
+        }
+        "grantLayer" => {
+            let args: GrantLayerArgs = match serde_json::from_value::<GrantLayerArgs>(args.clone())
+            {
+                Ok(args) if args.amount.is_none_or(f32::is_finite) => args,
+                Ok(_) => {
+                    log::warn!("[Trigger] grantLayer amount is non-finite; not binding");
+                    return None;
+                }
+                Err(error) => {
+                    log::warn!("[Trigger] grantLayer has invalid args; not binding: {error}");
+                    return None;
+                }
+            };
+            let layer = match args
+                .layer
+                .handle("grantLayer.layer")
+                .and_then(|handle| handle.expect_layer().map(str::to_string))
+            {
+                Ok(layer) => layer,
+                Err(error) => {
+                    log::warn!(
+                        "[Trigger] grantLayer has a bad layer reference; not binding: {error}"
+                    );
+                    return None;
+                }
+            };
+            Some(BoundTriggerCommand::GrantLayer {
+                target: target(primitive)?,
+                layer,
                 amount: args.amount,
             })
         }

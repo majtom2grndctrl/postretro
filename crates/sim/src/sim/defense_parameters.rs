@@ -344,6 +344,40 @@ impl DefenseParameterSource for DefenseParameters {
         }
         self.evaluate_resists(&bound.health_resist, &mut component.health_resist);
     }
+
+    fn evaluate_capacity(
+        &self,
+        registry: &EntityRegistry,
+        entity: EntityId,
+        component: &mut DefenseLayersComponent,
+        index: usize,
+    ) {
+        if !self.authoritative.get() {
+            return;
+        }
+        let Some(bound) = component
+            .descriptor
+            .as_deref()
+            .and_then(|name| self.entries.get(name))
+        else {
+            return;
+        };
+        let Some(layer) = component.layers.get_mut(index) else {
+            return;
+        };
+        let Some(bound_layer) = bound.layers.iter().find(|bound| bound.name == layer.name) else {
+            return;
+        };
+        if matches!(bound_layer.capacity, BoundValue::Literal) {
+            return;
+        }
+        self.scope.seed(registry, entity);
+        self.evaluate_into(
+            &bound_layer.capacity,
+            LAYER_CAPACITY_RANGE,
+            &mut layer.capacity,
+        );
+    }
 }
 
 fn bind_value(scope: &LayerScope, label: String, value: &NumberOrIr) -> BoundValue {

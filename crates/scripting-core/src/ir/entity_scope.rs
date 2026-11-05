@@ -85,6 +85,16 @@ pub struct EntityScope {
 const _: () = assert!(PlayerSlot::ALL.len() <= u32::BITS as usize);
 
 impl EntityScope {
+    /// Whether the committed vocabulary declares layer kind `name`. Binding
+    /// checks a `grantLayer` handle against it.
+    pub fn declares_defense_layer(&self, name: &str) -> bool {
+        self.registry
+            .borrow()
+            .defense_vocabulary()
+            .layer_index(name)
+            .is_some()
+    }
+
     /// Construct the host-authoritative impact-policy composite scope.
     ///
     /// Entity state itself is host-only. Bare global-store outputs still use

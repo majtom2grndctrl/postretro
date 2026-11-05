@@ -146,6 +146,7 @@ export type PlayerGroup = {
   setLifeState: (self: PlayerGroup, name: string) -> GroupCommand,
   respawn: (self: PlayerGroup, options: RespawnOptions?) -> GroupCommand,
   grantAmmo: (self: PlayerGroup, type: string, amount: number) -> GroupCommand,
+  grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   on: (self: PlayerGroup, edge: PlayerEventEdge, fire: {Reaction<any> | string}, options: PlayerEventOptions?) -> PlayerEventDescriptor,
 }
@@ -367,6 +368,7 @@ export type ActivatorsTarget = {
   setLifeState: (self: ActivatorsTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: ActivatorsTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: ActivatorsTarget, type: string, amount: number) -> SubjectTokenCommand,
+  grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- The player a player event fired for (`on.player`): a command target, and
@@ -378,6 +380,7 @@ export type PlayerTarget = {
   setLifeState: (self: PlayerTarget, name: string) -> SubjectTokenCommand,
   respawn: (self: PlayerTarget, options: RespawnOptions?) -> SubjectTokenCommand,
   grantAmmo: (self: PlayerTarget, type: string, amount: number) -> SubjectTokenCommand,
+  grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
 --- Dispatch values published by a player event: the player it fired for.
@@ -449,6 +452,7 @@ type ImpactEffectWire =
   | { primitive: "setState", target: "@impact.target", args: { name: string, value: any } }
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
+  | { primitive: "grantLayer", target: "@impact.source", args: { layer: DefenseLayer, amount: any? } }
   | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
@@ -487,6 +491,7 @@ export type SourceHandle = {
   --- Add an ammo-pool balance to the impact damager. A fire with no damager
   --- skips this effect; app-drain impacts run no policy in v1.
   grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,
+  grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,
   --- Whether the damager is a player pawn in life state `name` at this fire.
   --- False for a damager that is not a player. An unknown name skips the policy.
   inLifeState: (self: SourceHandle, name: string) -> BoolRef,
@@ -727,6 +732,13 @@ IMPACT_SOURCE = table.freeze({
   end,
   grantAmmo = function(_self: SourceHandle, ammoType: string, amount: NumberValue): Effect
     return sourceImpactEffect("grantAmmo", { type = ammoType, amount = numberNode(amount) })
+  end,
+  grantLayer = function(_self: SourceHandle, layer: DefenseLayer, amount: NumberValue?): Effect
+    local args: { [string]: any } = { layer = layer }
+    if amount ~= nil then
+      args.amount = numberNode(amount)
+    end
+    return sourceImpactEffect("grantLayer", args)
   end,
   inLifeState = function(_self: SourceHandle, name: string): BoolRef
     return boolRef({ op = "input", owner = "@impact.source", name = "player.inLifeState:" .. name })

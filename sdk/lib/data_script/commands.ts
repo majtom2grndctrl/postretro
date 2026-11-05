@@ -71,6 +71,12 @@ export interface PlayerGroup {
   respawn(options?: RespawnOptions): GroupCommand;
   /** Add `amount` to each player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): GroupCommand;
+  /**
+   * Refill each player's `layer`: omit `amount` to fill to capacity, or add
+   * a finite, non-negative `amount`, clamped to capacity. A player without
+   * that layer warns and is skipped.
+   */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   /**
@@ -116,6 +122,8 @@ export interface ActivatorsTarget {
   respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this fire's activators' named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
+  /** Refill this fire's activators' `layer`: omit `amount` to fill, or add it, clamped to capacity. */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -137,6 +145,8 @@ export interface PlayerTarget {
   respawn(options?: RespawnOptions): SubjectTokenCommand;
   /** Add to this event's player's named ammo-reserve pool. */
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
+  /** Refill this event's player's `layer`: omit `amount` to fill, or add it, clamped to capacity. */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -181,6 +191,8 @@ function playerVerbs<R>(make: CommandBuilder<R>) {
       return make("respawn", args);
     },
     grantAmmo: (type: string, amount: number): R => make("grantAmmo", { type, amount }),
+    grantLayer: (layer: import("postretro").DefenseLayer, amount?: number): R =>
+      make("grantLayer", amount === undefined ? { layer } : { layer, amount }),
     addSlot: (slot: StateRef<number>, delta: number): R =>
       make("addSlot", { slot: slot.slot, delta }),
   };

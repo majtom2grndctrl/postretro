@@ -27,7 +27,7 @@ use postretro_test_log_capture::LogCapture;
 use super::defense_layers::{VISITED, recharge_defense_layers};
 use super::defense_parameters::{DefenseParameters, EVALUATIONS};
 
-fn slot(value: f32, per_owner: bool) -> SlotRecord {
+pub(crate) fn slot(value: f32, per_owner: bool) -> SlotRecord {
     SlotRecord::new(SlotSchema {
         slot_type: SlotType::Number,
         default: Some(SlotValue::Number(value)),
@@ -44,49 +44,49 @@ fn slot(value: f32, per_owner: bool) -> SlotRecord {
     })
 }
 
-fn input(name: &str) -> IrNode {
+pub(crate) fn input(name: &str) -> IrNode {
     IrNode::Input {
         name: name.to_string(),
         owner: None,
     }
 }
 
-fn constant(value: f32) -> IrNode {
+pub(crate) fn constant(value: f32) -> IrNode {
     IrNode::Const {
         value: IrValue::Number(value),
     }
 }
 
-fn div(a: IrNode, b: IrNode) -> IrNode {
+pub(crate) fn div(a: IrNode, b: IrNode) -> IrNode {
     IrNode::Div {
         a: Box::new(a),
         b: Box::new(b),
     }
 }
 
-fn mul(a: IrNode, b: IrNode) -> IrNode {
+pub(crate) fn mul(a: IrNode, b: IrNode) -> IrNode {
     IrNode::Mul {
         a: Box::new(a),
         b: Box::new(b),
     }
 }
 
-fn expr(node: IrNode) -> NumberOrIr {
+pub(crate) fn expr(node: IrNode) -> NumberOrIr {
     NumberOrIr::Ir(node)
 }
 
-fn lit(value: f32) -> NumberOrIr {
+pub(crate) fn lit(value: f32) -> NumberOrIr {
     NumberOrIr::Literal(value)
 }
 
-struct Layer {
-    capacity: NumberOrIr,
-    delay: Option<NumberOrIr>,
-    rate: Option<NumberOrIr>,
-    resist: Vec<(&'static str, NumberOrIr)>,
+pub(crate) struct Layer {
+    pub(crate) capacity: NumberOrIr,
+    pub(crate) delay: Option<NumberOrIr>,
+    pub(crate) rate: Option<NumberOrIr>,
+    pub(crate) resist: Vec<(&'static str, NumberOrIr)>,
 }
 
-fn layer(capacity: NumberOrIr) -> Layer {
+pub(crate) fn layer(capacity: NumberOrIr) -> Layer {
     Layer {
         capacity,
         delay: None,
@@ -95,7 +95,7 @@ fn layer(capacity: NumberOrIr) -> Layer {
     }
 }
 
-fn health(layers: Vec<Layer>) -> HealthDescriptor {
+pub(crate) fn health(layers: Vec<Layer>) -> HealthDescriptor {
     HealthDescriptor {
         max: 100.0,
         layers: layers
@@ -120,7 +120,7 @@ fn health(layers: Vec<Layer>) -> HealthDescriptor {
 
 /// A host session with the global slots `tune.*`, the per-owner slot
 /// `seat.cap`, the shock type and one descriptor per entry of `descriptors`.
-fn session(descriptors: Vec<(&str, bool, HealthDescriptor)>) -> ScriptCtx {
+pub(crate) fn session(descriptors: Vec<(&str, bool, HealthDescriptor)>) -> ScriptCtx {
     let ctx = ScriptCtx::new();
     {
         let mut table = ctx.slot_table.borrow_mut();
@@ -175,7 +175,7 @@ fn session(descriptors: Vec<(&str, bool, HealthDescriptor)>) -> ScriptCtx {
     ctx
 }
 
-fn set_global(ctx: &ScriptCtx, name: &str, value: f32) {
+pub(crate) fn set_global(ctx: &ScriptCtx, name: &str, value: f32) {
     ctx.slot_table
         .borrow_mut()
         .get_mut(name)
@@ -185,7 +185,7 @@ fn set_global(ctx: &ScriptCtx, name: &str, value: f32) {
 
 /// Spawn `descriptor`'s layers the way the data-archetype spawn does:
 /// evaluate, then fill.
-fn spawn(ctx: &ScriptCtx, descriptor: &str) -> EntityId {
+pub(crate) fn spawn(ctx: &ScriptCtx, descriptor: &str) -> EntityId {
     let health_desc = ctx
         .data_registry
         .borrow()
@@ -212,13 +212,13 @@ fn spawn(ctx: &ScriptCtx, descriptor: &str) -> EntityId {
     id
 }
 
-fn tick(ctx: &ScriptCtx) {
+pub(crate) fn tick(ctx: &ScriptCtx) {
     let mut registry = ctx.registry.borrow_mut();
     registry.advance_host_tick();
     recharge_defense_layers(&mut registry);
 }
 
-fn shield(ctx: &ScriptCtx, id: EntityId) -> (f32, f32) {
+pub(crate) fn shield(ctx: &ScriptCtx, id: EntityId) -> (f32, f32) {
     let registry = ctx.registry.borrow();
     let layer = registry
         .get_component::<DefenseLayersComponent>(id)
@@ -228,7 +228,7 @@ fn shield(ctx: &ScriptCtx, id: EntityId) -> (f32, f32) {
     (layer.value, layer.capacity)
 }
 
-fn hit(ctx: &ScriptCtx, id: EntityId, amount: f32, ty: Option<u16>) {
+pub(crate) fn hit(ctx: &ScriptCtx, id: EntityId, amount: f32, ty: Option<u16>) {
     apply_damage_with_context(
         &mut ctx.registry.borrow_mut(),
         id,
@@ -241,7 +241,7 @@ fn hit(ctx: &ScriptCtx, id: EntityId, amount: f32, ty: Option<u16>) {
     );
 }
 
-fn approx(a: f32, b: f32) -> bool {
+pub(crate) fn approx(a: f32, b: f32) -> bool {
     (a - b).abs() < 1.0e-3
 }
 

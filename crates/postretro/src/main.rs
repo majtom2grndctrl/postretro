@@ -10,6 +10,8 @@ mod camera;
 mod client_assist;
 #[cfg(test)]
 mod coop_fixture_tests;
+#[cfg(test)]
+mod defense_layer_write_gate_tests;
 mod fluid_presentation;
 mod frame_eye;
 mod frame_loop;

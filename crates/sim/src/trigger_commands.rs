@@ -50,6 +50,13 @@ pub(crate) enum BoundTriggerCommand {
         ammo_type: String,
         amount: f32,
     },
+    /// `grantLayer`: the layer name is checked against the vocabulary at
+    /// install, so a bound command always names a declared layer.
+    GrantLayer {
+        target: BoundTarget,
+        layer: String,
+        amount: Option<f32>,
+    },
     Arm {
         target: BoundTarget,
     },
@@ -158,6 +165,7 @@ pub(crate) enum BoundTriggerCommandKind {
     Damage,
     GrantHealth,
     GrantAmmo,
+    GrantLayer,
     Arm,
     Disarm,
     TeleporterArmed,
@@ -429,6 +437,18 @@ impl BoundTriggerCommand {
                     );
                 }
             }
+            Self::GrantLayer {
+                target,
+                layer,
+                amount,
+            } => {
+                let targets = target.resolve(registry, fire_context);
+                for &target in targets.as_slice() {
+                    let _ = postretro_entities::components::grant::grant_layer(
+                        registry, target, layer, *amount,
+                    );
+                }
+            }
             Self::Arm { target } => arm_trigger_targets(
                 registry,
                 target.resolve(registry, fire_context).as_slice(),
@@ -526,6 +546,7 @@ impl BoundTriggerCommand {
             | Self::Damage { target, .. }
             | Self::GrantHealth { target, .. }
             | Self::GrantAmmo { target, .. }
+            | Self::GrantLayer { target, .. }
             | Self::Arm { target }
             | Self::Disarm { target }
             | Self::TeleporterArmed { target, .. }
@@ -552,6 +573,7 @@ impl BoundTriggerCommand {
             Self::Damage { .. } => BoundTriggerCommandKind::Damage,
             Self::GrantHealth { .. } => BoundTriggerCommandKind::GrantHealth,
             Self::GrantAmmo { .. } => BoundTriggerCommandKind::GrantAmmo,
+            Self::GrantLayer { .. } => BoundTriggerCommandKind::GrantLayer,
             Self::Arm { .. } => BoundTriggerCommandKind::Arm,
             Self::Disarm { .. } => BoundTriggerCommandKind::Disarm,
             Self::TeleporterArmed { .. } => BoundTriggerCommandKind::TeleporterArmed,

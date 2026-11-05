@@ -6966,6 +6966,78 @@ mod tests {
         assert_eq!(health.current, 80.0, "a heavy 10-point hit is ×2 on health");
     }
 
+    // G12: a flushed client hit dispatches with the client's pawn as the impact
+    // source, so `impact.source.grantLayer` credits the damager.
+    #[test]
+    fn flushed_client_hit_policy_grants_the_damager() {
+        use postretro_entities::components::defense_layers::{
+            DefenseLayer, DefenseLayersComponent,
+        };
+        let vocabulary = std::sync::Arc::new(postretro_foundation::defense::DefenseVocabulary {
+            layers: vec!["shield".to_string()],
+            ..Default::default()
+        });
+        let mut fixture = HitIngestFixture::new(CollisionWorld::new());
+        fixture
+            .registry
+            .set_defense_vocabulary(std::sync::Arc::clone(&vocabulary));
+        fixture
+            .registry
+            .set_component(
+                fixture.pawn,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 50.0,
+                        capacity: 100.0,
+                        recharge_delay_ms: 0.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+        fixture
+            .registry
+            .set_tags(fixture.target, vec!["enemy".to_string()])
+            .unwrap();
+        // The policy binds against the session's vocabulary; the flushed hit
+        // lands in the host registry the ingester holds.
+        let ctx = postretro_entities::ScriptCtx::new();
+        ctx.registry.borrow_mut().set_defense_vocabulary(vocabulary);
+        let mut policy = postretro_sim::impact_policy::ImpactPolicyRuntime::new(ctx);
+        policy.replace_global_events(vec![postretro_foundation::ImpactEventDescriptor {
+            id: "siphon".to_string(),
+            is_override: false,
+            levels: Vec::new(),
+            filter_tag: Some("enemy".to_string()),
+            policy: vec![serde_json::json!({
+                "primitive": "grantLayer",
+                "target": "@impact.source",
+                "args": {
+                    "layer": { "kind": "defenseLayer", "name": "shield" },
+                    "amount": { "op": "const", "value": 10.0 },
+                },
+            })],
+        }]);
+        let declaration = fixture.declaration(vec![fixture.record(Vec3::new(4.0, 1.5, 0.0), None)]);
+
+        assert!(fixture.ingest(7, &declaration));
+        policy.evaluate_pending_in_registry(&mut fixture.registry);
+
+        let layers = fixture
+            .registry
+            .get_component::<DefenseLayersComponent>(fixture.pawn)
+            .unwrap();
+        assert_eq!(
+            layers.layers[0].value, 60.0,
+            "the client's pawn is the damager"
+        );
+    }
+
     // Regression: connected-client level unload can leave the transport connected
     // while descriptors are empty. Descriptor-backed snapshots must not apply into
     // that empty level state, but classless Transform traffic remains safe.

@@ -16,7 +16,7 @@ pub const INVALID_RESPAWN_HEALTH: i32 = 0;
 pub fn is_consequential_primitive(primitive: &str) -> bool {
     matches!(
         primitive,
-        "grantHealth" | "grantAmmo" | "addSlot" | "setLifeState" | "respawn"
+        "grantHealth" | "grantAmmo" | "grantLayer" | "addSlot" | "setLifeState" | "respawn"
     )
 }
 
@@ -91,6 +91,21 @@ pub fn validate_consequential_args(
             .map_err(|detail| fail(format!("`addSlot` `args.delta` {detail}")));
     }
 
+    if primitive == "grantLayer" {
+        // The layer reference is checked against the vocabulary at install;
+        // here only its shape. No amount fills to capacity.
+        let layer = object
+            .get("layer")
+            .ok_or_else(|| fail("`grantLayer` `args.layer` must be a layer handle".to_string()))?;
+        crate::defense::HandleRef::from_json(layer)
+            .and_then(|handle| handle.expect_layer().map(|_| ()))
+            .map_err(|error| fail(format!("`grantLayer` `args.layer`: {error}")))?;
+        if let Some(amount) = object.get("amount") {
+            finite_f32(Some(amount))
+                .map_err(|detail| fail(format!("`grantLayer` `args.amount` {detail}")))?;
+        }
+        return Ok(());
+    }
     finite_f32(object.get("amount"))
         .map_err(|detail| fail(format!("`{primitive}` `args.amount` {detail}")))?;
     if primitive == "grantAmmo" {

@@ -123,6 +123,9 @@ local function playerVerbs(make)
     grantAmmo = function(_self, ammoType: string, amount: number)
       return make("grantAmmo", { type = ammoType, amount = amount })
     end,
+    grantLayer = function(_self, layer, amount: number?)
+      return make("grantLayer", { layer = layer, amount = amount })
+    end,
     addSlot = function(_self, slot, delta: number)
       return make("addSlot", { slot = slot.slot, delta = delta })
     end,

@@ -19,6 +19,8 @@ pub(crate) mod first_launch_hold;
 mod fluids_swim_surface_tests;
 #[cfg(test)]
 mod ghost_links_surface_tests;
+#[cfg(test)]
+mod grant_layer_surface_tests;
 pub(crate) mod level_loads;
 mod life_state_validation;
 pub(crate) mod lifecycle;

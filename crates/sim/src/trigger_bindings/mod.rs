@@ -3,6 +3,8 @@
 
 mod command_binding;
 #[cfg(test)]
+mod grant_layer_binding_tests;
+#[cfg(test)]
 pub(crate) mod group_tick_tests;
 mod install;
 mod manifest_events;

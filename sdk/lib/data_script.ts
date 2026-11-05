@@ -357,6 +357,7 @@ type ImpactEffectWire =
   | { primitive: "setState"; target: "@impact.target"; args: { name: string; value: RuntimeValue } }
   | { primitive: "grantHealth"; target: "@impact.source"; args: { amount: RuntimeValue } }
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
+  | { primitive: "grantLayer"; target: "@impact.source"; args: { layer: import("postretro").DefenseLayer; amount?: RuntimeValue } }
   | { primitive: "setLifeState"; target: "@impact.source"; args: { state: string } }
   | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
@@ -397,6 +398,13 @@ export interface SourceHandle {
    * skips this effect; app-drain impacts run no policy in v1.
    */
   grantAmmo(type: string, amount: NumberValue): Effect;
+  /**
+   * Refill the damager's `layer`: omit `amount` to fill to capacity, or add
+   * `amount`, clamped to capacity. The capacity is evaluated when the grant
+   * applies. A damager without that layer warns and skips; a fire with no
+   * damager skips this effect.
+   */
+  grantLayer(layer: import("postretro").DefenseLayer, amount?: NumberValue): Effect;
   /**
    * Whether the damager is a player pawn in life state `name` at this fire.
    * False for a damager that is not a player. An unknown name skips the policy.
@@ -531,6 +539,8 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
 const impactSource = {
   grantHealth: (amount: NumberValue) => sourceImpactEffect("grantHealth", { amount: numberNode(amount) }),
   grantAmmo: (type: string, amount: NumberValue) => sourceImpactEffect("grantAmmo", { type, amount: numberNode(amount) }),
+  grantLayer: (layer: import("postretro").DefenseLayer, amount?: NumberValue) =>
+    sourceImpactEffect("grantLayer", amount === undefined ? { layer } : { layer, amount: numberNode(amount) }),
   inLifeState: (name: string) =>
     boolRef({ op: "input", owner: "@impact.source", name: `player.inLifeState:${name}` }),
   setLifeState: (name: string) => sourceImpactEffect("setLifeState", { state: name }),

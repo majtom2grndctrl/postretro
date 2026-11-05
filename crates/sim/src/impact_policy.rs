@@ -36,6 +36,8 @@ pub use damaged_enemy_overlay::{
 
 mod assistable_overlay;
 mod damaged_enemy_overlay;
+#[cfg(test)]
+mod grant_layer_tests;
 mod source_life_state;
 #[cfg(test)]
 mod source_life_state_ordering_tests;
@@ -108,6 +110,10 @@ enum BoundEffect {
     GrantAmmo {
         pool: String,
         amount: BoundProgram<EntityScope>,
+    },
+    GrantLayer {
+        layer: String,
+        amount: Option<BoundProgram<EntityScope>>,
     },
     AdjustSentiment {
         from_recipient: CommandRecipient,
@@ -480,6 +486,7 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::Despawn { .. }
                         | BoundEffect::GrantHealth { .. }
                         | BoundEffect::GrantAmmo { .. }
+                        | BoundEffect::GrantLayer { .. }
                         | BoundEffect::AdjustSentiment { .. }
                         | BoundEffect::SetLifeState { .. } => self.consequential.push(planned),
                     }
@@ -902,6 +909,36 @@ fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEffect, String
                 amount,
             })
         }
+        "grantLayer" => {
+            require_impact_token(target, primitive, IMPACT_SOURCE_TOKEN)?;
+            let handle = postretro_foundation::defense::HandleRef::from_json(
+                args.get("layer")
+                    .ok_or_else(|| "grantLayer args is missing `layer`".to_string())?,
+            )
+            .map_err(|error| format!("grantLayer `layer`: {error}"))?;
+            let layer = handle
+                .expect_layer()
+                .map_err(|error| format!("grantLayer `layer`: {error}"))?;
+            if !scope.declares_defense_layer(layer) {
+                return Err(format!(
+                    "grantLayer `layer`: `{layer}` is not a declared defense layer"
+                ));
+            }
+            let amount = match args.get("amount") {
+                None => None,
+                Some(value) => {
+                    let amount = bind_read(value, scope)?;
+                    if amount.root_type != IrType::Number {
+                        return Err("grantLayer `amount` must evaluate to a number".to_string());
+                    }
+                    Some(amount)
+                }
+            };
+            Ok(BoundEffect::GrantLayer {
+                layer: layer.to_string(),
+                amount,
+            })
+        }
         "adjustSentiment" => {
             let from_recipient = impact_recipient(target, primitive)?;
             let to_recipient = impact_recipient(
@@ -1069,6 +1106,15 @@ fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedEffect {
             effect: ImpactEffect::GrantAmmo {
                 pool: pool.clone(),
                 amount: number(eval_value(amount, scope)),
+            },
+        },
+        BoundEffect::GrantLayer { layer, amount } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Source),
+            effect: ImpactEffect::GrantLayer {
+                layer: layer.clone(),
+                amount: amount
+                    .as_ref()
+                    .map(|amount| number(eval_value(amount, scope))),
             },
         },
         BoundEffect::AdjustSentiment {

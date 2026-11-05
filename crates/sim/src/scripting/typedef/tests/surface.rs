@@ -814,6 +814,11 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
             "grantAmmo: (self: SourceHandle, type: string, amount: NumberValue) -> Effect,",
         ),
         (
+            "grantLayer",
+            "grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;",
+            "grantLayer: (self: SourceHandle, layer: DefenseLayer, amount: NumberValue?) -> Effect,",
+        ),
+        (
             "source.setLifeState",
             "setLifeState(name: string): Effect;",
             "setLifeState: (self: SourceHandle, name: string) -> Effect,",
@@ -846,13 +851,13 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     }
     assert_eq!(
         ts.matches("): Effect;").count(),
-        12,
-        "TypeScript must expose exactly the twelve closed impact-effect builders"
+        13,
+        "TypeScript must expose exactly the thirteen closed impact-effect builders"
     );
     assert_eq!(
         luau.matches("-> Effect").count(),
-        10,
-        "Luau must expose exactly the ten receiver-method impact-effect builders; set/update are global functions"
+        11,
+        "Luau must expose exactly the eleven receiver-method impact-effect builders; set/update are global functions"
     );
     // The source's life-state read is a BoolRef, not an Effect.
     assert!(ts.contains("inLifeState(name: string): BoolRef;"));
@@ -862,6 +867,7 @@ fn impact_policy_surface_uses_author_ids_and_closed_effect_union() {
     for wire in [
         "grantHealth\", target: \"@impact.source",
         "grantAmmo\", target: \"@impact.source",
+        "grantLayer\", target: \"@impact.source",
         "adjustSentiment\", target: \"@impact.target\" | \"@impact.source",
         "slot.set\", target: \"@impact.source",
         "setLifeState\", target: \"@impact.source",

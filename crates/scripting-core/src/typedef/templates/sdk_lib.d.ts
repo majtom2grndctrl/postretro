@@ -387,6 +387,8 @@
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this fire's activators' named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -421,6 +423,8 @@
     respawn(options?: RespawnOptions): SubjectTokenCommand;
     /** Add `amount` to this event's player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
+    /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -528,6 +532,8 @@
     grantHealth(amount: NumberValue): Effect;
     /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
     grantAmmo(type: string, amount: NumberValue): Effect;
+    /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
+    grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
     /** Whether the damager is a player pawn in life state `name` at this fire. False for a damager that is not a player. An unknown name skips the policy. */
     inLifeState(name: string): BoolRef;
     /** Put the damager player pawn into life state `name` in-tick, as `setLifeState`: a change restarts its elapsed time, the current state is a no-op. A fire with no damager skips it; a damager lacking the state warns and skips. */
@@ -675,6 +681,8 @@
     respawn(options?: RespawnOptions): GroupCommand;
     /** Add `amount` to each player's named ammo-reserve pool. */
     grantAmmo(type: string, amount: number): GroupCommand;
+    /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
+    grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */

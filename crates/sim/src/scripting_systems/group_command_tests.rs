@@ -24,7 +24,7 @@ use postretro_scripting_core::reaction_dispatch::{
     fire_named_event_with_sequences, validate_sequence_primitives,
 };
 use postretro_scripting_core::reaction_registry::{
-    ReactionPrimitiveRegistry, SystemReactionCommand, SystemReactionRegistry,
+    ReactionPrimitiveRegistry, SystemReactionRegistry,
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_test_log_capture::LogCapture;

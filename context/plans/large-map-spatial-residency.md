@@ -7,7 +7,7 @@
 > vertex block table, streaming through the shared issuer, and a dev-panel meter. Its budget is a debug-tool
 > pool-cap slider. Its findings recommend a pool-policy change before the Low tier fits, and moving the
 > payload split off the frame thread. The player-facing tier is a later spec: `experimental_spikes.md`
-> forbids user-facing settings in a spike. Not ready for `/build-spec`.
+> forbids user-facing settings in a spike. Not ready for `/build-brief`.
 > **Supporting research:** `context/research/spatial-streaming.md`. Shipped SH residency:
 > `context/lib/rendering_pipeline.md` §Cluster SH residency.
 

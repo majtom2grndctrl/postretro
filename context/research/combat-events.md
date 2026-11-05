@@ -248,4 +248,4 @@ the in-flight enemy-AI plan reworks for animation-deferred despawn
 An epic of roughly five sequential specs, front-loaded on the source-id +
 ledger recording contract (the hard-to-reverse data shape), then a kill-first
 thin slice, the hit moments, the `CombatScope` IR adopter, and a dev-mod
-integration. Detailed decomposition belongs in `/draft-plan`, not here.
+integration. Detailed decomposition belongs in `/draft-brief`, not here.

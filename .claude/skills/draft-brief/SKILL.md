@@ -1,11 +1,11 @@
 ---
 name: draft-brief
 description: >
-  Drafts a problem brief for PostRetro — the lightweight spec form for a
+  Drafts a problem brief for PostRetro — the lightweight plan form for a
   repo-aware executor. Records the problem, decisions, acceptance criteria,
   and a non-binding path. Chooses compact or resumable execution before prose
   grows around the work. Use after /draft-session routes work to a brief.
-  Promotion follows /validate-plan and owner sign-off.
+  Promotion follows /validate-plan, detail review, and owner sign-off.
 argument-hint: "[feature-name]"
 ---
 
@@ -22,9 +22,8 @@ A brief is written for a reader with the repo. One integrating executor owns the
 ## Rules
 
 1. **Nothing is restated for an agent that cannot see the rest.** Every executor gets the whole brief, relevant research and context, and the source tree. There is no task-paragraph contract.
-2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim is reported in the plan of record, not fixed in a review round. No line numbers.
-3. **One review gate, at direction.** `/validate-plan` runs once. No identifier-checking review, no implementability review. The diff is reviewed instead, by `/review-panel`. `/review-draft-spec` never runs on a brief: its lenses emit task-paragraph fixes and pin-table prose the form has no home for, and applied they land in Decisions as binding clauses. Where the stakes warrant a detail read, `/review-brief` is the opt-in — it writes only Acceptance rows and `research.md`, and everything else is a finding for the owner.
-4. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
+2. **Decisions in, verification out.** Ground the premise of every *Decision* against source this session — a decision built on a false premise is the expensive kind. Everything else is cited by symbol and left for the executor to re-verify: the header records the commit the source was read at, and a stale *Path* claim found at build is reported in the plan of record. No line numbers.
+3. **Execution weight follows coordination cost.** Cross-boundary contracts add detail to the brief. They do not alone require resumable execution. Choose resumable mode only when durable checkpoints or handoffs will earn their cost.
 
 ## Process
 
@@ -121,7 +120,15 @@ External stress and performance rows follow `context/lib/testing_guide.md` §Res
 
 **Size smell** is on the Problem paragraph, not the document. Two problems in one paragraph is two briefs. Past the mode's target, move derivation to `research.md` and task decomposition to the executor. Required boundary and wire tables do not count toward the target.
 
-**Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append the `Wire format` and `Boundary inventory` sections from `/draft-plan` unchanged. There the document *is* the contract between sides built separately, and the brief is only its front half.
+**Wire formats and cross-boundary names.** When the brief adds a binary or PRL section, or crosses Rust ↔ JS/Luau ↔ wire ↔ FGD, append both sections below. They pin what sides built separately must agree on.
+
+*Boundary inventory.* Casing and encoding for every cross-boundary name, pinned once. Reference it instead of re-deciding inline.
+
+| Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
+|---|---|---|---|---|---|
+| (example) `BillboardEmitter` | `ComponentValue::BillboardEmitter` | `"billboard_emitter"` | `"billboard_emitter"` | `"billboard_emitter"` | n/a |
+
+*Wire format.* For each new binary surface: endianness, integer signedness, length-prefix width, entry-count placement, per-entry field order, empty-list encoding, sentinel/null per runtime. Name the existing section the layout mirrors.
 
 **Spikes.** A build-to-learn brief follows `context/lib/experimental_spikes.md`: honesty-gate ACs are pass/fail, measured findings are measure-and-report, and the last delivered item is a findings note.
 
@@ -140,7 +147,7 @@ External stress and performance rows follow `context/lib/testing_guide.md` §Res
 ### 4b. Revising
 
 - A resolved question becomes one Decisions bullet and leaves. No history: not "was open," not "we settled on." The executor never saw the question.
-- A review finding lands as an Acceptance row, a `research.md` pin row, or a Decisions edit the owner makes in their own words. Reviewer prose never lands in Decisions — that parenthetical is how a brief turns back into a spec.
+- A review finding lands as an Acceptance row, a `research.md` pin row, a meaning-preserving Decisions correction, or a Decisions edit the owner makes in their own words. Reviewer prose never lands in Decisions as a new clause — that parenthetical is how a brief turns back into a spec.
 - Re-read Decisions after any Problem edit. A reframed basis orphans a decision that answered the old one, and the diff never touches the orphan.
 - Read the diff, not the result. Amend-only histories destroy the per-round diff, so snapshot before each round and diff against the snapshot. An edit that drops a trailing line reads fine everywhere you think to look.
 
@@ -154,9 +161,9 @@ Do not update `context/lib/` during drafting. Durable capture happens at promoti
 
 ### 6. Validate direction
 
-Run `/validate-plan <name>`. It reads the brief the same way it reads a spec; the six questions apply unchanged.
+Run `/validate-plan <name>`.
 
-Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a spec*, or *Under-scoped* unilaterally — those are owner decisions.
+Surface the verdict and read it as a fresh reader would; do not rebut it from inside the session that drafted the brief. Never act on *Reshape*, *Not a brief*, or *Under-scoped* unilaterally — those are owner decisions.
 
 ### 7. Report
 
@@ -174,6 +181,7 @@ Between draft and promotion the owner and the drafter resolve **blocks build** q
 
 A brief is ready when:
 - `/validate-plan` returned *Direction sound*, or the owner accepted a reshape and the brief reflects it
+- Detail review reached its stop rule, and the owner has seen its owner items
 - No **blocks build** entries remain; every surviving entry is **delegated**
 - The owner signs off
 
@@ -192,5 +200,3 @@ At promotion:
 **Decisions and Acceptance are owner-owned.** A material change to either requires a proposed restatement and an owner decision. A clarification that preserves both goes in `plan.md`; it does not stop the build. A false Decision premise always stops.
 
 At landing the table gains a result column — every AC, its proof, pass or fail; a gap is named, never silent — and the brief moves to `done/` with `plan.md` beside it.
-
-**Opt-in pre-build check.** When the stakes warrant it — a renderer state machine, a wire format, a cache key, a one-way door — run `/review-brief` before promotion. It fact-checks Decision premises, pins orderings as rows, asks whether each AC is achievable and proves the Problem, and asks what could be deleted; it edits only Acceptance and `research.md`, and every finding on Decisions is the owner's. Not a default step, and never a second round — a brief that needs one has a Decisions problem, which is `/validate-plan`'s.

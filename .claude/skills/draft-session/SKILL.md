@@ -3,14 +3,13 @@ name: draft-session
 description: >
   Guides a planning conversation before choosing an execution artifact.
   Grounds the problem in source, resolves owner decisions, defines proof,
-  and routes the work to a direct build, a problem brief, a full spec, or
-  no work. Invoke first, before /draft-brief or /draft-plan, unless the
+  and routes the work to a direct build, a problem brief, or no work. Invoke first, before /draft-brief, unless the
   route is already settled.
 ---
 
 # Draft Session
 
-Run the conversation that precedes an artifact. The session ends in a handoff block; the route's skill consumes it. `/draft-brief` and `/draft-plan` carry their format rules and assume this session already happened.
+Run the conversation that precedes an artifact. The session ends in a handoff block; the route's skill consumes it. `/draft-brief` carries the format rules and assumes this session already happened.
 
 ## Current plans
 
@@ -22,7 +21,7 @@ Run the conversation that precedes an artifact. The session ends in a handoff bl
 
 **Work as an orchestrator.** After a baseline read, dispatch bounded, read-only research agents — one question each, returning claim, symbol, and confidence. Keep your own context for decisions. Never delegate a product or architectural decision: a delegated answer is a report, and it grounds no one.
 
-**Do not delegate task decomposition, line-level verification, or a map of the whole tree.** Each is the executor's job. Pre-doing it is how a conversation turns into a spec nobody asked for.
+**Do not delegate task decomposition, line-level verification, or a map of the whole tree.** Each is the executor's job. Pre-doing it is how a conversation turns into a plan nobody asked for.
 
 ## The loop
 
@@ -75,12 +74,13 @@ Route by the cost of a wrong decision after code exists, not by breadth. Work th
 |---|---|
 | Direct build | Decisions are clear and reversible after code exists; one integrating executor retains the conversation; durable capture can wait for landing |
 | Problem brief | A decision must be reviewed before code exists — a modder-facing surface, a wire format, a one-way door — or the record must outlive the session. One integrating executor still owns decomposition, seams, and sequencing. Compact vs resumable is `/draft-brief`'s call |
-| Full spec | Task contracts and sequencing must be owner-reviewed before implementation, or several executors work from isolated portions of the artifact |
 | No work | Source disproves the premise, existing behavior already delivers the outcome, or an existing plan owns it |
 
-A spike is not a route. Build-to-learn work takes the brief or spec route with the AC shape from `context/lib/experimental_spikes.md`.
+A spike is not a route. Build-to-learn work takes the brief route with the AC shape from `context/lib/experimental_spikes.md`.
 
-Routing is provisional. `/validate-plan` can still return *Not a spec* or *Under-scoped* once an artifact exists; surface that verdict, never act on it unilaterally.
+Routing is provisional. `/validate-plan` can still return *Not a brief* or *Under-scoped* once an artifact exists; surface that verdict, never act on it unilaterally.
+
+**Brief loop.** `/draft-brief` drafts; it may run in a subagent. The orchestrating session owns what follows. Once `/validate-plan` returns *Direction sound*, run the `/review-brief` loop yourself: review → fix → self-review → re-review, until its stop rule or an owner item. Promotion waits for the loop and the owner's sign-off. Planning authorization covers the loop; it edits the draft, not source.
 
 **Direct build loop.** `/build-brief` assumes a promoted brief and lifecycle directories; a direct build has neither, so its loop is stated here. The session is the integrating executor:
 
@@ -110,7 +110,7 @@ Decisions:
 Non-goals:
 Proof:
 Open owner questions:
-Route: direct build | brief | spec | no work
+Route: direct build | brief | no work
 Why this route:
 Next action: discuss | draft | build
 ```

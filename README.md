@@ -109,7 +109,7 @@ Implementation is checked against acceptance criteria, architectural constraints
 
 Revise `context/lib/` to address any context drift that emerged during execution — assumptions that proved wrong, boundaries that shifted, contracts that evolved. Once the context library is up to date, move the completed plan to `done/`. The `done/` folder keeps recently completed plans accessible for reference; old plans are periodically pruned to keep no more than 15.
 
-**The guiding principle:** context files describe what survives refactoring. If a sentence would break when a module is reorganized or a function is renamed, it belongs in a task spec or code comment — not in `context/lib/`.
+**The guiding principle:** context files describe what survives refactoring. If a sentence would break when a module is reorganized or a function is renamed, it belongs in a task description or code comment — not in `context/lib/`.
 
 ### Skills (.claude/skills/)
 
@@ -119,25 +119,20 @@ The lifecycle is supported by Claude Code skills, grouped by the stage they serv
 
 | Skill | Role |
 |-------|------|
-| `draft-session` | Runs the conversation that precedes an artifact; routes to a direct build, brief, spec, or no work |
-| `draft-plan` | Drafts a full feature or epic spec — tasks, sequencing, acceptance criteria |
-| `draft-brief` | Drafts a problem brief — the lightweight spec form for a repo-aware executor |
+| `draft-session` | Runs the conversation that precedes an artifact; routes to a direct build, brief, or no work |
+| `draft-brief` | Drafts a problem brief — the lightweight plan form for a repo-aware executor |
 
-**Review a spec** — before any code exists.
+**Review a brief** — before any code exists.
 
 | Skill | Role |
 |-------|------|
 | `validate-plan` | Adversarial direction review: is this a reasonable solution to the problem? |
-| `review-draft-spec` | Three parallel reviewers — broad, source-anchored, temporal |
-| `review-brief` | Three-lens detail review of a brief; opt-in, for one-way doors |
-| `review-implementability` | Reads a spec through the executor's lens: would a task agent build the right thing? |
-| `spec-review-loop` | Runs the full review loop end to end, then audits `context/lib/` for staleness |
+| `review-brief` | Three-lens detail review of a brief, run as a review-and-fix loop until clean |
 
 **Execute** — turn an artifact into code.
 
 | Skill | Role |
 |-------|------|
-| `build-spec` | Executes a drafted spec — spawns agents, tracks progress, moves plans through stages |
 | `build-brief` | Executes a promoted problem brief end to end |
 | `build-session` | Talks a feature through, then orchestrates the build in the same session |
 | `implement-task` | Implements a single task from a plan or an ad-hoc description |
@@ -157,7 +152,6 @@ The lifecycle is supported by Claude Code skills, grouped by the stage they serv
 |-------|------|
 | `create-skill` | Builds new skills for the project |
 
-Three experimental variants exist alongside their parents and are selected deliberately, not by default: `draft-plan-priced-deferral`, `draft-plan-schema-first`, and `review-draft-spec-priced-deferral`.
 
 ## Tech Stack
 
